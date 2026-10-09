@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from griffe_expand_aliases import (
     ExpandTokenAliases,
     PromoteStubOverloads,
     annotation_aliases,
+    constructor_binding,
     expand_annotation,
 )
 
@@ -36,6 +38,14 @@ _PUBLIC_TYPEVAR_NAMES = {
 
 ParameterForm = tuple[str | None, str, str | None, str | None]
 CallForm = tuple[tuple[ParameterForm, ...], str | None]
+
+
+@dataclass(frozen=True)
+class _StubConstructor:
+    source_class: str
+    name: str
+    forms: tuple[CallForm, ...]
+    error: str | None = None
 
 
 def _is_never(function: griffe.Function) -> bool:
@@ -119,12 +129,20 @@ def _stub_call_form(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     stub_module: griffe.Module,
     aliases: dict[str, Any],
-) -> CallForm:
+    *,
+    receiver: str | None = None,
+    constructor: str | None = None,
+    class_result: str | None = None,
+) -> CallForm | None:
     args = function.args
     positional = [*args.posonlyargs, *args.args]
     defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    if receiver is not None and (not positional or positional[0].arg != receiver):
+        return None
     parameters: list[ParameterForm] = []
     for index, (argument, default) in enumerate(zip(positional, defaults, strict=True)):
+        if receiver is not None and index == 0:
+            continue
         kind = (
             'positional-only'
             if index < len(args.posonlyargs)
@@ -157,7 +175,13 @@ def _stub_call_form(
             _stub_annotation(args.kwarg.annotation, stub_module, aliases),
             None,
         ))
-    return tuple(parameters), _stub_annotation(function.returns, stub_module, aliases)
+    returns = _stub_annotation(function.returns, stub_module, aliases)
+    if constructor is not None and (
+        constructor == '__init__'
+        or (returns is not None and returns.rsplit('.', 1)[-1] == 'Self')
+    ):
+        returns = class_result
+    return tuple(parameters), returns
 
 
 def _griffe_call_form(function: griffe.Function) -> CallForm:
@@ -179,10 +203,13 @@ def _griffe_call_form(function: griffe.Function) -> CallForm:
 
 
 def _stub_overloads(
-    stub_module: griffe.Module, aliases: dict[str, Any]
+    stub_module: griffe.Module,
+    aliases: dict[str, Any],
+    tree: ast.Module | None = None,
 ) -> dict[str, tuple[CallForm, ...]]:
     """All non-Never overload forms by model path, in authored order."""
-    tree = ast.parse(STUB.read_text(encoding='utf-8'))
+    if tree is None:
+        tree = ast.parse(STUB.read_text(encoding='utf-8'))
     groups: list[tuple[str, list[ast.FunctionDef | ast.AsyncFunctionDef]]] = []
 
     def collect(prefix: str, body: list[ast.stmt]) -> None:
@@ -215,10 +242,371 @@ def _stub_overloads(
         if not concrete:
             # Never-only groups have no accepted forms to publish.
             continue
-        result[path] = tuple(
-            _stub_call_form(function, stub_module, aliases) for function in concrete
+        forms = []
+        for function in concrete:
+            form = _stub_call_form(function, stub_module, aliases)
+            if form is None:
+                raise ValueError(f'{path}: unexpected missing method call form')
+            forms.append(form)
+        result[path] = tuple(forms)
+    return result
+
+
+def _stub_base_name(expression: ast.expr) -> str | None:
+    if isinstance(expression, ast.Subscript):
+        return _stub_base_name(expression.value)
+    if isinstance(expression, ast.Name):
+        return expression.id
+    if isinstance(expression, ast.Attribute):
+        return expression.attr
+    return None
+
+
+def _stub_class_nodes(tree: ast.Module) -> dict[str, ast.ClassDef]:
+    return {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+
+
+def _stub_type_variables(tree: ast.Module) -> set[str]:
+    constructors = {'TypeVar', 'TypeVarTuple', 'ParamSpec'}
+    names = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+            value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        if (
+            not isinstance(value, ast.Call)
+            or _stub_base_name(value.func) not in constructors
+        ):
+            continue
+        names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names
+
+
+def _stub_expression_names(expression: ast.expr) -> list[str]:
+    if isinstance(expression, ast.Name):
+        return [expression.id]
+    names = []
+    for child in ast.iter_child_nodes(expression):
+        if isinstance(child, ast.expr):
+            names.extend(_stub_expression_names(child))
+    return names
+
+
+def _stub_class_type_parameters(
+    class_node: ast.ClassDef,
+    type_variables: set[str],
+) -> tuple[str, ...]:
+    parameters = [parameter.name for parameter in class_node.type_params]
+    if parameters:
+        return tuple(dict.fromkeys(parameters))
+
+    explicit_generic = []
+    for base in class_node.bases:
+        if isinstance(base, ast.Subscript) and _stub_base_name(base.value) == 'Generic':
+            explicit_generic.extend(
+                name
+                for name in _stub_expression_names(base.slice)
+                if name in type_variables
+            )
+    if explicit_generic:
+        return tuple(dict.fromkeys(explicit_generic))
+
+    inherited_generic = []
+    for base in class_node.bases:
+        if not isinstance(base, ast.Subscript):
+            continue
+        inherited_generic.extend(
+            name
+            for name in _stub_expression_names(base.slice)
+            if name in type_variables
+        )
+    return tuple(dict.fromkeys(inherited_generic))
+
+
+def _stub_class_call_result(
+    class_name: str,
+    class_node: ast.ClassDef,
+    type_variables: set[str],
+) -> str:
+    parameters = tuple(
+        _public_annotation(name)
+        for name in _stub_class_type_parameters(class_node, type_variables)
+    )
+    return f'{class_name}[{", ".join(parameters)}]' if parameters else class_name
+
+
+def _stub_mro(
+    name: str,
+    classes: dict[str, ast.ClassDef],
+    active: frozenset[str] = frozenset(),
+) -> tuple[str, ...] | None:
+    if name in active:
+        return None
+    node = classes.get(name)
+    if node is None:
+        return (name,)
+    bases = [
+        base_name
+        for expression in node.bases
+        if (base_name := _stub_base_name(expression)) is not None
+    ] or ['object']
+    sequences = []
+    for base in bases:
+        base_mro = _stub_mro(base, classes, active | {name})
+        if base_mro is None:
+            return None
+        sequences.append(list(base_mro))
+    sequences.append(list(bases))
+    result = [name]
+    while any(sequences):
+        candidate = next(
+            (
+                sequence[0]
+                for sequence in sequences
+                if sequence and not any(sequence[0] in other[1:] for other in sequences)
+            ),
+            None,
+        )
+        if candidate is None:
+            return None
+        result.append(candidate)
+        for sequence in sequences:
+            if sequence and sequence[0] == candidate:
+                sequence.pop(0)
+    return tuple(result)
+
+
+def _stub_constructor_declarations(
+    class_node: ast.ClassDef,
+    name: str,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    functions = [
+        member
+        for member in class_node.body
+        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and member.name == name
+    ]
+    overloads = [
+        function
+        for function in functions
+        if any(
+            isinstance(decorator, ast.Name) and decorator.id == 'overload'
+            for decorator in function.decorator_list
+        )
+    ]
+    if overloads:
+        return overloads
+    return functions[-1:]
+
+
+def _stub_constructor_declared(class_node: ast.ClassDef, name: str) -> bool:
+    if _stub_constructor_declarations(class_node, name):
+        return True
+
+    def assigned_name(target: ast.expr) -> str | None:
+        if isinstance(target, ast.Name):
+            return target.id
+        if isinstance(target, ast.Attribute):
+            return target.attr
+        return None
+
+    return any(
+        assigned_name(target) == name
+        for member in class_node.body
+        for target in (
+            member.targets
+            if isinstance(member, ast.Assign)
+            else [member.target]
+            if isinstance(member, ast.AnnAssign)
+            else ()
+        )
+    )
+
+
+def _stub_has_required_never_input(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    stub_module: griffe.Module,
+    aliases: dict[str, Any],
+    receiver: str,
+) -> bool:
+    args = function.args
+    positional = [*args.posonlyargs, *args.args]
+    defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    for index, (argument, default) in enumerate(zip(positional, defaults, strict=True)):
+        if index == 0 and argument.arg == receiver:
+            continue
+        annotation = _stub_annotation(argument.annotation, stub_module, aliases)
+        if (
+            default is None
+            and annotation is not None
+            and annotation.rsplit('.', 1)[-1] in {'Never', 'NoReturn'}
+        ):
+            return True
+    for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+        annotation = _stub_annotation(argument.annotation, stub_module, aliases)
+        if (
+            default is None
+            and annotation is not None
+            and annotation.rsplit('.', 1)[-1] in {'Never', 'NoReturn'}
+        ):
+            return True
+    return False
+
+
+def _stub_constructor_source(
+    name: str,
+    classes: dict[str, ast.ClassDef],
+) -> tuple[str, str, list[ast.FunctionDef | ast.AsyncFunctionDef]] | str | None:
+    class_node = classes.get(name)
+    if class_node is None:
+        return None
+    own = {
+        constructor: (
+            _stub_constructor_declarations(class_node, constructor),
+            _stub_constructor_declared(class_node, constructor),
+        )
+        for constructor in ('__new__', '__init__')
+    }
+    own = {constructor: value for constructor, value in own.items() if value[1]}
+    if len(own) > 1:
+        return 'both __new__ and __init__ are declared'
+    if own:
+        constructor, (functions, _) = next(iter(own.items()))
+        other = '__init__' if constructor == '__new__' else '__new__'
+        mro = _stub_mro(name, classes)
+        if mro is None:
+            return 'class MRO cannot be resolved from authored bases'
+        for base_name in mro[1:]:
+            base = classes.get(base_name)
+            if base is None:
+                continue
+            if _stub_constructor_declared(base, other):
+                return (
+                    f'{name}.{constructor} and {base_name}.{other} '
+                    'both constrain construction'
+                )
+        return name, constructor, functions
+
+    mro = _stub_mro(name, classes)
+    if mro is None:
+        return 'class MRO cannot be resolved from authored bases'
+    inherited: dict[
+        str,
+        tuple[str, list[ast.FunctionDef | ast.AsyncFunctionDef]],
+    ] = {}
+    for base_name in mro[1:]:
+        base = classes.get(base_name)
+        if base is None:
+            if base_name not in {'Generic', 'object'}:
+                return None
+            continue
+        for constructor in ('__new__', '__init__'):
+            if constructor in inherited or not _stub_constructor_declared(
+                base, constructor
+            ):
+                continue
+            inherited[constructor] = (
+                base_name,
+                _stub_constructor_declarations(base, constructor),
+            )
+    if len(inherited) > 1:
+        return 'inherited __new__ and __init__ declarations both constrain construction'
+    if inherited:
+        constructor, (source_class, functions) = next(iter(inherited.items()))
+        return source_class, constructor, functions
+    return None
+
+
+def _stub_constructor_contracts(
+    stub_module: griffe.Module,
+    aliases: dict[str, Any],
+    public_names: set[str],
+    tree: ast.Module | None = None,
+) -> dict[str, _StubConstructor]:
+    if tree is None:
+        tree = ast.parse(STUB.read_text(encoding='utf-8'))
+    classes = _stub_class_nodes(tree)
+    type_variables = _stub_type_variables(tree)
+    result: dict[str, _StubConstructor] = {}
+    for class_name in sorted(public_names):
+        source = _stub_constructor_source(class_name, classes)
+        if source is None:
+            continue
+        class_path = f'gometry.{class_name}'
+        if isinstance(source, str):
+            result[class_path] = _StubConstructor(
+                class_name,
+                '',
+                (),
+                error=source,
+            )
+            continue
+        source_class, constructor, functions = source
+        class_result = _stub_class_call_result(
+            class_name,
+            classes[class_name],
+            type_variables,
+        )
+        receiver = 'cls' if constructor == '__new__' else 'self'
+        forms = []
+        error = None
+        for function in functions:
+            if _stub_is_never(function.returns, stub_module, aliases) or (
+                _stub_has_required_never_input(
+                    function,
+                    stub_module,
+                    aliases,
+                    receiver,
+                )
+            ):
+                continue
+            form = _stub_call_form(
+                function,
+                stub_module,
+                aliases,
+                receiver=receiver,
+                constructor=constructor,
+                class_result=class_result,
+            )
+            if form is None:
+                error = (
+                    f'{source_class}.{constructor} has no leading {receiver} receiver'
+                )
+                break
+            forms.append(form)
+        result[class_path] = _StubConstructor(
+            source_class,
+            constructor,
+            tuple(forms),
+            error=error,
         )
     return result
+
+
+def _call_form_defaults(
+    forms: tuple[CallForm, ...],
+) -> tuple[dict[str, str | None], list[str]]:
+    values: dict[str, set[str]] = {}
+    for parameters, _ in forms:
+        for _, name, _, default in parameters:
+            if default is not None:
+                values.setdefault(name, set()).add(default)
+            else:
+                values.setdefault(name, set())
+    conflicts = [
+        f'{name}: defaults differ across accepted forms {sorted(defaults)}'
+        for name, defaults in values.items()
+        if len(defaults) > 1
+    ]
+    return {
+        name: next(iter(defaults)) if defaults else None
+        for name, defaults in values.items()
+    }, conflicts
 
 
 def _public_overload_paths(
@@ -276,8 +664,20 @@ def collect_errors() -> list[str]:
     if not isinstance(lib, griffe.Module):
         return ['transformed model has no gometry._lib module']
     aliases = annotation_aliases(pkg)
-    stub_overloads = _stub_overloads(lib, aliases)
+    stub_tree = ast.parse(STUB.read_text(encoding='utf-8'))
+    stub_overloads = _stub_overloads(lib, aliases, stub_tree)
     public_overloads = _public_overload_paths(stub_overloads, set(gm.__all__))
+    public_classes = {
+        name: member
+        for name, member in pkg.members.items()
+        if name in gm.__all__ and isinstance(member, griffe.Class)
+    }
+    stub_constructors = _stub_constructor_contracts(
+        lib,
+        aliases,
+        set(gm.__all__),
+        stub_tree,
+    )
 
     # The import inventory is authoritative: every flat public native
     # function/class must still be represented by its same-named native member;
@@ -352,6 +752,88 @@ def collect_errors() -> list[str]:
         for path in sorted(public_overloads - model_overloads)
         if stub_overloads[path]
     )
+
+    for path, expected in sorted(stub_constructors.items()):
+        class_name = path.rsplit('.', 1)[-1]
+        class_obj = public_classes.get(class_name)
+        if expected.error is not None:
+            errors.append(f'{path}: {expected.error}')
+            continue
+        binding = constructor_binding(class_obj) if class_obj is not None else None
+        if not expected.forms:
+            if binding is not None:
+                errors.append(f'{path}: prohibited constructor was exposed')
+            continue
+        expected_defaults, conflicts = _call_form_defaults(expected.forms)
+        errors.extend(f'{path}: {conflict}' for conflict in conflicts)
+        if class_obj is None:
+            errors.append(f'{path}: constructor class is missing from the Griffe model')
+            continue
+        if binding is None:
+            errors.append(
+                f'{path}: accepted class-call forms are missing from the Griffe model'
+            )
+            continue
+
+        actual_forms = tuple(
+            _griffe_call_form(form) for form in binding.overloads or ()
+        )
+        if actual_forms != expected.forms:
+            errors.append(
+                f'{path}: class-call forms differ from the authored constructor sequence'
+            )
+        constructor_data = binding.extra.get('gometry', {})
+        source = constructor_data.get('source_function')
+        if (
+            not isinstance(source, griffe.Function)
+            or source.name != expected.name
+            or not isinstance(source.parent, griffe.Class)
+            or source.parent.name != expected.source_class
+        ):
+            errors.append(
+                f'{path}: constructor binding has incorrect source provenance'
+            )
+        if binding in class_obj.members.values():
+            errors.append(f'{path}: private constructor binding became a public member')
+
+        actual_defaults = {
+            parameter.name: _expression_text(parameter.default)
+            for parameter in binding.parameters
+        }
+        if actual_defaults != expected_defaults:
+            errors.append(f'{path}: constructor parameter context defaults differ')
+
+        sections = constructor_data.get('docstring_sections', ())
+        rendered_defaults: dict[str, str | None] = {}
+        for section in sections:
+            if section.kind not in {
+                griffe.DocstringSectionKind.parameters,
+                griffe.DocstringSectionKind.other_parameters,
+            }:
+                continue
+            for parameter in section.value:
+                actual = _expression_text(parameter.value)
+                expected_default = expected_defaults.get(parameter.name)
+                if parameter.name in expected_defaults and actual != expected_default:
+                    errors.append(
+                        f'{path}({parameter.name}): parsed documentation default '
+                        f'{actual!r} differs from {expected_default!r}'
+                    )
+                key = f'{section.kind.value}:{parameter.name}'
+                if key in rendered_defaults:
+                    errors.append(f'{path}({parameter.name}): duplicate parameter row')
+                rendered_defaults[key] = actual
+
+    expected_constructor_paths = set(stub_constructors)
+    for name, class_obj in public_classes.items():
+        path = f'gometry.{name}'
+        if (
+            path not in expected_constructor_paths
+            and constructor_binding(class_obj) is not None
+        ):
+            errors.append(
+                f'{path}: constructor binding has no authored local provenance'
+            )
 
     cell_array = pkg.members.get('CellArray')
     if isinstance(cell_array, griffe.Class):
