@@ -590,7 +590,12 @@ pub(in crate::geometry) trait Problem {
         work: &mut W,
     ) -> Result<Vec<Self::Key>>;
 
-    fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering>;
+    fn compare_nodes<W: Work>(
+        &self,
+        left: Self::Node,
+        right: Self::Node,
+        work: &mut W,
+    ) -> Result<Ordering>;
 
     /// Append domain-admitted candidates for `node`; their input order is ignored.
     fn fill_candidates<W: Work>(
@@ -601,11 +606,12 @@ pub(in crate::geometry) trait Problem {
     ) -> Result<()>;
 
     /// Exact displacement order, followed by the domain's coordinate tie-break.
-    fn compare_candidates(
+    fn compare_candidates<W: Work>(
         &self,
         node: Self::Node,
         left: Self::Candidate,
         right: Self::Candidate,
+        work: &mut W,
     ) -> Result<Ordering>;
 
     fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key;
@@ -1225,13 +1231,13 @@ fn prepare_classes<P: Problem, A: SearchAccount>(
         }
         account.charge_product(variables.len(), 1)?;
         let mut variables = variables.clone();
-        try_sort_by_with_work(&mut variables, account, |left, right, _work| {
-            problem.compare_nodes(*left, *right)
+        try_sort_by_with_work(&mut variables, account, |left, right, work| {
+            problem.compare_nodes(*left, *right, work)
         })?;
         account.charge(1)?;
         specs.push(ClassSpec { class, variables });
     }
-    try_sort_by_with_work(&mut specs, account, |left, right, _work| {
+    try_sort_by_with_work(&mut specs, account, |left, right, work| {
         let left_class = left.class;
         let right_class = right.class;
         let left_node = *left
@@ -1242,7 +1248,7 @@ fn prepare_classes<P: Problem, A: SearchAccount>(
             .variables
             .first()
             .expect("variable classes are nonempty");
-        let order = problem.compare_nodes(left_node, right_node)?;
+        let order = problem.compare_nodes(left_node, right_node, work)?;
         Ok(if order == Ordering::Equal {
             left_class.cmp(&right_class)
         } else {
@@ -1348,7 +1354,9 @@ fn sort_candidates<P: Problem, W: Work>(
             let previous_candidate = *candidates
                 .get(previous)
                 .expect("previous candidate is within the sorted prefix");
-            if problem.compare_candidates(node, candidate, previous_candidate)? != Ordering::Less {
+            if problem.compare_candidates(node, candidate, previous_candidate, work)?
+                != Ordering::Less
+            {
                 break;
             }
             work.charge(2)?;
@@ -1579,6 +1587,7 @@ mod tests {
         nested_accounted_ticks: u128,
         global_error: bool,
         initial_evaluations: u64,
+        comparison_phase: Option<Rc<Cell<u8>>>,
         prepare_calls: Rc<Cell<usize>>,
         local_calls: Rc<Cell<usize>>,
         global_calls: Rc<Cell<usize>>,
@@ -1603,6 +1612,7 @@ mod tests {
                 nested_accounted_ticks: 0,
                 global_error: false,
                 initial_evaluations: 0,
+                comparison_phase: None,
                 prepare_calls: Rc::new(Cell::new(0)),
                 local_calls: Rc::new(Cell::new(0)),
                 global_calls: Rc::new(Cell::new(0)),
@@ -1634,7 +1644,18 @@ mod tests {
                 .ok_or_else(|| GeometryErrorKind::Invalid("fixture class is unknown".into()).into())
         }
 
-        fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
+        fn compare_nodes<W: Work>(
+            &self,
+            left: Self::Node,
+            right: Self::Node,
+            work: &mut W,
+        ) -> Result<Ordering> {
+            if let Some(phase) = &self.comparison_phase {
+                phase.set(1);
+                let result = work.charge(37);
+                phase.set(0);
+                result?;
+            }
             Ok(left.cmp(&right))
         }
 
@@ -1653,12 +1674,19 @@ mod tests {
             Ok(())
         }
 
-        fn compare_candidates(
+        fn compare_candidates<W: Work>(
             &self,
             _node: Self::Node,
             left: Self::Candidate,
             right: Self::Candidate,
+            work: &mut W,
         ) -> Result<Ordering> {
+            if let Some(phase) = &self.comparison_phase {
+                phase.set(2);
+                let result = work.charge(37);
+                phase.set(0);
+                result?;
+            }
             Ok(left.cmp(&right))
         }
 
@@ -1784,11 +1812,96 @@ mod tests {
         }
     }
 
+    struct ComparisonWorkProbe {
+        budget: EvaluationBudget,
+        phase: Rc<Cell<u8>>,
+        comparator_ticks: Cell<[u64; 3]>,
+    }
+
+    impl Work for ComparisonWorkProbe {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            self.budget.charge(ticks)?;
+            let phase = usize::from(self.phase.get());
+            if phase != 0 {
+                let mut comparator_ticks = self.comparator_ticks.get();
+                comparator_ticks[phase] = comparator_ticks[phase]
+                    .checked_add(ticks)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                self.comparator_ticks.set(comparator_ticks);
+            }
+            Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.budget.charge_product(count, ticks_per_item)?;
+            let phase = usize::from(self.phase.get());
+            if phase != 0 {
+                let ticks = u64::try_from(count)
+                    .map_err(|_| ResourceError::SizeOverflow)?
+                    .checked_mul(
+                        u64::try_from(ticks_per_item).map_err(|_| ResourceError::SizeOverflow)?,
+                    )
+                    .ok_or(ResourceError::SizeOverflow)?;
+                let mut comparator_ticks = self.comparator_ticks.get();
+                comparator_ticks[phase] = comparator_ticks[phase]
+                    .checked_add(ticks)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                self.comparator_ticks.set(comparator_ticks);
+            }
+            Ok(())
+        }
+    }
+
+    impl SearchAccount for ComparisonWorkProbe {
+        fn budget_mut(&mut self) -> &mut EvaluationBudget {
+            &mut self.budget
+        }
+    }
+
     fn search_fixture(
         problem: FixtureProblem,
         constructed: usize,
     ) -> Result<SearchAssignment<usize, u8, FixtureOutput>> {
         Search::new(problem, "search_test", constructed)?.run()
+    }
+
+    #[test]
+    fn search_forwards_the_shared_work_handle_to_both_comparison_hooks() -> Result<()> {
+        let phase = Rc::new(Cell::new(0));
+        let mut problem = FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0]; 2]);
+        problem.comparison_phase = Some(Rc::clone(&phase));
+        let mut account = ComparisonWorkProbe {
+            budget: EvaluationBudget::new("comparison_work_probe", 2)?,
+            phase,
+            comparator_ticks: Cell::new([0; 3]),
+        };
+
+        assert!(matches!(
+            run_with_budget(&mut problem, &mut account)?,
+            SearchOutcome::Pass(_)
+        ));
+        let comparator_ticks = account.comparator_ticks.get();
+        assert!(comparator_ticks[1] >= 37, "node comparison was not charged");
+        assert!(
+            comparator_ticks[2] >= 37,
+            "candidate comparison was not charged"
+        );
+
+        let baseline = Search::new(
+            FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0]; 2]),
+            "comparison_work_probe",
+            2,
+        )?
+        .run()?;
+        let ordinary_phase = Rc::new(Cell::new(0));
+        let mut ordinary_problem = FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0]; 2]);
+        ordinary_problem.comparison_phase = Some(ordinary_phase);
+        let ordinary = Search::new(ordinary_problem, "comparison_work_probe", 2)?.run()?;
+        assert_eq!(ordinary.evaluations, baseline.evaluations);
+        assert_eq!(ordinary.output, baseline.output);
+        assert_eq!(ordinary.classes[0].variables, baseline.classes[0].variables);
+        assert_eq!(ordinary.classes[0].values, baseline.classes[0].values);
+        Ok(())
     }
 
     #[test]

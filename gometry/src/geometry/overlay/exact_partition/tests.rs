@@ -6605,8 +6605,9 @@ fn planar_candidate_values(
         .fill_candidates(node, &mut candidates, &mut Unmetered)
         .unwrap();
     let mut ordered = candidates.clone();
-    crate::geometry::try_sort_by(&mut ordered, |left, right| {
-        problem.compare_candidates(node, *left, *right)
+    let mut work = Unmetered;
+    crate::geometry::try_sort_by_with_work(&mut ordered, &mut work, |left, right, work| {
+        problem.compare_candidates(node, *left, *right, work)
     })
     .unwrap();
     (nearest, candidates, ordered)
@@ -6661,11 +6662,16 @@ impl<P: Problem<Output = ()>> Problem for TestVerifier<'_, P> {
         self.inner.fixed_keys(class, variables, work)
     }
 
-    fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
-        self.node_order.map_or_else(
-            || self.inner.compare_nodes(left, right),
-            |compare| Ok(compare(left, right)),
-        )
+    fn compare_nodes<W: Work>(
+        &self,
+        left: Self::Node,
+        right: Self::Node,
+        work: &mut W,
+    ) -> Result<Ordering> {
+        match self.node_order {
+            Some(compare) => Ok(compare(left, right)),
+            None => self.inner.compare_nodes(left, right, work),
+        }
     }
 
     fn fill_candidates<W: Work>(
@@ -6682,13 +6688,14 @@ impl<P: Problem<Output = ()>> Problem for TestVerifier<'_, P> {
         Ok(())
     }
 
-    fn compare_candidates(
+    fn compare_candidates<W: Work>(
         &self,
         node: Self::Node,
         left: Self::Candidate,
         right: Self::Candidate,
+        work: &mut W,
     ) -> Result<Ordering> {
-        self.inner.compare_candidates(node, left, right)
+        self.inner.compare_candidates(node, left, right, work)
     }
 
     fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key {
@@ -6766,8 +6773,13 @@ impl Problem for FanBypassVerifier<'_, '_, '_, '_> {
         Problem::fixed_keys(self.inner, class, variables, work)
     }
 
-    fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
-        Problem::compare_nodes(self.inner, left, right)
+    fn compare_nodes<W: Work>(
+        &self,
+        left: Self::Node,
+        right: Self::Node,
+        work: &mut W,
+    ) -> Result<Ordering> {
+        Problem::compare_nodes(self.inner, left, right, work)
     }
 
     fn fill_candidates<W: Work>(
@@ -6779,13 +6791,14 @@ impl Problem for FanBypassVerifier<'_, '_, '_, '_> {
         Problem::fill_candidates(self.inner, node, candidates, work)
     }
 
-    fn compare_candidates(
+    fn compare_candidates<W: Work>(
         &self,
         node: Self::Node,
         left: Self::Candidate,
         right: Self::Candidate,
+        work: &mut W,
     ) -> Result<Ordering> {
-        Problem::compare_candidates(self.inner, node, left, right)
+        Problem::compare_candidates(self.inner, node, left, right, work)
     }
 
     fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key {
@@ -6936,8 +6949,9 @@ fn assert_collision_class_matches_search(count: usize, compare_oracle: bool) {
         .expect("fixture has one proximity class")
         .clone();
     assert_eq!(variables.len(), count);
-    crate::geometry::try_sort_by(&mut variables, |left, right| {
-        problem.compare_nodes(*left, *right)
+    let mut work = Unmetered;
+    crate::geometry::try_sort_by_with_work(&mut variables, &mut work, |left, right, work| {
+        problem.compare_nodes(*left, *right, work)
     })
     .unwrap();
 
@@ -6949,8 +6963,8 @@ fn assert_collision_class_matches_search(count: usize, compare_oracle: bool) {
             problem
                 .fill_candidates(node, &mut values, &mut Unmetered)
                 .unwrap();
-            crate::geometry::try_sort_by(&mut values, |left, right| {
-                problem.compare_candidates(node, *left, *right)
+            crate::geometry::try_sort_by_with_work(&mut values, &mut work, |left, right, work| {
+                problem.compare_candidates(node, *left, *right, work)
             })
             .unwrap();
             let mut row = Vec::new();
@@ -7149,8 +7163,9 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
     assert_eq!(classes.len(), 1);
     assert_eq!(classes.first().unwrap().len(), 3);
     let mut variables = classes.first().unwrap().clone();
-    crate::geometry::try_sort_by(&mut variables, |left, right| {
-        problem.compare_nodes(*left, *right)
+    let mut work = Unmetered;
+    crate::geometry::try_sort_by_with_work(&mut variables, &mut work, |left, right, work| {
+        problem.compare_nodes(*left, *right, work)
     })
     .unwrap();
     let fixed = problem.fixed_keys(0, &variables, &mut Unmetered).unwrap();
@@ -7160,8 +7175,8 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
         problem
             .fill_candidates(node, &mut values, &mut Unmetered)
             .unwrap();
-        crate::geometry::try_sort_by(&mut values, |left, right| {
-            problem.compare_candidates(node, *left, *right)
+        crate::geometry::try_sort_by_with_work(&mut values, &mut work, |left, right, work| {
+            problem.compare_candidates(node, *left, *right, work)
         })
         .unwrap();
         let mut row = Vec::new();
@@ -7386,8 +7401,9 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
         .fill_candidates(point, &mut raw_candidates, &mut Unmetered)
         .unwrap();
     assert_eq!(raw_candidates.len(), 9);
-    crate::geometry::try_sort_by(&mut raw_candidates, |left, right| {
-        problem.compare_candidates(point, *left, *right)
+    let mut work = Unmetered;
+    crate::geometry::try_sort_by_with_work(&mut raw_candidates, &mut work, |left, right, work| {
+        problem.compare_candidates(point, *left, *right, work)
     })
     .unwrap();
     let mut available = Vec::new();
@@ -8320,8 +8336,9 @@ fn classify_fan_candidates(
     let fixed = problem.fixed_keys(class, &[center], &mut Unmetered)?;
     let mut candidates = Vec::new();
     problem.fill_candidates(center, &mut candidates, &mut Unmetered)?;
-    crate::geometry::try_sort_by(&mut candidates, |left, right| {
-        problem.compare_candidates(center, *left, *right)
+    let mut work = Unmetered;
+    crate::geometry::try_sort_by_with_work(&mut candidates, &mut work, |left, right, work| {
+        problem.compare_candidates(center, *left, *right, work)
     })?;
     let mut seen: Vec<PointKey> = Vec::new();
     candidates.retain(|candidate| {
@@ -8511,8 +8528,9 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     problem
         .fill_candidates(center, &mut candidates, &mut Unmetered)
         .unwrap();
-    crate::geometry::try_sort_by(&mut candidates, |left, right| {
-        problem.compare_candidates(center, *left, *right)
+    let mut work = Unmetered;
+    crate::geometry::try_sort_by_with_work(&mut candidates, &mut work, |left, right, work| {
+        problem.compare_candidates(center, *left, *right, work)
     })
     .unwrap();
     candidates.retain(|candidate| !fixed.contains(&problem.candidate_key(*candidate)));

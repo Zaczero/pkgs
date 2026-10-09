@@ -3884,7 +3884,12 @@ impl Problem for VoronoiProblem<'_, '_> {
         Ok(keys)
     }
 
-    fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
+    fn compare_nodes<W: Work>(
+        &self,
+        left: Self::Node,
+        right: Self::Node,
+        _work: &mut W,
+    ) -> Result<Ordering> {
         let left_seeded = self.search_seeds.binary_search(&left).is_ok();
         let right_seeded = self.search_seeds.binary_search(&right).is_ok();
         Ok(if left_seeded == right_seeded {
@@ -3920,11 +3925,12 @@ impl Problem for VoronoiProblem<'_, '_> {
         Ok(())
     }
 
-    fn compare_candidates(
+    fn compare_candidates<W: Work>(
         &self,
         node: Self::Node,
         left: Self::Candidate,
         right: Self::Candidate,
+        _work: &mut W,
     ) -> Result<Ordering> {
         let exact = &self.embedding.subdivision.vertex(node).point;
         Ok(exact::squared_distance_cmp_point(exact, left, right)?

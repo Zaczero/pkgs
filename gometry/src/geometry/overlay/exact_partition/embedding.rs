@@ -498,22 +498,23 @@ fn unique_emission_items(emissions: &[&Emission]) -> Result<Vec<(usize, usize)>>
     Ok(items)
 }
 
-fn squared_displacement(
+fn squared_displacement_with_work(
     partition: &ExactPartition<'_>,
     node: NodeId,
     candidate: XY,
+    work: &mut impl Work,
 ) -> Result<ExactDyadic> {
     let point = partition.exact(node)?;
     let [x, y, weight] = point.as_ref();
     let x = ExactDyadic::from_f64(candidate.x)
-        .try_product(weight)?
-        .try_subtract_ref(x)?;
+        .try_product_with_work(weight, work)?
+        .try_subtract_ref_with_work(x, work)?;
     let y = ExactDyadic::from_f64(candidate.y)
-        .try_product(weight)?
-        .try_subtract_ref(y)?;
-    let xx = x.try_product(&x)?;
-    let yy = y.try_product(&y)?;
-    ExactDyadic::try_add_refs(&xx, &yy)
+        .try_product_with_work(weight, work)?
+        .try_subtract_ref_with_work(y, work)?;
+    let xx = x.try_product_with_work(&x, work)?;
+    let yy = y.try_product_with_work(&y, work)?;
+    ExactDyadic::try_add_refs_with_work(&xx, &yy, work)
 }
 
 #[derive(Clone, Copy)]
@@ -1532,7 +1533,12 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         Ok(keys)
     }
 
-    fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
+    fn compare_nodes<W: Work>(
+        &self,
+        left: Self::Node,
+        right: Self::Node,
+        _work: &mut W,
+    ) -> Result<Ordering> {
         self.partition.compare_nodes(left, right)
     }
 
@@ -1596,17 +1602,18 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         Ok(())
     }
 
-    fn compare_candidates(
+    fn compare_candidates<W: Work>(
         &self,
         node: Self::Node,
         left: Self::Candidate,
         right: Self::Candidate,
+        work: &mut W,
     ) -> Result<Ordering> {
-        let order = squared_displacement(self.partition, node, left)?.cmp(&squared_displacement(
-            self.partition,
-            node,
-            right,
-        )?);
+        let order = squared_displacement_with_work(self.partition, node, left, work)?
+            .cmp_with_work(
+                &squared_displacement_with_work(self.partition, node, right, work)?,
+                work,
+            )?;
         Ok(order
             .then_with(|| left.x.total_cmp(&right.x))
             .then_with(|| left.y.total_cmp(&right.y)))
