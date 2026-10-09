@@ -326,7 +326,8 @@ pub(crate) use relate::{
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
 pub(crate) use segment_index::{PointEntry, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 #[cfg(test)]

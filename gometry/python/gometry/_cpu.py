@@ -5,8 +5,8 @@ from __future__ import annotations
 import ctypes
 import platform
 import sys
+from typing import TYPE_CHECKING
 
-TYPE_CHECKING = False
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable
 

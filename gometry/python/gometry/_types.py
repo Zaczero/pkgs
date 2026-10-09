@@ -24,8 +24,10 @@ import math
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import (
+    TYPE_CHECKING,
     Any,
     ClassVar,
+    ForwardRef,
     Generic,
     Literal,
     NamedTuple,
@@ -59,16 +61,11 @@ FloatScalar: TypeAlias = (
     float | np.floating[Any] | np.signedinteger[Any] | np.unsignedinteger[Any]
 )
 
-TYPE_CHECKING = False
-
 if TYPE_CHECKING:
-    # Optional-dependency typing assist: plain conditional imports, no
-    # try/except — checkers never execute code, so an `except ImportError`
-    # arm assigning `None`/`Any` statically poisons every alias into a
-    # "variable in type expression". With a bare import, a user WITH the
-    # dependency gets the real types; a user without it gets an unresolved
-    # import inside library code, which both pyright and mypy suppress for
-    # installed packages (the aliases degrade to ``Any``).
+    # Static consumers see the nominal optional dependency types. Runtime
+    # aliases for those external types remain forward references until a caller
+    # supplies the corresponding modules and symbol names. Arrow C capsules
+    # intentionally remain opaque objects.
     import geopandas as gpd
     import pandas as pd
     import polars as pl
@@ -89,20 +86,20 @@ if TYPE_CHECKING:
     PandasIndex: TypeAlias = pd.Index
     PolarsSeries: TypeAlias = pl.Series
 else:
-    PyArrowArray = Any
-    PyArrowChunkedArray = Any
-    PyArrowTable = Any
-    PyArrowRecordBatch = Any
-    PyArrowRecordBatchReader = Any
-    PyArrowCapsule = Any
-    PyArrowSchemaCapsule = Any
-    GeoPandasSeries = Any
-    PandasDataFrame = Any
-    PandasSeries = Any
-    PandasIndex = Any
-    PolarsSeries = Any
-    PyprojCrs = Any
-    PyprojAreaOfInterest = Any
+    PyArrowArray: TypeAlias = ForwardRef('pa.Array | pa.ExtensionArray')
+    PyArrowChunkedArray: TypeAlias = ForwardRef('pa.ChunkedArray')
+    PyArrowTable: TypeAlias = ForwardRef('pa.Table')
+    PyArrowRecordBatch: TypeAlias = ForwardRef('pa.RecordBatch')
+    PyArrowRecordBatchReader: TypeAlias = ForwardRef('pa.RecordBatchReader')
+    PyArrowCapsule: TypeAlias = object
+    PyArrowSchemaCapsule: TypeAlias = object
+    GeoPandasSeries: TypeAlias = ForwardRef('gpd.GeoSeries')
+    PandasDataFrame: TypeAlias = ForwardRef('pd.DataFrame')
+    PandasSeries: TypeAlias = ForwardRef('pd.Series')
+    PandasIndex: TypeAlias = ForwardRef('pd.Index')
+    PolarsSeries: TypeAlias = ForwardRef('pl.Series')
+    PyprojCrs: TypeAlias = ForwardRef('pyproj.CRS')
+    PyprojAreaOfInterest: TypeAlias = ForwardRef('pyproj.aoi.AreaOfInterest')
 
 from gometry._lib import (
     CellArray,

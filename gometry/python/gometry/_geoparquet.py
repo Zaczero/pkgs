@@ -9,7 +9,7 @@ import numbers
 import os  # noqa: TC003 - required by runtime get_type_hints
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from gometry._lib import (
     CRS,
@@ -20,9 +20,10 @@ from gometry._lib import (
     _GeoParquetPhysicalLayout,
 )
 from gometry._optional import missing_optional_dependency
-from gometry._types import PyArrowTable, mapping_as_dict
+from gometry._types import mapping_as_dict
 
-TYPE_CHECKING = False
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 GEOARROW_ENCODINGS = frozenset({
     'point',
@@ -292,7 +293,7 @@ def to_geoparquet(
     values: Geometry | GeometryArray[Geometry | None],
     path: str | os.PathLike[str],
     *,
-    attributes: PyArrowTable | Mapping[str, Any] | None = None,
+    attributes: pa.Table | Mapping[str, Any] | None = None,
     encoding: Literal['wkb', 'native'] = 'wkb',
     **kwargs: Any,
 ) -> None:
@@ -946,7 +947,7 @@ def from_geoparquet(
     row_groups: Iterable[int] | None = None,
     filesystem: Any = None,
     **kwargs: Any,
-) -> tuple[GeometryArray[Geometry | None], PyArrowTable]:
+) -> tuple[GeometryArray[Geometry | None], pa.Table]:
     """Read a GeoParquet geometry column and its aligned attributes.
 
     Parameters

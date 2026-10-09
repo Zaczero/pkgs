@@ -162,6 +162,7 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
         source_list_contents.replacen(source_list_marker, source_list_replacement, 1),
     )?;
     let mut config = cmake::Config::new(source_dir);
+    cmake_flags::configure_fresh_build(&mut config);
     config.define("BUILD_SHARED_LIBS", "OFF");
     config.define("BUILD_TESTING", "OFF");
     config.define("BUILD_CCT", "OFF");
@@ -187,10 +188,18 @@ fn build_from_source() -> Result<std::path::PathBuf, Box<dyn std::error::Error>>
     // If these are not set, it's necessary that libsqlite3 exists on the build system
     // in a location accessible by cmake
     if let Ok(sqlite_include) = std::env::var("DEP_SQLITE3_INCLUDE") {
-        config.define("SQLITE3_INCLUDE_DIR", sqlite_include);
+        config.define("SQLite3_INCLUDE_DIR", sqlite_include);
     }
     if let Ok(sqlite_lib_dir) = std::env::var("DEP_SQLITE3_LIB_DIR") {
-        config.define("SQLITE3_LIBRARY", format!("{sqlite_lib_dir}/libsqlite3.a",));
+        let sqlite_library = if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            "sqlite3.lib"
+        } else {
+            "libsqlite3.a"
+        };
+        config.define(
+            "SQLite3_LIBRARY",
+            PathBuf::from(sqlite_lib_dir).join(sqlite_library),
+        );
     }
 
     if cfg!(feature = "tiff") {

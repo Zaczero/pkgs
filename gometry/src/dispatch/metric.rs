@@ -328,7 +328,7 @@ impl<'a> MetricCtx<'a> {
                 scratch.source_chart_metric(source_crs).map(Some)
             },
             Self::GeographicCarry { .. } => self.geographic_chart_metric(),
-            Self::None | Self::Antimeridian(_) => Ok(None),
+            Self::None | Self::Antimeridian => Ok(None),
         }
     }
 }
@@ -419,12 +419,12 @@ mod tests {
 
         assert!(matches!(domain, TopologyDomain::Geographic(_)));
         assert!(matches!(
-            metric.model(),
-            Some(MetricModel::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_model(MetricOp::OffsetCurve).unwrap(),
+            MetricModel::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert!(matches!(
-            metric.resolved(),
-            Some(ResolvedMetric::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_resolved(MetricOp::OffsetCurve).unwrap(),
+            ResolvedMetric::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert!(
             context_scratch
@@ -450,12 +450,12 @@ mod tests {
         assert_eq!(source_metric.geodesic.f, 1.0 / 150.0);
         assert_eq!(source_metric.state.generation, generation);
         assert!(matches!(
-            metric.model(),
-            Some(MetricModel::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_model(MetricOp::OffsetCurve).unwrap(),
+            MetricModel::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert!(matches!(
-            metric.resolved(),
-            Some(ResolvedMetric::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_resolved(MetricOp::OffsetCurve).unwrap(),
+            ResolvedMetric::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert_eq!(
             binary_dispatch_counters::snapshot().runtime_state_snapshots,
@@ -484,7 +484,9 @@ mod tests {
         };
 
         assert!(matches!(domain, TopologyDomain::Geographic(_)));
-        let Some(ResolvedMetric::Geodesic(operation_metric)) = metric.resolved() else {
+        let ResolvedMetric::Geodesic(operation_metric) =
+            metric.require_resolved(MetricOp::OffsetCurve).unwrap()
+        else {
             panic!("geographic operation resolves its geodesic metric");
         };
         let source_metric = metric
