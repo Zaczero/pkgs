@@ -704,7 +704,10 @@ fn seam_spelled_axis_ring_is_not_an_explicit_world_band() {
 
 #[test]
 fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
-    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape, SharedSlice};
+    use crate::geometry::{
+        CoordinateAxes, LineSeq, MultiLineString, MultiMember, MultiPolygon, Polygon, Shape,
+        SharedSlice,
+    };
 
     let shell = ring(vec![0.0, 2.0, 2.0, 0.0, 0.0], vec![0.0, 0.0, 2.0, 2.0, 0.0]);
     let bad_hole = ring(vec![0.5, 1.5, 1.5, 0.5, 0.5], vec![
@@ -730,6 +733,34 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
     assert_eq!(error.location.coordinate, 2);
     assert_bits(error.native.x, 1.5);
     assert_bits(error.native.y, 91.0);
+
+    let valid_line =
+        LineSeq::try_new(xy_seq(vec![0.0, 1.0], vec![0.0, 1.0])).expect("valid XY line");
+    let invalid_line = LineSeq::try_new(xy_seq(vec![0.0, 1.0], vec![0.0, 91.0]))
+        .expect("finite line outside the latitude range");
+    let multipart = MultiLineString::try_new(CoordinateAxes::XY, vec![
+        MultiMember::Empty,
+        MultiMember::Value(valid_line),
+        MultiMember::Value(invalid_line.clone()),
+        MultiMember::Value(invalid_line),
+    ])
+    .expect("multipart lines have homogeneous XY axes");
+    let nested_line = Shape::geometry_collection(vec![
+        Shape::geometry_collection(vec![Shape::MultiLineString(multipart)])
+            .expect("test collection is valid"),
+    ])
+    .expect("test collection is valid");
+    let error = ScalarGeographicView::try_new(degrees(), &nested_line)
+        .expect_err("the first invalid line member must be rejected");
+    assert_eq!(error.location.members.as_slice(), [0, 0, 2]);
+    assert_eq!(error.location.ring, None);
+    assert_eq!(error.location.coordinate, 1);
+    assert_bits(error.native.x, 1.0);
+    assert_bits(error.native.y, 91.0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
 }
 
 #[test]

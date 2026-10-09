@@ -87,11 +87,10 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut split = Vec::with_capacity(lines.member_count());
-                for member in lines.members() {
+                for member in lines.members_with_values() {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),
-                        MultiMember::Value(index) => {
-                            let line = &lines.as_slice()[index];
+                        MultiMember::Value(line) => {
                             let pieces = segment_coords(&collect_points(line));
                             if pieces.is_empty() {
                                 split.push(MultiMember::Value(line.clone()));
@@ -118,19 +117,14 @@ impl Shape {
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.member_count());
-                for member in polygons.members() {
+                for member in polygons.members_with_values() {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),
-                        MultiMember::Value(index) => {
+                        MultiMember::Value(polygon) => {
                             split.extend(
-                                split_polygon(
-                                    self,
-                                    &polygons.as_slice()[index],
-                                    PoleClosure::Auto,
-                                    metric_access,
-                                )?
-                                .into_iter()
-                                .map(MultiMember::Value),
+                                split_polygon(self, polygon, PoleClosure::Auto, metric_access)?
+                                    .into_iter()
+                                    .map(MultiMember::Value),
                             );
                         },
                     }
@@ -186,14 +180,14 @@ impl Shape {
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.member_count());
-                for member in polygons.members() {
+                for member in polygons.members_with_values() {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),
-                        MultiMember::Value(index) => {
+                        MultiMember::Value(polygon) => {
                             split.extend(
                                 split_polygon(
                                     self,
-                                    &polygons.as_slice()[index],
+                                    polygon,
                                     closure,
                                     None::<
                                         &SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>,
@@ -452,11 +446,11 @@ fn chart_shape(
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::new();
             members.reserve_exact(polygons.members().len());
-            for member in polygons.members() {
+            for member in polygons.members_with_values() {
                 members.push(match member {
                     MultiMember::Empty => MultiMember::Empty,
-                    MultiMember::Value(index) => MultiMember::Value(chart_polygon(
-                        &polygons.as_slice()[index],
+                    MultiMember::Value(polygon) => MultiMember::Value(chart_polygon(
+                        polygon,
                         frame,
                         longitude_scale,
                         latitude_scale,
@@ -1094,8 +1088,8 @@ mod tests {
     };
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::{
-        ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, LineSeq, MOrdinate, Point,
-        Polygon, Ring, Shape, ZOrdinate,
+        ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, LineSeq, MOrdinate,
+        MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, ZOrdinate,
     };
     use crate::test_support::allocation_count;
 
@@ -1250,6 +1244,197 @@ mod tests {
             ])],
         ));
         assert_eq!(split_crs84(&shape), shape);
+    }
+
+    #[test]
+    fn multiline_split_preserves_logical_empty_and_repeated_members() {
+        let crossing_line = LineSeq::try_new(
+            CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![10.0, 10.0], None, None)
+                .expect("finite XY line coordinates"),
+        )
+        .expect("two-point line");
+        let multiline = MultiLineString::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(crossing_line.clone()),
+            MultiMember::Empty,
+            MultiMember::Value(crossing_line),
+            MultiMember::Empty,
+        ])
+        .expect("multipart lines have homogeneous XY axes");
+        let split = Shape::MultiLineString(multiline)
+            .split_antimeridian_in_frame(GeographicFrame::crs84())
+            .expect("valid multipart line splits");
+        let split_lines = match split {
+            Shape::MultiLineString(lines) => Some(lines),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
+        }
+        .expect("multipart line remains a multipart line");
+        assert_eq!(split_lines.axes(), CoordinateAxes::XY);
+        let mut line_members = split_lines.members_with_values();
+        assert!(matches!(line_members.next(), Some(MultiMember::Empty)));
+        let first_part = line_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(line) => Some(line),
+            })
+            .expect("first crossing line has a first part");
+        let second_part = line_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(line) => Some(line),
+            })
+            .expect("first crossing line has a second part");
+        assert!(matches!(line_members.next(), Some(MultiMember::Empty)));
+        let repeated_first_part = line_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(line) => Some(line),
+            })
+            .expect("repeated crossing line has a first part");
+        let repeated_second_part = line_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(line) => Some(line),
+            })
+            .expect("repeated crossing line has a second part");
+        assert!(matches!(line_members.next(), Some(MultiMember::Empty)));
+        assert!(line_members.next().is_none());
+        assert_eq!(first_part, repeated_first_part);
+        assert_eq!(second_part, repeated_second_part);
+    }
+
+    #[test]
+    fn multipolygon_chart_split_preserves_logical_empty_and_repeated_members() {
+        let crossing_polygon = Polygon::new(
+            closed_ring(&[170.0, -170.0, -170.0, 170.0, 170.0], &[
+                40.0, 40.0, 50.0, 50.0, 40.0,
+            ]),
+            Vec::new(),
+        );
+        let multipolygon = MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(crossing_polygon.clone()),
+            MultiMember::Empty,
+            MultiMember::Value(crossing_polygon),
+            MultiMember::Empty,
+        ])
+        .expect("multipart polygons have homogeneous XY axes");
+        let split = Shape::MultiPolygon(multipolygon)
+            .split_antimeridian_in_frame(GeographicFrame::crs84())
+            .expect("valid multipart polygon splits");
+        let split_polygons = match split {
+            Shape::MultiPolygon(polygons) => Some(polygons),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
+        }
+        .expect("multipart polygon remains a multipart polygon");
+        assert_eq!(split_polygons.axes(), CoordinateAxes::XY);
+        let mut polygon_members = split_polygons.members_with_values();
+        assert!(matches!(polygon_members.next(), Some(MultiMember::Empty)));
+        let first_part = polygon_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(polygon) => Some(polygon),
+            })
+            .expect("first crossing polygon has a first part");
+        let second_part = polygon_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(polygon) => Some(polygon),
+            })
+            .expect("first crossing polygon has a second part");
+        assert!(matches!(polygon_members.next(), Some(MultiMember::Empty)));
+        let repeated_first_part = polygon_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(polygon) => Some(polygon),
+            })
+            .expect("repeated crossing polygon has a first part");
+        let repeated_second_part = polygon_members
+            .next()
+            .and_then(|member| match member {
+                MultiMember::Empty => None,
+                MultiMember::Value(polygon) => Some(polygon),
+            })
+            .expect("repeated crossing polygon has a second part");
+        assert!(matches!(polygon_members.next(), Some(MultiMember::Empty)));
+        assert!(polygon_members.next().is_none());
+        assert_eq!(first_part, repeated_first_part);
+        assert_eq!(second_part, repeated_second_part);
+    }
+
+    #[test]
+    fn multipolygon_forced_pole_split_preserves_logical_empty_and_repeated_members() {
+        let north_cap = Polygon::new(
+            closed_ring(&[-45.0, 45.0, 135.0, -135.0, -45.0], &[
+                40.0, 40.0, 40.0, 40.0, 40.0,
+            ]),
+            Vec::new(),
+        );
+        let multipolygon = MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(north_cap.clone()),
+            MultiMember::Empty,
+            MultiMember::Value(north_cap),
+            MultiMember::Empty,
+        ])
+        .expect("multipart polygons have homogeneous XY axes");
+        let forced = Shape::MultiPolygon(multipolygon)
+            .split_antimeridian_over_pole(true)
+            .expect("valid multipart north-pole cap splits");
+        let forced_caps = match forced {
+            Shape::MultiPolygon(polygons) => Some(polygons),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
+        }
+        .expect("forced pole split remains a multipart polygon");
+        let mut groups = Vec::<Vec<Polygon>>::new();
+        let mut current = Vec::new();
+        let mut empty_rows = 0;
+        for member in forced_caps.members_with_values() {
+            match member {
+                MultiMember::Empty => {
+                    groups.push(std::mem::take(&mut current));
+                    empty_rows += 1;
+                },
+                MultiMember::Value(polygon) => current.push(polygon.clone()),
+            }
+        }
+        groups.push(current);
+        assert_eq!(empty_rows, 3);
+        assert_eq!(groups.len(), 4);
+        let mut groups = groups.into_iter();
+        assert!(groups.next().expect("leading empty row").is_empty());
+        let first = groups.next().expect("first pole cap");
+        assert!(!first.is_empty());
+        let repeated = groups.next().expect("repeated pole cap");
+        assert!(!repeated.is_empty());
+        assert_eq!(repeated, first);
+        assert!(groups.next().expect("trailing empty row").is_empty());
+        assert!(groups.next().is_none());
     }
 
     #[test]
