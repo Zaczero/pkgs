@@ -6,8 +6,8 @@ use crate::collections::HashSet;
 #[cfg(test)]
 use crate::geometry::point_on_segment;
 use crate::geometry::{
-    BulkRTree, Point, PointKey, Segment, SquaredDistanceKey, XY, point_pair_distance_key,
-    same_point,
+    BulkRTree, Point, PointKey, Segment, SquaredDistanceKey, clearance_aabb_filter,
+    point_pair_distance_key, same_point,
 };
 
 /// One segment as an R-tree leaf, carrying its position in the build slice
@@ -180,45 +180,6 @@ fn clearance_node_envelope(node: &RTreeNode<PointEntry>) -> AABB<[f64; 2]> {
     }
 }
 
-fn clearance_node_lower_bound(point: Point, node: &RTreeNode<PointEntry>) -> SquaredDistanceKey {
-    let envelope = clearance_node_envelope(node);
-    let [lower_x, lower_y] = envelope.lower();
-    let [upper_x, upper_y] = envelope.upper();
-    clearance_aabb_lower_bound(point, [lower_x, lower_y, upper_x, upper_y])
-}
-
-/// Exact source-distance lower bound from a point to a clamped AABB.
-pub(crate) fn clearance_aabb_lower_bound(point: Point, aabb: [f64; 4]) -> SquaredDistanceKey {
-    let [lower_x, lower_y, upper_x, upper_y] = aabb;
-    // An invalid envelope carries no pruning evidence.
-    if !point.x.is_finite()
-        || !point.y.is_finite()
-        || !lower_x.is_finite()
-        || !lower_y.is_finite()
-        || !upper_x.is_finite()
-        || !upper_y.is_finite()
-        || lower_x > upper_x
-        || lower_y > upper_y
-    {
-        return point_pair_distance_key(XY::new(0.0, 0.0), XY::new(0.0, 0.0));
-    }
-    let x = if point.x < lower_x {
-        lower_x
-    } else if point.x > upper_x {
-        upper_x
-    } else {
-        point.x
-    };
-    let y = if point.y < lower_y {
-        lower_y
-    } else if point.y > upper_y {
-        upper_y
-    } else {
-        point.y
-    };
-    point_pair_distance_key(point.xy(), XY::new(x, y))
-}
-
 fn nearer_clearance_limit<'a>(
     local: Option<&'a SquaredDistanceKey>,
     global: Option<&'a SquaredDistanceKey>,
@@ -256,13 +217,20 @@ fn push_clearance_children<'a>(
                 CLEARANCE_POINT_LEAVES.with(|work| work.set(work.get().saturating_add(1)));
             },
         }
-        let lower_bound = clearance_node_lower_bound(point, node);
-        if let Some(limit) = limit
-            && lower_bound.cmp_distance(limit)?.is_gt()
-        {
-            continue;
+        let envelope = clearance_node_envelope(node);
+        let [lower_x, lower_y] = envelope.lower();
+        let [upper_x, upper_y] = envelope.upper();
+        let (witness, filter) =
+            clearance_aabb_filter(point.xy(), [lower_x, lower_y, upper_x, upper_y]);
+        if let Some(limit) = limit {
+            if filter.cmp_witness_key(witness, limit)?.is_gt() {
+                continue;
+            }
         }
-        stack.push(ClearancePointNode { node, lower_bound });
+        stack.push(ClearancePointNode {
+            node,
+            lower_bound: filter.bind_witness(witness),
+        });
     }
 
     let mut index = first_child.wrapping_add(1);
