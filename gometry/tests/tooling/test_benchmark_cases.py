@@ -17,10 +17,14 @@ from quality_runtime import read_quality_receipt  # noqa: E402
 
 _QUALITY_RECEIPT = read_quality_receipt(_ROOT)
 _CHILD_ENV = os.environ.copy()
-_CHILD_ENV['PYTHONPATH'] = os.pathsep.join((
-    _QUALITY_RECEIPT['package_root'],
-    '/home/user/Source/pkgs/gometry/.venv/lib/python3.14/site-packages',
-))
+_CHILD_ENV['PYTHONPATH'] = os.pathsep.join(
+    entry
+    for entry in (
+        _QUALITY_RECEIPT['package_root'],
+        os.environ.get('PYTHONPATH'),
+    )
+    if entry
+)
 
 
 @pytest.mark.parametrize('case_path', _CASES, ids=lambda path: path.stem)
