@@ -558,7 +558,8 @@ fn linref_point_between_packed_inner(
             crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
                 .map_err(|error| (0, error))?;
         }
-        let rows = crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+
+        crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
             let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
@@ -576,8 +577,7 @@ fn linref_point_between_packed_inner(
                 .collect_rows();
             Ok(rows)
         })
-        .map_err(|error| (0, error))?;
-        rows
+        .map_err(|error| (0, error))?
     } else {
         (0..len)
             .map(|row| {
@@ -634,7 +634,8 @@ fn linref_substring_packed_inner(
             crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
                 .map_err(|error| (0, error))?;
         }
-        let rows = crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+
+        crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
             let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
@@ -653,8 +654,7 @@ fn linref_substring_packed_inner(
                 .collect_rows();
             Ok(rows)
         })
-        .map_err(|error| (0, error))?;
-        rows
+        .map_err(|error| (0, error))?
     } else {
         (0..len)
             .map(|row| {

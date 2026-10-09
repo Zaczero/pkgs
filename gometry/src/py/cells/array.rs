@@ -1894,6 +1894,7 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::{GridKind, PyCellArray};
+    use crate::grid::cell::GridCell as _;
 
     fn h3_id(lat: f64, lon: f64, resolution: u8) -> u64 {
         u64::from(
@@ -2003,15 +2004,11 @@ mod tests {
             let parent = cells
                 .parent(Some(&depth))
                 .expect("parent resolves one shared explicit depth");
-            let expected_parent = crate::grid::cell::GridCell::parent_at(
-                h3o::CellIndex::try_from(cells.id_at(0)).expect("valid H3 id"),
-                6,
-            )
-            .expect("parent at depth 6");
-            assert_eq!(
-                parent.id_at(0),
-                crate::grid::cell::GridCell::hash_key(expected_parent)
-            );
+            let expected_parent = h3o::CellIndex::try_from(cells.id_at(0))
+                .expect("valid H3 id")
+                .parent_at(6)
+                .expect("parent at depth 6");
+            assert_eq!(parent.id_at(0), expected_parent.hash_key());
             assert_eq!(
                 depth
                     .getattr("calls")

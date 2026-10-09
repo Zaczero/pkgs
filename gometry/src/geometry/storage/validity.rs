@@ -380,6 +380,10 @@ impl ValidityMask {
         self.valid_count
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "rows is a Range while self is a bitmap; each endpoint is intentionally checked against its own bound"
+    )]
     pub(crate) fn present_in_range(&self, rows: std::ops::Range<usize>) -> usize {
         assert!(
             rows.start <= rows.end && rows.end <= self.len,

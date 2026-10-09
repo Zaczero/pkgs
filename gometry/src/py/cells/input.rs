@@ -2,6 +2,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyIterator;
 
+use crate::boundary::metadata;
 use crate::crs::frame::FrameAdoption;
 use crate::geometry::Shape;
 use crate::geometry::storage::ValidityMask;
@@ -112,11 +113,8 @@ fn geometry_array_from_items(
         geometries.push(geometry.clone());
     }
 
-    let frame = crate::boundary::metadata::resolve_geometry_frames(
-        &mut geometries,
-        FrameAdoption::default(),
-        context,
-    )?;
+    let frame =
+        metadata::resolve_geometry_frames(&mut geometries, FrameAdoption::default(), context)?;
     let present = PyGeometryArray::from_shapes(
         geometries
             .iter()
