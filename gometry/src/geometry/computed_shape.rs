@@ -898,12 +898,25 @@ mod tests {
         publish_raw_computed_shape, publish_transformed_shape,
         publish_triangle_vertex_stream_budgeted,
     };
+    use crate::crs::frame::{Frame, GeometryTransformFrame, crs_arc_static};
     use crate::geographic::GeographicFrame;
     use crate::geometry::{
         CoordSeq, CoordWindow, CoordinateAxes, Coordinates as _, ExpansionBudget, LineSeq,
         MOrdinate, Point, Polygon, Ring, Shape, SmoothMethod, SourceArcContext, TopologyDomain,
         ZOrdinate,
     };
+
+    fn geographic_transform_plan() -> crate::crs::TransformPlan {
+        let source = Frame::Crs(crs_arc_static("EPSG:4326"));
+        let frame = GeometryTransformFrame::new(
+            &source,
+            crs_arc_static("EPSG:4326"),
+            None,
+            crate::crs::TransformOptions::default(),
+        )
+        .unwrap();
+        crate::crs::TransformPlan::from_geometry_frame(frame).unwrap()
+    }
 
     #[test]
     fn transformed_shape_chain_provider_uses_each_original_endpoint_pair() {
@@ -1069,8 +1082,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let plan = crate::crs::TransformPlan::new("EPSG:4326", "EPSG:4326").unwrap();
-        let mut metric = plan.target_metric_scratch("EPSG:4326");
+        let plan = geographic_transform_plan();
+        let mut metric = plan.target_metric_scratch();
         let Shape::LineString(line) =
             publish_transformed_shape(&source, &output, Some(frame), frame, "to_crs", &mut metric)
                 .unwrap()
