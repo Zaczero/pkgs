@@ -23,10 +23,12 @@
     reason = "a, b, c, d name the vertices of a quad and e, f, t, u its slots, the geometry kernel convention"
 )]
 
+use std::hash::Hash;
+
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
-use crate::geometry::{Point, XY};
+use crate::geometry::{Point, XY, canonicalize_zero};
 
 pub(crate) const EMPTY: usize = usize::MAX;
 
@@ -147,16 +149,102 @@ impl ExactMesh {
 
 /// Triangulate `points` exactly. Fewer than three non-collinear sites give an
 /// empty mesh whose hull is the collinear chain the crate already reports.
+#[cfg(test)]
 pub(super) fn exact_delaunay(points: &[Point]) -> Result<ExactMesh> {
-    let Some(mesh) = Mesh::try_delaunay(points)? else {
+    let xy = |site| site_xy(points, site);
+    exact_delaunay_with(&xy, points.len())
+}
+
+/// A typed coordinate view over one exact mesh. `Query` distinguishes an
+/// admitted site from an arbitrary raw XY query used by constrained insertion.
+pub(in crate::geometry::tessellation) trait MeshCoordinates {
+    type Query: Copy;
+    type Key: Eq + Hash;
+
+    fn query(&self, site: usize) -> Self::Query;
+    fn key(&self, query: Self::Query) -> Self::Key;
+    fn compare(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering;
+    fn compare_x(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering;
+    fn compare_y(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering;
+    fn orient(&self, points: [Self::Query; 3]) -> Result<ExactSign>;
+    fn incircle(&self, points: [Self::Query; 4]) -> Result<ExactSign>;
+    fn compare_axis_spans(
+        &self,
+        x_extremes: [Self::Query; 2],
+        y_extremes: [Self::Query; 2],
+    ) -> Result<std::cmp::Ordering>;
+    fn locality_xy(&self, site: usize) -> XY;
+}
+
+pub(in crate::geometry::tessellation) fn compare_f64(left: f64, right: f64) -> std::cmp::Ordering {
+    canonicalize_zero(left).total_cmp(&canonicalize_zero(right))
+}
+
+impl<F: Fn(usize) -> XY> MeshCoordinates for F {
+    type Query = XY;
+    type Key = [u64; 2];
+
+    fn query(&self, site: usize) -> Self::Query {
+        self(site)
+    }
+
+    fn key(&self, query: Self::Query) -> Self::Key {
+        let normalized = |value: f64| {
+            if value == 0.0 {
+                0.0_f64.to_bits()
+            } else {
+                value.to_bits()
+            }
+        };
+        [normalized(query.x), normalized(query.y)]
+    }
+
+    fn compare(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering {
+        compare_xy(left, right)
+    }
+
+    fn compare_x(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering {
+        compare_f64(left.x, right.x)
+    }
+
+    fn compare_y(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering {
+        compare_f64(left.y, right.y)
+    }
+
+    fn orient(&self, [a, b, c]: [Self::Query; 3]) -> Result<ExactSign> {
+        Ok(exact::orient2d(a, b, c))
+    }
+
+    fn incircle(&self, [a, b, c, d]: [Self::Query; 4]) -> Result<ExactSign> {
+        exact::incircle(a, b, c, d)
+    }
+
+    fn compare_axis_spans(
+        &self,
+        [min_x, max_x]: [Self::Query; 2],
+        [min_y, max_y]: [Self::Query; 2],
+    ) -> Result<std::cmp::Ordering> {
+        Ok(compare_f64(max_x.x - min_x.x, max_y.y - min_y.y))
+    }
+
+    fn locality_xy(&self, site: usize) -> XY {
+        self(site)
+    }
+}
+
+pub(super) fn exact_delaunay_with<C: MeshCoordinates>(
+    coordinates: &C,
+    site_count: usize,
+) -> Result<ExactMesh> {
+    let Some(mesh) = Mesh::try_delaunay(coordinates, site_count)? else {
         return Ok(ExactMesh {
             triangles: Vec::new(),
             halfedges: Vec::new(),
-            hull: super::exact_hull_cycle(points),
+            hull: super::exact_hull_cycle_with(coordinates, site_count)?,
             cocircular: Vec::new(),
         });
     };
-    mesh.finish(|site| site_xy(points, site))
+    mesh.finish(coordinates)
 }
 
 #[expect(
@@ -167,7 +255,7 @@ pub(in crate::geometry::tessellation) const fn site_xy(points: &[Point], site: u
     points[site].xy()
 }
 
-pub(super) fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
+pub(in crate::geometry::tessellation) fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
     let coordinate = |left: f64, right: f64| {
         if left == right {
             std::cmp::Ordering::Equal
@@ -181,18 +269,21 @@ pub(super) fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
 /// Lexicographically ordered infinitesimal vertical lifts of the paraboloid.
 /// On a zero determinant, its first nonzero lift cofactor selects one diagonal;
 /// the exact geometric predicate remains unchanged for circumcenter certificates.
-fn symbolic_incircle_tie(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
+fn symbolic_incircle_tie<C: MeshCoordinates>(
+    coordinates: &C,
+    [a, b, c, d]: [C::Query; 4],
+) -> Result<ExactSign> {
     let mut sites = [(a, 0), (b, 1), (c, 2), (d, 3)];
-    sites.sort_unstable_by(|&(left, _), &(right, _)| compare_xy(left, right));
+    sites.sort_unstable_by(|&(left, _), &(right, _)| coordinates.compare(left, right));
     for (_, row) in sites {
         let (sign, negate) = match row {
-            0 => (exact::orient2d(b, c, d), false),
-            1 => (exact::orient2d(a, c, d), true),
-            2 => (exact::orient2d(a, b, d), false),
-            _ => (exact::orient2d(a, b, c), true),
+            0 => (coordinates.orient([b, c, d])?, false),
+            1 => (coordinates.orient([a, c, d])?, true),
+            2 => (coordinates.orient([a, b, d])?, false),
+            _ => (coordinates.orient([a, b, c])?, true),
         };
         if sign != ExactSign::Zero {
-            return if negate {
+            return Ok(if negate {
                 match sign {
                     ExactSign::Positive => ExactSign::Negative,
                     ExactSign::Negative => ExactSign::Positive,
@@ -200,17 +291,18 @@ fn symbolic_incircle_tie(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
                 }
             } else {
                 sign
-            };
+            });
         }
     }
-    ExactSign::Zero
+    Ok(ExactSign::Zero)
 }
 
 macro_rules! canonical_incircle {
-    ($a:expr, $b:expr, $c:expr, $d:expr) => {{
+    ($coordinates:expr, $a:expr, $b:expr, $c:expr, $d:expr) => {{
+        let coordinates = $coordinates;
         let [a, b, c, d] = [$a, $b, $c, $d];
-        match exact::incircle(a, b, c, d)? {
-            ExactSign::Zero => symbolic_incircle_tie(a, b, c, d),
+        match coordinates.incircle([a, b, c, d])? {
+            ExactSign::Zero => symbolic_incircle_tie(coordinates, [a, b, c, d])?,
             sign => sign,
         }
     }};
@@ -218,18 +310,33 @@ macro_rules! canonical_incircle {
 
 #[cfg(test)]
 fn canonical_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
-    Ok(canonical_incircle!(a, b, c, d))
+    let sites = [a, b, c, d];
+    let xy = |site| {
+        *sites
+            .get(site)
+            .expect("the tie predicate receives only its four admitted sites")
+    };
+    Ok(canonical_incircle!(&xy, a, b, c, d))
 }
 
-pub(in crate::geometry::tessellation) fn canonicalize_triangles(
+pub(in crate::geometry::tessellation) fn canonicalize_triangles<C: MeshCoordinates>(
+    coordinates: &C,
     triangles: &mut [[usize; 3]],
-    xy: impl Fn(usize) -> XY,
 ) {
     for triangle in triangles.iter_mut() {
         let [a, b, c] = *triangle;
-        *triangle = if compare_xy(xy(b), xy(a)).is_lt() && compare_xy(xy(b), xy(c)).is_lt() {
+        *triangle = if coordinates
+            .compare(coordinates.query(b), coordinates.query(a))
+            .is_lt()
+            && coordinates
+                .compare(coordinates.query(b), coordinates.query(c))
+                .is_lt()
+        {
             [b, c, a]
-        } else if compare_xy(xy(c), xy(a)).is_lt() {
+        } else if coordinates
+            .compare(coordinates.query(c), coordinates.query(a))
+            .is_lt()
+        {
             [c, a, b]
         } else {
             [a, b, c]
@@ -238,7 +345,9 @@ pub(in crate::geometry::tessellation) fn canonicalize_triangles(
     triangles.sort_unstable_by(|left, right| {
         left.iter()
             .zip(right)
-            .map(|(&left, &right)| compare_xy(xy(left), xy(right)))
+            .map(|(&left, &right)| {
+                coordinates.compare(coordinates.query(left), coordinates.query(right))
+            })
             .find(|order| !order.is_eq())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
@@ -284,61 +393,54 @@ fn order_interior(interior: &mut [(u32, usize)]) {
 
 impl Mesh {
     /// Exact Delaunay construction for constrained and unconstrained publication.
-    pub(super) fn try_delaunay(points: &[Point]) -> Result<Option<Self>> {
-        let hull = super::exact_corner_hull_cycle(points);
+    pub(super) fn try_delaunay<C: MeshCoordinates>(
+        coordinates: &C,
+        site_count: usize,
+    ) -> Result<Option<Self>> {
+        let hull = super::exact_corner_hull_cycle_with(coordinates, site_count)?;
         if hull.len() < 3 {
             return Ok(None);
         }
-        let xy = |site| site_xy(points, site);
-        let mut mesh = Self::seed(&hull, points.len());
-        mesh.try_legalize(&xy)?;
+        let mut mesh = Self::seed(&hull, site_count);
+        mesh.try_legalize(coordinates)?;
 
         // Remaining distinct sites exclude only strict hull corners, so a
         // collinear hull site is inserted along with the interior sites.
-        let mut placed = crate::collections::try_hash_set_with_capacity(points.len())?;
+        let mut placed = crate::collections::try_hash_set_with_capacity(site_count)?;
         for &site in &hull {
-            placed.insert(key(xy(site)));
+            placed.insert(coordinates.key(coordinates.query(site)));
         }
         let mut hull_sites = crate::collections::try_hash_set_with_capacity(hull.len())?;
         for &site in &hull {
             hull_sites.insert(site);
         }
-        let (min, max) = bounds(points);
-        let mut interior = Vec::with_capacity(points.len());
-        for site in 0..points.len() {
-            if !hull_sites.contains(&site) && placed.insert(key(xy(site))) {
-                interior.push((hilbert16(xy(site), min, max), site));
+        let (min, max) = bounds(coordinates, site_count);
+        let mut interior = Vec::with_capacity(site_count);
+        for site in 0..site_count {
+            if !hull_sites.contains(&site)
+                && placed.insert(coordinates.key(coordinates.query(site)))
+            {
+                interior.push((hilbert16(coordinates.locality_xy(site), min, max), site));
             }
         }
         order_interior(&mut interior);
 
         let mut last = FaceId::from_index(0);
         for (_, site) in interior {
-            let located = mesh.locate(&xy, last, xy(site));
-            last = mesh.try_insert_with(&xy, site, located, None, |_, _| ())?.0;
+            let located = mesh.locate(coordinates, last, coordinates.query(site))?;
+            last = mesh
+                .try_insert_with(coordinates, site, located, None, |_, _| ())?
+                .0;
         }
         Ok(Some(mesh))
     }
 }
 
-/// One coordinate pair as an exact identity key (bit patterns, with both
-/// signed zeros as one point).
-fn key(p: XY) -> [u64; 2] {
-    let norm = |v: f64| {
-        if v == 0.0 {
-            0.0_f64.to_bits()
-        } else {
-            v.to_bits()
-        }
-    };
-    [norm(p.x), norm(p.y)]
-}
-
-fn bounds(points: &[Point]) -> (XY, XY) {
+fn bounds<C: MeshCoordinates>(coordinates: &C, site_count: usize) -> (XY, XY) {
     let mut min = XY::new(f64::INFINITY, f64::INFINITY);
     let mut max = XY::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for point in points {
-        let p = point.xy();
+    for site in 0..site_count {
+        let p = coordinates.locality_xy(site);
         min = XY::new(min.x.min(p.x), min.y.min(p.y));
         max = XY::new(max.x.max(p.x), max.y.max(p.y));
     }
@@ -392,6 +494,13 @@ pub(super) enum Located {
     OnVertex,
     /// Outside the current convex hull, where the insertion must extend it.
     Outside(HalfedgeId),
+}
+
+/// Result of the geometric location walk; arithmetic failures stay in `Result`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LocationOutcome {
+    Located(Located),
+    Blocked(HalfedgeId),
 }
 
 pub(super) struct OutsideInsertion {
@@ -818,7 +927,7 @@ impl Mesh {
     /// Delaunay property only from a Delaunay start. A slot left on the stack
     /// by a flip names whatever edge now lives there; re-checking a legal
     /// edge is harmless, and every edge a flip disturbed is pushed again.
-    fn try_legalize(&mut self, xy: &impl Fn(usize) -> XY) -> Result<()> {
+    fn try_legalize<C: MeshCoordinates>(&mut self, coordinates: &C) -> Result<()> {
         let mut stack = Vec::with_capacity(self.halfedges.len());
         for (e, &twin) in self.halfedges.iter().enumerate() {
             if twin != EMPTY && twin > e {
@@ -832,7 +941,14 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(edge.face());
             let d = self.edge_apex(HalfedgeId::from_index(twin));
-            if canonical_incircle!(xy(a), xy(b), xy(c), xy(d)) != ExactSign::Positive {
+            if canonical_incircle!(
+                coordinates,
+                coordinates.query(a),
+                coordinates.query(b),
+                coordinates.query(c),
+                coordinates.query(d)
+            ) != ExactSign::Positive
+            {
                 continue;
             }
             let diagonal = self.flip(edge);
@@ -846,9 +962,9 @@ impl Mesh {
         Ok(())
     }
 
-    pub(super) fn try_legalize_constrained_from(
+    pub(super) fn try_legalize_constrained_from<C: MeshCoordinates>(
         &mut self,
-        xy: &impl Fn(usize) -> XY,
+        coordinates: &C,
         constrained: &mut [bool],
         mut stack: Vec<HalfedgeId>,
     ) -> Result<Vec<FaceId>> {
@@ -860,7 +976,14 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(edge.face());
             let opposite = self.edge_apex(HalfedgeId::from_index(twin));
-            if canonical_incircle!(xy(a), xy(b), xy(c), xy(opposite)) != ExactSign::Positive {
+            if canonical_incircle!(
+                coordinates,
+                coordinates.query(a),
+                coordinates.query(b),
+                coordinates.query(c),
+                coordinates.query(opposite)
+            ) != ExactSign::Positive
+            {
                 continue;
             }
             let diagonal = self.flip_carrying(edge, constrained, false);
@@ -963,22 +1086,32 @@ impl Mesh {
     /// Walk from triangle `start` toward `p` by exact orientation. Every
     /// inserted site lies in the closed seed hull; a hull-edge site is
     /// classified as `OnEdge` before the walk could cross the hull.
-    pub(super) fn locate(&self, xy: &impl Fn(usize) -> XY, start: FaceId, p: XY) -> Located {
-        self.locate_bounded(xy, start, p, &[])
-            .unwrap_or_else(|_| unreachable!("a site in the closed hull is locatable"))
+    pub(super) fn locate<C: MeshCoordinates>(
+        &self,
+        coordinates: &C,
+        start: FaceId,
+        point: C::Query,
+    ) -> Result<Located> {
+        match self.locate_bounded(coordinates, start, point, &[])? {
+            LocationOutcome::Located(located) => Ok(located),
+            LocationOutcome::Blocked(_) => {
+                unreachable!("an admitted Delaunay site lies in its closed seed hull")
+            },
+        }
     }
 
     /// The orientation walk that never crosses a hull edge or a slot `stop`
-    /// marks: `Err(e)` is the edge it would have had to cross. A constrained
-    /// mesh is not Delaunay, where the walk can cycle, so a walk longer than
-    /// the mesh settles by scanning every live face.
-    pub(super) fn locate_bounded(
+    /// mark returns `Blocked(e)` for the edge it would have had to cross.
+    /// Arithmetic errors stay in the outer Result. A constrained mesh is not
+    /// Delaunay, where the walk can cycle, so a walk longer than the mesh
+    /// settles by scanning every live face.
+    pub(super) fn locate_bounded<C: MeshCoordinates>(
         &self,
-        xy: &impl Fn(usize) -> XY,
+        coordinates: &C,
         start: FaceId,
-        p: XY,
+        point: C::Query,
         stop: &[bool],
-    ) -> Result<Located, HalfedgeId> {
+    ) -> Result<LocationOutcome> {
         let mut t = if self.alive(start) {
             start
         } else {
@@ -986,55 +1119,72 @@ impl Mesh {
         };
         let mut steps = 0_usize;
         loop {
-            let e = match self.classify(xy, t, p) {
-                Ok(located) => return Ok(located),
-                Err(e) => e,
+            let e = match self.classify(coordinates, t, point)? {
+                LocationOutcome::Located(located) => {
+                    return Ok(LocationOutcome::Located(located));
+                },
+                LocationOutcome::Blocked(edge) => edge,
             };
             let twin = self.twin(e);
             if twin == EMPTY || stop.get(e.index()).is_some_and(|&stopped| stopped) {
-                return Err(e);
+                return Ok(LocationOutcome::Blocked(e));
             }
             steps = steps.wrapping_add(1);
             if steps > self.triangle_count() {
-                return (0..self.triangle_count())
+                for face in (0..self.triangle_count())
                     .map(FaceId::from_index)
-                    .filter(|&f| self.alive(f))
-                    .find_map(|f| self.classify(xy, f, p).ok())
-                    .ok_or(e);
+                    .filter(|&face| self.alive(face))
+                {
+                    if let LocationOutcome::Located(located) =
+                        self.classify(coordinates, face, point)?
+                    {
+                        return Ok(LocationOutcome::Located(located));
+                    }
+                }
+                return Ok(LocationOutcome::Blocked(e));
             }
             t = HalfedgeId::from_index(twin).face();
         }
     }
 
-    pub(super) fn outside_edge(&self, xy: &impl Fn(usize) -> XY, point: XY) -> Option<HalfedgeId> {
+    pub(super) fn outside_edge<C: MeshCoordinates>(
+        &self,
+        coordinates: &C,
+        point: C::Query,
+    ) -> Result<Option<HalfedgeId>> {
         let hull_len = self.hull.len();
         if hull_len < 3 {
-            return None;
+            return Ok(None);
         }
-        self.hull
-            .iter()
-            .zip(self.hull.iter().cycle().skip(1))
-            .find_map(|(&start, &end)| {
-                (exact::orient2d(xy(start), xy(end), point) == ExactSign::Negative)
-                    .then(|| self.directed_slot(start, end))
-                    .flatten()
-            })
+        for (&start, &end) in self.hull.iter().zip(self.hull.iter().cycle().skip(1)) {
+            if coordinates.orient([coordinates.query(start), coordinates.query(end), point])?
+                == ExactSign::Negative
+                && let Some(edge) = self.directed_slot(start, end)
+            {
+                return Ok(Some(edge));
+            }
+        }
+        Ok(None)
     }
 
-    /// Where `p` stands relative to live triangle `t`: `Err(e)` names the
-    /// first edge `p` is strictly to the right of.
-    pub(super) fn classify(
+    /// Where the query stands relative to live triangle `t`, or the first edge
+    /// it is strictly to the right of.
+    pub(super) fn classify<C: MeshCoordinates>(
         &self,
-        xy: &impl Fn(usize) -> XY,
+        coordinates: &C,
         t: FaceId,
-        p: XY,
-    ) -> Result<Located, HalfedgeId> {
+        point: C::Query,
+    ) -> Result<LocationOutcome> {
         let mut collinear_count = 0_usize;
         let mut collinear_edge = FaceSide::First;
         for side in FaceSide::ALL {
             let edge = HalfedgeId::in_face(t, side);
-            match exact::orient2d(xy(self.edge_start(edge)), xy(self.edge_end(edge)), p) {
-                ExactSign::Negative => return Err(edge),
+            match coordinates.orient([
+                coordinates.query(self.edge_start(edge)),
+                coordinates.query(self.edge_end(edge)),
+                point,
+            ])? {
+                ExactSign::Negative => return Ok(LocationOutcome::Blocked(edge)),
                 ExactSign::Zero => {
                     collinear_count = collinear_count.wrapping_add(1);
                     collinear_edge = side;
@@ -1042,19 +1192,21 @@ impl Mesh {
                 ExactSign::Positive => {},
             }
         }
-        Ok(match collinear_count {
+        Ok(LocationOutcome::Located(match collinear_count {
             0 => Located::Inside(t),
             1 => {
                 let edge = HalfedgeId::in_face(t, collinear_edge);
                 let (a, b) = (self.edge_start(edge), self.edge_end(edge));
-                if p == xy(a) || p == xy(b) {
+                if coordinates.compare(point, coordinates.query(a)).is_eq()
+                    || coordinates.compare(point, coordinates.query(b)).is_eq()
+                {
                     Located::OnVertex
                 } else {
                     Located::OnEdge(edge)
                 }
             },
             _ => Located::OnVertex,
-        })
+        }))
     }
 
     fn any_alive(&self) -> FaceId {
@@ -1071,9 +1223,9 @@ impl Mesh {
         clippy::panic_in_result_fn,
         reason = "a broken admitted cavity is a topology invariant failure, not recoverable input"
     )]
-    pub(super) fn try_insert_with<R>(
+    pub(super) fn try_insert_with<C: MeshCoordinates, R>(
         &mut self,
-        xy: &impl Fn(usize) -> XY,
+        coordinates: &C,
         site: usize,
         located: Located,
         mut skip: Option<&mut Vec<bool>>,
@@ -1101,7 +1253,7 @@ impl Mesh {
                 }
             },
         };
-        let p = xy(site);
+        let point = coordinates.query(site);
         // The cavity: every triangle reachable from the seeds across edges
         // whose far triangle's circumcircle strictly contains p. The seeds
         // themselves are in by construction (p is inside or on them).
@@ -1133,7 +1285,14 @@ impl Mesh {
                     continue;
                 }
                 let [a, b, c] = self.triangle(neighbor);
-                if canonical_incircle!(xy(a), xy(b), xy(c), p) == ExactSign::Positive {
+                if canonical_incircle!(
+                    coordinates,
+                    coordinates.query(a),
+                    coordinates.query(b),
+                    coordinates.query(c),
+                    point
+                ) == ExactSign::Positive
+                {
                     self.set_stamp(neighbor, epoch);
                     stack.push(neighbor);
                 }
@@ -1265,17 +1424,23 @@ impl Mesh {
         Ok((last, changed))
     }
 
-    pub(super) fn insert_constrained(
+    pub(super) fn insert_constrained<C: MeshCoordinates>(
         &mut self,
-        xy: &impl Fn(usize) -> XY,
+        coordinates: &C,
         site: usize,
         located: Located,
         skip: &mut Vec<bool>,
     ) -> Result<Vec<FaceId>> {
-        self.try_insert_with(xy, site, located, Some(skip), |mut cavity, slots| {
-            cavity.extend_from_slice(slots);
-            cavity
-        })
+        self.try_insert_with(
+            coordinates,
+            site,
+            located,
+            Some(skip),
+            |mut cavity, slots| {
+                cavity.extend_from_slice(slots);
+                cavity
+            },
+        )
         .map(|(_, changed)| changed)
     }
 
@@ -1339,9 +1504,9 @@ impl Mesh {
         assert_eq!(actual, expected, "fan changed the ordered boundary tuples");
     }
 
-    pub(super) fn insert_outside(
+    pub(super) fn insert_outside<C: MeshCoordinates>(
         &mut self,
-        xy: &impl Fn(usize) -> XY,
+        coordinates: &C,
         site: usize,
         visible_edge: HalfedgeId,
         constrained: &mut Vec<bool>,
@@ -1352,10 +1517,11 @@ impl Mesh {
                 "outside insertion needs a two-dimensional hull",
             ));
         }
-        let point = xy(site);
+        let point = coordinates.query(site);
         let (mut start, end) = self.edge_vertices(visible_edge);
         if self.twin(visible_edge) != EMPTY
-            || exact::orient2d(xy(start), xy(end), point) != ExactSign::Negative
+            || coordinates.orient([coordinates.query(start), coordinates.query(end), point])?
+                != ExactSign::Negative
         {
             return Err(crate::geometry::GeometryErrorKind::triangulation(
                 "outside insertion needs a visible hull edge",
@@ -1364,7 +1530,9 @@ impl Mesh {
         let first_visible = start;
         loop {
             let previous = self.hull.previous(start);
-            if exact::orient2d(xy(previous), xy(start), point) != ExactSign::Negative {
+            if coordinates.orient([coordinates.query(previous), coordinates.query(start), point])?
+                != ExactSign::Negative
+            {
                 break;
             }
             start = previous;
@@ -1378,7 +1546,9 @@ impl Mesh {
         let mut at = start;
         loop {
             let end = self.hull.next(at);
-            if exact::orient2d(xy(at), xy(end), point) != ExactSign::Negative {
+            if coordinates.orient([coordinates.query(at), coordinates.query(end), point])?
+                != ExactSign::Negative
+            {
                 break;
             }
             let Some(edge) = self.directed_slot(at, end) else {
@@ -1501,7 +1671,7 @@ impl Mesh {
 
     /// Compact out the dead slots, remap twins, and flag cocircular edges
     /// with one exact pass over the finished mesh.
-    pub(super) fn finish(self, xy: impl Fn(usize) -> XY) -> Result<ExactMesh> {
+    pub(super) fn finish<C: MeshCoordinates>(self, coordinates: &C) -> Result<ExactMesh> {
         let mut remap = vec![EMPTY; self.triangle_count()];
         let mut triangles = Vec::with_capacity(self.triangles.len());
         for (vertices, slot) in self.triangles.as_chunks::<3>().0.iter().zip(&mut remap) {
@@ -1548,7 +1718,13 @@ impl Mesh {
                 }
                 let opposite_edge = HalfedgeId::from_index(twin).prev();
                 let opposite = Self::output_vertex(&triangles, opposite_edge);
-                if exact::incircle(xy(a), xy(b), xy(c), xy(opposite))? == ExactSign::Zero {
+                if coordinates.incircle([
+                    coordinates.query(a),
+                    coordinates.query(b),
+                    coordinates.query(c),
+                    coordinates.query(opposite),
+                ])? == ExactSign::Zero
+                {
                     Self::set_output_flag(&mut cocircular, edge, true);
                     Self::set_output_flag(&mut cocircular, HalfedgeId::from_index(twin), true);
                 }
@@ -1628,6 +1804,101 @@ mod tests {
         assert_eq!(canonical_incircle(b, a, c, d).unwrap(), ExactSign::Negative);
         assert_eq!(canonical_incircle(a, c, b, d).unwrap(), ExactSign::Negative);
         assert_eq!(canonical_incircle(a, b, d, c).unwrap(), ExactSign::Negative);
+    }
+
+    struct FallbackScanCoordinates {
+        points: [XY; 4],
+        orientation_calls: std::cell::Cell<usize>,
+    }
+
+    impl MeshCoordinates for FallbackScanCoordinates {
+        type Query = XY;
+        type Key = [u64; 2];
+
+        fn query(&self, site: usize) -> Self::Query {
+            *self
+                .points
+                .get(site)
+                .expect("fallback test queries an admitted square site")
+        }
+
+        fn key(&self, query: Self::Query) -> Self::Key {
+            let normalized = |value: f64| {
+                if value == 0.0 {
+                    0.0_f64.to_bits()
+                } else {
+                    value.to_bits()
+                }
+            };
+            [normalized(query.x), normalized(query.y)]
+        }
+
+        fn compare(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering {
+            compare_xy(left, right)
+        }
+
+        fn compare_x(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering {
+            compare_f64(left.x, right.x)
+        }
+
+        fn compare_y(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering {
+            compare_f64(left.y, right.y)
+        }
+
+        fn orient(&self, _points: [Self::Query; 3]) -> Result<ExactSign> {
+            let call = self.orientation_calls.get().wrapping_add(1);
+            self.orientation_calls.set(call);
+            match call {
+                3 | 4 | 7 => Ok(ExactSign::Negative),
+                8 => Err(crate::error::ResourceError::SizeOverflow.into()),
+                // If fallback scanning wrongly swallows call 8's error, the
+                // next face receives an inside classification.
+                _ => Ok(ExactSign::Positive),
+            }
+        }
+
+        fn incircle(&self, [a, b, c, d]: [Self::Query; 4]) -> Result<ExactSign> {
+            exact::incircle(a, b, c, d)
+        }
+
+        fn compare_axis_spans(
+            &self,
+            [min_x, max_x]: [Self::Query; 2],
+            [min_y, max_y]: [Self::Query; 2],
+        ) -> Result<std::cmp::Ordering> {
+            Ok(compare_f64(max_x.x - min_x.x, max_y.y - min_y.y))
+        }
+
+        fn locality_xy(&self, site: usize) -> XY {
+            self.query(site)
+        }
+    }
+
+    #[test]
+    fn location_propagates_arithmetic_error_from_the_bounded_fallback_scan() {
+        // The seeded square has adjacent faces 0 and 1 across a shared edge.
+        // Inject signs that walk 0 -> 1 -> 0 until the step limit selects the
+        // fallback scan, then fail on that scan's first face. This is a
+        // control-flow fault injection, not a geometric input fixture.
+        let coordinates = FallbackScanCoordinates {
+            points: [
+                XY::new(0.0, 0.0),
+                XY::new(2.0, 0.0),
+                XY::new(2.0, 2.0),
+                XY::new(0.0, 2.0),
+            ],
+            orientation_calls: std::cell::Cell::new(0),
+        };
+        let mesh = Mesh::seed(&[0, 1, 2, 3], 4);
+        let error = mesh
+            .locate_bounded(&coordinates, FaceId::from_index(0), XY::new(10.0, 10.0), &[
+            ])
+            .unwrap_err();
+        assert_eq!(coordinates.orientation_calls.get(), 8);
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
     }
 
     #[test]
@@ -1956,16 +2227,18 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
         .map(|(x, y)| Point::new_raw_xy(x, y))
         .into();
         let xy = |site| site_xy(&points, site);
-        let mut mesh = Mesh::try_delaunay(&points[..4]).unwrap().unwrap();
+        let mut mesh = Mesh::try_delaunay(&xy, 4).unwrap().unwrap();
         let mut constrained = vec![false; mesh.edge_count()];
         for site in 4..points.len() {
-            let visible = mesh.outside_edge(&xy, xy(site)).unwrap();
+            let visible = mesh.outside_edge(&xy, xy(site)).unwrap().unwrap();
             let insertion = mesh
                 .insert_outside(&xy, site, visible, &mut constrained)
                 .unwrap();
             mesh.try_legalize_constrained_from(&xy, &mut constrained, insertion.legalization)
                 .unwrap();
-            let expected = Mesh::try_delaunay(&points[..=site]).unwrap().unwrap();
+            let expected = Mesh::try_delaunay(&xy, site.wrapping_add(1))
+                .unwrap()
+                .unwrap();
             let face_set = |mesh: &Mesh| {
                 let mut triangles: Vec<_> = mesh
                     .face_ids()
@@ -2248,7 +2521,7 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
             let hull: Vec<_> = (0..n).collect();
             let mut mesh = Mesh::seed(&hull, pts.len());
             mesh.try_legalize(&xy).unwrap();
-            let located = mesh.locate(&xy, FaceId::from_index(0), xy(n));
+            let located = mesh.locate(&xy, FaceId::from_index(0), xy(n)).unwrap();
             let (_, changed) = mesh
                 .try_insert_with(&xy, n, located, None, |mut cavity, slots| {
                     assert_eq!(cavity.len(), n - 2);
@@ -2261,7 +2534,7 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
             let steps = PERIMETER_STEPS.with(std::cell::Cell::get);
             assert_eq!(steps, 3 * (n - 2));
             eprintln!("late center: boundary={n}, cavity={}, steps={steps}", n - 2);
-            let result = mesh.finish(xy).unwrap();
+            let result = mesh.finish(&xy).unwrap();
             assert_halfedges_consistent(&result);
             assert_delaunay(&result, &pts);
         }
@@ -2273,7 +2546,7 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
         let xy = |site: usize| pts[site].xy();
         let mut mesh = Mesh::seed(&[0, 1, 2, 3], pts.len());
         mesh.try_legalize(&xy).unwrap();
-        let located = mesh.locate(&xy, FaceId::from_index(0), xy(4));
+        let located = mesh.locate(&xy, FaceId::from_index(0), xy(4)).unwrap();
         let (last, changed) = mesh
             .try_insert_with(&xy, 4, located, None, |mut cavity, slots| {
                 cavity.extend_from_slice(slots);
@@ -2285,7 +2558,7 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
             [1, 0, 0, 1, 2, 3]
         );
         assert_eq!(last.index(), 3);
-        let repeated = mesh.locate(&xy, last, xy(4));
+        let repeated = mesh.locate(&xy, last, xy(4)).unwrap();
         let (_, changed) = mesh
             .try_insert_with(&xy, 4, repeated, None, |mut cavity, slots| {
                 cavity.extend_from_slice(slots);
@@ -2308,7 +2581,7 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
         let mut wrapped = seed();
         wrapped.epoch = u32::MAX;
         wrapped.stamp.fill(1);
-        let located = ordinary.locate(&xy, FaceId::from_index(0), xy(4));
+        let located = ordinary.locate(&xy, FaceId::from_index(0), xy(4)).unwrap();
         assert!(matches!(located, Located::Inside(_)));
         ordinary
             .try_insert_with(&xy, 4, located, None, |_, _| ())
@@ -2316,8 +2589,8 @@ corpus.append(([gm.Polygon(rings[0])], {'method': 'constrained', 'max_area': 111
         wrapped
             .try_insert_with(&xy, 4, located, None, |_, _| ())
             .unwrap();
-        let ordinary = ordinary.finish(xy).unwrap();
-        let wrapped = wrapped.finish(xy).unwrap();
+        let ordinary = ordinary.finish(&xy).unwrap();
+        let wrapped = wrapped.finish(&xy).unwrap();
         assert_delaunay(&ordinary, &pts);
         assert_delaunay(&wrapped, &pts);
         assert_eq!(
