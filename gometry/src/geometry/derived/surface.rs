@@ -1,7 +1,7 @@
-use super::centroid::{centroid_line_columns, lineal_centroid};
+use super::centroid::{centroid_line_columns, lineal_centroid, point_centroid};
 use crate::error::Result;
 use crate::geometry::{
-    Bounds, CoordSeq, LineSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, RingClass, Shape,
+    Bounds, Component, CoordSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, RingClass, Shape,
     column_mean2, held_axis_interpolate, line_length_columns, point_on_segment,
     ring_classify_point, ring_classify_point_columns, same_point, simd_argmin_f64,
 };
@@ -398,37 +398,49 @@ pub(crate) fn point_set_surface_point_at(shape: &Shape, center: Point) -> Option
     }
 }
 
-/// Flatten a (possibly nested) collection into its areal, lineal, and puntal
-/// components for the interior-point cascade.
-fn gather_surface_components<'a>(
-    parts: &'a [Shape],
-    polygons: &mut Vec<&'a Polygon>,
-    lines: &mut Vec<&'a CoordSeq>,
-    points: &mut Vec<Point>,
-) {
-    for part in parts {
-        match part {
-            Shape::Point(point) => points.push(*point),
-            Shape::MultiPoint(seq) => {
-                points.reserve(seq.xs().len());
-                points.extend(seq.iter());
-            },
-            Shape::LineString(seq) => lines.push(seq.as_coords()),
-            Shape::MultiLineString(seqs) => {
-                lines.reserve(seqs.as_slice().len());
-                lines.extend(seqs.iter().map(LineSeq::as_coords));
-            },
-            Shape::Polygon(polygon) => polygons.push(polygon),
-            Shape::MultiPolygon(polys) => {
-                polygons.reserve(polys.as_slice().len());
-                polygons.extend(polys.iter());
-            },
-            Shape::GeometryCollection(inner) => {
-                gather_surface_components(inner, polygons, lines, points);
-            },
-            Shape::Empty(..) => {},
+fn first_surface_polygons(shape: &Shape) -> Vec<&Polygon> {
+    let mut polygons = Vec::new();
+    match shape.try_for_each_first_component(&mut |component| {
+        if let Component::Polygon(polygon) = component {
+            polygons.push(polygon);
         }
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(()) => {},
+        Err(never) => match never {},
     }
+    polygons
+}
+
+fn first_surface_lines(shape: &Shape) -> Vec<&CoordSeq> {
+    let mut lines = Vec::new();
+    match shape.try_for_each_first_component(&mut |component| {
+        if let Component::LineString(line) = component {
+            lines.push(line.as_coords());
+        }
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(()) => {},
+        Err(never) => match never {},
+    }
+    lines
+}
+
+fn point_component_surface_point(shape: &Shape, center: Point) -> Option<Point> {
+    let mut best: Option<(f64, Point)> = None;
+    match shape.try_for_each_first_component(&mut |component| {
+        if let Component::Point(candidate) = component {
+            let distance = squared_xy_distance(candidate, center);
+            if best.is_none_or(|(current, _)| distance.total_cmp(&current).is_lt()) {
+                best = Some((distance, candidate));
+            }
+        }
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(()) => {},
+        Err(never) => match never {},
+    }
+    best.map(|(_, point)| point)
 }
 
 /// Representative of an arbitrary (possibly nested, mixed, or degenerate)
@@ -437,15 +449,7 @@ fn gather_surface_components<'a>(
 /// degenerate polygons too (via `from_ref`), which the scanline kernel leaves
 /// to this boundary path.
 pub(crate) fn collection_surface_point(shape: &Shape) -> Result<Option<Point>> {
-    let mut polygons: Vec<&Polygon> = Vec::new();
-    let mut lines: Vec<&CoordSeq> = Vec::new();
-    let mut points: Vec<Point> = Vec::new();
-    gather_surface_components(
-        std::slice::from_ref(shape),
-        &mut polygons,
-        &mut lines,
-        &mut points,
-    );
+    let polygons = first_surface_polygons(shape);
     if !polygons.is_empty() {
         if let Some(point) = polygonal_surface_point(polygons.iter().copied()) {
             return Ok(Some(point));
@@ -460,6 +464,7 @@ pub(crate) fn collection_surface_point(shape: &Shape) -> Result<Option<Point>> {
             return Ok(Some(point));
         }
     }
+    let lines = first_surface_lines(shape);
     if let [line] = lines.as_slice() {
         return Ok(point_on_surface_line_columns(line.xs(), line.ys()));
     }
@@ -468,14 +473,13 @@ pub(crate) fn collection_surface_point(shape: &Shape) -> Result<Option<Point>> {
     {
         return Ok(Some(point));
     }
-    if points.is_empty() {
+    let Some((x, y)) = point_centroid(shape)? else {
         return Ok(None);
-    }
-    let mut xs = Vec::with_capacity(points.len());
-    let mut ys = Vec::with_capacity(points.len());
-    xs.extend(points.iter().map(|point| point.x));
-    ys.extend(points.iter().map(|point| point.y));
-    Ok(multipoint_surface_point(&xs, &ys))
+    };
+    Ok(point_component_surface_point(
+        shape,
+        Point::new_raw_xy(x, y),
+    ))
 }
 
 #[cfg(test)]
@@ -627,6 +631,18 @@ mod tests {
         }
     }
 
+    fn first_component_work(shape: &Shape) -> usize {
+        let mut visits = 0;
+        match shape.try_for_each_first_component(&mut |_| {
+            visits += 1;
+            Ok::<_, std::convert::Infallible>(())
+        }) {
+            Ok(()) => {},
+            Err(never) => match never {},
+        }
+        visits
+    }
+
     #[test]
     fn empty_geometry_yields_empty_point_without_staging() {
         for empty in [
@@ -671,6 +687,24 @@ mod tests {
                 exact_shape_covers(&collection, collection_point),
                 "collection for {transformed:?} does not cover {collection_point:?}"
             );
+        }
+    }
+
+    #[test]
+    fn shared_collection_surface_stages_only_first_owner_candidates() {
+        let mut shape = Shape::geometry_collection(vec![
+            box_polygon(0.0, 0.0, 2.0, 2.0),
+            Shape::LineString(LineSeq::from_proven(
+                CoordSeq::try_from_points(&[xy(0.0, 4.0), xy(4.0, 4.0)]).expect("line"),
+            )),
+            Shape::Point(xy(10.0, 10.0)),
+        ])
+        .expect("mixed leaf");
+        for _ in 0..=8 {
+            assert_eq!(first_surface_polygons(&shape).len(), 1);
+            assert_eq!(first_component_work(&shape), 3);
+            assert_eq!(surface_xy(&shape), (1.0, 1.0));
+            shape = Shape::geometry_collection(vec![shape.clone(), shape]).expect("shared level");
         }
     }
 
@@ -863,6 +897,24 @@ mod tests {
         ])
         .expect("point collection");
         assert_eq!(surface_xy(&collection), (2.0, 0.0));
+    }
+
+    #[test]
+    fn shared_point_occurrences_keep_two_to_one_centroid_weight() {
+        let repeated = Shape::geometry_collection(vec![Shape::Point(xy(3.0, 0.0))])
+            .expect("shared point owner");
+        let collection = Shape::geometry_collection(vec![
+            Shape::Point(xy(0.0, 0.0)),
+            repeated.clone(),
+            repeated,
+        ])
+        .expect("weighted point collection");
+
+        assert_eq!(
+            point_centroid(&collection).expect("point centroid"),
+            Some((2.0, 0.0))
+        );
+        assert_eq!(surface_xy(&collection), (3.0, 0.0));
     }
 
     #[test]
