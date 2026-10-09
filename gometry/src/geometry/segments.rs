@@ -968,15 +968,8 @@ pub(crate) fn segment_projection(
     projection_from_classification(point, segment, classify_segment_projection(point, segment))
 }
 
-// This compact decide/decline filter is the projection hot path. Keeping its
-// consumer-specific return handling in the caller removes the otherwise
-// dominant per-segment enum call ABI; the exact fallback remains cold and
-// out-of-line below.
-#[expect(
-    clippy::inline_always,
-    reason = "measured specialization reduced the ordinary distance ABBA ratio from 1.3043x to 1.224192x"
-)]
-#[inline(always)]
+// The compact decide/decline filter handles ordinary projections; unresolved
+// cases continue through the exact fallback.
 fn classify_segment_projection(point: XY, segment: Segment) -> ClassifiedSegmentProjection {
     let Some(dx) = source_difference(segment.end.x, segment.start.x) else {
         return ClassifiedSegmentProjection::Declined;
@@ -1025,10 +1018,7 @@ fn classify_segment_projection(point: XY, segment: Segment) -> ClassifiedSegment
 }
 
 /// Ratio and witness certification is reached only after both endpoint signs
-/// have been decided as strictly interior. Keeping it out of the endpoint
-/// classifier avoids carrying this larger proof through the distance loop's
-/// overwhelmingly common start/end decisions.
-#[inline(never)]
+/// have been decided as strictly interior.
 fn classify_filtered_interior(
     segment: Segment,
     numerator: SourcePair,
@@ -1047,11 +1037,7 @@ fn classify_filtered_interior(
     ClassifiedSegmentProjection::Declined
 }
 
-/// The interval-filter decline is intentionally out of line: keeping limb
-/// construction and exact ratio rounding out of the ordinary projection's
-/// codegen is material in the distance inner loop.
-#[cold]
-#[inline(never)]
+/// The interval-filter decline uses exact stored-dyadic arithmetic.
 fn classify_segment_projection_exact(
     point: XY,
     segment: Segment,
@@ -1413,11 +1399,6 @@ impl PointSegmentSelection {
 /// The single projection owner classifies every clamped parameter before a
 /// metric consumes it. The measurement and selection key both use the source
 /// determinant; projection emission is a later witness operation.
-#[expect(
-    clippy::inline_always,
-    reason = "measured specialization reduced the ordinary distance ABBA ratio from 1.3043x to 1.224192x"
-)]
-#[inline(always)]
 fn point_segment_metric(point: XY, segment: Segment) -> Result<PointSegmentMetric> {
     let classification = classify_segment_projection(point, segment);
     if matches!(&classification, ClassifiedSegmentProjection::Start) {
@@ -1491,11 +1472,7 @@ pub(in crate::geometry) fn point_segment_distance_and_projection(
     }
 }
 
-/// Exact classification and squared-ratio rounding are a decline path. They
-/// stay out of the ordinary metric's frame so a certified endpoint/interior
-/// does not carry heap-backed dyadic state through the distance inner loop.
-#[cold]
-#[inline(never)]
+/// Exact classification and squared-ratio rounding handle filter declines.
 fn point_segment_metric_exact(point: XY, segment: Segment) -> Result<PointSegmentMetric> {
     Ok(match classify_segment_projection_exact(point, segment)? {
         ExactClassifiedSegmentProjection::Start => try_point_distance_squared(point, segment.start)
