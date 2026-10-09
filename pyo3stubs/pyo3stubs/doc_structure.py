@@ -46,14 +46,10 @@ if TYPE_CHECKING:
 _NUMPYDOC_SECTION = re.compile(r'^([A-Za-z][A-Za-z ]*)\n-+\n', re.MULTILINE)
 _GOOGLE_SECTION = re.compile(r'^([A-Za-z][A-Za-z ]*):[ \t]*$', re.MULTILINE)
 _DEFAULT_MARKER = re.compile(
-    r'\bdefaults?(?:\s+to\b|\s*=\s*|\s+)',
+    r'\bdefaults?(?:\s+to\b|\s*[:=]\s*|\s+)',
     re.IGNORECASE,
 )
 _ENTRY_NAMES = re.compile(r'[*\w]+(?:\s*,\s*[*\w]+)*')
-_GOOGLE_ENTRY = re.compile(
-    r'(?P<names>[*\w]+(?:\s*,\s*[*\w]+)*)'
-    r'(?:\s+\((?P<type>[^)]*)\))?\s*:\s*(?P<description>.*)'
-)
 _SECTION_ALIASES = {'Args': 'Parameters', 'Arguments': 'Parameters'}
 _PARAMETER_SECTIONS = frozenset({
     'Parameters',
@@ -61,7 +57,8 @@ _PARAMETER_SECTIONS = frozenset({
     'Keyword Arguments',
 })
 _NAMED_TYPE_SECTIONS = _PARAMETER_SECTIONS | {'Attributes'}
-_RETURN_SECTIONS = frozenset({'Returns', 'Yields', 'Receives'})
+_TYPED_VALUE_SECTIONS = frozenset({'Returns', 'Yields', 'Receives'})
+_OUTPUT_SECTIONS = frozenset({'Returns', 'Yields'})
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,12 +236,13 @@ def _entry_indent(line: str) -> int:
     return len(line) - len(line.lstrip(' \t'))
 
 
-def _split_google_return_header(line: str) -> tuple[str, str]:
-    """Split a Google return header at its top-level type/description colon."""
-    depth = 0
+def _top_level_separator(text: str, separator: str) -> int | None:
+    """Find a separator outside balanced brackets and quoted literals."""
+    closing: list[str] = []
     quote: str | None = None
     escaped = False
-    for index, char in enumerate(line):
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    for index, char in enumerate(text):
         if quote is not None:
             if escaped:
                 escaped = False
@@ -255,31 +253,109 @@ def _split_google_return_header(line: str) -> tuple[str, str]:
             continue
         if char in {'"', "'"}:
             quote = char
-        elif char in '[({':
-            depth += 1
-        elif char in '])}':
-            depth = max(0, depth - 1)
-        elif char == ':' and depth == 0:
-            return line[:index].strip(), line[index + 1 :].strip()
-    return line.strip(), ''
+        elif char in pairs:
+            closing.append(pairs[char])
+        elif char in ')]}':
+            if not closing or char != closing.pop():
+                return None
+        elif char == separator and not closing:
+            return index
+    return None
+
+
+def _matching_delimiter(text: str, start: int) -> int | None:
+    """Index the matching close for one opening delimiter, respecting quotes."""
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    first = text[start]
+    if first not in pairs:
+        return None
+    closing = [pairs[first]]
+    quote: str | None = None
+    escaped = False
+    for index in range(start + 1, len(text)):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char in pairs:
+            closing.append(pairs[char])
+        elif char in ')]}':
+            if not closing or char != closing.pop():
+                return None
+            if not closing:
+                return index
+    return None
+
+
+def _split_google_return_header(line: str) -> tuple[str, str]:
+    """Split a Google value header at its top-level type/description colon."""
+    separator = _top_level_separator(line, ':')
+    if separator is None:
+        return line.strip(), ''
+    return line[:separator].strip(), line[separator + 1 :].strip()
+
+
+def _google_entry_header(line: str) -> tuple[str, str, str] | None:
+    """Parse a Google name, balanced optional type wrapper, and description."""
+    separator = _top_level_separator(line, ':')
+    if separator is None:
+        return None
+    left = line[:separator].strip()
+    description = line[separator + 1 :].strip()
+    wrapper = left.find('(')
+    if wrapper < 0:
+        names = left
+        type_text = ''
+    else:
+        if not left[:wrapper].endswith((' ', '\t')):
+            return None
+        names = left[:wrapper].strip()
+        close = _matching_delimiter(left, wrapper)
+        if close != len(left) - 1:
+            return None
+        type_text = left[wrapper + 1 : close].strip()
+    if not _entry_names(names):
+        return None
+    return names, type_text, description
+
+
+def _has_indented_description(
+    lines: list[str],
+    index: int,
+    base_indent: int,
+) -> bool:
+    for line in lines[index + 1 :]:
+        if line.strip():
+            return _entry_indent(line) > base_indent
+    return False
 
 
 def _is_entry_header(
     line: str,
     section: DocSection,
     style: Literal['numpy', 'google'],
+    *,
+    has_indented_description: bool = False,
 ) -> bool:
     if not line.strip():
         return False
-    if style == 'google' and section.name in _RETURN_SECTIONS:
+    if style == 'google' and section.name in _TYPED_VALUE_SECTIONS:
         type_text, _description = _split_google_return_header(line.strip())
         return bool(type_text)
     if style == 'google':
-        match = _GOOGLE_ENTRY.match(line.strip())
-        return match is not None
+        return _google_entry_header(line.strip()) is not None
     if section.name in _NAMED_TYPE_SECTIONS:
         names, separator, type_text = line.partition(':')
-        return bool(separator and type_text.strip() and _entry_names(names))
+        if separator:
+            return bool(type_text.strip() and _entry_names(names))
+        return has_indented_description and bool(_entry_names(line))
     return True
 
 
@@ -294,24 +370,23 @@ def _parse_entry(
     names: tuple[str, ...] = ()
     type_text = ''
     default_text = None
-    if style == 'google' and section.name in _RETURN_SECTIONS:
+    if style == 'google' and section.name in _TYPED_VALUE_SECTIONS:
         type_text, inline_description = _split_google_return_header(line.strip())
     elif style == 'google':
-        match = _GOOGLE_ENTRY.match(line.strip())
-        if match is None:
+        parsed = _google_entry_header(line.strip())
+        if parsed is None:
             return DocEntry((), '', '', None, line_number)
-        left = match.group('names')
-        inline_description = match.group('description').strip()
+        left, google_type, inline_description = parsed
         if section.name in _NAMED_TYPE_SECTIONS:
             names = _entry_names(left)
-            type_text = match.group('type') or ''
+            type_text = google_type
         else:
-            names = _entry_names(left)
+            names = _entry_names(left) if not google_type else ()
     elif section.name in _NAMED_TYPE_SECTIONS:
         left, _, type_text = line.partition(':')
         names = _entry_names(left)
         type_text = type_text.strip()
-    elif section.name in _RETURN_SECTIONS:
+    elif section.name in _TYPED_VALUE_SECTIONS:
         left, separator, right = line.partition(':')
         if separator and _entry_names(left):
             names = _entry_names(left)
@@ -352,11 +427,21 @@ def _entries(
     if not nonempty_indents:
         return ()
     base_indent = min(nonempty_indents) if style == 'google' else 0
-    starts = [
-        index
-        for index, line in enumerate(lines)
-        if _entry_indent(line) == base_indent and _is_entry_header(line, section, style)
-    ]
+    starts = []
+    for index, line in enumerate(lines):
+        if _entry_indent(line) != base_indent:
+            continue
+        if _is_entry_header(
+            line,
+            section,
+            style,
+            has_indented_description=_has_indented_description(
+                lines,
+                index,
+                base_indent,
+            ),
+        ):
+            starts.append(index)
     entries: list[DocEntry] = []
     body_offset = 1 if style == 'google' else 2
     for position, index in enumerate(starts):
@@ -405,7 +490,7 @@ def return_entries(doc: ParsedDoc) -> tuple[DocEntry, ...]:
     return tuple(
         entry
         for section in doc.sections
-        if section.name in _RETURN_SECTIONS
+        if section.name in _OUTPUT_SECTIONS
         for entry in _entries(section, doc.style)
     )
 

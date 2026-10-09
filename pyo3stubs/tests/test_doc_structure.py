@@ -372,9 +372,158 @@ def test_google_returns_parse_full_types_and_keep_their_descriptions():
         ),
         ('float', 'One numeric measurement.'),
         ('Iterator[Geometry]', 'The generated geometries.'),
-        ('Geometry | None', 'The optional next geometry.'),
     ]
     assert check_doc_subject(_subject('measure', doc, ())) == []
+
+
+@pytest.mark.parametrize(
+    ('header', 'expected_name', 'expected_type', 'expected_default'),
+    [
+        pytest.param(
+            'pair (tuple[int, int], default=(0, 1)): Bounds.',
+            'pair',
+            'tuple[int, int]',
+            '(0, 1)',
+            id='nested-parentheses-in-default',
+        ),
+        pytest.param(
+            "token (Literal[')']): Token.",
+            'token',
+            "Literal[')']",
+            None,
+            id='quoted-close-paren-in-type',
+        ),
+        pytest.param(
+            "token (Literal['default=None']): Token.",
+            'token',
+            "Literal['default=None']",
+            None,
+            id='quoted-default-like-type-literal',
+        ),
+    ],
+)
+def test_google_parameter_headers_scan_the_complete_type_wrapper(
+    header,
+    expected_name,
+    expected_type,
+    expected_default,
+):
+    parsed = parse_doc(
+        f"""\
+        Read a value.
+
+        Args:
+            {header}
+        """
+    )
+    (entry,) = parameter_entries(parsed)
+
+    assert (entry.names, entry.type_text, entry.default_text) == (
+        (expected_name,),
+        expected_type,
+        expected_default,
+    )
+
+
+def test_numpy_untyped_parameter_headers_cover_named_varargs_without_prose():
+    doc = """\
+    Accept values.
+
+    Parameters
+    ----------
+    value
+        The primary value.
+    *args
+        Additional positional values.
+    **kwargs
+        Additional named values.
+    provide an integer
+        This sentence is prose, not a parameter name.
+
+    Returns
+    -------
+    object
+    """
+    parsed = parse_doc(doc)
+    entries = parameter_entries(parsed)
+
+    assert [
+        (entry.names, entry.type_text, entry.default_text) for entry in entries
+    ] == [
+        (('value',), '', None),
+        (('args',), '', None),
+        (('kwargs',), '', None),
+    ]
+    parameters = (
+        inspect.Parameter('value', inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter('args', inspect.Parameter.VAR_POSITIONAL),
+        inspect.Parameter('kwargs', inspect.Parameter.VAR_KEYWORD),
+    )
+    assert check_doc_subject(_subject('accept', doc, parameters)) == []
+
+    missing_kwargs = doc.replace(
+        '    **kwargs\n        Additional named values.\n',
+        '',
+    )
+    assert check_doc_subject(_subject('accept', missing_kwargs, parameters)) == [
+        "accept: parameter 'kwargs' is not documented"
+    ]
+
+
+@pytest.mark.parametrize(
+    'default_marker',
+    [
+        pytest.param('default=True', id='equals'),
+        pytest.param('default True', id='space'),
+        pytest.param('default: True', id='colon'),
+    ],
+)
+def test_numpy_default_marker_forms_parse_and_check_against_the_signature(
+    default_marker,
+):
+    doc = f"""\
+    Copy a value.
+
+    Parameters
+    ----------
+    copy : bool, {default_marker}
+        Whether to copy.
+
+    Returns
+    -------
+    object
+    """
+    (entry,) = parameter_entries(parse_doc(doc))
+
+    assert (entry.names, entry.type_text, entry.default_text) == (
+        ('copy',),
+        'bool',
+        'True',
+    )
+    parameter = inspect.Parameter(
+        'copy',
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        default=False,
+    )
+    assert check_doc_subject(_subject('copy_value', doc, (parameter,))) == [
+        'copy_value.copy: documented default True != runtime False'
+    ]
+
+
+def test_receives_does_not_satisfy_the_output_contract():
+    doc = """\
+    Consume a value.
+
+    Receives
+    --------
+    value : object
+        The value sent into the generator.
+    """
+
+    assert return_entries(parse_doc(doc)) == ()
+    assert check_doc_subject(_subject('consume', doc, ())) == [
+        'consume: no Returns section — document what it gives back'
+    ]
 
 
 def test_duplicate_google_section_aliases_remain_visible():
