@@ -900,6 +900,22 @@ def test_constructor_parameter_tables_show_authored_defaults() -> None:
         )
 
 
+def test_constructor_default_projection_keeps_differing_accepted_forms() -> None:
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    forms = (
+        ((('keyword-only', 'value', 'int', None),), None),
+        ((('keyword-only', 'value', 'int', '1'),), None),
+        ((('keyword-only', 'value', 'int', '2'),), None),
+    )
+
+    defaults, conflicts = model._call_form_defaults(forms)
+
+    assert defaults == {'value': '1'}
+    assert conflicts == []
+
+
 def test_constructor_class_template_uses_the_handler_formatter_once_per_form() -> None:
     pkg = _load_griffe_model()
     expand = load_tool('griffe_expand_aliases')
