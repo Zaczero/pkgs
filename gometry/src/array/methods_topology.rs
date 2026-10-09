@@ -236,22 +236,19 @@ impl PyGeometryArray {
             let rows = self.row_owner().clone();
             let converted_rows = py
                 .detach(move || {
-                    let present_count = rows
+                    let missing = rows
                         .missing()
-                        .expect("mixed nullable rows carry a validity mask")
-                        .present_count();
-                    let mut present = Vec::with_capacity(present_count);
-                    for row in rows.logical_rows() {
-                        if let crate::geometry::storage::LogicalRow::Present { row, .. } = row {
-                            present.push(row.with_shape(Clone::clone)?);
-                        }
-                    }
-                    let borrowed: Vec<_> = present.iter().collect();
+                        .expect("mixed nullable rows carry a validity mask");
+                    let GeometryArrayStorage::Mixed(shapes) = rows.storage() else {
+                        unreachable!("this transform path handles mixed nullable rows");
+                    };
+                    let present: Vec<_> = shapes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(row, shape)| (!missing.is_missing(row)).then_some(shape))
+                        .collect();
                     let converted = transformer
-                        .transform_shapes_with_computed_edges_indexed(
-                            &borrowed,
-                            target_crs.as_str(),
-                        )
+                        .transform_shapes_with_computed_edges_indexed(&present, target_crs.as_str())
                         .map_err(|failure| {
                             let coordinate = failure
                                 .coordinate
@@ -270,11 +267,7 @@ impl PyGeometryArray {
                             },
                         })
                         .collect();
-                    let mask = rows
-                        .missing()
-                        .expect("mixed nullable rows carry a validity mask")
-                        .clone();
-                    Ok::<_, crate::crs::TransformFailure>((output, mask))
+                    Ok::<_, crate::crs::TransformFailure>((output, missing.clone()))
                 })
                 .map_err(transform_failure_pyerr)?;
             drain_accuracy_warning(py, &execution)?;

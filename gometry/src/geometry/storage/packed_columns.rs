@@ -776,23 +776,23 @@ fn push_replacement_vertex(
     );
 }
 
-fn validate_replacement_ring(
+pub(crate) fn validate_replacement_ring(
     coords: &CoordSeq,
     window: std::ops::Range<usize>,
-) -> PackedColumnResult<()> {
+) -> crate::error::Result<()> {
     match CheckedRingWindow::checked(coords, window) {
         Ok(_) => Ok(()),
-        Err(RingWindowError::TooShort(len)) => Err(PackedColumnError::Batch(
-            crate::geometry::GeometryErrorKind::RingTooShort(len).into(),
-        )),
-        Err(RingWindowError::Open) => Err(PackedColumnError::Batch(
-            crate::geometry::GeometryErrorKind::message("polygon ring must be closed"),
-        )),
-        Err(RingWindowError::Inverted | RingWindowError::OutOfRange) => {
-            Err(PackedColumnError::Batch(
-                crate::geometry::GeometryErrorKind::message("polygon ring range is invalid"),
-            ))
+        Err(RingWindowError::TooShort(len)) => {
+            Err(crate::geometry::GeometryErrorKind::RingTooShort(len).into())
         },
+        Err(RingWindowError::Open) => Err(crate::geometry::GeometryErrorKind::Invalid(
+            "polygon ring must be closed".into(),
+        )
+        .into()),
+        Err(RingWindowError::Inverted | RingWindowError::OutOfRange) => Err(
+            crate::geometry::GeometryErrorKind::Invalid("polygon ring range is invalid".into())
+                .into(),
+        ),
     }
 }
 
@@ -888,7 +888,6 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
     let mut ring_builder = CsrOffsetBuilder::with_capacity(ring_capacity);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(polygon_columns.rows());
     let mut ring_count = 0_usize;
-    let mut validate_windows = Vec::with_capacity(ring_capacity);
     for row in 0..polygon_columns.rows() {
         if HAS_MISSING && polygon_columns.is_missing(row) {
             polygon_builder
@@ -904,7 +903,6 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
             let window = packed_row
                 .polygon_ring_window(ring)
                 .expect("ring lies in its admitted polygon row");
-            let output_start = builder.len();
             for old_index in window {
                 push_replacement_vertex(
                     &mut builder,
@@ -915,7 +913,6 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
                 );
                 *replacement_index = (*replacement_index).wrapping_add(1);
             }
-            validate_windows.push(output_start..builder.len());
             ring_builder
                 .push_end(builder.len(), i32::MAX as usize)
                 .map_err(batch_err)?;
@@ -927,19 +924,26 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
     }
     let coords = finish_replacement_builder(builder, HAS_MISSING)?;
     let coord_len = coords.len();
-    for window in validate_windows {
-        validate_replacement_ring(&coords, window)?;
+    let ring_offsets = ring_builder
+        .finish(coord_len)
+        .map_err(batch_err)?
+        .cast_level();
+    let polygon_offsets = polygon_builder
+        .finish(ring_count)
+        .map_err(batch_err)?
+        .cast_level();
+    for row in 0..polygon_columns.rows() {
+        let rings = csr_value_window(polygon_offsets.as_slice(), row..row.wrapping_add(1));
+        for ring in rings {
+            let window = csr_value_window(ring_offsets.as_slice(), ring..ring.wrapping_add(1));
+            validate_replacement_ring(&coords, window)
+                .map_err(|error| PackedColumnError::Row { row, error })?;
+        }
     }
     Ok(PackedColumnOutput::Polygons {
         coords,
-        ring_offsets: ring_builder
-            .finish(coord_len)
-            .map_err(batch_err)?
-            .cast_level(),
-        polygon_offsets: polygon_builder
-            .finish(ring_count)
-            .map_err(batch_err)?
-            .cast_level(),
+        ring_offsets,
+        polygon_offsets,
     })
 }
 
@@ -1521,7 +1525,7 @@ mod tests {
     use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geographic::AngularFactor;
     use crate::geometry::storage::{RowSelection, StorageLayout};
-    use crate::geometry::{LineSeq, Polygon, Ring, Shape};
+    use crate::geometry::{LineSeq, Polygon, Ring, Shape, SharedSlice};
     use crate::test_support::allocation_count;
 
     fn coords() -> CoordSeq {
@@ -1541,6 +1545,38 @@ mod tests {
     ) -> ArrayRows {
         ArrayRows::admit(Arc::new(storage), missing, layout)
             .expect("test packed storage is admitted")
+    }
+
+    #[test]
+    fn nullable_polygon_replacement_reports_the_logical_ring_row() {
+        let array = crate::test_support::nullable_polygon_typed_empty_fixture();
+        let GeometryArrayStorage::Packed(PackedStorage::Polygons { coords, .. }) = array.storage()
+        else {
+            panic!("nullable polygon fixture remains packed");
+        };
+        let mut xs = coords.xs().to_vec();
+        *xs.last_mut().expect("present polygon has a ring") = -1.0;
+        let replacement = CoordinateReplacement {
+            xs: SharedSlice::from_vec(xs),
+            ys: SharedSlice::from_vec(coords.ys().to_vec()),
+            zs: ReplacementAxis::Carry,
+            ms: ReplacementAxis::Carry,
+            len: coords.len(),
+            axes: coords.axes(),
+            positional: false,
+        };
+
+        let columns = array
+            .row_owner()
+            .packed_columns()
+            .expect("packed nullable polygon resolves to columns");
+        let mut replacement_index = 0;
+        let Err(error) =
+            replace_packed_columns_dispatch(columns, &replacement, &mut replacement_index)
+        else {
+            panic!("open replacement ring is rejected");
+        };
+        assert!(matches!(error, PackedColumnError::Row { row: 3, .. }));
     }
 
     fn geographic_array(shapes: Vec<Shape>) -> PyGeometryArray {

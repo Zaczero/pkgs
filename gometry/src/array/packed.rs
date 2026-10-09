@@ -1498,24 +1498,7 @@ mod compact_nullable_tests {
 
     #[test]
     fn nullable_polygon_distinguishes_missing_from_typed_empty() {
-        let present = PyGeometryArray::packed_polygons(
-            CoordSeq::try_from_vecs(
-                vec![0.0, 1.0, 1.0, 0.0, 0.0],
-                vec![0.0, 0.0, 1.0, 1.0, 0.0],
-                None,
-                None,
-            )
-            .unwrap(),
-            CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5], 5).unwrap(),
-            CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 0, 1], 1).unwrap(),
-            Frame::None,
-        )
-        .unwrap();
-        let array = PyGeometryArray::scatter_present_rows(
-            &present,
-            ValidityMask::from_vec(4, vec![true, false, true, false]).unwrap(),
-        )
-        .unwrap();
+        let array = crate::test_support::nullable_polygon_typed_empty_fixture();
         let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
             polygon_offsets,

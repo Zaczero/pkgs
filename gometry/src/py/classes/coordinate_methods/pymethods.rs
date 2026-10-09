@@ -149,7 +149,7 @@ impl PyCoordinates {
     pub fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, false)?,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, false),
         )
     }
 
@@ -161,7 +161,7 @@ impl PyCoordinates {
     pub fn __reversed__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, true)?,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, true),
         )
     }
 
@@ -422,19 +422,22 @@ impl PyCoordinates {
             coordinates::CoordinateSource::Shape(shape) => {
                 coordinates_object(py, shape, self.layout)
             },
-            coordinates::CoordinateSource::Array(storage, missing) => {
-                let nested = match storage {
+            coordinates::CoordinateSource::Array(rows) => {
+                let nested = match rows.storage() {
                     GeometryArrayStorage::Mixed(shapes) => shapes
                         .iter()
                         .enumerate()
-                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
+                        .filter(|(row, _)| {
+                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
+                        })
                         .map(|(_, shape)| coordinates_object(py, shape, self.layout))
                         .collect::<PyResult<Vec<_>>>()?,
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         let map = row_map.as_deref();
-                        if let Some(mask) = missing
-                            && mask.len() != storage::point_logical_len(coords, map)
-                        {
+                        if rows.is_compact_nullable() {
+                            let mask = rows
+                                .missing()
+                                .expect("compact nullable rows carry validity");
                             let nested = mask
                                 .cursor()
                                 .filter_map(|(_, present)| present)
@@ -451,7 +454,6 @@ impl PyCoordinates {
                             return Ok(PyList::new(py, nested)?.unbind().into());
                         }
                         (0..storage::point_logical_len(coords, map))
-                            .filter(|&index| !missing.is_some_and(|mask| mask.is_missing(index)))
                             .map(|index| {
                                 coordinates_object(
                                     py,
@@ -465,10 +467,13 @@ impl PyCoordinates {
                     },
                     GeometryArrayStorage::Packed(
                         PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-                    ) => storage
+                    ) => rows
+                        .storage()
                         .iter_shapes()
                         .enumerate()
-                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
+                        .filter(|(row, _)| {
+                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
+                        })
                         .map(|(_, shape)| {
                             shape
                                 .map_err(PyErr::from)
@@ -647,7 +652,7 @@ impl PyCoordinates {
         let measure = self.view.exact_measure(py)?;
         let axes = match self.view.source() {
             coordinates::CoordinateSource::Shape(_) => measure.shape_axes(),
-            coordinates::CoordinateSource::Array(..) => measure.present_axes(),
+            coordinates::CoordinateSource::Array(_) => measure.present_axes(),
         };
         let len = measure.count_pyint(py).str()?.extract::<String>()?;
         Ok(format!("<Coordinates {} len={len}>", axes.as_str()))
