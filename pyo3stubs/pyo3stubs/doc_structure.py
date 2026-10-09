@@ -113,7 +113,7 @@ def _rust_constructor_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource
     """Map exported classes to retained Rust constructor-doc carriers."""
     from pyo3stubs.rust_scan import constructor_doc_sources
 
-    return constructor_doc_sources(cfg)
+    return constructor_doc_sources(cfg).by_class
 
 
 def parse_doc(doc: str | None) -> ParsedDoc:
@@ -601,17 +601,18 @@ def _class_subjects(
         source_constructor is not None or constructible_stub
     ):
         carrier = new_defs[-1] if new_defs else None
-        runtime_new = inspect.getattr_static(cls, '__new__', None)
-        prose = _runtime_doc_for_stub('__new__', runtime_new)
-        source = _runtime_location(runtime_new, class_source)
-        if prose is None and carrier is not None:
-            prose = ast.get_docstring(carrier)
-            if _is_synthetic_doc('__new__', prose):
-                prose = None
-            source = _doc_location(class_path, carrier)
-        if prose is None and source_constructor is not None:
+        if source_constructor is not None:
             prose = source_constructor.prose
             source = DocLocation(source_constructor.path, source_constructor.line)
+        else:
+            runtime_new = inspect.getattr_static(cls, '__new__', None)
+            prose = _runtime_doc_for_stub('__new__', runtime_new)
+            source = _runtime_location(runtime_new, class_source)
+            if prose is None and carrier is not None:
+                prose = ast.get_docstring(carrier)
+                if _is_synthetic_doc('__new__', prose):
+                    prose = None
+                source = _doc_location(class_path, carrier)
         yield _subject(
             f'{name}.__new__',
             'constructor',

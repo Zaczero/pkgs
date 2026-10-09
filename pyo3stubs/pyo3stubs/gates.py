@@ -179,11 +179,14 @@ class Result:
 
 def _gen_docs_sync(cfg: StubConfig) -> list[str]:
     from pyo3stubs.context import CheckContext
+    from pyo3stubs.doc_contract import collect_errors as collect_doc_errors
     from pyo3stubs.gen import render_stub_with_docs
 
+    errors = list(collect_doc_errors(cfg))
     if CheckContext(cfg).stub_text == render_stub_with_docs(cfg):
-        return []
-    return [f'{cfg.stub_path}: stub docstrings are stale']
+        return errors
+    errors.append(f'{cfg.stub_path}: stub docstrings are stale')
+    return errors
 
 
 _GEN_DOCS = 'run `pyo3stubs gen-docs --config <shim>`'
