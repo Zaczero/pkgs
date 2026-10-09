@@ -259,15 +259,21 @@ impl PySpatialIndex {
         );
         let prepared = self.overflow.prepare_insert(&entries, total_rows)?;
         self.rows.reserve_insert(count);
-        self.overflow.reserve_entry_counts(count);
         if let Some(frame) = adopt_frame {
             self.metadata = Some(frame);
         }
-        for (offset, geometry) in items.into_iter().enumerate() {
+        for (offset, (geometry, entry_count)) in items
+            .into_iter()
+            .zip(entry_counts.iter().copied())
+            .enumerate()
+        {
             let handle = self.rows.push(geometry);
             debug_assert_eq!(handle, start.wrapping_add(offset));
+            if entry_count > 1 {
+                self.cover_counts.insert(handle, entry_count);
+            }
         }
-        self.overflow.commit_insert(prepared, entry_counts);
+        self.overflow.commit_insert(prepared);
         self.non_prunable_live = self.non_prunable_live.wrapping_add(non_prunable_live);
         self.mutation_gen = self.mutation_gen.wrapping_add(1);
         Ok(start)
@@ -286,11 +292,7 @@ impl PySpatialIndex {
                 .with_shape(|shape| geodesic_domain_invalid(shape, domain))?
         };
         let removed = if handle < self.bulk.initial_len() {
-            let removed_entries = self.bulk_entry_counts.as_ref().map_or(1, |counts| {
-                *counts
-                    .get(handle)
-                    .expect("bulk handle belongs to the original cover count column")
-            });
+            let removed_entries = self.cover_counts.get(&handle).copied().unwrap_or(1);
             let dead_after = self.bulk_dead_entries.wrapping_add(removed_entries);
             let prepared = if super::str_tree::compaction_due(self.bulk.entry_count(), dead_after) {
                 Some(self.bulk.prepare_compaction(
@@ -311,10 +313,7 @@ impl PySpatialIndex {
             }
             removed
         } else {
-            // The forest records the physical cover size when the row is
-            // inserted, so removal only consults that count. It never
-            // re-materializes the geometry or recomputes its cover.
-            let removed_entries = self.overflow.entry_count_for_handle(handle);
+            let removed_entries = self.cover_counts.get(&handle).copied().unwrap_or(1);
             let prepared = if self.overflow.should_compact(removed_entries) {
                 Some(self.overflow.prepare_compaction(
                     &self.rows.live_handles,
@@ -335,6 +334,7 @@ impl PySpatialIndex {
             removed
         };
         if removed {
+            self.cover_counts.remove(&handle);
             if non_prunable {
                 debug_assert!(self.non_prunable_live > 0);
                 self.non_prunable_live = self.non_prunable_live.wrapping_sub(1);
@@ -474,9 +474,29 @@ mod tests {
     }
 
     #[test]
-    fn removal_without_compaction_only_tombstones_the_row() {
+    fn overflow_cover_exceptions_are_removed_with_periodic_rows() {
         let mut index = empty_index();
-        for handle in 0..3 {
+        assert_eq!(index.insert_one(&crossing_line()).unwrap(), 0);
+        assert_eq!(index.cover_counts, [(0, 2)].into());
+
+        assert!(index.remove_handle(0).unwrap());
+        assert!(index.cover_counts.is_empty());
+        assert_eq!(index.overflow.total_entries(), 0);
+        assert_eq!(index.overflow.live_entry_count(), 0);
+        assert_eq!(index.overflow.dead_entry_count(), 0);
+
+        let frame = index.metadata.clone().unwrap();
+        assert_eq!(
+            index.insert_one(&framed_point(12.0, 0.0, &frame)).unwrap(),
+            1
+        );
+        assert!(index.cover_counts.is_empty());
+    }
+
+    #[test]
+    fn sparse_boxed_removal_reuses_payload_owner_without_compaction() {
+        let mut index = empty_index();
+        for handle in 0..6 {
             assert_eq!(
                 index
                     .insert_one(&point(handle as f64, 0.0))
@@ -484,14 +504,15 @@ mod tests {
                 handle
             );
         }
+        assert!(index.remove_handle(0).expect("first boxed remove"));
         let generation = index.mutation_gen;
         let removed =
-            crate::test_support::assert_no_allocations(|| index.remove_handle(0).expect("remove"));
+            crate::test_support::assert_no_allocations(|| index.remove_handle(1).expect("remove"));
         assert!(removed);
-        assert!(!index.rows.is_live(0));
-        assert_eq!(index.overflow.total_entries(), 3);
-        assert_eq!(index.overflow.live_entry_count(), 2);
-        assert_eq!(index.overflow.dead_entry_count(), 1);
+        assert!(!index.rows.is_live(1));
+        assert_eq!(index.overflow.total_entries(), 6);
+        assert_eq!(index.overflow.live_entry_count(), 4);
+        assert_eq!(index.overflow.dead_entry_count(), 2);
         assert_eq!(index.mutation_gen, generation + 1);
     }
 

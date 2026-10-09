@@ -33,7 +33,7 @@ pub(super) struct StrNode {
 
 /// The immutable bulk tree. Each `entries[*].idx` is a stable build handle in
 /// `0..initial_len()`; rows with no entry (skipped empties) still occupy a
-/// handle in the row liveness table, so `remove` never searches the tree.
+/// handle in the live-handle directory, so `remove` never searches the tree.
 #[derive(Debug, Default)]
 pub(super) struct StaticStrTree {
     /// STR-ordered entries (leaf children).
@@ -355,25 +355,19 @@ impl HeapSize for StaticStrTree {
 ///
 /// `runs[rank]`, when occupied, contains exactly `2.pow(rank)` physical
 /// envelope entries. The row table remains the sole liveness authority:
-/// `live_entries` and `dead_entries` count physical entries, while
-/// `entry_counts` records how many envelopes each never-reused overflow handle
-/// contributed.
+/// `live_entries` and `dead_entries` count physical entries.
 #[derive(Clone, Debug)]
 pub(super) struct StaticStrForest {
     runs: Vec<Option<Arc<StaticStrTree>>>,
-    handle_start: usize,
-    entry_counts: Vec<usize>,
     total_entries: usize,
     live_entries: usize,
     dead_entries: usize,
 }
 
 impl StaticStrForest {
-    pub(super) const fn new(handle_start: usize) -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             runs: Vec::new(),
-            handle_start,
-            entry_counts: Vec::new(),
             total_entries: 0,
             live_entries: 0,
             dead_entries: 0,
@@ -476,19 +470,6 @@ impl StaticStrForest {
         }
     }
 
-    /// Reserve the persistent count column for incoming overflow rows.
-    pub(super) fn reserve_entry_counts(&mut self, additional: usize) {
-        self.entry_counts.reserve(additional);
-    }
-
-    pub(super) fn entry_count_for_handle(&self, handle: usize) -> usize {
-        debug_assert!(handle >= self.handle_start);
-        self.entry_counts
-            .get(handle.saturating_sub(self.handle_start))
-            .copied()
-            .unwrap_or(0)
-    }
-
     /// Prepare the binary forest after adding `entries`, without touching this
     /// forest. The returned runs are complete enough to publish by a
     /// non-fallible move once all other mutation-owned reserves succeed.
@@ -584,10 +565,9 @@ impl StaticStrForest {
     /// Publish a previously prepared insertion. Every operation after this
     /// point is a move, drop, or infallible push into capacity reserved by the
     /// caller.
-    pub(super) fn commit_insert(&mut self, prepared: PreparedForest, entry_counts: &[usize]) {
+    pub(super) fn commit_insert(&mut self, prepared: PreparedForest) {
         debug_assert!(prepared.total_entries >= self.total_entries);
         let added_entries = prepared.total_entries.wrapping_sub(self.total_entries);
-        debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), added_entries);
         if !prepared.runs.is_empty() {
             let old_runs = std::mem::take(&mut self.runs);
             let mut runs = prepared.runs;
@@ -613,7 +593,6 @@ impl StaticStrForest {
             }
             self.runs = runs;
         }
-        self.entry_counts.extend_from_slice(entry_counts);
         self.total_entries = prepared.total_entries;
         self.live_entries = self.live_entries.wrapping_add(added_entries);
         debug_assert_eq!(
@@ -641,8 +620,8 @@ impl StaticStrForest {
     }
 
     /// Prepare a fresh forest containing every currently live entry except
-    /// `removed_handle`. The row tombstone is intentionally not published
-    /// until this fallible construction succeeds.
+    /// `removed_handle`. Row removal is not published until this fallible
+    /// construction succeeds.
     pub(super) fn prepare_compaction(
         &self,
         live: &LiveHandles,
@@ -657,7 +636,7 @@ impl StaticStrForest {
             removed_handle,
             remaining,
         };
-        let empty = Self::new(self.handle_start);
+        let empty = Self::new();
         let prepared = empty.prepare_insert_from(&mut entries, total_rows)?;
         #[cfg(debug_assertions)]
         entries.debug_assert_exhausted();
@@ -748,9 +727,7 @@ pub(super) struct PreparedForest {
 
 impl HeapSize for StaticStrForest {
     fn heap_bytes(&self) -> usize {
-        self.runs
-            .heap_bytes()
-            .saturating_add(self.entry_counts.heap_bytes())
+        self.runs.heap_bytes()
     }
 }
 
@@ -887,20 +864,18 @@ mod tests {
             .collect()
     }
 
-    fn commit_forest_batch(forest: &mut StaticStrForest, entries: &[IndexEntry], counts: &[usize]) {
+    fn commit_forest_batch(forest: &mut StaticStrForest, entries: &[IndexEntry]) {
         let prepared = forest
             .prepare_insert(entries, 128)
             .expect("prepared forest");
-        forest.reserve_entry_counts(counts.len());
-        forest.commit_insert(prepared, counts);
+        forest.commit_insert(prepared);
     }
 
     #[test]
     fn binary_forest_keeps_exact_occupied_weights_for_arbitrary_batches() {
-        let mut forest = StaticStrForest::new(10);
+        let mut forest = StaticStrForest::new();
         let entries = forest_entries(10, 13);
-        let counts = vec![1; entries.len()];
-        commit_forest_batch(&mut forest, &entries, &counts);
+        commit_forest_batch(&mut forest, &entries);
 
         let runs: Vec<_> = forest
             .occupied_runs()
@@ -915,11 +890,11 @@ mod tests {
 
     #[test]
     fn binary_forest_carries_across_preoccupied_ranks_without_losing_entries() {
-        let mut forest = StaticStrForest::new(20);
+        let mut forest = StaticStrForest::new();
         let first = forest_entries(20, 7);
-        commit_forest_batch(&mut forest, &first, &[1; 7]);
+        commit_forest_batch(&mut forest, &first);
         let second = forest_entries(27, 9);
-        commit_forest_batch(&mut forest, &second, &[1; 9]);
+        commit_forest_batch(&mut forest, &second);
 
         let weights: Vec<_> = forest
             .occupied_runs()
@@ -937,11 +912,11 @@ mod tests {
     fn binary_forest_small_batch_matrix_preserves_every_entry() {
         for initial_count in 0..16 {
             for batch_count in 0..16 {
-                let mut forest = StaticStrForest::new(50);
+                let mut forest = StaticStrForest::new();
                 let initial = forest_entries(50, initial_count);
-                commit_forest_batch(&mut forest, &initial, &vec![1; initial_count]);
+                commit_forest_batch(&mut forest, &initial);
                 let batch = forest_entries(50 + initial_count, batch_count);
-                commit_forest_batch(&mut forest, &batch, &vec![1; batch_count]);
+                commit_forest_batch(&mut forest, &batch);
 
                 let total = initial_count + batch_count;
                 let live = LiveHandles::from_sorted(0..50 + total);
@@ -969,9 +944,9 @@ mod tests {
 
     #[test]
     fn forest_spatial_traversal_matches_exhaustive_physical_oracle() {
-        let mut forest = StaticStrForest::new(60);
+        let mut forest = StaticStrForest::new();
         let entries = forest_entries(60, 37);
-        commit_forest_batch(&mut forest, &entries, &[1; 37]);
+        commit_forest_batch(&mut forest, &entries);
         let live =
             LiveHandles::from_sorted((0..97).filter(|handle| ![63, 74, 91].contains(handle)));
         forest.mark_removed(3);
@@ -1012,9 +987,9 @@ mod tests {
 
     #[test]
     fn compaction_rebuilds_only_live_entries_and_resets_dead_count() {
-        let mut forest = StaticStrForest::new(30);
+        let mut forest = StaticStrForest::new();
         let entries = forest_entries(30, 8);
-        commit_forest_batch(&mut forest, &entries, &[1; 8]);
+        commit_forest_batch(&mut forest, &entries);
         let live = LiveHandles::from_sorted(34..38);
         forest.mark_removed(4);
         assert!(forest.should_compact(1));
@@ -1031,12 +1006,12 @@ mod tests {
     #[test]
     fn scalar_insert_remove_work_is_not_quadratic() {
         let count = 256;
-        let mut forest = StaticStrForest::new(40);
+        let mut forest = StaticStrForest::new();
         let mut live = LiveHandles::default();
         StaticStrTree::reset_build_work();
         for handle in 40..40 + count {
             let entries = [entry(handle, [handle as f64, 0.0], [handle as f64, 0.0])];
-            commit_forest_batch(&mut forest, &entries, &[1]);
+            commit_forest_batch(&mut forest, &entries);
             live.insert(handle);
         }
         let mut handle = 40;

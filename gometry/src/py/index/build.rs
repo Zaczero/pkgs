@@ -1,12 +1,12 @@
 use super::live_handles::LiveHandles;
 use crate::boundary::metadata;
-use crate::geometry::storage::ArrayRows;
 use crate::geometry::{TopologyDomain, storage};
 use crate::py::index::{
-    Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore, PyAny,
-    PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, ShapeData,
-    StaticStrForest, StaticStrTree, bounds_envelope, checked_index_handle_end, exact_geometry,
-    exact_geometry_array, geodesic_domain_invalid, index_envelopes,
+    Bound, BoxedRows, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows,
+    PackedStore, PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex,
+    Python, ShapeData, StaticStrForest, StaticStrTree, bounds_envelope, checked_index_handle_end,
+    cover_count_exceptions, exact_geometry, exact_geometry_array, geodesic_domain_invalid,
+    index_envelopes,
 };
 
 pub(crate) fn spatial_index(mut items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
@@ -15,7 +15,8 @@ pub(crate) fn spatial_index(mut items: Vec<PyGeometry>) -> PyResult<PySpatialInd
     for item in &mut items {
         *item = item.with_prepared_plan(item.prepared_plan());
     }
-    finish_spatial_index(items, scan, metadata)
+    let boxed = BoxedRows::from_dense(items, &scan.live_handles);
+    finish_spatial_index(boxed, scan, metadata)
 }
 
 struct IndexScan {
@@ -32,22 +33,12 @@ fn spatial_index_rows(
     metadata: Option<Frame>,
 ) -> PyResult<PySpatialIndex> {
     let scan = scan_spatial_index_rows(items.iter().map(Option::as_ref), metadata.as_ref())?;
-    let placeholder_frame = metadata.clone().unwrap_or_default();
     let rows = items
         .into_iter()
-        .map(|item| {
-            item.map_or_else(
-                || {
-                    PyGeometry::with_frame(
-                        ArrayRows::missing_placeholder(),
-                        placeholder_frame.clone(),
-                    )
-                },
-                |item| item.with_prepared_plan(item.prepared_plan()),
-            )
-        })
+        .map(|item| item.map(|item| item.with_prepared_plan(item.prepared_plan())))
         .collect();
-    finish_spatial_index(rows, scan, metadata)
+    let boxed = BoxedRows::from_optional(rows, &scan.live_handles, scan.total_rows);
+    finish_spatial_index(boxed, scan, metadata)
 }
 
 fn scan_spatial_index_rows<'a>(
@@ -89,25 +80,25 @@ fn scan_spatial_index_rows<'a>(
 }
 
 fn finish_spatial_index(
-    rows: Vec<PyGeometry>,
+    boxed: BoxedRows,
     scan: IndexScan,
     metadata: Option<Frame>,
 ) -> PyResult<PySpatialIndex> {
     // Skipped empty rows consume handles, so the initial tree boundary remains
     // the complete input length even though the directory contains only live rows.
     let total_rows = scan.total_rows;
-    let bulk_entry_counts = bulk_entry_counts(&scan.entries, scan.live_handles.len(), total_rows);
+    let cover_counts = cover_count_exceptions(&scan.entries);
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
-            boxed: rows,
+            boxed,
             next_handle: total_rows,
             live_handles: scan.live_handles,
         },
         bulk: StaticStrTree::build(scan.entries, total_rows).map_err(pyo3::PyErr::from)?,
         bulk_dead_entries: 0,
-        bulk_entry_counts,
-        overflow: StaticStrForest::new(total_rows),
+        cover_counts,
+        overflow: StaticStrForest::new(),
         mutation_gen: 0,
         metadata,
         non_prunable_live: scan.non_prunable_live,
@@ -184,20 +175,20 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
     let (entries, live_handles, non_prunable_live) = packed_index_payload(array, domain)?;
-    let bulk_entry_counts = bulk_entry_counts(&entries, live_handles.len(), total_rows);
+    let cover_counts = cover_count_exceptions(&entries);
     Ok(Some(PySpatialIndex {
         rows: IndexRows {
             packed: Some(PackedStore {
                 source: array.clone(),
             }),
-            boxed: Vec::new(),
+            boxed: BoxedRows::default(),
             next_handle: total_rows,
             live_handles,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
         bulk_dead_entries: 0,
-        bulk_entry_counts,
-        overflow: StaticStrForest::new(total_rows),
+        cover_counts,
+        overflow: StaticStrForest::new(),
         mutation_gen: 0,
         metadata,
         non_prunable_live,
@@ -325,49 +316,32 @@ pub(crate) fn restore_spatial_index(
                 ));
             }
             live_handles.insert(logical);
-            geometry
+            Some(geometry)
         } else {
-            PyGeometry::with_frame(ArrayRows::missing_placeholder(), values.frame.clone())
+            None
         };
         rows.push(geometry);
     }
-    let bulk_entry_counts = bulk_entry_counts(&entries, live_handles.len(), total_rows);
+    let boxed = BoxedRows::from_optional(rows, &live_handles, total_rows);
+    let cover_counts = cover_count_exceptions(&entries);
     // Re-derive metadata from the row storage, while retaining an explicitly
     // framed index after its last live row is removed.
     let metadata = (has_metadata || present).then(|| values.frame.clone());
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
-            boxed: rows,
+            boxed,
             next_handle: total_rows,
             live_handles,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
         bulk_dead_entries: 0,
-        bulk_entry_counts,
-        overflow: StaticStrForest::new(total_rows),
+        cover_counts,
+        overflow: StaticStrForest::new(),
         mutation_gen: 0,
         metadata,
         non_prunable_live,
     })
-}
-
-fn bulk_entry_counts(
-    entries: &[IndexEntry],
-    live_count: usize,
-    total_rows: usize,
-) -> Option<crate::geometry::SharedSlice<usize>> {
-    if entries.len() == live_count {
-        return None;
-    }
-    let mut counts = vec![0_usize; total_rows];
-    for entry in entries {
-        let count = counts
-            .get_mut(entry.idx)
-            .expect("bulk entry belongs to the admitted row table");
-        *count = count.wrapping_add(1);
-    }
-    Some(crate::geometry::SharedSlice::from_vec(counts))
 }
 
 /// The CRS + coordinate epoch shared by every item, or `None` for an empty
@@ -391,7 +365,6 @@ mod ownership_tests {
     use crate::crs::frame;
     use crate::geometry::{
         Bounds, CoordSeq, CsrOffsetColumn, LineSeq, Point, PolygonLevel, RingLevel, Shape,
-        SharedSlice,
     };
 
     fn points() -> PyGeometryArray {
@@ -463,6 +436,17 @@ mod ownership_tests {
         let point_index = packed_spatial_index(&points()).unwrap().unwrap();
         assert!(point_index.rows.packed.is_some());
         assert!(point_index.rows.boxed.is_empty());
+        assert!(
+            crate::test_support::assert_no_allocations(|| {
+                point_index
+                    .rows
+                    .operation()
+                    .row(0)
+                    .expect("packed point")
+                    .quick_bounds()
+            })
+            .is_some()
+        );
 
         let line_index = packed_spatial_index(&long_lines()).unwrap().unwrap();
         assert!(line_index.rows.packed.is_some());
@@ -478,6 +462,47 @@ mod ownership_tests {
         let handles = index.insert_array(&inserted).unwrap();
         assert_eq!(handles, [2, 3]);
         assert_eq!(index.rows.boxed.len(), 2);
+    }
+
+    #[test]
+    fn dense_boxed_rows_keep_vector_lookup_and_release_removed_copies() {
+        let first = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(-3.0, 2.0))),
+            Frame::None,
+        );
+        let first_shape = Arc::downgrade(&first.shape);
+        let rows = std::iter::once(first)
+            .chain((1..8).map(|row| {
+                PyGeometry::with_frame(
+                    ShapeData::new(Shape::Point(Point::new_raw_xy(f64::from(row), 2.0))),
+                    Frame::None,
+                )
+            }))
+            .collect();
+        let mut index = spatial_index(rows).expect("dense boxed index");
+        assert!(matches!(&index.rows.boxed, BoxedRows::Dense(_)));
+
+        let (bounds, allocations) = crate::test_support::allocation_count(|| {
+            index
+                .rows
+                .operation()
+                .row(7)
+                .expect("dense boxed row")
+                .quick_bounds()
+        });
+        assert_eq!(allocations, 0);
+        assert!(bounds.is_some());
+
+        let mut copy = index.clone();
+        let (_, first_remove_allocations) =
+            crate::test_support::allocation_count(|| index.remove_handle(0).unwrap());
+        assert!(first_remove_allocations > 0);
+        assert!(matches!(&index.rows.boxed, BoxedRows::Sparse(_)));
+        assert!(first_shape.upgrade().is_some());
+        assert_eq!(index.rows.boxed.len(), 7);
+        assert_eq!(copy.rows.boxed.len(), 8);
+        assert!(copy.remove_handle(0).unwrap());
+        assert!(first_shape.upgrade().is_none());
     }
 
     #[test]
@@ -674,7 +699,7 @@ mod ownership_tests {
     }
 
     #[test]
-    fn geographic_bulk_counts_keep_empty_and_multi_entry_handle_positions() {
+    fn cover_count_exceptions_follow_live_periodic_handles() {
         let frame =
             Frame::new(Some(frame::crs_arc_static("EPSG:4326")), None).expect("geographic frame");
         let point = PyGeometry::with_frame(
@@ -691,40 +716,20 @@ mod ownership_tests {
             frame.clone(),
         );
         let mut index = spatial_index(vec![point, empty, crossing]).expect("spatial index");
-        assert_eq!(
-            index
-                .bulk_entry_counts
-                .as_ref()
-                .expect("periodic bulk counts")
-                .as_slice(),
-            [1, 0, 2]
-        );
+        assert_eq!(index.cover_counts, [(2, 2)].into());
         assert_eq!(index.live_handles_sorted(), [0, 2]);
 
         let mut copied = index.clone();
         assert!(index.remove_handle(2).expect("remove periodic row"));
         assert_eq!(index.live_handles_sorted(), [0]);
+        assert!(index.cover_counts.is_empty());
         assert_eq!(index.bulk.entry_count(), 1);
         assert_eq!(index.bulk_dead_entries, 0);
-        assert_eq!(
-            index
-                .bulk_entry_counts
-                .as_ref()
-                .expect("retained original counts")
-                .as_slice(),
-            [1, 0, 2]
-        );
         assert_eq!(copied.live_handles_sorted(), [0, 2]);
+        assert_eq!(copied.cover_counts, [(2, 2)].into());
         assert!(copied.remove_handle(2).expect("remove copied periodic row"));
         assert_eq!(copied.live_handles_sorted(), [0]);
-        assert_eq!(
-            copied
-                .bulk_entry_counts
-                .as_ref()
-                .expect("copied original counts")
-                .as_slice(),
-            [1, 0, 2]
-        );
+        assert!(copied.cover_counts.is_empty());
 
         assert!(index.remove_handle(0).expect("remove remaining row"));
         assert_eq!(index.bulk.entry_count(), 0);
@@ -739,19 +744,5 @@ mod ownership_tests {
             3
         );
         assert_eq!(index.live_handles_sorted(), [3]);
-    }
-
-    #[test]
-    fn shared_bulk_counts_account_for_an_over_reserved_vector() {
-        let mut values = Vec::with_capacity(17);
-        values.extend([1_usize, 0, 2]);
-        let capacity = values.capacity();
-        let counts = SharedSlice::from_vec(values);
-        assert!(capacity > counts.len());
-
-        let expected_bytes = std::mem::size_of::<[usize; 2]>()
-            .saturating_add(std::mem::size_of::<Vec<usize>>())
-            .saturating_add(capacity.saturating_mul(std::mem::size_of::<usize>()));
-        assert_eq!(counts.heap_bytes(), expected_bytes);
     }
 }

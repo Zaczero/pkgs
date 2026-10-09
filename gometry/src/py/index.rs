@@ -14,7 +14,7 @@ mod live_handles;
 mod str_tree;
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 
 use geodesic::{GeodesicBoxPruner, GeodesicIndexPruner, GeodesicPruner};
@@ -24,7 +24,7 @@ use str_tree::{StaticStrForest, StaticStrTree};
 
 use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_unique_row_ids;
-use crate::geometry::{Bounds, Point, Shape, ShapeData, SharedSlice, TopologyDomain};
+use crate::geometry::{Bounds, Point, Shape, ShapeData, TopologyDomain};
 use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
@@ -46,6 +46,25 @@ pub(crate) fn checked_index_handle_end(start: usize, count: usize) -> crate::err
         return Err(crate::error::ResourceError::SizeOverflow.into());
     }
     Ok(end)
+}
+
+fn cover_count_exceptions(entries: &[IndexEntry]) -> BTreeMap<usize, usize> {
+    debug_assert!(entries.windows(2).all(|pair| pair[0].idx <= pair[1].idx));
+    let mut counts = BTreeMap::new();
+    let mut start = 0;
+    while let Some(entry) = entries.get(start) {
+        let handle = entry.idx;
+        let mut end = start.wrapping_add(1);
+        while entries.get(end).is_some_and(|entry| entry.idx == handle) {
+            end = end.wrapping_add(1);
+        }
+        let count = end.wrapping_sub(start);
+        if count > 1 {
+            counts.insert(handle, count);
+        }
+        start = end;
+    }
+    counts
 }
 
 mod build;
@@ -494,9 +513,9 @@ pub(crate) struct PySpatialIndex {
     /// Build-time rows, repacked once tombstones outnumber live cover entries.
     bulk: Arc<StaticStrTree>,
     bulk_dead_entries: usize,
-    /// Periodic covers may contribute several entries for one handle.
-    /// Single-entry covers need no count column.
-    bulk_entry_counts: Option<SharedSlice<usize>>,
+    /// Periodic covers may contribute several entries for one live handle.
+    /// Single-entry covers need no count entry.
+    cover_counts: BTreeMap<usize, usize>,
     /// Post-build inserts — immutable STR runs maintained by binary carries.
     overflow: StaticStrForest,
     /// Insert/remove generation used by live index iterators.
@@ -517,7 +536,7 @@ impl Clone for PySpatialIndex {
             rows: self.rows.clone(),
             bulk: Arc::clone(&self.bulk),
             bulk_dead_entries: self.bulk_dead_entries,
-            bulk_entry_counts: self.bulk_entry_counts.clone(),
+            cover_counts: self.cover_counts.clone(),
             overflow: self.overflow.clone(),
             mutation_gen: self.mutation_gen,
             metadata: self.metadata.clone(),
@@ -548,11 +567,146 @@ pub(crate) struct PackedStore {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct IndexRows {
     pub(crate) packed: Option<PackedStore>,
-    boxed: Vec<PyGeometry>,
+    boxed: BoxedRows,
     /// Never-reused identity for the next successful insertion.
     next_handle: usize,
     /// Sole membership, cardinality and iteration-order authority.
     live_handles: live_handles::LiveHandles,
+}
+
+#[derive(Clone, Debug)]
+enum BoxedRows {
+    Dense(Vec<PyGeometry>),
+    Sparse(BTreeMap<usize, PyGeometry>),
+}
+
+impl Default for BoxedRows {
+    fn default() -> Self {
+        Self::Dense(Vec::new())
+    }
+}
+
+impl BoxedRows {
+    fn from_dense(rows: Vec<PyGeometry>, live: &live_handles::LiveHandles) -> Self {
+        if live.len() == rows.len() {
+            return Self::Dense(rows);
+        }
+        Self::Sparse(
+            rows.into_iter()
+                .enumerate()
+                .filter_map(|(handle, geometry)| {
+                    live.contains(handle).then_some((handle, geometry))
+                })
+                .collect(),
+        )
+    }
+
+    fn from_optional(
+        rows: Vec<Option<PyGeometry>>,
+        live: &live_handles::LiveHandles,
+        total_rows: usize,
+    ) -> Self {
+        if live.len() == total_rows {
+            return Self::Dense(
+                rows.into_iter()
+                    .map(|row| row.expect("every input row is live"))
+                    .collect(),
+            );
+        }
+        Self::Sparse(
+            rows.into_iter()
+                .enumerate()
+                .filter_map(|(handle, geometry)| {
+                    live.contains(handle).then(|| {
+                        (
+                            handle,
+                            geometry.expect("live input row retains its geometry"),
+                        )
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn get(&self, handle: usize, packed_len: usize) -> Option<&PyGeometry> {
+        match self {
+            Self::Dense(rows) => rows.get(handle.wrapping_sub(packed_len)),
+            Self::Sparse(rows) => rows.get(&handle),
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        match self {
+            Self::Dense(rows) => rows.len(),
+            Self::Sparse(rows) => rows.len(),
+        }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn reserve_insert(&mut self, additional: usize) {
+        if let Self::Dense(rows) = self {
+            rows.reserve(additional);
+        }
+    }
+
+    fn push(&mut self, handle: usize, packed_len: usize, geometry: PyGeometry) {
+        match self {
+            Self::Dense(rows) if handle == packed_len.wrapping_add(rows.len()) => {
+                rows.push(geometry);
+            },
+            Self::Dense(rows) => {
+                let old = std::mem::take(rows);
+                let mut sparse: BTreeMap<_, _> = old
+                    .into_iter()
+                    .enumerate()
+                    .map(|(offset, geometry)| (packed_len.wrapping_add(offset), geometry))
+                    .collect();
+                sparse.insert(handle, geometry);
+                *self = Self::Sparse(sparse);
+            },
+            Self::Sparse(rows) => {
+                let previous = rows.insert(handle, geometry);
+                debug_assert!(previous.is_none());
+            },
+        }
+    }
+
+    fn remove(&mut self, handle: usize, packed_len: usize) {
+        match self {
+            Self::Dense(rows) => {
+                let removed = handle.wrapping_sub(packed_len);
+                let old = std::mem::take(rows);
+                let sparse = old
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(offset, geometry)| {
+                        (offset != removed).then_some((packed_len.wrapping_add(offset), geometry))
+                    })
+                    .collect();
+                *self = Self::Sparse(sparse);
+            },
+            Self::Sparse(rows) => {
+                rows.remove(&handle);
+            },
+        }
+    }
+
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Dense(rows) => rows.heap_bytes(),
+            Self::Sparse(rows) => rows.iter().fold(0_usize, |bytes, (_, geometry)| {
+                bytes
+                    .saturating_add(size_of::<(usize, PyGeometry)>())
+                    .saturating_add(size_of::<[usize; 2]>())
+                    .saturating_add(geometry.heap_bytes())
+            }),
+        }
+    }
 }
 
 /// Operation-scoped access to the index's arbitrary live handles.
@@ -614,10 +768,9 @@ impl<'a> IndexRowOperation<'a> {
                 row: row.row(),
             });
         }
-        let boxed_index = handle.wrapping_sub(packed_len);
         let rows: &'a IndexRows = self.rows;
         rows.boxed
-            .get(boxed_index)
+            .get(handle, packed_len)
             .map(IndexRowSource::Boxed)
             .ok_or_else(|| Self::missing_handle(handle))
     }
@@ -669,7 +822,7 @@ impl IndexRows {
 
     fn push(&mut self, geometry: PyGeometry) -> usize {
         let handle = self.next_handle;
-        self.boxed.push(geometry);
+        self.boxed.push(handle, self.packed_len(), geometry);
         self.live_handles.insert(handle);
         self.next_handle = self.next_handle.wrapping_add(1);
         handle
@@ -703,7 +856,7 @@ impl IndexRows {
     }
 
     fn reserve_insert(&mut self, additional: usize) {
-        self.boxed.reserve(additional);
+        self.boxed.reserve_insert(additional);
     }
 
     fn is_live(&self, handle: usize) -> bool {
@@ -711,6 +864,13 @@ impl IndexRows {
     }
 
     fn mark_removed(&mut self, handle: usize) -> bool {
+        if !self.live_handles.contains(handle) {
+            return false;
+        }
+        let packed_len = self.packed_len();
+        if handle >= packed_len {
+            self.boxed.remove(handle, packed_len);
+        }
         self.live_handles.remove(handle)
     }
 
@@ -735,7 +895,9 @@ impl PySpatialIndex {
         self.rows
             .heap_bytes()
             .saturating_add(self.bulk.heap_bytes())
-            .saturating_add(self.bulk_entry_counts.heap_bytes())
+            .saturating_add(self.cover_counts.len().saturating_mul(
+                size_of::<(usize, usize)>().saturating_add(size_of::<[usize; 2]>()),
+            ))
             .saturating_add(self.overflow.heap_bytes())
             .saturating_add(self.metadata_heap_bytes())
     }
