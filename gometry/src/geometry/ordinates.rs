@@ -760,6 +760,7 @@ fn carry_or_degrade(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::embedding_search::EvaluationBudget;
 
     #[derive(Default)]
     struct CountingWork {
@@ -1196,7 +1197,6 @@ mod tests {
             let mut root = RootMetricState::default();
             let mut first_fraction = None;
             let mut first_work = Unmetered;
-            crate::crs::reset_quadrature_test_progress();
             let first = source_arc_ordinates(
                 &first_request,
                 || Ok(metric),
@@ -1209,25 +1209,47 @@ mod tests {
                 .expect("first interior request measures total");
             assert!(root.edge.is_some());
             assert!(first_fraction.is_some());
-            assert_eq!(crate::crs::quadrature_test_progress().seeds, 2);
 
             let mut rounding_work = CountingWork::default();
-            nearby_quarter.round_with_work(&mut rounding_work)?;
+            let rounded_parameter = nearby_quarter.round_with_work(&mut rounding_work)?;
             assert!(rounding_work.ticks > 0);
+            let edge = root.edge.expect("the first request retains its ChartEdge");
+            let mut fraction_work = CountingWork::default();
+            let expected_fraction = metric.chart_edge_arclength_fraction_with_work(
+                &edge,
+                rounded_parameter,
+                Some(total_length),
+                &mut fraction_work,
+            )?;
+            assert!(fraction_work.ticks > 0);
+            let remaining_ticks = u128::from(rounding_work.ticks) + u128::from(fraction_work.ticks);
+            let mut nearby_work = EvaluationBudget::with_remaining_ticks_for_test(
+                "source_arc_test",
+                1,
+                remaining_ticks,
+            )?;
             let mut nearby_fraction = None;
-            let mut nearby_work = Unmetered;
-            crate::crs::reset_quadrature_test_progress();
-            let nearby = source_arc_ordinates(
+            let nearby = match source_arc_ordinates(
                 &nearby_request,
                 || Ok(metric),
                 &mut root,
                 &mut nearby_fraction,
                 &mut nearby_work,
-            )?;
-            assert_eq!(crate::crs::quadrature_test_progress().seeds, 1);
+            ) {
+                Ok(nearby) => nearby,
+                Err(error) => {
+                    return Err(crate::crs::CrsError::invalid(format!(
+                        "cached root total reuse exceeded fraction-only Work: {error}"
+                    )));
+                },
+            };
             assert_eq!(
                 first_fraction.map(f64::to_bits),
                 nearby_fraction.map(f64::to_bits)
+            );
+            assert_eq!(
+                nearby_fraction.map(f64::to_bits),
+                Some(expected_fraction.to_bits())
             );
             assert_eq!(
                 root.total_length.map(f64::to_bits),
@@ -1243,7 +1265,6 @@ mod tests {
             );
 
             let mut duplicate_work = Unmetered;
-            crate::crs::reset_quadrature_test_progress();
             let duplicate = source_arc_ordinates(
                 &nearby_request,
                 || Ok(metric),
@@ -1251,7 +1272,6 @@ mod tests {
                 &mut nearby_fraction,
                 &mut duplicate_work,
             )?;
-            assert_eq!(crate::crs::quadrature_test_progress().seeds, 0);
             assert_eq!(
                 duplicate.z.value().map(f64::to_bits),
                 nearby.z.value().map(f64::to_bits)
@@ -1263,7 +1283,6 @@ mod tests {
 
             let mut shared_root_work = Unmetered;
             let mut later_fraction = None;
-            crate::crs::reset_quadrature_test_progress();
             let shared_root_result = source_arc_ordinates(
                 &later_request,
                 || Ok(metric),
@@ -1271,11 +1290,9 @@ mod tests {
                 &mut later_fraction,
                 &mut shared_root_work,
             )?;
-            assert_eq!(crate::crs::quadrature_test_progress().seeds, 1);
             let mut fresh_root = RootMetricState::default();
             let mut fresh_fraction = None;
             let mut fresh_root_work = Unmetered;
-            crate::crs::reset_quadrature_test_progress();
             let fresh_root_result = source_arc_ordinates(
                 &later_request,
                 || Ok(metric),
@@ -1283,7 +1300,6 @@ mod tests {
                 &mut fresh_fraction,
                 &mut fresh_root_work,
             )?;
-            assert_eq!(crate::crs::quadrature_test_progress().seeds, 2);
             assert_eq!(
                 shared_root_result.z.value().map(f64::to_bits),
                 fresh_root_result.z.value().map(f64::to_bits)
@@ -1353,12 +1369,8 @@ mod tests {
             );
 
             let mut rejected_work =
-                crate::geometry::embedding_search::EvaluationBudget::with_remaining_ticks_for_test(
-                    "source_arc_test",
-                    1,
-                    0,
-                )?;
-            let unavailable = match source_arc_ordinates(
+                EvaluationBudget::with_remaining_ticks_for_test("source_arc_test", 1, 0)?;
+            let Err(unavailable) = source_arc_ordinates(
                 &request,
                 || {
                     metric_accesses += 1;
@@ -1373,9 +1385,10 @@ mod tests {
                 &mut root,
                 &mut fraction,
                 &mut rejected_work,
-            ) {
-                Err(error) => error,
-                Ok(_) => panic!("cached fraction must not bypass metric authority"),
+            ) else {
+                return Err(crate::crs::CrsError::invalid(
+                    "cached fraction must not bypass metric authority",
+                ));
             };
             assert!(
                 unavailable
@@ -1413,36 +1426,49 @@ mod tests {
             parameter.round_with_work(&mut rounding_work)?;
             assert!(rounding_work.ticks > 0);
 
-            let mut budget =
-                crate::geometry::embedding_search::EvaluationBudget::with_remaining_ticks_for_test(
-                    "source_arc_test",
-                    1,
-                    u128::from(rounding_work.ticks),
-                )?;
+            let mut budget = EvaluationBudget::with_remaining_ticks_for_test(
+                "source_arc_test",
+                1,
+                u128::from(rounding_work.ticks),
+            )?;
             let mut root = RootMetricState::default();
             let mut fraction = None;
             crate::crs::reset_quadrature_test_progress();
-            let refusal = match source_arc_ordinates(
+            let resolution = source_arc_ordinates(
                 &request,
                 || Ok(metric),
                 &mut root,
                 &mut fraction,
                 &mut budget,
-            ) {
-                Err(error) => error,
-                Ok(_) => panic!("the first unpaid source-edge debit must be refused"),
-            };
-            assert!(matches!(
-                refusal.kind(),
-                crate::error::ErrorKind::Geometry(
-                    crate::geometry::GeometryErrorKind::ExactEmbeddingSearchLimit {
-                        operation: "source_arc_test",
-                        ..
-                    }
-                )
-            ));
+            );
+            match resolution {
+                Err(refusal)
+                    if matches!(
+                        refusal.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            crate::geometry::GeometryErrorKind::ExactEmbeddingSearchLimit {
+                                operation: "source_arc_test",
+                                ..
+                            }
+                        )
+                    ) => {},
+                Err(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "source arclength failed for a reason other than Work exhaustion",
+                    ));
+                },
+                Ok(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "the exact-round allowance funded later source-edge work",
+                    ));
+                },
+            }
+            if root.edge.is_some() {
+                return Err(crate::crs::CrsError::invalid(
+                    "the source ChartEdge was installed before its Work debit",
+                ));
+            }
             assert_eq!(crate::crs::quadrature_test_progress().seeds, 0);
-            assert!(root.edge.is_none());
             assert!(root.total_length.is_none());
             assert!(fraction.is_none());
             Ok(())

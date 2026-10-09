@@ -683,13 +683,9 @@ impl EvaluationBudget {
     ) -> Result<Self> {
         let mut budget = Self::new(operation, constructed)?;
         let limit_ticks = budget.limit_ticks();
-        assert!(
-            remaining_ticks <= limit_ticks,
-            "test fixture funding must not exceed the real account limit"
-        );
         budget.spent_ticks = limit_ticks
             .checked_sub(remaining_ticks)
-            .expect("test fixture funding is bounded by the real account limit");
+            .ok_or(ResourceError::SizeOverflow)?;
         Ok(budget)
     }
 
