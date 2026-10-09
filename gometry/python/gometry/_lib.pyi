@@ -261,7 +261,6 @@ __all__ = [
     'geohash_difference',
     'geohash_intersection',
     'geohash_union',
-    'get_coordinates',
     'h3_base_cells',
     'h3_bounding_cell',
     'h3_cells',
@@ -7643,7 +7642,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         --------
         >>> import gometry as gm
         >>> arr = gm.GeometryArray([gm.Point(1, 2, crs=4326)])
-        >>> round(float(gm.get_coordinates(arr.to_crs(3857))[0][0]), 2)
+        >>> round(float(arr.to_crs(3857).coords.x[0]), 2)
         111319.49
         """
     def sort_by_spatial_key(
@@ -19753,60 +19752,6 @@ def symmetric_difference_all(
     """
 
 @overload
-def get_coordinates(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    *,
-    return_index: Literal[False] = False,
-) -> npt.NDArray[np.float64]: ...
-@overload
-def get_coordinates(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    *,
-    return_index: Literal[True],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]: ...
-@overload
-def get_coordinates(
-    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    *,
-    return_index: bool = False,
-) -> npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
-    """Extract coordinates as one flat dense matrix.
-
-    Parameters
-    ----------
-    values : Geometry, GeometryArray, or iterable of Geometry/None
-        Values are flattened depth-first in source-row order. Missing and empty
-        geometries contribute no rows, but array and iterable source indexes
-        remain available through `return_index=True`.
-        The matrix includes every axis carried by the coordinates; heterogeneous
-        rows use ``NaN`` where a coordinate lacks an axis.
-    return_index : bool, default False
-        Return a source-row index alongside the matrix. Scalar geometries use
-        index zero for every coordinate.
-
-    Returns
-    -------
-    numpy.ndarray or tuple of numpy.ndarray
-        A dense matrix, or `(matrix, index)` when `return_index=True`.
-
-    Raises
-    ------
-    TypeError
-        If ``values`` is not geometry-like.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.get_coordinates(gm.Point(1, 2)).tolist()
-    [[1.0, 2.0]]
-    >>> matrix, indexes = gm.get_coordinates(
-    ...     [gm.Point(1, 2), None], return_index=True
-    ... )
-    >>> matrix.tolist(), indexes.tolist()
-    ([[1.0, 2.0]], [0])
-    """
-
-@overload
 def from_wkt(
     data: str, *, crs: CrsInput | None = None, epoch: float | None = None
 ) -> Geometry: ...
@@ -21497,7 +21442,8 @@ def crs_transform(
     tuple or numpy.ndarray
         Scalars in, scalars out: ``(x, y)`` or ``(x, y, z)``. Lane input returns
         a read-only ``(N, 2)``/``(N, 3)`` ``float64`` matrix (interleaved, the
-        same shape as `get_coordinates`), so ``result[:, 0]`` / ``result[:, 1]``
+        same shape as a NumPy matrix exported from ``geometry.coords``), so
+        ``result[:, 0]`` / ``result[:, 1]``
         read the transformed columns directly. The input epoch ``t`` is not a
         transformed spatial ordinate and is not returned (use `apply` if you
         need the raw columns echoed back).

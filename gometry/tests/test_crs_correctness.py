@@ -6,6 +6,7 @@ import json
 import math
 
 import gometry as gm
+import numpy as np
 import pytest
 from pyproj import Geod
 
@@ -72,7 +73,7 @@ def _physical_coordinates(box: gm.Geometry, crs: object) -> list[tuple[float, fl
     longitude_factor, latitude_factor, prime_meridian = _angular_frame_parameters(crs)
     return [
         (float(x) * longitude_factor + prime_meridian, float(y) * latitude_factor)
-        for x, y in gm.get_coordinates(box).tolist()
+        for x, y in np.asarray(box.coords, dtype=np.float64).tolist()
     ]
 
 
@@ -329,7 +330,7 @@ def test_chart_area_uses_the_chart_interior_for_large_regions() -> None:
             west, east, south, north, semi_major=GEOD.a, flattening=GEOD.f
         )
         assert expected > ellipsoid_area / 2.0
-        coordinates = gm.get_coordinates(geometry).tolist()
+        coordinates = np.asarray(geometry.coords, dtype=np.float64).tolist()
         for ring in (coordinates[:-1], list(reversed(coordinates[:-1]))):
             polygon = gm.Polygon(ring, crs=4326)
             assert gm.contains(polygon, origin)
@@ -402,7 +403,7 @@ def test_chart_polar_cap_area_respects_south_directed_latitude_axis(
 
 def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
     shell = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
-    shell_coordinates = gm.get_coordinates(shell).tolist()
+    shell_coordinates = np.asarray(shell.coords, dtype=np.float64).tolist()
     hole = [
         (-10.0, -10.0),
         (10.0, -10.0),
@@ -424,7 +425,7 @@ def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
 
 def test_chart_area_array_matches_scalar_in_packed_and_mixed_storage() -> None:
     wide = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
-    coordinates = gm.get_coordinates(wide).tolist()
+    coordinates = np.asarray(wide.coords, dtype=np.float64).tolist()
     reversed_wide = gm.Polygon(list(reversed(coordinates[:-1])), crs=4326)
     expected = [wide.area, reversed_wide.area]
 

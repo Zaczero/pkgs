@@ -321,20 +321,26 @@ def test_array_ragged_helpers_retain_empty_missing_rows_and_views() -> None:
     assert isinstance(rings, gm.Groups)
     assert rings.offsets.tolist() == [0, 1, 1, 1, 3]
 
-    coords, indexes = gm.get_coordinates(polygons, return_index=True)
+    view = polygons.coords
+    coords = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert coords.shape == (12, 2)
     np.testing.assert_array_equal(indexes, [0] * 4 + [3] * 8)
 
     selected = polygons[[3, 1, 2]]
     selected_rings = selected.boundary().parts
     assert selected_rings.offsets.tolist() == [0, 2, 2, 2]
-    selected_coords, selected_indexes = gm.get_coordinates(selected, return_index=True)
+    selected_view = selected.coords
+    selected_coords = np.asarray(selected_view, dtype=np.float64)
+    selected_indexes = selected_view.row_index
     assert selected_coords.shape == (8, 2)
     np.testing.assert_array_equal(selected_indexes, [0] * 8)
 
 
-def test_get_coordinates_matrix_is_readonly() -> None:
-    matrix = gm.get_coordinates(gm.GeometryArray([gm.Point(1, 2), None]))
+def test_coordinate_matrix_is_readonly() -> None:
+    matrix = np.asarray(
+        gm.GeometryArray([gm.Point(1, 2), None]).coords, dtype=np.float64
+    )
 
     assert matrix.flags.writeable is False
     with pytest.raises(ValueError):
@@ -368,13 +374,15 @@ def test_coordinate_columns_are_readonly_ndarrays() -> None:
 @pytest.mark.parametrize(
     'middle', [None, gm.from_wkt('POINT EMPTY')], ids=['missing', 'empty']
 )
-def test_get_coordinates_preserves_empty_rows_and_all_carried_axes(middle):
+def test_coords_preserves_empty_rows_and_all_carried_axes(middle):
     array = gm.GeometryArray([
         gm.from_wkt('POINT Z (1 2 3)'),
         middle,
         gm.from_wkt('POINT M (5 6 7)'),
     ])
-    matrix, indexes = gm.get_coordinates(array, return_index=True)
+    view = array.coords
+    matrix = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert matrix.shape == (2, 4)
     np.testing.assert_allclose(
         matrix,
@@ -384,34 +392,38 @@ def test_get_coordinates_preserves_empty_rows_and_all_carried_axes(middle):
     np.testing.assert_array_equal(indexes, [0, 2])
 
 
-def test_get_coordinates() -> None:
+def test_coords_matrix_and_row_index() -> None:
     line = gm.LineString([(0, 0), (1, 2), (3, 4)])
-    coords = gm.get_coordinates(line)
+    view = line.coords
+    coords = np.asarray(view, dtype=np.float64)
     assert coords.shape == (3, 2)
     assert coords.dtype == np.float64
     assert coords.tolist() == [[0.0, 0.0], [1.0, 2.0], [3.0, 4.0]]
-    scalar_coords, scalar_indexes = gm.get_coordinates(line, return_index=True)
+    scalar_coords = np.asarray(view, dtype=np.float64)
+    scalar_indexes = view.row_index
     np.testing.assert_array_equal(scalar_coords, coords)
     np.testing.assert_array_equal(scalar_indexes, [0, 0, 0])
     arr = gm.GeometryArray([gm.Point(0, 0), gm.LineString([(1, 1), (2, 2)])])
     with_z_arr = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1, z=9)])
-    with_z = gm.get_coordinates(with_z_arr)
+    with_z = np.asarray(with_z_arr.coords, dtype=np.float64)
     assert with_z.shape == (2, 3)
     np.testing.assert_allclose(with_z[:, 2], [np.nan, 9], equal_nan=True)
     np.testing.assert_array_equal(with_z[:, :2], [[0, 0], [1, 1]])
-    grouped, indexes = gm.get_coordinates(arr, return_index=True)
+    arr_view = arr.coords
+    grouped = np.asarray(arr_view, dtype=np.float64)
+    indexes = arr_view.row_index
     np.testing.assert_array_equal(grouped, [[0, 0], [1, 1], [2, 2]])
     assert indexes.dtype == np.int64
     assert indexes.flags.writeable is False
     np.testing.assert_array_equal(indexes, [0, 1, 1])
-    iterable, iterable_indexes = gm.get_coordinates(
-        [gm.Point(5, 6), None, gm.Point(7, 8)], return_index=True
-    )
+    iterable_view = gm.GeometryArray([gm.Point(5, 6), None, gm.Point(7, 8)]).coords
+    iterable = np.asarray(iterable_view, dtype=np.float64)
+    iterable_indexes = iterable_view.row_index
     np.testing.assert_array_equal(iterable, [[5.0, 6.0], [7.0, 8.0]])
     np.testing.assert_array_equal(iterable_indexes, [0, 2])
 
 
-def test_get_coordinates_collections_are_flat_and_one_shot() -> None:
+def test_coords_collections_are_flat_and_one_shot() -> None:
     rows = [gm.Point(5, 6), gm.from_wkt('POINT EMPTY'), None, gm.Point(7, 8)]
 
     class Once:
@@ -426,12 +438,18 @@ def test_get_coordinates_collections_are_flat_and_one_shot() -> None:
             return values
 
     for values in (rows, Once(rows), gm.GeometryArray(rows)):
-        matrix, indexes = gm.get_coordinates(values, return_index=True)
+        view = (
+            values.coords
+            if isinstance(values, gm.GeometryArray)
+            else gm.GeometryArray(values).coords
+        )
+        matrix = np.asarray(view, dtype=np.float64)
+        indexes = view.row_index
         np.testing.assert_array_equal(matrix, [[5.0, 6.0], [7.0, 8.0]])
         np.testing.assert_array_equal(indexes, [0, 3])
 
 
-def test_get_coordinates_collection_axes_match_across_input_representations() -> None:
+def test_coords_collection_axes_match_across_input_representations() -> None:
     rows = [
         gm.from_wkt('POINT Z (1 2 3)'),
         gm.from_wkt('POINT EMPTY'),
@@ -443,14 +461,27 @@ def test_get_coordinates_collection_axes_match_across_input_representations() ->
         lambda: iter(rows),
         lambda: gm.GeometryArray(rows),
     ):
-        matrix = gm.get_coordinates(source_factory())
+        value = source_factory()
+        view = (
+            value.coords
+            if isinstance(value, gm.GeometryArray)
+            else gm.GeometryArray(value).coords
+        )
+        matrix = np.asarray(view, dtype=np.float64)
         assert matrix.shape == (2, 4)
         np.testing.assert_allclose(
             matrix,
             [[1, 2, 3, np.nan], [5, 6, np.nan, 7]],
             equal_nan=True,
         )
-        matrix, indexes = gm.get_coordinates(source_factory(), return_index=True)
+        value = source_factory()
+        view = (
+            value.coords
+            if isinstance(value, gm.GeometryArray)
+            else gm.GeometryArray(value).coords
+        )
+        matrix = np.asarray(view, dtype=np.float64)
+        indexes = view.row_index
         np.testing.assert_allclose(
             matrix,
             [[1, 2, 3, np.nan], [5, 6, np.nan, 7]],
@@ -459,14 +490,16 @@ def test_get_coordinates_collection_axes_match_across_input_representations() ->
         np.testing.assert_array_equal(indexes, [0, 3])
 
 
-def test_get_coordinates_array_values_reconstruct_row_indices() -> None:
+def test_coords_array_values_reconstruct_row_indices() -> None:
     arr = gm.GeometryArray([
         gm.Point(1, 2),
         gm.from_wkt('LINESTRING EMPTY'),
         None,
         gm.LineString([(3, 4), (5, 6)]),
     ])
-    coordinates, indexes = gm.get_coordinates(arr, return_index=True)
+    view = arr.coords
+    coordinates = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
 
     np.testing.assert_array_equal(
         coordinates,
@@ -478,14 +511,16 @@ def test_get_coordinates_array_values_reconstruct_row_indices() -> None:
     )
 
 
-def test_get_coordinates_return_index_packed_lines() -> None:
+def test_coords_row_index_packed_lines() -> None:
     """Packed identity lines: matrix + CSR-derived logical row index."""
     lines = gm.GeometryArray([
         gm.LineString([(0, 0), (1, 0)]),
         gm.LineString([(2, 0), (3, 0), (4, 0)]),
         gm.LineString([(5, 0), (6, 0)]),
     ])
-    matrix, indexes = gm.get_coordinates(lines, return_index=True)
+    view = lines.coords
+    matrix = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert matrix.shape == (7, 2)
     np.testing.assert_array_equal(
         matrix,
@@ -494,7 +529,7 @@ def test_get_coordinates_return_index_packed_lines() -> None:
     np.testing.assert_array_equal(indexes, [0, 0, 1, 1, 1, 2, 2])
 
 
-def test_get_coordinates_return_index_polygons_with_holes() -> None:
+def test_coords_row_index_polygons_with_holes() -> None:
     """Polygon shell+holes flatten depth-first; index spans every ring vertex."""
     poly = gm.Polygon(
         [(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)],
@@ -502,7 +537,9 @@ def test_get_coordinates_return_index_polygons_with_holes() -> None:
     )
     other = gm.Polygon([(10, 10), (11, 10), (11, 11), (10, 10)])
     arr = gm.GeometryArray([poly, other])
-    matrix, indexes = gm.get_coordinates(arr, return_index=True)
+    view = arr.coords
+    matrix = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert matrix.shape == (14, 2)
     np.testing.assert_array_equal(indexes, [0] * 10 + [1] * 4)
     # Shell first vertex, then hole first vertex, then second polygon.
@@ -511,13 +548,15 @@ def test_get_coordinates_return_index_polygons_with_holes() -> None:
     np.testing.assert_array_equal(matrix[10], [10.0, 10.0])
 
 
-def test_get_coordinates_return_index_mixed_array() -> None:
+def test_coords_row_index_mixed_array() -> None:
     mixed = gm.GeometryArray([
         gm.Point(0, 0),
         gm.LineString([(1, 1), (2, 2)]),
         gm.Polygon([(3, 3), (4, 3), (4, 4), (3, 3)]),
     ])
-    matrix, indexes = gm.get_coordinates(mixed, return_index=True)
+    view = mixed.coords
+    matrix = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert matrix.shape == (7, 2)
     np.testing.assert_array_equal(indexes, [0, 1, 1, 2, 2, 2, 2])
     np.testing.assert_array_equal(matrix[0], [0.0, 0.0])
@@ -525,7 +564,7 @@ def test_get_coordinates_return_index_mixed_array() -> None:
     np.testing.assert_array_equal(matrix[3], [3.0, 3.0])
 
 
-def test_get_coordinates_return_index_gathered_selection() -> None:
+def test_coords_row_index_gathered_selection() -> None:
     """Gather preserves logical (not physical) row numbers in the index."""
     base = gm.GeometryArray([
         gm.LineString([(0, 0), (1, 0)]),
@@ -533,14 +572,16 @@ def test_get_coordinates_return_index_gathered_selection() -> None:
         gm.LineString([(5, 0), (6, 0)]),
     ])
     gathered = base[[2, 0]]
-    matrix, indexes = gm.get_coordinates(gathered, return_index=True)
+    view = gathered.coords
+    matrix = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     np.testing.assert_array_equal(
         matrix, [[5.0, 0.0], [6.0, 0.0], [0.0, 0.0], [1.0, 0.0]]
     )
     np.testing.assert_array_equal(indexes, [0, 0, 1, 1])
     # Window slice also keeps logical ids starting at 0.
     window = base[1:]
-    _, window_indexes = gm.get_coordinates(window, return_index=True)
+    window_indexes = window.coords.row_index
     np.testing.assert_array_equal(window_indexes, [0, 0, 0, 1, 1])
 
 
@@ -575,7 +616,9 @@ def test_compact_nullable_point_coordinate_indices(
     np.testing.assert_array_equal(columns['x'], [point.x for point in expected_points])
     np.testing.assert_array_equal(columns['z'], [point.z for point in expected_points])
 
-    matrix, indexes = gm.get_coordinates(values, return_index=True)
+    view = gm.GeometryArray(values).coords
+    matrix = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     np.testing.assert_array_equal(indexes, expected_rows)
     np.testing.assert_array_equal(
         matrix,
@@ -610,7 +653,9 @@ def test_compact_nullable_point_coordinate_indices_preserve_slices_and_edges() -
     assert empty.coords.coordinate_axes == 'XYZM'
     np.testing.assert_array_equal(empty.coords.row_index, [])
     np.testing.assert_array_equal(empty.coords.to_dict(index=True)['index'], [])
-    matrix, indexes = gm.get_coordinates(empty, return_index=True)
+    view = empty.coords
+    matrix = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert matrix.shape == (0, 4)
     np.testing.assert_array_equal(indexes, [])
 
@@ -1106,13 +1151,13 @@ def test_coordinate_exports_follow_carried_ordinates() -> None:
     assert list(line.coords) == [(0.0, 0.0, 5.0), (1.0, 1.0, 6.0)]
     assert np.asarray(line.coords).shape == (2, 3)
     assert set(line.coords.to_dict()) == {'x', 'y', 'z'}
-    assert gm.get_coordinates(line).shape == (2, 3)
+    assert np.asarray(line.coords, dtype=np.float64).shape == (2, 3)
 
     flat = line.force_2d()
     assert list(flat.coords) == [(0.0, 0.0), (1.0, 1.0)]
     assert np.asarray(flat.coords).shape == (2, 2)
     assert set(flat.coords.to_dict()) == {'x', 'y'}
-    assert gm.get_coordinates(flat).shape == (2, 2)
+    assert np.asarray(flat.coords, dtype=np.float64).shape == (2, 2)
 
 
 def _line_array(n: int, *, distinct: bool = False) -> gm.GeometryArray:

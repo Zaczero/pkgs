@@ -734,7 +734,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'from_polars',
         'from_wkb',
         'from_wkt',
-        'get_coordinates',
         'hausdorff_distance',
         'intersection',
         'intersection_all',
@@ -800,6 +799,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
     assert callable(gm.h3_cover)
     assert callable(gm.s2_cells)
     assert callable(gm.s2_cover)
+    assert not hasattr(gm, 'get_coordinates')
     assert not hasattr(gm, 'geodesic')
     assert not hasattr(gm, 'Planar')
     assert not hasattr(gm, 'Geodesic')

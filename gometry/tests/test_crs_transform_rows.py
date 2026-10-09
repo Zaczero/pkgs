@@ -6,6 +6,7 @@ import math
 from typing import TYPE_CHECKING
 
 import gometry as gm
+import numpy as np
 import pytest
 
 WGS84_RADIANS = (
@@ -526,7 +527,7 @@ def test_geographic_source_circle_is_published_from_paired_target_endpoints(
         crs=WGS84_SOUTH_WEST_GRADS,
     )
     transformed = source.to_crs(4326, authority='EPSG')
-    coordinates = gm.get_coordinates(transformed)
+    coordinates = np.asarray(transformed.coords, dtype=np.float64)
 
     start = gm.Point(
         source_x,
@@ -574,7 +575,7 @@ def test_west_axis_300_grad_transform_uses_paired_source_connection(
     else:
         transformed = source.to_crs(4326, authority='EPSG')
 
-    coordinates = gm.get_coordinates(transformed)
+    coordinates = np.asarray(transformed.coords, dtype=np.float64)
 
     # 300 west-axis grads are -270°; the canonical target endpoint is +90°.
     assert coordinates.shape == (2, 2)
@@ -588,7 +589,7 @@ def test_geographic_source_connector_is_shared_by_shape_and_array_routes() -> No
         crs=WGS84_SOUTH_WEST_GRADS,
     )
     line = circle.to_crs(4326, authority='EPSG')
-    assert gm.get_coordinates(line).shape == (5, 2)
+    assert np.asarray(line.coords, dtype=np.float64).shape == (5, 2)
 
     other = gm.LineString(
         [(10.0, 1.0), (11.0, 2.0)],
@@ -648,7 +649,7 @@ def test_selected_packed_lines_publish_the_paired_source_circle() -> None:
 
     expected_longitudes = [0.0, -90.0, -180.0, 90.0, 0.0]
     for row in (1, 2):
-        coordinates = gm.get_coordinates(transformed[row])
+        coordinates = np.asarray(transformed[row].coords, dtype=np.float64)
         assert coordinates.shape == (5, 2)
         assert coordinates[:, 0].tolist() == pytest.approx(
             expected_longitudes,
@@ -672,7 +673,7 @@ def test_selected_nullable_mixed_lines_publish_the_paired_source_circle() -> Non
     assert transformed[1] is None
     expected_longitudes = [0.0, -90.0, -180.0, 90.0, 0.0]
     for row in (2, 3):
-        coordinates = gm.get_coordinates(transformed[row])
+        coordinates = np.asarray(transformed[row].coords, dtype=np.float64)
         assert coordinates.shape == (5, 2)
         assert coordinates[:, 0].tolist() == pytest.approx(
             expected_longitudes,
@@ -686,8 +687,9 @@ def test_generated_zm_uses_the_actual_target_ellipsoid_chart_arclength() -> None
         'LINESTRING ZM (0 0 10 100, 400 40 110 300)',
         crs=WGS84_SOUTH_WEST_GRADS,
     )
-    coordinates = gm.get_coordinates(
-        source.to_crs(TARGET_SPHERE_DEGREES, allow_ballpark=True)
+    coordinates = np.asarray(
+        source.to_crs(TARGET_SPHERE_DEGREES, allow_ballpark=True).coords,
+        dtype=np.float64,
     )
 
     assert coordinates.shape == (5, 4)
@@ -720,8 +722,8 @@ def test_selected_packed_polygon_transform_pairs_each_source_ring() -> None:
     assert transformed[1].to_wkb() == expected_circle.to_wkb()
     assert transformed[2].to_wkb() == expected_circle.to_wkb()
     # Each full-turn shell edge is four published edges; the hole remains five coordinates.
-    assert gm.get_coordinates(transformed[1]).shape == (16, 2)
-    assert gm.get_coordinates(transformed[2]).shape == (16, 2)
+    assert np.asarray(transformed[1].coords, dtype=np.float64).shape == (16, 2)
+    assert np.asarray(transformed[2].coords, dtype=np.float64).shape == (16, 2)
 
 
 @pytest.mark.parametrize(

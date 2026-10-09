@@ -182,7 +182,7 @@ impl PyGeometryArray {
     /// --------
     /// >>> import gometry as gm
     /// >>> arr = gm.GeometryArray([gm.Point(1, 2, crs=4326)])
-    /// >>> round(float(gm.get_coordinates(arr.to_crs(3857))[0][0]), 2)
+    /// >>> round(float(arr.to_crs(3857).coords.x[0]), 2)
     /// 111319.49
     #[pyo3(signature = (
         crs,

@@ -113,7 +113,7 @@ mod dispatch;
 pub(crate) use py::classes::{
     PyCoordinates, PyCoordinatesIter, PyGeometry, PyGeometryCollection, PyGeometryParts,
     PyGeometryPartsIter, PyLineString, PyMultiLineString, PyMultiPoint, PyMultiPolygon, PyPoint,
-    PyPolygon, Typed, get_coordinates, map_coordinates_callback, parse_coordinate_replacement,
+    PyPolygon, Typed, map_coordinates_callback, parse_coordinate_replacement,
     replace_shape_coordinates, slice_replacement_for_shape,
 };
 use py::functions::polyline::from_polyline;
@@ -264,7 +264,6 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         coverage_is_valid, coverage_invalid_edges, coverage_simplify, coverage_clean,
         coverage_union, polygonize, polygonize_full,
         // IO, validation, and coordinate access.
-        get_coordinates,
         from_wkt, from_wkb, from_geojson, from_features, to_feature, to_feature_collection,
         from_polyline, require,
         // Pickle payload rebuilders (private; see the `__reduce__` impls).

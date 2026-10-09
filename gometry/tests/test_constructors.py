@@ -93,7 +93,7 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         (360.0, 9),
     ]:
         band = gm.box(-span / 2.0, -10.0, span / 2.0, 10.0, crs=4326)
-        coordinates = gm.get_coordinates(band)
+        coordinates = np.asarray(band.coords, dtype=np.float64)
         assert len(band.exterior.coords) == expected_positions
         steps = np.diff(coordinates[:, 0])
         steps = np.where(steps > 180.0, steps - 360.0, steps)
@@ -261,7 +261,7 @@ def test_points_numpy_columns_copy_values_and_preserve_zm_axes() -> None:
 
     assert points[0].coordinate_axes == 'XYZM'
     assert points[0].crs == 'EPSG:4326'
-    coordinates = gm.get_coordinates(points)
+    coordinates = np.asarray(points.coords, dtype=np.float64)
     assert coordinates.shape == (2, 4)
     np.testing.assert_array_equal(coordinates, np.column_stack((x, y, z, m)))
     # The packed constructor owns its columns; later producer mutation cannot
@@ -316,7 +316,7 @@ def test_points_numpy_big_endian_and_strided_columns_keep_axis_order() -> None:
     x = source[::2, 0].astype('>f8')
     y = source[::2, 1][::-1].astype('>f8')[::-1]
     points = gm.points(x, y)
-    coordinates = gm.get_coordinates(points)
+    coordinates = np.asarray(points.coords, dtype=np.float64)
     assert coordinates.shape == (3, 2)
     np.testing.assert_array_equal(
         coordinates,

@@ -930,7 +930,7 @@ def test_split_antimeridian_reexpresses_west_south_mixed_axes() -> None:
         split = gm.LineString(
             native, crs=WEST_RADIAN_SOUTH_GRAD_CRS
         ).split_antimeridian()
-        coordinates = gm.get_coordinates(split.to_crs(4326)).tolist()
+        coordinates = np.asarray(split.to_crs(4326).coords, dtype=np.float64).tolist()
         seam = [point for point in coordinates if abs(point[0]) == 180.0]
 
         assert len(seam) == 2
@@ -1857,7 +1857,7 @@ def test_split_polar_annulus_carries_resolvable_zm() -> None:
     hole = [(longitude, 80, 5, 50) for longitude in longitudes]
     annulus = gm.Polygon(shell, holes=[hole], crs=4326)
     split = annulus.split_antimeridian()
-    coordinates = gm.get_coordinates(split)
+    coordinates = np.asarray(split.coords, dtype=np.float64)
 
     assert annulus.is_valid
     assert split.is_valid

@@ -6,6 +6,7 @@ import json
 import math
 
 import gometry as gm
+import numpy as np
 import pytest
 
 WGS84_SOUTH_WEST_GRADS = (
@@ -900,7 +901,7 @@ def test_grid_cover_normalizes_geographic_aliases_and_keeps_projected_chord(
 
     projected = source.to_crs(3857)
     projected_roundtrip = projected.to_crs(4326)
-    coordinates = gm.get_coordinates(projected_roundtrip)
+    coordinates = np.asarray(projected_roundtrip.coords, dtype=np.float64)
     assert coordinates.shape == (3, 2)
     assert coordinates[:, 0].tolist() == pytest.approx(
         [179.0, 0.0, -179.0],

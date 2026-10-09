@@ -15,6 +15,7 @@ import struct
 from typing import Any
 
 import gometry as gm
+import numpy as np
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -251,7 +252,7 @@ def test_r15i_h3_s2_covered_point_tokens_subset_of_visible() -> None:
         ),  # polar
     ]
     for geom in corpus:
-        coords = gm.get_coordinates(geom)
+        coords = np.asarray(geom.coords, dtype=np.float64)
         for res in (2,):
             h3 = gm.h3_cover(geom, resolution=res, cell_rule='overlap')
             visible = _cover_tokens(h3)

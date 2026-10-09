@@ -1053,7 +1053,9 @@ def test_masked_voronoi_skips_missing_placeholder() -> None:
 
 def test_masked_coordinates_skip_missing_rows(masked: gm.GeometryArray) -> None:
     assert len(masked.coords) == 2
-    coords, indexes = gm.get_coordinates(masked, return_index=True)
+    view = masked.coords
+    coords = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert coords.shape == (2, 2)
     np.testing.assert_array_equal(indexes, [0, 2])
     np.testing.assert_array_equal(coords, [[0.0, 0.0], [2.0, 2.0]])

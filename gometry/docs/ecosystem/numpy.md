@@ -49,7 +49,7 @@ the input cannot affect the completed geometry. The native coordinate
 representation is float64, so a float32 `FloatColumn` is accepted but converted
 to float64 during ingestion; `FloatColumn` input is not zero-copy.
 
-## Coordinate columns, zero-copy
+## Coordinate views and matrix exports
 
 [`geom.coords`][gometry.Coordinates] exposes per-axis columns directly. [`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]
 are always read-only `float64` ndarrays. [`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m]
@@ -62,18 +62,21 @@ import numpy as np
 import gometry as gm
 
 line = gm.LineString([(0.0, 0.0), (3.0, 4.0), (6.0, 8.0)])
-xs = line.coords.x                 # read-only float64 view
-print("x column:", repr(xs), "| shares storage:", np.asarray(xs).base is not None)
+xs = line.coords.x                 # read-only float64 column
+print("x column:", xs.tolist(), "| read-only:", not xs.flags.writeable)
 
 arr = gm.GeometryArray([gm.Point(1, 2), gm.LineString([(0, 0), (1, 1)])])
-coords, row_index = gm.get_coordinates(arr, return_index=True)
-print("coords:\n", coords.tolist())
+coords = arr.coords
+matrix = np.asarray(coords, dtype=np.float64)
+row_index = coords.row_index
+print("coords:\n", matrix.tolist())
 print("source-row index:", row_index.tolist())
 ```
 
-`coords.x` shares storage; `np.asarray(coords)` materializes a dense
-`(N, dims)` matrix (a copy, since storage is column-major) with `NaN`
-for absent Z/M; [`coords.to_dict()`][gometry.Coordinates.to_dict] returns
+Per-axis columns can borrow storage when the carried layout permits it;
+`np.asarray(coords, dtype=np.float64)` materializes a dense
+`(N, dims)` matrix and always copies, with `NaN` for absent Z/M.
+[`coords.to_dict()`][gometry.Coordinates.to_dict] returns
 read-only ndarray columns such as `{'x': ndarray, 'y': ndarray}` for direct
 Pandas/Polars construction. It omits Z/M when the view does not carry those
 axes; mixed views include their union and use `NaN` where a row lacks an axis.
@@ -82,13 +85,10 @@ Use `coords.select('XY')`, `coords.select('XYZ')`, `coords.select('XYM')`, or
 layout changes nested output, iteration, ndarray/dict exports, and equality
 without changing the geometry. For a flattened `GeometryArray.coords` view, use
 [`.row_index`][gometry.Coordinates.row_index] to map each coordinate back to
-its source geometry row. [`get_coordinates`][gometry.get_coordinates] derives
-its columns from the carried axes and always returns one flat matrix; call
-`force_2d()`, `set_z(None)`, or `set_m(None)` on geometries before calling it
-when an ordinate should be removed. With
-`return_index=True` it also returns a parallel `int64` source-row index,
-including for empty and missing rows. Raw iterables use the same dense bulk
-extraction path.
+its source geometry row. The matrix includes every carried axis; use
+`coords.select('XY')` before conversion when a fixed layout is needed. For a
+foreign iterable, first use `gm.GeometryArray(values).coords`; this admits the
+same row formats as the array constructor.
 
 ## Coordinate matrices
 
@@ -148,8 +148,8 @@ print("object:", type(np.asarray(cells, dtype=object)[0]).__name__)
 Scattered-data interpolation (IDW, kriging, natural-neighbor) and coordinate
 clustering (k-means, DBSCAN, hierarchical) live in SciPy, scikit-gstat, and
 scikit-learn; gometry supplies their coordinate input.
-Pull a `float64` matrix with `get_coordinates`
-(or per-axis `.coords.x`/`.y`) and pass it straight in. Project to a metric CRS
+Pull a `float64` matrix with `np.asarray(geom.coords, dtype=np.float64)`
+(or use per-axis `.coords.x`/`.y`) and pass it straight in. Project to a metric CRS
 first when planar XY is wrong for geographic data:
 
 ```python exec="on" source="block" result="text"
@@ -160,7 +160,7 @@ from sklearn.cluster import KMeans          # not a gometry dependency
 lons = [13.35, 13.36, 13.37, 13.50, 13.51, 13.52]
 lats = [52.48, 52.49, 52.50, 52.51, 52.52, 52.53]
 pts = gm.points(lons, lats, crs=4326)
-xy = gm.get_coordinates(pts.to_crs(pts.estimate_local_crs()))    # planar meters
+xy = np.asarray(pts.to_crs(pts.estimate_local_crs()).coords, dtype=np.float64)  # planar meters
 labels = KMeans(n_clusters=2, n_init=10, random_state=0).fit_predict(xy)
 print("labels:", labels.tolist())
 ```

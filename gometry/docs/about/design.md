@@ -121,7 +121,7 @@ corner properties (read `tile.polygon.bounds`), and no geohash
 `expand` (`[cell, *cell.neighbors]`). Geometry clustering and scattered-data
 interpolation are out of scope: scikit-learn/scipy and scikit-gstat
 own those domains, and gometry hands off through
-[`get_coordinates`][gometry.get_coordinates] NumPy views. Cheap pre-grouping
+[`Geometry.coords`][gometry.Geometry.coords] and NumPy matrix conversion. Cheap pre-grouping
 before exact predicate work is what [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates]
 is for.
 

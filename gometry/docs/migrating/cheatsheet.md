@@ -42,7 +42,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | — | [`geom.coordinate_axes`][gometry.Geometry.coordinate_axes] | |
 | — | [`geom.epoch`][gometry.Geometry.epoch] | |
 | `geom.crs` (n/a in Shapely) | [`geom.crs`][gometry.Geometry.crs] | |
-| `get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.index`) / [`gm.get_coordinates(...)`][gometry.get_coordinates] | Flat matrix; `return_index=True` adds a parallel source-row index. |
+| `shapely.get_coordinates(geom)` | [`geom.coords`][gometry.Geometry.coords] (`list(...)`, `.x`/`.y`, `.row_index`) | Use `np.asarray(view, dtype=np.float64)` for the flat matrix; `view.row_index` maps array coordinates to source rows. |
 | `get_parts(...)` | [`geom.parts`][gometry.Geometry.parts] | A scalar gives a sequence view; an array gives row-preserving `Groups`. |
 | `get_rings(...)` | [`polygon.exterior`][gometry.Polygon.exterior] / [`polygon.interiors`][gometry.Polygon.interiors] | These expose stored shell and hole rings. For a MultiPolygon, inspect each polygon in `geom.parts`; use [`geom.boundary()`][gometry.Geometry.boundary] for the topological boundary of occupied support. |
 | `str(geom)` / `f"{geom:.2f}"` / `f"{geom:x}"` | same | WKT text; `.Nf`/`.Ng` round for display, `x`/`X` hex WKB. |
@@ -279,5 +279,5 @@ for coordinate exports without changing the geometry.
 
 | Old | gometry | Notes |
 |---|---|---|
-| `DBSCAN(...).fit(coords)` / k-means / hierarchical clustering | feed [`gm.get_coordinates`][gometry.get_coordinates] (or `.coords.x`/`.y`) to scikit-learn / scipy | gometry stays a geometry engine; cluster in coordinate space via NumPy handoff. |
-| scattered-data interpolation (IDW, kriging, …) | scipy / scikit-gstat over `gm.get_coordinates` | Project to a suitable CRS first when planar XY is wrong. |
+| `DBSCAN(...).fit(coords)` / k-means / hierarchical clustering | feed `np.asarray(geom.coords, dtype=np.float64)` (or `.coords.x`/`.y`) to scikit-learn / scipy | gometry stays a geometry engine; cluster in coordinate space via NumPy handoff. |
+| scattered-data interpolation (IDW, kriging, …) | scipy / scikit-gstat over `np.asarray(geom.coords, dtype=np.float64)` | Project to a suitable CRS first when planar XY is wrong. |
