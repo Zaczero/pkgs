@@ -1028,48 +1028,6 @@ pub struct MultiPoint {
     members: MultipartMembers,
 }
 
-/// Borrowed `MultiPoint` values in logical member order.
-///
-/// Empty members have no coordinate row and are skipped; each value is rebuilt
-/// directly from the shared coordinate columns.
-pub struct MultiPointIter<'a> {
-    members: MultipartMemberIter<'a>,
-    coords: &'a CoordSeq,
-    remaining: usize,
-}
-
-impl Iterator for MultiPointIter<'_> {
-    type Item = Point;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.members.find_map(|member| match member {
-            MultiMember::Empty => None,
-            MultiMember::Value(index) => {
-                self.remaining = self.remaining.wrapping_sub(1);
-                Some(self.coords.point_at(index))
-            },
-        })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
-    }
-}
-
-impl DoubleEndedIterator for MultiPointIter<'_> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        while let Some(member) = self.members.next_back() {
-            if let MultiMember::Value(index) = member {
-                self.remaining = self.remaining.wrapping_sub(1);
-                return Some(self.coords.point_at(index));
-            }
-        }
-        None
-    }
-}
-
-impl ExactSizeIterator for MultiPointIter<'_> {}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct MultiLineString {
     axes: CoordinateAxes,
@@ -1310,15 +1268,11 @@ impl MultiPoint {
         self.coords.is_empty()
     }
 
-    pub(crate) fn iter(&self) -> MultiPointIter<'_> {
-        MultiPointIter {
-            members: self.members(),
-            coords: &self.coords,
-            remaining: self.coords.len(),
-        }
+    pub(crate) fn iter(&self) -> CoordIter<'_> {
+        self.coords.iter()
     }
 
-    pub(crate) fn points(&self) -> MultiPointIter<'_> {
+    pub(crate) fn points(&self) -> CoordIter<'_> {
         self.iter()
     }
 
@@ -1435,7 +1389,7 @@ impl MultiPoint {
 
 impl<'a> IntoIterator for &'a MultiPoint {
     type Item = Point;
-    type IntoIter = MultiPointIter<'a>;
+    type IntoIter = CoordIter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -1771,6 +1725,63 @@ mod multipart_layout_tests {
             unreachable!("sparse fixture must retain member metadata");
         };
         assert!(sparse.members.heap_bytes() >= std::mem::size_of_val(&**members));
+    }
+
+    #[test]
+    fn multipoint_value_iteration_skips_empty_members_and_counts_values() {
+        let first = Point::new_raw_axes(
+            1.0,
+            2.0,
+            crate::geometry::ZOrdinate(Some(3.0)),
+            crate::geometry::MOrdinate(Some(4.0)),
+        );
+        let second = Point::new_raw_axes(
+            11.0,
+            12.0,
+            crate::geometry::ZOrdinate(Some(13.0)),
+            crate::geometry::MOrdinate(Some(14.0)),
+        );
+        let points = MultiPoint::try_new(CoordinateAxes::XYZM, vec![
+            MultiMember::Empty,
+            MultiMember::Value(first),
+            MultiMember::Empty,
+            MultiMember::Value(second),
+            MultiMember::Empty,
+        ])
+        .expect("sparse XYZM multipoint");
+
+        assert_eq!(points.axes(), CoordinateAxes::XYZM);
+        assert_eq!(points.member_count(), 5);
+        assert_eq!(points.members().collect::<Vec<_>>(), [
+            MultiMember::Empty,
+            MultiMember::Value(0),
+            MultiMember::Empty,
+            MultiMember::Value(1),
+            MultiMember::Empty,
+        ]);
+        let mut values = points.iter();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values.next(), Some(first));
+        assert_eq!(values.len(), 1);
+        assert_eq!(values.next_back(), Some(second));
+        assert_eq!(values.len(), 0);
+        assert_eq!(values.next(), None);
+        assert_eq!(points.points().collect::<Vec<_>>(), [first, second]);
+        assert_eq!((&points).into_iter().collect::<Vec<_>>(), [first, second]);
+        assert_eq!(points.to_vec(), [first, second]);
+
+        let empty_members = MultiPoint::try_new(CoordinateAxes::XYZM, vec![
+            MultiMember::Empty,
+            MultiMember::Empty,
+        ])
+        .expect("all-empty multipoint");
+        assert_eq!(empty_members.axes(), CoordinateAxes::XYZM);
+        assert!(empty_members.is_empty());
+        assert_eq!(empty_members.iter().len(), 0);
+        assert_eq!(empty_members.members().collect::<Vec<_>>(), [
+            MultiMember::Empty,
+            MultiMember::Empty
+        ]);
     }
 
     #[test]

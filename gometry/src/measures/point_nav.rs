@@ -5,7 +5,9 @@ use pyo3::types::PyAny;
 use crate::dispatch::MetricOp;
 use crate::geographic::{GeographicFrame, lonlat as geographic};
 use crate::geometry::storage::validity::{LogicalRowIndex, PresentRowIndex, union_many};
-use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank};
+use crate::geometry::storage::{
+    ArrayRows, GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank,
+};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, HasM, HasZ, MOrdinate, ZOrdinate,
     same_topological_coordinate, storage,
@@ -2344,7 +2346,7 @@ fn point_binary_geometry_fallback(
             .map(|row| {
                 let logical = row.logical.get();
                 if is_missing(missing_for_rows.as_ref(), logical) {
-                    return Ok(PyGeometryArray::missing_placeholder());
+                    return Ok(ArrayRows::missing_placeholder());
                 }
                 rows.evaluate(logical, |left, right| fallback(left, right, row))
                     .map_err(|err| crate::note_array_row(err, logical))

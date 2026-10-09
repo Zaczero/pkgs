@@ -110,6 +110,34 @@ def test_gather_arrow_export_owns_materialized_columns() -> None:
     assert list(gm.from_arrow(exported).to_wkt()) == expected
 
 
+def test_nullable_gather_capsules_keep_csr_payload_after_owner_drop() -> None:
+    def line(x: float) -> gm.LineString:
+        return gm.LineString([(x, 0.0), (x + 1.0, 1.0)])
+
+    source = gm.GeometryArray([
+        line(0.0),
+        None,
+        line(10.0),
+        line(20.0),
+        None,
+        line(30.0),
+    ])
+    selected = source[[5, 1, 3, 1, 0]]
+    schema_capsule, array_capsule = selected.__arrow_c_array__()
+    del selected, source
+    gc.collect()
+
+    exported = pa.Array._import_from_c_capsule(schema_capsule, array_capsule)
+    restored = gm.from_arrow(exported)
+    assert list(restored.to_wkt()) == [
+        'LINESTRING (30 0, 31 1)',
+        None,
+        'LINESTRING (20 0, 21 1)',
+        None,
+        'LINESTRING (0 0, 1 1)',
+    ]
+
+
 def test_linestring_numpy_nx2_direct() -> None:
     coords = np.ascontiguousarray(
         np.column_stack([np.linspace(0, 1, 1000), np.linspace(2, 3, 1000)])

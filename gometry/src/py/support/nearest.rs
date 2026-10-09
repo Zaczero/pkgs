@@ -1,5 +1,5 @@
 use crate::array::ArrayRow;
-use crate::geometry::storage::ValidityMask;
+use crate::geometry::storage::{ArrayRows, ValidityMask};
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, Frame, Point, PyGeometry, PyGeometryArray, PyResult, Python,
     Shape, metric_nearest_points_resolved, rows_err,
@@ -20,8 +20,8 @@ pub(crate) fn nearest_point_columns_masked(
     let mut right = Vec::with_capacity(pair_count);
     for (row, (pair, common)) in pairs.into_iter().enumerate() {
         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-            left.push(PyGeometryArray::missing_placeholder());
-            right.push(PyGeometryArray::missing_placeholder());
+            left.push(ArrayRows::missing_placeholder());
+            right.push(ArrayRows::missing_placeholder());
             continue;
         }
         let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair.as_ref(), common);
