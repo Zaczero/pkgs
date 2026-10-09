@@ -21,6 +21,7 @@ import pytest
 
 from pyo3stubs.config import DualityConfig, MacroExport, StubConfig, SurfaceConfig
 from pyo3stubs.doc_contract import collect_errors as doc_contract
+from pyo3stubs.doc_structure import collect_errors as doc_structure
 from pyo3stubs.gates import GATES, Status, gate, gate_names, run_all
 from pyo3stubs.gen import render_stub_with_docs
 from pyo3stubs.leaked_types import collect_errors as leaked_types
@@ -198,7 +199,7 @@ CASES: dict[str, Case] = {
     ),
     'rust-nullability': Case(
         clean=_default,
-        seeded=_stub('def maybe(self) -> int | None:', 'def maybe(self) -> int:'),
+        seeded=_stub('maybe: int | None', 'maybe: int'),
         expect='does not admit None',
     ),
     'doc-contract': Case(
@@ -419,6 +420,32 @@ def test_doc_contract_flags_missing_runtime_doc(tmp_path, monkeypatch):
 
     monkeypatch.setattr(lib.Sealed.method, '__doc__', None, raising=False)
     assert any('Sealed.method' in e for e in doc_contract(make_config(tmp_path)))
+
+
+def test_doc_contract_flags_missing_annotated_descriptor_doc(
+    tmp_path, monkeypatch, pristine_stub
+):
+    from inspect import getattr_static
+
+    import fakepkg._lib as lib
+
+    descriptor = getattr_static(lib.Sealed, 'maybe')
+    monkeypatch.setattr(type(descriptor), '__doc__', None)
+    errors = doc_contract(make_config(tmp_path, stub_text=pristine_stub))
+    assert any('Sealed.maybe: runtime docstring missing or empty' in e for e in errors)
+
+
+def test_doc_structure_requires_returns_for_annotated_descriptor(
+    tmp_path, monkeypatch, pristine_stub
+):
+    from inspect import getattr_static
+
+    import fakepkg._lib as lib
+
+    descriptor = getattr_static(lib.Sealed, 'maybe')
+    monkeypatch.setattr(type(descriptor), '__doc__', 'Optional payload.')
+    errors = doc_structure(make_config(tmp_path, stub_text=pristine_stub))
+    assert any('Sealed.maybe: no Returns section' in e for e in errors)
 
 
 @pytest.mark.parametrize(

@@ -3,9 +3,9 @@
 The single implementation of the contract (``gen.py`` writes docstrings, this
 module validates presence — no duplicated logic):
 
-* a public runtime symbol (module function, class, or method defined on the
-  class itself) must have a non-empty runtime docstring — stale stub prose must
-  never outlive its Rust ``///`` source;
+* a public runtime symbol (module function, class, method defined on the class,
+  or annotated data descriptor) must have a non-empty runtime docstring —
+  stale stub prose must never outlive its Rust ``///`` source;
 * a stub-only override of an inherited runtime member narrows types, so it must
   carry its own hand-written docstring — on its docstring-carrier def (the last
   variant of an overload set, or the def itself when not overloaded).
@@ -18,7 +18,7 @@ from __future__ import annotations
 import ast
 from typing import TYPE_CHECKING
 
-from pyo3stubs.ast_util import doc_of, function_groups
+from pyo3stubs.ast_util import annotated_data_descriptors, doc_of, function_groups
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, loc
 
@@ -88,6 +88,15 @@ def collect_errors(cfg: StubConfig) -> Findings:
                 missing.append(
                     f'{loc(path, carrier)}: {qualname}: stub override needs its '
                     f'own docstring'
+                )
+        for name, stmt, _, descriptor in annotated_data_descriptors(cls, node.body):
+            if name.startswith('_'):
+                continue
+            examined += 1
+            if not doc_of(descriptor):
+                missing.append(
+                    f'{loc(path, stmt)}: {node.name}.{name}: runtime docstring '
+                    f'missing or empty'
                 )
 
     return Findings(missing, examined=examined)

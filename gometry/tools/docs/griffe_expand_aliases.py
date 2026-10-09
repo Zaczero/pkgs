@@ -62,6 +62,7 @@ _PRIVATE_TYPEVAR_RENAMES = {
     '_ExtremeT': 'ExtremeT',
     '_CellT_co': 'CellT_co',
     '_GeometryOtherT': 'GeometryOtherT',
+    '_GeometryRowT': 'GeometryRowT',
     '_GeometryT': 'GeometryT',
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
@@ -298,6 +299,15 @@ def _expand(expr: Any, aliases: dict[str, Any]) -> Any:
         expr.left = _expand(expr.left, aliases)
         expr.right = _expand(expr.right, aliases)
     elif isinstance(expr, griffe.ExprSubscript):
+        if (
+            isinstance(expr.left, griffe.ExprName)
+            and expr.left.name == '_CellGeometryProjection'
+        ):
+            element = _expand(expr.slice, aliases)
+            return griffe.ExprSubscript(
+                griffe.ExprName('GeometryArray'),
+                griffe.ExprBinOp(element, '|', griffe.ExprName('None')),
+            )
         expr.left = _expand(expr.left, aliases)
         expr.slice = _expand(expr.slice, aliases)
     elif isinstance(expr, griffe.ExprTuple):
@@ -327,7 +337,15 @@ def _walk_annotations(obj: Any, aliases: dict[str, Any], seen: set[int]) -> None
     elif isinstance(obj, griffe.Class):
         obj.bases = [_expand_base(base, aliases) for base in obj.bases]
     elif isinstance(obj, griffe.Attribute):
+        is_cell_projection = (
+            isinstance(obj.annotation, griffe.ExprSubscript)
+            and isinstance(obj.annotation.left, griffe.ExprName)
+            and obj.annotation.left.name == '_CellGeometryProjection'
+        )
         obj.annotation = _expand(obj.annotation, aliases)
+        if is_cell_projection:
+            obj.labels.discard('instance-attribute')
+            obj.labels.update({'property', 'readonly'})
     for member in getattr(obj, 'members', {}).values():
         _walk_annotations(member, aliases, seen)
 

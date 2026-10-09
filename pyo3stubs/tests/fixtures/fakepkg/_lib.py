@@ -7,6 +7,22 @@ Each member exists to trip (or satisfy) exactly one check — see
 __all__ = ['Open', 'Sealed', 'documented', 'overloaded']
 
 
+class _MaybeDescriptor:
+    """Optional payload (fixture for the Option gate).
+
+    Returns
+    -------
+    int or None
+        The optional value.
+    """
+
+    def __get__(self, instance, owner=None):
+        return self if instance is None else None
+
+    def __set__(self, instance, value):
+        raise AttributeError('maybe is read-only')
+
+
 class Sealed:
     """A runtime-unsubclassable class (PyO3 default)."""
 
@@ -15,10 +31,7 @@ class Sealed:
     def __init_subclass__(cls, **kwargs: object) -> None:
         raise TypeError('Sealed cannot be subclassed')
 
-    @property
-    def maybe(self) -> int | None:
-        """Optional payload (fixture for the Option gate)."""
-        return None
+    maybe = _MaybeDescriptor()
 
     def method(self, value: int, flag: bool = True) -> int:
         """A documented method.

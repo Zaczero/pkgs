@@ -1,11 +1,11 @@
-"""Docstring *structure*: a documented symbol documents its whole signature.
+"""Docstring *structure*: callable and descriptor prose matches its contract.
 
 ``doc-contract`` owns presence — every public symbol has prose. This owns what
 that prose has to contain, which is the half that rots silently:
 
-* every signature parameter appears in ``Parameters``;
+* every callable signature parameter appears in ``Parameters``;
 * no documented parameter has left the signature (stale docs fail);
-* a ``Returns`` section exists (documenting ``None`` explicitly is the point);
+* a ``Returns`` section exists for callables and annotated data descriptors;
 * a ``default X`` stated in prose matches the runtime default.
 
 Sections are parsed format-agnostically — numpydoc (``Parameters`` over a
@@ -23,7 +23,7 @@ import inspect
 import re
 from typing import TYPE_CHECKING
 
-from pyo3stubs.ast_util import function_groups
+from pyo3stubs.ast_util import annotated_data_descriptors, doc_of, function_groups
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, unused_allowlist_errors
 
@@ -220,6 +220,17 @@ def collect_errors(cfg: StubConfig) -> Findings:
         examined += 1
         errors.extend(_check(qualname, obj, doc or '', parameters=parameters))
 
+    def visit_descriptor(qualname: str, descriptor: object) -> None:
+        nonlocal examined
+        doc = doc_of(descriptor)
+        if not doc:
+            return  # presence is the doc-contract gate's finding
+        if qualname in cfg.doc_structure_allowlist:
+            exempt.add(qualname)
+            return
+        examined += 1
+        errors.extend(_check(qualname, descriptor, doc, parameters=[]))
+
     for name in function_groups(ctx.stub_ast.body):
         if not name.startswith('_'):
             visit(name, getattr(runtime, name, None))
@@ -245,6 +256,9 @@ def collect_errors(cfg: StubConfig) -> Findings:
                     doc=stub_doc,
                     parameters=_stub_parameters(carrier),
                 )
+        for name, _, _, descriptor in annotated_data_descriptors(cls, node.body):
+            if not name.startswith('_'):
+                visit_descriptor(f'{class_name}.{name}', descriptor)
 
     errors += unused_allowlist_errors(
         'doc structure', cfg.doc_structure_allowlist, exempt

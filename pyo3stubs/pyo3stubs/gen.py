@@ -4,8 +4,8 @@ the toolkit; the check modules validate, this one writes).
 Docstrings live once, in the Rust ``///`` doc comments on the PyO3 surface, and
 become the compiled extension's ``__doc__``. :func:`render_stub_with_docs` copies
 each symbol's runtime ``__doc__`` into the hand-authored stub so IDE hover and the
-docs site render the prose, while preserving the hand-written signatures,
-overloads, and typed annotations untouched.
+docs site render the prose, while preserving hand-written signatures, overloads,
+typed annotations, and annotated descriptor declarations.
 
 Placement contract: **exactly one docstring per symbol.** A non-overloaded def
 carries it directly; an overload set carries it on the *last* variant — the
@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, TypeVar
 
 import libcst as cst
 
-from pyo3stubs.ast_util import decorator_names, doc_of
+from pyo3stubs.ast_util import annotated_data_descriptors, decorator_names, doc_of
 from pyo3stubs.context import CheckContext
 from pyo3stubs.rust_scan import constructor_docs
 
@@ -217,6 +217,55 @@ def _def_totals(stub_source: str) -> Counter[tuple[str, str]]:
     return totals
 
 
+def _descriptor_docs(
+    stub_source: str,
+    runtime: types.ModuleType,
+) -> dict[str, dict[str, str]]:
+    """Native prose for annotated data descriptors, keyed by class/member."""
+    docs: dict[str, dict[str, str]] = {}
+    module = ast.parse(stub_source)
+    for node in module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        cls = getattr(runtime, node.name, None)
+        if not isinstance(cls, type):
+            continue
+        for name, _, _, descriptor in annotated_data_descriptors(cls, node.body):
+            if doc := _runtime_doc_for_stub(name, descriptor):
+                docs.setdefault(node.name, {})[name] = doc
+    return docs
+
+
+def _inject_attribute_docs(
+    body: cst.IndentedBlock,
+    docs: dict[str, str],
+    continuation_indent: str,
+) -> cst.IndentedBlock:
+    """Replace adjacent docstrings of native annotated data descriptors."""
+    statements = list(body.body)
+    updated: list[cst.BaseStatement] = []
+    index = 0
+    while index < len(statements):
+        statement = statements[index]
+        attribute = None
+        if (
+            isinstance(statement, cst.SimpleStatementLine)
+            and len(statement.body) == 1
+            and isinstance(statement.body[0], cst.AnnAssign)
+            and isinstance(statement.body[0].target, cst.Name)
+        ):
+            attribute = statement.body[0].target.value
+        doc = docs.get(attribute) if attribute is not None else None
+        updated.append(statement)
+        index += 1
+        if doc is None:
+            continue
+        if index < len(statements) and _is_string_expr(statements[index]):
+            index += 1
+        updated.append(_docstring_statement(doc, continuation_indent))
+    return body.with_changes(body=updated)
+
+
 class DocInjector(cst.CSTTransformer):
     """Copy ``runtime.__doc__`` onto each symbol's docstring-carrier def."""
 
@@ -225,10 +274,12 @@ class DocInjector(cst.CSTTransformer):
         runtime: types.ModuleType,
         totals: Counter[tuple[str, str]],
         constructors: dict[str, str],
+        attribute_docs: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self._runtime = runtime
         self._totals = totals
         self._constructors = constructors
+        self._attribute_docs = attribute_docs or {}
         self._seen: Counter[tuple[str, str]] = Counter()
         self._stack: list[str] = []
 
@@ -243,6 +294,16 @@ class DocInjector(cst.CSTTransformer):
         obj = getattr(self._runtime, name, None)
         if obj is None:
             return updated  # stub-only typing helper (protocols)
+        if (attribute_docs := self._attribute_docs.get(name)) and isinstance(
+            updated.body, cst.IndentedBlock
+        ):
+            updated = updated.with_changes(
+                body=_inject_attribute_docs(
+                    updated.body,
+                    attribute_docs,
+                    '    ' * (len(self._stack) + 1),
+                )
+            )
         doc = _runtime_doc_for_stub(name, obj)
         if doc:
             return _apply(updated, doc, '    ' * (len(self._stack) + 1))
@@ -301,6 +362,9 @@ def render_stub_with_docs(cfg: StubConfig) -> str:
     ctx = CheckContext(cfg)
     source = ctx.stub_text
     injector = DocInjector(
-        ctx.runtime_module, _def_totals(source), constructor_docs(cfg)
+        ctx.runtime_module,
+        _def_totals(source),
+        constructor_docs(cfg),
+        _descriptor_docs(source, ctx.runtime_module),
     )
     return cst.parse_module(source).visit(injector).code

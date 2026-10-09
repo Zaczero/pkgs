@@ -167,6 +167,32 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
     ), found
 
 
+def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties() -> None:
+    expand = load_tool('griffe_expand_aliases')
+    loader = griffe.GriffeLoader(
+        search_paths=[str(GOMETRY_ROOT / 'python')],
+        extensions=griffe.Extensions(
+            expand.PromoteStubOverloads(),
+            expand.ExpandTokenAliases(),
+        ),
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    cell_array = pkg.members['CellArray']
+    assert isinstance(cell_array, griffe.Class)
+
+    for name, geometry_type in (('center', 'Point'), ('polygon', 'Polygon')):
+        attribute = cell_array.members[name]
+        assert isinstance(attribute, griffe.Attribute)
+        assert attribute.canonical_path == f'gometry.CellArray.{name}'
+        assert str(attribute.annotation) == f'GeometryArray[{geometry_type} | None]'
+        assert {'property', 'readonly'} <= attribute.labels
+        assert attribute.docstring is not None
+        assert attribute.docstring.value.strip()
+        assert '_CellGeometryProjection' not in str(attribute.annotation)
+
+
 def _public_python_function_aliases(
     pkg: griffe.Module,
 ) -> dict[str, tuple[griffe.Alias, griffe.Function]]:
