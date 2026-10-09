@@ -9,7 +9,7 @@ grid_free_functions! {
         cell_type: CellIndex,
         label: "H3",
         cell_doc: "H3Cell",
-        item_doc: "H3Cell, int, str, or iterable of those",
+        item_doc: "H3Cell, int, str, or iterable of those with missing values skipped",
         contract_doc: "This is cell-ID algebra (the ``compact`` contract): an H3 child's *geometry* does not nest exactly inside its parent, but its id does.",
         parse_error_doc: "If an id or token is not a valid H3 cell.",
         parse_cell: h3_cell_index,

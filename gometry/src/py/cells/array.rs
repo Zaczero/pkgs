@@ -27,7 +27,8 @@ use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::grid_kind::{
-    collect_ids, collect_inferred_ids, grid_kind_from_type, membership_id,
+    collect_ids, collect_inferred_ids, grid_kind_from_type, grid_kind_from_value, is_raw_identity,
+    membership_id,
 };
 use crate::py::cells::{
     FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
@@ -609,13 +610,18 @@ impl PyCellArray {
                 values
             })
         } else {
-            let other_kind = grid_kind_from_type(&other.get_type())?;
-            if kind != other_kind {
-                return Err(GeometryError::new_err(format!(
-                    "cell types must match, got {} and {}",
-                    kind.class_name(),
-                    other_kind.class_name()
-                )));
+            if let Some(other_kind) = grid_kind_from_value(other) {
+                if kind != other_kind {
+                    return Err(GeometryError::new_err(format!(
+                        "cell types must match, got {} and {}",
+                        kind.class_name(),
+                        other_kind.class_name()
+                    )));
+                }
+            } else if !is_raw_identity(other, kind) {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "other must be a same-grid cell, integer id, or string token",
+                ));
             }
             let other_id = kind.id_from_value(other)?;
             dispatch_cell_grid!(self, G, {
@@ -894,8 +900,8 @@ impl PyCellArray {
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------
@@ -922,8 +928,8 @@ fn contains(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAn
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------

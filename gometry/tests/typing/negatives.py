@@ -29,13 +29,11 @@ if TYPE_CHECKING:
     H3_CELLS = gm.h3_cells([1.0], [2.0], resolution=9)
     S2_CELLS = gm.s2_cells([1.0], [2.0], level=9)
 
-    # Fixed-depth and adaptive S2 covers have disjoint signatures.
-    gm.s2_cover(POLY)  # type: ignore[call-overload]
-    gm.s2_cover(POLY, level=None)  # type: ignore[call-overload]
-    gm.s2_cover(POLY, level=8, target_cells=8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, level=8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, 8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, min_level=None)  # type: ignore[call-overload]
+    # S2 levels and adaptive controls use integer parameters.
+    gm.s2_cover(POLY, '8')  # type: ignore[arg-type]
+    gm.s2_cover(POLY, level='8')  # type: ignore[arg-type]
+    gm.s2_cover(POLY, min_level='8')  # type: ignore[arg-type]
+    gm.s2_cover(POLY, level_mod=True)  # type: ignore[arg-type]
 
     # Domain families are flat, prefix-discoverable top-level functions;
     # namespace spellings are deliberately not retained for this first release.
