@@ -96,17 +96,16 @@ def _promote_overloads(obj: Any, seen: set[int]) -> None:
             usable = [variant for variant in variants if not _is_never(variant)]
             if not usable:
                 continue
-            # The stub's final concrete definition is Griffe's canonical
-            # implementation.  Arity is not a reliable proxy: overloads can
-            # deliberately widen or narrow parameters independently.
-            canonical = usable[-1]
-            canonical.overloads = [
+            # Keep the final authored form as the model's prose carrier. The
+            # reference template renders the complete overload list separately.
+            carrier = usable[-1]
+            carrier.overloads = [
                 variant
                 for variant in variants
-                if variant is not canonical and not _is_never(variant)
+                if variant is not carrier and not _is_never(variant)
             ]
-            canonical.overloads.append(copy.copy(canonical))
-            obj.set_member(name, canonical)
+            carrier.overloads.append(copy.copy(carrier))
+            obj.set_member(name, carrier)
             del stranded[name]
     for member in list(getattr(obj, 'members', {}).values()):
         _promote_overloads(member, seen)
@@ -284,7 +283,8 @@ class PromoteStubOverloads(griffe.Extension):
         _materialize_function_aliases(pkg)
 
 
-def _expand(expr: Any, aliases: dict[str, Any]) -> Any:
+def expand_annotation(expr: Any, aliases: dict[str, Any]) -> Any:
+    """Apply the public annotation rewrites shared by Griffe and model checks."""
     if expr is None or isinstance(expr, str):
         return expr
     if isinstance(expr, griffe.ExprName):
@@ -296,22 +296,24 @@ def _expand(expr: Any, aliases: dict[str, Any]) -> Any:
             return griffe.ExprName('object')
         return aliases.get(expr.name, expr)
     if isinstance(expr, griffe.ExprBinOp):
-        expr.left = _expand(expr.left, aliases)
-        expr.right = _expand(expr.right, aliases)
+        expr.left = expand_annotation(expr.left, aliases)
+        expr.right = expand_annotation(expr.right, aliases)
     elif isinstance(expr, griffe.ExprSubscript):
         if (
             isinstance(expr.left, griffe.ExprName)
             and expr.left.name == '_CellGeometryProjection'
         ):
-            element = _expand(expr.slice, aliases)
+            element = expand_annotation(expr.slice, aliases)
             return griffe.ExprSubscript(
                 griffe.ExprName('GeometryArray'),
                 griffe.ExprBinOp(element, '|', griffe.ExprName('None')),
             )
-        expr.left = _expand(expr.left, aliases)
-        expr.slice = _expand(expr.slice, aliases)
+        expr.left = expand_annotation(expr.left, aliases)
+        expr.slice = expand_annotation(expr.slice, aliases)
     elif isinstance(expr, griffe.ExprTuple):
-        expr.elements = [_expand(element, aliases) for element in expr.elements]
+        expr.elements = [
+            expand_annotation(element, aliases) for element in expr.elements
+        ]
     return expr
 
 
@@ -322,7 +324,7 @@ def _expand_base(expr: Any, aliases: dict[str, Any]) -> Any:
         and expr.left.name == '_CellArrayIterator'
     ):
         return griffe.ExprName('Iterator')
-    return _expand(expr, aliases)
+    return expand_annotation(expr, aliases)
 
 
 def _walk_annotations(obj: Any, aliases: dict[str, Any], seen: set[int]) -> None:
@@ -332,8 +334,8 @@ def _walk_annotations(obj: Any, aliases: dict[str, Any], seen: set[int]) -> None
     if isinstance(obj, griffe.Function):
         for function in (obj, *(obj.overloads or ())):
             for parameter in function.parameters:
-                parameter.annotation = _expand(parameter.annotation, aliases)
-            function.returns = _expand(function.returns, aliases)
+                parameter.annotation = expand_annotation(parameter.annotation, aliases)
+            function.returns = expand_annotation(function.returns, aliases)
     elif isinstance(obj, griffe.Class):
         obj.bases = [_expand_base(base, aliases) for base in obj.bases]
     elif isinstance(obj, griffe.Attribute):
@@ -342,7 +344,7 @@ def _walk_annotations(obj: Any, aliases: dict[str, Any], seen: set[int]) -> None
             and isinstance(obj.annotation.left, griffe.ExprName)
             and obj.annotation.left.name == '_CellGeometryProjection'
         )
-        obj.annotation = _expand(obj.annotation, aliases)
+        obj.annotation = expand_annotation(obj.annotation, aliases)
         if is_cell_projection:
             obj.labels.discard('instance-attribute')
             obj.labels.update({'property', 'readonly'})
@@ -401,28 +403,35 @@ def _link_see_also(
         _link_see_also(member, top, classes, seen)
 
 
+def annotation_aliases(pkg: griffe.Module) -> dict[str, Any]:
+    """Aliases expanded in rendered annotations, shared with the model gate."""
+    aliases: dict[str, Any] = {}
+    types_module = pkg.members.get('_types')
+    if isinstance(types_module, griffe.Module):
+        for name, member in types_module.members.items():
+            if isinstance(member, griffe.Alias):
+                continue
+            value = getattr(member, 'value', None)
+            if value is not None and str(value).startswith('Literal['):
+                aliases[name] = value
+    lib = pkg.members.get('_lib')
+    if isinstance(lib, griffe.Module):
+        for name in _STUB_LOCAL:
+            value = getattr(lib.members.get(name), 'value', None)
+            if value is not None:
+                aliases[name] = value
+    return aliases
+
+
 class ExpandTokenAliases(griffe.Extension):
     """Expand private Literal/input aliases in rendered annotations only."""
 
     def on_package(self, *, pkg: griffe.Module, **kwargs: Any) -> None:
         if pkg.name != 'gometry':
             return
-        aliases: dict[str, Any] = {}
-        types_module = pkg.members.get('_types')
-        if isinstance(types_module, griffe.Module):
-            for name, member in types_module.members.items():
-                if isinstance(member, griffe.Alias):
-                    continue
-                value = getattr(member, 'value', None)
-                if value is not None and str(value).startswith('Literal['):
-                    aliases[name] = value
-        lib = pkg.members.get('_lib')
-        if isinstance(lib, griffe.Module):
-            for name in _STUB_LOCAL:
-                value = getattr(lib.members.get(name), 'value', None)
-                if value is not None:
-                    aliases[name] = value
+        aliases = annotation_aliases(pkg)
         seen: set[int] = set()
+        lib = pkg.members.get('_lib')
         if isinstance(lib, griffe.Module):
             _walk_annotations(lib, aliases, seen)
         _walk_annotations(pkg, aliases, seen)

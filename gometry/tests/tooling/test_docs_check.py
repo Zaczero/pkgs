@@ -9,9 +9,12 @@ Drives the real shipped helpers in ``tools/docs/``:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 import griffe
+from jinja2 import ChoiceLoader, DictLoader, Environment, FileSystemLoader
+from markupsafe import Markup
 
 from tests._support import GOMETRY_ROOT, load_tool
 
@@ -30,6 +33,54 @@ def _write_site(tmp_path: Path, pages: dict[str, str]) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding='utf-8')
     return site
+
+
+def _render_signature_block(function: Any) -> tuple[str, tuple[Any, ...]]:
+    forms = tuple(function.overloads or ()) or (function,)
+    markers = {id(form): f'form-{index}' for index, form in enumerate(forms)}
+
+    def format_signature(_body: str, form: Any, *_args: Any, **_kwargs: Any) -> Markup:
+        return Markup('<span data-form="{}"></span>').format(markers[id(form)])
+
+    template_dir = GOMETRY_ROOT / 'overrides/mkdocstrings/python/material'
+    environment = Environment(
+        loader=ChoiceLoader([
+            FileSystemLoader(str(template_dir)),
+            DictLoader({
+                '_base/function.html.jinja': (
+                    '{% block signature scoped %}{% endblock signature %}'
+                ),
+            }),
+        ]),
+        autoescape=True,
+    )
+    environment.filters['format_signature'] = format_signature
+    template = environment.get_template('function.html.jinja')
+    rendered = template.render(
+        function=function,
+        config=SimpleNamespace(
+            separate_signature=True,
+            line_length=88,
+            signature_crossrefs=True,
+        ),
+    )
+    return rendered, forms
+
+
+def _load_griffe_model() -> griffe.Module:
+    expand = load_tool('griffe_expand_aliases')
+    loader = griffe.GriffeLoader(
+        search_paths=[str(GOMETRY_ROOT / 'python')],
+        extensions=griffe.Extensions(
+            expand.PromoteStubOverloads(),
+            expand.ExpandTokenAliases(),
+        ),
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    assert isinstance(pkg, griffe.Module)
+    loader.resolve_aliases(external=False)
+    return pkg
 
 
 def test_unresolved_public_type_span_is_flagged(tmp_path: Path) -> None:
@@ -290,40 +341,86 @@ def test_function_alias_materializer_ignores_broken_external_and_class_targets()
         assert isinstance(pkg.members[name], griffe.Alias)
 
 
-def test_griffe_uses_final_concrete_overload_as_canonical() -> None:
-    """The rendered implementation is the final non-Never overload."""
-    expand = load_tool('griffe_expand_aliases')
-    loader = griffe.GriffeLoader(
-        search_paths=[str(GOMETRY_ROOT / 'python')],
-        extensions=griffe.Extensions(
-            expand.PromoteStubOverloads(),
-            expand.ExpandTokenAliases(),
-        ),
-        allow_inspection=False,
-    )
-    pkg = loader.load('gometry')
-    loader.resolve_aliases(external=False)
+def test_griffe_preserves_all_accepted_forms_in_authored_order() -> None:
+    pkg = _load_griffe_model()
     doc_model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
-    expected = doc_model._stub_overloads()
-    for member in pkg.members.values():
-        if not isinstance(member, griffe.Function) or not member.overloads:
-            continue
-        expected_return, expected_params = expected[member.canonical_path]
-        assert doc_model._public_annotation(
-            str(member.returns)
-        ) == doc_model._public_annotation(expected_return), member.name
+    lib = pkg.members['_lib']
+    assert isinstance(lib, griffe.Module)
+    expected = doc_model._stub_overloads(
+        lib,
+        doc_model.annotation_aliases(pkg),
+    )
+    functions = {
+        function.canonical_path: function
+        for function in doc_model._functions(pkg, set())
+    }
+    paths = (
+        'gometry.Point.destination',
+        'gometry.Geometry.segmentize',
+        'gometry.Geometry.line_interpolate',
+    )
+
+    for path in paths:
+        function = functions[path]
+        forms = tuple(function.overloads or ())
+        assert forms
         assert (
-            tuple(
-                parameter.name
-                for parameter in member.parameters
-                if parameter.name not in {'self', 'cls'}
-            )
-            == expected_params
-        ), member.name
-        assert all(
-            getattr(getattr(variant, 'returns', None), 'name', None)
-            not in {'Never', 'NoReturn'}
-            for variant in (member, *member.overloads)
-        ), member.name
+            tuple(doc_model._griffe_call_form(form) for form in forms) == expected[path]
+        )
+
+
+def test_function_template_renders_every_accepted_form_once_in_order() -> None:
+    pkg = _load_griffe_model()
+    point = pkg.members['Point']
+    geometry = pkg.members['Geometry']
+    assert isinstance(point, griffe.Class)
+    assert isinstance(geometry, griffe.Class)
+    assert point.canonical_path == 'gometry.Point'
+    assert geometry.canonical_path == 'gometry.Geometry'
+    functions = (
+        point.members['destination'],
+        geometry.members['segmentize'],
+        geometry.members['line_interpolate'],
+    )
+
+    for function in functions:
+        rendered, forms = _render_signature_block(function)
+        markers = [
+            f'<span data-form="form-{index}"></span>' for index, _ in enumerate(forms)
+        ]
+        assert function.overloads
+        assert '<details open class="doc-overloads-details">' in rendered
+        assert '<summary>Accepted call forms</summary>' in rendered
+        assert 'doc-canonical-signature' not in rendered
+        assert rendered.count('<span data-form=') == len(forms)
+        assert all(rendered.count(marker) == 1 for marker in markers)
+        assert [rendered.index(marker) for marker in markers] == sorted(
+            rendered.index(marker) for marker in markers
+        )
+
+
+def test_function_template_keeps_ordinary_and_single_form_signatures() -> None:
+    pkg = _load_griffe_model()
+    geometry = pkg.members['Geometry']
+    assert isinstance(geometry, griffe.Class)
+
+    ordinary = geometry.members['minimum_clearance']
+    assert isinstance(ordinary, griffe.Function)
+    assert ordinary.canonical_path == 'gometry.Geometry.minimum_clearance'
+    assert not ordinary.overloads
+    ordinary_html, ordinary_forms = _render_signature_block(ordinary)
+    assert ordinary_forms == (ordinary,)
+    assert '<div class="doc-canonical-signature">' in ordinary_html
+    assert '<details' not in ordinary_html
+    assert ordinary_html.count('<span data-form=') == 1
+
+    accepted_form = SimpleNamespace(name='sample', returns='Point')
+    single_form = SimpleNamespace(name='sample', returns='Point')
+    single_form.overloads = [accepted_form]
+    single_html, single_forms = _render_signature_block(single_form)
+    assert single_forms == (accepted_form,)
+    assert '<details open class="doc-overloads-details">' in single_html
+    assert 'doc-canonical-signature' not in single_html
+    assert single_html.count('<span data-form="form-0"></span>') == 1

@@ -8,12 +8,13 @@ docs site render the prose, while preserving hand-written signatures, overloads,
 typed annotations, and annotated descriptor declarations.
 
 Placement contract: **exactly one docstring per symbol.** A non-overloaded def
-carries it directly; an overload set carries it on the *last* variant — the
-canonical union signature (stubs must not have a bare implementation def per
-PEP 484, and duplicating prose across variants is drift surface). Earlier
-variants are stripped. Stub-only overrides of inherited runtime members keep
-their hand-written prose untouched (they narrow types, so they document
-themselves — the doc-contract check enforces their presence).
+carries it directly; an overload set carries it on the *last* authored variant
+as the prose carrier (stubs must not have a bare implementation def per PEP 484,
+and duplicating prose across variants is drift surface). Earlier variants are
+stripped. Reference pages show every accepted variant in source order; the
+carrier is not a universal signature. Stub-only overrides of inherited runtime
+members keep their hand-written prose untouched (they narrow types, so they
+document themselves — the doc-contract check enforces their presence).
 
 Requires ``libcst``. The runtime module and stub path come from the project's
 :class:`~pyo3stubs.config.StubConfig`.

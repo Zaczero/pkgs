@@ -14,7 +14,12 @@ ROOT = Path(__file__).resolve().parents[2]
 STUB = ROOT / 'python/gometry/_lib.pyi'
 sys.path.insert(0, str(ROOT / 'tools/docs'))
 
-from griffe_expand_aliases import ExpandTokenAliases, PromoteStubOverloads
+from griffe_expand_aliases import (
+    ExpandTokenAliases,
+    PromoteStubOverloads,
+    annotation_aliases,
+    expand_annotation,
+)
 
 _PUBLIC_TYPEVAR_NAMES = {
     '_CellT': 'CellT',
@@ -28,6 +33,9 @@ _PUBLIC_TYPEVAR_NAMES = {
     '_GroupKeyT': 'GroupKeyT',
     '_GroupValuesT_co': 'GroupValuesT_co',
 }
+
+ParameterForm = tuple[str | None, str, str | None, str | None]
+CallForm = tuple[tuple[ParameterForm, ...], str | None]
 
 
 def _is_never(function: griffe.Function) -> bool:
@@ -68,22 +76,126 @@ def _functions(obj: Any, seen: set[int]) -> list[griffe.Function]:
     return result
 
 
-def _stub_overloads() -> dict[str, tuple[str, tuple[str, ...]]]:
-    """Final non-Never overload return and parameters by public model path."""
+def _expression_text(expression: Any) -> str | None:
+    if expression is None:
+        return None
+    source = str(expression)
+    try:
+        return ast.unparse(ast.parse(source, mode='eval').body)
+    except SyntaxError:
+        return f'<unparsed:{source}>'
+
+
+def _stub_annotation(
+    expression: ast.expr | None,
+    stub_module: griffe.Module,
+    aliases: dict[str, Any],
+) -> str | None:
+    if expression is None:
+        return None
+    parsed = griffe.get_expression(expression, stub_module, parse_strings=True)
+    if parsed is None:
+        return None
+    return _public_annotation(str(expand_annotation(parsed, aliases)))
+
+
+def _model_annotation(expression: Any) -> str | None:
+    return _public_annotation(str(expression)) if expression is not None else None
+
+
+def _stub_is_never(
+    expression: ast.expr | None,
+    stub_module: griffe.Module,
+    aliases: dict[str, Any],
+) -> bool:
+    annotation = _stub_annotation(expression, stub_module, aliases)
+    return annotation is not None and annotation.rsplit('.', 1)[-1] in {
+        'Never',
+        'NoReturn',
+    }
+
+
+def _stub_call_form(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    stub_module: griffe.Module,
+    aliases: dict[str, Any],
+) -> CallForm:
+    args = function.args
+    positional = [*args.posonlyargs, *args.args]
+    defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    parameters: list[ParameterForm] = []
+    for index, (argument, default) in enumerate(zip(positional, defaults, strict=True)):
+        kind = (
+            'positional-only'
+            if index < len(args.posonlyargs)
+            else 'positional or keyword'
+        )
+        parameters.append((
+            kind,
+            argument.arg,
+            _stub_annotation(argument.annotation, stub_module, aliases),
+            _expression_text(ast.unparse(default)) if default is not None else None,
+        ))
+    if args.vararg is not None:
+        parameters.append((
+            'variadic positional',
+            args.vararg.arg,
+            _stub_annotation(args.vararg.annotation, stub_module, aliases),
+            None,
+        ))
+    for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+        parameters.append((
+            'keyword-only',
+            argument.arg,
+            _stub_annotation(argument.annotation, stub_module, aliases),
+            _expression_text(ast.unparse(default)) if default is not None else None,
+        ))
+    if args.kwarg is not None:
+        parameters.append((
+            'variadic keyword',
+            args.kwarg.arg,
+            _stub_annotation(args.kwarg.annotation, stub_module, aliases),
+            None,
+        ))
+    return tuple(parameters), _stub_annotation(function.returns, stub_module, aliases)
+
+
+def _griffe_call_form(function: griffe.Function) -> CallForm:
+    parameters: list[ParameterForm] = []
+    for parameter in function.parameters:
+        kind = parameter.kind.value if parameter.kind is not None else None
+        default = (
+            None
+            if kind in {'variadic positional', 'variadic keyword'}
+            else _expression_text(parameter.default)
+        )
+        parameters.append((
+            kind,
+            parameter.name,
+            _model_annotation(parameter.annotation),
+            default,
+        ))
+    return tuple(parameters), _model_annotation(function.returns)
+
+
+def _stub_overloads(
+    stub_module: griffe.Module, aliases: dict[str, Any]
+) -> dict[str, tuple[CallForm, ...]]:
+    """All non-Never overload forms by model path, in authored order."""
     tree = ast.parse(STUB.read_text(encoding='utf-8'))
-    groups: list[tuple[str, list[ast.FunctionDef]]] = []
+    groups: list[tuple[str, list[ast.FunctionDef | ast.AsyncFunctionDef]]] = []
 
     def collect(prefix: str, body: list[ast.stmt]) -> None:
-        by_name: dict[str, list[ast.FunctionDef]] = {}
+        by_name: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
         for node in body:
-            if isinstance(node, ast.FunctionDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 by_name.setdefault(node.name, []).append(node)
             elif isinstance(node, ast.ClassDef):
                 collect(f'{prefix}{node.name}.', node.body)
         groups.extend((f'{prefix}{name}', defs) for name, defs in by_name.items())
 
     collect('gometry.', tree.body)
-    result: dict[str, tuple[str, tuple[str, ...]]] = {}
+    result: dict[str, tuple[CallForm, ...]] = {}
     for path, defs in groups:
         overloads = [
             node
@@ -98,22 +210,27 @@ def _stub_overloads() -> dict[str, tuple[str, tuple[str, ...]]]:
         concrete = [
             node
             for node in overloads
-            if ast.unparse(node.returns) not in {'Never', 'NoReturn'}
+            if not _stub_is_never(node.returns, stub_module, aliases)
         ]
         if not concrete:
+            # Never-only groups have no accepted forms to publish.
             continue
-        final = concrete[-1]
-        params = tuple(
-            argument.arg
-            for argument in [
-                *final.args.posonlyargs,
-                *final.args.args,
-                *final.args.kwonlyargs,
-            ]
-            if argument.arg not in {'self', 'cls'}
+        result[path] = tuple(
+            _stub_call_form(function, stub_module, aliases) for function in concrete
         )
-        result[path] = (ast.unparse(final.returns), params)
     return result
+
+
+def _public_overload_paths(
+    overloads: dict[str, tuple[CallForm, ...]], public_names: set[str]
+) -> set[str]:
+    return {
+        path
+        for path in overloads
+        if (parts := path.split('.'))[1] in public_names
+        and not parts[-1].startswith('_')
+        and not any(part.startswith('_') for part in parts[2:-1])
+    }
 
 
 def _python_function_sources(
@@ -156,9 +273,11 @@ def collect_errors() -> list[str]:
     loader.resolve_aliases(external=False)
     lib = pkg.members.get('_lib')
     errors: list[str] = []
-    stub_overloads = _stub_overloads()
     if not isinstance(lib, griffe.Module):
         return ['transformed model has no gometry._lib module']
+    aliases = annotation_aliases(pkg)
+    stub_overloads = _stub_overloads(lib, aliases)
+    public_overloads = _public_overload_paths(stub_overloads, set(gm.__all__))
 
     # The import inventory is authoritative: every flat public native
     # function/class must still be represented by its same-named native member;
@@ -196,28 +315,24 @@ def collect_errors() -> list[str]:
             ):
                 errors.append(f'{name}: missing native class provenance')
 
+    model_overloads: set[str] = set()
     for function in _functions(pkg, set()):
         if function.name.startswith('_'):
             continue
+        path = function.canonical_path
+        if path in stub_overloads:
+            if path in public_overloads:
+                model_overloads.add(path)
+            actual_forms = tuple(
+                _griffe_call_form(variant) for variant in function.overloads or ()
+            )
+            if actual_forms != stub_overloads[path]:
+                errors.append(
+                    f'{path}: accepted call forms differ from the authored overload sequence'
+                )
         variants = [function, *(function.overloads or ())]
         if any(_is_never(variant) for variant in variants):
             errors.append(f'{function.canonical_path}: public Never overload')
-        if expected := stub_overloads.get(function.canonical_path):
-            expected_return, expected_params = expected
-            actual_params = tuple(
-                parameter.name
-                for parameter in function.parameters
-                if parameter.name not in {'self', 'cls'}
-            )
-            if (
-                _public_annotation(str(function.returns))
-                != _public_annotation(expected_return)
-                or actual_params != expected_params
-            ):
-                errors.append(
-                    f'{function.canonical_path}: canonical overload differs from '
-                    'the final non-Never stub overload'
-                )
         for variant in variants:
             annotations = [parameter.annotation for parameter in variant.parameters]
             annotations.append(variant.returns)
@@ -231,6 +346,12 @@ def collect_errors() -> list[str]:
                 errors.append(
                     f'{function.canonical_path}: private annotations {private}'
                 )
+
+    errors.extend(
+        f'{path}: accepted overload group missing from the Griffe model'
+        for path in sorted(public_overloads - model_overloads)
+        if stub_overloads[path]
+    )
 
     cell_array = pkg.members.get('CellArray')
     if isinstance(cell_array, griffe.Class):
