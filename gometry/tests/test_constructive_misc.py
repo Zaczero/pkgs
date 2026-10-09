@@ -1253,7 +1253,9 @@ def test_vertex_inventing_ops_have_fixed_2d_results() -> None:
     z_with_dangle = gm.from_wkt(
         'MULTILINESTRING Z ((0 0 5, 1 0 5), (1 0 5, 1 1 5), (1 1 5, 0 0 5), (2 2 5, 3 3 5))'
     )
-    polygons, _cuts, dangles, _invalid = gm.polygonize_full([z_with_dangle])
+    polygons, _cuts, dangles, _invalid = gm.polygonize_all(
+        [z_with_dangle], diagnostics=True
+    )
     assert polygons[0].coordinate_axes == 'XYZ'
     assert dangles[0] and all(d.coordinate_axes == 'XYZ' for d in dangles[0])
     bowtie_z = gm.from_wkt('POLYGON Z ((0 0 1, 2 2 5, 2 0 3, 0 2 7, 0 0 1))')

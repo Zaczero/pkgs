@@ -933,6 +933,10 @@ mod frame_cache_tests {
     use crate::geometry::{CoordSeq, LineSeq};
     use crate::test_support::allocation_count;
 
+    fn cached_measured_locate(shape: &PreparedPlan, point: Point) -> crate::error::Result<f64> {
+        shape.measured_line_index()?.locate(point, &PlanarMetric)
+    }
+
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
         let base = GeographicMetricKey::new_at_generation(
@@ -1070,13 +1074,10 @@ mod frame_cache_tests {
                 .expect("repeated measured interpolation")
         });
         let (located, locate_allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
-                .expect("measured locate")
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0)).expect("measured locate")
         });
         let (repeat_located, repeat_locate_allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0))
                 .expect("repeated measured locate")
         });
         assert_eq!(interpolation, repeat_interpolation);
@@ -1143,8 +1144,7 @@ mod frame_cache_tests {
         assert_eq!(last.m().unwrap().to_bits(), 2.0_f64.to_bits());
 
         let (located, allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0))
                 .expect("interior measured locate")
         });
         assert_eq!(located.to_bits(), 0.5_f64.to_bits());
@@ -1168,8 +1168,7 @@ mod frame_cache_tests {
         shape.measured_line_index().expect("measured line index");
 
         let (located, allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 1.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 1.0))
                 .expect("locate past duplicate segment")
         });
         assert_eq!(located.to_bits(), 1.0_f64.to_bits());
@@ -1204,8 +1203,7 @@ mod frame_cache_tests {
         ));
         shape.measured_line_index().expect("measured line index");
 
-        let located = shape
-            .line_locate_point_m_with(Point::new_raw_xy(minimum, 1.0), &PlanarMetric)
+        let located = cached_measured_locate(&shape, Point::new_raw_xy(minimum, 1.0))
             .expect("exact subnormal measured locate");
         assert_eq!(located.to_bits(), minimum.to_bits());
     }
@@ -1369,7 +1367,11 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn backend_floor(self) -> f64 {
-        self.semi_major * Self::BACKEND_RELATIVE
+        crate::geometry::interval::Interval::exact(self.semi_major)
+            .mul(crate::geometry::interval::Interval::exact(
+                Self::BACKEND_RELATIVE,
+            ))
+            .upper()
     }
 
     pub(crate) fn minimum_gap(self) -> f64 {
@@ -1381,7 +1383,14 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
-        self.backend_floor() * evaluations.max(1.0)
+        crate::geometry::interval::Interval::exact(self.semi_major)
+            .mul(crate::geometry::interval::Interval::exact(
+                Self::BACKEND_RELATIVE,
+            ))
+            .mul(crate::geometry::interval::Interval::exact(
+                evaluations.max(1.0),
+            ))
+            .upper()
     }
 }
 
@@ -1444,6 +1453,66 @@ pub(crate) struct PointEdgeMinimum {
     pub(crate) budget_exhausted: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DwithinOutcome {
+    Within,
+    Outside,
+    Unresolved,
+}
+
+impl DwithinOutcome {
+    pub(crate) const fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Within, _) | (_, Self::Within) => Self::Within,
+            (Self::Unresolved, _) | (_, Self::Unresolved) => Self::Unresolved,
+            (Self::Outside, Self::Outside) => Self::Outside,
+        }
+    }
+
+    pub(crate) fn into_bool(self) -> Result<bool> {
+        match self {
+            Self::Within => Ok(true),
+            Self::Outside => Ok(false),
+            Self::Unresolved => Err(crate::crs::CrsError::message(
+                "geodesic dwithin did not converge within 128 point-edge evaluations",
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod dwithin_outcome_tests {
+    use super::DwithinOutcome;
+
+    #[test]
+    fn witnessed_within_dominates_an_earlier_unresolved_edge() {
+        assert_eq!(
+            DwithinOutcome::Unresolved.combine(DwithinOutcome::Within),
+            DwithinOutcome::Within
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Unresolved),
+            DwithinOutcome::Unresolved
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Outside),
+            DwithinOutcome::Outside
+        );
+    }
+
+    #[test]
+    fn unresolved_is_an_error_only_at_the_boolean_boundary() {
+        let error = DwithinOutcome::Unresolved
+            .into_bool()
+            .expect_err("a bool cannot encode an unresolved threshold");
+        assert!(
+            error
+                .to_string()
+                .contains("geodesic dwithin did not converge within 128 point-edge evaluations")
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferential {
     pub(crate) speed: f64,
@@ -1453,9 +1522,7 @@ pub(crate) struct ChartEdgeDifferential {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferentialBounds {
     pub(crate) speed: f64,
-    pub(crate) lipschitz_speed: f64,
-    pub(crate) acceleration: f64,
-    pub(crate) curvature: f64,
+    pub(crate) covariant_acceleration: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1474,7 +1541,10 @@ pub(crate) enum PointEdgeQueryResult {
     Outside {
         lower_bound: f64,
         evaluations: usize,
-        budget_exhausted: bool,
+    },
+    Unresolved {
+        lower_bound: f64,
+        evaluations: usize,
     },
 }
 
@@ -1528,7 +1598,11 @@ pub(crate) trait ChartMetric {
         source_speed: f64,
         source_azimuth: f64,
     ) -> Result<ChartPointDistanceSample>;
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64;
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64;
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
     fn chart_area_density(
         &self,

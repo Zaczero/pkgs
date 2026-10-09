@@ -152,6 +152,20 @@ Pull a `float64` matrix with `np.asarray(geom.coords, dtype=np.float64)`
 (or use per-axis `.coords.x`/`.y`) and pass it straight in. Project to a metric CRS
 first when planar XY is wrong for geographic data:
 
+Install scikit-learn for the clustering example:
+
+=== "uv"
+
+    ```bash
+    uv add scikit-learn
+    ```
+
+=== "pip"
+
+    ```bash
+    python -m pip install scikit-learn
+    ```
+
 ```python exec="on" source="block" result="text"
 import numpy as np
 import gometry as gm

@@ -4,8 +4,6 @@ use rstar::{AABB, PointDistance, RTreeNode, RTreeObject};
 use crate::HeapSize;
 use crate::collections::HashSet;
 #[cfg(test)]
-use crate::geometry::EXACT_SELECTION_FALLBACKS;
-#[cfg(test)]
 use crate::geometry::point_on_segment;
 use crate::geometry::{
     BulkRTree, Point, PointKey, Segment, SquaredDistanceKey, XY, point_pair_distance_key,
@@ -130,8 +128,6 @@ std::thread_local! {
         const { std::cell::Cell::new(0) };
     pub(crate) static CLEARANCE_POINT_RECHECKS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
-    pub(crate) static CLEARANCE_POINT_EXACT_FALLBACKS: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(0) };
 }
 
 /// A point-index leaf retains its position in the full-ordinate source.
@@ -167,7 +163,7 @@ fn consider_clearance_neighbor(
     let replace = match best.as_ref() {
         None => true,
         Some((ordinal, incumbent)) => {
-            let order = clearance_point_cmp(&key, incumbent)?;
+            let order = key.cmp_distance(incumbent)?;
             order.is_lt() || order.is_eq() && entry.ordinal < *ordinal
         },
     };
@@ -175,23 +171,6 @@ fn consider_clearance_neighbor(
         *best = Some((entry.ordinal, key));
     }
     Ok(())
-}
-
-fn clearance_point_cmp(
-    left: &SquaredDistanceKey,
-    right: &SquaredDistanceKey,
-) -> crate::error::Result<std::cmp::Ordering> {
-    #[cfg(test)]
-    let before = EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get);
-    let result = left.cmp_distance(right);
-    #[cfg(test)]
-    {
-        let after = EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get);
-        CLEARANCE_POINT_EXACT_FALLBACKS.with(|count| {
-            count.set(count.get().saturating_add(after.saturating_sub(before)));
-        });
-    }
-    result
 }
 
 fn clearance_node_envelope(node: &RTreeNode<PointEntry>) -> AABB<[f64; 2]> {
@@ -205,6 +184,12 @@ fn clearance_node_lower_bound(point: Point, node: &RTreeNode<PointEntry>) -> Squ
     let envelope = clearance_node_envelope(node);
     let [lower_x, lower_y] = envelope.lower();
     let [upper_x, upper_y] = envelope.upper();
+    clearance_aabb_lower_bound(point, [lower_x, lower_y, upper_x, upper_y])
+}
+
+/// Exact source-distance lower bound from a point to a clamped AABB.
+pub(crate) fn clearance_aabb_lower_bound(point: Point, aabb: [f64; 4]) -> SquaredDistanceKey {
+    let [lower_x, lower_y, upper_x, upper_y] = aabb;
     // An invalid envelope carries no pruning evidence.
     if !point.x.is_finite()
         || !point.y.is_finite()
@@ -243,7 +228,7 @@ fn nearer_clearance_limit<'a>(
         (Some(local), None) => Ok(Some(local)),
         (None, Some(global)) => Ok(Some(global)),
         (Some(local), Some(global)) => {
-            if clearance_point_cmp(local, global)?.is_lt() {
+            if local.cmp_distance(global)?.is_lt() {
                 Ok(Some(local))
             } else {
                 Ok(Some(global))
@@ -273,7 +258,7 @@ fn push_clearance_children<'a>(
         }
         let lower_bound = clearance_node_lower_bound(point, node);
         if let Some(limit) = limit
-            && clearance_point_cmp(&lower_bound, limit)?.is_gt()
+            && lower_bound.cmp_distance(limit)?.is_gt()
         {
             continue;
         }
@@ -292,7 +277,7 @@ fn push_clearance_children<'a>(
                 .get(current.wrapping_sub(1))
                 .expect("previous clearance child remains in the stack")
                 .lower_bound;
-            if !clearance_point_cmp(current_bound, previous_bound)?.is_gt() {
+            if !current_bound.cmp_distance(previous_bound)?.is_gt() {
                 break;
             }
             stack.swap(current, current.wrapping_sub(1));
@@ -403,7 +388,7 @@ impl ClearancePointQuery<'_> {
             if let Some(limit) = nearer_clearance_limit(local, incumbent)? {
                 #[cfg(test)]
                 CLEARANCE_POINT_RECHECKS.with(|work| work.set(work.get().saturating_add(1)));
-                if clearance_point_cmp(&node.lower_bound, limit)?.is_gt() {
+                if node.lower_bound.cmp_distance(limit)?.is_gt() {
                     continue;
                 }
             }
@@ -427,7 +412,7 @@ impl ClearancePointQuery<'_> {
             return Ok(None);
         };
         if let Some(incumbent) = incumbent
-            && !clearance_point_cmp(&key, incumbent)?.is_lt()
+            && !key.cmp_distance(incumbent)?.is_lt()
         {
             return Ok(None);
         }

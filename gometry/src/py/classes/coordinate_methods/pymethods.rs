@@ -149,7 +149,7 @@ impl PyCoordinates {
     pub fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, false)?,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, false),
         )
     }
 
@@ -161,7 +161,7 @@ impl PyCoordinates {
     pub fn __reversed__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, true)?,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, true),
         )
     }
 
@@ -197,11 +197,12 @@ impl PyCoordinates {
     }
 
     /// Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
-    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``): every tuple/column has that
-    /// shape. Nested/tuple output uses ``None`` where a coordinate lacks the
-    /// requested Z/M; ndarray columns and ``numpy.asarray`` use ``NaN`` there.
-    /// `select` changes which ordinates nested output, iteration, ndarray/dict
-    /// exports, and coordinate equality see; it does not change the geometry.
+    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``). This layout defines the schema
+    /// of coordinate tuples, nested output, matrices, dictionaries, and equality.
+    /// Tuple/nested output uses ``None`` where a coordinate lacks the requested
+    /// Z/M; matrices and dictionary columns use ``NaN`` there. Independent axis
+    /// accessors such as ``.z`` continue to read the source view, regardless of
+    /// the selected layout. Selection does not change the geometry.
     ///
     /// Parameters
     /// ----------
@@ -422,19 +423,22 @@ impl PyCoordinates {
             coordinates::CoordinateSource::Shape(shape) => {
                 coordinates_object(py, shape, self.layout)
             },
-            coordinates::CoordinateSource::Array(storage, missing) => {
-                let nested = match storage {
+            coordinates::CoordinateSource::Array(rows) => {
+                let nested = match rows.storage() {
                     GeometryArrayStorage::Mixed(shapes) => shapes
                         .iter()
                         .enumerate()
-                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
+                        .filter(|(row, _)| {
+                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
+                        })
                         .map(|(_, shape)| coordinates_object(py, shape, self.layout))
                         .collect::<PyResult<Vec<_>>>()?,
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         let map = row_map.as_deref();
-                        if let Some(mask) = missing
-                            && mask.len() != storage::point_logical_len(coords, map)
-                        {
+                        if rows.is_compact_nullable() {
+                            let mask = rows
+                                .missing()
+                                .expect("compact nullable rows carry validity");
                             let nested = mask
                                 .cursor()
                                 .filter_map(|(_, present)| present)
@@ -451,7 +455,6 @@ impl PyCoordinates {
                             return Ok(PyList::new(py, nested)?.unbind().into());
                         }
                         (0..storage::point_logical_len(coords, map))
-                            .filter(|&index| !missing.is_some_and(|mask| mask.is_missing(index)))
                             .map(|index| {
                                 coordinates_object(
                                     py,
@@ -465,10 +468,13 @@ impl PyCoordinates {
                     },
                     GeometryArrayStorage::Packed(
                         PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-                    ) => storage
+                    ) => rows
+                        .storage()
                         .iter_shapes()
                         .enumerate()
-                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
+                        .filter(|(row, _)| {
+                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
+                        })
                         .map(|(_, shape)| {
                             shape
                                 .map_err(PyErr::from)
@@ -482,23 +488,17 @@ impl PyCoordinates {
     }
 
     /// Value equality against another `Coordinates` or a sequence of coordinate
-    /// tuples. Other types defer with ``NotImplemented``. Provider exceptions
-    /// propagate; only non-iterable types yield ``NotImplemented``. Arc-identity
-    /// / short-circuit paths in ``coordinates_equal`` are preserved.
+    /// tuples. Other types defer with ``NotImplemented``. Errors from an
+    /// admitted iterator or item comparison propagate. Arc-identity /
+    /// short-circuit paths in ``coordinates_equal`` are preserved.
     pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
             return Ok(py_bool(py, self.coordinates_equal(py, &other_coords)?));
         }
-        // Do not call `try_iter` merely to probe — that drains one-shot
-        // generators. Attempt equality once; a TypeError (not iterable)
-        // becomes NotImplemented, other errors propagate.
-        match self.coordinates_equal_sequence(other) {
-            Ok(equal) => Ok(py_bool(py, equal)),
-            Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
-                Ok(py.NotImplemented())
-            },
-            Err(err) => Err(err),
-        }
+        let Some(items) = crate::boundary::reserve::py_iter_or_none(other)? else {
+            return Ok(py.NotImplemented());
+        };
+        Ok(py_bool(py, self.coordinates_equal_iter(items)?))
     }
 
     /// Whether a coordinate tuple appears among the vertices, using the same
@@ -647,7 +647,7 @@ impl PyCoordinates {
         let measure = self.view.exact_measure(py)?;
         let axes = match self.view.source() {
             coordinates::CoordinateSource::Shape(_) => measure.shape_axes(),
-            coordinates::CoordinateSource::Array(..) => measure.present_axes(),
+            coordinates::CoordinateSource::Array(_) => measure.present_axes(),
         };
         let len = measure.count_pyint(py).str()?.extract::<String>()?;
         Ok(format!("<Coordinates {} len={len}>", axes.as_str()))

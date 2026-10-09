@@ -221,22 +221,13 @@ impl PreparedLinework {
     }
 
     /// Global vertex index for a facet-local source vertex.
+    #[cfg(test)]
     pub(crate) fn facet_vertex_index(&self, facet: Facet, local: usize) -> usize {
         self.chain_vertex_offsets
             .get(facet.chain as usize)
             .expect("facet chain belongs to prepared linework")
             .wrapping_add(facet.first_vertex as usize)
             .wrapping_add(local)
-    }
-
-    /// Total linework vertex count across every chain.
-    pub(crate) fn vertex_count(&self) -> usize {
-        self.chains.last().map_or(0, |chain| {
-            self.chain_vertex_offsets
-                .last()
-                .expect("every prepared chain has a global offset")
-                .wrapping_add(chain.len())
-        })
     }
 
     fn locate_vertex(&self, global: usize) -> (usize, usize) {
@@ -258,6 +249,14 @@ impl PreparedLinework {
             .get(chain)
             .expect("global vertex belongs to a prepared chain")
             .point_at(local)
+    }
+
+    /// Full vertex at an admitted chain-local support position.
+    pub(crate) fn vertex_at_chain_local(&self, chain: u32, local: u32) -> Point {
+        self.chains
+            .get(chain as usize)
+            .expect("support chain belongs to prepared linework")
+            .point_at(local as usize)
     }
 
     pub(crate) fn segment_ordinal(&self, facet: Facet, index: usize) -> usize {
@@ -313,7 +312,7 @@ impl PreparedLinework {
 
     /// Every linework vertex as full `Point`s — the argmin probe source.
     pub(crate) fn vertex_points(&self) -> impl Iterator<Item = Point> + '_ {
-        (0..self.vertex_count()).map(|index| self.vertex_at(index))
+        self.chains.iter().flat_map(CoordSeq::points)
     }
 
     /// Single-chain fast path: direct column refs when the shape has exactly

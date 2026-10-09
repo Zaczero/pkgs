@@ -685,6 +685,34 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     assert invalid_substrings[2].is_empty
 
 
+def test_scalar_invalid_m_line_keeps_ownership_over_query_array() -> None:
+    invalid = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=4326)
+    queries = gm.GeometryArray(
+        [gm.Point(2.0, 0.0, crs=4326), gm.Point(5.0, 0.0, crs=4326)],
+        crs=4326,
+    )
+
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match='measured linear referencing requires every vertex to carry an M ordinate',
+    ):
+        invalid.line_locate(queries, basis='m')
+
+    measured = gm.LineString(
+        [(0.0, 0.0), (10.0, 0.0)],
+        m=[0.0, 100.0],
+        crs=4326,
+    )
+    line_rows = gm.GeometryArray([invalid, measured], crs=4326)
+    query_rows = gm.GeometryArray(
+        [gm.Point(2.0, 0.0, crs=4326), gm.Point(5.0, 0.0, crs=4326)],
+        crs=4326,
+    )
+    located = line_rows.line_locate(query_rows, basis='m')
+    assert math.isnan(located[0])
+    assert located[1] == pytest.approx(50.0)
+
+
 def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:
     points = gm.GeometryArray([
         gm.Point(0.0, 0.0, crs=4326),
@@ -1275,12 +1303,12 @@ def test_pooled_reductions_skip_missing_iterable_rows() -> None:
         assert gm.equals_exact(operation(values), operation(present))
 
     ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
-    pooled = gm.polygonize([ring, None])
-    dense = gm.polygonize([ring])
+    pooled = gm.polygonize_all([ring, None])
+    dense = gm.polygonize_all([ring])
     assert gm.equals_exact(pooled, dense).all()
     assert gm.equals_exact(
-        gm.polygonize_full([ring, None]).polygons,
-        gm.polygonize_full([ring]).polygons,
+        gm.polygonize_all([ring, None], diagnostics=True).polygons,
+        gm.polygonize_all([ring], diagnostics=True).polygons,
     ).all()
 
 

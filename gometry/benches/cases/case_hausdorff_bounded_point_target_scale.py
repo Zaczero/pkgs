@@ -11,8 +11,12 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -22,13 +26,15 @@ def _case(count: int) -> tuple[gm.LineString, gm.MultiPoint]:
     return source, target
 
 
-def _median_hausdorff(count: int) -> float:
+def _median_hausdorff(count: int, *, prepare: bool = True) -> float:
     source, target = _case(count)
     expected = math.sqrt(1.25)
     max_error = 1e-12
     for _ in range(3):
         actual = gm.hausdorff_distance(source, target, max_error=max_error)
         assert abs(actual - expected) <= max_error
+    if prepare:
+        prepare_measurement()
     samples = []
     for _ in range(9):
         start = time.perf_counter()
@@ -54,7 +60,7 @@ def main() -> None:
 
 
 def validate_case() -> None:
-    assert _median_hausdorff(2) > 0.0
+    assert _median_hausdorff(2, prepare=False) > 0.0
     emit_validation(
         'case_hausdorff_bounded_point_target_scale',
         useful_output={'count': 2, 'unit': 'target-points'},

@@ -412,6 +412,12 @@ def test_effective_release_policy_has_no_architecture_crossing(
         monkeypatch.setenv('CFLAGS', cflags)
         for prefix in ('CFLAGS', 'CXXFLAGS'):
             name = f'{prefix}_{target_suffix}'
+            monkeypatch.delenv(name, raising=False)
+            with pytest.raises(
+                AssertionError,
+                match=f'{name} is missing; release policy requires',
+            ):
+                artifact_common._effective_release_policy(target)
             monkeypatch.setenv(name, '-march=native')
             with pytest.raises(AssertionError, match=f'{name} disagrees'):
                 artifact_common._effective_release_policy(target)

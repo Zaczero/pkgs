@@ -133,8 +133,13 @@ scale; exact membership uses the source geometry with [`gm.covers`][gometry.cove
 ```python exec="on" source="block" result="text" session="catchment"
 import gometry as gm
 cells = gm.h3_cover(service_area, resolution=10)
-print('H3 cover created:', len(cells) > 0)
-print('source covers the station:', gm.covers(service_area, station))
+has_cells = len(cells) > 0
+station_is_covered = gm.covers(service_area, station)
+print('H3 cover created:', has_cells)
+print('source covers the station:', station_is_covered)
+assert has_cells
+assert cells.grid == 'h3'
+assert station_is_covered is True
 
 ```
 

@@ -6,6 +6,35 @@ use pyo3::exceptions::PyKeyboardInterrupt;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt as _;
 
+use crate::geometry::storage::ValidityMask;
+
+pub(crate) fn nullable_polygon_typed_empty_fixture() -> crate::array::PyGeometryArray {
+    let present = crate::array::PyGeometryArray::packed_polygons(
+        crate::geometry::CoordSeq::try_from_vecs(
+            vec![0.0, 1.0, 1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 1.0, 1.0, 0.0],
+            None,
+            None,
+        )
+        .expect("typed-empty fixture coordinates"),
+        crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(vec![0, 5], 5)
+            .expect("typed-empty fixture ring offsets"),
+        crate::geometry::CsrOffsetColumn::<crate::geometry::PolygonLevel>::try_new(
+            vec![0, 0, 1],
+            1,
+        )
+        .expect("typed-empty fixture polygon offsets"),
+        crate::Frame::None,
+    )
+    .expect("typed-empty fixture packs");
+    crate::array::PyGeometryArray::scatter_present_rows(
+        &present,
+        ValidityMask::from_vec(4, vec![true, false, true, false])
+            .expect("typed-empty fixture validity"),
+    )
+    .expect("typed-empty fixture admits")
+}
+
 pub(crate) struct CountingAllocator;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -267,6 +296,69 @@ pub(crate) mod binary_dispatch_counters {
         update(|snapshot| {
             snapshot.point_predicate_dispatches =
                 snapshot.point_predicate_dispatches.saturating_add(1);
+        });
+    }
+}
+
+pub(crate) mod linear_reference_counters {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub(crate) struct Snapshot {
+        pub(crate) prepared_chart_index_resolutions: usize,
+        pub(crate) coordseq_chart_index_builds: usize,
+        pub(crate) resolved_metrics: usize,
+        pub(crate) geographic_metric_scopes: usize,
+    }
+
+    thread_local! {
+        static COUNTERS: Cell<Snapshot> = const { Cell::new(Snapshot {
+            prepared_chart_index_resolutions: 0,
+            coordseq_chart_index_builds: 0,
+            resolved_metrics: 0,
+            geographic_metric_scopes: 0,
+        }) };
+    }
+
+    pub(crate) fn reset() {
+        COUNTERS.with(|counters| counters.set(Snapshot::default()));
+    }
+
+    pub(crate) fn snapshot() -> Snapshot {
+        COUNTERS.with(Cell::get)
+    }
+
+    pub(crate) fn prepared_chart_index_resolution() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.prepared_chart_index_resolutions =
+                snapshot.prepared_chart_index_resolutions.saturating_add(1);
+            counters.set(snapshot);
+        });
+    }
+
+    pub(crate) fn coordseq_chart_index_build() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.coordseq_chart_index_builds =
+                snapshot.coordseq_chart_index_builds.saturating_add(1);
+            counters.set(snapshot);
+        });
+    }
+
+    pub(crate) fn resolved_metric() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.resolved_metrics = snapshot.resolved_metrics.saturating_add(1);
+            counters.set(snapshot);
+        });
+    }
+
+    pub(crate) fn geographic_metric_scope() {
+        COUNTERS.with(|counters| {
+            let mut snapshot = counters.get();
+            snapshot.geographic_metric_scopes = snapshot.geographic_metric_scopes.saturating_add(1);
+            counters.set(snapshot);
         });
     }
 }

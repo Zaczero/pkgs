@@ -164,6 +164,8 @@ impl ResolvedMetric {
     /// resolution a single time; per-shape lon/lat domain validation is NOT done
     /// here (the per-pair kernel validates each operand it actually measures).
     pub(crate) fn from_model(model: &MetricModel) -> Result<Self> {
+        #[cfg(test)]
+        crate::test_support::linear_reference_counters::resolved_metric();
         Ok(match model {
             MetricModel::Planar { to_metre } => Self::Planar {
                 to_metre: *to_metre,

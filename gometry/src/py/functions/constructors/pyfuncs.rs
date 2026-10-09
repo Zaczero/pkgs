@@ -22,7 +22,7 @@ use crate::py::numpy;
 /// minx, miny, maxx, maxy : float
 ///     Finite rectangle bounds; each minimum must not exceed its maximum,
 ///     except that ``minx > maxx`` is allowed with ``wrap='split'`` to wrap a
-///     geographic box across the antimeridian.
+///     geographic box across the CRS frame's longitude seam.
 ///
 /// crs : str or int, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
@@ -36,10 +36,12 @@ use crate::py::numpy;
 ///     guarantee does not apply on that path.
 ///
 /// wrap : {'split'}, optional
-///     Antimeridian handling for geographic (EPSG:4326) boxes. ``'split'``
-///     lets ``minx`` exceed ``maxx`` to span the 180° meridian, returning a
-///     `MultiPolygon` split at the antimeridian. The default (``None``) leaves
-///     coordinates unwrapped and requires ``minx <= maxx``.
+///     Seam handling for boxes with a geographic CRS. ``'split'`` lets
+///     ``minx`` exceed ``maxx`` to cross the frame's longitude seam, returning
+///     a `MultiPolygon`. The default (``None``) leaves coordinates unwrapped
+///     and requires ``minx <= maxx``. Latitude bounds must lie within the frame's
+///     poles. Longitude endpoints must lie within its native half-period unless
+///     their eastward span is at least one period, which selects the full band.
 ///
 /// ccw : bool, default True
 ///     If ``True`` the ring is counter-clockwise; ``False`` makes it clockwise.
@@ -50,8 +52,8 @@ use crate::py::numpy;
 /// Returns
 /// -------
 /// Polygon | MultiPolygon
-///     A rectangular polygon, or a MultiPolygon when ``wrap='split'`` spans
-///     the antimeridian.
+///     A rectangular polygon, or a MultiPolygon when ``wrap='split'`` crosses
+///     the frame's longitude seam.
 ///
 /// Raises
 /// ------
@@ -60,9 +62,10 @@ use crate::py::numpy;
 ///     ``wrap='split'``.
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-///     without ``crs=4326``.
+///     without a geographic CRS.
 /// GeometryError
-///     If ``epoch`` is not a finite decimal year.
+///     If ``epoch`` is not a finite decimal year or wrapped geographic bounds
+///     lie outside their CRS frame.
 ///
 /// Examples
 /// --------
@@ -289,7 +292,7 @@ fn try_points_from_arc_columns(
 ///     and length measure the stored chart edges when the chart-edge path applies.
 ///
 /// wrap : {'split'}, optional
-///     Antimeridian handling for geographic (EPSG:4326) boxes — same as `box`.
+///     Seam handling for geographic boxes — same as `box`.
 ///
 /// ccw : bool, default True
 ///     If ``True`` each ring is counter-clockwise; ``False`` makes it clockwise.
@@ -308,9 +311,10 @@ fn try_points_from_arc_columns(
 ///     If bounds are non-finite or invalid per row.
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
-///     without ``crs=4326``.
+///     without a geographic CRS.
 /// GeometryError
-///     If every argument is scalar (use `box`) or ``epoch`` is invalid.
+///     If every argument is scalar (use `box`), ``epoch`` is invalid, or wrapped
+///     geographic bounds lie outside their CRS frame.
 ///
 /// Examples
 /// --------

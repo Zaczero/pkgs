@@ -12,8 +12,9 @@
 //! every segment pair. See `distance_disjoint_with_parts` for the convexity
 //! argument.
 //!
-//! Minimum-clearance traversal builds the same facet count in source order
-//! and augments its nodes with exact-source-supported direction strips. Directed
+//! Minimum-clearance traversal partitions facets spatially, choosing a source
+//! ordinal median only when it gives tighter normalized child bounds, and
+//! augments every node with exact-source-supported direction strips. Directed
 //! AABB and strip bounds reject only when a certified source-space lower bound
 //! strictly exceeds the exact incumbent; uncertain comparisons use exact
 //! arithmetic. The other distance paths retain their squared/hypot kernels and

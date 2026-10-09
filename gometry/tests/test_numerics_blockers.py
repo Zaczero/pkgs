@@ -186,7 +186,7 @@ def test_tiny_ring_area_decision_keeps_nonzero_orientation() -> None:
         [(s, s), (0.0, s)],
         [(0.0, s), (0.0, 0.0)],
     ])
-    polys = gm.polygonize(edges)
+    polys = gm.polygonize_all(edges)
     assert len(polys) >= 1
     assert not polys[0].is_empty
 

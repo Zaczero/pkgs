@@ -12,6 +12,7 @@ use crate::geometry::{
 #[cfg(test)]
 std::thread_local! {
     static SHAPE_ITER_MATERIALIZATIONS: Cell<usize> = const { Cell::new(0) };
+    static CSR_SIZE_ROW_VISITS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -27,6 +28,21 @@ pub(crate) fn shape_iter_materializations() -> usize {
 #[cfg(test)]
 fn record_shape_iter_materialization() {
     SHAPE_ITER_MATERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+pub(crate) fn reset_csr_size_row_visits() {
+    CSR_SIZE_ROW_VISITS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn csr_size_row_visits() -> usize {
+    CSR_SIZE_ROW_VISITS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn record_csr_size_row_visit() {
+    CSR_SIZE_ROW_VISITS.with(|count| count.set(count.get().saturating_add(1)));
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,9 +205,48 @@ impl RowSelectionRef<'_> {
         admitted_csr_window!(offsets, self.physical(logical))
     }
 
+    pub(crate) const fn csr_rows(
+        self,
+        logical: std::ops::Range<usize>,
+    ) -> Option<std::ops::Range<usize>> {
+        match self {
+            Self::Identity => Some(logical),
+            Self::Window { start, .. } => {
+                Some(start.wrapping_add(logical.start)..start.wrapping_add(logical.end))
+            },
+            Self::Gather(_) => None,
+        }
+    }
+
     pub(crate) const fn is_identity(self) -> bool {
         matches!(self, Self::Identity)
     }
+}
+
+/// Values covered by contiguous CSR rows. Gather selections have no single
+/// endpoint range and return `None`.
+pub(crate) fn csr_value_range(
+    offsets: &[i32],
+    row_map: RowSelectionRef<'_>,
+    logical_rows: std::ops::Range<usize>,
+) -> Option<std::ops::Range<usize>> {
+    let physical_rows = row_map.csr_rows(logical_rows)?;
+    let endpoints = offsets
+        .get(physical_rows.start..=physical_rows.end)
+        .expect("admitted CSR rows include both endpoint offsets");
+    let start = usize::try_from(
+        *endpoints
+            .first()
+            .expect("CSR endpoint range contains the first offset"),
+    )
+    .expect("admitted CSR offsets are non-negative");
+    let end = usize::try_from(
+        *endpoints
+            .last()
+            .expect("CSR endpoint range contains the final offset"),
+    )
+    .expect("admitted CSR offsets are non-negative");
+    Some(start..end)
 }
 
 /// Expand selected line-row construction into hot per-row callers. The row

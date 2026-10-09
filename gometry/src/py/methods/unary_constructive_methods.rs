@@ -132,7 +132,7 @@ GeometryArray[Point]
 ";
     tail: r"See Also
 --------
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 polylabel : Pole of inaccessibility (best label anchor).
 
 Raises
@@ -425,7 +425,7 @@ GeometryArray
 --------
 polylabel : Approximate pole-of-inaccessibility label point.
 maximum_inscribed_radius : The radius alone.
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 centroid : Area/length-weighted center (may fall outside).
 
 Raises
@@ -750,10 +750,11 @@ method_doc! {
     doc_point_on_surface;
     body: r"Representative point guaranteed to lie on the geometry. Geographic (lon/lat)
 input crossing the antimeridian is auto-split-normalized; no manual
-``split_antimeridian`` is required. Always inside (or on) the geometry,
-unlike centroid. The representative point is computed in XY and does not
-imply a source Z/M. On planar polygonal input, the first polygon component
-wins when representative chords have equal width.
+``split_antimeridian`` is required. The point lies inside or on the geometry,
+unlike centroid. Polygonal scanline candidates are checked after rounding; an
+uncovered candidate falls back to a source boundary point. The representative
+is computed in XY and does not imply a source Z/M. On planar polygonal input,
+the first polygon component wins when representative chords have equal width.
 
 See Also
 --------
@@ -773,7 +774,7 @@ Point
 Returns
 -------
 GeometryArray[Point]
-    One interior point per row.
+    One point inside or on each row's geometry.
 
 ";
     tail: r"
@@ -795,7 +796,7 @@ method_doc! {
     body: r"Build polygons from a geometry's own linework, automatically noding
 crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
 polygons from a pile of edges pooled across many geometries, use free function
-``polygonize`` on an iterable of
+``polygonize_all`` on an iterable of
 values. Input ordinates are carried where possible; unsourceable noding seams
 yield XY.";
     scalar: r"
@@ -814,10 +815,14 @@ Groups of GeometryArray
     One ragged group of polygons per input geometry, in input order — each
     input's OWN linework is polygonized independently (row ``i`` is
     ``self[i].polygonize()``). To pool ALL rows' edges into one graph so a
-    ring can close across inputs, use the free function ``polygonize``.
+    ring can close across inputs, use the free function ``polygonize_all``.
 
 ";
     tail: r"
+See Also
+--------
+polygonize_all : Pool linework across all supplied geometries.
+
 Raises
 ------
 GeometryError
@@ -852,7 +857,7 @@ See Also
 --------
 maximum_inscribed_circle : Certified filled disk from its own center search.
 centroid : Area/length-weighted center (may fall outside).
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 
 Parameters
 ----------";

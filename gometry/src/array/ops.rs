@@ -714,7 +714,7 @@ impl PyGeometryArray {
 
     /// Per-row polygonize: each input geometry's own linework → its polygons,
     /// one group per input (`= scalar polygonize per row`). Pool raw linework
-    /// with the free function ``polygonize``; passing a GeometryArray there
+    /// with the free function ``polygonize_all``; passing a GeometryArray there
     /// pools its present rows.
     pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<Groups> {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
