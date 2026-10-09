@@ -222,8 +222,8 @@ impl Basis {
         if length.is_finite() && length != 0.0 {
             return Ok(Self::from_vector(dx, dy));
         }
-        let start_x = axis.lifted_site_longitude(&start_longitude)?;
-        let end_x = axis.lifted_site_longitude(&end_longitude)?;
+        let start_x = axis.lifted_site_longitude(start_longitude)?;
+        let end_x = axis.lifted_site_longitude(end_longitude)?;
         let magnitude = start_x
             .abs()
             .max(end_x.abs())
@@ -3018,7 +3018,7 @@ mod tests {
         let axis = frame.longitude();
         let west = axis
             .lifted_site_longitude(
-                &ordered
+                ordered
                     .first()
                     .expect("chart hull has a west site")
                     .longitude(),
@@ -3026,7 +3026,7 @@ mod tests {
             .unwrap();
         let east = axis
             .lifted_site_longitude(
-                &ordered
+                ordered
                     .last()
                     .expect("chart hull has an east site")
                     .longitude(),

@@ -863,10 +863,10 @@ mod tests {
         let (_, _chart, sites) = chart_sites(&shape, frame);
         let axis = frame.longitude();
         let first_lift = axis
-            .lifted_site_longitude(&sites[2].longitude())
+            .lifted_site_longitude(sites[2].longitude())
             .expect("first translated site");
         let second_lift = axis
-            .lifted_site_longitude(&sites[3].longitude())
+            .lifted_site_longitude(sites[3].longitude())
             .expect("adjacent translated site");
         assert_eq!(first_lift.to_bits(), second_lift.to_bits());
         assert_eq!(
@@ -905,12 +905,12 @@ mod tests {
         let last = sites[*ordered.last().expect("nonempty sites")];
         let axis = frame.longitude();
         assert_eq!(
-            axis.lifted_site_longitude(&first.longitude())
+            axis.lifted_site_longitude(first.longitude())
                 .expect("chart west"),
             0.0
         );
         assert_eq!(
-            axis.lifted_site_longitude(&last.longitude())
+            axis.lifted_site_longitude(last.longitude())
                 .expect("chart east"),
             240.0
         );

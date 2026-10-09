@@ -372,6 +372,10 @@ fn source_ordinates(shape: &Shape, split_x: bool, owner_coordinate_count: usize)
         ordinates.push(if split_x { point.x } else { point.y });
     });
     ordinates.sort_unstable_by(f64::total_cmp);
+    #[expect(
+        clippy::float_cmp,
+        reason = "source ordinates are finite and exact equality merges signed zero but preserves adjacent vertices"
+    )]
     ordinates.dedup_by(|left, right| *left == *right);
     ordinates
 }
@@ -2234,6 +2238,28 @@ mod subdivision_tests {
                 .is_some_and(|count| count <= 8)
         }));
         assert_eq!(partition_calls(), 0);
+    }
+
+    #[test]
+    fn source_ordinate_dedup_merges_signed_zero_and_keeps_adjacent_values() {
+        let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
+        let shape = line_shape(&[
+            Point::new_raw_xy(-0.0, 0.0),
+            Point::new_raw_xy(-30.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(-10.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(adjacent, 0.0),
+        ]);
+
+        let ordinates = source_ordinates(&shape, true, 6);
+
+        assert_eq!(ordinates.len(), 5);
+        assert_eq!(ordinates[0].to_bits(), (-30.0_f64).to_bits());
+        assert_eq!(ordinates[1].to_bits(), (-10.0_f64).to_bits());
+        assert_eq!(ordinates[2].abs().to_bits(), 0.0_f64.to_bits());
+        assert_eq!(ordinates[3].to_bits(), 1.0_f64.to_bits());
+        assert_eq!(ordinates[4].to_bits(), adjacent.to_bits());
     }
 
     #[test]
