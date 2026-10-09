@@ -710,19 +710,22 @@ pub(crate) fn coverage_factory_shapes(
 /// distant parts, and the band behind a seam split, with unrelated cells.
 pub(crate) fn envelope_windows(cover_shape: &Shape) -> Vec<crate::geometry::Bounds> {
     let mut windows = Vec::new();
-    cover_shape.for_each_component(&mut |component| {
-        let Some(bounds) = component.to_shape().bounds() else {
-            return;
-        };
-        let (west, south, east, north) =
-            (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
-        if west > east {
-            windows.push(crate::geometry::Bounds::new_raw(west, south, 180.0, north));
-            windows.push(crate::geometry::Bounds::new_raw(-180.0, south, east, north));
-        } else {
-            windows.push(bounds);
-        }
-    });
+    cover_shape
+        .try_for_each_first_component(&mut |component| {
+            let Some(bounds) = component.to_shape().bounds() else {
+                return Ok(());
+            };
+            let (west, south, east, north) =
+                (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
+            if west > east {
+                windows.push(crate::geometry::Bounds::new_raw(west, south, 180.0, north));
+                windows.push(crate::geometry::Bounds::new_raw(-180.0, south, east, north));
+            } else {
+                windows.push(bounds);
+            }
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("component windows cannot fail");
     windows
 }
 
@@ -757,6 +760,44 @@ mod tests {
     use crate::geographic::{GeographicFrame, ScalarGeographicView};
     use crate::geometry::{CoordSeq, GeometryErrorKind, LineSeq, Point, Shape};
     use crate::grid::CoverError;
+
+    #[test]
+    fn envelope_windows_preserve_distinct_occurrences_and_reduce_shared_owners() {
+        fn line(west: f64, east: f64) -> Shape {
+            Shape::LineString(
+                LineSeq::segment(Point::new_raw_xy(west, 0.0), Point::new_raw_xy(east, 0.0))
+                    .expect("valid test line"),
+            )
+        }
+
+        let source = Shape::geometry_collection(vec![line(-5.0, -4.0), line(4.0, 5.0)])
+            .expect("distinct envelope components");
+        let mut expanded = Vec::new();
+        source.for_each_component(&mut |component| {
+            if let Some(bounds) = component.to_shape().bounds() {
+                expanded.push(bounds);
+            }
+        });
+        assert_eq!(super::envelope_windows(&source), expanded);
+
+        let mut shared = line(-5.0, -4.0);
+        for _ in 0..9 {
+            shared = Shape::geometry_collection(vec![shared.clone(), shared])
+                .expect("shared collection node");
+        }
+        let mut occurrences = 0;
+        shared.for_each_component(&mut |_| occurrences += 1);
+        assert_eq!(occurrences, 1 << 9);
+        let mut first_owner_components = 0;
+        shared
+            .try_for_each_first_component(&mut |_| {
+                first_owner_components += 1;
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .expect("component traversal cannot fail");
+        assert_eq!(first_owner_components, 2);
+        assert_eq!(super::envelope_windows(&shared).len(), 2);
+    }
 
     #[test]
     fn canonicalizes_shuffled_duplicates() {
