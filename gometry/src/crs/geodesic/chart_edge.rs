@@ -15,7 +15,9 @@ use crate::geometry::exact_arith::{
     retained_delta_scaled, retained_source_interval_initial_piece_count,
     retained_source_interval_reads_as, retained_source_sheet_site,
 };
-use crate::geometry::interval::Interval as CertifiedInterval;
+use crate::geometry::interval::{
+    HALF_PI_LOWER, HALF_PI_UPPER, Interval as CertifiedInterval, PI_LOWER, PI_UPPER,
+};
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
@@ -65,10 +67,6 @@ const MAX_GK15_EVALUATIONS: usize = 5_000;
 const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
 const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
-const PI_LOWER: f64 = 3.141_592_653_589_793;
-const PI_UPPER: f64 = 3.141_592_653_589_793_6;
-const HALF_PI_LOWER: f64 = 1.570_796_326_794_896_6;
-const HALF_PI_UPPER: f64 = 1.570_796_326_794_896_8;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -471,7 +469,18 @@ impl ChartEdge {
         let latitude_rate = CertifiedInterval::exact(latitude_delta)
             .mul(CertifiedInterval::exact(self.latitude_unit.abs()))
             .upper();
-        let longitude_rate = self.longitude_delta.abs().next_up();
+        let longitude_rate = if self.longitude_delta_native.is_finite() {
+            CertifiedInterval::from_bounds(
+                self.longitude_delta_native.next_down(),
+                self.longitude_delta_native.next_up(),
+            )
+            .mul(CertifiedInterval::exact(
+                self.frame.longitude().radians_per_unit(),
+            ))
+            .max_abs_upper()
+        } else {
+            self.longitude_delta.abs().next_up()
+        };
         let speed = if self.is_parallel() {
             self.parallel_speed_upper(n_max, longitude_rate)
         } else {
@@ -1431,8 +1440,16 @@ impl ChartMetric for super::GeodesicMetric {
         )
     }
 
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64 {
-        super::edge_distance::curvature_hessian_bound(&self.geodesic, lower_distance)
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64 {
+        super::edge_distance::curvature_hessian_bound(
+            &self.geodesic,
+            lower_distance,
+            upper_distance,
+        )
     }
 
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64 {

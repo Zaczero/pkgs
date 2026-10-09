@@ -1369,7 +1369,11 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn backend_floor(self) -> f64 {
-        self.semi_major * Self::BACKEND_RELATIVE
+        crate::geometry::interval::Interval::exact(self.semi_major)
+            .mul(crate::geometry::interval::Interval::exact(
+                Self::BACKEND_RELATIVE,
+            ))
+            .upper()
     }
 
     pub(crate) fn minimum_gap(self) -> f64 {
@@ -1381,7 +1385,14 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
-        self.backend_floor() * evaluations.max(1.0)
+        crate::geometry::interval::Interval::exact(self.semi_major)
+            .mul(crate::geometry::interval::Interval::exact(
+                Self::BACKEND_RELATIVE,
+            ))
+            .mul(crate::geometry::interval::Interval::exact(
+                evaluations.max(1.0),
+            ))
+            .upper()
     }
 }
 
@@ -1526,7 +1537,11 @@ pub(crate) trait ChartMetric {
         source_speed: f64,
         source_azimuth: f64,
     ) -> Result<ChartPointDistanceSample>;
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64;
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64;
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
     fn chart_area_density(
         &self,

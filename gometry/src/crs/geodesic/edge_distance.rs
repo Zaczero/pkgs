@@ -9,13 +9,13 @@ use super::chart_edge::ChartEdge;
 use super::ellipsoid_metric::inverse_distance_azimuths;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
+use crate::geometry::interval::Interval as CertifiedInterval;
 use crate::geometry::{
     ChartEdgeDifferentialBounds, GeodesicNumericalPolicy, Point, PointEdgeMinimum, PointEdgeQuery,
     PointEdgeQueryResult,
 };
 
 const MAX_EVALUATIONS: usize = 128;
-const CURVATURE_CUT_LOCUS_FRACTION: f64 = 0.999;
 
 #[derive(Default)]
 pub(crate) struct PointEdgeScratch {
@@ -544,60 +544,155 @@ fn interval_lower_bound(
     geodesic: &Geodesic,
     policy: GeodesicNumericalPolicy,
 ) -> f64 {
-    let width = interval.t1 - interval.t0;
-    let lipschitz = ((interval.d0 + interval.d1 - derivative_bounds.speed * width) / 2.0).max(0.0);
-    let d_lower = lipschitz;
-    let curvature = curvature_hessian_bound(geodesic, d_lower);
-    let second_derivative = derivative_bounds.speed * derivative_bounds.speed * curvature
-        + derivative_bounds.covariant_acceleration;
+    let width = CertifiedInterval::exact(interval.t1).sub(CertifiedInterval::exact(interval.t0));
+    let speed_span = CertifiedInterval::exact(derivative_bounds.speed).mul(width);
+    let lipschitz_interval = CertifiedInterval::exact(interval.d0)
+        .add(CertifiedInterval::exact(interval.d1))
+        .sub(speed_span)
+        .div(CertifiedInterval::exact(2.0));
+    let lipschitz = lipschitz_interval.lower().max(0.0);
+    let hessian_allowance = policy.evaluation_allowance(4.0).next_up();
+    let distance_lower = lipschitz_interval
+        .sub(CertifiedInterval::exact(hessian_allowance))
+        .lower()
+        .max(0.0);
+    let distance_upper = CertifiedInterval::exact(interval.d0.max(interval.d1))
+        .add(speed_span)
+        .add(CertifiedInterval::exact(hessian_allowance))
+        .upper();
+    let distance_hessian = curvature_hessian_bound(geodesic, distance_lower, distance_upper);
+    let second_derivative = if distance_hessian.is_finite() {
+        CertifiedInterval::exact(derivative_bounds.speed)
+            .mul(CertifiedInterval::exact(derivative_bounds.speed))
+            .mul(CertifiedInterval::exact(distance_hessian))
+            .add(CertifiedInterval::exact(
+                derivative_bounds.covariant_acceleration,
+            ))
+            .upper()
+    } else {
+        f64::INFINITY
+    };
     let mut lower = lipschitz;
-    if second_derivative.is_finite() {
-        let l0 = |t: f64| {
-            interval.d0 + interval.g0 * (t - interval.t0)
-                - second_derivative * (t - interval.t0) * (t - interval.t0) / 2.0
-        };
-        let l1 = |t: f64| {
-            interval.d1 + interval.g1 * (t - interval.t1)
-                - second_derivative * (t - interval.t1) * (t - interval.t1) / 2.0
-        };
-        let mut parabola = l0(interval.t0).max(l1(interval.t0));
-        parabola = parabola.min(l0(interval.t1).max(l1(interval.t1)));
+    if second_derivative.is_finite() && interval.g0.is_finite() && interval.g1.is_finite() {
+        let relative_slope_allowance = CertifiedInterval::exact(4.0).mul(CertifiedInterval::exact(
+            GeodesicNumericalPolicy::BACKEND_RELATIVE,
+        ));
+        let slope_allowance = CertifiedInterval::exact(derivative_bounds.speed)
+            .mul(relative_slope_allowance)
+            .upper();
+        let g0 =
+            CertifiedInterval::exact(interval.g0).sub(CertifiedInterval::exact(slope_allowance));
+        let g1 =
+            CertifiedInterval::exact(interval.g1).sub(CertifiedInterval::exact(slope_allowance));
+        let endpoint_allowance = policy.backend_floor().next_up();
+        let d0 = CertifiedInterval::exact(interval.d0)
+            .sub(CertifiedInterval::exact(endpoint_allowance))
+            .lower();
+        let d1 = CertifiedInterval::exact(interval.d1)
+            .sub(CertifiedInterval::exact(endpoint_allowance))
+            .lower();
+        let b = CertifiedInterval::exact(second_derivative);
+        let zero = CertifiedInterval::exact(0.0);
+        let half = CertifiedInterval::exact(2.0);
 
-        // The two supporting parabolas share their quadratic term, so their
-        // crossing is the root of a linear equation.
-        let a = interval.g0 - interval.g1 + second_derivative * (interval.t0 - interval.t1);
-        let c = interval.d0 - interval.d1 - interval.g0 * interval.t0
-            + interval.g1 * interval.t1
-            + second_derivative / 2.0 * (interval.t0 - interval.t1) * (-interval.t0 - interval.t1);
-        if a != 0.0 {
-            let crossing = -c / a;
-            if (interval.t0..=interval.t1).contains(&crossing) {
-                parabola = parabola.min(l0(crossing).max(l1(crossing)));
+        let left_start = lower_parabola(d0, g0, b, zero);
+        let right_start = lower_parabola(d1, g1, b, width.neg());
+        let start = left_start.max(right_start).lower();
+        let left_end = lower_parabola(d0, g0, b, width);
+        let right_end = lower_parabola(d1, g1, b, zero);
+        let end = left_end.max(right_end).lower();
+        let mut parabola = start.min(end);
+
+        // Both supporting parabolas share their quadratic term, so their
+        // crossing is linear in the offset from the interval start.
+        let slope = g0.sub(g1).sub(b.mul(width));
+        let intercept = CertifiedInterval::exact(d0)
+            .sub(CertifiedInterval::exact(d1))
+            .add(g1.mul(width))
+            .add(b.mul(width.mul(width)).div(half));
+        if !slope.contains_zero() {
+            let crossing = intercept.neg().div(slope);
+            let domain = CertifiedInterval::from_bounds(0.0, width.upper());
+            if crossing.intersects(domain) {
+                let crossing = CertifiedInterval::from_bounds(
+                    crossing.lower().max(0.0),
+                    crossing.upper().min(width.upper()),
+                );
+                let left_at_crossing = lower_parabola(d0, g0, b, crossing);
+                let right_offset = crossing.sub(width);
+                let right_at_crossing = lower_parabola(d1, g1, b, right_offset);
+                parabola = parabola.min(left_at_crossing.max(right_at_crossing).lower());
             }
         }
         lower = lower.max(parabola);
     }
-    (lower - policy.backend_floor()).max(0.0)
+    CertifiedInterval::exact(lower)
+        .sub(CertifiedInterval::exact(policy.backend_floor().next_up()))
+        .lower()
+        .max(0.0)
 }
 
-pub(super) fn curvature_hessian_bound(geodesic: &Geodesic, distance: f64) -> f64 {
-    if distance <= 0.0 {
+fn lower_parabola(
+    distance: f64,
+    slope: CertifiedInterval,
+    second_derivative: CertifiedInterval,
+    offset: CertifiedInterval,
+) -> CertifiedInterval {
+    CertifiedInterval::exact(distance)
+        .add(slope.mul(offset))
+        .sub(
+            second_derivative
+                .mul(offset.mul(offset))
+                .div(CertifiedInterval::exact(2.0)),
+        )
+}
+
+/// Bound the distance Hessian only inside a certified normal ball.
+///
+/// For an ellipsoid with semiaxes `a` and `b`, its principal curvatures are
+/// bounded by `κ = max(a/b², b/a²)`. Rauch comparison places the first
+/// conjugate point at least `π/κ` away. Klingenberg's alternative is half the
+/// length of a geodesic loop; Fenchel's total-curvature theorem, allowing a
+/// `π` corner at the loop base, bounds that loop length below by `π/κ`.
+/// Therefore the injectivity radius is at least `π/(2κ)`. Before that radius,
+/// Hessian comparison with Euclidean space and the nonnegative Gaussian
+/// curvature gives `0 <= Hess(distance) <= 1/r`.
+///
+/// `distance_lower` and `distance_upper` must already enclose every distance
+/// in the interval, including the backend allowance.
+pub(super) fn curvature_hessian_bound(
+    geodesic: &Geodesic,
+    distance_lower: f64,
+    distance_upper: f64,
+) -> f64 {
+    if !(distance_lower.is_finite() && distance_lower > 0.0 && distance_upper.is_finite()) {
         return f64::INFINITY;
     }
-    let e2 = geodesic.f * (2.0 - geodesic.f);
-    let denominator = geodesic.a * geodesic.a * (1.0 - e2);
-    let equatorial = 1.0 / denominator;
-    let polar = (1.0 - e2) * (1.0 - e2) / denominator;
-    let curvature_high = equatorial.max(polar);
-    let root = curvature_high.sqrt();
-    let angle = root * distance;
-    if angle < std::f64::consts::FRAC_PI_2 {
-        return 1.0 / distance;
-    }
-    if angle >= CURVATURE_CUT_LOCUS_FRACTION * std::f64::consts::PI {
+    let one = CertifiedInterval::exact(1.0);
+    let flattening = CertifiedInterval::exact(geodesic.f);
+    let c = one.sub(flattening.mul(CertifiedInterval::exact(2.0).sub(flattening)));
+    if c.lower() <= 0.0 {
         return f64::INFINITY;
     }
-    root * angle.tan().recip().abs()
+    let semi_major = CertifiedInterval::exact(geodesic.a);
+    let semi_minor = semi_major.mul(c.sqrt());
+    let semi_major_squared = semi_major.mul(semi_major);
+    let semi_minor_squared = semi_minor.mul(semi_minor);
+    let equatorial = semi_major.div(semi_minor_squared);
+    let polar = semi_minor.div(semi_major_squared);
+    let maximum_principal_curvature = equatorial.max(polar);
+    let injectivity_radius_lower = CertifiedInterval::from_bounds(
+        crate::geometry::interval::PI_LOWER,
+        crate::geometry::interval::PI_UPPER,
+    )
+    .div(CertifiedInterval::exact(2.0).mul(maximum_principal_curvature))
+    .lower();
+    if !(distance_upper < injectivity_radius_lower) {
+        return f64::INFINITY;
+    }
+    CertifiedInterval::exact(1.0)
+        .div(CertifiedInterval::exact(distance_lower))
+        .upper()
 }
 
 #[cfg(test)]
@@ -796,11 +891,71 @@ mod tests {
         let end = Point::new_raw_xy(1.0e-10, 0.0);
         let edge = metric.chart_edge(start, end).unwrap();
         let minimum = point_edge_minimum(&metric, point, start, end);
-        assert!(curvature_hessian_bound(&metric.geodesic, minimum.distance).is_infinite());
+        assert!(
+            curvature_hessian_bound(&metric.geodesic, minimum.distance, minimum.distance)
+                .is_infinite()
+        );
         let oracle = dense_oracle(&metric, point, &edge);
         assert!((minimum.distance - oracle).abs() <= 4.0e-11 * metric.geodesic.a);
         assert!(!minimum.budget_exhausted);
         assert!(minimum.evaluations <= 128);
+    }
+
+    #[test]
+    fn hessian_bound_requires_the_whole_distance_interval_inside_its_normal_ball() {
+        let sphere = Geodesic::new(1.0, 0.0);
+        let hessian = curvature_hessian_bound(&sphere, 0.2, 1.4);
+        assert!(hessian.is_finite());
+        assert!(hessian >= 5.0);
+        assert!(curvature_hessian_bound(&sphere, 0.2, 1.6).is_infinite());
+        assert!(curvature_hessian_bound(&sphere, 0.0, 0.2).is_infinite());
+    }
+
+    #[test]
+    fn spherical_antipodal_interval_lower_never_exceeds_its_attained_endpoint() {
+        let geodesic = Geodesic::new(1.0, 0.0);
+        let frame = GeographicFrame::crs84();
+        let latitude = 0.2_f64.to_degrees();
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(0.0, -latitude),
+            Point::new_raw_xy(0.0, latitude),
+            frame,
+        )
+        .unwrap();
+        let query = Point::new_raw_xy(180.0, 0.0);
+        let (distance0, azimuth0) = sample(&geodesic, query, &edge, 0.0).unwrap();
+        let (distance1, azimuth1) = sample(&geodesic, query, &edge, 1.0).unwrap();
+        let derivative0 = edge.derivatives(0.0, &geodesic);
+        let derivative1 = edge.derivatives(1.0, &geodesic);
+        let lower = interval_lower_bound(
+            IntervalEndpoints {
+                t0: 0.0,
+                d0: distance0,
+                g0: distance_derivative(derivative0, distance0, azimuth0),
+                t1: 1.0,
+                d1: distance1,
+                g1: distance_derivative(derivative1, distance1, azimuth1),
+            },
+            edge.differential_bounds(&geodesic),
+            &geodesic,
+            GeodesicNumericalPolicy::new(geodesic.a),
+        );
+        let radians_per_degree = CertifiedInterval::from_bounds(
+            crate::geometry::interval::PI_LOWER,
+            crate::geometry::interval::PI_UPPER,
+        )
+        .div(CertifiedInterval::exact(180.0));
+        let attained_lower = CertifiedInterval::from_bounds(
+            crate::geometry::interval::PI_LOWER,
+            crate::geometry::interval::PI_UPPER,
+        )
+        .sub(CertifiedInterval::exact(latitude).mul(radians_per_degree))
+        .mul(CertifiedInterval::exact(geodesic.a))
+        .lower();
+        assert!(
+            lower <= attained_lower,
+            "certified lower {lower} exceeds the independent spherical endpoint distance lower {attained_lower}"
+        );
     }
 
     #[test]

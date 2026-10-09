@@ -320,8 +320,12 @@ impl ChartMetric for EllipsoidMetric<'_> {
         )
     }
 
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64 {
-        super::edge_distance::curvature_hessian_bound(self.geodesic, lower_distance)
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64 {
+        super::edge_distance::curvature_hessian_bound(self.geodesic, lower_distance, upper_distance)
     }
 
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64 {

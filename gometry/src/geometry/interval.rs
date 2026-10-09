@@ -1,4 +1,13 @@
 //! Outward binary64 intervals for geographic distance certificates.
+//!
+//! The π literals below are adjacent binary64 values bracketing the real
+//! constants. Each arithmetic method expands a correctly rounded IEEE-754
+//! operation by one representable value in both directions.
+
+pub(crate) const PI_LOWER: f64 = 3.141_592_653_589_793;
+pub(crate) const PI_UPPER: f64 = 3.141_592_653_589_793_6;
+pub(crate) const HALF_PI_LOWER: f64 = 1.570_796_326_794_896_6;
+pub(crate) const HALF_PI_UPPER: f64 = 1.570_796_326_794_896_8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Interval {
@@ -7,6 +16,7 @@ pub(crate) struct Interval {
 }
 
 impl Interval {
+    /// Treat a represented binary64 input as an exact endpoint.
     pub(crate) const fn exact(value: f64) -> Self {
         Self {
             lower: value,
@@ -14,6 +24,7 @@ impl Interval {
         }
     }
 
+    /// Build an enclosure from endpoints already rounded outwards by a caller.
     pub(crate) const fn from_bounds(lower: f64, upper: f64) -> Self {
         Self { lower, upper }
     }
@@ -30,6 +41,7 @@ impl Interval {
         self.lower <= 0.0 && self.upper >= 0.0
     }
 
+    /// Enclose addition by stepping each rounded endpoint result outwards.
     pub(crate) fn add(self, other: Self) -> Self {
         Self {
             lower: (self.lower + other.lower).next_down(),
@@ -37,6 +49,7 @@ impl Interval {
         }
     }
 
+    /// Enclose subtraction using the smallest and largest endpoint differences.
     pub(crate) fn sub(self, other: Self) -> Self {
         Self {
             lower: (self.lower - other.upper).next_down(),
@@ -44,6 +57,7 @@ impl Interval {
         }
     }
 
+    /// Enclose all endpoint products; indeterminate infinite products widen fully.
     pub(crate) fn mul(self, other: Self) -> Self {
         let products = [
             (self.lower, other.lower),
@@ -64,6 +78,8 @@ impl Interval {
         Self { lower, upper }
     }
 
+    /// Enclose division through an outward reciprocal; zero-crossing divisors
+    /// have no finite enclosure.
     pub(crate) fn div(self, other: Self) -> Self {
         if other.contains_zero() {
             return Self::from_bounds(f64::NEG_INFINITY, f64::INFINITY);
@@ -75,6 +91,7 @@ impl Interval {
         self.mul(reciprocal)
     }
 
+    /// Enclose the nonnegative square root, clipping a rounded lower endpoint at zero.
     pub(crate) fn sqrt(self) -> Self {
         if self.upper < 0.0 {
             return Self::from_bounds(f64::NAN, f64::NAN);
@@ -85,11 +102,33 @@ impl Interval {
         }
     }
 
+    /// Enclose sign reversal by swapping and negating endpoints outwards.
+    pub(crate) fn neg(self) -> Self {
+        Self {
+            lower: (-self.upper).next_down(),
+            upper: (-self.lower).next_up(),
+        }
+    }
+
+    /// Upper bound the absolute value over the interval.
     pub(crate) fn abs_upper(self) -> f64 {
         self.lower.abs().max(self.upper.abs())
     }
 
     pub(crate) fn max_abs_upper(self) -> f64 {
         self.abs_upper().next_up()
+    }
+
+    /// Enclose the pointwise maximum of the two represented intervals.
+    pub(crate) fn max(self, other: Self) -> Self {
+        Self {
+            lower: self.lower.max(other.lower),
+            upper: self.upper.max(other.upper),
+        }
+    }
+
+    /// Whether two interval enclosures may share a represented value.
+    pub(crate) fn intersects(self, other: Self) -> bool {
+        self.lower <= other.upper && other.lower <= self.upper
     }
 }
