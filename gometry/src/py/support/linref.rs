@@ -1,9 +1,8 @@
 use crate::boundary::{FloatInput, input};
-use crate::dispatch::MetricOp;
 use crate::geometry::{GeographicPrepared, PreparedPlan};
 use crate::py::support::{
-    Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny, PyResult,
-    Result, Shape, float_values, resolve_metric,
+    Bound, CoordSeq, GeometryError, LineIndex, PlanarMetric, Point, PyAny, PyResult, Result, Shape,
+    float_values,
 };
 
 pub(crate) fn line_interpolate_shape_m(
@@ -76,25 +75,6 @@ pub(crate) fn line_substring_shape_m(
     }
 }
 
-/// Resolve the metric for a line-LRS op. `normalized` distances are fractions
-/// of total length, so they are unit-independent — pairing `unit=` with
-/// `normalized=True` is a contradiction and is rejected.
-pub(crate) fn resolve_line_metric(
-    crs: Option<&str>,
-    unit: Option<DistanceUnit>,
-    normalized: bool,
-    op: MetricOp,
-) -> PyResult<crate::crs::MetricModel> {
-    let op_name = op.name();
-    if normalized && unit.is_some() {
-        return Err(GeometryError::new_err(format!(
-            "{op_name}: unit does not apply to normalized distances (they are fractions of \
-             total length); drop unit= or set normalized=False"
-        )));
-    }
-    resolve_metric(crs, unit, op)
-}
-
 /// A parsed `line_interpolate_points` sampling plan: `count` linspace
 /// fractions (endpoints included from two samples up), or explicit
 /// CRS-aware distances.
@@ -104,16 +84,6 @@ pub(crate) enum InterpolatePlan {
 }
 
 impl InterpolatePlan {
-    /// Whether the plan's distances are fractions of total length (a `count`
-    /// linspace, or explicit `normalized` distances) — so a `unit=` override
-    /// is meaningless and rejected.
-    pub(crate) fn is_fractional(&self) -> bool {
-        match self {
-            Self::Count(_) => true,
-            Self::Distances(_, mode) => mode.is_normalized(),
-        }
-    }
-
     const fn sample_count(&self) -> usize {
         match self {
             Self::Count(count) => *count,

@@ -2800,7 +2800,7 @@ class Geometry:
         *,
         count: _IntScalar,
         basis: Literal['distance'] = 'distance',
-        normalized: bool = False,
+        normalized: Literal[False] = False,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point]: ...
     @overload
@@ -9280,7 +9280,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         *,
         count: _IntInput,
         basis: Literal['distance'] = 'distance',
-        normalized: bool = False,
+        normalized: Literal[False] = False,
         unit: DistanceUnit | None = None,
     ) -> Groups[GeometryArray[Point]]: ...
     @overload

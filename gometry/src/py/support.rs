@@ -105,7 +105,7 @@ pub(crate) use linref::{
     InterpolatePlan, line_interpolate_coordseq, line_interpolate_points_coordseq,
     line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,
     line_locate_coordseq, line_locate_shape, line_locate_shape_m, line_substring_coordseq,
-    line_substring_shape, line_substring_shape_m, parse_interpolate_plan, resolve_line_metric,
+    line_substring_shape, line_substring_shape_m, parse_interpolate_plan,
 };
 pub(crate) use nearest::{
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,

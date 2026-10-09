@@ -4,7 +4,7 @@ use crate::array::{
     Bound, CollectRows as _, DistanceUnit, GeometryError, I64Param, InterpolatePlan, Py, PyAny,
     PyGeometryArray, PyResult, Python, Shape, crs, line_interpolate_points_coordseq,
     line_interpolate_points_shape, line_locate_coordseq, note_array_row, parse_interpolate_plan,
-    positive_int, resolve_line_metric, rows_err,
+    positive_int, resolve_metric, rows_err,
 };
 use crate::broadcast::degrade_linref_float;
 use crate::geometry::storage::{
@@ -20,13 +20,6 @@ enum RowInterpolatePlan {
 }
 
 impl RowInterpolatePlan {
-    fn is_fractional(&self) -> bool {
-        match self {
-            Self::Shared(plan) => plan.is_fractional(),
-            Self::Counts(_) => true,
-        }
-    }
-
     fn with_row<T>(&self, row: usize, use_plan: impl FnOnce(&InterpolatePlan) -> T) -> T {
         match self {
             Self::Shared(plan) => use_plan(plan),
@@ -132,10 +125,9 @@ pub(crate) fn line_interpolate_points_rows(
             ));
         },
     };
-    let model = resolve_line_metric(
+    let model = resolve_metric(
         array.crs_str(),
         unit,
-        plan.is_fractional(),
         crate::dispatch::MetricOp::LineInterpolate,
     )?;
     if let GeometryArrayStorage::Packed(PackedStorage::Lines {

@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     gm.rhumb_distance(GEOMS, POINT)  # type: ignore[arg-type]
     LINE.line_interpolate(1.0, basis='m', unit='meters')  # type: ignore[call-overload]
     LINE.line_interpolate(count=2, basis='m')  # type: ignore[call-overload]
+    LINE.line_interpolate(count=2, normalized=True)  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', unit='planar')  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', normalized=True)  # type: ignore[call-overload]
 

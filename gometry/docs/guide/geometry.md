@@ -498,7 +498,12 @@ the next part's nearest point.
 spaced samples. A scalar line produces a [`GeometryArray`][gometry.GeometryArray] for those plural
 forms; an array receiver returns row-aligned points or [`Groups`][gometry.Groups] when each row
 has its own sample count. `normalized` and `unit` belong only to the distance
-basis, so a measured route never silently mixes two coordinate systems.
+basis, so a measured route never silently mixes two coordinate systems. On the
+distance basis, `unit` selects the route metric even when `normalized=True`:
+fractions are measured along that selected route, so changing `unit` can change
+the resulting position. `count=` also uses fractions of the selected metric and
+accepts `unit=`, but rejects `normalized=True` because the count already defines
+fractional sample positions.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
