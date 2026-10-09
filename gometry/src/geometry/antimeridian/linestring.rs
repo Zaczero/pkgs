@@ -1,5 +1,9 @@
+use crate::geographic::GeographicFrame;
+use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    Coordinates, MOrdinate, Point, ZOrdinate, interpolate_subdivision_ordinate, same_point,
+    ChartMetric, Coordinates, MOrdinate, Point, RootMetricState, SourceArcMetricAccess, Unmetered,
+    ZOrdinate, interpolate_subdivision_ordinate, same_point,
 };
 
 pub(super) fn collect_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
@@ -48,7 +52,11 @@ fn dedup_consecutive(coords: Vec<Point>) -> Vec<Point> {
 /// Returns the seam-separated pieces, or empty when nothing crosses. A
 /// closed input ring re-joins its trailing piece onto the leading one so
 /// every returned piece starts and ends on the seam.
-pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
+pub(crate) fn segment_coords_with_metric<M: ChartMetric>(
+    points: &[Point],
+    frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> crate::error::Result<Vec<Vec<Point>>> {
     let mut coords = points.to_vec();
     resolve_seam_aliases(&mut coords);
     let coords = dedup_consecutive(coords);
@@ -56,10 +64,10 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
     let mut pieces: Vec<Vec<Point>> = Vec::new();
     for &[start, end] in coords.array_windows::<2>() {
         piece.push(start);
-        split_transit(&mut piece, &mut pieces, start, end);
+        split_transit(&mut piece, &mut pieces, start, end, frame, metric_access)?;
     }
     if pieces.is_empty() {
-        return pieces;
+        return Ok(pieces);
     }
     let last = *coords.last().expect("segmented chains have coordinates");
     let first_piece_start = pieces[0][0];
@@ -71,7 +79,7 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
         piece.push(last);
         pieces.push(piece);
     }
-    pieces
+    Ok(pieces)
 }
 
 /// A closed ring cut at the seam.
@@ -92,18 +100,22 @@ pub(crate) enum SeamRing {
 /// interior occupies, which neither neighbour alone determines. A run that
 /// returns to its entry latitude on the side it entered from only touches the
 /// seam.
-pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
+pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
+    points: &[Point],
+    frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> crate::error::Result<SeamRing> {
     let coords = dedup_consecutive(points.to_vec());
     let cycle = &coords[..coords.len().saturating_sub(1)];
     let Some(start) = cycle.iter().position(|&point| !on_seam(point)) else {
         // Preserve the source seam runs. A ring that spells both seam aliases
         // without intermediate longitudes collapses to this support.
-        let pieces = segment_coords(points);
-        return if pieces.is_empty() {
+        let pieces = segment_coords_with_metric(points, frame, metric_access)?;
+        return Ok(if pieces.is_empty() {
             SeamRing::Whole(points.to_vec())
         } else {
             SeamRing::Pieces(pieces)
-        };
+        });
     };
     let vertex = |offset: usize| cycle[(start + offset) % cycle.len()];
     let mut whole = Vec::with_capacity(coords.len());
@@ -117,7 +129,14 @@ pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
         if !on_seam(current) {
             let previous = *piece.last().expect("a piece holds its opening vertex");
             let cut = pieces.len();
-            split_transit(&mut piece, &mut pieces, previous, current);
+            split_transit(
+                &mut piece,
+                &mut pieces,
+                previous,
+                current,
+                frame,
+                metric_access,
+            )?;
             transits |= pieces.len() != cut;
             piece.push(current);
             whole.push(current);
@@ -145,14 +164,14 @@ pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
         whole.pop();
         whole.rotate_right(start);
         whole.push(whole[0]);
-        return SeamRing::Whole(whole);
+        return Ok(SeamRing::Whole(whole));
     }
     // The trailing piece ends at the ring's start, where the leading piece
     // begins.
     let leading = &mut pieces[0];
     piece.extend(leading.drain(1..));
     *leading = piece;
-    SeamRing::Pieces(pieces)
+    Ok(SeamRing::Pieces(pieces))
 }
 
 /// Whether consecutive ring vertices trace an edge along the seam.
@@ -187,59 +206,120 @@ const fn spelled(mut point: Point, side: f64) -> Point {
 
 /// Close `piece` at the seam and open the next one when the chart edge from
 /// `start` to `end` transits it.
-fn split_transit(piece: &mut Vec<Point>, pieces: &mut Vec<Vec<Point>>, start: Point, end: Point) {
+fn split_transit<M: ChartMetric>(
+    piece: &mut Vec<Point>,
+    pieces: &mut Vec<Vec<Point>>,
+    start: Point,
+    end: Point,
+    frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> crate::error::Result<()> {
     let delta = end.x - start.x;
     if delta > 180.0 && delta != 360.0 {
         // Westward exit: close on -180, reopen on 180.
-        let (west, east) = crossing_points(start, end);
+        let (west, east) = crossing_points(start, end, frame, metric_access)?;
         piece.push(west);
         pieces.push(std::mem::replace(piece, vec![east]));
     } else if -delta > 180.0 && -delta != 360.0 {
         // Eastward exit: close on 180, reopen on -180.
-        let (west, east) = crossing_points(end, start);
+        let (west, east) = crossing_points(end, start, frame, metric_access)?;
         piece.push(east);
         pieces.push(std::mem::replace(piece, vec![west]));
     }
+    Ok(())
 }
 
-/// The pair of seam points `((-180, lat), (180, lat))` for an ordered
-/// unwrapped chart segment from the lower longitude `west` to the higher
-/// longitude `east`. Latitude and Z/M are interpolated at the same affine
-/// fraction along that chart segment.
-fn crossing_points(west: Point, east: Point) -> (Point, Point) {
-    let (latitude, fraction) = crossing_latitude_and_fraction(west, east);
-    let interpolate_ordinate = |start: Option<f64>, end: Option<f64>| match (start, end) {
-        (Some(start), Some(end)) => Some(interpolate_subdivision_ordinate(start, end, fraction)),
-        _ => None,
-    };
-    let z = interpolate_ordinate(west.z(), east.z());
-    let m = interpolate_ordinate(west.m(), east.m());
+/// The seam-point pair for an ordered chart segment. X/Y follow the affine
+/// chart crossing; eligible Z/M follow arclength along that retained edge.
+fn crossing_points<M: ChartMetric>(
+    west: Point,
+    east: Point,
+    frame: GeographicFrame,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> crate::error::Result<(Point, Point)> {
+    let (latitude, parameter, longitude) = crossing_latitude_and_parameter(west, east, frame)?;
+    let source = [west, east];
+    let request = SourceArcRequest::new(
+        frame,
+        &source,
+        west.axes().union(east.axes()),
+        &parameter,
+        || Ok(longitude),
+    )?;
+    let mut root_metric = RootMetricState::default();
+    let mut fraction = None;
+    let mut work = Unmetered;
+    let ordinates = source_arc_ordinates(
+        &request,
+        || {
+            let access = metric_access.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic antimeridian source ordinates require the operation's CRS metric",
+                )
+            })?;
+            access()
+        },
+        &mut root_metric,
+        &mut fraction,
+        &mut work,
+    )?;
     let make = |lon: f64| {
-        Point::new_axes(lon, latitude, ZOrdinate(z), MOrdinate(m))
-            .expect("seam coordinates are finite")
+        Point::new_axes(
+            lon,
+            latitude,
+            ZOrdinate(ordinates.z.value()),
+            MOrdinate(ordinates.m.value()),
+        )
     };
-    (make(-180.0), make(180.0))
+    Ok((make(-180.0)?, make(180.0)?))
 }
 
-/// Return the seam latitude and affine fraction for an ordered chart segment.
+/// Return the affine chart crossing parameter for an ordered chart segment.
 ///
 /// The endpoints are canonical chart longitudes, with `west` below `east`.
-/// A seam endpoint remains the exact source ordinate; otherwise the crossing
-/// fraction is the linear distance from `west` to −180 over the full
-/// unwrapped interval.
-fn crossing_latitude_and_fraction(west: Point, east: Point) -> (f64, f64) {
+/// A seam endpoint remains exact; otherwise the rational parameter follows
+/// the edge's retained periodic branch.
+fn crossing_latitude_and_parameter(
+    west: Point,
+    east: Point,
+    frame: GeographicFrame,
+) -> crate::error::Result<(
+    f64,
+    ExactRational,
+    crate::geographic::RetainedChartDisplacement,
+)> {
+    let connection = frame
+        .longitude()
+        .chart_connection(west.x, east.x)
+        .map_err(|error| {
+            crate::geometry::GeometryErrorKind::antimeridian_split_failed(error.to_string())
+        })?;
+    let longitude = connection.retained();
     if west.x.abs() == 180.0 {
-        return (west.y, 0.0);
+        return Ok((west.y, ExactRational::zero(), longitude));
     }
     if east.x.abs() == 180.0 {
-        return (east.y, 1.0);
+        return Ok((east.y, ExactRational::one(), longitude));
     }
-    let west_distance = west.x + 180.0;
-    let east_distance = 180.0 - east.x;
-    let fraction = west_distance / (west_distance + east_distance);
+    let axis = frame.longitude();
+    let [start, end] = longitude.endpoints();
+    let start = ExactDyadic::from_f64(start.get());
+    let branch = ExactDyadic::from_f64(axis.period())
+        .try_product(&ExactDyadic::from_i64(longitude.periods()))?;
+    let lifted_end = ExactDyadic::from_f64(end.get()).try_add(branch)?;
+    let delta = ExactDyadic::try_subtract_refs(&lifted_end, &start)?;
+    let seam = if delta.cmp(&ExactDyadic::zero()).is_gt() {
+        ExactDyadic::from_f64(axis.half_period())
+    } else {
+        ExactDyadic::from_f64(-axis.half_period())
+    };
+    let numerator = seam.try_subtract(start)?;
+    let parameter = ExactRational::new(numerator, delta)?;
+    let fraction = parameter.round()?;
     // `+ 0.0` canonicalizes a negative-zero crossing latitude.
-    (
+    Ok((
         interpolate_subdivision_ordinate(west.y, east.y, fraction) + 0.0,
-        fraction,
-    )
+        parameter,
+        longitude,
+    ))
 }

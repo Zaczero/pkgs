@@ -2,17 +2,21 @@ use std::collections::HashMap;
 
 use crate::error::Result;
 use crate::geographic::{
-    ChartPole, GeodeticPole, GeographicFrame, GeographicRing, GeographicViewError, Latitude,
-    RingDomain, RingSummary, ScalarGeographicView,
+    ChartConnection, ChartPole, GeodeticPole, GeographicFrame, GeographicRing, GeographicViewError,
+    Latitude, RetainedChartDisplacement, RingDomain, RingSummary, ScalarGeographicView,
 };
 use crate::geometry::antimeridian::{
-    SeamRing, collect_points, ring_follows_seam, segment_coords, split_ring_at_seam,
+    SeamRing, collect_points, ring_follows_seam, segment_coords_with_metric,
+    split_ring_at_seam_with_metric,
 };
+use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
-    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, ShapeOwnerKey,
-    SourceArcMetricAccess, Strictness, TopologyDomain, ZOrdinate, interpolate_optional_ordinate,
-    open_point_cycle_winding, polygon_is_valid, ring_encloses_pole, ring_winding, same_point,
+    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, RootMetricState, Shape,
+    ShapeOwnerKey, SourceArcMetricAccess, Strictness, TopologyDomain, Unmetered, ZOrdinate,
+    interpolate_subdivision_ordinate, open_point_cycle_winding, polygon_is_valid,
+    ring_encloses_pole, ring_winding, same_point,
 };
 
 #[derive(Default)]
@@ -69,12 +73,16 @@ impl Shape {
         match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(self.clone()),
             Self::LineString(points) => {
-                let pieces = segment_coords(&collect_points(points));
+                let pieces = segment_coords_with_metric(
+                    &collect_points(points),
+                    GeographicFrame::crs84(),
+                    metric_access,
+                )?;
                 if pieces.is_empty() {
                     Ok(self.clone())
                 } else {
                     Ok(Self::multi_line_string(
-                        CoordinateAxes::XY,
+                        points.axes(),
                         pieces
                             .into_iter()
                             .map(|piece| CoordSeq::try_from_points(&piece))
@@ -91,7 +99,11 @@ impl Shape {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),
                         MultiMember::Value(line) => {
-                            let pieces = segment_coords(&collect_points(line));
+                            let pieces = segment_coords_with_metric(
+                                &collect_points(line),
+                                GeographicFrame::crs84(),
+                                metric_access,
+                            )?;
                             if pieces.is_empty() {
                                 split.push(MultiMember::Value(line.clone()));
                             } else {
@@ -248,6 +260,7 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
         frame,
         longitude_scale,
         latitude_scale,
+        metric_access,
         &mut ShapeTransformMemo::default(),
     )?;
     if canonical
@@ -303,37 +316,206 @@ fn chart_latitude(value: f64, frame: GeographicFrame, scale: f64) -> Result<f64>
         .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
-fn append_circle_witnesses(
-    points: &mut Vec<Point>,
-    start: Point,
-    end: Point,
-    mut transform: impl FnMut(Point) -> Result<Point>,
+#[derive(Clone)]
+struct ChartEdgeEvent {
+    parameter: ExactRational,
+    seam_longitude: Option<f64>,
+}
+
+fn chart_connection(start: Point, end: Point, frame: GeographicFrame) -> Result<ChartConnection> {
+    frame
+        .longitude()
+        .chart_connection(start.x, end.x)
+        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()).into())
+}
+
+fn seam_event(
+    connection: ChartConnection,
+    frame: GeographicFrame,
+) -> Result<Option<ChartEdgeEvent>> {
+    let longitude = connection.retained();
+    let axis = frame.longitude();
+    let [start, end] = longitude.endpoints();
+    let start = ExactDyadic::from_f64(start.get());
+    let branch = ExactDyadic::from_f64(axis.period())
+        .try_product(&ExactDyadic::from_i64(longitude.periods()))?;
+    let lifted_end = ExactDyadic::from_f64(end.get()).try_add(branch)?;
+    let delta = ExactDyadic::try_subtract_refs(&lifted_end, &start)?;
+    let east_seam = ExactDyadic::from_f64(axis.half_period());
+    let west_seam = east_seam.clone().neg();
+    let crossing = if delta.cmp(&ExactDyadic::zero()).is_gt()
+        && start.cmp(&east_seam).is_lt()
+        && lifted_end.cmp(&east_seam).is_gt()
+    {
+        Some((east_seam, 180.0))
+    } else if delta.cmp(&ExactDyadic::zero()).is_lt()
+        && start.cmp(&west_seam).is_gt()
+        && lifted_end.cmp(&west_seam).is_lt()
+    {
+        Some((west_seam, -180.0))
+    } else {
+        None
+    };
+    crossing
+        .map(|(seam, native_side)| {
+            let numerator = seam.try_subtract(start)?;
+            let parameter = ExactRational::new(numerator, delta)?;
+            Ok(ChartEdgeEvent {
+                parameter,
+                seam_longitude: Some(native_side * frame.longitude_orientation_sign()),
+            })
+        })
+        .transpose()
+}
+
+fn insert_chart_event(events: &mut Vec<ChartEdgeEvent>, event: ChartEdgeEvent) -> Result<()> {
+    let mut index = events.len();
+    while index > 0 {
+        match event.parameter.try_cmp(&events[index - 1].parameter)? {
+            std::cmp::Ordering::Less => index -= 1,
+            std::cmp::Ordering::Equal => {
+                if event.seam_longitude.is_some() {
+                    events[index - 1].seam_longitude = event.seam_longitude;
+                }
+                return Ok(());
+            },
+            std::cmp::Ordering::Greater => break,
+        }
+    }
+    events.insert(index, event);
+    Ok(())
+}
+
+fn source_ordinates_at<M: ChartMetric>(
+    source: &[Point; 2],
+    frame: GeographicFrame,
+    longitude: RetainedChartDisplacement,
+    parameter: &ExactRational,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    root_metric: &mut RootMetricState,
+) -> Result<(ZOrdinate, MOrdinate)> {
+    let axes = source[0].axes().union(source[1].axes());
+    let request = SourceArcRequest::new(frame, source, axes, parameter, || Ok(longitude))?;
+    let mut fraction = None;
+    let mut work = Unmetered;
+    let ordinates = source_arc_ordinates(
+        &request,
+        || {
+            let access = metric_access.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic antimeridian source ordinates require the operation's CRS metric",
+                )
+            })?;
+            access()
+        },
+        root_metric,
+        &mut fraction,
+        &mut work,
+    )?;
+    Ok((
+        ZOrdinate(ordinates.z.value()),
+        MOrdinate(ordinates.m.value()),
+    ))
+}
+
+fn append_source_edge_events<M: ChartMetric>(
+    output: &mut Vec<Point>,
+    source: [Point; 2],
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    include_seam: bool,
+    circle_witnesses: bool,
+    band: Option<(f64, f64, f64)>,
 ) -> Result<()> {
-    for quarter in 1_u32..=3 {
-        let fraction = f64::from(quarter) / 4.0;
-        let interpolate = |start: f64, end: f64| {
-            if quarter == 2 {
-                f64::midpoint(start, end)
-            } else {
-                start + (end - start) * fraction
-            }
+    let connection = chart_connection(source[0], source[1], frame)?;
+    let longitude = connection.retained();
+    let mut events = Vec::new();
+    if circle_witnesses && connection.step.is_circle() {
+        events.reserve_exact(if include_seam { 4 } else { 3 });
+        for quarter in 1_i64..=3 {
+            insert_chart_event(&mut events, ChartEdgeEvent {
+                parameter: ExactRational::new(
+                    ExactDyadic::from_i64(quarter),
+                    ExactDyadic::from_i64(4),
+                )?,
+                seam_longitude: None,
+            })?;
+        }
+    }
+    if include_seam && let Some(event) = seam_event(connection, frame)? {
+        insert_chart_event(&mut events, event)?;
+    }
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut root_metric = RootMetricState::default();
+    for event in events {
+        let parameter = event.parameter.round()?;
+        let x = if let Some((start, end, west)) = band {
+            let lifted = interpolate_subdivision_ordinate(start, end, parameter);
+            (lifted - west - frame.longitude().half_period()) * longitude_scale
+        } else if let Some(seam_longitude) = event.seam_longitude {
+            seam_longitude
+        } else {
+            let site = frame.longitude().native_site_at(&longitude, parameter)?;
+            chart_longitude(site.native().get(), frame, longitude_scale)?
         };
-        let witness = Point::new_axes(
-            interpolate(start.x, end.x),
-            interpolate(start.y, end.y),
-            ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), fraction)),
-            MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), fraction)),
+        let latitude = interpolate_subdivision_ordinate(source[0].y, source[1].y, parameter);
+        let (z, m) = source_ordinates_at(
+            &source,
+            frame,
+            longitude,
+            &event.parameter,
+            metric_access,
+            &mut root_metric,
         )?;
-        points.push(transform(witness)?);
+        output.push(Point::new_axes(
+            x,
+            chart_latitude(latitude, frame, latitude_scale)?,
+            z,
+            m,
+        )?);
     }
     Ok(())
 }
 
-fn chart_ring(
+fn chart_line<M: ChartMetric>(
+    line: &LineSeq,
+    frame: GeographicFrame,
+    longitude_scale: f64,
+    latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+) -> Result<LineSeq> {
+    let points = collect_points(line);
+    let mut chart = Vec::with_capacity(points.len().saturating_mul(2));
+    for &[start, end] in points.array_windows::<2>() {
+        if chart.is_empty() {
+            chart.push(chart_point(start, frame, longitude_scale, latitude_scale)?);
+        }
+        append_source_edge_events(
+            &mut chart,
+            [start, end],
+            frame,
+            longitude_scale,
+            latitude_scale,
+            metric_access,
+            true,
+            true,
+            None,
+        )?;
+        chart.push(chart_point(end, frame, longitude_scale, latitude_scale)?);
+    }
+    Ok(LineSeq::from_proven(CoordSeq::try_from_points(&chart)?))
+}
+
+fn chart_ring<M: ChartMetric>(
     ring: &Ring,
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Ring> {
     let geographic = GeographicRing::from_ring(ring);
     let summary =
@@ -353,7 +535,8 @@ fn chart_ring(
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
     let output_count = geographic
         .len()
-        .checked_add(witness_count)
+        .checked_add(geographic.len().saturating_sub(1))
+        .and_then(|count| count.checked_add(witness_count))
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
     points.reserve_exact(output_count);
     if matches!(summary.domain, RingDomain::FullLongitude(_)) && summary.chart_turn == 0 {
@@ -381,18 +564,23 @@ fn chart_ring(
             };
             point.with_xy(x, chart_latitude(point.y, frame, latitude_scale)?)
         };
-        for [start, end] in unwrapped.segment_pairs() {
+        for ([start, end], [source_start, source_end]) in
+            unwrapped.segment_pairs().zip(ring.segment_pairs())
+        {
             if points.is_empty() {
                 points.push(band_point(start)?);
             }
-            if start.y.to_bits() == end.y.to_bits()
-                && axis
-                    .chart_step(start.x, end.x)
-                    .expect("the geographic view admitted every ring coordinate")
-                    .is_circle()
-            {
-                append_circle_witnesses(&mut points, start, end, &band_point)?;
-            }
+            append_source_edge_events(
+                &mut points,
+                [source_start, source_end],
+                frame,
+                longitude_scale,
+                latitude_scale,
+                metric_access,
+                false,
+                start.y.to_bits() == end.y.to_bits(),
+                Some((start.x, end.x, west)),
+            )?;
             points.push(band_point(end)?);
         }
     } else {
@@ -400,40 +588,57 @@ fn chart_ring(
             if points.is_empty() {
                 points.push(chart_point(start, frame, longitude_scale, latitude_scale)?);
             }
-            let step = axis
-                .chart_step(start.x, end.x)
-                .expect("the geographic view admitted every ring coordinate");
-            if step.is_circle() {
-                append_circle_witnesses(&mut points, start, end, |point| {
-                    chart_point(point, frame, longitude_scale, latitude_scale)
-                })?;
-            }
+            append_source_edge_events(
+                &mut points,
+                [start, end],
+                frame,
+                longitude_scale,
+                latitude_scale,
+                metric_access,
+                true,
+                true,
+                None,
+            )?;
             points.push(chart_point(end, frame, longitude_scale, latitude_scale)?);
         }
     }
     Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
 }
 
-fn chart_polygon(
+fn chart_polygon<M: ChartMetric>(
     polygon: &Polygon,
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<Polygon> {
-    let shell = chart_ring(&polygon.shell, frame, longitude_scale, latitude_scale)?;
+    let shell = chart_ring(
+        &polygon.shell,
+        frame,
+        longitude_scale,
+        latitude_scale,
+        metric_access,
+    )?;
     let mut holes = Vec::new();
     holes.reserve_exact(polygon.holes.len());
     for hole in polygon.holes.iter() {
-        holes.push(chart_ring(hole, frame, longitude_scale, latitude_scale)?);
+        holes.push(chart_ring(
+            hole,
+            frame,
+            longitude_scale,
+            latitude_scale,
+            metric_access,
+        )?);
     }
     Ok(Polygon::new(shell, holes))
 }
 
-fn chart_shape(
+fn chart_shape<M: ChartMetric>(
     shape: &Shape,
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
+    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
     memo: &mut ShapeTransformMemo,
 ) -> Result<Shape> {
     match shape {
@@ -442,6 +647,7 @@ fn chart_shape(
             frame,
             longitude_scale,
             latitude_scale,
+            metric_access,
         )?)),
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::new();
@@ -454,6 +660,7 @@ fn chart_shape(
                         frame,
                         longitude_scale,
                         latitude_scale,
+                        metric_access,
                     )?),
                 });
             }
@@ -470,16 +677,45 @@ fn chart_shape(
                 return Ok(chart);
             }
             let chart = Shape::GeometryCollection(collection.try_map_members(|member| {
-                chart_shape(member, frame, longitude_scale, latitude_scale, memo)
+                chart_shape(
+                    member,
+                    frame,
+                    longitude_scale,
+                    latitude_scale,
+                    metric_access,
+                    memo,
+                )
             })?);
             memo.insert(owner, chart.clone());
             Ok(chart)
         },
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Empty(..) => shape.map_xy_with(|x, y| {
+        Shape::LineString(line) => Ok(Shape::LineString(chart_line(
+            line,
+            frame,
+            longitude_scale,
+            latitude_scale,
+            metric_access,
+        )?)),
+        Shape::MultiLineString(lines) => {
+            let mut members = Vec::with_capacity(lines.member_count());
+            for member in lines.members_with_values() {
+                members.push(match member {
+                    MultiMember::Empty => MultiMember::Empty,
+                    MultiMember::Value(line) => MultiMember::Value(chart_line(
+                        line,
+                        frame,
+                        longitude_scale,
+                        latitude_scale,
+                        metric_access,
+                    )?),
+                });
+            }
+            Ok(Shape::MultiLineString(MultiLineString::try_new(
+                lines.axes(),
+                members,
+            )?))
+        },
+        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => shape.map_xy_with(|x, y| {
             Ok((
                 chart_longitude(x, frame, longitude_scale)?,
                 chart_latitude(y, frame, latitude_scale)?,
@@ -610,7 +846,7 @@ fn split_polygon_inner_in_mode<M: ChartMetric>(
     let mut stationary_holes = Vec::new();
     for hole in polygon.holes.iter() {
         let points = collect_points(hole.coords());
-        match split_ring_at_seam(&points) {
+        match split_ring_at_seam_with_metric(&points, GeographicFrame::crs84(), metric_access)? {
             SeamRing::Whole(spelled) if !ring_follows_seam(&points) => {
                 stationary_holes.push(Ring::try_from_closed(CoordSeq::try_from_points(&spelled)?)?);
             },
@@ -688,7 +924,11 @@ fn split_polygon_inner_in_mode<M: ChartMetric>(
         return Ok(charted);
     }
 
-    let segments = match split_ring_at_seam(&collect_points(polygon.shell.coords())) {
+    let segments = match split_ring_at_seam_with_metric(
+        &collect_points(polygon.shell.coords()),
+        GeographicFrame::crs84(),
+        metric_access,
+    )? {
         SeamRing::Whole(shell) => {
             let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
             return Ok(vec![Polygon::new(shell, stationary_holes)]);
@@ -1083,13 +1323,17 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
 
 #[cfg(test)]
 mod tests {
+    use super::{PoleClosure, chart_line, chart_polygon, split_polygon};
     use crate::geographic::{
         AngularFactor, ChartPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
     };
+    use crate::geometry::antimeridian::segment_coords_with_metric;
+    use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::{
-        ChartMetric as _, CoordSeq, CoordinateAxes, Coordinates as _, LineSeq, MOrdinate,
-        MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, ZOrdinate,
+        ChartMetric as _, CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq,
+        MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring,
+        RootMetricState, Shape, Unmetered, ZOrdinate,
     };
     use crate::test_support::allocation_count;
 
@@ -1151,6 +1395,329 @@ mod tests {
         let delta_radians = (end_degrees - start_degrees).to_radians();
         integrate(parameter, start_degrees, delta_radians, flattening)
             / integrate(1.0, start_degrees, delta_radians, flattening)
+    }
+
+    #[test]
+    fn chart_line_seam_ordinates_use_the_original_root_arclength() {
+        let source_points = [
+            Point::new_axes(170.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(1000.0))).unwrap(),
+            Point::new_axes(
+                -170.0,
+                60.0,
+                ZOrdinate(Some(100.0)),
+                MOrdinate(Some(3000.0)),
+            )
+            .unwrap(),
+        ];
+        let line = LineSeq::try_new(CoordSeq::try_from_points(&source_points).unwrap()).unwrap();
+        let shape = Shape::LineString(line.clone());
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let chart =
+            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&shape], &state, |metric| {
+                let metric_access = || Ok(metric);
+                chart_line(
+                    &line,
+                    GeographicFrame::crs84(),
+                    1.0,
+                    1.0,
+                    Some(&metric_access),
+                )
+            })
+            .unwrap();
+        let seam = chart.as_coords().point_at(1);
+
+        assert_eq!(seam.x, 180.0);
+        assert_eq!(seam.y, 30.0);
+        assert!((seam.z().unwrap() - 50.438_798_221_498_36).abs() <= 2.0e-9);
+        assert!((seam.m().unwrap() - 2_008.775_964_429_967_2).abs() <= 4.0e-8);
+    }
+
+    #[test]
+    fn segment_transit_ordinates_follow_the_retained_piece_arclength() {
+        let source = [
+            Point::new_axes(170.0, 10.0, ZOrdinate(Some(10.0)), MOrdinate(Some(1.0))).unwrap(),
+            Point::new_axes(-150.0, 30.0, ZOrdinate(Some(50.0)), MOrdinate(Some(5.0))).unwrap(),
+        ];
+        let line = LineSeq::try_new(CoordSeq::try_from_points(&source).unwrap()).unwrap();
+        let shape = Shape::LineString(line);
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let seam_values =
+            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&shape], &state, |metric| {
+                let metric_access = || Ok(metric);
+                Ok(segment_coords_with_metric(
+                    &source,
+                    GeographicFrame::crs84(),
+                    Some(&metric_access),
+                )?
+                .into_iter()
+                .flatten()
+                .filter(|point| point.x.abs() == 180.0)
+                .map(|point| (point.y, point.z(), point.m()))
+                .collect::<Vec<_>>())
+            })
+            .unwrap();
+        let expected = (20.339_021_393_918_856, 2.033_902_139_391_885_5);
+
+        assert_eq!(seam_values.len(), 2);
+        for (latitude, z, m) in seam_values {
+            assert_eq!(latitude, 15.0);
+            assert!((z.unwrap() - expected.0).abs() <= 1.0e-7);
+            assert!((m.unwrap() - expected.1).abs() <= 1.0e-8);
+        }
+    }
+
+    #[test]
+    fn split_line_preserves_an_authored_full_turn_circle() {
+        let source = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_axes(0.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(2.0))).unwrap(),
+                    Point::new_axes(360.0, 0.0, ZOrdinate(Some(110.0)), MOrdinate(Some(202.0)))
+                        .unwrap(),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let split =
+            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&source], &state, |metric| {
+                let metric_access = || Ok(metric);
+                source.split_antimeridian_in_frame_with_metric(
+                    GeographicFrame::crs84(),
+                    Some(&metric_access),
+                )
+            })
+            .unwrap();
+        let Shape::MultiLineString(lines) = &split else {
+            panic!("a full-turn circle crossing the cut has two chart pieces");
+        };
+        assert_eq!(lines.axes(), CoordinateAxes::XYZM);
+        let mut points = Vec::new();
+        split.for_each_point(|point| points.push(point));
+        for (longitude, z, m) in [
+            (90.0, 35.0, 52.0),
+            (-90.0, 85.0, 152.0),
+            (180.0, 60.0, 102.0),
+            (-180.0, 60.0, 102.0),
+        ] {
+            assert!(
+                points.iter().any(|point| {
+                    point.x == longitude && point.z() == Some(z) && point.m() == Some(m)
+                }),
+                "full-turn output omitted ({longitude}, 0, {z}, {m}): {points:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tilted_full_turn_seam_and_witnesses_use_the_original_root() {
+        let source = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_axes(170.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(100.0)))
+                        .unwrap(),
+                    Point::new_axes(530.0, 60.0, ZOrdinate(Some(100.0)), MOrdinate(Some(1100.0)))
+                        .unwrap(),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let Shape::LineString(line) = &source else {
+            unreachable!();
+        };
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let chart =
+            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&source], &state, |metric| {
+                let metric_access = || Ok(metric);
+                chart_line(
+                    line,
+                    GeographicFrame::crs84(),
+                    1.0,
+                    1.0,
+                    Some(&metric_access),
+                )
+            })
+            .unwrap();
+        let coordinates: Vec<_> = chart.as_coords().iter_coords().collect();
+        let seam = coordinates
+            .iter()
+            .find(|point| point.x == 180.0)
+            .expect("the authored full turn crosses the chart seam");
+        let quarter = coordinates
+            .iter()
+            .find(|point| point.x == -100.0)
+            .expect("the first quarter witness remains on the chart path");
+
+        assert!((seam.y - 60.0 * (10.0 / 360.0)).abs() <= 2.0e-14);
+        assert!((seam.z().unwrap() - 3.332_353_583_809_422).abs() <= 2.0e-8);
+        assert!((seam.m().unwrap() - 133.323_535_838_094_22).abs() <= 2.0e-7);
+        assert_eq!(quarter.y, 15.0);
+        assert!((quarter.z().unwrap() - 29.665_344_452_905_156).abs() <= 2.0e-8);
+        assert!((quarter.m().unwrap() - 396.653_444_529_051_6).abs() <= 2.0e-7);
+    }
+
+    #[test]
+    fn seam_piece_ordinate_composition_matches_independent_root_arclength() {
+        let source_points = [
+            Point::new_axes(170.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(100.0))).unwrap(),
+            Point::new_axes(
+                -170.0,
+                60.0,
+                ZOrdinate(Some(100.0)),
+                MOrdinate(Some(1100.0)),
+            )
+            .unwrap(),
+        ];
+        let line = LineSeq::try_new(CoordSeq::try_from_points(&source_points).unwrap()).unwrap();
+        let source_shape = Shape::LineString(line.clone());
+        let frame = GeographicFrame::crs84();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&source_shape], &state, |metric| {
+            let metric_access = || Ok(metric);
+            let chart = chart_line(&line, frame, 1.0, 1.0, Some(&metric_access))?;
+            let seam = chart.as_coords().point_at(1);
+            let piece = [source_points[0], seam];
+            let retained = frame
+                .longitude()
+                .chart_connection(piece[0].x, piece[1].x)
+                .map(|connection| connection.retained())
+                .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+            let parameter = ExactRational::new(ExactDyadic::from_i64(1), ExactDyadic::from_i64(2))?;
+            let request = SourceArcRequest::new(
+                frame,
+                &piece,
+                piece[0].axes().union(piece[1].axes()),
+                &parameter,
+                || Ok(retained),
+            )?;
+            let mut root_metric = RootMetricState::default();
+            let mut fraction = None;
+            let mut work = Unmetered;
+            let composed = source_arc_ordinates(
+                &request,
+                || Ok(metric),
+                &mut root_metric,
+                &mut fraction,
+                &mut work,
+            )?;
+            let expected_q = 0.252_865_084_440_217_66_f64;
+            assert!((composed.z.value().unwrap() - 100.0 * expected_q).abs() <= 2.0e-8);
+            assert!((composed.m.value().unwrap() - (100.0 + 1000.0 * expected_q)).abs() <= 2.0e-7);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn chart_line_eligible_interior_request_propagates_metric_failure() {
+        let line = LineSeq::try_new(
+            CoordSeq::try_from_points(&[
+                Point::new_axes(170.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(1.0))).unwrap(),
+                Point::new_axes(-170.0, 60.0, ZOrdinate(Some(100.0)), MOrdinate(Some(2.0)))
+                    .unwrap(),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let accesses = std::cell::Cell::new(0);
+        let failing_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
+            accesses.set(accesses.get() + 1);
+            Err(crate::crs::CrsError::invalid("seam metric sentinel").into())
+        };
+        let result = chart_line(
+            &line,
+            GeographicFrame::crs84(),
+            1.0,
+            1.0,
+            Some(&failing_metric),
+        );
+
+        assert!(
+            result
+                .expect_err("eligible seam ordinates require metric authority")
+                .to_string()
+                .contains("seam metric sentinel")
+        );
+        assert_eq!(accesses.get(), 1);
+
+        let xy = LineSeq::try_new(
+            CoordSeq::try_from_vecs(vec![170.0, -170.0], vec![0.0, 60.0], None, None).unwrap(),
+        )
+        .unwrap();
+        chart_line(
+            &xy,
+            GeographicFrame::crs84(),
+            1.0,
+            1.0,
+            Some(&failing_metric),
+        )
+        .unwrap();
+        assert_eq!(accesses.get(), 1);
+    }
+
+    #[test]
+    fn crossing_hole_circle_piece_ordinates_compose_to_the_original_root() {
+        let shell = xyzm_ring(&[
+            (0.0, -30.0, 30.0, 3000.0),
+            (360.0, -30.0, 20.0, 2000.0),
+            (360.0, 30.0, 20.0, 2000.0),
+            (0.0, 30.0, 30.0, 3000.0),
+            (0.0, -30.0, 30.0, 3000.0),
+        ]);
+        let hole = xyzm_ring(&[
+            (135.0, 30.0, 21.25, 2125.0),
+            (180.0, 25.0, 20.0, 2000.0),
+            (-180.0, 20.0, 30.0, 3000.0),
+            (-170.0, 18.0, 25.0, 2500.0),
+            (-170.0, 12.0, 25.0, 2500.0),
+            (-180.0, 10.0, 30.0, 3000.0),
+            (180.0, 15.0, 20.0, 2000.0),
+            (135.0, 20.0, 25.0, 2500.0),
+            (135.0, 30.0, 21.25, 2125.0),
+        ]);
+        let polygon = Polygon::new(shell, vec![hole]);
+        let source = Shape::Polygon(polygon.clone());
+        let frame = GeographicFrame::crs84();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let result =
+            crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[&source], &state, |metric| {
+                let metric_access = || Ok(metric);
+                let chart = chart_polygon(&polygon, frame, 1.0, 1.0, Some(&metric_access))?;
+                crate::geometry::ordinates::take_source_arc_observations();
+                let chart_shape = Shape::Polygon(chart.clone());
+                let parts = split_polygon(
+                    &chart_shape,
+                    &chart,
+                    PoleClosure::Auto,
+                    Some(&metric_access),
+                )?;
+                Ok(parts)
+            });
+        let observations = crate::geometry::ordinates::take_source_arc_observations();
+        let split = result.unwrap_or_else(|error| {
+            panic!("hole overlay failed after these source requests {observations:?}: {error}")
+        });
+        assert!(!split.is_empty());
+
+        let observation = observations
+            .iter()
+            .find(|observation| {
+                observation.source[0].y == 30.0
+                    && observation.source[1].y == 30.0
+                    && ((observation.source[0].x == 180.0 && observation.source[1].x == 90.0)
+                        || (observation.source[0].x == 90.0 && observation.source[1].x == 180.0))
+            })
+            .expect("hole overlay requests a node on the upper Circle witness interval");
+        let chart_longitude = observation.source[0].x
+            + (observation.source[1].x - observation.source[0].x) * observation.parameter;
+        let source_longitude = chart_longitude + 180.0;
+        let root_fraction = (360.0 - source_longitude) / 360.0;
+        let expected_z = 20.0 + 10.0 * root_fraction;
+        let expected_m = 2000.0 + 1000.0 * root_fraction;
+        assert!((observation.z.expect("shell carries Z") - expected_z).abs() <= 2.0e-9);
+        assert!((observation.m.expect("shell carries M") - expected_m).abs() <= 2.0e-8);
     }
 
     fn split_crs84(shape: &Shape) -> Shape {
@@ -1813,7 +2380,18 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let chart = super::chart_ring(&ring, GeographicFrame::crs84(), 1.0, 1.0).unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let chart = crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[], &state, |metric| {
+            let metric_access = || Ok(metric);
+            super::chart_ring(
+                &ring,
+                GeographicFrame::crs84(),
+                1.0,
+                1.0,
+                Some(&metric_access),
+            )
+        })
+        .unwrap();
 
         assert_eq!(chart.coords().coord_count(), 11);
         assert_eq!(chart.coords().point_at(2), point(0.0, -30.0, 180.0, 190.0));
@@ -1824,7 +2402,14 @@ mod tests {
     fn chart_ring_keeps_a_non_band_explicit_circle_edge() {
         let ring = closed_ring(&[0.0, 360.0, 300.0, 0.0], &[60.0, 60.0, 65.0, 60.0]);
 
-        let chart = super::chart_ring(&ring, GeographicFrame::crs84(), 1.0, 1.0).unwrap();
+        let chart = super::chart_ring::<crate::crs::GeodesicMetric>(
+            &ring,
+            GeographicFrame::crs84(),
+            1.0,
+            1.0,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(chart.coords().coord_count(), 7);
         assert_eq!(

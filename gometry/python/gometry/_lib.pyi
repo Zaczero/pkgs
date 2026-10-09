@@ -3484,13 +3484,16 @@ class Geometry:
         """Split at the antimeridian. Parts that cross come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
-        Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-        running off the seam closes over its pole automatically. Geometries that do
-        not cross are returned unchanged. A split ``LineString`` becomes a
-        ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-        Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        the split subdivides existing chart edges, so ellipsoidal area and perimeter
-        are conserved to rounding.
+        Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+        follow ellipsoidal arclength along the retained source edge. An authored
+        full-period edge is retained with quarter witnesses before its longitudes are
+        canonicalized. The two seam aliases and a displacement of multiple periods do
+        not imply a full-period edge. A ring running off the seam closes over its pole
+        automatically. Geometries that do not cross are returned unchanged. A split
+        ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+        ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+        existing chart edges, so ellipsoidal area and perimeter are conserved to
+        rounding.
 
         Returns
         -------
