@@ -400,7 +400,7 @@ impl PeriodicAxis {
         (self.period.fract() == 0.0).then_some(self.period)
     }
 
-    pub(crate) fn ordinary_longitude_bound(self) -> f64 {
+    pub(crate) const fn ordinary_longitude_bound(self) -> f64 {
         self.half_period
     }
 

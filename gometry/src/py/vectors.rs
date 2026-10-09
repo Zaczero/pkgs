@@ -549,7 +549,7 @@ impl Groups {
     ///
     /// Returns
     /// -------
-    /// numpy.ndarray or GeometryArray or CellArray
+    /// object
     ///     The selected flat values window. Numeric values are read-only int64;
     ///     geometry and cell values retain their immutable array types.
     #[getter]
