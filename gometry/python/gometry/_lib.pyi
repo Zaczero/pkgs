@@ -399,6 +399,8 @@ class GeometryError(ValueError):
 
     category: Literal['layout', 'metadata'] | None
     """GeoParquet admission category, or ``None`` for other geometry errors."""
+    code: str | None
+    """Stable machine-readable reason code when the error has one (else ``None``)."""
     param: str | None
     """The offending parameter's name, for value-lane errors (else ``None``)."""
     value: float | None

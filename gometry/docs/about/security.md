@@ -69,6 +69,13 @@ declarations:
   CRS search. [`CellArray.uncompact`][gometry.CellArray.uncompact] is a
   caller-directed, unlimited transform and is not protected by factory
   result-count limits; its output can therefore be much larger than its input.
+  Selected geometry output refusals expose
+  [`GeometryError.code`][gometry.GeometryError.code]: `'output_limit'` for a
+  generated-output cap, `'work_limit'` when an embedding search stops before
+  certification, and `'output_unrepresentable'` when an operation cannot meet
+  its admitted output and preservation constraints. A work-limit result does
+  not prove that no valid output exists, and an unrepresentable result applies
+  only to the operation's admitted coordinate domain and preservation contract.
 
 Proportionally large input can still abort on genuine OOM when its bytes are
 comparable to required memory and the process rlimit is below what it needs.

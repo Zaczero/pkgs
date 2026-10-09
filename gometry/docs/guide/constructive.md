@@ -220,13 +220,17 @@ vertices stay on or inside the rectangle; geographic outputs never move a
 vertex onto a seam or pole. Z/M values are evaluated at the exact constructed
 vertex.
 
-If no adjacent-coordinate assignment passes the certificate, the operation
-raises [`GeometryError`][gometry.GeometryError] instead of returning geometry
-with changed topology. A bounded-search exhaustion also raises
-`GeometryError`; its `operation` attribute names the operation. Simplify the
-operands or [`snap`][gometry.snap] near-coincident borders to a common tolerance
-first. Overlaying a published result again is a new operation on its rounded
-coordinates and is not promised to reproduce the first result.
+If no assignment in the operation's admitted finite coordinate domain passes
+the certificate, it raises [`GeometryError`][gometry.GeometryError] with
+`code == 'output_unrepresentable'` instead of returning geometry with changed
+topology. This is a refusal under that operation's drawing domain and
+preservation contract, not a claim that every possible binary64 drawing of the
+mathematical result is impossible. If the bounded search stops before it can
+certify an assignment, the error has `code == 'work_limit'`; that does not prove
+that no assignment exists. The `operation` attribute names the operation.
+Simplify the operands or [`snap`][gometry.snap] near-coincident borders to a
+common tolerance first. Overlaying a published result again is a new operation
+on its rounded coordinates and is not promised to reproduce the first result.
 The same certificate protects constructed vertices emitted by noding,
 polygonizing, clipping, subdividing, repair, and coverage cleaning.
 
