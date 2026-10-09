@@ -24,16 +24,20 @@ import tracemalloc
 from array import array
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-import gometry as gm
-import gometry._lib as gm_lib
 import numpy as np
 
 _CASE_DIR = Path(__file__).resolve().parent
 if str(_CASE_DIR) not in sys.path:
     sys.path.insert(0, str(_CASE_DIR))
 
+from _observation import bootstrap, finish_measurement, prepare_measurement
 from _validation import emit_validation
+
+if __name__ == '__main__':
+    bootstrap()
+
+import gometry as gm
+import gometry._lib as gm_lib
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -199,6 +203,7 @@ def main() -> None:
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
 
+    producer_identity = prepare_measurement()
     environment_before = cpu_state()
     rss_current_before_setup = current_rss_kib()
     pss_current_before_setup = current_pss_kib()
@@ -247,6 +252,7 @@ def main() -> None:
     # Lifetime high-water mark kept as diagnostic only (not endpoint arithmetic).
     rss_lifetime_maxrss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
+    case_process = finish_measurement()
     extension_path = Path(gm_lib.__file__).resolve()
     case_path = Path(__file__).resolve()
     payload = {
@@ -292,6 +298,8 @@ def main() -> None:
         'extension_path': str(extension_path),
         'extension_sha256': file_sha256(extension_path),
         'case_sha256': file_sha256(case_path),
+        'producer_identity': producer_identity,
+        'case_process': case_process,
         'python': sys.version,
         'environment_before': environment_before,
         'environment_after': cpu_state(),
