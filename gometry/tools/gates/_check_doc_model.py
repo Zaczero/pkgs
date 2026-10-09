@@ -783,22 +783,13 @@ def _stub_constructor_contracts(
 def _call_form_defaults(
     forms: tuple[CallForm, ...],
 ) -> tuple[dict[str, str | None], list[str]]:
-    values: dict[str, set[str]] = {}
+    values: dict[str, str | None] = {}
     for parameters, _ in forms:
         for _, name, _, default in parameters:
-            if default is not None:
-                values.setdefault(name, set()).add(default)
-            else:
-                values.setdefault(name, set())
-    conflicts = [
-        f'{name}: defaults differ across accepted forms {sorted(defaults)}'
-        for name, defaults in values.items()
-        if len(defaults) > 1
-    ]
-    return {
-        name: next(iter(defaults)) if defaults else None
-        for name, defaults in values.items()
-    }, conflicts
+            values.setdefault(name, None)
+            if values[name] is None and default is not None:
+                values[name] = default
+    return values, []
 
 
 def _public_overload_paths(
