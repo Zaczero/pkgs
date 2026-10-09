@@ -50,15 +50,16 @@ impl PySpatialIndex {
     /// immutable overflow runs.
     pub(crate) fn live_entries(&self) -> impl Iterator<Item = &IndexEntry> {
         self.bulk
-            .live_entries(&self.rows.live)
-            .chain(self.overflow.live_entries(&self.rows.live))
+            .live_entries(&self.rows.live_handles)
+            .chain(self.overflow.live_entries(&self.rows.live_handles))
     }
 
     /// Append every live handle whose envelope intersects `query`.
     pub(crate) fn collect_intersecting(&self, query: &AABB<[f64; 2]>, out: &mut Vec<usize>) {
-        self.bulk.append_intersecting(&self.rows.live, query, out);
+        self.bulk
+            .append_intersecting(&self.rows.live_handles, query, out);
         self.overflow
-            .append_intersecting(&self.rows.live, query, out);
+            .append_intersecting(&self.rows.live_handles, query, out);
     }
 
     /// Append every live handle whose envelope lies within squared distance
@@ -70,9 +71,9 @@ impl PySpatialIndex {
         out: &mut Vec<usize>,
     ) {
         self.bulk
-            .append_within_distance_2(&self.rows.live, point, max_distance_2, out);
+            .append_within_distance_2(&self.rows.live_handles, point, max_distance_2, out);
         self.overflow
-            .append_within_distance_2(&self.rows.live, point, max_distance_2, out);
+            .append_within_distance_2(&self.rows.live_handles, point, max_distance_2, out);
     }
 
     /// Append the handles whose envelopes meet `bounds`, ascending and unique
@@ -86,11 +87,11 @@ impl PySpatialIndex {
     /// Order the handles appended after `start` ascending, one per row — the
     /// form every candidate producer hands on. Retaining refinement keeps it.
     fn finish_candidates(&self, out: &mut Vec<usize>, start: usize) {
-        sort_unique_row_ids(out, start, self.rows.len());
+        sort_unique_row_ids(out, start, self.rows.next_handle);
     }
 
     fn append_live_handles(&self, out: &mut Vec<usize>) {
-        out.extend(self.live_entries().map(|entry| entry.idx));
+        self.rows.live_handles.append_ordered(out);
     }
 
     /// Visit each live row's matching higher handles for a symmetric predicate.
@@ -113,10 +114,9 @@ impl PySpatialIndex {
             None
         };
         let radius = distance.map_or(0.0, DwithinDistance::get);
-        let live = self.live_handles_sorted();
         let mut candidates = Vec::new();
         let mut products = self.rows.operation();
-        for &i in &live {
+        for i in self.rows.live_handles.iter() {
             // Symmetric relation: keep only j > i *before* the exact refine,
             // so each unordered pair is refined exactly once.
             let row = products.row(i)?;

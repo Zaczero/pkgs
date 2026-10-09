@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pickle
+import sys
 
 import gometry as gm
 import numpy as np
@@ -185,6 +186,36 @@ def test_forged_has_metadata_false_still_enforces_crs():
     idx = _lib._unpickle_spatial_index_v1(arr, False)
     with pytest.raises(gm.CRSMismatchError):
         idx.query(gm.Point(0, 0, crs=3857))
+
+
+def test_spatial_index_v2_validates_compact_handle_payload() -> None:
+    values = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 0)])
+
+    with pytest.raises(TypeError):
+        _lib._unpickle_spatial_index_v2(values, [0, 1], 2, False)
+    with pytest.raises(gm.GeometryError, match='handle count'):
+        _lib._unpickle_spatial_index_v2(values, (0,), 2, False)
+    with pytest.raises(gm.GeometryError, match='strictly increasing'):
+        _lib._unpickle_spatial_index_v2(values, (1, 1), 2, False)
+    with pytest.raises(gm.GeometryError, match='strictly increasing'):
+        _lib._unpickle_spatial_index_v2(values, (1, 0), 2, False)
+    with pytest.raises(gm.GeometryError, match='less than next_handle'):
+        _lib._unpickle_spatial_index_v2(values, (0, 2), 2, False)
+    with pytest.raises(TypeError, match='not bool'):
+        _lib._unpickle_spatial_index_v2(values, (False, 1), 2, False)
+    with pytest.raises(TypeError, match='not bool'):
+        _lib._unpickle_spatial_index_v2(values, (0, 1), True, False)
+    with pytest.raises(gm.GeometryError, match='non-negative'):
+        _lib._unpickle_spatial_index_v2(values, (0, 1), -1, False)
+    with pytest.raises(gm.GeometryError, match='too large'):
+        _lib._unpickle_spatial_index_v2(values, (0, 1), sys.maxsize + 1, False)
+
+    missing = gm.GeometryArray([gm.Point(0, 0), None])
+    with pytest.raises(gm.GeometryError, match='must not contain missing'):
+        _lib._unpickle_spatial_index_v2(missing, (0, 1), 2, False)
+    empty = gm.GeometryArray([gm.from_wkt('POINT EMPTY')])
+    with pytest.raises(gm.GeometryError, match='empty handle 0'):
+        _lib._unpickle_spatial_index_v2(empty, (0,), 1, False)
 
 
 def test_spatial_index_pickle_roundtrip():
