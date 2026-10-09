@@ -1209,6 +1209,52 @@ mod tests {
                 .expect("first interior request measures total");
             assert!(root.edge.is_some());
             assert!(first_fraction.is_some());
+            let root_edge_before_rejection = format!("{:?}", root.edge);
+
+            let mut nearby_fraction = None;
+            let mut rejected_work =
+                EvaluationBudget::with_remaining_ticks_for_test("source_arc_test", 1, 0)?;
+            let mut rejected_metric_accesses = 0;
+            let rejected = source_arc_ordinates(
+                &nearby_request,
+                || {
+                    rejected_metric_accesses += 1;
+                    Ok(metric)
+                },
+                &mut root,
+                &mut nearby_fraction,
+                &mut rejected_work,
+            );
+            match rejected {
+                Err(refusal)
+                    if matches!(
+                        refusal.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            crate::geometry::GeometryErrorKind::ExactEmbeddingSearchLimit {
+                                operation: "source_arc_test",
+                                ..
+                            }
+                        )
+                    ) => {},
+                Err(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "distinct exact source request failed for a reason other than Work exhaustion",
+                    ));
+                },
+                Ok(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "distinct exact source request reused another request's fraction",
+                    ));
+                },
+            }
+            assert_eq!(rejected_metric_accesses, 1);
+            assert!(nearby_fraction.is_none());
+            assert!(root.edge.is_some());
+            assert_eq!(format!("{:?}", root.edge), root_edge_before_rejection);
+            assert_eq!(
+                root.total_length.map(f64::to_bits),
+                Some(total_length.to_bits())
+            );
 
             let mut rounding_work = CountingWork::default();
             let rounded_parameter = nearby_quarter.round_with_work(&mut rounding_work)?;
@@ -1228,7 +1274,6 @@ mod tests {
                 1,
                 remaining_ticks,
             )?;
-            let mut nearby_fraction = None;
             let nearby = match source_arc_ordinates(
                 &nearby_request,
                 || Ok(metric),
@@ -1264,14 +1309,20 @@ mod tests {
                 nearby.m.value().map(f64::to_bits)
             );
 
-            let mut duplicate_work = Unmetered;
+            let mut duplicate_work =
+                EvaluationBudget::with_remaining_ticks_for_test("source_arc_test", 1, 0)?;
+            let mut duplicate_metric_accesses = 0;
             let duplicate = source_arc_ordinates(
                 &nearby_request,
-                || Ok(metric),
+                || {
+                    duplicate_metric_accesses += 1;
+                    Ok(metric)
+                },
                 &mut root,
                 &mut nearby_fraction,
                 &mut duplicate_work,
             )?;
+            assert_eq!(duplicate_metric_accesses, 1);
             assert_eq!(
                 duplicate.z.value().map(f64::to_bits),
                 nearby.z.value().map(f64::to_bits)
@@ -1307,6 +1358,17 @@ mod tests {
             assert_eq!(
                 shared_root_result.m.value().map(f64::to_bits),
                 fresh_root_result.m.value().map(f64::to_bits)
+            );
+            println!(
+                "root_metric_request_reuse={{\"rounded_parameter_bits\":\"{:016x}\",\"rounding_work_ticks\":{},\"fraction_work_ticks\":{},\"fraction_only_allowance_ticks\":{},\"root_total_bits\":\"{:016x}\",\"fraction_bits\":\"{:016x}\",\"distinct_request_zero_work\":\"refused\",\"fraction_empty_after_refusal\":true,\"root_edge_unchanged\":true,\"root_total_unchanged\":true,\"rejected_metric_accesses\":{},\"duplicate_zero_work\":\"succeeded\",\"duplicate_metric_accesses\":{}}}",
+                rounded_parameter.to_bits(),
+                rounding_work.ticks,
+                fraction_work.ticks,
+                remaining_ticks,
+                total_length.to_bits(),
+                expected_fraction.to_bits(),
+                rejected_metric_accesses,
+                duplicate_metric_accesses,
             );
             Ok(())
         })
