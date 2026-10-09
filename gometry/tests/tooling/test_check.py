@@ -6,13 +6,12 @@ from pathlib import Path
 
 import pytest
 
-GOMETRY_ROOT = Path(__file__).resolve().parents[2]
-TOOLS = GOMETRY_ROOT / 'tools'
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
+from tests._support import load_tool
 
-import check as quality_check  # noqa: E402
-import runtime_artifact  # noqa: E402
+GOMETRY_ROOT = Path(__file__).resolve().parents[2]
+
+quality_check = load_tool('quality_check', GOMETRY_ROOT / 'tools/check.py')
+runtime_artifact = sys.modules['runtime_artifact']
 
 
 def test_no_fix_keeps_source_checks_running_when_runtime_admission_fails(
