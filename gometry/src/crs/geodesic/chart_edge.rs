@@ -32,31 +32,28 @@ const GL4_WEIGHTS: [f64; 4] = [
     0.173_927_422_568_726_93,
 ];
 
-const GK15_NODES: [f64; 8] = [
-    0.991_455_371_120_812_6,
-    0.949_107_912_342_758_5,
-    0.864_864_423_359_769_1,
-    0.741_531_185_599_394_5,
-    0.586_087_235_467_691_1,
-    0.405_845_151_377_397_2,
-    0.207_784_955_007_898_48,
-    0.0,
-];
-const GK15_WEIGHTS: [f64; 8] = [
-    0.022_935_322_010_529_224,
-    0.063_092_092_629_978_55,
-    0.104_790_010_322_250_18,
-    0.140_653_259_715_525_92,
-    0.169_004_726_639_267_9,
-    0.190_350_578_064_785_42,
-    0.204_432_940_075_298_89,
-    0.209_482_141_084_727_82,
-];
-const G7_WEIGHTS: [f64; 4] = [
-    0.129_484_966_168_869_7,
-    0.279_705_391_489_276_67,
-    0.381_830_050_505_118_9,
-    0.417_959_183_673_469_4,
+const GK15_CENTER_KRONROD_WEIGHT: f64 = 0.209_482_141_084_727_82;
+const G7_CENTER_WEIGHT: f64 = 0.417_959_183_673_469_4;
+const GK15_NONCENTRAL_RULE: [(f64, f64, Option<f64>); 7] = [
+    (0.991_455_371_120_812_6, 0.022_935_322_010_529_224, None),
+    (
+        0.949_107_912_342_758_5,
+        0.063_092_092_629_978_55,
+        Some(0.129_484_966_168_869_7),
+    ),
+    (0.864_864_423_359_769_1, 0.104_790_010_322_250_18, None),
+    (
+        0.741_531_185_599_394_5,
+        0.140_653_259_715_525_92,
+        Some(0.279_705_391_489_276_67),
+    ),
+    (0.586_087_235_467_691_1, 0.169_004_726_639_267_9, None),
+    (
+        0.405_845_151_377_397_2,
+        0.190_350_578_064_785_42,
+        Some(0.381_830_050_505_118_9),
+    ),
+    (0.207_784_955_007_898_48, 0.204_432_940_075_298_89, None),
 ];
 
 const MAX_GK15_EVALUATIONS: usize = 5_000;
@@ -1178,15 +1175,15 @@ impl ChartEdge {
         let center = f64::midpoint(start, end);
         let half = (end - start) / 2.0;
         let center_value = self.speed(center, semi_major, e2, dphi);
-        let mut kronrod = center_value * GK15_WEIGHTS[7];
-        let mut gauss = center_value * G7_WEIGHTS[3];
-        for index in 0..7 {
-            let offset = half * GK15_NODES[index];
+        let mut kronrod = center_value * GK15_CENTER_KRONROD_WEIGHT;
+        let mut gauss = center_value * G7_CENTER_WEIGHT;
+        for &(node, kronrod_weight, gauss_weight) in &GK15_NONCENTRAL_RULE {
+            let offset = half * node;
             let pair = self.speed(center - offset, semi_major, e2, dphi)
                 + self.speed(center + offset, semi_major, e2, dphi);
-            kronrod += GK15_WEIGHTS[index] * pair;
-            if index % 2 == 1 {
-                gauss += G7_WEIGHTS[index / 2] * pair;
+            kronrod += kronrod_weight * pair;
+            if let Some(gauss_weight) = gauss_weight {
+                gauss += gauss_weight * pair;
             }
         }
         let value = kronrod * half;
