@@ -12,7 +12,7 @@ use crate::{
     ensure_homogeneous_axes, exact_geometry, extract_coordinate, extract_coordinate_or_empty,
     extract_lines, extract_points, extract_polygons, finite_coordinate_required,
     optional_coordinate_column_values, optional_coordinate_column_values_from_buffer,
-    optional_coordinates, parse_crs, parse_crs_epoch, wrapped_box,
+    optional_coordinates, parse_crs, parse_crs_epoch,
 };
 
 mod builders;
