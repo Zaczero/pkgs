@@ -1,6 +1,6 @@
 //! Unified dispatch spine — scalar/array/grid routing for geometry ops.
 //!
-//! Routes the unary, binary, and packed fast-path lanes. [`BulkElement`] lives
+//! Routes the unary, binary, and packed execution lanes. [`BulkElement`] lives
 //! in `broadcast`; [`Operation`] and [`MetricResolver`] centralize op names and
 //! CRS metric policy.
 
@@ -14,15 +14,13 @@ mod packed;
 mod unary;
 
 pub(crate) use binary::{
-    NoBinaryFastPath, admit_binary, admit_binary_inputs, dispatch_binary,
-    dispatch_binary_array_left, dispatch_binary_geometry,
-    dispatch_binary_geometry_admitted_with_resolver, dispatch_typed_metric_binary,
-    geometry_kernel_over_array,
+    admit_binary, admit_binary_inputs, dispatch_binary, dispatch_binary_array_left,
+    dispatch_binary_geometry, dispatch_binary_geometry_admitted_with_resolver,
+    dispatch_typed_metric_binary, geometry_kernel_over_array,
 };
 pub(crate) use binary_fast::{
-    OverlayFastPath, dispatch_broadcast2, dispatch_distance, dispatch_distance_3d,
-    dispatch_dwithin_admitted, dispatch_frechet_distance, dispatch_hausdorff_distance,
-    dispatch_overlay, dispatch_predicate,
+    dispatch_broadcast2, dispatch_distance, dispatch_distance_3d, dispatch_dwithin_admitted,
+    dispatch_frechet_distance, dispatch_hausdorff_distance, dispatch_overlay, dispatch_predicate,
 };
 pub(crate) use linref::{line_interpolate_points_scalar, line_locate_input};
 pub(crate) use metric::{

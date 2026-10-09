@@ -191,9 +191,6 @@ pub(crate) mod binary_dispatch_counters {
         pub(crate) frame_resolutions: usize,
         pub(crate) metric_context_acquisitions: usize,
         pub(crate) runtime_state_snapshots: usize,
-        pub(crate) fast_path_attempts: usize,
-        pub(crate) fast_path_taken: usize,
-        pub(crate) fast_path_declines: usize,
         pub(crate) general_lane_runs: usize,
         #[cfg(debug_assertions)]
         pub(crate) point_predicate_dispatches: usize,
@@ -207,9 +204,6 @@ pub(crate) mod binary_dispatch_counters {
                 frame_resolutions: 0,
                 metric_context_acquisitions: 0,
                 runtime_state_snapshots: 0,
-                fast_path_attempts: 0,
-                fast_path_taken: 0,
-                fast_path_declines: 0,
                 general_lane_runs: 0,
                 #[cfg(debug_assertions)]
                 point_predicate_dispatches: 0,
@@ -259,22 +253,6 @@ pub(crate) mod binary_dispatch_counters {
     pub(crate) fn runtime_state_snapshot() {
         update(|snapshot| {
             snapshot.runtime_state_snapshots = snapshot.runtime_state_snapshots.saturating_add(1);
-        });
-    }
-
-    pub(crate) fn fast_path_attempt() {
-        update(|snapshot| {
-            snapshot.fast_path_attempts = snapshot.fast_path_attempts.saturating_add(1);
-        });
-    }
-
-    pub(crate) fn fast_path_taken() {
-        update(|snapshot| snapshot.fast_path_taken = snapshot.fast_path_taken.saturating_add(1));
-    }
-
-    pub(crate) fn fast_path_declined() {
-        update(|snapshot| {
-            snapshot.fast_path_declines = snapshot.fast_path_declines.saturating_add(1);
         });
     }
 

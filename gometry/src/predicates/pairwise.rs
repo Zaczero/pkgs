@@ -93,9 +93,7 @@ pub(crate) fn shortest_line(
                 crate::dispatch::dispatch_binary_geometry_admitted_with_resolver(
                     py,
                     &admission,
-                    operation.name(),
                     crate::dispatch::MetricResolver::GeographicCarry,
-                    &crate::dispatch::OverlayFastPath,
                     move |left, right, ctx| {
                         metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
                     },
@@ -112,9 +110,7 @@ pub(crate) fn shortest_line(
                 crate::dispatch::dispatch_binary_geometry_admitted_with_resolver(
                     py,
                     &admission,
-                    operation.name(),
                     crate::dispatch::MetricResolver::GeographicCarry,
-                    &crate::dispatch::OverlayFastPath,
                     move |left, right, ctx| {
                         metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
                     },
@@ -135,9 +131,7 @@ pub(crate) fn shortest_line(
                 crate::dispatch::dispatch_binary_geometry_admitted_with_resolver(
                     py,
                     &admission,
-                    operation.name(),
                     crate::dispatch::MetricResolver::GeographicCarry,
-                    &crate::dispatch::OverlayFastPath,
                     move |left, right, ctx| {
                         metric_shortest_line_resolved(&resolved, left, right, ctx.domain)
                     },

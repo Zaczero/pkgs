@@ -4,160 +4,96 @@ use crate::broadcast::{
     GeometryInput, SimilarityOp, array_crs_distances, array_crs_dwithin, classify_required,
     predicate_pairwise_arrays, predicate_scalar_vs_array,
 };
-use crate::crs::{MetricModel, ResolvedMetric};
-use crate::dispatch::binary::{
-    BinaryArrayFastPath, NoBinaryFastPath, dispatch_binary, dispatch_binary_geometry,
-};
+use crate::dispatch::binary::{dispatch_binary, dispatch_binary_geometry};
 use crate::dispatch::kernels;
 use crate::dispatch::metric::GeodesicBinaryRow;
 use crate::dispatch::operation::{MetricOp, Operation};
-use crate::geometry::{GeometryKind, PreparedPlan, TopologyDomain, storage};
+use crate::geometry::storage::validity as missing;
+use crate::geometry::{GeometryKind, PreparedPlan, TopologyDomain};
 use crate::predicates::engine;
 use crate::predicates::engine::Predicate;
 use crate::{DistanceUnit, DwithinDistance, Frame, OverlayOp};
 
-/// Predicate array-lane fast path using the shared batch engine.
-pub(crate) struct PredicateFastPath {
-    predicate: Predicate,
-    scalar_is_left: bool,
-}
-
-impl PredicateFastPath {
-    const fn new(predicate: Predicate, scalar_is_left: bool) -> Self {
-        Self {
-            predicate,
-            scalar_is_left,
-        }
-    }
-}
-
-impl BinaryArrayFastPath<bool> for PredicateFastPath {
-    fn is_eligible(
-        &self,
-        _left: &crate::PyGeometryArray,
-        _right: GeometryInput<'_>,
-        _op_name: &str,
-        _frame: &Frame,
-    ) -> bool {
-        true
-    }
-
-    fn try_dispatch(
-        &self,
-        py: Python<'_>,
-        array: &crate::PyGeometryArray,
-        other: GeometryInput<'_>,
-        _op_name: &str,
-        frame: &Frame,
-        domain: crate::geometry::TopologyDomain,
-        missing: Option<&storage::ValidityMask>,
-        _model: Option<&MetricModel>,
-        _metric: Option<&ResolvedMetric>,
-    ) -> Option<PyResult<Py<PyAny>>> {
-        let spec = self.predicate.spec();
-        Some(match other {
-            GeometryInput::One(scalar) => predicate_scalar_vs_array(
-                py,
-                &spec,
-                scalar,
-                array,
-                self.scalar_is_left,
-                frame,
-                domain,
-            ),
-            GeometryInput::Many(right) => {
-                predicate_pairwise_arrays(py, &spec, array, right, frame, domain, missing)
-            },
-        })
-    }
-}
-
-/// Overlay set-ops use the shared geometry kernel over array rows.
-pub(crate) struct OverlayFastPath;
-
-impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
-    fn is_eligible(
-        &self,
-        _left: &crate::PyGeometryArray,
-        _right: GeometryInput<'_>,
-        _op_name: &str,
-        _frame: &Frame,
-    ) -> bool {
-        false
-    }
-
-    fn try_dispatch(
-        &self,
-        _py: Python<'_>,
-        _left: &crate::PyGeometryArray,
-        _right: GeometryInput<'_>,
-        _op_name: &str,
-        _frame: &Frame,
-        _domain: crate::geometry::TopologyDomain,
-        _missing: Option<&storage::ValidityMask>,
-        _model: Option<&MetricModel>,
-        _metric: Option<&ResolvedMetric>,
-    ) -> Option<PyResult<Py<PyAny>>> {
-        None
-    }
-}
-
-/// Predicate broadcast through the spine (fast paths in [`PredicateFastPath`]).
+/// Predicate broadcast through the shared scalar and array engines.
 pub(crate) fn dispatch_predicate(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     predicate: Predicate,
 ) -> PyResult<Py<PyAny>> {
+    use GeometryInput::{Many, One};
+
     let operation = Operation::Predicate(predicate);
     let admission = super::binary::admit_binary(left, right, operation.name())?;
-    if let (GeometryInput::One(left), GeometryInput::One(right)) = (admission.left, admission.right)
-    {
-        let spec = predicate.spec();
-        // The kind gate reads the operand kinds alone, so it answers before a
-        // prepared plan or a frame product is resolved.
-        if let Some(verdict) = spec.predicate.kind_gate(
-            GeometryKind::of(left.shape.shape()),
-            GeometryKind::of(right.shape.shape()),
-        ) {
-            return Ok(crate::broadcast::py_bool(py, verdict));
-        }
-        let left_plan = left.prepared_plan();
-        let right_plan = right.prepared_plan();
-        // Only geographic topology reads frame products; resolving them for a
-        // planar pair allocates a row-product chunk per operand that the
-        // Cartesian arm never looks at.
-        let value = match admission.domain {
-            TopologyDomain::Cartesian => py.detach(move || {
-                let operands = engine::PreparedTopologyPair::cartesian(&left_plan, &right_plan);
-                engine::topology_scalar_pair(&spec, &operands)
-            }),
-            TopologyDomain::Geographic(frame) => {
-                let left_cache = left.frame_cache();
-                let right_cache = right.frame_cache();
-                py.detach(move || {
-                    let operands = engine::PreparedTopologyPair::try_geographic(
-                        &left_plan,
-                        &left_cache,
-                        &right_plan,
-                        &right_cache,
-                        frame,
-                    )?;
+    let spec = predicate.spec();
+    match (admission.left, admission.right) {
+        (One(left), One(right)) => {
+            // The kind gate answers before prepared topology or frame products
+            // are acquired, while binary admission has already settled CRS.
+            if let Some(verdict) = spec.predicate.kind_gate(
+                GeometryKind::of(left.shape.shape()),
+                GeometryKind::of(right.shape.shape()),
+            ) {
+                return Ok(crate::broadcast::py_bool(py, verdict));
+            }
+            let left_plan = left.prepared_plan();
+            let right_plan = right.prepared_plan();
+            // Only geographic topology reads frame products; resolving them for a
+            // planar pair allocates a row-product chunk per operand that the
+            // Cartesian arm never looks at.
+            let value = match admission.domain {
+                TopologyDomain::Cartesian => py.detach(move || {
+                    let operands = engine::PreparedTopologyPair::cartesian(&left_plan, &right_plan);
                     engine::topology_scalar_pair(&spec, &operands)
-                })
-            },
-        }?;
-        return Ok(crate::broadcast::py_bool(py, value));
+                }),
+                TopologyDomain::Geographic(frame) => {
+                    let left_cache = left.frame_cache();
+                    let right_cache = right.frame_cache();
+                    py.detach(move || {
+                        let operands = engine::PreparedTopologyPair::try_geographic(
+                            &left_plan,
+                            &left_cache,
+                            &right_plan,
+                            &right_cache,
+                            frame,
+                        )?;
+                        engine::topology_scalar_pair(&spec, &operands)
+                    })
+                },
+            }?;
+            Ok(crate::broadcast::py_bool(py, value))
+        },
+        (One(scalar), Many(array)) => predicate_scalar_vs_array(
+            py,
+            &spec,
+            scalar,
+            array,
+            true,
+            &admission.frame,
+            admission.domain,
+        ),
+        (Many(array), One(scalar)) => predicate_scalar_vs_array(
+            py,
+            &spec,
+            scalar,
+            array,
+            false,
+            &admission.frame,
+            admission.domain,
+        ),
+        (Many(left), Many(right)) => {
+            let pair_missing = missing::union_many([left.missing(), right.missing()]);
+            predicate_pairwise_arrays(
+                py,
+                &spec,
+                left,
+                right,
+                &admission.frame,
+                admission.domain,
+                pair_missing.as_ref(),
+            )
+        },
     }
-    let scalar_is_left = matches!(admission.left, GeometryInput::One(_));
-    super::binary::dispatch_binary_admitted(
-        py,
-        &admission,
-        operation.name(),
-        super::MetricResolver::None,
-        &PredicateFastPath::new(predicate, scalar_is_left),
-        |_left, _right, _ctx| unreachable!("predicate array fast path handles every array lane"),
-    )
 }
 
 /// Geometry overlay through the shared geometry kernel.
@@ -175,7 +111,6 @@ pub(crate) fn dispatch_overlay(
         right,
         operation.name(),
         operation.resolver(),
-        &OverlayFastPath,
         move |left, right, ctx| kernels::binary_overlay(left, right, ctx, op, strictness),
     )
 }
@@ -197,7 +132,6 @@ where
         right,
         op_name,
         super::MetricResolver::None,
-        &NoBinaryFastPath,
         move |left, right, _ctx| op(left, right),
     )
 }
@@ -353,7 +287,6 @@ pub(crate) fn dispatch_distance_3d(
         right,
         op.name(),
         op.resolver().with_unit(unit),
-        &NoBinaryFastPath,
         kernels::binary_distance_3d,
     )
 }
@@ -407,9 +340,7 @@ fn dispatch_similarity_metric(
         return super::binary::dispatch_binary_admitted(
             py,
             &admission,
-            Operation::Metric(metric_op).name(),
             Operation::Metric(metric_op).resolver_with_unit(unit),
-            &NoBinaryFastPath,
             move |left, right, ctx| operation.eval_scalar(left, right, ctx),
         );
     };

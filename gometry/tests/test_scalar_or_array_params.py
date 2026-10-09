@@ -516,11 +516,6 @@ def test_free_snap_scalar_tolerance_preserves_missing_and_typed_empty_rows() -> 
         gm.snap(source_rows, gm.Point(0, 0), 0.1),
         gm.snap(source_rows, gm.Point(0, 0), [0.1, 0.1, 0.1]),
     )
-    for result in source_array_results:
-        assert result.is_missing.tolist() == [True, False, False]
-        assert result[0] is None
-        assert result[1].to_wkt() == 'POINT EMPTY'
-        assert result[2].to_wkt() == 'POINT (0 0)'
 
     reference_rows = gm.GeometryArray([
         None,
@@ -531,11 +526,6 @@ def test_free_snap_scalar_tolerance_preserves_missing_and_typed_empty_rows() -> 
         gm.snap(gm.Point(0.05, 0.05), reference_rows, 0.1),
         gm.snap(gm.Point(0.05, 0.05), reference_rows, [0.1, 0.1, 0.1]),
     )
-    for result in reference_array_results:
-        assert result.is_missing.tolist() == [True, False, False]
-        assert result[0] is None
-        assert result[1].to_wkt() == 'POINT (0 0)'
-        assert result[2].to_wkt() == 'POINT (0.05 0.05)'
 
     paired_result = gm.snap(
         gm.GeometryArray([
@@ -552,11 +542,38 @@ def test_free_snap_scalar_tolerance_preserves_missing_and_typed_empty_rows() -> 
         ]),
         0.1,
     )
-    assert paired_result.is_missing.tolist() == [True, True, False, False]
-    assert paired_result[0] is None
-    assert paired_result[1] is None
-    assert paired_result[2].to_wkt() == 'POINT EMPTY'
-    assert paired_result[3].to_wkt() == 'POINT (0 0)'
+
+    observed = []
+    for result in (*source_array_results, *reference_array_results, paired_result):
+        observed.append((
+            result.is_missing.tolist(),
+            [
+                None if result[row] is None else result[row].to_wkt()
+                for row in range(len(result))
+            ],
+        ))
+    assert observed == [
+        (
+            [True, False, False],
+            [None, 'POINT EMPTY', 'POINT (0 0)'],
+        ),
+        (
+            [True, False, False],
+            [None, 'POINT EMPTY', 'POINT (0 0)'],
+        ),
+        (
+            [True, False, False],
+            [None, 'POINT (0 0)', 'POINT (0.05 0.05)'],
+        ),
+        (
+            [True, False, False],
+            [None, 'POINT (0 0)', 'POINT (0.05 0.05)'],
+        ),
+        (
+            [True, True, False, False],
+            [None, None, 'POINT EMPTY', 'POINT (0 0)'],
+        ),
+    ]
 
 
 def test_free_equals_exact_accepts_per_element_tolerance() -> None:
