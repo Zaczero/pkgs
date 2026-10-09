@@ -7,21 +7,14 @@ use crate::py::index::{
 };
 
 fn checked_total_rows(start: usize, count: usize) -> PyResult<usize> {
-    start
-        .checked_add(count)
-        .ok_or(crate::error::ResourceError::SizeOverflow)
-        .map_err(crate::error::Error::from)
-        .map_err(pyo3::PyErr::from)
+    super::checked_index_handle_end(start, count).map_err(pyo3::PyErr::from)
 }
 
 impl PySpatialIndex {
+    #[cfg(test)]
     pub(crate) fn live_handles_sorted(&self) -> Vec<usize> {
-        let mut handles = self
-            .live_entries()
-            .map(|entry| entry.idx)
-            .collect::<Vec<_>>();
-        handles.sort_unstable();
-        handles.dedup();
+        let mut handles = Vec::with_capacity(self.rows.live_handles.len());
+        self.rows.live_handles.append_ordered(&mut handles);
         handles
     }
 
@@ -90,7 +83,7 @@ impl PySpatialIndex {
         let adopt_frame = self.metadata.is_none().then(|| geometry.frame.clone());
         let mut entry_counts = [0_usize; 1];
         let mut entries = Vec::with_capacity(cover.entries().len());
-        let idx = self.rows.len();
+        let idx = self.rows.next_handle;
         entries.extend(
             cover
                 .entries()
@@ -122,7 +115,8 @@ impl PySpatialIndex {
             self.check_insert_frame(frame)?;
         }
         let adopt_frame = self.metadata.is_none().then(|| frame.clone()).flatten();
-        let start = self.rows.len();
+        let start = self.rows.next_handle;
+        checked_total_rows(start, items.len())?;
         let mut entries = Vec::with_capacity(items.len());
         let mut entry_counts = Vec::with_capacity(items.len());
         let domain = crate::geometry::topology_domain(
@@ -174,7 +168,8 @@ impl PySpatialIndex {
         }
         self.check_insert_frame(&array.frame)?;
         let adopt_frame = self.metadata.is_none().then(|| array.frame.clone());
-        let start = self.rows.len();
+        let start = self.rows.next_handle;
+        checked_total_rows(start, len)?;
         let mut entries = Vec::with_capacity(len);
         let mut items = Vec::with_capacity(len);
         let mut entry_counts = Vec::with_capacity(len);
@@ -225,7 +220,7 @@ impl PySpatialIndex {
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
     ) -> PyResult<Vec<usize>> {
-        let start = self.rows.len();
+        let start = self.rows.next_handle;
         let count = items.len();
         debug_assert_eq!(entry_counts.len(), count);
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
@@ -252,7 +247,7 @@ impl PySpatialIndex {
         adopt_frame: Option<Frame>,
         total_rows: usize,
     ) -> PyResult<usize> {
-        let start = self.rows.len();
+        let start = self.rows.next_handle;
         let count = items.len();
         debug_assert_eq!(entry_counts.len(), count);
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
@@ -299,7 +294,7 @@ impl PySpatialIndex {
             let dead_after = self.bulk_dead_entries.wrapping_add(removed_entries);
             let prepared = if super::str_tree::compaction_due(self.bulk.entry_count(), dead_after) {
                 Some(self.bulk.prepare_compaction(
-                    &self.rows.live,
+                    &self.rows.live_handles,
                     handle,
                     self.bulk.entry_count().wrapping_sub(dead_after),
                 )?)
@@ -322,9 +317,9 @@ impl PySpatialIndex {
             let removed_entries = self.overflow.entry_count_for_handle(handle);
             let prepared = if self.overflow.should_compact(removed_entries) {
                 Some(self.overflow.prepare_compaction(
-                    &self.rows.live,
+                    &self.rows.live_handles,
                     handle,
-                    self.rows.len(),
+                    self.rows.next_handle,
                     removed_entries,
                 )?)
             } else {
@@ -441,7 +436,7 @@ mod tests {
         assert_eq!(index.overflow.total_entries(), 11);
         assert_eq!(index.overflow.live_entry_count(), 10);
         assert_eq!(index.overflow.dead_entry_count(), 1);
-        assert_eq!(index.rows.live_count(), 13);
+        assert_eq!(index.rows.live_handles.len(), 13);
         assert_eq!(index.mutation_gen, 11);
     }
 
@@ -460,7 +455,7 @@ mod tests {
         assert!(index.bulk.entry_count() <= 32);
         assert_eq!(index.live_handles_sorted(), (240..256).collect::<Vec<_>>());
         assert_eq!(copy.bulk.entry_count(), 256);
-        assert_eq!(copy.rows.live_count(), 256);
+        assert_eq!(copy.rows.live_handles.len(), 256);
         assert_eq!(index.bulk.initial_len(), 256);
         assert_eq!(index.insert_one(&point(256.0, 0.0)).unwrap(), 256);
     }
@@ -474,7 +469,7 @@ mod tests {
         }
         assert_eq!(index.live_handles_sorted(), [61, 62, 63, 64]);
         assert!(index.bulk.entry_count() <= 2 * index.live_entries().count());
-        assert_eq!(copy.rows.live_count(), 65);
+        assert_eq!(copy.rows.live_handles.len(), 65);
         assert_eq!(copy.bulk.entry_count(), copy.live_entries().count());
     }
 
@@ -507,7 +502,7 @@ mod tests {
         let mut right = left.clone();
         assert_eq!(left.insert_one(&point(10.0, 0.0)).unwrap(), 1);
         assert_eq!(right.overflow.total_entries(), 1);
-        assert_eq!(right.rows.live_count(), 1);
+        assert_eq!(right.rows.live_handles.len(), 1);
         assert_eq!(right.insert_one(&point(20.0, 0.0)).unwrap(), 1);
         assert_eq!(left.overflow.total_entries(), 2);
         assert_eq!(right.overflow.total_entries(), 2);

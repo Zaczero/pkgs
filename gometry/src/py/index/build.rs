@@ -1,12 +1,14 @@
+use super::live_handles::LiveHandles;
 use crate::boundary::metadata;
 use crate::geometry::storage::ArrayRows;
 use crate::geometry::{TopologyDomain, storage};
 use crate::py::index::{
     Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore, PyAny,
     PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex, Python, ShapeData,
-    StaticStrForest, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
-    geodesic_domain_invalid, index_envelopes,
+    StaticStrForest, StaticStrTree, bounds_envelope, checked_index_handle_end, exact_geometry,
+    exact_geometry_array, geodesic_domain_invalid, index_envelopes,
 };
+
 pub(crate) fn spatial_index(mut items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
     let metadata = index_metadata(&items)?;
     let scan = scan_spatial_index_rows(items.iter().map(Some), metadata.as_ref())?;
@@ -17,14 +19,14 @@ pub(crate) fn spatial_index(mut items: Vec<PyGeometry>) -> PyResult<PySpatialInd
 }
 
 struct IndexScan {
+    total_rows: usize,
     entries: Vec<IndexEntry>,
-    live: Vec<u8>,
+    live_handles: LiveHandles,
     non_prunable_live: usize,
 }
 
-/// Build over a sparse row table. ``None`` rows retain their input position as
-/// a permanently non-live handle, so every reported handle remains an original
-/// row id even when missing rows are skipped.
+/// Build over sparse input rows. ``None`` rows consume an input handle without
+/// entering the live-handle directory, so later rows retain their original ids.
 fn spatial_index_rows(
     items: Vec<Option<PyGeometry>>,
     metadata: Option<Frame>,
@@ -52,27 +54,26 @@ fn scan_spatial_index_rows<'a>(
     items: impl ExactSizeIterator<Item = Option<&'a PyGeometry>>,
     metadata: Option<&Frame>,
 ) -> PyResult<IndexScan> {
+    let total_rows = checked_index_handle_end(0, items.len()).map_err(pyo3::PyErr::from)?;
     let domain = metadata
         .map(crate::geometry::topology_domain)
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
     let mut entries = Vec::new();
-    let mut live = Vec::with_capacity(items.len());
+    let mut live_handles = LiveHandles::default();
     let mut non_prunable_live = 0_usize;
     for (idx, item) in items.enumerate() {
         let Some(item) = item else {
-            live.push(0);
             continue;
         };
         let Some(bounds) = item.shape.bounds() else {
-            live.push(0);
             continue;
         };
         let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
         for &envelope in cover.entries() {
             entries.push(IndexEntry { idx, envelope });
         }
-        live.push(1);
+        live_handles.insert(idx);
         if matches!(domain, TopologyDomain::Geographic(_)) {
             non_prunable_live = non_prunable_live.wrapping_add(usize::from(
                 geodesic_domain_invalid(item.shape.shape(), domain),
@@ -80,8 +81,9 @@ fn scan_spatial_index_rows<'a>(
         }
     }
     Ok(IndexScan {
+        total_rows,
         entries,
-        live,
+        live_handles,
         non_prunable_live,
     })
 }
@@ -91,20 +93,16 @@ fn finish_spatial_index(
     scan: IndexScan,
     metadata: Option<Frame>,
 ) -> PyResult<PySpatialIndex> {
-    // `total_rows` spans every input row (incl. skipped empties) so the
-    // tombstone bitmap and tree/overflow handle boundary stay aligned to the
-    // boxed row positions the query results index into.
-    let total_rows = rows.len();
-    let live_count = scan.live.iter().filter(|&&live| live != 0).count();
-    let bulk_entry_counts = bulk_entry_counts(&scan.entries, live_count, total_rows);
-    let live_handles = super::live_handles::LiveHandles::from_live(&scan.live, live_count);
+    // Skipped empty rows consume handles, so the initial tree boundary remains
+    // the complete input length even though the directory contains only live rows.
+    let total_rows = scan.total_rows;
+    let bulk_entry_counts = bulk_entry_counts(&scan.entries, scan.live_handles.len(), total_rows);
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
             boxed: rows,
-            live: scan.live,
-            live_count,
-            live_handles,
+            next_handle: total_rows,
+            live_handles: scan.live_handles,
         },
         bulk: StaticStrTree::build(scan.entries, total_rows).map_err(pyo3::PyErr::from)?,
         bulk_dead_entries: 0,
@@ -117,13 +115,13 @@ fn finish_spatial_index(
 }
 
 /// Build packed entries directly from the retained array owner. Empty and
-/// missing rows stay in the liveness bitmap without a tree entry.
+/// missing rows consume their logical handles without becoming live.
 fn packed_index_payload(
     array: &PyGeometryArray,
     domain: TopologyDomain,
-) -> PyResult<(Vec<IndexEntry>, Vec<u8>, usize)> {
+) -> PyResult<(Vec<IndexEntry>, LiveHandles, usize)> {
     let mut entries = Vec::with_capacity(array.len());
-    let mut live = Vec::with_capacity(array.len());
+    let mut live_handles = LiveHandles::default();
     let mut non_prunable_live = 0_usize;
     let element_bounds = (!matches!(
         array.storage(),
@@ -134,7 +132,6 @@ fn packed_index_payload(
     let rows = array.row_operation();
     for logical_row in rows.rows_with_missing(|| ()) {
         let crate::array::ArrayRow::Present(row) = logical_row else {
-            live.push(0);
             continue;
         };
         let logical = row.logical();
@@ -144,7 +141,6 @@ fn packed_index_payload(
             .and_then(|bounds| bounds.get(logical).copied().flatten())
             .or_else(|| shape_row.quick_bounds());
         let Some(bounds) = bounds else {
-            live.push(0);
             continue;
         };
         let mut row_non_prunable = false;
@@ -165,18 +161,19 @@ fn packed_index_payload(
                 Ok::<_, pyo3::PyErr>(())
             })?,
         }
-        live.push(1);
+        live_handles.insert(logical);
         if matches!(domain, TopologyDomain::Geographic(_)) {
             non_prunable_live = non_prunable_live.wrapping_add(usize::from(row_non_prunable));
         }
     }
-    Ok((entries, live, non_prunable_live))
+    Ok((entries, live_handles, non_prunable_live))
 }
 
 pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<PySpatialIndex>> {
     if array.len() == 0 || !matches!(array.storage(), GeometryArrayStorage::Packed(_)) {
         return Ok(None);
     }
+    let total_rows = checked_index_handle_end(0, array.len()).map_err(pyo3::PyErr::from)?;
     let metadata = array
         .missing()
         .is_none_or(|missing| missing.present_count() != 0)
@@ -186,22 +183,15 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         .map(crate::geometry::topology_domain)
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
-    let (entries, live, non_prunable_live) = packed_index_payload(array, domain)?;
-    let live_count = match domain {
-        TopologyDomain::Cartesian => entries.len(),
-        TopologyDomain::Geographic(_) => live.iter().map(|&live| usize::from(live != 0)).sum(),
-    };
-    let total_rows = array.len();
-    let bulk_entry_counts = bulk_entry_counts(&entries, live_count, total_rows);
-    let live_handles = super::live_handles::LiveHandles::from_live(&live, live_count);
+    let (entries, live_handles, non_prunable_live) = packed_index_payload(array, domain)?;
+    let bulk_entry_counts = bulk_entry_counts(&entries, live_handles.len(), total_rows);
     Ok(Some(PySpatialIndex {
         rows: IndexRows {
             packed: Some(PackedStore {
                 source: array.clone(),
             }),
             boxed: Vec::new(),
-            live,
-            live_count,
+            next_handle: total_rows,
             live_handles,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
@@ -302,8 +292,9 @@ pub(crate) fn restore_spatial_index(
         index.metadata = (has_metadata || has_present_rows).then(|| values.frame.clone());
         return Ok(index);
     }
+    let total_rows = checked_index_handle_end(0, values.len()).map_err(pyo3::PyErr::from)?;
     let mut rows = Vec::with_capacity(values.len());
-    let mut live = Vec::with_capacity(values.len());
+    let mut live_handles = LiveHandles::default();
     let mut present = false;
     let mut row_operation = values.row_operation();
     let domain = crate::geometry::topology_domain(&values.frame)?;
@@ -333,18 +324,14 @@ pub(crate) fn restore_spatial_index(
                     geodesic_domain_invalid(geometry.shape.shape(), domain),
                 ));
             }
-            live.push(1);
+            live_handles.insert(logical);
             geometry
         } else {
-            live.push(0);
             PyGeometry::with_frame(ArrayRows::missing_placeholder(), values.frame.clone())
         };
         rows.push(geometry);
     }
-    let total_rows = rows.len();
-    let live_count = live.iter().filter(|&&live| live != 0).count();
-    let bulk_entry_counts = bulk_entry_counts(&entries, live_count, total_rows);
-    let live_handles = super::live_handles::LiveHandles::from_live(&live, live_count);
+    let bulk_entry_counts = bulk_entry_counts(&entries, live_handles.len(), total_rows);
     // Re-derive metadata from the row storage, while retaining an explicitly
     // framed index after its last live row is removed.
     let metadata = (has_metadata || present).then(|| values.frame.clone());
@@ -352,8 +339,7 @@ pub(crate) fn restore_spatial_index(
         rows: IndexRows {
             packed: None,
             boxed: rows,
-            live,
-            live_count,
+            next_handle: total_rows,
             live_handles,
         },
         bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
@@ -501,7 +487,7 @@ mod ownership_tests {
         storage::reset_shape_iter_materializations();
         let index = packed_spatial_index(&source).unwrap().unwrap();
 
-        assert_eq!(index.rows.live, [0, 1, 0, 1]);
+        assert_eq!(index.rows.live_handles.iter().collect::<Vec<_>>(), [1, 3]);
         assert_eq!(index.live_handles_sorted(), [1, 3]);
         assert!(index.rows.packed.is_some());
         assert!(index.rows.boxed.is_empty());
@@ -530,7 +516,7 @@ mod ownership_tests {
         let source = compact_lines();
         let index = packed_spatial_index(&source).unwrap().unwrap();
 
-        assert_eq!(index.rows.live, [1, 0, 1]);
+        assert_eq!(index.rows.live_handles.iter().collect::<Vec<_>>(), [0, 2]);
         assert_eq!(index.live_handles_sorted(), [0, 2]);
         assert!(index.rows.packed.is_some());
         assert!(index.rows.boxed.is_empty());
@@ -680,7 +666,7 @@ mod ownership_tests {
         assert!(restored.rows.boxed.is_empty());
         assert!(!restored.rows.is_live(0));
         assert!(restored.rows.is_live(1));
-        assert_eq!(restored.rows.live, [0, 1]);
+        assert_eq!(restored.rows.live_handles.iter().collect::<Vec<_>>(), [1]);
         assert_eq!(
             restored.rows.heap_bytes(),
             HeapSize::heap_bytes(&restored.rows)

@@ -38,6 +38,16 @@ use crate::{
     validate_nearest_k,
 };
 
+pub(crate) fn checked_index_handle_end(start: usize, count: usize) -> crate::error::Result<usize> {
+    let end = start
+        .checked_add(count)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    if end > isize::MAX as usize {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
+    Ok(end)
+}
+
 mod build;
 mod free_functions;
 mod impl_mutate;
@@ -478,9 +488,8 @@ impl PreparedIndexQuery {
 )]
 #[derive(Debug)]
 pub(crate) struct PySpatialIndex {
-    // `rows` is append-only so a handle (its index) stays stable across mutation;
-    // `remove` tombstones handles; overflow entries stay in their immutable
-    // runs until the dead-entry invariant triggers compaction.
+    // Handles are never reused. The row owner retains the next identity even
+    // after removals; overflow entries stay in immutable runs until compaction.
     rows: IndexRows,
     /// Build-time rows, repacked once tombstones outnumber live cover entries.
     bulk: Arc<StaticStrTree>,
@@ -532,18 +541,17 @@ pub(crate) struct PackedStore {
     pub(crate) source: PyGeometryArray,
 }
 
-/// The indexed rows. Building from a packed point or line array shares its
-/// coordinate columns zero-copy (no per-row boxing); Mixed-array rows,
-/// iterable rows, and every later `insert` are boxed handles. A handle is
-/// its build/insert position: packed rows first, then boxed rows.
+/// The indexed rows. Building from a packed array shares its coordinate
+/// columns zero-copy (no per-row boxing); Mixed-array rows, iterable rows, and
+/// every later `insert` are boxed handles. A handle is its build/insert
+/// position: packed rows first, then boxed rows.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct IndexRows {
     pub(crate) packed: Option<PackedStore>,
     boxed: Vec<PyGeometry>,
-    /// O(1) liveness by stable handle. This is the sole liveness authority for
-    /// both immutable bulk entries and mutable overflow entries.
-    live: Vec<u8>,
-    live_count: usize,
+    /// Never-reused identity for the next successful insertion.
+    next_handle: usize,
+    /// Sole membership, cardinality and iteration-order authority.
     live_handles: live_handles::LiveHandles,
 }
 
@@ -588,6 +596,9 @@ impl<'a> IndexRowOperation<'a> {
         &'operation mut self,
         handle: usize,
     ) -> crate::error::Result<IndexRowSource<'operation, 'a>> {
+        if !self.rows.live_handles.contains(handle) {
+            return Err(Self::missing_handle(handle));
+        }
         let packed_len = self.rows.packed_len();
         if handle < packed_len {
             let packed = self
@@ -652,47 +663,29 @@ impl IndexRows {
         IndexRowOperation::new(self)
     }
 
-    const fn live_count(&self) -> usize {
-        self.live_count
-    }
-    fn len(&self) -> usize {
-        debug_assert_eq!(
-            self.packed
-                .as_ref()
-                .map_or(0, |packed| packed.source.len())
-                .checked_add(self.boxed.len()),
-            Some(self.live.len())
-        );
-        self.live.len()
-    }
-
-    const fn packed_len(&self) -> usize {
-        self.live.len().wrapping_sub(self.boxed.len())
+    fn packed_len(&self) -> usize {
+        self.packed.as_ref().map_or(0, |packed| packed.source.len())
     }
 
     fn push(&mut self, geometry: PyGeometry) -> usize {
-        let handle = self.len();
+        let handle = self.next_handle;
         self.boxed.push(geometry);
-        self.live.push(1);
-        self.live_count = self.live_count.wrapping_add(1);
         self.live_handles.insert(handle);
+        self.next_handle = self.next_handle.wrapping_add(1);
         handle
     }
 
     /// Materialize the sparse row table used by pickle.
     ///
-    /// The liveness bitmap is the handle owner, so removed and originally
+    /// The live-handle directory is the handle owner, so removed and originally
     /// missing rows become missing rows in the serialized array. Replaying
     /// the source array and applying tombstones afterward is not equivalent
     /// for compact nullable storage: its physical payload contains only
     /// present rows and can otherwise make a removed logical row live again.
     fn pickle_array(&self, frame: Frame) -> PyResult<PyGeometryArray> {
-        let mut shapes = Vec::with_capacity(self.live_count);
+        let mut shapes = Vec::with_capacity(self.live_handles.len());
         let mut rows = self.operation();
-        for (handle, &live) in self.live.iter().enumerate() {
-            if live == 0 {
-                continue;
-            }
+        for handle in self.live_handles.iter() {
             let shape = rows
                 .row(handle)?
                 .with_shape(std::clone::Clone::clone)
@@ -701,8 +694,8 @@ impl IndexRows {
         }
         let present = PyGeometryArray::from_shapes(shapes, frame)?;
         let Some(missing) = storage::ValidityMask::from_missing_iter(
-            self.live.len(),
-            self.live.iter().map(|&live| live == 0),
+            self.next_handle,
+            (0..self.next_handle).map(|handle| !self.live_handles.contains(handle)),
         ) else {
             return Ok(present);
         };
@@ -711,24 +704,14 @@ impl IndexRows {
 
     fn reserve_insert(&mut self, additional: usize) {
         self.boxed.reserve(additional);
-        self.live.reserve(additional);
     }
 
     fn is_live(&self, handle: usize) -> bool {
-        self.live.get(handle).copied().unwrap_or(0) != 0
+        self.live_handles.contains(handle)
     }
 
     fn mark_removed(&mut self, handle: usize) -> bool {
-        let Some(live) = self.live.get_mut(handle) else {
-            return false;
-        };
-        if *live == 0 {
-            return false;
-        }
-        *live = 0;
-        self.live_count = self.live_count.wrapping_sub(1);
-        self.live_handles.remove(handle);
-        true
+        self.live_handles.remove(handle)
     }
 
     #[expect(
@@ -764,7 +747,6 @@ impl HeapSize for IndexRows {
             .as_ref()
             .map_or(0, |packed| HeapSize::heap_bytes(&packed.source))
             .saturating_add(self.boxed.heap_bytes())
-            .saturating_add(self.live.heap_bytes())
             .saturating_add(self.live_handles.heap_bytes())
     }
 }

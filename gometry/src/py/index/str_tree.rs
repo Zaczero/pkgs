@@ -12,6 +12,7 @@ use rstar::{AABB, Envelope as _};
 
 use crate::HeapSize;
 use crate::py::index::IndexEntry;
+use crate::py::index::live_handles::LiveHandles;
 
 #[cfg(test)]
 thread_local! {
@@ -165,7 +166,7 @@ impl StaticStrTree {
 
     pub(super) fn prepare_compaction(
         &self,
-        live: &[u8],
+        live: &LiveHandles,
         removed_handle: usize,
         remaining: usize,
     ) -> crate::error::Result<Arc<Self>> {
@@ -183,14 +184,9 @@ impl StaticStrTree {
     /// Every live entry, in STR storage order.
     pub(super) fn live_entries<'a>(
         &'a self,
-        live: &'a [u8],
+        live: &'a LiveHandles,
     ) -> impl Iterator<Item = &'a IndexEntry> {
-        self.entries.iter().filter(|entry| {
-            *live
-                .get(entry.idx)
-                .expect("tree handle belongs to the row liveness table")
-                != 0
-        })
+        self.entries.iter().filter(|entry| live.contains(entry.idx))
     }
 
     /// The root layer (empty tree → empty slice) — descent seeds.
@@ -221,7 +217,7 @@ impl StaticStrTree {
     /// Append the live handles whose envelope intersects `query`.
     pub(super) fn append_intersecting(
         &self,
-        live: &[u8],
+        live: &LiveHandles,
         query: &AABB<[f64; 2]>,
         out: &mut Vec<usize>,
     ) {
@@ -240,7 +236,7 @@ impl StaticStrTree {
     /// the entry's envelope distance decides).
     pub(super) fn append_within_distance_2(
         &self,
-        live: &[u8],
+        live: &LiveHandles,
         point: [f64; 2],
         max_distance_2: f64,
         out: &mut Vec<usize>,
@@ -302,18 +298,13 @@ impl StaticStrTree {
 /// whole leaf and the pushes stay in capacity.
 fn append_live(
     entries: &[IndexEntry],
-    live: &[u8],
+    live: &LiveHandles,
     out: &mut Vec<usize>,
     keep: impl Fn(&IndexEntry) -> bool,
 ) {
     out.reserve(entries.len());
     for entry in entries {
-        if *live
-            .get(entry.idx)
-            .expect("tree handle belongs to the row liveness table")
-            != 0
-            && keep(entry)
-        {
+        if live.contains(entry.idx) && keep(entry) {
             out.push(entry.idx);
         }
     }
@@ -454,7 +445,7 @@ impl StaticStrForest {
     /// query contract returns logical handles.
     pub(super) fn live_entries<'a>(
         &'a self,
-        live: &'a [u8],
+        live: &'a LiveHandles,
     ) -> impl Iterator<Item = &'a IndexEntry> {
         self.runs
             .iter()
@@ -464,7 +455,7 @@ impl StaticStrForest {
 
     pub(super) fn append_intersecting(
         &self,
-        live: &[u8],
+        live: &LiveHandles,
         query: &AABB<[f64; 2]>,
         out: &mut Vec<usize>,
     ) {
@@ -475,7 +466,7 @@ impl StaticStrForest {
 
     pub(super) fn append_within_distance_2(
         &self,
-        live: &[u8],
+        live: &LiveHandles,
         point: [f64; 2],
         max_distance_2: f64,
         out: &mut Vec<usize>,
@@ -654,7 +645,7 @@ impl StaticStrForest {
     /// until this fallible construction succeeds.
     pub(super) fn prepare_compaction(
         &self,
-        live: &[u8],
+        live: &LiveHandles,
         removed_handle: usize,
         total_rows: usize,
         removed_entries: usize,
@@ -832,10 +823,8 @@ mod tests {
             let entries = fixture(count);
             let tree = StaticStrTree::build(entries.clone(), entries.len()).expect("tree");
             let removed: Vec<usize> = (0..count).filter(|idx| idx % 7 == 3).collect();
-            let mut live = vec![1_u8; count];
-            for &handle in &removed {
-                live[handle] = 0;
-            }
+            let live =
+                LiveHandles::from_sorted((0..count).filter(|handle| !removed.contains(handle)));
             assert_eq!(
                 sorted(tree.live_entries(&live).map(|entry| entry.idx).collect()),
                 brute(&entries, &removed, |_| true)
@@ -880,7 +869,7 @@ mod tests {
         let tree = StaticStrTree::build(vec![positive, negative], 2).expect("tree");
         let mut negative_hits = Vec::new();
         tree.append_intersecting(
-            &[1, 1],
+            &LiveHandles::from_sorted(0..2),
             &AABB::from_corners([-1.0e308, -1.0e308], [-9.0e307, -9.0e307]),
             &mut negative_hits,
         );
@@ -938,7 +927,7 @@ mod tests {
             .collect();
         assert_eq!(weights, [(4, 16)]);
         assert_eq!(forest.total_entries(), 16);
-        let live = vec![1_u8; 36];
+        let live = LiveHandles::from_sorted(0..36);
         let ids: Vec<_> = forest.live_entries(&live).map(|entry| entry.idx).collect();
         assert_eq!(ids.len(), 16);
         assert!(ids.into_iter().all(|idx| (20..36).contains(&idx)));
@@ -955,7 +944,7 @@ mod tests {
                 commit_forest_batch(&mut forest, &batch, &vec![1; batch_count]);
 
                 let total = initial_count + batch_count;
-                let live = vec![1_u8; 50 + total];
+                let live = LiveHandles::from_sorted(0..50 + total);
                 let mut ids: Vec<_> = forest.live_entries(&live).map(|entry| entry.idx).collect();
                 ids.sort_unstable();
                 let expected: Vec<_> = (50..50 + total).collect();
@@ -983,10 +972,8 @@ mod tests {
         let mut forest = StaticStrForest::new(60);
         let entries = forest_entries(60, 37);
         commit_forest_batch(&mut forest, &entries, &[1; 37]);
-        let mut live = vec![1_u8; 97];
-        for handle in [63, 74, 91] {
-            live[handle] = 0;
-        }
+        let live =
+            LiveHandles::from_sorted((0..97).filter(|handle| ![63, 74, 91].contains(handle)));
         forest.mark_removed(3);
 
         let intersects_queries = [
@@ -1000,7 +987,7 @@ mod tests {
             actual.sort_unstable();
             let mut expected: Vec<_> = entries
                 .iter()
-                .filter(|entry| live[entry.idx] != 0 && intersects(&entry.envelope, &query))
+                .filter(|entry| live.contains(entry.idx) && intersects(&entry.envelope, &query))
                 .map(|entry| entry.idx)
                 .collect();
             expected.sort_unstable();
@@ -1014,7 +1001,7 @@ mod tests {
             let mut expected: Vec<_> = entries
                 .iter()
                 .filter(|entry| {
-                    live[entry.idx] != 0 && distance_2(&entry.envelope, &point) <= radius_2
+                    live.contains(entry.idx) && distance_2(&entry.envelope, &point) <= radius_2
                 })
                 .map(|entry| entry.idx)
                 .collect();
@@ -1028,11 +1015,7 @@ mod tests {
         let mut forest = StaticStrForest::new(30);
         let entries = forest_entries(30, 8);
         commit_forest_batch(&mut forest, &entries, &[1; 8]);
-        let mut live = vec![1_u8; 38];
-        live[30] = 0;
-        live[31] = 0;
-        live[32] = 0;
-        live[33] = 0;
+        let live = LiveHandles::from_sorted(34..38);
         forest.mark_removed(4);
         assert!(forest.should_compact(1));
         let prepared = forest
@@ -1049,23 +1032,23 @@ mod tests {
     fn scalar_insert_remove_work_is_not_quadratic() {
         let count = 256;
         let mut forest = StaticStrForest::new(40);
-        let mut live = vec![0_u8; 40 + count];
+        let mut live = LiveHandles::default();
         StaticStrTree::reset_build_work();
-        for (handle, row) in live.iter_mut().enumerate().skip(40).take(count) {
+        for handle in 40..40 + count {
             let entries = [entry(handle, [handle as f64, 0.0], [handle as f64, 0.0])];
             commit_forest_batch(&mut forest, &entries, &[1]);
-            *row = 1;
+            live.insert(handle);
         }
         let mut handle = 40;
         while handle < 40 + count {
             if forest.should_compact(1) {
                 let prepared = forest
-                    .prepare_compaction(&live, handle, live.len(), 1)
+                    .prepare_compaction(&live, handle, 40 + count, 1)
                     .expect("compaction");
-                live[handle] = 0;
+                assert!(live.remove(handle));
                 forest.commit_compaction(prepared);
             } else {
-                live[handle] = 0;
+                assert!(live.remove(handle));
                 forest.mark_removed(1);
             }
             handle += 1;

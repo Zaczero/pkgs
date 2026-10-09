@@ -150,7 +150,7 @@ impl PySpatialIndex {
     /// -------
     /// int
     pub(crate) const fn __len__(&self) -> usize {
-        self.rows.live_count()
+        self.rows.live_handles.len()
     }
 
     /// Pickle as one sparse row table containing only live geometries.
@@ -316,7 +316,7 @@ impl PySpatialIndex {
     }
 
     pub(crate) fn __repr__(&self) -> String {
-        let len = self.rows.live_count();
+        let len = self.rows.live_handles.len();
         self.metadata
             .as_ref()
             .and_then(|frame| frame.crs_str())
