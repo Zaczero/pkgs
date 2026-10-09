@@ -22665,10 +22665,6 @@ def pluscode_shorten(
 def pluscode_shorten(code: str, reference: FloatScalar, lat: FloatScalar) -> str: ...
 @overload
 def pluscode_shorten(
-    code: Iterable[str], reference: FloatInput, lat: FloatInput
-) -> list[str]: ...
-@overload
-def pluscode_shorten(
     code: str, reference: Sequence[float], lat: FloatInput
 ) -> list[str]: ...
 @overload
@@ -22690,7 +22686,11 @@ def pluscode_shorten(
 @overload
 def pluscode_shorten(
     code: str, reference: FloatInput, lat: Iterable[float]
-) -> str | list[str]:
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: Iterable[str], reference: FloatInput, lat: FloatInput
+) -> list[str]:
     """Shorten a full plus code relative to a nearby reference point.
 
     Removes two to six leading digits that the reference location implies;
@@ -22739,10 +22739,6 @@ def pluscode_recover(
 def pluscode_recover(code: str, reference: FloatScalar, lat: FloatScalar) -> str: ...
 @overload
 def pluscode_recover(
-    code: Iterable[str], reference: FloatInput, lat: FloatInput
-) -> list[str]: ...
-@overload
-def pluscode_recover(
     code: str, reference: Sequence[float], lat: FloatInput
 ) -> list[str]: ...
 @overload
@@ -22764,7 +22760,11 @@ def pluscode_recover(
 @overload
 def pluscode_recover(
     code: str, reference: FloatInput, lat: Iterable[float]
-) -> str | list[str]:
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: Iterable[str], reference: FloatInput, lat: FloatInput
+) -> list[str]:
     """Recover the nearest full plus code from a shortened one.
 
     Parameters

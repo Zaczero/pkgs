@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import inspect
 import re
 import sys
@@ -159,7 +160,8 @@ def _scalar_array_return_errors(stub: Path, runtime: object) -> list[str]:
                     ) and not any(
                         definition.returns is not None
                         and any(
-                            isinstance(node, ast.Name) and node.id == 'GeometryArray'
+                            isinstance(node, ast.Name)
+                            and node.id in {'GeometryArray', '_GroupValuesT_co'}
                             for node in ast.walk(definition.returns)
                         )
                         for definition in definitions
@@ -924,10 +926,14 @@ def collect_errors() -> list[str]:
         for variant in variants:
             annotations = [parameter.annotation for parameter in variant.parameters]
             annotations.append(variant.returns)
+            # Private TypeAlias names are implementation details; their expanded
+            # members, rather than the alias spelling, determine the public type.
             private = sorted({
                 expr.name
                 for annotation in annotations
-                for expr in _expressions(annotation)
+                for expr in _expressions(
+                    expand_annotation(copy.deepcopy(annotation), aliases)
+                )
                 if expr.name.startswith('_')
             })
             if private:

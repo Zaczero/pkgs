@@ -126,6 +126,11 @@ def run(
 ) -> bool:
     print(f'\n==> {" ".join(arguments)}', file=sys.stderr, flush=True)
     child_environment = os.environ.copy() if environment is None else environment.copy()
+    if require_runtime:
+        interpreter_bin = str(Path(sys.executable).parent)
+        child_environment['PATH'] = os.pathsep.join(
+            (interpreter_bin, child_environment.get('PATH', ''))
+        )
     if arguments[0] == 'cargo':
         child_environment['PYO3_PYTHON'] = sys.executable
     command = (
