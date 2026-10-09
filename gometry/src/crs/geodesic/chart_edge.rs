@@ -64,6 +64,55 @@ const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
 const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct QuadratureTestProgress {
+    pub(crate) seeds: u32,
+    pub(crate) scans: u32,
+    pub(crate) removals: u32,
+    pub(crate) child_pairs: u32,
+    pub(crate) growth_requests: u32,
+    pub(crate) growths: u32,
+    pub(crate) refinements: u32,
+    pub(crate) current_refinements: u32,
+    pub(crate) max_refinements: u32,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static QUADRATURE_TEST_PROGRESS: std::cell::Cell<QuadratureTestProgress> =
+        const { std::cell::Cell::new(QuadratureTestProgress {
+            seeds: 0,
+            scans: 0,
+            removals: 0,
+            child_pairs: 0,
+            growth_requests: 0,
+            growths: 0,
+            refinements: 0,
+            current_refinements: 0,
+            max_refinements: 0,
+        }) };
+}
+
+#[cfg(test)]
+fn update_test_progress(update: impl FnOnce(&mut QuadratureTestProgress)) {
+    QUADRATURE_TEST_PROGRESS.with(|progress| {
+        let mut current = progress.get();
+        update(&mut current);
+        progress.set(current);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn reset_quadrature_test_progress() {
+    QUADRATURE_TEST_PROGRESS.set(QuadratureTestProgress::default());
+}
+
+#[cfg(test)]
+pub(crate) fn quadrature_test_progress() -> QuadratureTestProgress {
+    QUADRATURE_TEST_PROGRESS.get()
+}
+
 #[derive(Clone, Copy, Debug)]
 /// Truncated authalic-q sine series cached with its ellipsoid's geodesic.
 pub(crate) struct AuthalicSeries {
@@ -961,20 +1010,41 @@ impl ChartEdge {
 
         let mut total = initial;
         let mut total_error = initial_error;
+        work.charge(2)?;
         let mut intervals = vec![Interval {
             start,
             end,
             value: initial,
             error: initial_error,
         }];
+        #[cfg(test)]
+        update_test_progress(|progress| {
+            progress.seeds = progress.seeds.wrapping_add(1);
+            progress.current_refinements = 0;
+        });
         while total_error > tolerance {
+            work.charge(intervals.len() as u64)?;
             let largest = intervals
                 .iter()
                 .enumerate()
                 .max_by(|(_, left), (_, right)| left.error.total_cmp(&right.error))
                 .map(|(index, _)| index)
                 .expect("an unconverged quadrature has an interval");
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.scans = progress.scans.wrapping_add(1);
+            });
+            let removal_work = if largest < intervals.len().saturating_sub(1) {
+                2
+            } else {
+                1
+            };
+            work.charge(removal_work)?;
             let parent = intervals.swap_remove(largest);
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.removals = progress.removals.wrapping_add(1);
+            });
             if evaluations + 30 > MAX_GK15_EVALUATIONS {
                 return Err(GeometryErrorKind::message(
                     "chart-edge length quadrature did not converge within 5,000 evaluations",
@@ -984,6 +1054,35 @@ impl ChartEdge {
             let middle = f64::midpoint(parent.start, parent.end);
             let (left, left_error) = self.gk15(parent.start, middle, geodesic.a, e2, dphi);
             let (right, right_error) = self.gk15(middle, parent.end, geodesic.a, e2, dphi);
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.child_pairs = progress.child_pairs.wrapping_add(1);
+            });
+
+            let needs_growth = intervals.capacity().saturating_sub(intervals.len()) < 2;
+            #[cfg(test)]
+            if needs_growth {
+                update_test_progress(|progress| {
+                    progress.growth_requests = progress.growth_requests.wrapping_add(1);
+                });
+            }
+            // Three scalar updates, two interval writes, and—when reserve
+            // relocates storage—two requested slots plus every live record.
+            // The 5,000-sample cap keeps this billing sum below 174.
+            let refinement_work = if needs_growth {
+                5_u64.wrapping_add(2).wrapping_add(intervals.len() as u64)
+            } else {
+                5
+            };
+            work.charge(refinement_work)?;
+            if needs_growth {
+                intervals.reserve(2);
+                #[cfg(test)]
+                update_test_progress(|progress| {
+                    progress.growths = progress.growths.wrapping_add(1);
+                });
+            }
+
             evaluations += 30;
             total += (left + right) - parent.value;
             total_error = (total_error - parent.error).max(0.0) + left_error + right_error;
@@ -998,6 +1097,13 @@ impl ChartEdge {
                 end: parent.end,
                 value: right,
                 error: right_error,
+            });
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.refinements = progress.refinements.wrapping_add(1);
+                progress.current_refinements = progress.current_refinements.wrapping_add(1);
+                progress.max_refinements =
+                    progress.max_refinements.max(progress.current_refinements);
             });
         }
         self.finite_length(total)

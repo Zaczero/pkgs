@@ -100,6 +100,10 @@ pub(crate) use geodesic::{
     with_geodesic_cache_at, with_geographic_coordseq_collect_rows_at,
     with_geographic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
 };
+#[cfg(test)]
+pub(crate) use geodesic::{
+    QuadratureTestProgress, quadrature_test_progress, reset_quadrature_test_progress,
+};
 pub(crate) use grids::grid_info;
 use in_core::{
     InCoreTransform, transform_in_core_xy_batch, transform_in_core_xy_batch_indexed,
