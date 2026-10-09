@@ -528,25 +528,42 @@ mod ownership_tests {
         let point_index = packed_spatial_index(&points()).unwrap().unwrap();
         assert!(point_index.rows.packed.is_some());
         assert!(point_index.rows.boxed.is_empty());
-        assert!(
-            crate::test_support::assert_no_allocations(|| {
-                point_index
-                    .rows
-                    .operation()
-                    .row(0)
-                    .expect("packed point")
-                    .quick_bounds()
-            })
-            .is_some()
-        );
+        let (point_bounds, point_allocations) = crate::test_support::allocation_count(|| {
+            point_index
+                .rows
+                .operation()
+                .row(0)
+                .expect("packed point")
+                .quick_bounds()
+        });
+        assert_eq!(point_allocations, 0);
+        assert!(point_bounds.is_some());
 
         let line_index = packed_spatial_index(&long_lines()).unwrap().unwrap();
         assert!(line_index.rows.packed.is_some());
         assert!(line_index.rows.boxed.is_empty());
+        let (_, line_allocations) = crate::test_support::allocation_count(|| {
+            line_index
+                .rows
+                .operation()
+                .row(0)
+                .expect("packed line")
+                .quick_bounds()
+        });
+        assert_eq!(line_allocations, 0);
 
         let polygon_index = packed_spatial_index(&polygons()).unwrap().unwrap();
         assert!(polygon_index.rows.packed.is_some());
         assert!(polygon_index.rows.boxed.is_empty());
+        let (_, polygon_allocations) = crate::test_support::allocation_count(|| {
+            polygon_index
+                .rows
+                .operation()
+                .row(0)
+                .expect("packed polygon")
+                .quick_bounds()
+        });
+        assert_eq!(polygon_allocations, 0);
 
         let source = points();
         let mut index = packed_spatial_index(&source).unwrap().unwrap();
@@ -563,8 +580,14 @@ mod ownership_tests {
             Frame::None,
         );
         let first_shape = Arc::downgrade(&first.shape);
-        let rows = std::iter::once(first)
-            .chain((1..8).map(|row| {
+        let second = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))),
+            Frame::None,
+        );
+        let second_shape = Arc::downgrade(&second.shape);
+        let rows = [first, second]
+            .into_iter()
+            .chain((2..8).map(|row| {
                 PyGeometry::with_frame(
                     ShapeData::new(Shape::Point(Point::new_raw_xy(f64::from(row), 2.0))),
                     Frame::None,
@@ -595,6 +618,9 @@ mod ownership_tests {
         assert_eq!(copy.rows.boxed.len(), 8);
         assert!(copy.remove_handle(0).unwrap());
         assert!(first_shape.upgrade().is_none());
+        drop(copy);
+        assert!(index.remove_handle(1).unwrap());
+        assert!(second_shape.upgrade().is_none());
     }
 
     #[test]
@@ -904,11 +930,15 @@ mod ownership_tests {
 
         LiveHandles::reset_visit_counts();
         let small_ids: Vec<_> = small.rows.live_handles.iter().collect();
-        assert_eq!(LiveHandles::iterated_handle_count(), handles.len());
-        let small_pickle = small
-            .rows
-            .pickle_live_rows(Frame::None)
-            .expect("compact small pickle rows");
+        let small_iteration_visits = LiveHandles::iterated_handle_count();
+        assert_eq!(small_iteration_visits, handles.len());
+        let (small_pickle, small_pickle_allocations) =
+            crate::test_support::allocation_count(|| {
+                small
+                    .rows
+                    .pickle_live_rows(Frame::None)
+                    .expect("compact small pickle rows")
+            });
         assert_eq!(
             LiveHandles::membership_check_count(),
             handles.len(),
@@ -916,16 +946,21 @@ mod ownership_tests {
         );
         LiveHandles::reset_visit_counts();
         let large_ids: Vec<_> = large.rows.live_handles.iter().collect();
-        assert_eq!(LiveHandles::iterated_handle_count(), handles.len());
-        let large_pickle = large
-            .rows
-            .pickle_live_rows(Frame::None)
-            .expect("compact large pickle rows");
+        let large_iteration_visits = LiveHandles::iterated_handle_count();
+        assert_eq!(large_iteration_visits, handles.len());
+        let (large_pickle, large_pickle_allocations) =
+            crate::test_support::allocation_count(|| {
+                large
+                    .rows
+                    .pickle_live_rows(Frame::None)
+                    .expect("compact large pickle rows")
+            });
         assert_eq!(LiveHandles::membership_check_count(), handles.len());
         assert_eq!(small_ids, handles);
         assert_eq!(large_ids, handles);
         assert_eq!(small_pickle.1, large_pickle.1);
         assert_eq!(small_pickle.0.len(), large_pickle.0.len());
+        assert_eq!(small_pickle_allocations, large_pickle_allocations);
     }
 
     #[test]
