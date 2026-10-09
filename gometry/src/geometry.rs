@@ -932,7 +932,7 @@ impl Bounds {
     /// Geographic rectangle with frame-native longitude and latitude bounds.
     /// Finite west/east endpoints use west>east to signal a seam-crossing
     /// window; latitudes must satisfy ``south <= north``.
-    pub fn new_geographic(
+    pub(crate) fn new_geographic(
         frame: crate::geographic::GeographicFrame,
         west: f64,
         south: f64,
