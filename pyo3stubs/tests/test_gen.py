@@ -353,3 +353,27 @@ def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
         if item.attr('new') is not None
     ]
     assert [item.line for item in inner] == [8], 'line numbers survive the re-parse'
+
+
+def test_configured_constructor_macro_uses_its_impl_doc_carrier(tmp_path):
+    """A macro-generated `#[new]` can carry prose on its class impl input."""
+    from pyo3stubs.rust_scan import constructor_doc_sources, constructor_docs
+
+    src = (
+        '#[pyclass(name = "Widget")]\n'
+        'pub struct PyWidget;\n'
+        '\n'
+        'make_array! {\n'
+        '    /// Build a widget array.\n'
+        '    impl PyWidget {}\n'
+        '}\n'
+    )
+    cfg = make_config(
+        tmp_path,
+        src_text=src,
+        constructor_doc_macros=frozenset({'make_array'}),
+    )
+
+    assert constructor_docs(cfg) == {'Widget': 'Build a widget array.'}
+    source = constructor_doc_sources(cfg)['Widget']
+    assert (source.path, source.line) == ('src/lib.rs', 6)

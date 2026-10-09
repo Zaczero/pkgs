@@ -721,6 +721,15 @@ macro_rules! geometry_parts_methods {
             }
 
             /// The component geometries.
+            ///
+            /// Returns
+            /// -------
+            /// GeometryParts
+            ///     A lazy view of immediate components in component order. It
+            ///     retains the source geometry; each component has the type
+            ///     declared by its owning geometry class. Scalar indexing and
+            ///     iteration create one typed geometry at a time, while slices
+            ///     return a list.
             #[getter]
             fn parts(slf: PyRef<'_, Self>) -> PyGeometryParts {
                 let base = &**slf.as_super();

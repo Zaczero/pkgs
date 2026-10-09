@@ -80,14 +80,21 @@ impl PySpatialIndex {
     ///
     /// Parameters
     /// ----------
-    /// values : GeometryArray, iterable of Geometry or None, default None
-    ///     Geometries to index. ``None`` builds an empty mutable index for
+    /// values : Geometry, GeometryArray, iterable, or None, default None
+    ///     Geometries to index. Iterable rows may be native geometries, WKB
+    ///     buffers, GeoJSON mappings, or objects exposing
+    ///     ``__geo_interface__``. ``None`` builds an empty mutable index for
     ///     later ``insert`` calls. Every indexed geometry must share one CRS
     ///     and coordinate epoch. Missing rows are skipped but retain their
     ///     original positions as stable, non-live handles, so query and join
     ///     results always refer to the input row ids. Packed arrays retain
     ///     their immutable column storage; empty rows likewise have no live
     ///     tree entry.
+    ///
+    /// Returns
+    /// -------
+    /// SpatialIndex
+    ///     A mutable STR-tree whose handles refer to the original input rows.
     ///
     /// Raises
     /// ------

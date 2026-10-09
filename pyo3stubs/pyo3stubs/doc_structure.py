@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
 
     from pyo3stubs.config import StubConfig
+    from pyo3stubs.rust_scan import ConstructorDocSource
 
 _NUMPYDOC_SECTION = re.compile(r'^([A-Za-z][A-Za-z ]*)\n-+\n', re.MULTILINE)
 _GOOGLE_SECTION = re.compile(r'^([A-Za-z][A-Za-z ]*):[ \t]*$', re.MULTILINE)
@@ -108,36 +109,11 @@ class DocSubject:
     source: DocLocation
 
 
-@dataclass(frozen=True, slots=True)
-class ConstructorSource:
-    """Prose and source location for one retained PyO3 ``#[new]`` item."""
+def _rust_constructor_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
+    """Map exported classes to retained Rust constructor-doc carriers."""
+    from pyo3stubs.rust_scan import constructor_doc_sources
 
-    prose: str | None
-    source: DocLocation
-
-
-def _rust_constructor_sources(cfg: StubConfig) -> dict[str, ConstructorSource]:
-    """Map exported PyO3 ``#[new]`` items to their authored doc carriers."""
-    from pyo3stubs.rust_scan import constructor_docs, iter_sources, rust_class_map
-
-    classes = rust_class_map(cfg)
-    docs = constructor_docs(cfg)
-    sources: dict[str, ConstructorSource] = {}
-    for source in iter_sources(cfg, scope='export'):
-        for item in source.walk():
-            class_name = classes.get(item.name) if item.kind == 'impl_item' else None
-            if class_name is None:
-                continue
-            for method in item.children:
-                if method.attr('new') is not None:
-                    sources.setdefault(
-                        class_name,
-                        ConstructorSource(
-                            docs.get(class_name),
-                            DocLocation(source.label, method.line),
-                        ),
-                    )
-    return sources
+    return constructor_doc_sources(cfg)
 
 
 def parse_doc(doc: str | None) -> ParsedDoc:
@@ -588,7 +564,7 @@ def _class_subjects(
     name: str,
     cls: type,
     class_node: ast.ClassDef | None,
-    constructor_sources: Mapping[str, ConstructorSource],
+    constructor_sources: Mapping[str, ConstructorDocSource],
 ) -> Iterator[DocSubject]:
     class_path = str(ctx.cfg.stub_path)
     class_source = (
@@ -635,7 +611,7 @@ def _class_subjects(
             source = _doc_location(class_path, carrier)
         if prose is None and source_constructor is not None:
             prose = source_constructor.prose
-            source = source_constructor.source
+            source = DocLocation(source_constructor.path, source_constructor.line)
         yield _subject(
             f'{name}.__new__',
             'constructor',
@@ -735,7 +711,7 @@ def iter_doc_subjects(
     ctx: CheckContext,
     *,
     runtime_module: ModuleType | None = None,
-    constructor_sources: Mapping[str, ConstructorSource] | None = None,
+    constructor_sources: Mapping[str, ConstructorDocSource] | None = None,
 ) -> Iterator[DocSubject]:
     """Enumerate documented public subjects from the stub and runtime surface.
 

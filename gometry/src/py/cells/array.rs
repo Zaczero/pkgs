@@ -48,15 +48,16 @@ use crate::py::vectors::Groups;
 /// Index with an integer for the typed cell object or `None` for a missing row;
 /// slice or mask for a new `CellArray`. Build from an iterable containing
 /// typed cell objects and `None`; the grid is inferred from the first concrete
-/// cell. Raw ids and tokens are accepted when a concrete cell supplies the
-/// family. For raw-only ids/tokens, arrays, buffers, or all-missing inputs,
-/// pass ``type=`` explicitly; every id is validated for that grid.
+/// cell. Raw ids for H3, S2, and Tile and tokens for any grid may accompany a
+/// typed cell of the same grid. Geohash cells use tokens, not integer ids. For
+/// raw-only values, numeric arrays or buffers, empty input, or all-missing
+/// input, pass ``type=`` explicitly; every id and token is validated.
 ///
 /// Parameters
 /// ----------
-/// values : numpy.ndarray or iterable
-///     Typed cell objects and ``None``; raw ids/tokens are also accepted when
-///     a concrete cell supplies the family.
+/// values : numpy.ndarray, buffer, or iterable
+///     Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
+///     any grid are accepted when a concrete cell supplies the family.
 /// type : type, optional
 ///     Native cell class. Inferred from a concrete typed cell when present.
 #[pyclass(
@@ -677,6 +678,39 @@ impl PyCellArray {
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
 
+    /// Construct a cell array from typed cells, ids, or tokens.
+    ///
+    /// The grid is inferred from a typed cell when ``type=None``. H3, S2, and
+    /// Tile ids and any grid's tokens may accompany a typed cell from the same
+    /// grid; Geohash cells accept tokens, not integer ids. Supply ``type=`` for
+    /// raw-only values, numeric arrays or buffers, empty input, or input
+    /// containing only ``None``. Wrap a single cell or supported id in an
+    /// iterable; a bare token string is ambiguous, so wrap one token in a
+    /// one-item iterable.
+    ///
+    /// Parameters
+    /// ----------
+    /// values : iterable, numpy.ndarray, or buffer
+    ///     Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
+    ///     are accepted when the grid can be inferred. Iterables are consumed
+    ///     in input order.
+    /// type : type, optional, default None
+    ///     One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
+    ///     ``GeohashCell`` classes, required when the grid cannot be inferred.
+    ///
+    /// Returns
+    /// -------
+    /// CellArray
+    ///     An immutable array in input order; ``None`` entries remain missing
+    ///     rows.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If the grid cannot be inferred, ``type`` is unsupported, or a value
+    ///     does not match the selected grid.
+    /// ParseError
+    ///     If an id or token is invalid for the selected grid.
     #[new]
     #[pyo3(signature = (values, *, r#type=None))]
     fn new(

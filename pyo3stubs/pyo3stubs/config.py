@@ -200,6 +200,9 @@ class StubConfig:
         :data:`~pyo3stubs.config.DEFAULT_IGNORED_TYPE_NAMES`.
     macro_exports:
         Project macros that declare ``#[pyclass]`` types, by argument position.
+    constructor_doc_macros:
+        Macros that carry a constructor's Rust doc comment on the class ``impl``
+        passed to the invocation rather than on a visible ``#[new]`` item.
     disabled_gates:
         Gate names to skip entirely. Reported as disabled, never as passing.
     surface:
@@ -222,6 +225,7 @@ class StubConfig:
     doc_structure_allowlist: Reasons = field(default_factory=dict)
     extra_ignored_type_names: frozenset[str] = field(default_factory=frozenset)
     macro_exports: tuple[MacroExport, ...] = ()
+    constructor_doc_macros: frozenset[str] = field(default_factory=frozenset)
     disabled_gates: frozenset[str] = field(default_factory=frozenset)
     surface: SurfaceConfig | None = None
     duality: DualityConfig | None = None
