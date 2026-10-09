@@ -52,10 +52,10 @@ struct Fixture {
 }
 
 struct FixtureOutputs {
-    dep_info: PathBuf,
     metadata: PathBuf,
     stdout: PathBuf,
     stderr: PathBuf,
+    dep_info: PathBuf,
 }
 
 impl FixtureOutputs {
