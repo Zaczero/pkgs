@@ -84,7 +84,7 @@ def _runtime_binding_identity(value: Any) -> None:
             raise _fail(f'runtime_binding.{field} must be a non-empty string')
     if value['kind'] not in {'quality', 'release', 'runner'}:
         raise _fail('runtime_binding.kind is unsupported')
-    if value['profile'] not in {'dev', 'release'}:
+    if value['profile'] not in {'dev', 'release-dist'}:
         raise _fail('runtime_binding.profile is unsupported')
     _sha256(value.get('sha256'), label='runtime_binding.sha256')
     _file_identity(value.get('facade'), label='runtime_binding.facade')

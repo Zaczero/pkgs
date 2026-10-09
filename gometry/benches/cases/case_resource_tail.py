@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import hashlib
 import json
 import os
 import resource
@@ -37,7 +36,6 @@ if __name__ == '__main__':
     bootstrap()
 
 import gometry as gm
-import gometry._lib as gm_lib
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -170,14 +168,6 @@ CASES = {
 }
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def cpu_state() -> dict[str, object]:
     affinity = sorted(os.sched_getaffinity(0))
     states: dict[str, dict[str, str]] = {}
@@ -253,8 +243,6 @@ def main() -> None:
     rss_lifetime_maxrss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
     case_process = finish_measurement()
-    extension_path = Path(gm_lib.__file__).resolve()
-    case_path = Path(__file__).resolve()
     payload = {
         'schema_version': 1,
         'mode': args.mode,
@@ -295,9 +283,6 @@ def main() -> None:
         'python_peak_traced_bytes': python_peak_bytes,
         'python_allocated_blocks_delta': blocks_after - blocks_before,
         'tracemalloc_active_during_latency': False,
-        'extension_path': str(extension_path),
-        'extension_sha256': file_sha256(extension_path),
-        'case_sha256': file_sha256(case_path),
         'producer_identity': producer_identity,
         'case_process': case_process,
         'python': sys.version,

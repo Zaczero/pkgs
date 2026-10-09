@@ -8,8 +8,13 @@ import importlib.util
 import json
 import os
 import platform
+import selectors
+import signal
 import sys
 import sysconfig
+import subprocess
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,6 +44,7 @@ from benchmark_identity import (
     identity_for_arm,
     validate_producer_identity,
 )
+from benchmark_observation import validate_observation
 
 _DEPENDENCIES = (
     'gometry',
@@ -149,7 +155,7 @@ def environment_for_subject(
     if control:
         environment['GOMETRY_BENCH_CONTROL'] = '1'
     else:
-        environment.pop('GOMETRY_BENCH_CONTROL', None)
+        environment['GOMETRY_BENCH_CONTROL'] = '0'
     return environment
 
 
@@ -462,24 +468,37 @@ def validate_identity_for_subject(
     gometry = packages.get('gometry') if isinstance(packages, dict) else None
     if not isinstance(gometry, dict):
         raise TypeError('case process identity has no gometry package')
-    attributed = identity_for_arm(
-        identity,
-        side=side,
-        row=row,
-        runtime='gometry',
-        module=gometry['module'],
-        distribution=gometry['distribution'],
-        native_libraries=[
-            {
-                key: identity['extension'][key]
-                for key in ('path', 'sha256', 'size_bytes')
-            }
-        ],
-        native_library_status='identified',
-        source_commit=identity.get('source_commit'),
-        source_receipt=identity.get('source_receipt'),
-        source_wheel=identity.get('source_wheel'),
-    )
+    implementation = identity.get('implementation')
+    arm = identity.get('arm')
+    if implementation is not None or arm is not None:
+        attributed = identity
+        if (
+            not isinstance(implementation, dict)
+            or implementation.get('runtime') != 'gometry'
+            or implementation.get('row') != row
+            or not isinstance(arm, dict)
+            or arm != {'side': side, 'row': row}
+        ):
+            raise AssertionError('case process identity has different arm attribution')
+    else:
+        attributed = identity_for_arm(
+            identity,
+            side=side,
+            row=row,
+            runtime='gometry',
+            module=gometry['module'],
+            distribution=gometry['distribution'],
+            native_libraries=[
+                {
+                    key: identity['extension'][key]
+                    for key in ('path', 'sha256', 'size_bytes')
+                }
+            ],
+            native_library_status='identified',
+            source_commit=identity.get('source_commit'),
+            source_receipt=identity.get('source_receipt'),
+            source_wheel=identity.get('source_wheel'),
+        )
     validate_producer_identity(attributed)
     receipt_facts = release_artifact.match_benchmark_receipt(
         subject,
@@ -488,18 +507,18 @@ def validate_identity_for_subject(
         runtime_binding=binding,
         verify_archive=verify_archive,
     )
-    if identity.get('source_commit') != receipt_facts['source_commit']:
+    source_commit = attributed['implementation']['source_commit']
+    source_receipt = attributed['implementation']['source_receipt']
+    source_wheel = attributed['implementation']['source_wheel']
+    if source_commit != receipt_facts['source_commit']:
         raise AssertionError('case process source commit differs from selected subject')
     if receipt_facts['source_commit'] is None:
-        if (
-            identity.get('source_receipt') is not None
-            or identity.get('source_wheel') is not None
-        ):
+        if source_receipt is not None or source_wheel is not None:
             raise AssertionError('unattributed producer contains receipt fields')
-    elif identity.get('source_receipt') != {
+    elif source_receipt != {
         'path': receipt_facts['receipt_path'],
         'sha256': receipt_facts['receipt_sha256'],
-    } or identity.get('source_wheel') != {
+    } or source_wheel != {
         'filename': receipt_facts['wheel_filename'],
         'sha256': receipt_facts['wheel_sha256'],
         'extension_member': receipt_facts['extension_member'],
@@ -513,3 +532,258 @@ def identity_sha256(identity: dict[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(',', ':')).encode('utf-8')
     ).hexdigest()
+
+
+def _stop_controlled_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def run_controlled_process(
+    command: list[str],
+    *,
+    case: Path,
+    side: str,
+    subject: dict[str, Any],
+    package_root: Path,
+    timeout: int,
+    environment: dict[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+    result_path: Path | None = None,
+) -> dict[str, Any]:
+    """Run one case through ready/permission/done before accepting its artifact."""
+    invocation_id = (environment or {}).get(
+        'GOMETRY_BENCH_INVOCATION_ID'
+    ) or uuid.uuid4().hex
+    row = str(case.resolve())
+    child_environment = environment_for_subject(
+        subject,
+        package_root,
+        invocation_id=invocation_id,
+        control=True,
+        base=environment,
+    )
+    child_environment['GOMETRY_BENCH_SIDE'] = side
+    child_environment['GOMETRY_BENCH_ROW'] = row
+    expected_case = {
+        'path': row,
+        'sha256': hashlib.sha256(case.read_bytes()).hexdigest(),
+    }
+    process = subprocess.Popen(
+        command,
+        cwd=_GOMETRY_ROOT,
+        env=child_environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        bufsize=0,
+        pass_fds=pass_fds,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    selector = selectors.DefaultSelector()
+    stdout_fd = process.stdout.fileno()
+    stderr_fd = process.stderr.fileno()
+    for descriptor in (stdout_fd, stderr_fd):
+        os.set_blocking(descriptor, False)
+        selector.register(descriptor, selectors.EVENT_READ)
+    buffers = {stdout_fd: bytearray(), stderr_fd: bytearray()}
+    stdout_lines: list[bytes] = []
+    stderr_bytes = bytearray()
+    ready: dict[str, Any] | None = None
+    done: dict[str, Any] | None = None
+    result_line: bytes | None = None
+    started_ns: int | None = None
+    ended_ns: int | None = None
+    deadline = time.monotonic() + timeout
+
+    def consume_stdout(line: bytes) -> None:
+        nonlocal ready, done, result_line
+        try:
+            payload = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise SystemExit(
+                f'{case}: controlled case emitted non-JSON stdout: {line[:500]!r}'
+            ) from error
+        control = (
+            payload.get('benchmark_control') if isinstance(payload, dict) else None
+        )
+        if isinstance(control, dict):
+            if control.get('invocation_id') != invocation_id:
+                raise SystemExit(f'{case}: controlled case invocation does not match')
+            if control.get('type') == 'ready':
+                if ready is not None or done is not None or result_line is not None:
+                    raise SystemExit(f'{case}: duplicate or out-of-order ready record')
+                if control.get('case') != expected_case:
+                    raise SystemExit(f'{case}: controlled case source changed')
+                identity = control.get('identity')
+                if not isinstance(identity, dict):
+                    raise SystemExit(f'{case}: ready record has no producer identity')
+                try:
+                    attributed = validate_identity_for_subject(
+                        identity,
+                        subject,
+                        side=side,
+                        row=row,
+                        verify_archive=False,
+                    )
+                except (AssertionError, TypeError, ValueError) as error:
+                    raise SystemExit(
+                        f'{case}: case identity rejected before timing: {error}'
+                    ) from error
+                if attributed != identity:
+                    raise SystemExit(f'{case}: ready identity changed during admission')
+                ready = control
+                return
+            if control.get('type') == 'done':
+                if ready is None or done is not None or result_line is not None:
+                    raise SystemExit(f'{case}: completion arrived out of order')
+                if (
+                    control.get('pid') != ready.get('pid')
+                    or control.get('case') != ready.get('case')
+                    or control.get('identity_sha256')
+                    != identity_sha256(ready['identity'])
+                ):
+                    raise SystemExit(f'{case}: completion differs from ready identity')
+                done = control
+                return
+            raise SystemExit(f'{case}: controlled case sent an unknown message')
+        if done is None or result_path is not None or result_line is not None:
+            raise SystemExit(f'{case}: result output arrived outside its completion')
+        result_line = line
+
+    try:
+        eof: set[int] = set()
+        while len(eof) < 2 or process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            for key, _mask in selector.select(remaining):
+                descriptor = key.fd
+                data = os.read(descriptor, 65536)
+                if not data:
+                    eof.add(descriptor)
+                    selector.unregister(descriptor)
+                    pending = buffers[descriptor]
+                    if descriptor == stdout_fd and pending:
+                        line = bytes(pending)
+                        stdout_lines.append(line)
+                        consume_stdout(line)
+                        pending.clear()
+                    continue
+                pending = buffers[descriptor]
+                if descriptor == stderr_fd:
+                    stderr_bytes.extend(data)
+                    continue
+                pending.extend(data)
+                while b'\n' in pending:
+                    line, _, remainder = pending.partition(b'\n')
+                    pending[:] = remainder
+                    stdout_lines.append(line + b'\n')
+                    consume_stdout(line)
+                    if ready is not None and started_ns is None:
+                        started_ns = time.monotonic_ns()
+                        process.stdin.write(
+                            json.dumps(
+                                {
+                                    'command': 'measure',
+                                    'invocation_id': invocation_id,
+                                },
+                                sort_keys=True,
+                            ).encode()
+                            + b'\n'
+                        )
+                        process.stdin.flush()
+                        process.stdin.close()
+                    if done is not None and ended_ns is None:
+                        ended_ns = time.monotonic_ns()
+            if process.poll() is not None and not selector.get_map():
+                break
+        returncode = process.wait()
+        stdout = b''.join(stdout_lines).decode(errors='replace')
+        stderr = bytes(stderr_bytes).decode(errors='replace')
+        if returncode != 0:
+            raise SystemExit(
+                f'{case}: controlled case failed with status {returncode}; '
+                f'stdout={stdout!r}; stderr={stderr[-400:]!r}'
+            )
+        if ready is None or done is None or started_ns is None or ended_ns is None:
+            raise SystemExit(f'{case}: controlled case omitted ready or completion')
+        if result_path is None:
+            if result_line is None:
+                raise SystemExit(f'{case}: controlled case omitted its observation')
+            try:
+                payload = json.loads(result_line)
+            except json.JSONDecodeError as error:
+                raise SystemExit(f'{case}: observation JSON is malformed') from error
+            if not isinstance(payload, dict) or set(payload) != {'observation'}:
+                raise SystemExit(f'{case}: case stdout contains an unexpected result')
+        else:
+            try:
+                payload = json.loads(result_path.read_text(encoding='utf-8'))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise SystemExit(
+                    f'{case}: controlled case result file is unreadable: {error}'
+                ) from error
+        if not isinstance(payload, dict):
+            raise SystemExit(f'{case}: controlled case result is not an object')
+        case_process = payload.get('case_process')
+        identity = payload.get('producer_identity')
+        if result_path is None:
+            observation = payload.get('observation')
+            if not isinstance(observation, dict):
+                raise SystemExit(f'{case}: observation is malformed')
+            case_process = observation.get('case_process')
+            identity = observation.get('producer_identity')
+            validate_observation(observation)
+        if (
+            not isinstance(case_process, dict)
+            or case_process.get('pid') != ready.get('pid')
+            or case_process.get('invocation_id') != invocation_id
+            or case_process.get('case') != expected_case
+            or case_process.get('identity_sha256') != identity_sha256(ready['identity'])
+            or identity != ready['identity']
+        ):
+            raise SystemExit(
+                f'{case}: final result differs from measured process identity'
+            )
+        return {
+            'command': command,
+            'returncode': returncode,
+            'timeout': False,
+            'elapsed_seconds': (ended_ns - started_ns) / 1_000_000_000,
+            'started_monotonic_ns': started_ns,
+            'ended_monotonic_ns': ended_ns,
+            'stdout_tail': stdout[-10_000:],
+            'stderr_tail': stderr[-10_000:],
+            'case_stdout': stdout,
+            'case_stderr': stderr,
+            'case_process': case_process,
+            'producer_identity': identity,
+            'observation': payload.get('observation'),
+            'result': payload,
+        }
+    except subprocess.TimeoutExpired as error:
+        _stop_controlled_process(process)
+        raise SystemExit(f'{case}: controlled case exceeded {timeout}s') from error
+    except BaseException:
+        if process.poll() is None:
+            _stop_controlled_process(process)
+        raise
+    finally:
+        selector.close()
+        process.stdin.close()
+        process.stdout.close()
+        process.stderr.close()
