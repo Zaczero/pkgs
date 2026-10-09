@@ -1079,6 +1079,21 @@ def test_geographic_chart_lrs_matches_independent_sloped_edge_values() -> None:
         expected_midpoint,
         _SLOPED_XY_BUDGETS_NATIVE[1],
     )
+    normalized_midpoint = line.line_interpolate(0.5, normalized=True, unit='meters')
+    default_normalized_midpoint = line.line_interpolate(0.5, normalized=True)
+    counted_midpoint = line.line_interpolate(count=3, unit='meters')[1]
+    default_counted_midpoint = line.line_interpolate(count=3)[1]
+    for actual in (
+        normalized_midpoint,
+        default_normalized_midpoint,
+        counted_midpoint,
+        default_counted_midpoint,
+    ):
+        _assert_xy_within_budget(
+            (actual.x, actual.y),
+            expected_midpoint,
+            _SLOPED_XY_BUDGETS_NATIVE[1],
+        )
     _assert_station_within_budget(
         line.line_locate(midpoint),
         middle_distance,
@@ -1099,11 +1114,33 @@ def test_geographic_chart_lrs_matches_independent_sloped_edge_values() -> None:
         strict=True,
     ):
         _assert_xy_within_budget(tuple(actual[:2]), expected, xy_budget)
+    normalized_substring = line.line_substring(
+        0.25, 0.75, normalized=True, unit='meters'
+    )
+    default_normalized_substring = line.line_substring(0.25, 0.75, normalized=True)
+    for route in (normalized_substring, default_normalized_substring):
+        for actual, expected, xy_budget in zip(
+            route.coords,
+            expected_coordinates,
+            (_SLOPED_XY_BUDGETS_NATIVE[0], _SLOPED_XY_BUDGETS_NATIVE[2]),
+            strict=True,
+        ):
+            _assert_xy_within_budget(tuple(actual[:2]), expected, xy_budget)
     assert substring.length == pytest.approx(
         end_distance - start_distance,
         rel=0.0,
         abs=_SLOPED_SUBSTRING_LENGTH_BUDGET_M,
     )
+    oracle_point = gm.Point(*expected_midpoint, crs=4326)
+    for normalized_station in (
+        line.line_locate(oracle_point, normalized=True),
+        line.line_locate(oracle_point, normalized=True, unit='meters'),
+    ):
+        _assert_station_within_budget(
+            normalized_station * expected_length,
+            middle_distance,
+            _SLOPED_STATION_BUDGETS_M[1],
+        )
 
 
 def test_geographic_chart_lrs_preserves_lifted_370_degree_meridian() -> None:

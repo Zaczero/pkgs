@@ -17,7 +17,8 @@ pub(crate) enum MetricResolver {
     /// Antimeridian ops admit their CRS model before row execution; the row
     /// kernel enforces that projected frames have no antimeridian.
     Antimeridian,
-    /// Distance/area/length/buffer and other CRS-aware measure/constructive ops.
+    /// Distance/area/length/buffer, linear referencing, and other CRS-aware
+    /// measure/constructive ops.
     Metric {
         op: MetricOp,
         unit: Option<DistanceUnit>,
@@ -29,14 +30,6 @@ pub(crate) enum MetricResolver {
         op: MetricOp,
         unit: Option<DistanceUnit>,
     },
-    /// Linear-referencing distances: CRS-aware like [`Self::Metric`], but a
-    /// normalized call uses fractions of line length and therefore rejects
-    /// `unit=`.
-    LineMetric {
-        op: MetricOp,
-        unit: Option<DistanceUnit>,
-        normalized: bool,
-    },
     /// Geographic topology borrows its CRS model and resolves the ellipsoid
     /// only after an attributed interior source arc is admitted.
     GeographicCarry,
@@ -47,26 +40,6 @@ impl MetricResolver {
     /// [`crate::dispatch::Operation::resolver`].
     pub(crate) const fn with_unit(self, unit: Option<DistanceUnit>) -> Self {
         match self {
-            Self::Metric { op, .. } => Self::Metric { op, unit },
-            Self::Metric3d { op, .. } => Self::Metric3d { op, unit },
-            Self::LineMetric { op, normalized, .. } => Self::LineMetric {
-                op,
-                unit,
-                normalized,
-            },
-            Self::Antimeridian => Self::Antimeridian,
-            Self::GeographicCarry => Self::GeographicCarry,
-            other @ Self::None => other,
-        }
-    }
-
-    pub(crate) const fn with_line_unit(self, unit: Option<DistanceUnit>, normalized: bool) -> Self {
-        match self {
-            Self::LineMetric { op, .. } => Self::LineMetric {
-                op,
-                unit,
-                normalized,
-            },
             Self::Metric { op, .. } => Self::Metric { op, unit },
             Self::Metric3d { op, .. } => Self::Metric3d { op, unit },
             Self::Antimeridian => Self::Antimeridian,
@@ -115,15 +88,6 @@ impl MetricResolver {
             },
             Self::Metric3d { op, unit } => {
                 crate::broadcast::resolve_metric_3d(frame.crs_str(), unit, op)?
-            },
-            Self::LineMetric {
-                op,
-                unit,
-                normalized,
-            } => {
-                #[cfg(test)]
-                metric_context_acquisition();
-                crate::resolve_line_metric(frame.crs_str(), unit, normalized, op)?
             },
         };
         let metric = match crs::ResolvedMetric::from_model(&model) {

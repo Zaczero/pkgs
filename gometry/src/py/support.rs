@@ -9,7 +9,7 @@ use crate::{
     PyTypeMethods, Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
     VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option, exact_geometry,
     float_values, float_values_at_most, float_values_exact, metric_nearest_points_resolved,
-    non_negative_int, py_i64_bounded, pyfunction, resolve_metric, rows_err, wgs84_crs,
+    non_negative_int, py_i64_bounded, pyfunction, rows_err, wgs84_crs,
 };
 
 pub(crate) const QUADRANT_SEGMENTS_DEFAULT_I64: i64 = 8;
@@ -105,7 +105,7 @@ pub(crate) use linref::{
     InterpolatePlan, line_interpolate_coordseq, line_interpolate_points_coordseq,
     line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,
     line_locate_coordseq, line_locate_shape, line_locate_shape_m, line_substring_coordseq,
-    line_substring_shape, line_substring_shape_m, parse_interpolate_plan, resolve_line_metric,
+    line_substring_shape, line_substring_shape_m, parse_interpolate_plan,
 };
 pub(crate) use nearest::{
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,

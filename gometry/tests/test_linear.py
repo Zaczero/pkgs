@@ -590,11 +590,89 @@ def test_linear_referencing_is_crs_aware_with_a_planar_escape() -> None:
     assert line.line_locate(here, unit='planar') == pytest.approx(0.5)
     half = line.line_substring(0.0, 0.5, unit='planar')
     assert list(half.coords)[-1][0] == pytest.approx(0.5)
-    for call in (
-        lambda: line.line_interpolate(0.5, normalized=True, unit='meters'),
-        lambda: line.line_substring(0.0, 0.5, normalized=True, unit='planar'),
-        lambda: line.line_locate(here, normalized=True, unit='meters'),
-        lambda: line.line_interpolate(count=3, unit='meters'),
-    ):
-        with pytest.raises(ValueError, match='unit'):
-            call()
+    assert line.line_interpolate(
+        0.5, normalized=True, unit='meters'
+    ).x == pytest.approx(0.5)
+    normalized_half = line.line_substring(0.0, 0.5, normalized=True, unit='planar')
+    assert list(normalized_half.coords)[-1][0] == pytest.approx(0.5)
+    assert line.line_locate(here, normalized=True, unit='meters') == pytest.approx(0.5)
+    assert [
+        point.x for point in line.line_interpolate(count=3, unit='meters')
+    ] == pytest.approx([0.0, 0.5, 1.0])
+
+
+def test_normalized_lrs_selects_planar_metric_across_packed_and_gathered_rows() -> None:
+    line = gm.LineString([(0, 0), (40, 60)], crs=4326)
+    short = gm.LineString([(0, 0), (8, 12)], crs=4326)
+    query = gm.Point(20, 30, crs=4326)
+
+    midpoint = line.line_interpolate(0.5, normalized=True, unit='planar')
+    assert (midpoint.x, midpoint.y) == pytest.approx((20, 30))
+    substring = line.line_substring(0.25, 0.75, normalized=True, unit='planar')
+    assert [tuple(coords[:2]) for coords in substring.coords] == [
+        (10.0, 15.0),
+        (30.0, 45.0),
+    ]
+    assert line.line_locate(query, normalized=True, unit='planar') == pytest.approx(0.5)
+    assert [
+        (point.x, point.y) for point in line.line_interpolate(count=3, unit='planar')
+    ] == [(0.0, 0.0), (20.0, 30.0), (40.0, 60.0)]
+
+    packed = gm.GeometryArray([line, short])
+    packed_points = packed.line_interpolate(0.5, normalized=True, unit='planar')
+    assert [(point.x, point.y) for point in packed_points] == [
+        (20.0, 30.0),
+        (4.0, 6.0),
+    ]
+    packed_substrings = packed.line_substring(
+        0.25, 0.75, normalized=True, unit='planar'
+    )
+    assert [
+        [tuple(coords[:2]) for coords in route.coords] for route in packed_substrings
+    ] == [
+        [(10.0, 15.0), (30.0, 45.0)],
+        [(2.0, 3.0), (6.0, 9.0)],
+    ]
+    assert packed.line_locate(query, normalized=True, unit='planar') == pytest.approx([
+        0.5,
+        1.0,
+    ])
+    packed_samples = packed.line_interpolate(count=3, unit='planar')
+    assert [[(point.x, point.y) for point in route] for route in packed_samples] == [
+        [(0.0, 0.0), (20.0, 30.0), (40.0, 60.0)],
+        [(0.0, 0.0), (4.0, 6.0), (8.0, 12.0)],
+    ]
+
+    nullable = gm.GeometryArray([line, None, short], crs=4326)
+    gathered = nullable[[2, 1, 0, 2]]
+    gathered_points = gathered.line_interpolate(0.5, normalized=True, unit='planar')
+    assert [
+        None if point is None else (point.x, point.y) for point in gathered_points
+    ] == [(4.0, 6.0), None, (20.0, 30.0), (4.0, 6.0)]
+    gathered_substrings = gathered.line_substring(
+        0.25, 0.75, normalized=True, unit='planar'
+    )
+    assert [
+        None if route is None else [tuple(coords[:2]) for coords in route.coords]
+        for route in gathered_substrings
+    ] == [
+        [(2.0, 3.0), (6.0, 9.0)],
+        None,
+        [(10.0, 15.0), (30.0, 45.0)],
+        [(2.0, 3.0), (6.0, 9.0)],
+    ]
+    gathered_locations = gathered.line_locate(query, normalized=True, unit='planar')
+    assert np.isnan(gathered_locations[1])
+    assert gathered_locations[[0, 2, 3]] == pytest.approx([1.0, 0.5, 1.0])
+    gathered_samples = gathered.line_interpolate(count=3, unit='planar')
+    assert [[(point.x, point.y) for point in route] for route in gathered_samples] == [
+        [(0.0, 0.0), (4.0, 6.0), (8.0, 12.0)],
+        [],
+        [(0.0, 0.0), (20.0, 30.0), (40.0, 60.0)],
+        [(0.0, 0.0), (4.0, 6.0), (8.0, 12.0)],
+    ]
+
+    with pytest.raises(ValueError, match='requires a CRS'):
+        gm.LineString([(0, 0), (1, 1)]).line_interpolate(
+            0.5, normalized=True, unit='meters'
+        )

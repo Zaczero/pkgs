@@ -77,7 +77,7 @@ pub(crate) fn line_locate_input(
         point_epoch,
         op_name,
     )?;
-    let model = crate::resolve_line_metric(crs, unit, normalized, MetricOp::LineLocate)?;
+    let model = crate::broadcast::resolve_metric(crs, unit, MetricOp::LineLocate)?;
     let locate = Locate {
         model: &model,
         basis,
@@ -176,7 +176,7 @@ pub(crate) fn line_interpolate_points_scalar(
     unit: Option<DistanceUnit>,
 ) -> PyResult<PyGeometryArray> {
     let model = Operation::Metric(MetricOp::LineInterpolate)
-        .resolver_with_line_unit(unit, plan.is_fractional())
+        .resolver_with_unit(unit)
         .resolve_ctx(
             &geometry.frame,
             &mut crate::dispatch::MetricScratch::default(),

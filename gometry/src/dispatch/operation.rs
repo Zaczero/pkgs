@@ -135,20 +135,13 @@ impl MetricOp {
 
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "ordinary metric operations share this hot resolver; only 3D and linear-reference metrics are specialized above"
+        reason = "ordinary metric operations share this hot resolver; only 3D metrics are specialized above"
     )]
     pub(crate) const fn resolver(self) -> MetricResolver {
         match self {
             Self::Distance3d | Self::Length3d => MetricResolver::Metric3d {
                 op: self,
                 unit: None,
-            },
-            Self::LineInterpolate | Self::LineLocate | Self::LineSubstring => {
-                MetricResolver::LineMetric {
-                    op: self,
-                    unit: None,
-                    normalized: false,
-                }
             },
             _ => MetricResolver::Metric {
                 op: self,
@@ -209,14 +202,6 @@ impl Operation {
     /// Call-site ``unit=`` for CRS-aware ops (merged into [`MetricResolver`]).
     pub(crate) const fn resolver_with_unit(self, unit: Option<DistanceUnit>) -> MetricResolver {
         self.resolver().with_unit(unit)
-    }
-
-    pub(crate) const fn resolver_with_line_unit(
-        self,
-        unit: Option<DistanceUnit>,
-        normalized: bool,
-    ) -> MetricResolver {
-        self.resolver().with_line_unit(unit, normalized)
     }
 
     pub(crate) const fn from_overlay(op: OverlayOp) -> Self {

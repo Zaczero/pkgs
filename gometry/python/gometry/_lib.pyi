@@ -2268,8 +2268,9 @@ class Geometry:
             chart-edge arclength on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
-            Interpret distance-basis positions as fractions in [0, 1]. Invalid with
-            ``basis='m'``.
+            Interpret distance-basis positions as fractions of the route length under
+            the selected metric. Changing ``unit`` can change the cut points. Invalid
+            with ``basis='m'``.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -2627,7 +2628,9 @@ class Geometry:
             ellipsoidal arclength on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
-            Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
+            Return a distance-basis fraction in [0, 1] under the selected metric.
+            Changing ``unit`` can change the nearest projection and returned fraction.
+            Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
@@ -2804,7 +2807,7 @@ class Geometry:
         *,
         count: _IntScalar,
         basis: Literal['distance'] = 'distance',
-        normalized: bool = False,
+        normalized: Literal[False] = False,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[Point]: ...
     @overload
@@ -2840,8 +2843,10 @@ class Geometry:
 
 
         count : int, optional
-            Number of evenly spaced distance-basis samples (``>= 1``). Mutually
-            exclusive with ``at`` and unavailable with ``basis='m'``.
+            Number of evenly spaced distance-basis samples (``>= 1``) along the metric
+            selected by ``unit``. Mutually exclusive with ``at`` and unavailable with
+            ``basis='m'``; ``normalized=True`` is invalid because count already supplies
+            fractional positions.
 
         basis : {'distance', 'm'}, default 'distance'
             Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
@@ -2849,8 +2854,9 @@ class Geometry:
             chart-edge arclength on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
-            Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
-            with ``basis='m'``.
+            Interpret distance-basis ``at`` values as fractions of the route length
+            under the selected metric. Changing ``unit`` can change their positions.
+            Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
@@ -8609,8 +8615,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
             chart-edge arclength on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
-            Interpret distance-basis positions as fractions in [0, 1]. Invalid with
-            ``basis='m'``.
+            Interpret distance-basis positions as fractions of the route length under
+            the selected metric. Changing ``unit`` can change the cut points. Invalid
+            with ``basis='m'``.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -9106,7 +9113,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
             ellipsoidal arclength on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
-            Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
+            Return a distance-basis fraction in [0, 1] under the selected metric.
+            Changing ``unit`` can change the nearest projection and returned fraction.
+            Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
@@ -9284,7 +9293,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         *,
         count: _IntInput,
         basis: Literal['distance'] = 'distance',
-        normalized: bool = False,
+        normalized: Literal[False] = False,
         unit: DistanceUnit | None = None,
     ) -> Groups[GeometryArray[Point]]: ...
     @overload
@@ -9330,9 +9339,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
 
         count : int or iterable of int, optional
-            Number of evenly spaced distance-basis samples per row (``>= 1``). A scalar
-            broadcasts; otherwise pass one count per row. Mutually exclusive with
-            ``at`` and unavailable with ``basis='m'``.
+            Number of evenly spaced distance-basis samples per row (``>= 1``) along the
+            metric selected by ``unit``. A scalar broadcasts; otherwise pass one count
+            per row. Mutually exclusive with ``at`` and unavailable with ``basis='m'``;
+            ``normalized=True`` is invalid because count already supplies fractional
+            positions.
 
         basis : {'distance', 'm'}, default 'distance'
             Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
@@ -9340,8 +9351,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
             chart-edge arclength on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
-            Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
-            with ``basis='m'``.
+            Interpret distance-basis ``at`` values as fractions of the route length
+            under the selected metric. Changing ``unit`` can change their positions.
+            Invalid with ``basis='m'``.
 
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
