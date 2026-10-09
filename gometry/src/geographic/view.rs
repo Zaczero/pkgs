@@ -679,14 +679,14 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
             support_visit,
         ),
         Shape::MultiLineString(lines) => {
-            for (logical, member) in lines.members().enumerate() {
-                if let MultiMember::Value(physical) = member {
+            for (logical, member) in lines.members_with_values().enumerate() {
+                if let MultiMember::Value(line) = member {
                     if !ORDINARY_SCREEN {
                         members.push(logical);
                     }
                     visit_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                         frame,
-                        &lines.as_slice()[physical],
+                        line,
                         row,
                         members,
                         None,
@@ -721,12 +721,12 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
-            for (logical, member) in polygons.members().enumerate() {
-                if let MultiMember::Value(physical) = member {
+            for (logical, member) in polygons.members_with_values().enumerate() {
+                if let MultiMember::Value(polygon) = member {
                     if !ORDINARY_SCREEN {
                         members.push(logical);
                     }
-                    for (ring, coords) in polygons.as_slice()[physical].rings().enumerate() {
+                    for (ring, coords) in polygon.rings().enumerate() {
                         visit_ring_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                             frame,
                             coords,
