@@ -480,16 +480,16 @@ def test_polygonize_builds_polygons_from_exact_noded_linework() -> None:
     )
     polygons = square_edges.polygonize()
     top_level = square_edges.polygonize()
-    full_polygons, full_cuts, full_dangles, full_invalid = gm.polygonize_full([
-        square_edges
-    ])
-    top_level_full = gm.polygonize_full([square_edges])
-    invalid_full = gm.polygonize_full([
-        gm.MultiLineString([[(0, 0), (1, 0)], [(0, 0), (1, 0)]])
-    ])
+    full_polygons, full_cuts, full_dangles, full_invalid = gm.polygonize_all(
+        [square_edges], diagnostics=True
+    )
+    top_level_full = gm.polygonize_all([square_edges], diagnostics=True)
+    invalid_full = gm.polygonize_all(
+        [gm.MultiLineString([[(0, 0), (1, 0)], [(0, 0), (1, 0)]])], diagnostics=True
+    )
     with_hole = hole_edges.polygonize()
     array_polygons = gm.GeometryArray([square_edges]).polygonize()
-    pooled_full = gm.polygonize_full([square_edges])
+    pooled_full = gm.polygonize_all([square_edges], diagnostics=True)
     assert len(polygons) == 1
     assert polygons.crs == 'EPSG:3857'
     assert polygons[0].geometry_type == 'Polygon'
@@ -553,7 +553,7 @@ def test_polygonize_full_preserves_epoch() -> None:
     ring = gm.MultiLineString(
         [[(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 0)]], crs=4326, epoch=2020.0
     )
-    result = gm.polygonize_full([ring])
+    result = gm.polygonize_all([ring], diagnostics=True)
     assert result.polygons.crs == 'EPSG:4326'
     assert result.polygons.epoch == 2020.0
     for groups in (result.cut_edges, result.dangles, result.invalid_rings):
@@ -570,8 +570,8 @@ def test_polygonize_full_diagnostics_keep_source_rows_after_missing_input() -> N
     dangle = gm.LineString([(-1, 5), (0, 5)])
     invalid = gm.MultiLineString([[(10, 0), (11, 0)], [(10, 0), (11, 0)]])
 
-    result = gm.polygonize_full(
-        gm.GeometryArray([None, joined_cycles, dangle, invalid])
+    result = gm.polygonize_all(
+        gm.GeometryArray([None, joined_cycles, dangle, invalid]), diagnostics=True
     )
 
     assert len(result.polygons) == 2
@@ -597,21 +597,17 @@ def test_polygonize_full_diagnostics_keep_source_rows_after_missing_input() -> N
     [(3857, 2020.0), (4326, 2021.0)],
     ids=['crs-mismatch', 'epoch-mismatch'],
 )
-@pytest.mark.parametrize(
-    'operation',
-    [gm.polygonize, gm.polygonize_full],
-    ids=['polygonize', 'polygonize-full'],
-)
+@pytest.mark.parametrize('diagnostics', [False, True], ids=['polygons', 'diagnostics'])
 def test_pooled_polygonize_rejects_crs_and_epoch_mismatches(
     right_crs: int,
     right_epoch: float,
-    operation,
+    diagnostics: bool,
 ) -> None:
     left = gm.LineString([(0, 0), (1, 0)], crs=4326, epoch=2020.0)
     right = gm.LineString([(1, 0), (1, 1)], crs=right_crs, epoch=right_epoch)
 
     with pytest.raises(gm.CRSMismatchError):
-        operation([left, right])
+        gm.polygonize_all([left, right], diagnostics=diagnostics)
 
 
 def test_empty_polygon_rejects_non_iterable_holes() -> None:

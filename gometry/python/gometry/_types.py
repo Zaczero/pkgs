@@ -790,7 +790,7 @@ def _restore_extremes_v1(
 class PolygonizeResult(NamedTuple):
     """Full polygonization output: the polygons plus the leftover linework.
 
-    Returned by `polygonize_full`; unpacks as ``(polygons, cut_edges,
+    Returned by `polygonize_all(diagnostics=True)`; unpacks as ``(polygons, cut_edges,
     dangles, invalid_rings)``, or use the named fields. ``polygons`` is the
     pooled result; each diagnostic is a ``Groups[GeometryArray[LineString]]``
     with one row per input source.

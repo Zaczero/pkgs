@@ -491,12 +491,13 @@ print(panels(
 explicit: `method='delaunay'` triangulates input vertices,
 `method='earcut'` triangulates polygon interiors, and `method='constrained'`
 keeps input edges as constraints. [`voronoi_polygons`][gometry.Geometry.voronoi_polygons]
-returns the dual Voronoi cells. [`polygonize`][gometry.Geometry.polygonize]
-assembles polygons from a collection of linework, automatically splitting
-crossings and overlaps before polygonization (the inverse of taking boundaries).
-The scalar and pooled free-function forms return a
-[`GeometryArray`][gometry.GeometryArray] — a vectorized container you iterate,
-index, and `len()` directly. The row-wise array method returns [`Groups`][gometry.Groups].
+returns the dual Voronoi cells. [`Geometry.polygonize()`][gometry.Geometry.polygonize]
+polygonizes that geometry's own linework, automatically splitting crossings
+and overlaps. [`polygonize_all`][gometry.polygonize_all] pools all supplied
+geometries' linework into one graph before polygonization, so a ring can close
+across inputs. Both return a [`GeometryArray`][gometry.GeometryArray]; the
+row-wise [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize]
+returns [`Groups`][gometry.Groups], one result per row.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -513,7 +514,7 @@ edges = [
     gm.LineString([(1, 0), (1, 1)]),
     gm.LineString([(1, 1), (0, 0)]),
 ]
-print("polygonized:", len(gm.polygonize(edges)))
+print("polygonized:", len(gm.polygonize_all(edges)))
 
 ```
 
@@ -539,11 +540,11 @@ On arrays, the radius method returns a read-only `float64` NumPy column.
     triangulation; `method='delaunay'` needs only the input vertices.
     [`voronoi_edges`][gometry.Geometry.voronoi_edges] returns the cell boundaries
     as lines, and
-    [`polygonize_full`][gometry.polygonize_full] additionally reports dangles,
-    cut edges, and invalid rings for pooled linework, grouped by source row as
-    [`Groups`][gometry.Groups].
+    [`polygonize_all`][gometry.polygonize_all] with ``diagnostics=True`` also
+    reports dangles, cut edges, and invalid rings for pooled linework, grouped
+    by source row as [`Groups`][gometry.Groups].
     [`GeometryArray.polygonize()`][gometry.GeometryArray.polygonize] is row-wise and returns
-    [`Groups`][gometry.Groups]; pass the array directly to either free function to opt into one
+    [`Groups`][gometry.Groups]; pass the array directly to `polygonize_all` to opt into one
     pooled graph. Constrained
     `min_angle`/`max_area` refinement is bounded at 16,000,000 generated
     vertices. A request whose estimated work exceeds that limit, or whose
