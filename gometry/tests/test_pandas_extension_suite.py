@@ -2,9 +2,11 @@
 
 Borrowed gate: ``pandas.tests.extension.base`` exercises the behavior classes
 bespoke probes cannot enumerate (this suite would have caught both live glue
-bugs — the scalar ``__eq__`` and the empty-deleting ``dropna``). Ordering,
-reductions, and arithmetic are out of scope for an unordered geometry array;
-focused interop tests cover the mutable pandas-container contract.
+bugs — the scalar ``__eq__`` and the empty-deleting ``dropna``). Sorting runs
+on the array's deterministic WKB-byte key; order comparisons, ``searchsorted``,
+``diff`` and the numeric reductions and arithmetic are refused by design, and
+the overrides here pin each refusal. Focused interop tests cover the mutable
+pandas-container contract.
 """
 
 from __future__ import annotations
@@ -23,6 +25,19 @@ def _points(n: int) -> list[gm.Point]:
     return [gm.Point(float(i), float(i % 7)) for i in range(n)]
 
 
+def _ordered_points() -> tuple[gm.Point, gm.Point, gm.Point]:
+    """Points A < B < C under the array's argsort key.
+
+    Geometries sort by WKB bytes (`_values_for_argsort`), and IEEE-754
+    little-endian bytes do not sort numerically — so pick x values that
+    differ only in the low mantissa byte, where byte order == value order.
+    """
+    base = 1.0
+    first = np.nextafter(base, 2.0)
+    second = np.nextafter(first, 2.0)
+    return gm.Point(base, 0.0), gm.Point(first, 0.0), gm.Point(second, 0.0)
+
+
 @pytest.fixture
 def dtype() -> GeometryDtype:
     return GeometryDtype()
@@ -32,11 +47,6 @@ def dtype() -> GeometryDtype:
 def data() -> GeometryExtensionArray:
     """Length-10, first two distinct non-missing (suite contract)."""
     return GeometryExtensionArray(gm.GeometryArray(_points(10)))
-
-
-@pytest.fixture
-def data_for_twos() -> None:
-    pytest.skip('geometries have no numeric "2" value')
 
 
 @pytest.fixture
@@ -62,13 +72,17 @@ def data_repeated(data):
 
 
 @pytest.fixture
-def data_for_sorting() -> None:
-    pytest.skip('geometries are unordered')
+def data_for_sorting() -> GeometryExtensionArray:
+    """[B, C, A] with A < B < C under the argsort order."""
+    a, b, c = _ordered_points()
+    return GeometryExtensionArray._from_sequence([b, c, a])
 
 
 @pytest.fixture
-def data_missing_for_sorting() -> None:
-    pytest.skip('geometries are unordered')
+def data_missing_for_sorting() -> GeometryExtensionArray:
+    """[B, NA, A] with A < B under the argsort order."""
+    a, b, _ = _ordered_points()
+    return GeometryExtensionArray._from_sequence([b, None, a])
 
 
 @pytest.fixture
@@ -83,16 +97,8 @@ def na_value():
 
 @pytest.fixture
 def data_for_grouping() -> GeometryExtensionArray:
-    """[B, B, NA, NA, A, A, B, C] with A < B < C under the argsort order.
-
-    Geometries sort by WKB bytes (`_values_for_argsort`), and IEEE-754
-    little-endian bytes do not sort numerically — so pick x values that
-    differ only in the low mantissa byte, where byte order == value order.
-    """
-    base = 1.0
-    a = gm.Point(base, 0.0)
-    b = gm.Point(np.nextafter(base, 2.0), 0.0)
-    c = gm.Point(np.nextafter(np.nextafter(base, 2.0), 2.0), 0.0)
+    """[B, B, NA, NA, A, A, B, C] with A < B < C under the argsort order."""
+    a, b, c = _ordered_points()
     return GeometryExtensionArray._from_sequence([b, b, None, None, a, a, b, c])
 
 
@@ -131,6 +137,12 @@ def use_numpy(request):
 
 @pytest.fixture(params=['ffill', 'bfill'])
 def fillna_method(request):
+    return request.param
+
+
+@pytest.fixture(params=[None, lambda x: x])
+def sort_by_key(request):
+    """Mirrors pandas' own fixture (pandas/conftest.py): no key, then identity."""
     return request.param
 
 
@@ -263,5 +275,21 @@ class TestGroupby(base.BaseGroupbyTests):
 
 
 class TestMethods(base.BaseMethodsTests):
+    """Sorting uses the WKB-byte argsort key; order comparisons are refused."""
+
     def test_combine_le(self, data_repeated):
-        pytest.skip('geometries are unordered; `<=` is a TypeError by design')
+        first, second = data_repeated(2)
+        with pytest.raises(TypeError, match='not supported'):
+            pd.Series(first).combine(pd.Series(second), lambda a, b: a <= b)
+
+    def test_searchsorted(self, data_for_sorting, as_series):
+        smallest = data_for_sorting.take([2, 0, 1])
+        needle = data_for_sorting[2]
+        values = pd.Series(smallest) if as_series else smallest
+        with pytest.raises(TypeError, match='not supported'):
+            values.searchsorted(needle)
+
+    @pytest.mark.parametrize('periods', [1, -2])
+    def test_diff(self, data, periods):
+        with pytest.raises(TypeError, match='diff'):
+            pd.Series(data).diff(periods)
