@@ -598,6 +598,14 @@ def _prepared_input_identity(hashes: Mapping[str, str]) -> str:
     return _sha256_bytes(value.encode('ascii'))
 
 
+def _prepared_input_record(hashes: Mapping[str, str]) -> dict[str, Any]:
+    files = dict(sorted(hashes.items()))
+    return {
+        'identity_sha256': _prepared_input_identity(files),
+        'files': files,
+    }
+
+
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     path.write_text(
         json.dumps(value, indent=2, sort_keys=True) + '\n',

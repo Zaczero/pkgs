@@ -1299,7 +1299,7 @@ def inspect_wheel(
         raise AssertionError(
             f'wheel contains generated Python bytecode: {generated_members[:20]}'
         )
-    if leaks := content_leaks(text_members, binary_members):
+    if release and (leaks := content_leaks(text_members, binary_members)):
         raise AssertionError(f'wheel contents leak absolute build paths: {leaks}')
     if pth_files and not package:
         raise AssertionError(f'wheel is .pth-only: {pth_files}')

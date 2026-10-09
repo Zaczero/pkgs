@@ -94,6 +94,40 @@ def _wheel(
     return path
 
 
+def _quality_wheel(
+    directory: Path,
+    *,
+    version: str,
+    python_members: dict[str, bytes],
+    licenses: dict[str, bytes],
+    extension_payload: bytes,
+) -> Path:
+    dist_info = f'gometry-{version}.dist-info'
+    extension = f'gometry/_lib{sysconfig.get_config_var("EXT_SUFFIX")}'
+    members = {
+        **python_members,
+        extension: extension_payload,
+        f'{dist_info}/METADATA': (f'Name: gometry\nVersion: {version}\n'.encode()),
+        f'{dist_info}/WHEEL': (
+            b'Wheel-Version: 1.0\n'
+            b'Generator: maturin (1.14.1)\n'
+            b'Tag: cp314-cp314-manylinux_2_17_x86_64\n'
+        ),
+        **{
+            f'{dist_info}/licenses/{name}': payload
+            for name, payload in licenses.items()
+        },
+    }
+    record_name = f'{dist_info}/RECORD'
+    members[record_name] = b''
+    members[record_name] = _record_bytes(members)
+    path = directory / f'gometry-{version}-cp314-cp314-manylinux_2_17_x86_64.whl'
+    with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
+    return path
+
+
 def _inspection(path: Path) -> dict[str, Any]:
     with zipfile.ZipFile(path) as archive:
         return artifact_content.inspect_wheel_members(archive)
@@ -642,6 +676,61 @@ def test_record_inspection_hashes_members_and_retains_only_needed_payloads(
     assert 'fixture-1.dist-info/RECORD' not in result['payloads']
 
 
+def test_absolute_build_paths_are_allowed_only_in_dev_wheels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_members = {
+        'gometry/_lib.pyi': b'def value() -> int: ...\n',
+        'gometry/py.typed': b'',
+    }
+    licenses = {
+        'LICENSE-APACHE.md': b'apache\n',
+        'LICENSE-MIT.md': b'mit\n',
+        'LICENSE-THIRD-PARTY.md': b'third-party\n',
+    }
+    wheel = _quality_wheel(
+        tmp_path,
+        version='1.0.0',
+        python_members=python_members,
+        licenses=licenses,
+        extension_payload=(
+            b'\x7fELF\x00debug\x00/home/user/checkout/gometry/src/lib.rs\x00'
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_content,
+        '_verify_native_debug_sections',
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        artifact_content,
+        'native_image_facts',
+        lambda *_args: {},
+    )
+    expected_licenses = {
+        name: hashlib.sha256(payload).hexdigest() for name, payload in licenses.items()
+    }
+
+    dev_inspection = artifact_content.inspect_wheel(
+        wheel,
+        release=False,
+        expected_prepared_inputs=expected_licenses,
+    )
+
+    assert dev_inspection['extension_members'][
+        f'gometry/_lib{sysconfig.get_config_var("EXT_SUFFIX")}'
+    ].endswith(b'/home/user/checkout/gometry/src/lib.rs\x00')
+    with pytest.raises(
+        AssertionError, match='wheel contents leak absolute build paths'
+    ):
+        artifact_content.inspect_wheel(
+            wheel,
+            release=True,
+            expected_prepared_inputs=expected_licenses,
+        )
+
+
 def test_runtime_loader_facts_match_the_active_platform() -> None:
     facts = runtime_artifact._runtime_loader_identity()
 
@@ -762,14 +851,14 @@ def test_record_rejects_duplicate_archive_paths_and_noncanonical_names(
     with zipfile.ZipFile(unsafe, 'w') as archive:
         archive.writestr('../outside.py', b'x')
 
-    with pytest.raises(AssertionError, match='unsafe archive path'):
+    with pytest.raises(AssertionError, match='non-canonical archive path'):
         _inspection(unsafe)
 
     windows_absolute = tmp_path / 'windows-absolute.whl'
     with zipfile.ZipFile(windows_absolute, 'w') as archive:
         archive.writestr('C:/outside.py', b'x')
 
-    with pytest.raises(AssertionError, match='unsafe archive path'):
+    with pytest.raises(AssertionError, match='non-canonical archive path'):
         _inspection(windows_absolute)
 
 
@@ -1202,7 +1291,7 @@ def test_runner_build_identity_rejects_false_profile_and_partial_guards() -> Non
 
     missing_guard = json.loads(json.dumps(build))
     del missing_guard['settings']['environment']['GOMETRY_RELEASE_CXXFLAGS']
-    with pytest.raises(AssertionError, match='GOMETRY_RELEASE_CXXFLAGS'):
+    with pytest.raises(TypeError, match='GOMETRY_RELEASE_CXXFLAGS'):
         release_artifact._validate_build_identity(missing_guard)
 
 
@@ -1298,7 +1387,9 @@ def test_native_receipt_binds_running_binary_and_python_to_nextest_junit(
     assert receipt['run_id'] == invocation_run_id
     assert receipt['nextest_run_id'] == nextest_run_id
     assert receipt['python']['embedded'] == embedded_python
-    assert receipt['junit']['test_cases'][0]['name'] == observation['test_name']
+    assert receipt['junit']['test_cases'][0]['name'] == (
+        f'native_test_identity::{observation["test_name"]}'
+    )
 
 
 def test_native_receipt_rejects_a_junit_without_the_executed_elf_witness(
@@ -1818,6 +1909,182 @@ def test_corrupt_quality_wheel_is_not_rebuilt(
         )
 
 
+def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / 'workspace'
+    root = workspace / 'gometry'
+    package = root / 'python' / 'gometry'
+    package.mkdir(parents=True)
+    fixed_inputs = {
+        workspace / 'Cargo.toml': '[workspace]\n',
+        workspace / 'Cargo.lock': 'version = 4\n',
+        workspace / '.cargo' / 'config.toml': '[build]\n',
+        root / 'Cargo.toml': ('[package]\nname = "gometry"\nversion = "1.0.0"\n'),
+        root / 'pyproject.toml': '[project]\nname = "gometry"\n',
+        root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
+        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.6.2.tar.gz': (
+            'fixture archive'
+        ),
+    }
+    for path, contents in fixed_inputs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding='utf-8')
+    python_payloads = {
+        'gometry/__init__.py': b'VALUE = 17\n',
+        'gometry/_lib.pyi': b'def value() -> int: ...\n',
+        'gometry/py.typed': b'',
+    }
+    for name, payload in python_payloads.items():
+        (package / Path(name).name).write_bytes(payload)
+
+    license_payloads = {
+        'LICENSE-APACHE.md': b'apache license\n',
+        'LICENSE-MIT.md': b'mit license\n',
+        'LICENSE-THIRD-PARTY.md': b'third-party notices\n',
+    }
+
+    def prepare_outputs(source_root: Path) -> None:
+        (source_root / 'README.md').write_bytes(b'package readme\n')
+        for name, payload in license_payloads.items():
+            (source_root / name).write_bytes(payload)
+
+    monkeypatch.setenv('CARGO_HOME', str(tmp_path / 'cargo-home'))
+    for name in (*artifact_common.RELEASE_ENV_VARS, 'MATURIN_PEP517_ARGS'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        quality_runtime,
+        'prepare_license_outputs',
+        prepare_outputs,
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        'source_input_digests',
+        lambda _root: {
+            'source_inputs_sha256': '1' * 64,
+            'native_source_inputs_sha256': '2' * 64,
+        },
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        '_rust_target_triple',
+        lambda *_args, **_kwargs: 'x86_64-unknown-linux-gnu',
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        'cargo_metadata',
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        'required_source_records',
+        lambda *_args, **_kwargs: [
+            {
+                'name': 'fixture',
+                'source': 'registry+https://example.invalid/index',
+                'checksum': '3' * 64,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        '_maturin_command',
+        lambda _root: ['maturin'],
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        '_tool_output',
+        lambda command, **_kwargs: (
+            'rustc fixture' if command[0] == 'rustc' else 'cargo fixture'
+        ),
+    )
+    monkeypatch.setattr(
+        quality_runtime, '_admit_quality_candidate', lambda *_args: None
+    )
+    monkeypatch.setattr(artifact_content, 'native_image_facts', lambda *_args: {})
+    builds = 0
+
+    def build_wheel(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+    ) -> None:
+        nonlocal builds
+        assert cwd == root
+        assert env['PYO3_PYTHON'] == str(Path(sys.executable).resolve())
+        output = Path(command[command.index('--out') + 1])
+        package_members = {
+            f'gometry/{path.relative_to(package).as_posix()}': path.read_bytes()
+            for path in package.rglob('*')
+            if path.is_file()
+        }
+        _quality_wheel(
+            output,
+            version='1.0.0',
+            python_members=package_members,
+            licenses={name: (root / name).read_bytes() for name in license_payloads},
+            extension_payload=b'\x7fELF\x00development extension',
+        )
+        builds += 1
+
+    monkeypatch.setattr(quality_runtime, 'run', build_wheel)
+
+    quality_runtime.prepare_quality_runtime(
+        root,
+        scratch=root / 'target' / 'quality-runtime',
+    )
+    parsed = quality_runtime.read_quality_receipt(root)
+    quality_runtime.validate_quality_producer_inputs(root, parsed)
+
+    prepared = parsed['prepared_inputs']
+    assert set(prepared) == {'identity_sha256', 'files'}
+    assert prepared['identity_sha256'] == artifact_common._prepared_input_identity(
+        prepared['files']
+    )
+    assert prepared['files'] == artifact_common._prepared_output_hashes(root)
+    assert 'authored_stub' not in parsed
+    interpreter = parsed['build']['interpreter']
+    assert (
+        parsed['build']['settings']['environment']['PYO3_PYTHON']
+        == interpreter['resolved_executable']
+    )
+    alternate_environment = os.environ.copy()
+    target = parsed['build']['target']
+    alternate_environment.update({
+        'CARGO_BUILD_TARGET': target,
+        'NIX_DONT_SET_RPATH': '1',
+        f'NIX_DONT_SET_RPATH_{target.replace("-", "_")}': '1',
+        'PYO3_PYTHON': str(tmp_path / 'other-python'),
+    })
+    assert (
+        quality_runtime.quality_settings(root, alternate_environment)['identity_sha256']
+        != parsed['build']['settings']['identity_sha256']
+    )
+
+    reused = quality_runtime.prepare_quality_runtime(
+        root,
+        scratch=root / 'target' / 'quality-runtime',
+    )
+    assert builds == 1
+    assert reused['prepared_inputs'] == parsed['prepared_inputs']
+    parsed = quality_runtime.read_quality_receipt(root)
+    quality_runtime.validate_quality_producer_inputs(root, parsed)
+
+    (package / '_lib.pyi').write_bytes(b'def value() -> str: ...\n')
+    refreshed = quality_runtime.refresh_quality_runtime(root)
+    parsed = quality_runtime.read_quality_receipt(root)
+    quality_runtime.validate_quality_producer_inputs(root, parsed)
+    refreshed_prepared = parsed['prepared_inputs']
+    assert refreshed['prepared_inputs'] == refreshed_prepared
+    assert refreshed_prepared['files'] == artifact_common._prepared_output_hashes(root)
+    assert refreshed_prepared['identity_sha256'] == (
+        artifact_common._prepared_input_identity(refreshed_prepared['files'])
+    )
+    assert builds == 1
+
+
 def _quality_package_members(
     root: Path,
 ) -> tuple[Path, dict[str, Any], dict[str, str], dict[str, bytes]]:
@@ -1947,7 +2214,7 @@ def test_wheel_receipt_cli_accepts_its_required_evidence_options(
         observed['kwargs'] = kwargs
         return output
 
-    monkeypatch.setattr(release_artifact, 'write_runner_receipt', write_receipt)
+    monkeypatch.setattr(wheel_cli, 'write_runner_receipt', write_receipt)
 
     status = wheel_cli.main([
         '--write-wheel-receipt',

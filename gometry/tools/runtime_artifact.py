@@ -589,7 +589,11 @@ def inspect_runtime_inputs(
             expected_wheel,
             release=profile != 'dev',
             expected_python_members=None if quality_receipt else python_members,
-            expected_prepared_inputs=receipt.get('prepared_inputs'),
+            expected_prepared_inputs=(
+                receipt['prepared_inputs']['files']
+                if quality_receipt
+                else receipt.get('prepared_inputs')
+            ),
         )
         if wheel_inspection['generator'] != f'maturin ({MATURIN_VERSION})':
             raise AssertionError('installed wheel has the wrong Maturin Generator')
