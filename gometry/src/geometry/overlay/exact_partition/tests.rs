@@ -1,5 +1,4 @@
 use super::*;
-use crate::geometry::Unmetered;
 use crate::geometry::embedding_search::{
     ClassAssignment, GlobalCheck, Problem, Search, SearchAccount, Work,
 };
@@ -6194,6 +6193,7 @@ fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders() {
                     &partition,
                     node,
                     crate::geometry::CoordinateAxes::XYZM,
+                    crate::geometry::SourceArcContext::cartesian(),
                     None,
                 )
                 .unwrap();
