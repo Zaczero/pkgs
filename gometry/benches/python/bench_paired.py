@@ -8,8 +8,8 @@ import json
 import os
 import platform
 import sys
-import sysconfig
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -33,123 +33,17 @@ from _bench_oracles import (
 from _bench_registry import operation_for_row, scaling_record
 from bench_doctor import (
     packages_required_by_operations,
-    _extension_identity,
-    _loaded_native_libraries,
-    _package_identity,
-    _source_inputs_digest,
-    benchmark_source_inputs_identity,
-    _run,
-    _uv_lock_identity,
     implementation_identity,
 )
+import benchmark_runtime
 from benchmark_identity import (
     IDENTITY_SCHEMA_VERSION,
     identity_for_arm,
 )
 from benchmark_observation import make_observation
-import release_artifact as artifact_release
 
-_DEPENDENCIES = (
-    'gometry',
-    'numpy',
-    'shapely',
-    'pyproj',
-    'h3',
-    'geopandas',
-    'pyarrow',
-    'mercantile',
-    'pygeohash',
-)
 _OUTPUT_SINK = 0
 PAIR_ARTIFACT_SCHEMA_VERSION = 1
-
-
-def producer_identity(
-    receipt_binding: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Capture immutable producer facts, not transient host load."""
-    import gometry._lib as lib
-
-    extension = _extension_identity()
-    build_info = extension.get('build_info')
-    checkout_source_digest = _source_inputs_digest()
-    expected_source_digest = (
-        receipt_binding['source']['source_inputs_sha256']
-        if receipt_binding is not None
-        else os.environ.get('GOMETRY_BENCH_SOURCE_INPUTS_SHA256')
-    )
-    try:
-        source_digest = benchmark_source_inputs_identity(
-            build_info,
-            checkout_source_digest,
-            expected_source_digest,
-        )
-    except (TypeError, ValueError) as error:
-        raise SystemExit(f'paired block producer identity is stale: {error}') from error
-    if receipt_binding is not None and (
-        not isinstance(build_info, dict)
-        or build_info.get('native_source_inputs_sha256')
-        != receipt_binding['source']['native_source_inputs_sha256']
-    ):
-        raise SystemExit(
-            'paired block producer native inputs do not match the validated receipt'
-        )
-    if not isinstance(getattr(lib, '__build_info__', None), dict):
-        raise SystemExit('paired block producer identity lacks embedded build info')
-    packages = {
-        name: identity
-        for name in _DEPENDENCIES
-        if (identity := _package_identity(name)) is not None
-    }
-    identity = {
-        'identity_schema_version': IDENTITY_SCHEMA_VERSION,
-        'harness_commit': _run(['git', 'rev-parse', 'HEAD']),
-        'source_inputs_sha256': source_digest,
-        'extension': extension,
-        'uv_lock': _uv_lock_identity(),
-        'packages': packages,
-        'loaded_native_libraries': _loaded_native_libraries(),
-        'python': {
-            'executable': str(Path(sys.executable).resolve()),
-            'version': sys.version,
-            'implementation': platform.python_implementation(),
-            'cache_tag': sys.implementation.cache_tag,
-            'build': {
-                'implementation': platform.python_implementation(),
-                'version': platform.python_version(),
-                'build': platform.python_build(),
-                'debug': bool(sysconfig.get_config_var('Py_DEBUG')),
-            },
-        },
-    }
-    if receipt_binding is None:
-        identity.update({
-            'source_commit': None,
-            'source_receipt': None,
-            'source_wheel': None,
-        })
-    else:
-        receipt_facts = artifact_release.match_benchmark_receipt(
-            receipt_binding,
-            extension,
-            packages.get('gometry', {}).get('distribution'),
-        )
-        identity['source_commit'] = receipt_facts['source_commit']
-        if receipt_facts['source_commit'] is None:
-            identity['source_receipt'] = None
-            identity['source_wheel'] = None
-        else:
-            identity['source_receipt'] = {
-                'path': receipt_facts['receipt_path'],
-                'sha256': receipt_facts['receipt_sha256'],
-            }
-            identity['source_wheel'] = {
-                'filename': receipt_facts['wheel_filename'],
-                'sha256': receipt_facts['wheel_sha256'],
-                'extension_member': receipt_facts['extension_member'],
-                'extension_sha256': receipt_facts['extension_sha256'],
-            }
-    return identity
 
 
 def _arm_identity(
@@ -280,7 +174,8 @@ def run_block(
     warmups: int,
     repetitions: int,
     clock_ns: Callable[[], int] = time.perf_counter_ns,
-    identity: Callable[[], dict[str, Any]] = producer_identity,
+    identity: Callable[[], dict[str, Any]],
+    completion: Callable[[], dict[str, Any]] | None = None,
     builder: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Build and execute one complete paired block."""
@@ -291,6 +186,7 @@ def run_block(
             'paired block warmups must be non-negative and repetitions positive'
         )
     phase = operation.phase
+    invocation_id = os.environ.get('GOMETRY_BENCH_INVOCATION_ID') or uuid.uuid4().hex
     if phase == 'first-use':
         raise SystemExit(
             'first-use cannot be paired in one shared process: the first arm warms '
@@ -362,7 +258,7 @@ def run_block(
         )
         for side in order
     }
-    common_after = identity()
+    common_after = completion() if completion is not None else identity()
     if common_before != common_after:
         raise SystemExit(
             'paired block producer identity changed during the timed block'
@@ -383,6 +279,16 @@ def run_block(
     for side in ('A', 'B'):
         measured[side]['provenance_after'] = arm_identity_after[side]
         measured[side]['observation']['producer_identity'] = arm_identity_before[side]
+        case_process = {
+            'pid': os.getpid(),
+            'invocation_id': invocation_id,
+            'row': arms[side][0],
+            'identity_sha256': benchmark_runtime.identity_sha256(
+                arm_identity_before[side]
+            ),
+        }
+        measured[side]['case_process'] = case_process
+        measured[side]['observation']['case_process'] = case_process
     return {
         'schema_version': PAIR_ARTIFACT_SCHEMA_VERSION,
         'artifact_type': 'gometry-paired-block',
@@ -397,7 +303,12 @@ def run_block(
         },
         'lead_order': list(order),
         'state_scope': 'shared-process-prepared-fixture',
-        'process': {'pid': os.getpid(), 'platform': platform.platform()},
+        'process': {
+            'pid': os.getpid(),
+            'invocation_id': invocation_id,
+            'platform': platform.platform(),
+            'executable': str(Path(sys.executable).resolve()),
+        },
         'timestamps_monotonic_ns': {
             'block_started': block_started,
             'block_ended': block_ended,
@@ -436,15 +347,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     if (args.gometry_receipt is None) != (args.receipt_sha256 is None):
         parser.error('--gometry-receipt and --receipt-sha256 must be supplied together')
-    receipt_binding = (
-        None
-        if args.gometry_receipt is None
-        else artifact_release.read_benchmark_receipt(
-            args.gometry_receipt,
-            args.receipt_sha256,
-        )
+    runtime = benchmark_runtime.admit_runtime(
+        args.gometry_receipt,
+        expected_receipt_sha256=args.receipt_sha256,
+        package_root=os.environ.get('GOMETRY_BENCH_PACKAGE_ROOT'),
     )
-    producer_identity(receipt_binding)
     operation = operation_for_row(args.gometry)
     if operation is None or operation.gometry != args.gometry:
         raise SystemExit(f'unknown gometry public row: {args.gometry}')
@@ -455,7 +362,8 @@ def main(argv: list[str] | None = None) -> int:
         lead=args.lead,
         warmups=args.warmups,
         repetitions=args.repetitions,
-        identity=lambda: producer_identity(receipt_binding),
+        identity=runtime.collect_identity,
+        completion=runtime.complete,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as stream:

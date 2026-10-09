@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ for _path in (_BENCHES / 'support',):
         sys.path.insert(0, str(_path))
 
 import benchmark_observation as bo  # noqa: E402
+import benchmark_runtime  # noqa: E402
 import summarize_bench as sb  # noqa: E402
 
 from tests.tooling._bench_support import producer  # noqa: E402
@@ -64,6 +66,21 @@ def _block(
     }
     for side, observation in observations.items():
         observation['producer_identity'] = provenance[side]
+    process_pid = 1234 + int.from_bytes(
+        hashlib.sha256(block_id.encode()).digest()[:4], 'big'
+    )
+    invocation_id = f'{block_id}-invocation'
+    case_processes = {
+        side: {
+            'pid': process_pid,
+            'invocation_id': invocation_id,
+            'row': provenance[side]['implementation']['row'],
+            'identity_sha256': benchmark_runtime.identity_sha256(provenance[side]),
+        }
+        for side in ('A', 'B')
+    }
+    for side, observation in observations.items():
+        observation['case_process'] = case_processes[side]
     return {
         'schema_version': 1,
         'artifact_type': 'gometry-paired-block',
@@ -78,6 +95,12 @@ def _block(
         },
         'lead_order': order,
         'state_scope': 'shared-process-prepared-fixture',
+        'process': {
+            'pid': process_pid,
+            'invocation_id': invocation_id,
+            'platform': 'test',
+            'executable': '/python',
+        },
         'timestamps_monotonic_ns': {'block_started': 1, 'block_ended': 20},
         'sampling': {
             'warmup_iterations': 1,
@@ -93,6 +116,7 @@ def _block(
                 'ended_monotonic_ns': 3 if lead == 'ab' else 13,
                 'provenance_before': provenance['A'],
                 'provenance_after': provenance['A'],
+                'case_process': case_processes['A'],
                 'observation': observations['A'],
             },
             'B': {
@@ -101,6 +125,7 @@ def _block(
                 'ended_monotonic_ns': 13 if lead == 'ab' else 3,
                 'provenance_before': provenance['B'],
                 'provenance_after': provenance['B'],
+                'case_process': case_processes['B'],
                 'observation': observations['B'],
             },
         },
@@ -176,6 +201,9 @@ def _with_identity(payload: dict, side: str, identity: dict) -> dict:
     arm = payload['arms'][side]
     arm['provenance_before'] = arm['provenance_after'] = identity
     arm['observation']['producer_identity'] = identity
+    arm['case_process']['row'] = identity['implementation']['row']
+    arm['case_process']['identity_sha256'] = benchmark_runtime.identity_sha256(identity)
+    arm['observation']['case_process'] = arm['case_process']
     return payload
 
 
@@ -219,6 +247,21 @@ def test_arm_identity_disagreement_fails_closed(
         _load([path])
 
 
+def test_arm_process_identity_must_match_the_producer_and_invocation(
+    tmp_path: Path,
+) -> None:
+    payload = _block()
+    payload['arms']['B']['case_process']['identity_sha256'] = '0' * 64
+    payload['arms']['B']['observation']['case_process'] = payload['arms']['B'][
+        'case_process'
+    ]
+    path = tmp_path / 'wrong-process-identity.json'
+    path.write_text(json.dumps(payload), encoding='utf-8')
+
+    with pytest.raises(SystemExit, match='process identity differs from its producer'):
+        _load([path])
+
+
 def test_summary_distinguishes_harness_commit_from_unbound_producer_commit() -> None:
     lines = sb.render(
         [],
@@ -244,6 +287,9 @@ def test_arm_metric_type_disagreement_fails_closed(tmp_path: Path) -> None:
     payload['arms']['B']['observation'] = _observation('scaling_ratio', 2.0)
     payload['arms']['B']['observation']['producer_identity'] = payload['arms']['B'][
         'provenance_before'
+    ]
+    payload['arms']['B']['observation']['case_process'] = payload['arms']['B'][
+        'case_process'
     ]
     path = tmp_path / 'bad-metric.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
@@ -382,5 +428,5 @@ def test_block_artifact_is_immutable_in_identity_fields(tmp_path: Path) -> None:
     mutated = copy.deepcopy(loaded)
     mutated['arms']['A']['row'] = 'shapely.other'
     path.write_text(json.dumps(mutated), encoding='utf-8')
-    with pytest.raises(SystemExit, match='operation and arm row identity'):
+    with pytest.raises(SystemExit, match='process identity differs from its producer'):
         _load([path])
