@@ -297,7 +297,8 @@ def test_features_constructor_and_field_prose_matches_the_python_declaration() -
     }
     assert features.members['geometries'].kind == 'attribute'
     assert 'One parsed geometry' in features.members['geometries'].prose
-    assert 'independent shallow copy' in features.members['properties'].prose
+    assert 'shallow-copied for each row' in features.members['properties'].prose
+    assert 'independent shallow copy per row' in initializer.prose
     assert 'non-boolean integer' in initializer.prose
     assert 'frozen slots' not in (ast.get_docstring(features.node) or '').lower()
     assert 'cold import' not in (ast.get_docstring(features.node) or '').lower()
