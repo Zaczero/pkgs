@@ -1481,7 +1481,7 @@ impl ExactSourceInventory {
         }
         let mut z = AxisValue::default();
         let mut m = AxisValue::default();
-        let geographic_frame = match context.domain() {
+        let source_frame = match context.domain() {
             crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
             crate::geometry::TopologyDomain::Cartesian => None,
         };
@@ -1510,11 +1510,11 @@ impl ExactSourceInventory {
                     })?;
                     let points = &record.points;
                     let [start, end] = *points;
-                    if let Some(frame) = geographic_frame {
+                    if let Some(source_frame) = source_frame {
                         let parameter = ExactRational::new(along.clone(), den.clone())?;
                         let request =
-                            SourceArcRequest::new(frame, points, axes, &parameter, || {
-                                frame
+                            SourceArcRequest::new(source_frame, points, axes, &parameter, || {
+                                source_frame
                                     .longitude()
                                     .chart_connection(start.x, end.x)
                                     .map(|connection| connection.retained())

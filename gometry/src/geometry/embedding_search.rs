@@ -675,6 +675,20 @@ impl EvaluationBudget {
         })
     }
 
+    #[cfg(test)]
+    pub(in crate::geometry) fn with_remaining_ticks_for_test(
+        operation: &'static str,
+        constructed: usize,
+        remaining_ticks: u128,
+    ) -> Result<Self> {
+        let mut budget = Self::new(operation, constructed)?;
+        let limit_ticks = budget.limit_ticks();
+        budget.spent_ticks = limit_ticks
+            .checked_sub(remaining_ticks)
+            .ok_or(ResourceError::SizeOverflow)?;
+        Ok(budget)
+    }
+
     pub(in crate::geometry) fn set_constructed(&mut self, constructed: usize) -> Result<()> {
         let constructed = u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
         let per_node = EVALUATIONS_PER_CONSTRUCTED_NODE
