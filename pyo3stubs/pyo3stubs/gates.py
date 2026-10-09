@@ -285,10 +285,10 @@ GATES: tuple[Gate, ...] = (
     Gate(
         name='doc-structure',
         collect=_collector('pyo3stubs.doc_structure'),
-        summary='documented prose describes the whole signature',
+        summary='documented prose covers callable signatures and descriptor results',
         success='doc structure OK',
         remedy='document the parameter, or the return, in the Rust `///`',
-        subject='documented callable',
+        subject='documented member',
     ),
     Gate(
         name='gen-docs-sync',
