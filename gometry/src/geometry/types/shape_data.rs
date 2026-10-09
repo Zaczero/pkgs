@@ -933,6 +933,10 @@ mod frame_cache_tests {
     use crate::geometry::{CoordSeq, LineSeq};
     use crate::test_support::allocation_count;
 
+    fn cached_measured_locate(shape: &PreparedPlan, point: Point) -> crate::error::Result<f64> {
+        shape.measured_line_index()?.locate(point, &PlanarMetric)
+    }
+
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
         let base = GeographicMetricKey::new_at_generation(
@@ -1070,13 +1074,10 @@ mod frame_cache_tests {
                 .expect("repeated measured interpolation")
         });
         let (located, locate_allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
-                .expect("measured locate")
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0)).expect("measured locate")
         });
         let (repeat_located, repeat_locate_allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0))
                 .expect("repeated measured locate")
         });
         assert_eq!(interpolation, repeat_interpolation);
@@ -1143,8 +1144,7 @@ mod frame_cache_tests {
         assert_eq!(last.m().unwrap().to_bits(), 2.0_f64.to_bits());
 
         let (located, allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0))
                 .expect("interior measured locate")
         });
         assert_eq!(located.to_bits(), 0.5_f64.to_bits());
@@ -1168,8 +1168,7 @@ mod frame_cache_tests {
         shape.measured_line_index().expect("measured line index");
 
         let (located, allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 1.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 1.0))
                 .expect("locate past duplicate segment")
         });
         assert_eq!(located.to_bits(), 1.0_f64.to_bits());
@@ -1204,8 +1203,7 @@ mod frame_cache_tests {
         ));
         shape.measured_line_index().expect("measured line index");
 
-        let located = shape
-            .line_locate_point_m_with(Point::new_raw_xy(minimum, 1.0), &PlanarMetric)
+        let located = cached_measured_locate(&shape, Point::new_raw_xy(minimum, 1.0))
             .expect("exact subnormal measured locate");
         assert_eq!(located.to_bits(), minimum.to_bits());
     }

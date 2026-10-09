@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::{env, fs};
 
 use pyo3::prelude::*;
-use sha2::{Digest, Sha256};
+use sha2::{Digest as _, Sha256};
 
 fn embedded_python_identity() -> serde_json::Value {
     Python::initialize();

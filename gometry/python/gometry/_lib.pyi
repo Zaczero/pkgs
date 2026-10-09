@@ -11685,12 +11685,11 @@ class SpatialIndex(Mapping[int, Geometry]):
         int
         """
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        """Pickle as one sparse row table containing only live geometries.
+        """Pickle live geometries with their stable handles and next identity.
 
         Handles are the public identity returned by ``query``/``nearest`` and
-        consumed by ``remove``/``__getitem__``. The row owner therefore writes
-        tombstones into the array's missing mask instead of replaying removed
-        source rows and filtering them after reconstruction.
+        consumed by ``remove``/``__getitem__``. Values are stored compactly in
+        handle order; removed and missing rows do not occupy pickle rows.
         """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...

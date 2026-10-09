@@ -406,10 +406,13 @@ pub(crate) fn unary_array_linref_with_model(
                 let row_index = present.logical();
                 let shape = present.row();
                 let data = crate::array::PreparedRow::transient(shape)?;
+                let cache = rows.frame_cache(row_index);
+                if let crate::crs::MetricModel::Geodesic { frame, .. } = model {
+                    crate::geometry::GeographicPrepared::try_new(&data, &cache, *frame)?;
+                }
                 if resolved.is_none() {
                     resolved = Some(crate::crs::ResolvedMetric::from_model(model)?);
                 }
-                let cache = rows.frame_cache(row_index);
                 let row = LinearReferenceRow {
                     lane: Lane::Array(row_index),
                     metric: resolved
