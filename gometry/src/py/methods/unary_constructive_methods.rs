@@ -1016,7 +1016,9 @@ Groups
 
 method_doc! {
     doc_split_antimeridian;
-    body: r"Split at the antimeridian. Parts that cross come back as multiple parts
+    body: r"Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+come back as multiple parts
 whose edges follow the seam — each side keeping its own seam sign — so the
 result remains a coordinate-planar longitude/latitude chart for topology.
 Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M

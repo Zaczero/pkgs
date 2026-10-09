@@ -43,6 +43,16 @@ impl Shape {
     /// coordinates exist only for this operation; source coordinates remain
     /// the storage authority.
     pub(crate) fn split_antimeridian_in_frame(&self, frame: GeographicFrame) -> Result<Self> {
+        if frame == GeographicFrame::crs84() {
+            let metric = std::sync::OnceLock::new();
+            let metric_access = || {
+                metric.get_or_try_init(|| {
+                    let model = crate::crs::metric_model(Some("OGC:CRS84"))?;
+                    crate::crs::GeodesicMetric::from_model(&model)
+                })
+            };
+            return self.split_antimeridian_in_frame_with_metric(frame, Some(&metric_access));
+        }
         self.split_antimeridian_in_frame_with_metric::<crate::crs::GeodesicMetric>(frame, None)
     }
 

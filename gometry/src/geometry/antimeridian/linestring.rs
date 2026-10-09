@@ -32,20 +32,33 @@ fn resolve_seam_aliases(coords: &mut [Point]) {
 
 /// Drop exact consecutive duplicates. One-ULP neighbors are distinct source
 /// vertices; Z/M differences also retain the source segment boundary.
+fn same_coordinate_values(left: Point, right: Point) -> bool {
+    left.x.to_bits() == right.x.to_bits()
+        && left.y.to_bits() == right.y.to_bits()
+        && left.z() == right.z()
+        && left.m() == right.m()
+}
+
 fn dedup_consecutive(coords: Vec<Point>) -> Vec<Point> {
     let mut result: Vec<Point> = Vec::with_capacity(coords.len());
     for point in coords {
         if let Some(last) = result.last()
-            && point.x.to_bits() == last.x.to_bits()
-            && point.y.to_bits() == last.y.to_bits()
-            && point.z() == last.z()
-            && point.m() == last.m()
+            && same_coordinate_values(*last, point)
         {
             continue;
         }
         result.push(point);
     }
     result
+}
+
+fn push_distinct_consecutive(coords: &mut Vec<Point>, point: Point) {
+    if coords
+        .last()
+        .is_none_or(|&last| !same_coordinate_values(last, point))
+    {
+        coords.push(point);
+    }
 }
 
 /// Walk a coordinate chain and split it at every antimeridian crossing.
@@ -218,12 +231,12 @@ fn split_transit<M: ChartMetric>(
     if delta > 180.0 && delta != 360.0 {
         // Westward exit: close on -180, reopen on 180.
         let (west, east) = crossing_points(start, end, frame, metric_access)?;
-        piece.push(west);
+        push_distinct_consecutive(piece, west);
         pieces.push(std::mem::replace(piece, vec![east]));
     } else if -delta > 180.0 && -delta != 360.0 {
         // Eastward exit: close on 180, reopen on -180.
         let (west, east) = crossing_points(end, start, frame, metric_access)?;
-        piece.push(east);
+        push_distinct_consecutive(piece, east);
         pieces.push(std::mem::replace(piece, vec![west]));
     }
     Ok(())

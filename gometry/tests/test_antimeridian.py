@@ -867,6 +867,28 @@ def test_split_antimeridian_ordinate_policy(
         gm.from_wkt(pole_wkt, crs=4326).split_antimeridian()
 
 
+def test_crs_free_split_antimeridian_uses_crs84_arclength_for_zm() -> None:
+    line = gm.LineString(
+        [(170.0, 0.0), (-170.0, 60.0)],
+        z=[0.0, 100.0],
+        m=[1000.0, 3000.0],
+    )
+
+    split = line.split_antimeridian()
+
+    assert split.crs is None
+    seam = [
+        coordinate
+        for part in split.parts
+        for coordinate in part.coords
+        if abs(coordinate[0]) == 180.0
+    ]
+    assert len(seam) == 2
+    expected = (50.43879822149836, 2008.7759644299672)
+    for coordinate in seam:
+        assert coordinate[2:] == pytest.approx(expected, abs=2.0e-9)
+
+
 def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
     band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
     split = band.split_antimeridian()
