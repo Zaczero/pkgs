@@ -30,10 +30,10 @@ if TYPE_CHECKING:
     S2_CELLS = gm.s2_cells([1.0], [2.0], level=9)
 
     # S2 levels and adaptive controls use integer parameters.
-    gm.s2_cover(POLY, '8')  # type: ignore[arg-type]
-    gm.s2_cover(POLY, level='8')  # type: ignore[arg-type]
-    gm.s2_cover(POLY, min_level='8')  # type: ignore[arg-type]
-    gm.s2_cover(POLY, level_mod=True)  # type: ignore[arg-type]
+    gm.s2_cover(POLY, '8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, min_level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level_mod=True)  # type: ignore[call-overload]
 
     # Domain families are flat, prefix-discoverable top-level functions;
     # namespace spellings are deliberately not retained for this first release.

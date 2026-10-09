@@ -928,14 +928,17 @@ def collect_errors() -> list[str]:
             annotations.append(variant.returns)
             # Private TypeAlias names are implementation details; their expanded
             # members, rather than the alias spelling, determine the public type.
-            private = sorted({
-                expr.name
-                for annotation in annotations
-                for expr in _expressions(
-                    expand_annotation(copy.deepcopy(annotation), aliases)
+            private_names = set()
+            for annotation in annotations:
+                expressions = _expressions(annotation)
+                if any(expr.name.startswith('_') for expr in expressions):
+                    expressions = _expressions(
+                        expand_annotation(copy.deepcopy(annotation), aliases)
+                    )
+                private_names.update(
+                    expr.name for expr in expressions if expr.name.startswith('_')
                 )
-                if expr.name.startswith('_')
-            })
+            private = sorted(private_names)
             if private:
                 errors.append(
                     f'{function.canonical_path}: private annotations {private}'

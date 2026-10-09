@@ -35,8 +35,10 @@ _STUB_LOCAL = (
     '_FloatArray1D',
     '_FloatColumn1D',
     '_FloatScalarInput',
+    '_GeohashSetInput',
     '_GeoJsonScalar',
     '_GeometryLike',
+    '_H3SetInput',
     '_IdArray',
     '_IndexLane',
     '_IntArray0D',
@@ -45,6 +47,8 @@ _STUB_LOCAL = (
     '_IntScalar',
     '_IntScalarInput',
     '_RingsInput',
+    '_S2SetInput',
+    '_TileSetInput',
 )
 _ERROR_CLASSES = (
     'CRSError',
