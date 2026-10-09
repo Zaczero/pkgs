@@ -32,10 +32,10 @@
 //! `&ProjContext` vs E0308 for `*mut c_void`/`*mut u8`).
 
 use std::collections::{BTreeSet, HashSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
+use std::{fs, io};
 
 use serde_json::Value;
 
@@ -49,6 +49,25 @@ struct Fixture {
     /// (top-level message, span labels, child notes). Names the guarded
     /// property so a same-code different-message regression cannot pass.
     message_needle: &'static str,
+}
+
+struct FixtureOutputs {
+    metadata: PathBuf,
+    stdout: PathBuf,
+    stderr: PathBuf,
+    dep_info: PathBuf,
+}
+
+impl FixtureOutputs {
+    fn under(invocation_dir: &Path, fixture_rel: &str) -> Self {
+        let dep_info = invocation_dir.join(fixture_rel).with_extension("d");
+        Self {
+            metadata: dep_info.with_extension("rmeta"),
+            stdout: dep_info.with_extension("stdout"),
+            stderr: dep_info.with_extension("stderr"),
+            dep_info,
+        }
+    }
 }
 
 /// Explicit manifest — discovery must match this set exactly.
@@ -362,6 +381,47 @@ fn rustc_fixture(
         .output()
 }
 
+fn allocate_invocation_dir(root: &Path) -> io::Result<PathBuf> {
+    fs::create_dir_all(root)?;
+    let mut suffix = 0_u64;
+    loop {
+        let path = root.join(format!("{}-{suffix}", std::process::id()));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                suffix = suffix
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("invocation suffix space exhausted"))?;
+            },
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn retain_rustc_output(
+    fx: &Fixture,
+    outputs: &FixtureOutputs,
+    output: &std::process::Output,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    if let Err(error) = fs::write(&outputs.stdout, &output.stdout) {
+        errors.push(format!("stdout {}: {error}", outputs.stdout.display()));
+    }
+    if let Err(error) = fs::write(&outputs.stderr, &output.stderr) {
+        errors.push(format!("stderr {}: {error}", outputs.stderr.display()));
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{}: failed to retain rustc output: {}\n  stdout={}\n  stderr={}",
+        fx.property,
+        errors.join("; "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
 fn check_coded_sites(fx: &Fixture, sites: &[CodedSite], fixture_path: &Path) -> Result<(), String> {
     let codes: BTreeSet<&str> = sites.iter().map(|s| s.code.as_str()).collect();
     if codes.len() != 1 || !codes.contains(fx.code) {
@@ -416,7 +476,7 @@ fn check_coded_sites(fx: &Fixture, sites: &[CodedSite], fixture_path: &Path) -> 
     Ok(())
 }
 
-fn run_fixture(fx: &Fixture, src: &Path, out_dir: &Path) -> Result<(), String> {
+fn run_fixture(fx: &Fixture, src: &Path, outputs: &FixtureOutputs) -> Result<(), String> {
     let fixture_path = src.join(fx.rel);
     if !fixture_path.is_file() {
         return Err(format!(
@@ -426,15 +486,24 @@ fn run_fixture(fx: &Fixture, src: &Path, out_dir: &Path) -> Result<(), String> {
         ));
     }
 
-    let stem = fixture_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("fixture");
-    let dep_path = out_dir.join(format!("{stem}.d"));
-    let meta_path = out_dir.join(format!("{stem}.rmeta"));
+    let output_dir = outputs.dep_info.parent().ok_or_else(|| {
+        format!(
+            "{}: fixture output path has no parent: {}",
+            fx.property,
+            outputs.dep_info.display()
+        )
+    })?;
+    fs::create_dir_all(output_dir).map_err(|error| {
+        format!(
+            "{}: failed to create fixture output directory {}: {error}",
+            fx.property,
+            output_dir.display()
+        )
+    })?;
 
-    let output = rustc_fixture(&fixture_path, &dep_path, &meta_path)
+    let output = rustc_fixture(&fixture_path, &outputs.dep_info, &outputs.metadata)
         .map_err(|e| format!("{}: failed to spawn rustc: {e}", fx.property))?;
+    retain_rustc_output(fx, outputs, &output)?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -463,31 +532,32 @@ fn run_fixture(fx: &Fixture, src: &Path, out_dir: &Path) -> Result<(), String> {
     }
     check_coded_sites(fx, &sites, &fixture_path)?;
 
-    let prod = production_deps(&dep_path, src, &fixture_path);
+    let prod = production_deps(&outputs.dep_info, src, &fixture_path);
     if prod.is_empty() {
         return Err(format!(
             "{}: expected at least one production src/ dep outside compile_fail/; dep-info empty or fixture-only\n  fixture={}\n  depfile={}",
             fx.property,
             fx.rel,
-            dep_path.display()
+            outputs.dep_info.display()
         ));
     }
     Ok(())
 }
 
-fn failure_with_deps(fx: &Fixture, src: &Path, out_dir: &Path, err: &str) -> String {
+fn failure_with_deps(fx: &Fixture, src: &Path, outputs: &FixtureOutputs, err: &str) -> String {
     let fixture_path = src.join(fx.rel);
-    let stem = fixture_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("fixture");
-    let dep_path = out_dir.join(format!("{stem}.d"));
-    let prod = production_deps(&dep_path, src, &fixture_path);
+    let prod = production_deps(&outputs.dep_info, src, &fixture_path);
     let prod_names: Vec<String> = prod
         .iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect();
-    format!("{err}\n  production deps={prod_names:?}")
+    format!(
+        "{err}\n  production deps={prod_names:?}\n  dep-info={}\n  metadata={}\n  stdout={}\n  stderr={}",
+        outputs.dep_info.display(),
+        outputs.metadata.display(),
+        outputs.stdout.display(),
+        outputs.stderr.display()
+    )
 }
 
 #[test]
@@ -503,16 +573,22 @@ fn compile_fail_fixtures_guard_production() {
         "compile_fail discovery must match the property/code manifest\n  discovered={discovered_rels:?}\n  manifest={manifest_rels:?}"
     );
 
-    let out_dir = std::env::var_os("CARGO_TARGET_DIR")
+    let output_root = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| manifest_dir().join("target"), PathBuf::from)
         .join("compile_fail_gate");
-    fs::create_dir_all(&out_dir).expect("create compile_fail_gate output dir");
+    let invocation_dir = allocate_invocation_dir(&output_root).unwrap_or_else(|error| {
+        panic!(
+            "compile_fail_gate: failed to allocate invocation directory under {}: {error}",
+            output_root.display()
+        )
+    });
 
     let start = Instant::now();
     let mut failures = Vec::new();
     for fx in MANIFEST {
-        if let Err(e) = run_fixture(fx, &src, &out_dir) {
-            failures.push(failure_with_deps(fx, &src, &out_dir, &e));
+        let outputs = FixtureOutputs::under(&invocation_dir, fx.rel);
+        if let Err(error) = run_fixture(fx, &src, &outputs) {
+            failures.push(failure_with_deps(fx, &src, &outputs, &error));
         }
     }
     let elapsed = start.elapsed();
@@ -523,10 +599,20 @@ fn compile_fail_fixtures_guard_production() {
         elapsed.as_secs_f64()
     );
 
+    if failures.is_empty() {
+        fs::remove_dir_all(&invocation_dir).unwrap_or_else(|error| {
+            panic!(
+                "compile_fail_gate: passed, but could not remove owned invocation directory {}: {error}",
+                invocation_dir.display()
+            )
+        });
+    }
+
     assert!(
         failures.is_empty(),
-        "compile_fail_gate failed for {} fixture(s):\n\n{}",
+        "compile_fail_gate failed for {} fixture(s); evidence retained in {}\n\n{}",
         failures.len(),
+        invocation_dir.display(),
         failures.join("\n\n")
     );
 }

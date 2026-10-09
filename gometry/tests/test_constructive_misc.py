@@ -718,13 +718,15 @@ def test_geographic_envelope_preserves_its_authentic_longitude_endpoints() -> No
         [0.1, 1.0],
     ]
     for envelope in (source.envelope(), gm.GeometryArray([source]).envelope()[0]):
-        np.testing.assert_array_equal(gm.get_coordinates(envelope), expected)
+        np.testing.assert_array_equal(
+            np.asarray(envelope.coords, dtype=np.float64), expected
+        )
 
 
 def test_wrapped_geographic_envelope_uses_the_canonical_seam_vertex() -> None:
     source = gm.LineString([(170.0, -10.0), (-170.0, 10.0)], crs=4326)
     np.testing.assert_array_equal(
-        gm.get_coordinates(source.envelope()),
+        np.asarray(source.envelope().coords, dtype=np.float64),
         [
             [170.0, -10.0],
             [-180.0, -10.0],
@@ -753,7 +755,9 @@ def test_full_longitude_envelope_uses_canonical_quarter_turn_vertices() -> None:
         [-180.0, -10.0],
     ]
     for envelope in (source.envelope(), gm.GeometryArray([source]).envelope()[0]):
-        np.testing.assert_array_equal(gm.get_coordinates(envelope), expected)
+        np.testing.assert_array_equal(
+            np.asarray(envelope.coords, dtype=np.float64), expected
+        )
 
 
 def test_simplify_collapse_drops_degenerate_rings_not_invalid() -> None:

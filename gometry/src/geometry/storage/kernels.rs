@@ -12,8 +12,7 @@ use std::num::NonZeroU32;
 use super::builder::PackedColumnBuilder;
 use super::packed_columns::{
     LineColumns, PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns,
-    PointColumns, PointRowLayout, PointRows, PolygonColumns, SegmentedRuns, XyColumns, batch_err,
-    row_err,
+    PointColumns, PolygonColumns, SegmentedRuns, XyColumns, batch_err, row_err,
 };
 use crate::crs;
 use crate::error::Result;
@@ -670,22 +669,16 @@ pub(crate) fn ensure_geographic_columns_present(
     })
 }
 
-/// Transform present packed points once, then rebuild the selected point
-/// column. Missing placeholders never cross the transform boundary; compact
-/// inputs return present-only coordinates and row-aligned inputs are rebuilt
-/// with their placeholders in one output allocation.
+/// Transform the present-only payload of nullable packed points. Array
+/// publication restores the logical mask after the transformed column returns.
 pub(crate) fn map_masked_point_columns_to_crs(
     transformer: &crs::TransformPlan,
-    coords: &CoordSeq,
-    selection: RowSelectionRef<'_>,
-    missing: &ValidityMask,
-    layout: PointRowLayout,
+    points: &PointColumns<'_>,
 ) -> std::result::Result<CoordSeq, crate::crs::TransformFailure> {
-    let rows = PointRows::new(coords.len(), selection, Some(missing), layout);
+    let coords = points.coords();
+    let rows = points.rows();
     let present_count = rows.present_count();
-    let compact = rows.is_compact();
-    storage::admit_packed_coord_count(if compact { present_count } else { rows.len() })
-        .map_err(crate::crs::TransformFailure::from)?;
+    storage::admit_packed_coord_count(present_count).map_err(crate::crs::TransformFailure::from)?;
     let mut xs = Vec::with_capacity(present_count);
     let mut ys = Vec::with_capacity(present_count);
     let mut zs = coords.zs().map(|_| Vec::with_capacity(present_count));
@@ -711,35 +704,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
         transformer.transform_coordinates_indexed(&mut xs, &mut ys, zt)?;
     }
 
-    if compact {
-        return Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?);
-    }
-
-    let mut output = CoordSeqBuilder::with_capacity(coords.axes(), rows.len());
-    let mut xs = xs.into_iter();
-    let mut ys = ys.into_iter();
-    let mut zs = zs.map(Vec::into_iter);
-    let mut ms = ms.map(Vec::into_iter);
-    for (_, physical) in rows.cursor() {
-        if physical.is_some() {
-            output.push_xyzm(
-                xs.next().expect("present point has transformed X"),
-                ys.next().expect("present point has transformed Y"),
-                zs.as_mut()
-                    .map(|values| values.next().expect("present point has transformed Z")),
-                ms.as_mut()
-                    .map(|values| values.next().expect("present point has transformed M")),
-            );
-        } else {
-            output.push_xyzm(
-                f64::NAN,
-                f64::NAN,
-                coords.zs().map(|_| f64::NAN),
-                coords.ms().map(|_| f64::NAN),
-            );
-        }
-    }
-    Ok(output.finish()?)
+    Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
 }
 
 /// Dispatch a packed-column reduce over line or polygon storage only — the
@@ -1188,26 +1153,11 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 let transform = linear.at((pivot_x, pivot_y)).map_err(batch_err)?;
                 let rows = point_columns.rows();
                 let axes = point_columns.coords().axes();
-                let capacity = if rows.is_compact() {
-                    rows.present_count()
-                } else {
-                    rows.len()
-                };
+                let capacity = rows.present_count();
                 storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
                 let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
-                let mut has_missing = false;
                 for (logical, physical) in rows.cursor() {
                     let Some(physical) = physical else {
-                        if rows.is_compact() {
-                            continue;
-                        }
-                        has_missing = true;
-                        builder.push(Point::new_raw_axes(
-                            f64::NAN,
-                            f64::NAN,
-                            ZOrdinate(axes.has_z().then_some(f64::NAN)),
-                            MOrdinate(axes.has_m().then_some(f64::NAN)),
-                        ));
                         continue;
                     };
                     let point = point_columns.coords().point_at(physical);
@@ -1219,13 +1169,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                             .map_err(|error| row_err(logical, error))?,
                     );
                 }
-                let coords = if rows.is_compact() || !has_missing {
-                    builder.finish().map_err(batch_err)?
-                } else {
-                    builder
-                        .finish_with_missing_placeholders()
-                        .map_err(batch_err)?
-                };
+                let coords = builder.finish().map_err(batch_err)?;
                 Ok(PackedColumnOutput::Points(coords))
             },
         },

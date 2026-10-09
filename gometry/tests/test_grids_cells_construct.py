@@ -263,7 +263,7 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
     minx, miny, maxx, maxy = hemisphere.bounds
     assert (minx, maxx) == (0.0, -180.0)
     midpoint = 90.0
-    assert gm.get_coordinates(hemisphere).tolist() == [
+    assert np.asarray(hemisphere.coords, dtype=np.float64).tolist() == [
         [minx, miny],
         [midpoint, miny],
         [-180.0, miny],
@@ -401,6 +401,98 @@ def test_empty_cell_array_neighbors_children_are_empty_groups() -> None:
     children = cells.children()
     assert isinstance(neighbors, gm.Groups) and len(neighbors) == 0
     assert isinstance(children, gm.Groups) and len(children) == 0
+
+
+def test_cell_array_outputs_preserve_nullable_reversed_duplicate_gathers() -> None:
+    source = gm.CellArray(
+        [
+            gm.H3Cell(-122.4194, 37.7749, resolution=7),
+            None,
+            gm.H3Cell(-122.4194, 37.7749, resolution=8),
+            gm.H3Cell(-122.4194, 37.7749, resolution=9),
+        ],
+        type=gm.H3Cell,
+    )
+    cells = source[::-1][[0, 1, 2, 3, 1]]
+    expected = list(cells)
+
+    centers = cells.center
+    assert centers.crs == 'OGC:CRS84'
+    assert not centers.coords.x.flags.writeable
+    assert not centers.coords.y.flags.writeable
+    assert centers.to_wkt() == [
+        None if cell is None else cell.center.to_wkt() for cell in expected
+    ]
+    polygons = cells.polygon
+    assert polygons.crs == 'OGC:CRS84'
+    assert polygons.to_wkt() == [
+        None if cell is None else cell.polygon.to_wkt() for cell in expected
+    ]
+
+    parents = cells.parent()
+    assert list(parents) == [
+        None if cell is None else cell.parent() for cell in expected
+    ]
+    target = 10
+    counts = cells.children_count(target)
+    expected_counts = np.array([
+        np.nan if cell is None else cell.children_count(target) for cell in expected
+    ])
+    np.testing.assert_array_equal(counts, expected_counts)
+
+
+def test_cell_array_parent_and_count_parse_depth_once_for_present_rows() -> None:
+    class CountingIndex:
+        def __init__(self, value: int) -> None:
+            self.value = value
+            self.calls = 0
+
+        def __index__(self) -> int:
+            self.calls += 1
+            return self.value
+
+    cells = gm.CellArray(
+        [
+            gm.H3Cell(-122.4194, 37.7749, resolution=7),
+            None,
+            gm.H3Cell(-122.4194, 37.7749, resolution=8),
+        ],
+        type=gm.H3Cell,
+    )[::-1]
+    target = CountingIndex(6)
+    assert list(cells.parent(target)) == [
+        cells[0].parent(target.value),
+        None,
+        cells[2].parent(target.value),
+    ]
+    assert target.calls == 1
+
+    target = CountingIndex(10)
+    counts = cells.children_count(target)
+    assert target.calls == 1
+    np.testing.assert_array_equal(counts, [49.0, np.nan, 343.0])
+
+    target = CountingIndex(6)
+    empty = gm.CellArray([], type=gm.H3Cell)
+    missing = gm.CellArray([None, None], type=gm.H3Cell)
+    assert len(empty.parent(target)) == 0
+    assert np.isnan(empty.children_count(target)).size == 0
+    assert list(missing.parent(target)) == [None, None]
+    assert np.isnan(missing.children_count(target)).all()
+    assert target.calls == 0
+
+
+def test_cell_array_parent_and_count_keep_root_and_max_depth_errors() -> None:
+    root = gm.CellArray([gm.H3Cell(-122.4194, 37.7749, resolution=0)], type=gm.H3Cell)
+    with pytest.raises(ValueError, match='minimum-resolution cell has no parent'):
+        root.parent()
+
+    maximum = gm.CellArray(
+        [gm.H3Cell(-122.4194, 37.7749, resolution=15)], type=gm.H3Cell
+    )
+    np.testing.assert_array_equal(maximum.children_count(), [0.0])
+    with pytest.raises(ValueError, match='must be >='):
+        maximum.children_count(14)
 
 
 def test_max_depth_cell_array_children_are_empty_rows() -> None:

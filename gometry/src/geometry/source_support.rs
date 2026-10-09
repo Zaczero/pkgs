@@ -2606,7 +2606,7 @@ mod tests {
         let noded = crossing
             .node_with_context(
                 crate::geometry::Strictness::Strict,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap();
         let expected = shape("MULTILINESTRING ((0 0,1 1),(1 1,2 2),(0 2,1 1),(1 1,2 0))");
@@ -2618,7 +2618,7 @@ mod tests {
             .unwrap()
             .node_with_context(
                 crate::geometry::Strictness::Strict,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap_err();
         assert!(
@@ -2642,7 +2642,7 @@ mod tests {
             point
                 .node_with_context(
                     crate::geometry::Strictness::Strict,
-                    crate::geometry::SourceArcContext::cartesian(),
+                    &crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap(),
             Shape::Empty(

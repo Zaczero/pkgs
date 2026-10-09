@@ -9,7 +9,6 @@ use crate::crs::MetricModel;
 use crate::dispatch::metric::MetricScratch;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::{Lane, kernels};
-use crate::geometry::storage::packed_columns::resolve_packed_columns;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef,
 };
@@ -216,8 +215,7 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
         Operation::IsRing | Operation::IsSimple | Operation::IsValid
     ) && let TopologyDomain::Geographic(frame) = domain
     {
-        let columns =
-            resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())?;
+        let columns = array.packed_columns()?;
         if !columns.faithful_geographic_predicates(frame) {
             for row in array.row_operation().present_rows() {
                 let route = match row.row().with_shape(|shape| {
@@ -427,8 +425,8 @@ pub(crate) fn try_unary_packed_array(
             let result = match resolver.resolve_topology_ctx(&array.frame, &mut scratch) {
                 Ok((domain, metric)) => {
                     let rect = match domain {
-                        TopologyDomain::Geographic(_) => {
-                            Bounds::new_geographic(*minx, *miny, *maxx, *maxy)
+                        TopologyDomain::Geographic(frame) => {
+                            Bounds::new_geographic(frame, *minx, *miny, *maxx, *maxy)
                         },
                         TopologyDomain::Cartesian => Bounds::new(*minx, *miny, *maxx, *maxy),
                     };

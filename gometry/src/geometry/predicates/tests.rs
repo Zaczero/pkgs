@@ -489,7 +489,7 @@ mod convex_tests {
             .repair_with_context(
                 RepairMethod::Linework,
                 false,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap();
         assert_eq!(crate::io::to_wkt(&repaired).unwrap(), "POLYGON EMPTY");
@@ -504,14 +504,14 @@ mod convex_tests {
             .repair_with_context(
                 RepairMethod::Linework,
                 false,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap();
         let structure = overlap
             .repair_with_context(
                 RepairMethod::Structure,
                 false,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap();
         assert_eq!(linework.geometry_type(), "Polygon");
@@ -528,7 +528,7 @@ mod convex_tests {
                 .repair_with_context(
                     RepairMethod::Linework,
                     false,
-                    crate::geometry::SourceArcContext::cartesian(),
+                    &crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap()
                 .area(),
@@ -543,7 +543,7 @@ mod convex_tests {
             &bowtie,
             TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
             RepairMethod::Linework,
-            crate::geometry::SourceArcContext::new(
+            &crate::geometry::SourceArcContext::new(
                 TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
                 None,
             ),

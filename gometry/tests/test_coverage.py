@@ -5,6 +5,7 @@ and cleaning (the GEOS/PostGIS coverage model over a GeometryArray).
 import math
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -606,7 +607,7 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
     assert not gm.coverage_is_valid(near)
     unchanged_default = gm.coverage_clean(near)
     assert gm.coverage_is_valid(unchanged_default)
-    coordinates = gm.get_coordinates(unchanged_default)
+    coordinates = np.asarray(unchanged_default.coords, dtype=np.float64)
     assert sorted(set(coordinates[:, 0])) == [
         0.0,
         1.0,
@@ -714,7 +715,7 @@ def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
     expected_bits = {tuple(row) for row in expected.view(np.uint64)}
     shared_bits = []
     for geometry in out:
-        coordinates = gm.get_coordinates(geometry.force_2d())
+        coordinates = np.asarray(geometry.force_2d().coords, dtype=np.float64)
         selected = coordinates[
             (coordinates[:, 0] == 1.2)
             & ((coordinates[:, 1] == 0.0) | (coordinates[:, 1] == 1.0))

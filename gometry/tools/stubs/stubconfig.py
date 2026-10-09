@@ -5,6 +5,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+_TOOLS_ROOT = Path(__file__).resolve().parents[1]
+if str(_TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_ROOT))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
+_STUBS = Path(__file__).resolve().parent
+ROOT = _TOOLS_ROOT.parent
+require_runtime(ROOT)
+
 import gometry as gm
 from pyo3stubs import (
     DualityConfig,
@@ -14,14 +25,6 @@ from pyo3stubs import (
     TokenConfig,
 )
 
-_TOOLS_ROOT = Path(__file__).resolve().parents[1]
-if str(_TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_ROOT))
-from _gatelib import prepend_tools_import_paths
-
-prepend_tools_import_paths()
-_STUBS = Path(__file__).resolve().parent
-ROOT = _TOOLS_ROOT.parent
 STUB = ROOT / 'python' / 'gometry' / '_lib.pyi'
 SRC = ROOT / 'src'
 
@@ -33,6 +36,41 @@ GEOMETRY_LEAF = MacroExport(macro='geometry_leaf', rust=0, python=1)
 # (empty since gm.index was folded into the SpatialIndex constructor — the
 # 2026-07 form review resolved the index name collision at the source.)
 KNOWN_DIVERGENCES: dict[str, str] = {}
+
+UNINSPECTABLE_ALLOWLIST: dict[str, str] = {
+    'AccuracyWarning': (
+        'UserWarning subclass created without a custom constructor; '
+        'it keeps the standard exception args semantics.'
+    ),
+    'CRSError': (
+        'GeometryError subclass created without a custom constructor; '
+        'it inherits the standard ValueError-derived exception args.'
+    ),
+    'CRSMismatchError': (
+        'CRSError subclass created without a custom constructor; '
+        'it inherits the standard ValueError-derived exception args.'
+    ),
+    'GeometryError': (
+        'ValueError subclass created without a custom constructor; '
+        'it uses the standard exception args semantics.'
+    ),
+    'GeometryTypeError': (
+        'Dynamic GeometryError/TypeError subclass with only doc and module '
+        'attributes; it inherits the standard exception args constructor.'
+    ),
+    'InvalidGeometryError': (
+        'GeometryError subclass created without a custom constructor; '
+        'it inherits the standard ValueError-derived exception args.'
+    ),
+    'ParseError': (
+        'GeometryError subclass created without a custom constructor; '
+        'it inherits the standard ValueError-derived exception args.'
+    ),
+    'TransformError': (
+        'CRSError subclass created without a custom constructor; '
+        'it inherits the standard ValueError-derived exception args.'
+    ),
+}
 
 EXTRA_IGNORED_TYPE_NAMES = frozenset({'_GeometryT', '_GeometryT_co', '_CellT'})
 
@@ -52,6 +90,7 @@ def config() -> StubConfig:
         leak_allowlist={
             'NativeBoundaryIterator': 'cfg(test)-only allocation-boundary fixture',
         },
+        uninspectable_allowlist=UNINSPECTABLE_ALLOWLIST,
         surface=SurfaceConfig(
             targets=SURFACES,
             known_divergences=KNOWN_DIVERGENCES,
@@ -65,6 +104,7 @@ def config() -> StubConfig:
         typecheck_targets=(ROOT / 'python' / 'gometry',),
         extra_ignored_type_names=EXTRA_IGNORED_TYPE_NAMES,
         macro_exports=(GEOMETRY_LEAF,),
+        constructor_doc_macros=frozenset({'h3_index_array_common'}),
         # Array method returns are DERIVED from the scalar contract.
         duality=DualityConfig(pairs=(('Geometry', 'GeometryArray'),)),
         tokens=TokenConfig(

@@ -1,0 +1,48 @@
+{% extends "_base/class.html.jinja" %}
+
+{% block signature scoped %}
+  {% set constructor = class.extra.get("gometry", {}).get("constructor") %}
+  {% if constructor and config.separate_signature %}
+    <details open class="doc-overloads-details">
+      <summary>Accepted call forms</summary>
+      <div class="doc-overloads" role="group" aria-label="Accepted call forms">
+        {% for form in constructor.overloads %}
+          {% set positional_only = namespace(any=False, all=True) %}
+          {% for parameter in form.parameters %}
+            {% set positional_only.any = true %}
+            {% if parameter.kind.value != "positional-only" %}
+              {% set positional_only.all = false %}
+            {% endif %}
+          {% endfor %}
+          {% set signature %}
+            {% filter format_signature(form, config.line_length, annotations=True, crossrefs=config.signature_crossrefs) %}
+              {{ class.name }}
+            {% endfilter %}
+          {% endset %}
+          {% if positional_only.any and positional_only.all %}
+            {# The installed signature template omits a trailing positional-only slash. #}
+            {{ signature | replace('</span><span class="p">)</span>', '</span><span class="p">,</span> <span class="o">/</span><span class="p">)</span>' | safe, 1) }}
+          {% else %}
+            {{ signature }}
+          {% endif %}
+        {% endfor %}
+      </div>
+    </details>
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock signature %}
+
+{% block docstring scoped %}
+  {% set constructor = class.extra.get("gometry", {}).get("constructor") %}
+  {% if constructor %}
+    {% with
+      obj=class,
+      docstring_sections=constructor.extra["gometry"]["docstring_sections"]
+    %}
+      {% include "docstring.html.jinja" with context %}
+    {% endwith %}
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock docstring %}

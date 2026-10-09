@@ -534,7 +534,7 @@ impl Shape {
     pub(crate) fn polygonize_with_context(
         &self,
         strict: bool,
-        context: SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
         Self::polygonize_all_with_context(&[self], strict, context)
     }
@@ -549,14 +549,14 @@ impl Shape {
         Self::polygonize_all_with_context(
             shapes,
             strict,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
     }
 
     pub(crate) fn polygonize_all_with_context<S: Borrow<Self>>(
         shapes: &[S],
         strict: bool,
-        context: SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
         let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
             axes.union(Borrow::<Self>::borrow(shape).axes())
@@ -586,14 +586,14 @@ impl Shape {
         Self::build_area_all_with_context(
             shapes,
             strict,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
     }
 
     pub(crate) fn build_area_all_with_context(
         shapes: &[&Self],
         strict: bool,
-        context: SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
         let declared_axes = shapes
             .iter()
@@ -618,13 +618,13 @@ impl Shape {
     /// returned polygons share axes, or a `GeometryCollection` when their axes
     /// differ.
     pub fn build_area(&self, strict: bool) -> Result<Self> {
-        self.build_area_with_context(strict, crate::geometry::SourceArcContext::cartesian())
+        self.build_area_with_context(strict, &crate::geometry::SourceArcContext::cartesian())
     }
 
     pub(crate) fn build_area_with_context(
         &self,
         strict: bool,
-        context: SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         let polygons: Vec<Polygon> = Self::build_area_all_with_context(&[self], strict, context)?
             .into_iter()
@@ -670,14 +670,14 @@ impl Shape {
         Self::polygonize_full_all_with_context(
             shapes,
             strict,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
     }
 
     pub(crate) fn polygonize_full_all_with_context<S: Borrow<Self>>(
         shapes: &[S],
         strict: bool,
-        context: SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<PolygonizeFull> {
         let declared_axes = shapes.iter().fold(CoordinateAxes::XY, |axes, shape| {
             axes.union(Borrow::<Self>::borrow(shape).axes())

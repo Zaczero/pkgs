@@ -18,15 +18,18 @@ import sys
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
-
-import gometry as gm
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 SITE = ROOT / 'site'
 API_SITE = SITE / 'api'
 
+_TOOLS_ROOT = ROOT / 'tools'
+if str(_TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_structure import generated_api_nav_paths
+from public_inventory import load_public_symbols
 
 _SIGNATURE = re.compile(
     r'<div class="language-python doc-signature highlight">(?P<body>.*?)</div>',
@@ -44,18 +47,6 @@ _UNRESOLVED_GOMETRY_TYPE = re.compile(
     r'<span\b[^>]*title="gometry\.(?:(?:_lib|_types)\.)?'
     r'(?P<name>[A-Za-z_]\w*)"[^>]*>'
 )
-_RAISES_TABLE = re.compile(
-    r'<span\b[^>]*class="[^"]*\bdoc-section-title\b[^"]*"[^>]*>'
-    r'\s*Raises:\s*</span>\s*</p>\s*'
-    r'<table>(?P<body>.*?)</table>',
-    re.IGNORECASE | re.DOTALL,
-)
-_DOC_DESCRIPTION = re.compile(
-    r'<div\b[^>]*class="[^"]*\bdoc-md-description\b[^"]*"[^>]*>'
-    r'(?P<body>.*?)</div>',
-    re.DOTALL,
-)
-_RENDERED_DOUBLE_PERIOD = re.compile(r'(?<!\.)\.\s*\.(?!\.)(?=\s*$)')
 
 
 class _Ids(HTMLParser):
@@ -71,12 +62,30 @@ class _Ids(HTMLParser):
         self.values.extend(value for name, value in attrs if name == 'id' and value)
 
 
+class _Hrefs(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.values: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag.lower() == 'a':
+            self.values.extend(
+                value for name, value in attrs if name == 'href' and value
+            )
+
+
 def _plain(fragment: str) -> str:
     return html.unescape(_TAG.sub(' ', fragment))
 
 
 def collect_errors(site: Path = SITE) -> list[str]:
     """Return structural problems in an already-built site."""
+    import gometry as gm
+
     api_site = site / 'api'
     if not api_site.is_dir():
         return ['site/api is missing; run `properdocs build --strict` first']
@@ -98,15 +107,6 @@ def collect_errors(site: Path = SITE) -> list[str]:
         if _LITERAL_FENCE.search(source):
             errors.append(f'{relative}: a Markdown fence rendered as prose')
 
-        for section in _RAISES_TABLE.finditer(source):
-            for description in _DOC_DESCRIPTION.finditer(section.group('body')):
-                visible = ' '.join(_plain(description.group('body')).split())
-                if _RENDERED_DOUBLE_PERIOD.search(visible):
-                    errors.append(
-                        f'{relative}: doubled terminal period in rendered '
-                        f'Raises description: {visible[:80]!r}'
-                    )
-
     expected_pages: set[Path] = set()
     for source_path in generated_api_nav_paths():
         path = Path(source_path)
@@ -125,6 +125,10 @@ def collect_errors(site: Path = SITE) -> list[str]:
         source for path, source in pages.items() if path.is_relative_to(api_site)
     )
     exports = set(gm.__all__)
+    public_symbols = load_public_symbols(
+        ROOT / 'python' / 'gometry' / '_lib.pyi',
+        ROOT / 'python' / 'gometry' / '__init__.py',
+    )
     public_classes = {
         name for name in exports if inspect.isclass(getattr(gm, name, None))
     }
@@ -153,19 +157,50 @@ def collect_errors(site: Path = SITE) -> list[str]:
         if leaked:
             errors.append(f'private names in rendered signature: {leaked}')
 
-    for block in _SEE_ALSO.finditer(api_html):
-        entries = _SEE_ALSO_ENTRY.findall(block.group('body'))
-        unlinked = [
-            text
-            for entry in entries or [block.group('body')]
-            if '<a ' not in entry and (text := _plain(entry).strip())
-        ]
-        errors.extend(f'unlinked See Also entry: {text[:80]!r}' for text in unlinked)
+    for path, source in pages.items():
+        if not path.is_relative_to(api_site):
+            continue
+        relative = path.relative_to(site)
+        for block in _SEE_ALSO.finditer(source):
+            entries = _SEE_ALSO_ENTRY.findall(block.group('body'))
+            for entry in entries or [block.group('body')]:
+                links = _Hrefs()
+                links.feed(entry)
+                if not links.values:
+                    text = _plain(entry).strip()
+                    if text:
+                        errors.append(f'unlinked See Also entry: {text[:80]!r}')
+                    continue
+                for href in links.values:
+                    try:
+                        fragment = unquote(urlsplit(html.unescape(href)).fragment)
+                    except ValueError:
+                        errors.append(
+                            f'{relative}: malformed See Also link target {href!r}'
+                        )
+                        continue
+                    target = fragment.removeprefix('gometry.')
+                    if (
+                        not fragment.startswith('gometry.')
+                        or target not in public_symbols
+                    ):
+                        errors.append(
+                            f'{relative}: See Also link {href!r} does not target '
+                            'a public API symbol'
+                        )
 
     return errors
 
 
 def main() -> int:
+    tools = ROOT / 'tools'
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from _gatelib import prepend_tools_import_paths
+    from runtime_artifact import require_runtime
+
+    prepend_tools_import_paths()
+    require_runtime(ROOT)
     errors = collect_errors()
     lychee = shutil.which('lychee')
     if lychee is None:

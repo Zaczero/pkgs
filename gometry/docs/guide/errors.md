@@ -133,11 +133,12 @@ handlers act on data instead of parsing messages. Class-level defaults are
 | [`position`][gometry.ParseError.position] | `ParseError` | WKT/EWKT reports the zero-based UTF-8 byte offset where parsing detected the error, including an EWKT prefix; WKB reports its zero-based binary byte offset; other codecs report `None` when unavailable |
 | [`param`][gometry.GeometryError.param] / [`value`][gometry.GeometryError.value] | [`GeometryError`][gometry.GeometryError] (value lanes) | Offending keyword and value |
 | [`parameter`][gometry.GeometryError.parameter] / [`produced`][gometry.GeometryError.produced] / [`limit`][gometry.GeometryError.limit] | bounded-output `GeometryError` | Controlling parameter, produced count, and configured limit |
+| [`code`][gometry.GeometryError.code] | `GeometryError` (selected output refusals) | `'output_limit'`, `'output_unrepresentable'`, or `'work_limit'`; `None` for errors without a stable refusal code |
 | [`expected`][gometry.GeometryTypeError.expected] / [`got`][gometry.GeometryTypeError.got] | [`GeometryTypeError`][gometry.GeometryTypeError] | Required and received geometry kinds |
 | [`source`][gometry.TransformError.source] / [`target`][gometry.TransformError.target] | [`TransformError`][gometry.TransformError] | Source and target CRS of a failed transform |
 | [`operation`][gometry.GeometryError.operation] | [`GeometryError`][gometry.GeometryError] (bounded-output or binary64 embedding); [`InvalidGeometryError`][gometry.InvalidGeometryError] (empty sequence or invalid coverage) | Operation associated with the failure |
 | [`row`][gometry.InvalidGeometryError.row] / [`path`][gometry.InvalidGeometryError.path] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Failing array row and structural path |
-| [`code`][gometry.InvalidGeometryError.code] / [`detail`][gometry.InvalidGeometryError.detail] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Stable validity code and human-readable issue detail |
+| [`code`][gometry.InvalidGeometryError.code] / [`detail`][gometry.InvalidGeometryError.detail] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Open-string validity issue code and human-readable issue detail |
 | [`location`][gometry.InvalidGeometryError.location] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Coordinate witness for the validity issue; quotient-topology issues choose a canonical coordinate of their contact set deterministically by minimum latitude then longitude |
 | [`crs`][gometry.CRSError.crs] | [`CRSError`][gometry.CRSError] | CRS involved in a unit/authority mismatch |
 
@@ -183,8 +184,8 @@ public keyword names, `repr` for user-supplied strings, no trailing period:
 - `invalid <FORMAT>: <detail>` — `invalid WKT: unbalanced parentheses`
 - `unknown <concept> <value>; expected …` — `unknown buffer cap_style "fancy"; expected 'round', 'flat', or 'square'` — with a `did you mean '<closest>'?` clause when the value looks like a typo
 
-Callers can branch on exception classes, structured attributes, and message
-shapes.
+Callers can branch on exception classes, structured attributes, and stable
+`.code` values where available.
 
 ## Pickling
 

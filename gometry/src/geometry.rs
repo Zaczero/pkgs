@@ -108,12 +108,12 @@ pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
     publish_computed_point_or_raw_shape, publish_polygon_parts_with_edge_roles,
-    publish_polygon_with_edge_roles_and_context,
-    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
-    publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,
-    publish_raw_computed_shapes_with_budget_and_context, publish_raw_computed_shapes_with_context,
-    publish_stored_computed_shape, publish_transformed_chain, publish_transformed_shape,
-    publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
+    publish_polygon_with_edge_roles_and_context, publish_raw_computed_shape,
+    publish_raw_computed_shape_with_budget, publish_raw_computed_shape_with_budget_and_context,
+    publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
+    publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
+    publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
+    publish_voronoi_polygon_outputs,
 };
 mod arrangement;
 mod bvh_code;
@@ -206,14 +206,15 @@ pub(crate) use coverage::{
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 use distance::line_length_3d;
 pub(crate) use distance::{
-    DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
+    ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
     ensure_geographic_hausdorff_linework, frechet_distance_line_columns,
     frechet_distance_line_columns_batch, hausdorff_distance, hausdorff_distance_line_columns,
     hausdorff_distance_line_columns_batch,
 };
 pub(crate) use facet_bvh::{
-    BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
+    BVH_MIN_INDEXED_SEGMENTS, ClearanceFacetBvh, FacetBvh, NearestCandidate, NearestTarget,
+    PreparedLinework,
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
 pub(crate) use line_index::{
@@ -244,9 +245,10 @@ use predicates::{
 pub(in crate::geometry) use predicates::{PolygonContact, remove_antenna_vertices};
 pub(crate) use predicates::{
     RingClass, fan_alternations, line_is_ccw, line_is_closed_in_domain, line_is_simple,
-    line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
-    shape_is_closed_in_domain, shape_reaches_geographic_pole_in_frame, validate_line,
-    validate_point, validate_points, validate_ring,
+    line_is_valid, polygon_is_valid, ring_classify_point_columns, shape_encloses_pole_in_frame,
+    shape_has_polar_ring_in_frame, shape_is_closed_in_domain,
+    shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
+    validate_ring,
 };
 pub(in crate::geometry) use segments::{
     DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp, exact_crossing_parameter,
@@ -323,12 +325,21 @@ pub(crate) use relate::{
     graph_intersects_data_geographic, graph_relate_data, graph_relate_data_geographic,
     graph_relate_shapes, is_axis_aligned_rectangle, is_axis_aligned_rectangle_row, predicate_rows,
 };
+#[cfg(test)]
+pub(crate) use segment_index::{
+    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
+    CLEARANCE_POINT_RECHECKS,
+};
+pub(crate) use segment_index::{
+    ClearancePointQuery, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex,
+    clearance_aabb_lower_bound,
+};
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
-pub(crate) use segment_index::{PointEntry, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 #[cfg(test)]
 use segments::point_segment_distance_key;
 use segments::{
@@ -336,15 +347,18 @@ use segments::{
     point_pair_distance_key, point_segment_distance_and_projection, point_segment_distance_squared,
     point_segment_exact_distance_key, ray_crossing_is_right, segment_contact_exact,
     segment_contact_point, segment_cross_point, segment_envelopes_disjoint, segments_intersect,
-    shared_segment_part, try_point_distance_squared, try_point_segment_distance_squared,
-    undirected_segment_edge_key,
+    shared_segment_part, undirected_segment_edge_key,
+};
+#[cfg(test)]
+pub(crate) use segments::{
+    CLEARANCE_STRIP_EXACT_FALLBACKS, CLEARANCE_STRIP_SUPPORT_FALLBACKS, EXACT_SELECTION_FALLBACKS,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
 pub(crate) use segments::{
-    RectContact, WitnessRole, finish_planar_squared_min, lerp_point, line_segments, point_distance,
-    point_distance_squared, point_on_segment, points_dwithin, segment_vs_rect,
-    squared_norm_is_trustworthy,
+    RectContact, WitnessRole, clearance_strip_exceeds, finish_planar_squared_min, lerp_point,
+    line_segments, point_distance, point_distance_squared, point_on_segment, points_dwithin,
+    segment_vs_rect, source_dot_cmp, squared_norm_is_trustworthy,
 };
 pub(crate) use segments::{
     SegmentProjection, point_segment_distance, point_segment_selection, segment_projection,
@@ -917,16 +931,26 @@ impl Bounds {
         }
     }
 
-    /// Geographic clip rectangle with canonical longitudes in ``[-180, 180]``.
-    /// Finite west/east endpoints use west>east to signal an
-    /// antimeridian-crossing window; latitudes must satisfy ``south <= north``.
-    pub fn new_geographic(west: f64, south: f64, east: f64, north: f64) -> Result<Self> {
+    /// Geographic rectangle with frame-native longitude and latitude bounds.
+    /// Finite west/east endpoints use west>east to signal a seam-crossing
+    /// window; latitudes must satisfy ``south <= north``.
+    pub(crate) fn new_geographic(
+        frame: crate::geographic::GeographicFrame,
+        west: f64,
+        south: f64,
+        east: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        let pole = frame.pole();
         if west.is_finite()
             && south.is_finite()
             && east.is_finite()
             && north.is_finite()
-            && (-180.0..=180.0).contains(&west)
-            && (-180.0..=180.0).contains(&east)
+            && (-half_period..=half_period).contains(&west)
+            && (-half_period..=half_period).contains(&east)
+            && (-pole..=pole).contains(&south)
+            && (-pole..=pole).contains(&north)
             && south <= north
         {
             Ok(Self::new_raw(west, south, east, north))
@@ -935,9 +959,33 @@ impl Bounds {
         }
     }
 
+    /// The full longitude band between two frame-valid latitudes.
+    pub(crate) fn full_geographic_longitude(
+        frame: crate::geographic::GeographicFrame,
+        south: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        Self::new_geographic(frame, -half_period, south, half_period, north)
+    }
+
     /// Whether these bounds cross the antimeridian (west longitude > east).
     pub fn crosses_antimeridian(self) -> bool {
         self.minx() > self.maxx()
+    }
+
+    /// Split a validated geographic rectangle at its frame's periodic seam.
+    pub(crate) fn split_geographic(
+        self,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Option<[Self; 2]> {
+        self.crosses_antimeridian().then(|| {
+            let half_period = frame.longitude().half_period();
+            [
+                Self::new_raw(self.minx(), self.miny(), half_period, self.maxy()),
+                Self::new_raw(-half_period, self.miny(), self.maxx(), self.maxy()),
+            ]
+        })
     }
 
     pub fn intersects(self, other: Self) -> bool {

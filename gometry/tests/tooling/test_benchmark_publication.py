@@ -137,8 +137,9 @@ def _build_result(tmp_path: Path) -> dict[str, object]:
     )
     artifacts.insert(0, str(oracle))
     metadata = {
-        'git_commit': 'deadbeef',
+        'harness_commit': 'deadbeef',
         'source_inputs_sha256': HASH,
+        'native_source_inputs_sha256': HASH,
         'python_executable': '/python',
         'python': '3.14',
         'python_version': '3.14 test build',
@@ -682,7 +683,7 @@ def test_publication_writes_only_the_deterministic_summary(
     summary_md = first.decode('utf-8')
     assert '## Run environment' in summary_md
     assert 'Measured on test with Linux' in summary_md
-    assert 'CPython 3.14, at commit `deadbeef`.' in summary_md
+    assert 'CPython 3.14. Benchmark harness commit: `deadbeef`.' in summary_md
     assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
     assert 'core' not in summary_md.split('###')[0]
     assert '<table>' not in summary_md

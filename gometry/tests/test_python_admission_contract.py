@@ -275,6 +275,22 @@ def test_line_interpolate_drains_at_provider_before_processing_array_rows() -> N
         ),
         pytest.param(lambda: gm.s2_cover(gm.Point(0, 0), level=True), id='level'),
         pytest.param(
+            lambda: gm.s2_cover_adaptive(gm.Point(0, 0), target_cells=True),
+            id='target_cells',
+        ),
+        pytest.param(
+            lambda: gm.s2_cover_adaptive(gm.Point(0, 0), min_level=True),
+            id='min_level',
+        ),
+        pytest.param(
+            lambda: gm.s2_cover_adaptive(gm.Point(0, 0), max_level=True),
+            id='max_level',
+        ),
+        pytest.param(
+            lambda: gm.s2_cover_adaptive(gm.Point(0, 0), level_mod=True),
+            id='level_mod',
+        ),
+        pytest.param(
             lambda: gm.Point(0, 0).buffer(1, quadrant_segments=True), id='count'
         ),
         pytest.param(lambda: gm.crs_search('WGS', limit=True), id='limit'),
@@ -291,6 +307,58 @@ def test_line_interpolate_drains_at_provider_before_processing_array_rows() -> N
 def test_integer_parameter_lanes_reject_bool(operation) -> None:
     with pytest.raises(TypeError, match='integer'):
         operation()
+
+
+def test_s2_fixed_and_adaptive_cover_bindings_reject_each_others_controls() -> None:
+    point = gm.Point(0, 0, crs=4326)
+
+    with pytest.raises(TypeError):
+        gm.s2_cover(point)
+    with pytest.raises(TypeError):
+        gm.s2_cover(point, None)
+    for control in (
+        {'target_cells': 8},
+        {'min_level': 0},
+        {'max_level': 30},
+        {'level_mod': 1},
+    ):
+        with pytest.raises(TypeError):
+            gm.s2_cover(point, level=8, **control)
+    with pytest.raises(TypeError):
+        gm.s2_cover_adaptive(point, level=8)
+    with pytest.raises(TypeError):
+        gm.s2_cover_adaptive(point, 8)
+    for control in (
+        {'min_level': None},
+        {'max_level': None},
+        {'min_level': 0.0},
+        {'max_level': 30.0},
+    ):
+        with pytest.raises(TypeError, match='integer'):
+            gm.s2_cover_adaptive(point, **control)
+
+
+def test_s2_cover_integer_index_providers_and_overflow() -> None:
+    class IndexValue:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __index__(self) -> int:
+            return self.value
+
+    point = gm.Point(1, 1, crs=4326)
+    assert len(gm.s2_cover(point, level=IndexValue(4), max_cells=IndexValue(1))) == 1
+    adaptive = gm.s2_cover_adaptive(
+        point,
+        target_cells=IndexValue(1),
+        min_level=IndexValue(4),
+        max_level=IndexValue(4),
+        level_mod=IndexValue(1),
+        max_cells=IndexValue(1),
+    )
+    assert len(adaptive) == 1
+    with pytest.raises(gm.GeometryError, match='integer is too large'):
+        gm.s2_cover_adaptive(point, max_level=10**100)
 
 
 def test_boolean_options_remain_boolean_options() -> None:

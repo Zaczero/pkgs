@@ -289,6 +289,44 @@ impl PyGeometryArray {
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
 
+    /// Construct an immutable array from geometry-like rows.
+    ///
+    /// Iterable values are consumed once in input order. ``None`` creates a
+    /// missing row. A single ``Geometry`` is not a row iterable; wrap it in a
+    /// one-item sequence. Rows may be native geometries, WKB byte buffers,
+    /// GeoJSON mappings, or objects exposing ``__geo_interface__``. ``crs=``
+    /// attaches shared metadata and never transforms coordinates.
+    ///
+    /// Parameters
+    /// ----------
+    /// values : iterable of Geometry, Buffer, Mapping, or None
+    ///     One native geometry, WKB buffer, GeoJSON mapping, or object exposing
+    ///     ``__geo_interface__`` per input position; ``None`` marks a missing
+    ///     row.
+    /// crs : CrsInput or None, optional, default None
+    ///     Shared CRS label. CRS-free rows adopt it; existing CRS values must
+    ///     be equivalent to it.
+    /// epoch : float or None, optional, default None
+    ///     Shared coordinate epoch for a CRS that admits geometry epochs.
+    ///     Existing epochs must agree with it.
+    ///
+    /// Returns
+    /// -------
+    /// GeometryArray
+    ///     An immutable, row-aligned array with missing positions preserved.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If ``values`` is a single geometry or contains an unsupported value.
+    /// CRSError
+    ///     If ``crs`` cannot be resolved or an epoch is invalid for its CRS.
+    /// CRSMismatchError
+    ///     If input CRS or epoch metadata conflicts with the shared frame.
+    /// GeometryError
+    ///     If ``epoch`` is non-finite.
+    /// ParseError
+    ///     If a WKB or GeoJSON row is malformed.
     #[new]
     #[pyo3(signature = (values, *, crs = None, epoch = None))]
     pub fn new(

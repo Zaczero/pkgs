@@ -121,6 +121,7 @@ def _extension_type(
     The CRS definition (as an inline PROJJSON object) and coordinate epoch are serialized into
     the extension metadata, so both survive a gometry Arrow round trip. The
     ``epoch`` key is a gometry extension and may be ignored by other readers.
+    When data returns to gometry, the shared geometry-frame policy validates it.
     """
     depth = _STORAGE_DEPTH[extension_name]
     if depth is None:

@@ -29,6 +29,14 @@ if TYPE_CHECKING:
     H3_CELLS = gm.h3_cells([1.0], [2.0], resolution=9)
     S2_CELLS = gm.s2_cells([1.0], [2.0], level=9)
 
+    # Fixed-depth and adaptive S2 covers have disjoint signatures.
+    gm.s2_cover(POLY)  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level=None)  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level=8, target_cells=8)  # type: ignore[call-overload]
+    gm.s2_cover_adaptive(POLY, level=8)  # type: ignore[call-overload]
+    gm.s2_cover_adaptive(POLY, 8)  # type: ignore[call-overload]
+    gm.s2_cover_adaptive(POLY, min_level=None)  # type: ignore[call-overload]
+
     # Domain families are flat, prefix-discoverable top-level functions;
     # namespace spellings are deliberately not retained for this first release.
 
@@ -85,6 +93,7 @@ if TYPE_CHECKING:
     gm.rhumb_distance(GEOMS, POINT)  # type: ignore[arg-type]
     LINE.line_interpolate(1.0, basis='m', unit='meters')  # type: ignore[call-overload]
     LINE.line_interpolate(count=2, basis='m')  # type: ignore[call-overload]
+    LINE.line_interpolate(count=2, normalized=True)  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', unit='planar')  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', normalized=True)  # type: ignore[call-overload]
 
@@ -104,6 +113,16 @@ if TYPE_CHECKING:
     gm.GeometryParts()  # type: ignore[call-arg]
     gm.Groups()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
+
+    gm.H3VertexArray([1.5])  # type: ignore[arg-type]
+    gm.H3EdgeArray([1.5])  # type: ignore[arg-type]
+
+    def _reject_to_pairs_for_noninteger_groups(
+        geometries: gm.Groups[gm.GeometryArray[gm.Geometry]],
+        cells: gm.Groups[gm.CellArray[gm.H3Cell]],
+    ) -> None:
+        geometries.to_pairs()  # type: ignore[misc]
+        cells.to_pairs()  # type: ignore[misc]
 
     gm.SpatialIndex(POINTS).query(POINTS).__getitem__(index=0)  # type: ignore[call-overload]
 
@@ -142,12 +161,27 @@ if TYPE_CHECKING:
     _dense_pts: gm.GeometryArray[gm.Point] = nullable_points  # type: ignore[assignment]
     _ = gm.GeometryArray([POINT, None])[0].x  # type: ignore[union-attr]
     _ = next(iter(gm.GeometryArray([POINT, None]))).x  # type: ignore[union-attr]
+    _dense_required: gm.GeometryArray[gm.Point] = gm.require(nullable_points)  # type: ignore[assignment]
+    _ = gm.require(nullable_points)[0].x  # type: ignore[union-attr]
     _dense_cells: gm.CellArray[gm.H3Cell] = gm.CellArray([h3_cell, None])  # type: ignore[assignment]
     _ = gm.CellArray([h3_cell, None])[0].token  # type: ignore[union-attr]
     _ = gm.GeometryArray([POINT, None]).centroid()[0].x  # type: ignore[union-attr]
     _dense_overlay: gm.GeometryArray[gm.Geometry] = gm.intersection(
         gm.GeometryArray([POINT, None]), POLY
     )  # type: ignore[assignment]
+
+    def _reject_unchecked_nullable_group(
+        groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
+    ) -> None:
+        _ = gm.require(groups)[0].x  # type: ignore[union-attr]
+
+    def _reject_unchecked_cell_projections(
+        centers: gm.CellArray[gm.H3Cell | None],
+        polygons: gm.CellArray[gm.S2Cell | None],
+    ) -> None:
+        _ = centers.center[0].x  # type: ignore[union-attr]
+        _ = polygons.polygon[0].area  # type: ignore[union-attr]
+        centers.center = centers.center  # type: ignore[assignment]
 
     # Scalar overload result is a bare float — it has no ndarray attributes.
     _ = gm.distance(POINT, POLY).dtype  # type: ignore[attr-defined]

@@ -183,6 +183,11 @@ impl PyCoordinates {
 
     /// Coordinate layout: ``'XY'``, ``'XYZ'``, ``'XYM'``, or ``'XYZM'`` — the
     /// `select`-forced layout when set, else the union of the present axes.
+    ///
+    /// Returns
+    /// -------
+    /// CoordinateAxes
+    ///     The exact ordinate layout visible through this coordinate view.
     #[getter]
     pub fn coordinate_axes(&self, py: Python<'_>) -> PyResult<&'static str> {
         match self.layout {
@@ -192,11 +197,12 @@ impl PyCoordinates {
     }
 
     /// Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
-    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``): every tuple/column has that
-    /// shape. Nested/tuple output uses ``None`` where a coordinate lacks the
-    /// requested Z/M; ndarray columns and ``numpy.asarray`` use ``NaN`` there.
-    /// `select` changes which ordinates nested output, iteration, ndarray/dict
-    /// exports, and coordinate equality see; it does not change the geometry.
+    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``). This layout defines the schema
+    /// of coordinate tuples, nested output, matrices, dictionaries, and equality.
+    /// Tuple/nested output uses ``None`` where a coordinate lacks the requested
+    /// Z/M; matrices and dictionary columns use ``NaN`` there. Independent axis
+    /// accessors such as ``.z`` continue to read the source view, regardless of
+    /// the selected layout. Selection does not change the geometry.
     ///
     /// Parameters
     /// ----------
@@ -223,18 +229,38 @@ impl PyCoordinates {
 
     /// Per-coordinate source geometry row (all ``0`` for a scalar geometry);
     /// the source row for each vertex of a ``GeometryArray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A materialized, read-only int64 array in flat coordinate order, one
+    ///     source-row label per vertex.
     #[getter]
     pub fn row_index(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         int64_array(py, self.view.try_row_index_i64(py)?)
     }
 
     /// The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order, in the geometry's
+    ///     native coordinate units (raw coordinate units when CRS-free). The
+    ///     array shares the immutable coordinate column when one is available.
     #[getter]
     pub fn x(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::X)
     }
 
     /// The Y ordinates as a read-only ``float64`` ``numpy.ndarray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order, in the geometry's
+    ///     native coordinate units (raw coordinate units when CRS-free). The
+    ///     array shares the immutable coordinate column when one is available.
     #[getter]
     pub fn y(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Y)
@@ -242,6 +268,13 @@ impl PyCoordinates {
 
     /// The Z ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
     /// length (``NaN`` when no coordinate carries Z).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order; missing Z ordinates
+    ///     are ``NaN``. Values remain in the geometry's native coordinate
+    ///     units; absent columns are materialized.
     #[getter]
     pub fn z(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Z)
@@ -249,6 +282,13 @@ impl PyCoordinates {
 
     /// The M ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
     /// length (``NaN`` when no coordinate carries M).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order; missing M ordinates
+    ///     are ``NaN``. M is a measure ordinate, not a CRS unit; absent columns
+    ///     are materialized.
     #[getter]
     pub fn m(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::M)
@@ -443,23 +483,17 @@ impl PyCoordinates {
     }
 
     /// Value equality against another `Coordinates` or a sequence of coordinate
-    /// tuples. Other types defer with ``NotImplemented``. Provider exceptions
-    /// propagate; only non-iterable types yield ``NotImplemented``. Arc-identity
-    /// / short-circuit paths in ``coordinates_equal`` are preserved.
+    /// tuples. Other types defer with ``NotImplemented``. Errors from an
+    /// admitted iterator or item comparison propagate. Arc-identity /
+    /// short-circuit paths in ``coordinates_equal`` are preserved.
     pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
             return Ok(py_bool(py, self.coordinates_equal(py, &other_coords)?));
         }
-        // Do not call `try_iter` merely to probe — that drains one-shot
-        // generators. Attempt equality once; a TypeError (not iterable)
-        // becomes NotImplemented, other errors propagate.
-        match self.coordinates_equal_sequence(other) {
-            Ok(equal) => Ok(py_bool(py, equal)),
-            Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
-                Ok(py.NotImplemented())
-            },
-            Err(err) => Err(err),
-        }
+        let Some(items) = crate::boundary::reserve::py_iter_or_none(other)? else {
+            return Ok(py.NotImplemented());
+        };
+        Ok(py_bool(py, self.coordinates_equal_iter(items)?))
     }
 
     /// Whether a coordinate tuple appears among the vertices, using the same

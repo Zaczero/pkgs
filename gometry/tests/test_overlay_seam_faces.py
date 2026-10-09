@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -204,7 +205,9 @@ def test_ordinary_geographic_node_uses_the_operation_metric_for_interior_sources
     assert result.geometry_type == 'MultiLineString'
     assert result.coordinate_axes == 'XYZM'
     crossing = [
-        row for row in gm.get_coordinates(result).tolist() if row[:2] == [0.0, -5.0]
+        row
+        for row in np.asarray(result.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
     ]
     carried = [
         row for row in crossing if math.isfinite(row[2]) and math.isfinite(row[3])
@@ -245,10 +248,14 @@ def test_ordinary_geographic_single_cut_subdivide_carries_source_arclength_zm() 
     assert [part.num_coordinates for part in parts] == [8, 8]
     assert all(part.coordinate_axes == 'XYZM' for part in parts)
     cut_nodes = [
-        row for row in gm.get_coordinates(parts).tolist() if row[:2] == [0.0, 20.0]
+        row
+        for row in np.asarray(parts.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, 20.0]
     ]
     right_cut_nodes = [
-        row for row in gm.get_coordinates(parts).tolist() if row[:2] == [1.0, 20.0]
+        row
+        for row in np.asarray(parts.coords, dtype=np.float64).tolist()
+        if row[:2] == [1.0, 20.0]
     ]
     assert cut_nodes and right_cut_nodes
     for _, _, z, m in cut_nodes:
@@ -263,7 +270,7 @@ def test_ordinary_geographic_single_cut_subdivide_carries_source_arclength_zm() 
     assert [len(groups[index]) for index in range(3)] == [2, 0, 2]
     for index in (0, 2):
         assert all(part.coordinate_axes == 'XYZM' for part in groups[index])
-        coordinates = gm.get_coordinates(groups[index]).tolist()
+        coordinates = np.asarray(groups[index].coords, dtype=np.float64).tolist()
         for x, expected_z, expected_m in (
             (0.0, 7.0 + 40.0 * fraction, 101.0 + 600.0 * fraction),
             (1.0, 11.0 + 20.0 * fraction, 301.0 + 200.0 * fraction),
@@ -288,7 +295,7 @@ def test_ordinary_geographic_shared_paths_keeps_arclength_zm_at_overlap_start() 
     expected_z, expected_m = _source_zm_at_latitude(-5.0)
     assert same.coordinate_axes == 'XYZM'
     assert opposite.is_empty
-    coordinates = gm.get_coordinates(same).tolist()
+    coordinates = np.asarray(same.coords, dtype=np.float64).tolist()
     assert coordinates[0][:2] == [0.0, -5.0]
     assert coordinates[0][2] == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
     assert coordinates[0][3] == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
@@ -317,7 +324,7 @@ def test_ordinary_geographic_nullable_shared_paths_array_uses_source_arclength()
         same, opposite = row.parts
         assert same.coordinate_axes == 'XYZM'
         assert opposite.is_empty
-        start = gm.get_coordinates(same).tolist()[0]
+        start = np.asarray(same.coords, dtype=np.float64).tolist()[0]
         assert start[:2] == [0.0, -5.0]
         assert start[2] == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
         assert start[3] == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
@@ -340,7 +347,9 @@ def test_ordinary_geographic_line_merge_reconciles_a_split_source_vertex_by_arcl
 
     assert merged.coordinate_axes == 'XYZM'
     cut_nodes = [
-        row for row in gm.get_coordinates(merged).tolist() if row[:2] == [0.0, -5.0]
+        row
+        for row in np.asarray(merged.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
     ]
     assert cut_nodes
     for _, _, z, m in cut_nodes:
@@ -379,7 +388,9 @@ def test_ordinary_geographic_line_merge_detects_only_conflicting_source_axis(
 
     assert merged.coordinate_axes == expected_axes
     cut_nodes = [
-        row for row in gm.get_coordinates(merged).tolist() if row[:2] == [0.0, -5.0]
+        row
+        for row in np.asarray(merged.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
     ]
     assert cut_nodes
     if conflict_axis == 'z':
@@ -407,7 +418,9 @@ def test_geographic_shared_paths_conflicting_signed_zero_is_order_independent() 
         assert same.coordinate_axes == 'XYM'
         assert opposite.is_empty
         start = [
-            row for row in gm.get_coordinates(same).tolist() if row[:2] == [0.0, -30.0]
+            row
+            for row in np.asarray(same.coords, dtype=np.float64).tolist()
+            if row[:2] == [0.0, -30.0]
         ]
         assert start
         assert all(row[2] == 101.0 for row in start)
@@ -429,7 +442,7 @@ def test_ordinary_geographic_polygonize_and_full_use_source_arclength_before_axe
     assert all(polygon.coordinate_axes == 'XYZM' for polygon in full.polygons)
     cut_nodes = [
         row
-        for row in gm.get_coordinates(full.polygons).tolist()
+        for row in np.asarray(full.polygons.coords, dtype=np.float64).tolist()
         if row[:2] == [0.0, -5.0]
     ]
     assert cut_nodes
@@ -451,7 +464,7 @@ def test_ordinary_geographic_nullable_polygonize_array_uses_source_arclength() -
         assert all(polygon.coordinate_axes == 'XYZM' for polygon in polygons)
         cut_nodes = [
             row
-            for row in gm.get_coordinates(polygons).tolist()
+            for row in np.asarray(polygons.coords, dtype=np.float64).tolist()
             if row[:2] == [0.0, -5.0]
         ]
         assert cut_nodes
@@ -469,7 +482,9 @@ def test_ordinary_geographic_build_area_keeps_a_source_metric_vertex() -> None:
 
     assert area.coordinate_axes == 'XYZM'
     cut_nodes = [
-        row for row in gm.get_coordinates(area).tolist() if row[:2] == [0.0, -5.0]
+        row
+        for row in np.asarray(area.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
     ]
     assert cut_nodes
     for _, _, z, m in cut_nodes:
@@ -492,7 +507,9 @@ def test_ordinary_geographic_repair_uses_source_arclength_at_a_self_crossing() -
     assert repaired.is_valid
     assert repaired.coordinate_axes == 'XYZM'
     cut_nodes = [
-        row for row in gm.get_coordinates(repaired).tolist() if row[:2] == [0.0, -5.0]
+        row
+        for row in np.asarray(repaired.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
     ]
     assert cut_nodes
     for _, _, z, m in cut_nodes:
@@ -518,7 +535,7 @@ def test_ordinary_geographic_nullable_repair_array_uses_source_arclength() -> No
         assert repaired[index].coordinate_axes == 'XYZM'
         cut_nodes = [
             row
-            for row in gm.get_coordinates(repaired[index]).tolist()
+            for row in np.asarray(repaired[index].coords, dtype=np.float64).tolist()
             if row[:2] == [0.0, -5.0]
         ]
         assert cut_nodes
@@ -547,7 +564,9 @@ def test_ordinary_geographic_coverage_clean_keeps_source_arclength_at_shared_nod
 
     assert cleaned[0].coordinate_axes == 'XYZM'
     cut_nodes = [
-        row for row in gm.get_coordinates(cleaned[0]).tolist() if row[:2] == [0.0, -5.0]
+        row
+        for row in np.asarray(cleaned[0].coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
     ]
     assert cut_nodes
     for _, _, z, m in cut_nodes:
@@ -577,7 +596,7 @@ def test_ordinary_geographic_nullable_line_merge_array_carries_source_arclength(
         assert row.coordinate_axes == 'XYZM'
         cut_nodes = [
             coordinate
-            for coordinate in gm.get_coordinates(row).tolist()
+            for coordinate in np.asarray(row.coords, dtype=np.float64).tolist()
             if coordinate[:2] == [0.0, -5.0]
         ]
         assert cut_nodes

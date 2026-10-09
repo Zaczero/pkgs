@@ -455,7 +455,7 @@ pub(crate) enum PointSet<'a> {
 
 fn point_set_only_with_owners(shape: &Shape, owners: &mut SharedShapeOwners) -> bool {
     match shape {
-        Shape::Point(_) | Shape::MultiPoint(_) => true,
+        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => true,
         Shape::LineString(line) => line.as_coords().is_empty(),
         Shape::MultiLineString(lines) => lines.iter().all(|line| line.as_coords().is_empty()),
         Shape::Polygon(polygon) => polygon.rings().all(|ring| ring.coords().is_empty()),
@@ -463,15 +463,14 @@ fn point_set_only_with_owners(shape: &Shape, owners: &mut SharedShapeOwners) -> 
             .iter()
             .all(|polygon| polygon.rings().all(|ring| ring.coords().is_empty())),
         Shape::GeometryCollection(collection) => {
-            if !owners.first_collection(collection.as_slice(), collection.members_are_shared()) {
-                true
-            } else {
+            if owners.first_collection(collection.as_slice(), collection.members_are_shared()) {
                 collection
                     .iter()
                     .all(|member| point_set_only_with_owners(member, owners))
+            } else {
+                true
             }
         },
-        Shape::Empty(..) => true,
     }
 }
 
@@ -480,14 +479,15 @@ impl Shape {
     /// their declared kind but contribute no site to a point-set selection.
     pub(crate) fn point_set_only(&self) -> bool {
         match self {
-            Self::Point(_) | Self::MultiPoint(_) => true,
-            Self::GeometryCollection(_) => {
-                point_set_only_with_owners(self, &mut SharedShapeOwners::for_collections())
-            },
-            Self::Empty(
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::Empty(
                 GeometryKind::Point | GeometryKind::MultiPoint | GeometryKind::GeometryCollection,
                 _,
             ) => true,
+            Self::GeometryCollection(_) => {
+                point_set_only_with_owners(self, &mut SharedShapeOwners::for_collections())
+            },
             Self::LineString(_)
             | Self::MultiLineString(_)
             | Self::Polygon(_)

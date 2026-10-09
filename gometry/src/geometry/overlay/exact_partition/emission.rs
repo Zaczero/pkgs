@@ -886,7 +886,7 @@ fn canonicalize_open_nodes_by_xy(coordinates: &[XY], nodes: &mut [NodeId]) {
             == Ordering::Less
         {
             minimum = point;
-            rotation = index + 1;
+            rotation = index.wrapping_add(1);
         }
     }
     nodes.rotate_left(rotation);

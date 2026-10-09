@@ -343,8 +343,13 @@ def test_g3_interleaved_size3_rejects_noncanonical_field_name() -> None:
 
 def test_g4_wkt_empty_members_are_preserved() -> None:
     """EMPTY multipart members retain their declared positions."""
-    g = gm.from_wkt('MULTIPOINT Z ((1 2 3), EMPTY)')
-    assert g.to_wkt() == 'MULTIPOINT Z ((1 2 3), EMPTY)'
+    g = gm.from_wkt('MULTIPOINT ZM (EMPTY, (1 2 3 4), EMPTY, (5 6 7 8), EMPTY)')
+    expected = 'MULTIPOINT ZM (EMPTY, (1 2 3 4), EMPTY, (5 6 7 8), EMPTY)'
+    assert g.to_wkt() == expected
+    assert gm.from_wkb(g.to_wkb()).to_wkt() == expected
+    all_empty = gm.from_wkt('MULTIPOINT ZM (EMPTY, EMPTY)')
+    assert all_empty.to_wkt() == 'MULTIPOINT ZM (EMPTY, EMPTY)'
+    assert gm.from_wkb(all_empty.to_wkb()).to_wkt() == ('MULTIPOINT ZM (EMPTY, EMPTY)')
     g2 = gm.from_wkt('MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)')
     assert g2.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)'
     assert gm.MultiPoint([gm.Point(1, 2), gm.Point()]).to_wkt() == (

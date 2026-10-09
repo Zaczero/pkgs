@@ -8,7 +8,7 @@ use crate::collections::{
 };
 use crate::error::{ResourceError, Result};
 use crate::geometry::{
-    Bounds, GeometryErrorKind, Segment, XY, for_each_overlapping_bounds_cross_pair,
+    Bounds, GeometryErrorKind, Segment, XY, for_each_overlapping_bounds_cross_pair_with_work,
     try_sort_by_with_work,
 };
 
@@ -394,19 +394,15 @@ where
                 }
             }
         }
-        let mut callback_error = None;
-        let flow =
-            for_each_overlapping_bounds_cross_pair(&left_bounds, &all_bounds, |left, right| {
-                if callback_error.is_some() {
-                    return std::ops::ControlFlow::Break(());
-                }
-                if let Err(error) = work.charge(1) {
-                    callback_error = Some(error);
-                    return std::ops::ControlFlow::Break(());
-                }
+        let flow = for_each_overlapping_bounds_cross_pair_with_work(
+            &left_bounds,
+            &all_bounds,
+            work,
+            |left, right, work| {
+                work.charge(1)?;
                 let left_index = frontier_chords[left];
                 if left_index == right {
-                    return std::ops::ControlFlow::Continue(());
+                    return Ok(std::ops::ControlFlow::<()>::Continue(()));
                 }
                 let left_chord = *chords
                     .get(left_index)
@@ -414,51 +410,31 @@ where
                 let right_chord = *chords
                     .get(right)
                     .expect("overlap sweep ordinal belongs to the emitted chord table");
-                let exact_radii = (|| {
-                    Ok((
-                        exact_chord_radius(
-                            left_chord,
-                            &mut radius_cache,
-                            left_index,
-                            movable_cache,
-                            &mut is_movable,
-                        )?,
-                        exact_chord_radius(
-                            right_chord,
-                            &mut radius_cache,
-                            right,
-                            movable_cache,
-                            &mut is_movable,
-                        )?,
-                    ))
-                })();
-                let (left_radius, right_radius) = match exact_radii {
-                    Ok(radii) => radii,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return std::ops::ControlFlow::Break(());
-                    },
-                };
+                let left_radius = exact_chord_radius(
+                    left_chord,
+                    &mut radius_cache,
+                    left_index,
+                    movable_cache,
+                    &mut is_movable,
+                )?;
+                let right_radius = exact_chord_radius(
+                    right_chord,
+                    &mut radius_cache,
+                    right,
+                    movable_cache,
+                    &mut is_movable,
+                )?;
                 if !segments_within(
                     left_chord.nearest,
                     right_chord.nearest,
                     proximity_limit(left_radius, right_radius),
                 ) {
-                    return std::ops::ControlFlow::Continue(());
+                    return Ok(std::ops::ControlFlow::<()>::Continue(()));
                 }
-                let endpoints = (|| {
-                    Ok((
-                        chord_movable_endpoints(left_chord, movable_cache, &mut is_movable)?,
-                        chord_movable_endpoints(right_chord, movable_cache, &mut is_movable)?,
-                    ))
-                })();
-                let (left_movable, right_movable) = match endpoints {
-                    Ok(endpoints) => endpoints,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return std::ops::ControlFlow::Break(());
-                    },
-                };
+                let left_movable =
+                    chord_movable_endpoints(left_chord, movable_cache, &mut is_movable)?;
+                let right_movable =
+                    chord_movable_endpoints(right_chord, movable_cache, &mut is_movable)?;
                 let movable_nodes = [
                     left_movable[0],
                     left_movable[1],
@@ -467,41 +443,22 @@ where
                 ];
                 for endpoints in [left_movable, right_movable] {
                     if let [Some(first), Some(second)] = endpoints {
-                        if let Err(error) = evaluation_event(work, &mut initial_evaluations, 1) {
-                            callback_error = Some(error);
-                            return std::ops::ControlFlow::Break(());
-                        }
-                        if let Err(error) =
-                            union.union_with_work(first as usize, second as usize, work)
-                        {
-                            callback_error = Some(error);
-                            return std::ops::ControlFlow::Break(());
-                        }
+                        evaluation_event(work, &mut initial_evaluations, 1)?;
+                        union.union_with_work(first as usize, second as usize, work)?;
                     }
                 }
                 for left_node in left_movable.into_iter().flatten() {
                     for right_node in right_movable.into_iter().flatten() {
-                        if let Err(error) =
-                            union.union_with_work(left_node as usize, right_node as usize, work)
-                        {
-                            callback_error = Some(error);
-                            return std::ops::ControlFlow::Break(());
-                        }
+                        union.union_with_work(left_node as usize, right_node as usize, work)?;
                     }
                 }
                 for node in movable_nodes.into_iter().flatten() {
-                    if let Err(error) = work.charge(1) {
-                        callback_error = Some(error);
-                        return std::ops::ControlFlow::Break(());
-                    }
+                    work.charge(1)?;
                     let is_reached = *closure
                         .get(node as usize)
                         .expect("chord endpoint belongs to the node domain");
                     if !is_reached {
-                        if let Err(error) = work.charge(3) {
-                            callback_error = Some(error);
-                            return std::ops::ControlFlow::Break(());
-                        }
+                        work.charge(3)?;
                         *closure
                             .get_mut(node as usize)
                             .expect("chord endpoint belongs to the node domain") = true;
@@ -509,11 +466,9 @@ where
                         newly_reached.push(node);
                     }
                 }
-                std::ops::ControlFlow::Continue(())
-            })?;
-        if let Some(error) = callback_error {
-            return Err(error);
-        }
+                Ok(std::ops::ControlFlow::<()>::Continue(()))
+            },
+        )?;
         debug_assert!(flow.is_continue());
         frontier_nodes = newly_reached;
     }
@@ -718,6 +673,20 @@ impl EvaluationBudget {
             limit: BASE_EVALUATION_LIMIT.max(per_node),
             spent_ticks: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub(in crate::geometry) fn with_remaining_ticks_for_test(
+        operation: &'static str,
+        constructed: usize,
+        remaining_ticks: u128,
+    ) -> Result<Self> {
+        let mut budget = Self::new(operation, constructed)?;
+        let limit_ticks = budget.limit_ticks();
+        budget.spent_ticks = limit_ticks
+            .checked_sub(remaining_ticks)
+            .ok_or(ResourceError::SizeOverflow)?;
+        Ok(budget)
     }
 
     pub(in crate::geometry) fn set_constructed(&mut self, constructed: usize) -> Result<()> {
@@ -1520,10 +1489,17 @@ struct MatchFrame {
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::ops::ControlFlow;
     use std::rc::Rc;
 
     use super::*;
     use crate::error::ErrorKind;
+    use crate::geometry::segment_index::sweep::{
+        for_each_candidate_pair_with_work as sweep_for_each_candidate_pair_with_work,
+        for_each_overlapping_bounds_cross_pair_with_work as sweep_for_each_overlapping_bounds_cross_pair_with_work,
+        for_each_overlapping_bounds_pair_with_work as sweep_for_each_overlapping_bounds_pair_with_work,
+    };
+    use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, round_ratio_with_work};
 
     type Assignment = Vec<(usize, u8)>;
     type AssignmentBlame = Vec<(Assignment, Vec<usize>)>;
@@ -2913,6 +2889,358 @@ mod tests {
         unmetered.charge_product(usize::MAX, usize::MAX).unwrap();
     }
 
+    fn equal_primary_sweep_bounds() -> Vec<Bounds> {
+        (0..40)
+            .map(|ordinal| match ordinal {
+                0 | 20 | 39 => Bounds::new_raw(100.0, 0.0, 101.0, 1.0),
+                _ => {
+                    let cross = f64::from(ordinal) + 10.0;
+                    Bounds::new_raw(0.0, cross, 0.0, cross)
+                },
+            })
+            .collect()
+    }
+
+    fn stable_sweep_pairs<W: Work>(bounds: &[Bounds], work: &mut W) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        let flow =
+            sweep_for_each_overlapping_bounds_pair_with_work(bounds, work, |left, right, _work| {
+                pairs.push((left, right));
+                Ok(ControlFlow::<std::convert::Infallible>::Continue(()))
+            })
+            .expect("the test bounds fit their structural width");
+        assert_eq!(flow, ControlFlow::Continue(()));
+        pairs
+    }
+
+    fn stable_cross_sweep_pairs<W: Work>(
+        left: &[Bounds],
+        right: &[Bounds],
+        work: &mut W,
+    ) -> Vec<(usize, usize)> {
+        let mut pairs = Vec::new();
+        let flow = sweep_for_each_overlapping_bounds_cross_pair_with_work(
+            left,
+            right,
+            work,
+            |left, right, _work| {
+                pairs.push((left, right));
+                Ok(ControlFlow::<std::convert::Infallible>::Continue(()))
+            },
+        )
+        .expect("the test bounds fit their structural width");
+        assert_eq!(flow, ControlFlow::Continue(()));
+        pairs
+    }
+
+    fn assert_stable_break<W: Work>(bounds: &[Bounds], work: &mut W) {
+        let mut pairs = Vec::new();
+        let flow =
+            sweep_for_each_overlapping_bounds_pair_with_work(bounds, work, |left, right, _work| {
+                pairs.push((left, right));
+                Ok(if pairs.len() == 2 {
+                    ControlFlow::Break("second stable pair".to_owned())
+                } else {
+                    ControlFlow::Continue(())
+                })
+            })
+            .expect("the test bounds fit their structural width");
+        assert_eq!(flow, ControlFlow::Break("second stable pair".to_owned()));
+        assert_eq!(pairs, [(0, 20), (0, 39)]);
+    }
+
+    fn assert_sweep_error_stops_after_second_pair<W: Work>(bounds: &[Bounds], work: &mut W) {
+        let mut pairs = Vec::new();
+        let error =
+            sweep_for_each_overlapping_bounds_pair_with_work(bounds, work, |left, right, _work| {
+                pairs.push((left, right));
+                if pairs.len() == 2 {
+                    Err(GeometryErrorKind::Invalid("stable sweep callback".into()).into())
+                } else {
+                    Ok(ControlFlow::<()>::Continue(()))
+                }
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+        assert_eq!(pairs, [(0, 20), (0, 39)]);
+    }
+
+    #[test]
+    fn equal_primary_bounds_keep_staging_order_for_every_work_policy() {
+        let bounds = equal_primary_sweep_bounds();
+        let expected = [(0, 20), (0, 39), (20, 39)];
+
+        let mut ordinary = Vec::new();
+        let flow = crate::geometry::for_each_overlapping_bounds_pair(&bounds, |left, right| {
+            ordinary.push((left, right));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(ordinary, expected);
+
+        let mut unmetered = Unmetered;
+        assert_eq!(stable_sweep_pairs(&bounds, &mut unmetered), expected);
+
+        let mut erased_budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        let erased = {
+            let mut account = EvaluationOnly::new(&mut erased_budget);
+            stable_sweep_pairs(&bounds, &mut account)
+        };
+        assert_eq!(erased, expected);
+        assert_eq!(erased_budget.spent_ticks, 0);
+
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        assert_eq!(stable_sweep_pairs(&bounds, &mut budget), expected);
+        assert!(budget.spent_ticks > 0);
+    }
+
+    #[test]
+    fn equal_primary_cross_bounds_keep_left_then_right_staging_order() {
+        let left = [Bounds::new_raw(0.0, 0.0, 1.0, 1.0); 3];
+        let right = [Bounds::new_raw(0.0, 0.0, 1.0, 1.0); 3];
+        let expected = [
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (1, 0),
+            (1, 1),
+            (1, 2),
+            (2, 0),
+            (2, 1),
+            (2, 2),
+        ];
+
+        let mut ordinary = Vec::new();
+        let flow =
+            crate::geometry::for_each_overlapping_bounds_cross_pair(&left, &right, |a, b| {
+                ordinary.push((a, b));
+                ControlFlow::<()>::Continue(())
+            })
+            .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(ordinary, expected);
+
+        let mut unmetered = Unmetered;
+        assert_eq!(
+            stable_cross_sweep_pairs(&left, &right, &mut unmetered),
+            expected
+        );
+        let mut erased_budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        {
+            let mut account = EvaluationOnly::new(&mut erased_budget);
+            assert_eq!(
+                stable_cross_sweep_pairs(&left, &right, &mut account),
+                expected
+            );
+        }
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        assert_eq!(
+            stable_cross_sweep_pairs(&left, &right, &mut budget),
+            expected
+        );
+    }
+
+    #[test]
+    fn stable_sweep_break_and_callback_error_stop_at_the_same_pair_prefix() {
+        let bounds = equal_primary_sweep_bounds();
+
+        let mut ordinary_pairs = Vec::new();
+        let ordinary_flow =
+            crate::geometry::for_each_overlapping_bounds_pair(&bounds, |left, right| {
+                ordinary_pairs.push((left, right));
+                if ordinary_pairs.len() == 2 {
+                    ControlFlow::Break("second stable pair".to_owned())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            ordinary_flow,
+            ControlFlow::Break("second stable pair".to_owned())
+        );
+        assert_eq!(ordinary_pairs, [(0, 20), (0, 39)]);
+
+        let mut unmetered = Unmetered;
+        assert_stable_break(&bounds, &mut unmetered);
+        assert_sweep_error_stops_after_second_pair(&bounds, &mut unmetered);
+
+        let mut erased_budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        {
+            let mut account = EvaluationOnly::new(&mut erased_budget);
+            assert_stable_break(&bounds, &mut account);
+            assert_sweep_error_stops_after_second_pair(&bounds, &mut account);
+        }
+        assert_eq!(erased_budget.spent_ticks, 0);
+
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        assert_stable_break(&bounds, &mut budget);
+        assert_sweep_error_stops_after_second_pair(&bounds, &mut budget);
+    }
+
+    #[test]
+    fn sweep_callback_reborrow_uses_the_same_exhausted_account() {
+        let bounds = equal_primary_sweep_bounds();
+        let mut baseline = EvaluationBudget::new("sweep_test", 1).unwrap();
+        let mut before_callback = None;
+        let flow = sweep_for_each_overlapping_bounds_pair_with_work(
+            &bounds,
+            &mut baseline,
+            |left, right, work| {
+                assert_eq!((left, right), (0, 20));
+                before_callback = Some(work.spent_ticks);
+                Ok(ControlFlow::Break(()))
+            },
+        )
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Break(()));
+        let before_callback = before_callback.unwrap();
+
+        let allowance_after_sweep = before_callback.wrapping_add(1);
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        budget.limit =
+            u64::try_from(allowance_after_sweep.div_ceil(WORK_TICKS_PER_EVALUATION)).unwrap();
+        budget.spent_ticks = budget.limit_ticks().wrapping_sub(allowance_after_sweep);
+        let mut callback_count = 0;
+        let mut callback_progress = 0;
+
+        let error =
+            sweep_for_each_overlapping_bounds_pair_with_work(&bounds, &mut budget, |_, _, work| {
+                callback_count += 1;
+                work.charge(1)?;
+                callback_progress += 1;
+                work.charge(1)?;
+                callback_progress += 1;
+                Ok(ControlFlow::<()>::Continue(()))
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "sweep_test",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(callback_count, 1);
+        assert_eq!(callback_progress, 1);
+        assert_eq!(budget.spent_ticks, budget.limit_ticks());
+    }
+
+    #[test]
+    fn sweep_refuses_before_the_next_monotone_source_probe() {
+        let pool = [
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(1.0, 1.0),
+            },
+            Segment {
+                start: XY::new(3.0, 0.0),
+                end: XY::new(4.0, 1.0),
+            },
+        ];
+        let chain_calls = Cell::new(0);
+        let candidate_calls = Cell::new(0);
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        budget.limit = 0;
+
+        let error = sweep_for_each_candidate_pair_with_work(
+            &pool,
+            |_| {
+                chain_calls.set(chain_calls.get() + 1);
+                0
+            },
+            &mut budget,
+            |_, _, _work| {
+                candidate_calls.set(candidate_calls.get() + 1);
+                Ok(ControlFlow::<()>::Continue(()))
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "sweep_test",
+                constructed: 1,
+                evaluations: 0
+            })
+        ));
+        assert_eq!(chain_calls.get(), 0);
+        assert_eq!(candidate_calls.get(), 0);
+        assert_eq!(budget.spent_ticks, 0);
+    }
+
+    #[test]
+    fn bounds_brute_refusal_precedes_filter_and_callback() {
+        let left = [Bounds::new_raw(0.0, 0.0, 1.0, 1.0)];
+        let right = [Bounds::new_raw(0.0, 0.0, 1.0, 1.0)];
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        budget.limit = 1;
+        budget.spent_ticks = 16;
+        let mut callbacks = 0;
+
+        let error = sweep_for_each_overlapping_bounds_cross_pair_with_work(
+            &left,
+            &right,
+            &mut budget,
+            |_, _, _work| {
+                callbacks += 1;
+                Ok(ControlFlow::<()>::Continue(()))
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "sweep_test",
+                constructed: 1,
+                evaluations: 1
+            })
+        ));
+        assert_eq!(callbacks, 0);
+        assert_eq!(budget.spent_ticks, 16);
+    }
+
+    #[test]
+    fn banded_window_refusal_precedes_the_first_4096_entry_callback() {
+        let bounds = vec![Bounds::new_raw(0.0, 0.0, 1.0, 1.0); 4096];
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        // The funded entry, stable-sort, two extent-fold, CSR, band-row and
+        // left-row phases total 126,736 ticks before the first right window.
+        let remaining_ticks = 126_736_u128;
+        budget.limit = u64::try_from(remaining_ticks.div_ceil(WORK_TICKS_PER_EVALUATION)).unwrap();
+        budget.spent_ticks = budget.limit_ticks().wrapping_sub(remaining_ticks);
+        let mut callbacks = 0;
+
+        let error = sweep_for_each_overlapping_bounds_pair_with_work(
+            &bounds,
+            &mut budget,
+            |_, _, _work| {
+                callbacks += 1;
+                Ok(ControlFlow::<()>::Break(()))
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "sweep_test",
+                constructed: 1,
+                evaluations: 7_921
+            })
+        ));
+        assert_eq!(callbacks, 0);
+        assert_eq!(budget.spent_ticks, 126_736);
+    }
+
     #[test]
     fn unaffordable_billing_product_is_a_native_search_limit() {
         let mut budget = EvaluationBudget::new("search_test", 1).unwrap();
@@ -2929,6 +3257,160 @@ mod tests {
             })
         ));
         assert_eq!(budget.spent_ticks, 0);
+    }
+
+    #[test]
+    fn exact_product_refuses_before_multilimb_cells_after_reservation() {
+        let left = ExactDyadic::from_parts(false, vec![u64::MAX; 9], 0);
+        let right = ExactDyadic::from_parts(false, vec![u64::MAX; 10], 0);
+        let mut budget = EvaluationBudget::new("exact_product", 1).unwrap();
+        budget.limit = 6;
+
+        let error = left.try_product_with_work(&right, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_product",
+                constructed: 1,
+                evaluations: 2
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 19);
+    }
+
+    #[test]
+    fn exact_division_refuses_before_the_first_algorithm_d_digit_cells() {
+        const TOP: u64 = 1 << 63;
+        let dividend = [0, 0, TOP, TOP - 1];
+        let divisor = [1, 0, TOP];
+        let mut budget = EvaluationBudget::new("exact_division", 1).unwrap();
+        budget.limit = 2;
+        budget.spent_ticks = 8;
+
+        let error =
+            ExactDyadic::div_rem_unsigned_with_work(&dividend, &divisor, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_division",
+                constructed: 1,
+                evaluations: 2
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 30);
+    }
+
+    #[test]
+    fn exact_inline_gcd_funds_each_binary_iteration() {
+        const PRIME: u64 = 0xFFFF_FFFF_FFFF_FFC5;
+        let left = ExactDyadic::try_from_u128(false, u128::from(PRIME).wrapping_mul(3), 5).unwrap();
+        let right =
+            ExactDyadic::try_from_u128(false, u128::from(PRIME).wrapping_mul(5), -3).unwrap();
+        let mut budget = EvaluationBudget::new("exact_gcd", 1).unwrap();
+        budget.limit = 1;
+        budget.spent_ticks = 15;
+
+        let error = left.gcd_with_work(&right, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_gcd",
+                constructed: 1,
+                evaluations: 1
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 16);
+    }
+
+    #[test]
+    fn exact_ratio_rounding_refuses_before_multilimb_product_cells() {
+        let numerator = ExactDyadic::one();
+        let denominator = ExactDyadic::from_parts(false, vec![1, 0, 1], 0);
+        let mut budget = EvaluationBudget::new("exact_round", 1).unwrap();
+        budget.limit = 1;
+        budget.spent_ticks = 6;
+
+        let error = round_ratio_with_work(&numerator, &denominator, &mut budget).unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "exact_round",
+                constructed: 1,
+                evaluations: 1
+            })
+        ));
+        assert_eq!(budget.spent_ticks, 14);
+    }
+
+    #[test]
+    fn exact_primitives_share_native_fuel_and_evaluation_only_erases_work() {
+        let left = ExactDyadic::from_parts(false, vec![u64::MAX; 9], 0);
+        let right = ExactDyadic::from_parts(false, vec![u64::MAX; 10], 0);
+        let expected_product = [
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            u64::MAX,
+            u64::MAX - 1,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        ];
+        let numerator = ExactDyadic::from_f64(615.0);
+        let denominator = ExactDyadic::from_f64(9.0);
+        let one = ExactDyadic::one();
+        let three = ExactDyadic::from_f64(3.0);
+
+        let mut native = EvaluationBudget::new("exact_primitives", 1).unwrap();
+        let native_product = left.try_product_with_work(&right, &mut native).unwrap();
+        let native_ratio =
+            ExactRational::new_with_work(numerator.clone(), denominator.clone(), &mut native)
+                .unwrap();
+        let native_round = round_ratio_with_work(&one, &three, &mut native).unwrap();
+
+        assert_eq!(native_product.limbs.as_slice(), expected_product);
+        let (normalized_numerator, normalized_denominator) = native_ratio.parts();
+        assert_eq!(normalized_numerator.limbs.as_slice(), [205]);
+        assert_eq!(normalized_denominator.limbs.as_slice(), [3]);
+        assert_eq!(normalized_numerator.exponent, 0);
+        assert_eq!(normalized_denominator.exponent, 0);
+        assert_eq!(native_round.to_bits(), 0x3FD5_5555_5555_5555);
+        assert!(native.spent_ticks > 0);
+        assert!(native.spent_ticks <= native.limit_ticks());
+
+        let mut depleted = EvaluationBudget::new("exact_erasure", 1).unwrap();
+        depleted.limit = 1;
+        depleted.spent_ticks = depleted.limit_ticks();
+        let spent_before_erasure = depleted.spent_ticks;
+        let (erased_product, erased_ratio, erased_round) = {
+            let mut erased = EvaluationOnly::new(&mut depleted);
+            let product = left.try_product_with_work(&right, &mut erased).unwrap();
+            let ratio = ExactRational::new_with_work(numerator, denominator, &mut erased).unwrap();
+            let rounded = round_ratio_with_work(&one, &three, &mut erased).unwrap();
+            (product, ratio, rounded)
+        };
+
+        assert_eq!(erased_product.limbs.as_slice(), expected_product);
+        let (normalized_numerator, normalized_denominator) = erased_ratio.parts();
+        assert_eq!(normalized_numerator.limbs.as_slice(), [205]);
+        assert_eq!(normalized_denominator.limbs.as_slice(), [3]);
+        assert_eq!(erased_round.to_bits(), 0x3FD5_5555_5555_5555);
+        assert_eq!(depleted.spent_ticks, spent_before_erasure);
     }
 
     #[test]
@@ -3121,5 +3603,265 @@ mod tests {
             })
         ));
         assert_eq!(budget.spent_ticks, 16);
+    }
+
+    fn native_source_sample<M: crate::geometry::ChartMetric>(
+        metric: &M,
+        frame: crate::geographic::GeographicFrame,
+        source: &[crate::geometry::Point; 2],
+        longitude: crate::geographic::RetainedChartDisplacement,
+        parameter: f64,
+        axes: crate::geometry::CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<crate::geographic::ComputedSampleOrdinates> {
+        let mut root = crate::geometry::RootMetricState::default();
+        crate::geometry::computed_native_sample_ordinates(
+            frame,
+            source,
+            longitude,
+            parameter,
+            axes,
+            || Ok(metric),
+            &mut root,
+            work,
+        )
+    }
+
+    #[derive(Clone, Copy)]
+    struct SuccessfulRawCharge {
+        ticks: u128,
+        spent_before: u128,
+        progress: crate::crs::QuadratureTestProgress,
+    }
+
+    struct RecordingWork<'a> {
+        budget: &'a mut EvaluationBudget,
+        successful: Vec<SuccessfulRawCharge>,
+    }
+
+    impl RecordingWork<'_> {
+        fn record_success(
+            &mut self,
+            spent_before: u128,
+            progress: crate::crs::QuadratureTestProgress,
+        ) {
+            let ticks = self.budget.spent_ticks.saturating_sub(spent_before);
+            self.successful.push(SuccessfulRawCharge {
+                ticks,
+                spent_before,
+                progress,
+            });
+        }
+    }
+
+    impl Work for RecordingWork<'_> {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            let spent_before = self.budget.spent_ticks;
+            let progress = crate::crs::quadrature_test_progress();
+            <EvaluationBudget as Work>::charge(self.budget, ticks)?;
+            self.record_success(spent_before, progress);
+            Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            let spent_before = self.budget.spent_ticks;
+            let progress = crate::crs::quadrature_test_progress();
+            <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item)?;
+            self.record_success(spent_before, progress);
+            Ok(())
+        }
+    }
+
+    fn budget_refusing_before(
+        operation: &'static str,
+        event: &SuccessfulRawCharge,
+    ) -> EvaluationBudget {
+        assert!(event.ticks > 0);
+        let mut budget =
+            EvaluationBudget::new(operation, 1).expect("the test budget is representable");
+        let earlier_work = event
+            .spent_before
+            .checked_add(event.ticks.checked_sub(1).expect("charge is positive"))
+            .expect("observed work fits the raw account");
+        let prior_spend = budget
+            .limit_ticks()
+            .checked_sub(earlier_work)
+            .expect("the event fits within the real budget");
+        <EvaluationBudget as Work>::charge(
+            &mut budget,
+            u64::try_from(prior_spend).expect("the account limit fits u64 ticks"),
+        )
+        .expect("the calibrated prior spend fits the real account");
+        budget
+    }
+
+    fn assert_raw_budget_refuses_before_progress(
+        operation: &'static str,
+        event: &SuccessfulRawCharge,
+        action: &'static str,
+        run: impl FnOnce(&mut EvaluationBudget) -> Result<crate::geographic::ComputedSampleOrdinates>,
+    ) {
+        crate::crs::reset_quadrature_test_progress();
+        let mut budget = budget_refusing_before(operation, event);
+        let Err(error) = run(&mut budget) else {
+            panic!("{action}: operation unexpectedly succeeded")
+        };
+        let ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+            operation: actual_operation,
+            constructed: 1,
+            ..
+        }) = error.kind()
+        else {
+            panic!(
+                "{action}: expected a raw budget refusal, got {:?}",
+                error.kind()
+            )
+        };
+        assert_eq!(*actual_operation, operation, "{action}");
+        assert_eq!(
+            budget.spent_ticks,
+            budget
+                .limit_ticks()
+                .checked_sub(event.ticks)
+                .and_then(|ticks| ticks.checked_add(1))
+                .expect("the refused charge remains unpaid"),
+            "{action}"
+        );
+        assert_eq!(
+            crate::crs::quadrature_test_progress(),
+            event.progress,
+            "{action}"
+        );
+    }
+
+    #[test]
+    fn native_source_arc_quadrature_funds_refinement_before_progress() {
+        const OPERATION: &str = "quadrature_source_arc";
+        let runtime = crate::crs::runtime_state_snapshot()
+            .expect("the test runtime configuration is available");
+        crate::crs::with_ellipsoid_metric_at("EPSG:4326", &[], &runtime, |metric| {
+            let frame = crate::geometry::ChartMetric::chart_frame(metric);
+            let source = [
+                crate::geometry::Point::new_axes(
+                    0.0,
+                    0.0,
+                    crate::geometry::ZOrdinate(Some(7.0)),
+                    crate::geometry::MOrdinate(Some(101.0)),
+                )?,
+                crate::geometry::Point::new_axes(
+                    179.0,
+                    89.9,
+                    crate::geometry::ZOrdinate(Some(47.0)),
+                    crate::geometry::MOrdinate(Some(701.0)),
+                )?,
+            ];
+            let longitude = frame
+                .longitude()
+                .chart_connection(source[0].x, source[1].x)
+                .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?
+                .retained();
+            let parameter = 0.5;
+            let axes = crate::geometry::CoordinateAxes::XYZM;
+
+            crate::crs::reset_quadrature_test_progress();
+            let mut metered_budget = EvaluationBudget::new(OPERATION, 1)?;
+            let (metered, successful_charges) = {
+                let mut work = RecordingWork {
+                    budget: &mut metered_budget,
+                    successful: Vec::new(),
+                };
+                let sample = native_source_sample(
+                    metric, frame, &source, longitude, parameter, axes, &mut work,
+                )?;
+                (sample, std::mem::take(&mut work.successful))
+            };
+            let metered_progress = crate::crs::quadrature_test_progress();
+            assert!(
+                metered_progress.max_refinements >= 2,
+                "the real source-arc path refined only {} times in one integration",
+                metered_progress.max_refinements
+            );
+            assert!(metered_budget.spent_ticks > 0);
+
+            let actual_z = metered.z.0.expect("XYZM sampling carries Z");
+            let expected_z = 31.528_758_192_036_157;
+            assert!(
+                (actual_z - expected_z).abs() <= 1.0e-12,
+                "Z oracle: actual={actual_z:.17}, expected={expected_z:.17}"
+            );
+            let actual_m = metered.m.0.expect("XYZM sampling carries M");
+            let expected_m = 468.931_372_880_542_37;
+            assert!(
+                (actual_m - expected_m).abs() <= 1.0e-11,
+                "M oracle: actual={actual_m:.17}, expected={expected_m:.17}"
+            );
+
+            crate::crs::reset_quadrature_test_progress();
+            let mut ordinary_work = Unmetered;
+            let ordinary = native_source_sample(
+                metric,
+                frame,
+                &source,
+                longitude,
+                parameter,
+                axes,
+                &mut ordinary_work,
+            )?;
+            assert_eq!(metered.y.to_bits(), ordinary.y.to_bits());
+            assert_eq!(
+                metered.z.0.map(f64::to_bits),
+                ordinary.z.0.map(f64::to_bits)
+            );
+            assert_eq!(
+                metered.m.0.map(f64::to_bits),
+                ordinary.m.0.map(f64::to_bits)
+            );
+
+            let funded_growths = successful_charges
+                .iter()
+                .filter(|charge| charge.progress.growth_requests > charge.progress.growths)
+                .count();
+            assert_eq!(
+                u32::try_from(funded_growths).expect("growth count fits the interval cap"),
+                metered_progress.growths,
+                "each interval growth must follow a successful raw commit debit"
+            );
+            let scan_charge = successful_charges
+                .iter()
+                .copied()
+                .find(|charge| charge.progress.seeds == 1 && charge.progress.scans == 0)
+                .expect("the real source path charges the largest-error scan");
+            let commit_charge = successful_charges
+                .iter()
+                .copied()
+                .find(|charge| {
+                    charge.progress.child_pairs > charge.progress.refinements
+                        && charge.progress.growth_requests > charge.progress.growths
+                })
+                .expect("the real source path charges a refinement that requires growth");
+
+            let removal_charge = successful_charges
+                .iter()
+                .copied()
+                .find(|charge| charge.progress.scans == 1 && charge.progress.removals == 0)
+                .expect("the real source path charges before removing the largest interval");
+            for (charge, action) in [
+                (&scan_charge, "before the interval scan"),
+                (&removal_charge, "before interval removal"),
+                (&commit_charge, "before the refinement commit"),
+            ] {
+                assert_raw_budget_refuses_before_progress(OPERATION, charge, action, |budget| {
+                    let mut work = RecordingWork {
+                        budget,
+                        successful: Vec::new(),
+                    };
+                    native_source_sample(
+                        metric, frame, &source, longitude, parameter, axes, &mut work,
+                    )
+                });
+            }
+            Ok(())
+        })
+        .expect("EPSG:4326 resolves the source-arc test metric");
     }
 }

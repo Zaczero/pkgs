@@ -1,11 +1,11 @@
 //! Binary-operation broadcasts layered on the [`crate::dispatch`] spine.
 //!
-//! `broadcast2`/`array_binary_*`/`geometry_binary*` bind the spine's defaults
-//! (fast-path/resolver) so callers get a slim signature, and this module owns
-//! the genuinely broadcast-specific logic: the prepared + point-fast-path
-//! predicate optimizations, the CRS-aware distance/dwithin broadcasts, and the
-//! small shared classifiers/helpers. Reaches the crate-root model and sibling
-//! modules via `use super::*`; re-exported at the crate root.
+//! `broadcast2`/`array_binary_*`/`geometry_binary*` bind the spine's resolver
+//! policies so callers get a slim signature, and this module owns the genuinely
+//! broadcast-specific logic: prepared predicate kernels, CRS-aware
+//! distance/dwithin broadcasts, and shared classifiers/helpers. Reaches the
+//! crate-root model and sibling modules via `use super::*`; re-exported at the
+//! crate root.
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -89,7 +89,6 @@ where
         right,
         op_name,
         crate::dispatch::MetricResolver::GeographicCarry,
-        &crate::dispatch::OverlayFastPath,
         move |left, right, context| kernel(left, right, context),
     )
 }

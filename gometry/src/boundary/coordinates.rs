@@ -1738,8 +1738,7 @@ impl CoordinateView {
 
     /// Per-coordinate geometry-row index as NumPy's `int64` lane, built at
     /// coordinate-run altitude (CSR window fills / one fill per run) rather
-    /// than per-vertex push. Mirrors [`row_index`] for the `Coordinates.index`
-    /// getter and `get_coordinates(..., return_index=True)`.
+    /// than per-vertex push. Backs the public `Coordinates.row_index` getter.
     pub(crate) fn try_row_index_i64(&self, py: Python<'_>) -> PyResult<Vec<i64>> {
         let count = self.len_for_python(py)?;
         let capacity = checked_vector_len::<i64>(count, "coordinate row index")?;

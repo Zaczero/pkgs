@@ -196,7 +196,7 @@ fn subdivision_children(source: &Shape, split_x: bool, cut: f64) -> [Shape; 2] {
             false,
             [1, 2],
             &mut budget,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     let [first, second] = &children;
@@ -286,7 +286,7 @@ fn subdivision_keeps_a_hole_vertex_on_the_other_childs_dissolved_seam() {
     assert!(
         crate::geometry::boundary_with_metric::<crate::crs::GeodesicMetric>(
             &crate::geometry::PreparedPlan::transient(&right),
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap()
         .intersects(&Shape::Point(Point::new_raw_xy(0.0, 0.0)))
@@ -396,7 +396,7 @@ fn boundary_of_polygonal_support(wkt: &str) -> String {
         .occupied_boundary_shape::<crate::crs::GeodesicMetric>(
             &partition,
             shape.axes(),
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .expect("boundary cells emit");
     crate::io::to_wkt(&boundary).expect("boundary WKT writes")
@@ -549,7 +549,7 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
             &accepted,
             nodes.iter().copied(),
             axes,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -639,7 +639,7 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
             &nearest_embedding,
             nodes.iter().copied(),
             axes,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -713,7 +713,7 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
                 &partition,
                 crossing,
                 crate::geometry::CoordinateAxes::XYZM,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
                 None,
             )
             .unwrap();
@@ -724,7 +724,7 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
                 &partition,
                 endpoint,
                 crate::geometry::CoordinateAxes::XYZM,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
                 None,
             )
             .unwrap();
@@ -750,9 +750,9 @@ fn resolved_node_points_use_embedding_xy_and_exact_ordinates() {
         .resolve_node_points::<crate::crs::GeodesicMetric, _>(
             &partition,
             &embedding,
-            [crossing, endpoint].into_iter(),
+            [crossing, endpoint],
             crate::geometry::CoordinateAxes::XYZM,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -2741,7 +2741,7 @@ fn polygonal_union_as_one_operand_matches_separate_operands() {
                 crate::geometry::OverlayOp::Union,
                 axes,
                 true,
-                crate::geometry::SourceArcContext::cartesian(),
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap()
     };
@@ -3477,7 +3477,7 @@ fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
             "test",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(faces.len(), 4);
@@ -3514,7 +3514,7 @@ fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
             "test",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(parts.len(), 3);
@@ -3543,7 +3543,7 @@ fn polygonize_emission_preserves_hosts_across_disconnected_cycles() {
             "polygonize",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(polygons.len(), 2);
@@ -3702,7 +3702,7 @@ fn polygonize_full_certifies_diagnostic_lines_with_polygon_faces() {
             CoordinateAxes::XY,
             &[CoordinateAxes::XY],
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(full.polygons.len(), 2);
@@ -3762,7 +3762,7 @@ fn polygonize_faces_attach_closed_holes_to_their_literal_hosts() {
             "polygonize",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(polygons.len(), 4);
@@ -3823,7 +3823,7 @@ fn polygonize_faces_keep_point_touching_and_tangent_hole_cycles_separate() {
             "polygonize",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(polygons.len(), 2);
@@ -3871,7 +3871,7 @@ fn polygonize_faces_keep_point_touching_and_tangent_hole_cycles_separate() {
             "polygonize",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(polygons.len(), 2);
@@ -3914,7 +3914,7 @@ fn polygonize_keeps_collinear_partition_nodes_in_serialized_and_certified_bounda
             "polygonize",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(polygons.len(), 1);
@@ -3997,7 +3997,7 @@ fn polygonize_faces_sort_global_faces_after_dangling_walks() {
             "polygonize",
             CoordinateAxes::XY,
             false,
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     assert_eq!(polygons.len(), 2);
@@ -4094,7 +4094,7 @@ fn polygonize_faces_serialize_the_supplied_certified_node_table() {
             CoordinateAxes::XY,
             false,
             "polygonize",
-            crate::geometry::SourceArcContext::cartesian(),
+            &crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -4140,7 +4140,7 @@ fn polygonize_returns_no_polygons_without_a_bounded_face() {
                     "polygonize",
                     CoordinateAxes::XY,
                     false,
-                    crate::geometry::SourceArcContext::cartesian(),
+                    &crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap()
                 .is_empty()
@@ -6267,7 +6267,7 @@ fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders() {
                     &partition,
                     node,
                     crate::geometry::CoordinateAxes::XYZM,
-                    SourceArcContext::cartesian(),
+                    &SourceArcContext::cartesian(),
                     None,
                 )
                 .unwrap();

@@ -35,9 +35,6 @@ from __future__ import annotations
 import collections.abc as _cabc
 from typing import get_type_hints as _get_type_hints
 
-TYPE_CHECKING = False
-del TYPE_CHECKING
-
 from gometry._cpu import ensure_supported_cpu as _ensure_supported_cpu
 
 _ensure_supported_cpu()
@@ -137,7 +134,6 @@ from gometry._lib import (
     geohash_difference,
     geohash_intersection,
     geohash_union,
-    get_coordinates,
     h3_base_cells,
     h3_bounding_cell,
     h3_cells,
@@ -179,6 +175,7 @@ from gometry._lib import (
     s2_bounding_cell,
     s2_cells,
     s2_cover,
+    s2_cover_adaptive,
     s2_difference,
     s2_intersection,
     s2_union,
@@ -350,7 +347,6 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'geohash_difference',
     'geohash_intersection',
     'geohash_union',
-    'get_coordinates',
     'h3_base_cells',
     'h3_bounding_cell',
     'h3_cells',
@@ -392,6 +388,7 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     's2_bounding_cell',
     's2_cells',
     's2_cover',
+    's2_cover_adaptive',
     's2_difference',
     's2_intersection',
     's2_union',

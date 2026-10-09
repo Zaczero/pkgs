@@ -16,6 +16,9 @@ for path in (_SUPPORT, _PYTHON):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+# Resolve benchmark support only after selecting the repository import paths.
+from benchmark_identity import identity_for_arm  # noqa: E402
+
 _SPEC = importlib.util.spec_from_file_location(
     'gometry_bench_paired_test', _PYTHON / 'bench_paired.py'
 )
@@ -70,7 +73,7 @@ def _file_identity(path: str) -> dict[str, object]:
 def _complete_identity() -> dict[str, object]:
     source = '0' * 64
     extension = {
-        **_file_identity('/checkout/gometry.so'),
+        **_file_identity('/checkout/gometry/_lib.cpython-314.so'),
         'build_info': {'source_inputs_sha256': source},
     }
 
@@ -91,8 +94,8 @@ def _complete_identity() -> dict[str, object]:
         }
 
     return {
-        'identity_schema_version': 1,
-        'git_commit': 'test-commit',
+        'identity_schema_version': 2,
+        'harness_commit': 'test-commit',
         'source_inputs_sha256': source,
         'extension': extension,
         'uv_lock': None,
@@ -346,3 +349,96 @@ def test_complete_arm_identity_uses_rows_from_tuple_backed_arms(
         artifact['arms']['B']['provenance_before']['implementation']['row']
         == operation.competitor
     )
+
+
+def test_source_commit_binding_and_null_attribution_require_consistent_receipts() -> (
+    None
+):
+    common = _complete_identity()
+    package = common['packages']['gometry']
+    extension = common['extension']
+    native = [{key: extension[key] for key in ('path', 'sha256', 'size_bytes')}]
+    receipt = {
+        'path': '/bench-evidence/gometry-release-manifest.json',
+        'sha256': '1' * 64,
+    }
+    wheel = {
+        'filename': 'gometry-1.0-cp314-cp314-manylinux_x86_64.whl',
+        'sha256': '2' * 64,
+        'extension_member': 'gometry/_lib.cpython-314.so',
+        'extension_sha256': extension['sha256'],
+    }
+
+    identity = identity_for_arm(
+        common,
+        side='A',
+        row='gometry.op/1',
+        runtime='gometry',
+        module=package['module'],
+        distribution=package['distribution'],
+        native_libraries=native,
+        native_library_status='identified',
+        source_commit='3' * 40,
+        source_receipt=receipt,
+        source_wheel=wheel,
+    )
+
+    assert identity['implementation']['source_commit'] == '3' * 40
+    assert identity['implementation']['source_wheel'] == wheel
+
+    unbound = identity_for_arm(
+        common,
+        side='A',
+        row='gometry.op/1',
+        runtime='gometry',
+        module=package['module'],
+        distribution=package['distribution'],
+        native_libraries=native,
+        native_library_status='identified',
+    )
+    implementation = unbound['implementation']
+    assert implementation['source_commit'] is None
+    assert implementation['source_receipt'] is None
+    assert implementation['source_wheel'] is None
+    assert implementation['module'] == package['module']
+    assert implementation['native_libraries'] == native
+
+    with pytest.raises(ValueError, match='require a producer source commit'):
+        identity_for_arm(
+            common,
+            side='A',
+            row='gometry.op/1',
+            runtime='gometry',
+            module=package['module'],
+            distribution=package['distribution'],
+            native_libraries=native,
+            native_library_status='identified',
+            source_receipt=receipt,
+        )
+    with pytest.raises(ValueError, match='require a producer source commit'):
+        identity_for_arm(
+            common,
+            side='A',
+            row='gometry.op/1',
+            runtime='gometry',
+            module=package['module'],
+            distribution=package['distribution'],
+            native_libraries=native,
+            native_library_status='identified',
+            source_wheel=wheel,
+        )
+
+    with pytest.raises(ValueError, match='source receipt extension'):
+        identity_for_arm(
+            common,
+            side='A',
+            row='gometry.op/1',
+            runtime='gometry',
+            module=package['module'],
+            distribution=package['distribution'],
+            native_libraries=native,
+            native_library_status='identified',
+            source_commit='3' * 40,
+            source_receipt=receipt,
+            source_wheel={**wheel, 'extension_sha256': 'b' * 64},
+        )

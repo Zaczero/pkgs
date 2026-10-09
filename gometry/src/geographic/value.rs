@@ -2,6 +2,9 @@ use std::cmp::Ordering;
 
 use super::GeographicError;
 use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::exact_arith::{
+    nearest_periodic_alias, retained_delta_native, retained_lifted_native, retained_native_site,
+};
 use crate::geometry::{Bounds, Point};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,6 +45,10 @@ impl AngularFactor {
     }
 
     pub(crate) fn degrees_to_native(self, degrees: f64, period: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path is the exact conventional 360-unit identity"
+        )]
         if period == 360.0 {
             return degrees;
         }
@@ -52,6 +59,10 @@ impl AngularFactor {
     }
 
     pub(crate) fn native_to_degrees(self, value: f64, period: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path is the exact conventional 360-unit identity"
+        )]
         if period == 360.0 {
             return value;
         }
@@ -89,11 +100,11 @@ pub(crate) struct RetainedLongitudeSite<L: RetainedNativeLongitude = CanonicalLo
 }
 
 impl<L: RetainedNativeLongitude> RetainedLongitudeSite<L> {
-    pub(crate) fn new(native: L, periods: i64) -> Self {
+    pub(crate) const fn new(native: L, periods: i64) -> Self {
         Self { native, periods }
     }
 
-    pub(crate) fn native(&self) -> &L {
+    pub(crate) const fn native(&self) -> &L {
         &self.native
     }
 
@@ -111,7 +122,7 @@ pub(crate) struct RetainedChartDisplacement<L: RetainedNativeLongitude = Canonic
 }
 
 impl<L: RetainedNativeLongitude> RetainedChartDisplacement<L> {
-    pub(crate) fn from_native_endpoints(endpoints: [L; 2], periods: i64) -> Self {
+    pub(crate) const fn from_native_endpoints(endpoints: [L; 2], periods: i64) -> Self {
         Self { endpoints, periods }
     }
 
@@ -130,7 +141,7 @@ impl<L: RetainedNativeLongitude> RetainedChartDisplacement<L> {
         })
     }
 
-    pub(crate) fn endpoints(&self) -> &[L; 2] {
+    pub(crate) const fn endpoints(&self) -> &[L; 2] {
         &self.endpoints
     }
 
@@ -141,7 +152,7 @@ impl<L: RetainedNativeLongitude> RetainedChartDisplacement<L> {
 
 impl RetainedChartDisplacement<CanonicalLongitude> {
     pub(crate) fn delta_native(&self, axis: PeriodicAxis) -> f64 {
-        crate::geometry::exact_arith::retained_delta_native(
+        retained_delta_native(
             self.endpoints[0].get(),
             self.endpoints[1].get(),
             axis.period(),
@@ -191,6 +202,10 @@ impl PeriodicAxis {
         self.unit.effective_radians_per_unit()
     }
     pub(crate) fn to_degrees(self, value: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path preserves the exact conventional longitude identity"
+        )]
         if self.period == 360.0 {
             value
         } else if let Some(period) = self.conventional_integer_period() {
@@ -199,7 +214,11 @@ impl PeriodicAxis {
             (value * self.unit.radians_per_unit()).to_degrees()
         }
     }
-    pub(crate) fn from_degrees(self, value: f64) -> f64 {
+    pub(crate) fn degrees_to_native(self, value: f64) -> f64 {
+        #[expect(
+            clippy::float_cmp,
+            reason = "the degree fast path preserves the exact conventional longitude identity"
+        )]
         if self.period == 360.0 {
             value
         } else if let Some(period) = self.conventional_integer_period() {
@@ -326,15 +345,15 @@ impl PeriodicAxis {
     pub(crate) fn native_site_at(
         self,
         edge: &RetainedChartDisplacement,
-        parameter: &f64,
+        parameter: f64,
     ) -> crate::error::Result<RetainedLongitudeSite> {
-        let (native, periods) = crate::geometry::exact_arith::retained_native_site(
+        let (native, periods) = retained_native_site(
             edge.endpoints[0].get(),
             edge.endpoints[1].get(),
             self.period(),
             self.half_period(),
             edge.periods,
-            *parameter,
+            parameter,
         )?;
         Ok(RetainedLongitudeSite::new(
             CanonicalLongitude(native),
@@ -344,13 +363,9 @@ impl PeriodicAxis {
 
     pub(crate) fn lifted_site_longitude(
         self,
-        site: &RetainedLongitudeSite,
+        site: RetainedLongitudeSite,
     ) -> crate::error::Result<f64> {
-        crate::geometry::exact_arith::retained_lifted_native(
-            site.native.get(),
-            self.period,
-            site.periods,
-        )
+        retained_lifted_native(site.native.get(), self.period, site.periods)
     }
 
     /// The strict-interior certificate for an edge with zero quotient-seam
@@ -386,11 +401,7 @@ impl PeriodicAxis {
     }
 
     pub(crate) fn ordinary_longitude_bound(self) -> f64 {
-        self.conventional_integer_period()
-            .filter(|period| (period / 2.0).fract() == 0.0)
-            .map_or(self.half_period, |period| {
-                self.half_period.min(period / 2.0)
-            })
+        self.half_period
     }
 
     pub(crate) fn canonicalize(self, value: f64) -> Result<CanonicalLongitude, GeographicError> {
@@ -408,21 +419,8 @@ impl PeriodicAxis {
         Ok(self.wrap_admitted(value))
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "the nominal half-period alias is an exact seam spelling"
-    )]
     pub(crate) fn ordinary_longitude(self, value: f64) -> Option<CanonicalLongitude> {
         if value.abs().partial_cmp(&self.half_period) != Some(Ordering::Less) {
-            return None;
-        }
-        // A rounded nominal half-period can lie just inside the derived half,
-        // while wrap_admitted still treats that integer alias as the seam.
-        if value.fract() == 0.0
-            && self
-                .conventional_integer_period()
-                .is_some_and(|period| value.abs() == period / 2.0)
-        {
             return None;
         }
         Some(CanonicalLongitude(if value == 0.0 { 0.0 } else { value }))
@@ -458,13 +456,7 @@ impl PeriodicAxis {
                 longitude,
                 difference,
             )
-            .unwrap_or_else(|| {
-                crate::geometry::exact_arith::nearest_periodic_alias(
-                    longitude,
-                    lifted_reference,
-                    self.period,
-                )
-            });
+            .unwrap_or_else(|| nearest_periodic_alias(longitude, lifted_reference, self.period));
         if alias.is_finite() {
             Ok(alias)
         } else {
@@ -525,9 +517,8 @@ impl PeriodicAxis {
         Some(lifted.round_to_binary64())
     }
 
-    /// Wrap a finite longitude with the canonical remainder, integer-period
-    /// aliases, and signed-zero spelling. Ingress must already have rejected
-    /// non-finite values.
+    /// Wrap a finite longitude with the canonical remainder and signed-zero
+    /// spelling. Ingress must already have rejected non-finite values.
     #[expect(
         clippy::float_cmp,
         reason = "exact zero and integer seam aliases are part of the coordinate contract"
@@ -540,20 +531,6 @@ impl PeriodicAxis {
         // `value + half_period` can overflow. The remainder first keeps every
         // finite binary64 input admissible.
         let mut reduced = value % self.period;
-        // PROJ's grad factor is a rounded representation of pi/200, so its
-        // derived period is one ULP below 400. Preserve the conventional
-        // integer aliases (400 and 200 grads) without widening ordinary
-        // coordinates near zero or the seam.
-        if value.fract() == 0.0
-            && let Some(nominal_period) = self.conventional_integer_period()
-        {
-            let nominal_remainder = value % nominal_period;
-            if nominal_remainder == 0.0 {
-                reduced = 0.0;
-            } else if nominal_remainder.abs() == nominal_period / 2.0 {
-                reduced = -self.half_period;
-            }
-        }
         if reduced < -self.half_period {
             reduced += self.period;
         } else if reduced >= self.half_period {
@@ -1124,7 +1101,7 @@ impl GeographicFrame {
             } else {
                 longitude - self.prime_meridian_radians.to_degrees()
             } * self.longitude_orientation_sign();
-            self.longitude.from_degrees(relative)
+            self.longitude.degrees_to_native(relative)
         };
         let latitude = if self == Self::crs84() {
             latitude
@@ -1184,11 +1161,7 @@ impl Latitude {
                 value,
             });
         }
-        if value < south || value > north {
-            Some(GeographicError::LatitudeOutOfRange { value })
-        } else {
-            None
-        }
+        (value < south || value > north).then_some(GeographicError::LatitudeOutOfRange { value })
     }
 
     pub(crate) fn first_invalid(
@@ -1373,29 +1346,6 @@ impl EdgeDirection {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod source_admission_counts {
-    use std::cell::Cell;
-
-    thread_local! {
-        static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
-    }
-
-    pub(crate) fn snapshot() -> (usize, usize) {
-        COUNTS.get()
-    }
-
-    pub(super) fn connection() {
-        let (connections, canonicalizations) = COUNTS.get();
-        COUNTS.set((connections + 1, canonicalizations));
-    }
-
-    pub(super) fn canonicalization() {
-        let (connections, canonicalizations) = COUNTS.get();
-        COUNTS.set((connections, canonicalizations + 1));
-    }
-}
-
 /// One admitted edge decision with authentic canonical endpoints and the
 /// integral lift that selects its directed source branch.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1456,5 +1406,28 @@ impl RingTurn {
             -1 => Self::Full(TurnDirection::Negative),
             _ => Self::Other,
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod source_admission_counts {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNTS: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    }
+
+    pub(crate) fn snapshot() -> (usize, usize) {
+        COUNTS.get()
+    }
+
+    pub(super) fn connection() {
+        let (connections, canonicalizations) = COUNTS.get();
+        COUNTS.set((connections.wrapping_add(1), canonicalizations));
+    }
+
+    pub(super) fn canonicalization() {
+        let (connections, canonicalizations) = COUNTS.get();
+        COUNTS.set((connections, canonicalizations.wrapping_add(1)));
     }
 }

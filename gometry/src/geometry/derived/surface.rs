@@ -1,10 +1,9 @@
-use std::ops::ControlFlow;
-
-use super::centroid::{centroid_line_columns, lineal_centroid};
+use super::centroid::{centroid_line_columns, lineal_centroid, point_centroid};
 use crate::error::Result;
 use crate::geometry::{
-    Bounds, CoordSeq, LineSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, column_mean2,
-    held_axis_interpolate, line_length_columns, point_on_segment, same_point, simd_argmin_f64,
+    Bounds, Component, CoordSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, RingClass, Shape,
+    column_mean2, held_axis_interpolate, line_length_columns, point_on_segment,
+    ring_classify_point, ring_classify_point_columns, same_point, simd_argmin_f64,
 };
 
 /// Collect horizontal-bisector chord crossings for one ring's coordinate
@@ -49,6 +48,47 @@ where
     Some(map(start, end))
 }
 
+fn polygon_covers_point(polygon: &Polygon, point: Point) -> bool {
+    ring_classify_point(polygon.shell.coords(), point) != RingClass::Exterior
+        && polygon
+            .holes
+            .iter()
+            .all(|hole| ring_classify_point(hole.coords(), point) != RingClass::Interior)
+}
+
+fn ring_classify_columns(xs: &[f64], ys: &[f64], start: i32, end: i32, point: Point) -> RingClass {
+    let (start, end) = (start as usize, end as usize);
+    let (xs_prefix, _) = xs.split_at(end);
+    let (_, xs_ring) = xs_prefix.split_at(start);
+    let (ys_prefix, _) = ys.split_at(end);
+    let (_, ys_ring) = ys_prefix.split_at(start);
+    ring_classify_point_columns(xs_ring, ys_ring, point)
+}
+
+fn polygon_columns_cover_point(
+    xs: &[f64],
+    ys: &[f64],
+    ring_offsets: &[i32],
+    rings: std::ops::Range<usize>,
+    point: Point,
+) -> bool {
+    let mut saw_shell = false;
+    let starts = ring_offsets.iter().skip(rings.start).copied();
+    let ends = ring_offsets.iter().skip(rings.start).copied().skip(1);
+    for (ordinal, (start, end)) in starts.zip(ends).take(rings.len()).enumerate() {
+        let location = ring_classify_columns(xs, ys, start, end, point);
+        if ordinal == 0 {
+            saw_shell = true;
+            if location == RingClass::Exterior {
+                return false;
+            }
+        } else if location == RingClass::Interior {
+            return false;
+        }
+    }
+    saw_shell
+}
+
 /// Binary64 squared distance used only to rank on-geometry representative candidates.
 fn squared_xy_distance(point: Point, center: Point) -> f64 {
     let (dx, dy) = (point.x - center.x, point.y - center.y);
@@ -80,8 +120,10 @@ fn point_on_surface_polygon_columns(
         }
     }
     widest_even_odd_chord(crossings, |start, end| {
-        Point::new_raw_xy(f64::midpoint(start, end), mid)
+        let point = Point::new_raw_xy(f64::midpoint(start, end), mid);
+        polygon_columns_cover_point(xs, ys, ring_offsets, rings, point).then_some(point)
     })
+    .flatten()
 }
 
 /// Degenerate polygon fallback: arc-length midpoint of the longest boundary
@@ -129,13 +171,30 @@ pub(crate) fn point_on_surface_polygon_row_columns(
     point_on_surface_polygon_boundary_columns(xs, ys, ring_offsets, rings)
 }
 
-/// Interior representative of borrowed polygon components. Scan each
+fn polygon_boundary_point(polygon: &Polygon) -> Option<Point> {
+    polygon
+        .rings()
+        .map(|ring| {
+            let coords = ring.coords();
+            (
+                line_length_columns(coords.xs(), coords.ys()),
+                coords.xs(),
+                coords.ys(),
+            )
+        })
+        .max_by(|left, right| left.0.total_cmp(&right.0))
+        .and_then(|(_, xs, ys)| point_on_surface_line_columns(xs, ys))
+}
+
+/// Representative of borrowed polygon components. Scan each
 /// component's own rings at the horizontal bisector of their combined bounds,
 /// then keep the widest component chord, retaining the first component on a
 /// tie. The half-open crossing rule (`start_below != end_below`) keeps each
 /// component's even-odd parity consistent through vertices, including its
-/// holes. `None` falls back to the generic engine when the global bisector
-/// finds no chord or an interpolated crossing is unrepresentable.
+/// holes. The final rounded point is checked against the winning polygon; when
+/// rounding moved it outside, the same polygon's boundary supplies the result.
+/// `None` falls back to the dimensional cascade when the global bisector finds
+/// no chord or an interpolated crossing is unrepresentable.
 pub(crate) fn polygonal_surface_point<'a>(
     polygons: impl Iterator<Item = &'a Polygon> + Clone,
 ) -> Option<Point> {
@@ -148,7 +207,7 @@ pub(crate) fn polygonal_surface_point<'a>(
     let mut crossings: Vec<f64> = Vec::new();
     // Columnar chord scan: read each ring's coordinate windows directly —
     // no per-segment struct or visitor indirection on the 2n-compare loop.
-    let mut best: Option<(f64, f64, f64)> = None;
+    let mut best: Option<(f64, f64, f64, &'a Polygon)> = None;
     for polygon in polygons {
         crossings.clear();
         for ring in polygon.rings() {
@@ -165,10 +224,16 @@ pub(crate) fn polygonal_surface_point<'a>(
             .as_ref()
             .is_none_or(|(best_width, ..)| width.total_cmp(best_width).is_gt())
         {
-            best = Some((width, start, end));
+            best = Some((width, start, end, polygon));
         }
     }
-    best.map(|(_, start, end)| Point::new_raw_xy(f64::midpoint(start, end), mid))
+    let (_, start, end, polygon) = best?;
+    let point = Point::new_raw_xy(f64::midpoint(start, end), mid);
+    Some(if polygon_covers_point(polygon, point) {
+        point
+    } else {
+        polygon_boundary_point(polygon)?
+    })
 }
 
 /// Lineal representative from one coordinate run, preferring the interior
@@ -266,6 +331,15 @@ pub(crate) fn lineal_surface_point<'a>(
 
 /// The multipoint vertex nearest its centroid — a representative that is always
 /// one of the input points (so `covered_by` holds), no geo-rs conversion.
+pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> {
+    let count = xs.len();
+    if count == 0 {
+        return None;
+    }
+    let (centroid_x, centroid_y) = column_mean2(xs, ys)?;
+    multipoint_surface_point_at(xs, ys, Point::new_raw_xy(centroid_x, centroid_y))
+}
+
 #[expect(
     clippy::indexing_slicing,
     reason = "argmin ordinals and SIMD lane groups are generated from these equal-length columns"
@@ -274,19 +348,6 @@ pub(crate) fn lineal_surface_point<'a>(
     clippy::arithmetic_side_effects,
     reason = "the selected vertex is defined by the existing IEEE-754 squared-distance score"
 )]
-pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> {
-    let count = xs.len();
-    if count == 0 {
-        return None;
-    }
-    let (centroid_x, centroid_y) = column_mean2(xs, ys)?;
-    multipoint_surface_point_at(
-        xs,
-        ys,
-        Point::new_raw_xy(centroid_x, centroid_y),
-    )
-}
-
 pub(crate) fn multipoint_surface_point_at(
     xs: &[f64],
     ys: &[f64],
@@ -320,13 +381,12 @@ pub(crate) fn point_set_surface_point_at(shape: &Shape, center: Point) -> Option
         Shape::MultiPoint(points) => multipoint_surface_point_at(points.xs(), points.ys(), center),
         Shape::GeometryCollection(_) => {
             let mut best: Option<(f64, Point)> = None;
-            let _ = shape.try_for_each_first_point_run::<()>(|point| {
+            shape.for_each_first_point_run(|point| {
                 let candidate = Point::new_raw_xy(point.x, point.y);
                 let distance = squared_xy_distance(candidate, center);
                 if best.is_none_or(|(current, _)| distance.total_cmp(&current).is_lt()) {
                     best = Some((distance, candidate));
                 }
-                ControlFlow::<()>::Continue(())
             });
             best.map(|(_, point)| point)
         },
@@ -338,54 +398,58 @@ pub(crate) fn point_set_surface_point_at(shape: &Shape, center: Point) -> Option
     }
 }
 
-/// Flatten a (possibly nested) collection into its areal, lineal, and puntal
-/// components for the interior-point cascade.
-fn gather_surface_components<'a>(
-    parts: &'a [Shape],
-    polygons: &mut Vec<&'a Polygon>,
-    lines: &mut Vec<&'a CoordSeq>,
-    points: &mut Vec<Point>,
-) {
-    for part in parts {
-        match part {
-            Shape::Point(point) => points.push(*point),
-            Shape::MultiPoint(seq) => {
-                points.reserve(seq.xs().len());
-                points.extend(seq.iter());
-            },
-            Shape::LineString(seq) => lines.push(seq.as_coords()),
-            Shape::MultiLineString(seqs) => {
-                lines.reserve(seqs.as_slice().len());
-                lines.extend(seqs.iter().map(LineSeq::as_coords));
-            },
-            Shape::Polygon(polygon) => polygons.push(polygon),
-            Shape::MultiPolygon(polys) => {
-                polygons.reserve(polys.as_slice().len());
-                polygons.extend(polys.iter());
-            },
-            Shape::GeometryCollection(inner) => {
-                gather_surface_components(inner, polygons, lines, points);
-            },
-            Shape::Empty(..) => {},
+fn first_surface_polygons(shape: &Shape) -> Vec<&Polygon> {
+    let mut polygons = Vec::new();
+    match shape.try_for_each_first_component(&mut |component| {
+        if let Component::Polygon(polygon) = component {
+            polygons.push(polygon);
         }
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(()) => {},
+        Err(never) => match never {},
     }
+    polygons
 }
 
-/// Interior point of an arbitrary (possibly nested, mixed, or degenerate)
+fn first_surface_lines(shape: &Shape) -> Vec<&CoordSeq> {
+    let mut lines = Vec::new();
+    match shape.try_for_each_first_component(&mut |component| {
+        if let Component::LineString(line) = component {
+            lines.push(line.as_coords());
+        }
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(()) => {},
+        Err(never) => match never {},
+    }
+    lines
+}
+
+fn point_component_surface_point(shape: &Shape, center: Point) -> Option<Point> {
+    let mut best: Option<(f64, Point)> = None;
+    match shape.try_for_each_first_component(&mut |component| {
+        if let Component::Point(candidate) = component {
+            let distance = squared_xy_distance(candidate, center);
+            if best.is_none_or(|(current, _)| distance.total_cmp(&current).is_lt()) {
+                best = Some((distance, candidate));
+            }
+        }
+        Ok::<_, std::convert::Infallible>(())
+    }) {
+        Ok(()) => {},
+        Err(never) => match never {},
+    }
+    best.map(|(_, point)| point)
+}
+
+/// Representative of an arbitrary (possibly nested, mixed, or degenerate)
 /// collection: the highest present dimension wins, areal degeneracy falls
 /// through to its boundary linework, then to its vertices. Reused for bare
 /// degenerate polygons too (via `from_ref`), which the scanline kernel leaves
 /// to this boundary path.
 pub(crate) fn collection_surface_point(shape: &Shape) -> Result<Option<Point>> {
-    let mut polygons: Vec<&Polygon> = Vec::new();
-    let mut lines: Vec<&CoordSeq> = Vec::new();
-    let mut points: Vec<Point> = Vec::new();
-    gather_surface_components(
-        std::slice::from_ref(shape),
-        &mut polygons,
-        &mut lines,
-        &mut points,
-    );
+    let polygons = first_surface_polygons(shape);
     if !polygons.is_empty() {
         if let Some(point) = polygonal_surface_point(polygons.iter().copied()) {
             return Ok(Some(point));
@@ -400,6 +464,7 @@ pub(crate) fn collection_surface_point(shape: &Shape) -> Result<Option<Point>> {
             return Ok(Some(point));
         }
     }
+    let lines = first_surface_lines(shape);
     if let [line] = lines.as_slice() {
         return Ok(point_on_surface_line_columns(line.xs(), line.ys()));
     }
@@ -408,20 +473,22 @@ pub(crate) fn collection_surface_point(shape: &Shape) -> Result<Option<Point>> {
     {
         return Ok(Some(point));
     }
-    if points.is_empty() {
+    let Some((x, y)) = point_centroid(shape)? else {
         return Ok(None);
-    }
-    let mut xs = Vec::with_capacity(points.len());
-    let mut ys = Vec::with_capacity(points.len());
-    xs.extend(points.iter().map(|point| point.x));
-    ys.extend(points.iter().map(|point| point.y));
-    Ok(multipoint_surface_point(&xs, &ys))
+    };
+    Ok(point_component_surface_point(
+        shape,
+        Point::new_raw_xy(x, y),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordinateAxes, GeometryKind, MultiMember, MultiPoint};
+    use crate::geometry::{
+        CoordinateAxes, Coordinates as _, GeometryKind, LineSeq, MultiMember, MultiPoint,
+        MultiPolygon,
+    };
 
     fn xy(x: f64, y: f64) -> Point {
         Point::new_raw_xy(x, y)
@@ -451,9 +518,9 @@ mod tests {
         )
     }
 
-    fn surface_xy(shape: &Shape) -> (f64, f64) {
+    fn surface_point(shape: &Shape) -> Point {
         match shape.point_on_surface().expect("test surface point") {
-            Shape::Point(point) => (point.x, point.y),
+            Shape::Point(point) => point,
             other @ (Shape::MultiPoint(_)
             | Shape::LineString(_)
             | Shape::MultiLineString(_)
@@ -462,6 +529,118 @@ mod tests {
             | Shape::GeometryCollection(_)
             | Shape::Empty(..)) => panic!("expected a point, got {other:?}"),
         }
+    }
+
+    fn surface_xy(shape: &Shape) -> (f64, f64) {
+        let point = surface_point(shape);
+        (point.x, point.y)
+    }
+
+    fn scaled_dyadic(value: f64, scale: u32) -> i128 {
+        if value == 0.0 {
+            return 0;
+        }
+        let bits = value.to_bits();
+        let sign = if bits >> 63 == 0 { 1_i128 } else { -1_i128 };
+        let exponent = ((bits >> 52) & 0x7FF) as i32;
+        let fraction = bits & ((1_u64 << 52) - 1);
+        let (significand, power) = if exponent == 0 {
+            (fraction as i128, -1074)
+        } else {
+            (((1_u64 << 52) | fraction) as i128, exponent - 1023 - 52)
+        };
+        let (numerator, denominator) = if power >= 0 {
+            (sign * (significand << power), 0)
+        } else {
+            (sign * significand, (-power) as u32)
+        };
+        numerator << (scale - denominator)
+    }
+
+    fn exact_orientation(a: Point, b: Point, point: Point) -> std::cmp::Ordering {
+        // These fixtures are dyadic; a common power-of-two denominator makes
+        // every orientation an exact integer determinant.
+        let values = [a.x, a.y, b.x, b.y, point.x, point.y];
+        let scale = values
+            .into_iter()
+            .map(|value| {
+                let exponent = ((value.to_bits() >> 52) & 0x7FF) as i32;
+                if exponent == 0 || value == 0.0 {
+                    0
+                } else {
+                    (1023 + 52 - exponent).max(0) as u32
+                }
+            })
+            .max()
+            .unwrap_or(0);
+        let [ax, ay, bx, by, px, py] = values.map(|value| scaled_dyadic(value, scale));
+        ((bx - ax) * (py - ay) - (by - ay) * (px - ax)).cmp(&0)
+    }
+
+    fn exact_ring_location(ring: &Ring, point: Point) -> RingClass {
+        let vertices: Vec<_> = ring.coords().iter_coords().collect();
+        let mut inside = false;
+        for edge in vertices.windows(2) {
+            let [a, b] = edge else {
+                unreachable!("window size is two");
+            };
+            let orientation = exact_orientation(*a, *b, point);
+            if orientation.is_eq()
+                && point.x >= a.x.min(b.x)
+                && point.x <= a.x.max(b.x)
+                && point.y >= a.y.min(b.y)
+                && point.y <= a.y.max(b.y)
+            {
+                return RingClass::Boundary;
+            }
+            if a.y <= point.y && point.y < b.y && orientation.is_gt()
+                || b.y <= point.y && point.y < a.y && orientation.is_lt()
+            {
+                inside = !inside;
+            }
+        }
+        if inside {
+            RingClass::Interior
+        } else {
+            RingClass::Exterior
+        }
+    }
+
+    fn exact_polygon_covers(polygon: &Polygon, point: Point) -> bool {
+        exact_ring_location(&polygon.shell, point) != RingClass::Exterior
+            && polygon
+                .holes
+                .iter()
+                .all(|hole| exact_ring_location(hole, point) != RingClass::Interior)
+    }
+
+    fn exact_shape_covers(shape: &Shape, point: Point) -> bool {
+        match shape {
+            Shape::Polygon(polygon) => exact_polygon_covers(polygon, point),
+            Shape::MultiPolygon(polygons) => polygons
+                .iter()
+                .any(|polygon| exact_polygon_covers(polygon, point)),
+            Shape::GeometryCollection(parts) => {
+                parts.iter().any(|part| exact_shape_covers(part, point))
+            },
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Empty(..) => false,
+        }
+    }
+
+    fn first_component_work(shape: &Shape) -> usize {
+        let mut visits = 0;
+        match shape.try_for_each_first_component(&mut |_| {
+            visits += 1;
+            Ok::<_, std::convert::Infallible>(())
+        }) {
+            Ok(()) => {},
+            Err(never) => match never {},
+        }
+        visits
     }
 
     #[test]
@@ -477,6 +656,59 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_float_triangles_publish_only_exactly_covered_points() {
+        let unit = 2.0_f64.powi(-52);
+        let vertices = [(1.0, 0.0), (1.0 + unit, 2.0), (1.0 + unit, 3.0), (1.0, 0.0)];
+        for (reflect_x, reflect_y, translate_y) in [
+            (false, false, 0.0),
+            (true, false, 0.0),
+            (false, false, 8.0),
+            (true, true, 8.0),
+        ] {
+            let transformed = vertices.map(|(x, y)| {
+                (
+                    if reflect_x { -x } else { x },
+                    (if reflect_y { -y } else { y }) + translate_y,
+                )
+            });
+            let source = polygon(&transformed, &[]);
+            let Shape::Polygon(source_polygon) = &source else {
+                unreachable!("test triangle is polygonal");
+            };
+            let point = surface_point(&source);
+            assert!(
+                exact_polygon_covers(source_polygon, point),
+                "source triangle {transformed:?} does not cover {point:?}"
+            );
+            let collection =
+                Shape::geometry_collection(vec![source.clone()]).expect("test collection");
+            let collection_point = surface_point(&collection);
+            assert!(
+                exact_shape_covers(&collection, collection_point),
+                "collection for {transformed:?} does not cover {collection_point:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_collection_surface_stages_only_first_owner_candidates() {
+        let mut shape = Shape::geometry_collection(vec![
+            box_polygon(0.0, 0.0, 2.0, 2.0),
+            Shape::LineString(LineSeq::from_proven(
+                CoordSeq::try_from_points(&[xy(0.0, 4.0), xy(4.0, 4.0)]).expect("line"),
+            )),
+            Shape::Point(xy(10.0, 10.0)),
+        ])
+        .expect("mixed leaf");
+        for _ in 0..=8 {
+            assert_eq!(first_surface_polygons(&shape).len(), 1);
+            assert_eq!(first_component_work(&shape), 3);
+            assert_eq!(surface_xy(&shape), (1.0, 1.0));
+            shape = Shape::geometry_collection(vec![shape.clone(), shape]).expect("shared level");
+        }
+    }
+
+    #[test]
     fn holed_polygon_uses_widest_even_odd_chord_outside_the_hole() {
         let donut = polygon(
             &[
@@ -488,7 +720,56 @@ mod tests {
             ],
             &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
         );
-        assert_eq!(surface_xy(&donut), (8.5, 5.0));
+        let point = surface_point(&donut);
+        assert_eq!((point.x, point.y), (8.5, 5.0));
+        let Shape::Polygon(donut) = &donut else {
+            unreachable!("test donut is polygonal");
+        };
+        assert!(exact_polygon_covers(donut, point));
+    }
+
+    #[test]
+    fn equal_width_multipolygon_tie_keeps_first_component_and_is_covered() {
+        let Shape::Polygon(first) = box_polygon(0.0, 0.0, 10.0, 10.0) else {
+            unreachable!("test box is polygonal");
+        };
+        let Shape::Polygon(second) = box_polygon(20.0, 0.0, 30.0, 10.0) else {
+            unreachable!("test box is polygonal");
+        };
+        let shape = Shape::MultiPolygon(
+            MultiPolygon::try_new(CoordinateAxes::XY, vec![
+                MultiMember::Value(first),
+                MultiMember::Value(second),
+            ])
+            .expect("valid test multipolygon"),
+        );
+        let point = surface_point(&shape);
+        assert_eq!((point.x, point.y), (5.0, 5.0));
+        assert!(exact_shape_covers(&shape, point));
+    }
+
+    #[test]
+    fn equal_width_chord_tie_keeps_later_chord_and_is_covered() {
+        let shape = polygon(
+            &[
+                (0.0, 0.0),
+                (2.0, 0.0),
+                (2.0, 6.0),
+                (6.0, 6.0),
+                (6.0, 0.0),
+                (8.0, 0.0),
+                (8.0, 8.0),
+                (0.0, 8.0),
+                (0.0, 0.0),
+            ],
+            &[],
+        );
+        let point = surface_point(&shape);
+        assert_eq!((point.x, point.y), (7.0, 4.0));
+        let Shape::Polygon(source) = &shape else {
+            unreachable!("test polygon is areal");
+        };
+        assert!(exact_polygon_covers(source, point));
     }
 
     #[test]
@@ -619,6 +900,24 @@ mod tests {
     }
 
     #[test]
+    fn shared_point_occurrences_keep_two_to_one_centroid_weight() {
+        let repeated = Shape::geometry_collection(vec![Shape::Point(xy(3.0, 0.0))])
+            .expect("shared point owner");
+        let collection = Shape::geometry_collection(vec![
+            Shape::Point(xy(0.0, 0.0)),
+            repeated.clone(),
+            repeated,
+        ])
+        .expect("weighted point collection");
+
+        assert_eq!(
+            point_centroid(&collection).expect("point centroid"),
+            Some((2.0, 0.0))
+        );
+        assert_eq!(surface_xy(&collection), (3.0, 0.0));
+    }
+
+    #[test]
     fn sparse_multipoint_member_is_skipped() {
         let collection = Shape::geometry_collection(vec![Shape::MultiPoint(
             MultiPoint::try_new(CoordinateAxes::XY, vec![
@@ -647,5 +946,95 @@ mod tests {
         )
         .expect("interior chord");
         assert_eq!((point.x, point.y), (1.0, 2.0));
+    }
+
+    #[test]
+    fn packed_polygon_row_falls_back_when_rounded_point_is_outside() {
+        let unit = 2.0_f64.powi(-52);
+        let source = polygon(
+            &[(1.0, 0.0), (1.0 + unit, 2.0), (1.0 + unit, 3.0), (1.0, 0.0)],
+            &[],
+        );
+        let Shape::Polygon(source) = source else {
+            unreachable!("test triangle is polygonal");
+        };
+        let xs = source.shell.coords().xs();
+        let ys = source.shell.coords().ys();
+        let ring_offsets = [0, 4];
+        let bounds = Bounds::new_raw(1.0, 0.0, 1.0 + unit, 3.0);
+        let point = point_on_surface_polygon_row_columns(
+            xs,
+            ys,
+            &ring_offsets,
+            0..1,
+            Some(bounds),
+            &mut Vec::new(),
+        )
+        .expect("the boundary fallback supplies a representative");
+        assert!(exact_polygon_covers(&source, point));
+    }
+
+    #[test]
+    fn packed_nullable_reversed_duplicate_gather_keeps_exact_polygon_membership() {
+        use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
+
+        crate::test_support::initialize_python();
+        let unit = 2.0_f64.powi(-52);
+        let triangle = polygon(
+            &[(1.0, 0.0), (1.0 + unit, 2.0), (1.0 + unit, 3.0), (1.0, 0.0)],
+            &[],
+        );
+        let translated = polygon(
+            &[
+                (1.0, 8.0),
+                (1.0 + unit, 10.0),
+                (1.0 + unit, 11.0),
+                (1.0, 8.0),
+            ],
+            &[],
+        );
+        let masked = crate::PyGeometryArray::from_shapes(
+            vec![
+                triangle.clone(),
+                box_polygon(20.0, 20.0, 22.0, 22.0),
+                translated.clone(),
+            ],
+            crate::Frame::None,
+        )
+        .expect("test polygons pack")
+        .with_missing_mask(Some(
+            ValidityMask::from_sparse(3, &[1]).expect("test missing mask"),
+        ))
+        .expect("test mask applies");
+        let gathered = masked
+            .gather_logical_rows(&[2, 1, 0, 2])
+            .expect("reversed duplicate gather");
+        assert!(matches!(
+            gathered.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
+        ));
+
+        let result = gathered
+            .point_on_surface_unary_packed()
+            .expect("packed point-on-surface");
+        assert!(matches!(
+            result.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+        ));
+        let expected = [Some(&translated), None, Some(&triangle), Some(&translated)];
+        for (result_row, source) in result
+            .row_operation()
+            .rows_with_missing(|| ())
+            .zip(expected)
+        {
+            match (result_row, source) {
+                (crate::array::ArrayRow::Missing { .. }, None) => {},
+                (crate::array::ArrayRow::Present(present), Some(Shape::Polygon(source))) => {
+                    let point = present.row().point().expect("present packed output point");
+                    assert!(exact_polygon_covers(source, point));
+                },
+                _ => panic!("packed point rows preserve the gathered nullable order"),
+            }
+        }
     }
 }

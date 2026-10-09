@@ -9,24 +9,26 @@ import pytest
 
 def test_cellarray_pickle_roundtrip_preserves_custom_target() -> None:
     area = gm.box(0, 80, 10, 85, crs=4326)
-    signature = str(inspect.signature(gm.s2_cover))
-    assert 'max_cells=1000000' in signature
-    assert 'target_cells=8' in signature
+    fixed_signature = str(inspect.signature(gm.s2_cover))
+    adaptive_signature = str(inspect.signature(gm.s2_cover_adaptive))
+    assert 'max_cells=1000000' in fixed_signature
+    assert 'target_cells' not in fixed_signature
+    assert 'target_cells=8' in adaptive_signature
 
     fixed = gm.s2_cover(area, level=10)
     fixed_default = gm.s2_cover(area, level=10, max_cells=1_000_000)
     assert fixed == fixed_default
 
-    adaptive = gm.s2_cover(area)
-    adaptive_default = gm.s2_cover(area, max_cells=1_000_000, target_cells=8)
+    adaptive = gm.s2_cover_adaptive(area)
+    adaptive_default = gm.s2_cover_adaptive(area, max_cells=1_000_000, target_cells=8)
     assert adaptive == adaptive_default
 
-    custom = gm.s2_cover(area, min_level=2, max_level=12, target_cells=24)
+    custom = gm.s2_cover_adaptive(area, min_level=2, max_level=12, target_cells=24)
     restored = pickle.loads(pickle.dumps(custom))
     assert restored == custom
 
     with pytest.raises(TypeError):
-        gm.s2_cover(area, target_cells=None)
+        gm.s2_cover_adaptive(area, target_cells=None)
 
 
 @pytest.mark.parametrize(

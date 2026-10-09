@@ -1,5 +1,6 @@
 use super::exact_partition::ResolvedNodePoints;
 use crate::error::Result;
+use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::overlay::{
     ExactLineEmission, ExactSourceInventory, NodeId, OverlayOp, Strictness, merge_chains,
     overlay_all,
@@ -140,7 +141,7 @@ impl Shape {
     pub(crate) fn node_with_context<M: crate::geometry::ChartMetric>(
         &self,
         strictness: Strictness,
-        context: crate::geometry::ordinates::SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Self> {
         let inventory = ExactSourceInventory::from_shapes(&[self])?;
         let mut budget = crate::geometry::ExpansionBudget::new("node", "exact partition");
@@ -152,12 +153,12 @@ impl Shape {
     }
 
     pub fn line_merge(&self) -> Result<Self> {
-        self.line_merge_with_context(crate::geometry::ordinates::SourceArcContext::cartesian())
+        self.line_merge_with_context(&crate::geometry::ordinates::SourceArcContext::cartesian())
     }
 
     pub(crate) fn line_merge_with_context(
         &self,
-        context: crate::geometry::ordinates::SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         let merged = match self.lineal().ok_or(GeometryErrorKind::LinealRequired)? {
             Lineal::LineString(_) | Lineal::Empty => self.clone(),
@@ -185,14 +186,14 @@ impl Shape {
     pub fn shared_paths(&self, other: &Self) -> Result<Self> {
         self.shared_paths_with_context(
             other,
-            crate::geometry::ordinates::SourceArcContext::cartesian(),
+            &crate::geometry::ordinates::SourceArcContext::cartesian(),
         )
     }
 
     pub(crate) fn shared_paths_with_context(
         &self,
         other: &Self,
-        context: crate::geometry::ordinates::SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         self.linework()
             .map_err(|_| GeometryErrorKind::LinealRequired)?;
@@ -242,14 +243,16 @@ impl Shape {
     }
 }
 
+type SharedPathExtraction = (
+    Vec<SharedPathSegment>,
+    HashMap<(PointKey, PointKey), Segment>,
+    Vec<SharedPathSegment>,
+    HashMap<(PointKey, PointKey), Segment>,
+);
+
 fn shared_path_segments_from_exact(
     emission: &ExactLineEmission<'_>,
-) -> Result<(
-    Vec<SharedPathSegment>,
-    HashMap<(PointKey, PointKey), Segment>,
-    Vec<SharedPathSegment>,
-    HashMap<(PointKey, PointKey), Segment>,
-)> {
+) -> Result<SharedPathExtraction> {
     let mut same = Vec::new();
     let mut opposite = Vec::new();
     let mut same_path_direction =

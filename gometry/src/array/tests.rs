@@ -266,7 +266,8 @@ mod linref_array_degrade_tests {
 mod multipart_storage_tests {
     use pyo3::prelude::*;
 
-    use super::super::{Frame, GeometryArrayStorage, PyGeometryArray, ValidityMask};
+    use super::super::{Frame, PyGeometryArray};
+    use crate::geometry::storage::{GeometryArrayStorage, ValidityMask};
     use crate::io::{parse_wkt, to_wkt};
 
     #[test]

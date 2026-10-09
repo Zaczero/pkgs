@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::error::Result;
+use crate::geometry::exact_arith::{ExactSign, retained_site_orientation};
 use crate::geometry::{
     CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
     same_topological_coordinate, scaled_residual,
@@ -131,16 +132,15 @@ pub(crate) fn monotone_chain_chart_hull(
 
     let mut hull: Vec<usize> = Vec::with_capacity(indices.len());
     for &site in &indices {
-        while hull.len() >= 2 {
-            let previous = *hull.get(hull.len() - 2).expect("two-site suffix");
-            let current = *hull.last().expect("nonempty hull");
-            let turn =
-                crate::geometry::exact_arith::retained_site_orientation(frame.longitude(), [
-                    (sites[previous].longitude(), sites[previous].source_y()),
-                    (sites[current].longitude(), sites[current].source_y()),
-                    (sites[site].longitude(), sites[site].source_y()),
-                ])?;
-            if turn == crate::geometry::exact_arith::ExactSign::Positive {
+        while let Some((current, prefix)) = hull.split_last()
+            && let Some((previous, _)) = prefix.split_last()
+        {
+            let turn = retained_site_orientation(frame.longitude(), &[
+                (sites[*previous].longitude(), sites[*previous].source_y()),
+                (sites[*current].longitude(), sites[*current].source_y()),
+                (sites[site].longitude(), sites[site].source_y()),
+            ])?;
+            if turn == ExactSign::Positive {
                 break;
             }
             hull.pop();
@@ -149,16 +149,16 @@ pub(crate) fn monotone_chain_chart_hull(
     }
     let lower_len = hull.len();
     for &site in indices.iter().rev().skip(1) {
-        while hull.len() > lower_len {
-            let previous = *hull.get(hull.len() - 2).expect("two-site suffix");
-            let current = *hull.last().expect("nonempty hull");
-            let turn =
-                crate::geometry::exact_arith::retained_site_orientation(frame.longitude(), [
-                    (sites[previous].longitude(), sites[previous].source_y()),
-                    (sites[current].longitude(), sites[current].source_y()),
-                    (sites[site].longitude(), sites[site].source_y()),
-                ])?;
-            if turn == crate::geometry::exact_arith::ExactSign::Positive {
+        while hull.len() > lower_len
+            && let Some((current, prefix)) = hull.split_last()
+            && let Some((previous, _)) = prefix.split_last()
+        {
+            let turn = retained_site_orientation(frame.longitude(), &[
+                (sites[*previous].longitude(), sites[*previous].source_y()),
+                (sites[*current].longitude(), sites[*current].source_y()),
+                (sites[site].longitude(), sites[site].source_y()),
+            ])?;
+            if turn == ExactSign::Positive {
                 break;
             }
             hull.pop();

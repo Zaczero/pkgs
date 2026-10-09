@@ -41,12 +41,11 @@ pub(crate) fn shared_paths(
                     crate::crs::CrsError::invalid(
                         "geographic shared_paths source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             let context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
             left.shape()
-                .shared_paths_with_context(right.shape(), context)
+                .shared_paths_with_context(right.shape(), &context)
         })
     })
 }

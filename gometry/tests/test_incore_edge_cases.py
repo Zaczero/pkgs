@@ -396,7 +396,7 @@ def test_web_mercator_accepts_shapes_above_square_tile_edge(
         gm.Point(-10.0, -89.99, crs=WGS84),
     ])
     transformed = points.to_crs(WEB_MERCATOR, authority=authority)
-    coordinates = gm.get_coordinates(transformed)
+    coordinates = np.asarray(transformed.coords, dtype=np.float64)
     expected_y = [
         WEB_MERCATOR_RADIUS * math.asinh(math.tan(math.radians(lat)))
         for lat in (86.0, 89.99, -89.99)
@@ -500,7 +500,7 @@ def test_z_m_preserved_scalar_geometry(
 def test_z_m_preserved_geometry_array() -> None:
     arr = gm.points([0.0, 10.0], [0.0, 10.0], z=[1.0, 2.0], m=[3.0, 4.0], crs=WGS84)
     out = arr.to_crs(WEB_MERCATOR)
-    coords = gm.get_coordinates(out)
+    coords = np.asarray(out.coords, dtype=np.float64)
     assert len(coords) == 2
     assert coords[0, 2:] == pytest.approx([1.0, 3.0])
     assert coords[1, 2:] == pytest.approx([2.0, 4.0])

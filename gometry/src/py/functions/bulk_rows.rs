@@ -40,6 +40,49 @@ struct BulkState {
     fallback: Option<Crs>,
 }
 
+impl BulkState {
+    fn admit_present(
+        &mut self,
+        row_crs: Option<Crs>,
+        epoch: Option<f64>,
+        explicit_epoch: Option<f64>,
+        row: usize,
+        crs_context: Option<&str>,
+    ) -> crate::error::Result<()> {
+        if let Some(context) = crs_context {
+            self.first_crs
+                .admit(row_crs, self.fallback.as_ref(), row, context)?;
+        }
+        if let Some(explicit) = explicit_epoch
+            && let Some(row_epoch) = epoch
+            && !frame::epochs_equal(row_epoch, explicit)
+        {
+            return Err(FrameError::SharedEpoch {
+                context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
+                index: row,
+                first: Some(explicit),
+                other: Some(row_epoch),
+            }
+            .into());
+        }
+        if explicit_epoch.is_none() {
+            if !self.have_present_row {
+                self.first_epoch = epoch;
+                self.have_present_row = true;
+            } else if self.first_epoch != epoch {
+                return Err(FrameError::SharedEpoch {
+                    context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
+                    index: row,
+                    first: self.first_epoch,
+                    other: epoch,
+                }
+                .into());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Stream rows while keeping Python iteration attached and all native parsing,
 /// frame admission, and storage growth detached. `own_row` must snapshot any
 /// Python-backed payload before `parse_row` receives it.
@@ -71,24 +114,12 @@ where
         let item = item?;
         crate::check_python_signals(item.py(), row)?;
         if item.is_none() {
-            let BulkState {
-                mut rows,
-                first_crs,
-                first_epoch,
-                have_present_row,
-                fallback,
-            } = state;
             let result = item
                 .py()
                 .detach(move || -> crate::error::Result<BulkState> {
-                    rows.try_push_missing()?;
-                    Ok(BulkState {
-                        rows,
-                        first_crs,
-                        first_epoch,
-                        have_present_row,
-                        fallback,
-                    })
+                    let mut state = state;
+                    state.rows.try_push_missing()?;
+                    Ok(state)
                 });
             state = match result {
                 Ok(state) => state,
@@ -102,16 +133,10 @@ where
             Err(error) => return Err(crate::note_array_row(error, row)),
         };
         let parse_row_ref = &parse_row;
-        let BulkState {
-            mut rows,
-            mut first_crs,
-            mut first_epoch,
-            mut have_present_row,
-            fallback,
-        } = state;
         let result = item
             .py()
             .detach(move || -> crate::error::Result<BulkState> {
+                let mut state = state;
                 let parsed = parse_row_ref(owned, row)?;
                 match parsed {
                     StreamedShape::Present {
@@ -119,51 +144,14 @@ where
                         crs: row_crs,
                         epoch,
                     } => {
-                        rows.try_push(shape)?;
-                        if let Some(context) = crs_context {
-                            first_crs.admit(row_crs, fallback.as_ref(), row, context)?;
-                        }
-                        if let Some(explicit) = explicit_epoch
-                            && let Some(row_epoch) = epoch
-                            && !frame::epochs_equal(row_epoch, explicit)
-                        {
-                            return Err(FrameError::SharedEpoch {
-                                context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
-                                index: row,
-                                first: Some(explicit),
-                                other: Some(row_epoch),
-                            }
-                            .into());
-                        }
-                        if explicit_epoch.is_none() {
-                            if !have_present_row {
-                                first_epoch = epoch;
-                                have_present_row = true;
-                            } else if first_epoch != epoch {
-                                return Err(FrameError::SharedEpoch {
-                                    context: crs_context
-                                        .unwrap_or("GeometryArray")
-                                        .to_owned()
-                                        .into(),
-                                    index: row,
-                                    first: first_epoch,
-                                    other: epoch,
-                                }
-                                .into());
-                            }
-                        }
+                        state.rows.try_push(shape)?;
+                        state.admit_present(row_crs, epoch, explicit_epoch, row, crs_context)?;
                     },
                     StreamedShape::Missing => {
-                        rows.try_push_missing()?;
+                        state.rows.try_push_missing()?;
                     },
                 }
-                Ok(BulkState {
-                    rows,
-                    first_crs,
-                    first_epoch,
-                    have_present_row,
-                    fallback,
-                })
+                Ok(state)
             });
         state = match result {
             Ok(state) => state,
@@ -204,64 +192,34 @@ pub(crate) fn stream_bulk<'py>(
     ) -> PyResult<StreamedRow>,
 ) -> PyResult<PyGeometryArray> {
     let row_capacity = crate::optional_len(values)?.unwrap_or_default();
-    let mut rows = crate::array::StreamingShapes::with_capacity(0, row_capacity);
-    let mut first_crs = SharedRowCrs::Unseen;
-    let mut first_epoch = None;
-    let mut have_present_row = false;
+    let mut state = BulkState {
+        rows: crate::array::StreamingShapes::with_capacity(0, row_capacity),
+        first_crs: SharedRowCrs::Unseen,
+        first_epoch: None,
+        have_present_row: false,
+        fallback,
+    };
     for (row, item) in iter.enumerate() {
         let item = item?;
         crate::check_python_signals(item.py(), row)?;
         if item.is_none() {
-            rows.try_push_missing()?;
+            state.rows.try_push_missing()?;
             continue;
         }
         let StreamedRow {
             crs: row_crs,
             epoch,
-        } = parse_row(&item, &mut rows, row).map_err(|err| crate::note_array_row(err, row))?;
-        if let Some(context) = crs_context {
-            first_crs
-                .admit(row_crs, fallback.as_ref(), row, context)
-                .map_err(|err| crate::note_array_row(err.into(), row))?;
-        }
-        if let Some(explicit) = explicit_epoch
-            && let Some(row_epoch) = epoch
-            && !frame::epochs_equal(row_epoch, explicit)
-        {
-            return Err(crate::note_array_row(
-                crate::error::Error::from(FrameError::SharedEpoch {
-                    context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
-                    index: row,
-                    first: Some(explicit),
-                    other: Some(row_epoch),
-                })
-                .into(),
-                row,
-            ));
-        }
-        if explicit_epoch.is_none() {
-            if !have_present_row {
-                first_epoch = epoch;
-                have_present_row = true;
-            } else if first_epoch != epoch {
-                return Err(crate::note_array_row(
-                    crate::error::Error::from(FrameError::SharedEpoch {
-                        context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
-                        index: row,
-                        first: first_epoch,
-                        other: epoch,
-                    })
-                    .into(),
-                    row,
-                ));
-            }
-        }
+        } = parse_row(&item, &mut state.rows, row)
+            .map_err(|err| crate::note_array_row(err, row))?;
+        state
+            .admit_present(row_crs, epoch, explicit_epoch, row, crs_context)
+            .map_err(|error| crate::note_array_row(error.into(), row))?;
     }
     py_finish_attached(
-        rows,
-        first_crs,
-        first_epoch,
-        fallback,
+        state.rows,
+        state.first_crs,
+        state.first_epoch,
+        state.fallback,
         explicit_epoch,
         crs_context,
     )
@@ -463,44 +421,9 @@ where
                     .rows
                     .try_push(shape)
                     .map_err(|error| BatchError::Row(row, error))?;
-                if let Some(context) = crs_context {
-                    state
-                        .first_crs
-                        .admit(crs, state.fallback.as_ref(), row, context)
-                        .map_err(|error| BatchError::Row(row, error))?;
-                }
-                if let Some(explicit) = explicit_epoch
-                    && let Some(row_epoch) = epoch
-                    && !frame::epochs_equal(row_epoch, explicit)
-                {
-                    return Err(BatchError::Row(
-                        row,
-                        FrameError::SharedEpoch {
-                            context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
-                            index: row,
-                            first: Some(explicit),
-                            other: Some(row_epoch),
-                        }
-                        .into(),
-                    ));
-                }
-                if explicit_epoch.is_none() {
-                    if !state.have_present_row {
-                        state.first_epoch = epoch;
-                        state.have_present_row = true;
-                    } else if state.first_epoch != epoch {
-                        return Err(BatchError::Row(
-                            row,
-                            FrameError::SharedEpoch {
-                                context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
-                                index: row,
-                                first: state.first_epoch,
-                                other: epoch,
-                            }
-                            .into(),
-                        ));
-                    }
-                }
+                state
+                    .admit_present(crs, epoch, explicit_epoch, row, crs_context)
+                    .map_err(|error| BatchError::Row(row, error))?;
             },
             StreamedShape::Missing => {
                 state

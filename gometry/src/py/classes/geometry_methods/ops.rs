@@ -30,7 +30,6 @@ fn publish_triangle_shapes_for_domain(
                     crate::crs::CrsError::invalid(
                         "geographic triangulation requires the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
@@ -38,7 +37,7 @@ fn publish_triangle_shapes_for_domain(
                 &shapes,
                 frame,
                 "triangulate",
-                source_context,
+                &source_context,
             )
         },
     }
@@ -149,7 +148,7 @@ impl PyGeometry {
         let repaired = py.detach(move || {
             let source_context =
                 crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            geometry::repair_data_in_frame(&plan, domain, method, source_context)
+            geometry::repair_data_in_frame(&plan, domain, method, &source_context)
         })?;
         Ok(Typed(repaired.map_or_else(
             || self.clone(),
@@ -322,11 +321,10 @@ impl PyGeometry {
                     crate::crs::CrsError::invalid(
                         "geographic polygonize source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            shape.polygonize_with_context(false, context)
+            shape.polygonize_with_context(false, &context)
         })?;
         self.parts_to_array(polygons)
     }
@@ -342,11 +340,10 @@ impl PyGeometry {
                     crate::crs::CrsError::invalid(
                         "geographic line_merge source ordinates require the operation's CRS metric",
                     )
-                    .into()
                 })
             };
             let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
-            shape.line_merge_with_context(context)
+            shape.line_merge_with_context(&context)
         })?;
         Ok(self.typed_shape(merged))
     }
@@ -413,7 +410,7 @@ impl PyGeometry {
             shape.subdivide_with_context(
                 max_vertices,
                 false,
-                crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
             )
         })?;
         self.parts_to_array(parts)

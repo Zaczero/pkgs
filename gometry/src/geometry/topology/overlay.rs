@@ -9,6 +9,7 @@ use crate::error::{ResourceError, Result};
 use crate::geographic::{
     ChartPole, GeographicRing, Latitude, RetainedChartDisplacement, RingSummary, SeamIdentity,
 };
+use crate::geometry::exact_arith::round_native_longitude;
 use crate::geometry::ordinates::{
     NodeOrdinates, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates_unmetered,
 };
@@ -1531,20 +1532,23 @@ fn walk_line_steps(
 }
 
 fn source_arc_node_ordinates<M: crate::geometry::ChartMetric>(
-    frame: crate::geographic::GeographicFrame,
+    source_frame: crate::geographic::GeographicFrame,
     source: &[Point; 2],
     parameter: &ExactRational,
     axes: CoordinateAxes,
     longitude: impl FnOnce() -> Result<RetainedChartDisplacement>,
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> Result<NodeOrdinates> {
-    let request = SourceArcRequest::new(frame, source, axes, parameter, longitude)?;
-    source_arc_ordinates_unmetered(&request, || match metric_access {
-        Some(access) => access(),
-        None => Err(crate::crs::CrsError::invalid(
-            "geographic source-ordinate carry requires the operation's CRS metric authority",
+    let request = SourceArcRequest::new(source_frame, source, axes, parameter, longitude)?;
+    source_arc_ordinates_unmetered(&request, || {
+        metric_access.map_or_else(
+            || {
+                Err(crate::crs::CrsError::invalid(
+                    "geographic source-ordinate carry requires the operation's CRS metric authority",
+                ))
+            },
+            |access| access(),
         )
-        .into()),
     })
 }
 
@@ -1697,7 +1701,7 @@ fn round_canonical_longitude(
     longitude: &ExactRational,
 ) -> Result<f64> {
     let axis = frame.longitude();
-    crate::geometry::exact_arith::round_native_longitude(axis, longitude)
+    round_native_longitude(axis, longitude)
 }
 
 fn push_line_part(output: &mut Vec<CoordSeq>, points: &mut Vec<Point>) -> Result<()> {
@@ -2034,10 +2038,7 @@ fn emit_source_ring(
             topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
             })?;
-        points.push(edge.source[0].with_xy_raw(
-            edge.source[0].x,
-            Latitude::from_admitted(topology.sources.frame, edge.source[0].y).get(),
-        ));
+        points.push(edge.source[0].with_xy_raw(edge.source[0].x, edge.source[0].y));
     }
     let last_edge = source_ring
         .source_edges
@@ -2045,10 +2046,7 @@ fn emit_source_ring(
         .checked_sub(1)
         .and_then(|index| topology.sources.edges.get(index))
         .ok_or_else(|| GeometryErrorKind::Invalid("Q source ring has no edges".into()))?;
-    points.push(last_edge.source[1].with_xy_raw(
-        last_edge.source[1].x,
-        Latitude::from_admitted(topology.sources.frame, last_edge.source[1].y).get(),
-    ));
+    points.push(last_edge.source[1].with_xy_raw(last_edge.source[1].x, last_edge.source[1].y));
     Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
 }
 
@@ -2074,10 +2072,7 @@ fn append_source_ring_nodes(
             record_emitted_node(
                 topology.sources.frame,
                 port.node,
-                endpoint.with_xy_raw(
-                    endpoint.x,
-                    Latitude::from_admitted(topology.sources.frame, endpoint.y).get(),
-                ),
+                endpoint.with_xy_raw(endpoint.x, endpoint.y),
                 live,
             )?;
         }
@@ -2402,7 +2397,7 @@ fn emit_ring(
             let latitude = Latitude::try_new(frame, exact_latitude_at(index, parameter)?.round()?)
                 .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
                 .get();
-            let [start, end] = endpoints;
+            let &[start, end] = endpoints;
             Ok(crate::geographic::ComputedSampleOrdinates {
                 y: latitude,
                 z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
@@ -2669,12 +2664,7 @@ fn source_point_coordinates(topology: &ExactGeographicTopology) -> Result<Vec<Op
         source_points
             .get_mut(node.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q source point node is unknown".into()))?
-            .get_or_insert_with(|| {
-                Point::new_raw_xy(
-                    source.point.x,
-                    Latitude::from_admitted(topology.sources.frame, source.point.y).get(),
-                )
-            });
+            .get_or_insert_with(|| Point::new_raw_xy(source.point.x, source.point.y));
     }
     Ok(source_points)
 }
@@ -2993,6 +2983,180 @@ mod tests {
             .unwrap()
     }
 
+    fn q_union_one_source(shape: &Shape, frame: GeographicFrame) -> Shape {
+        let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
+            .expect("source admits");
+        let topology =
+            ExactGeographicTopology::from_views_as_set(frame, inputs.views().iter().copied())
+                .expect("Q topology builds");
+        exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+            &topology,
+            OverlayOp::Union,
+            shape.axes(),
+            false,
+            None,
+        )
+        .expect("Q source-only union emits")
+    }
+
+    fn emitted_single_point(shape: &Shape) -> Point {
+        match shape {
+            Shape::Point(point) => *point,
+            Shape::MultiPoint(points) if points.len() == 1 => points.point_at(0),
+            _ => panic!("Q emitted one point, got {shape:?}"),
+        }
+    }
+
+    fn collect_points(shape: &Shape, output: &mut Vec<Point>) {
+        match shape {
+            Shape::Point(point) => output.push(*point),
+            Shape::MultiPoint(points) => output.extend(points.iter_coords()),
+            Shape::GeometryCollection(geometries) => {
+                for geometry in geometries {
+                    collect_points(geometry, output);
+                }
+            },
+            Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::Empty(..) => {},
+        }
+    }
+
+    #[test]
+    fn q_source_only_points_keep_admitted_latitude_bits_and_chart_identity() {
+        let frame = GeographicFrame::crs84();
+        let pole = frame.pole();
+        for (source_y, identity) in [
+            (
+                -0.0,
+                EmittedNodeKey::Coordinate(0.0_f64.to_bits(), 0.0_f64.to_bits()),
+            ),
+            (pole.next_up(), EmittedNodeKey::NorthPole),
+        ] {
+            let source = Point::new_raw_xy(0.0, source_y);
+            let output = q_union_one_source(&Shape::Point(source), frame);
+            let emitted = emitted_single_point(&output);
+
+            assert_eq!(emitted.y.to_bits(), source_y.to_bits());
+            assert_eq!(emitted_node_key(frame, emitted.xy()).unwrap(), identity);
+            assert_eq!(emitted_node_key(frame, source.xy()).unwrap(), identity);
+        }
+    }
+
+    #[test]
+    fn mixed_geographic_overlay_routes_a_retained_source_point_through_q() {
+        let frame = GeographicFrame::crs84();
+        let polygon = Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(170.0, 2.0),
+                    Point::new_raw_xy(-170.0, 2.0),
+                    Point::new_raw_xy(-165.0, 12.0),
+                    Point::new_raw_xy(160.0, 10.0),
+                    Point::new_raw_xy(170.0, 2.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+            Vec::new(),
+        ));
+        let source_point = Point::new_raw_xy(0.0, -0.0);
+        let shapes = [polygon, Shape::Point(source_point)];
+        let inputs =
+            GeographicInputs::try_from_shapes(frame, shapes.iter()).expect("sources admit");
+        assert_eq!(
+            crate::geometry::geographic_topology_route(inputs.views().iter().copied()),
+            crate::geometry::GeographicTopologyRoute::Quotient
+        );
+
+        let output = crate::geometry::overlay::overlay_all(
+            &shapes,
+            crate::geometry::TopologyDomain::Geographic(frame),
+            OverlayOp::Union,
+            crate::geometry::overlay::Strictness::Lenient,
+        )
+        .expect("mixed geographic union emits");
+        let mut points = Vec::new();
+        collect_points(&output, &mut points);
+        assert!(points.iter().any(|point| {
+            point.x.to_bits() == source_point.x.to_bits()
+                && point.y.to_bits() == source_point.y.to_bits()
+        }));
+    }
+
+    #[test]
+    fn q_source_only_whole_sphere_ring_keeps_source_latitude_bits() {
+        let frame = GeographicFrame::crs84();
+        let source_points = [
+            Point::new_raw_xy(-180.0, -90.0),
+            Point::new_raw_xy(-90.0, -90.0),
+            Point::new_raw_xy(0.0, -90.0),
+            Point::new_raw_xy(90.0, -90.0),
+            Point::new_raw_xy(180.0, -90.0),
+            Point::new_raw_xy(180.0, 90.0),
+            Point::new_raw_xy(90.0, 90.0),
+            Point::new_raw_xy(0.0, 90.0),
+            Point::new_raw_xy(-90.0, 90.0),
+            Point::new_raw_xy(-180.0, 90.0),
+            Point::new_raw_xy(-180.0, -0.0),
+            Point::new_raw_xy(-180.0, -90.0),
+        ];
+        let shell = Ring::try_from_closed(CoordSeq::try_from_points(&source_points).unwrap())
+            .expect("closed pole-to-pole source ring");
+        let source = Shape::Polygon(Polygon::new(shell, Vec::new()));
+        let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(&source))
+            .expect("source admits");
+        let topology =
+            ExactGeographicTopology::from_views_as_set(frame, inputs.views().iter().copied())
+                .expect("Q topology builds");
+
+        let plan = QOverlayPlan::build(&topology, OverlayOp::Union).unwrap();
+        assert!(matches!(
+            &plan.polygons,
+            PolygonPlan::WholeSphere(source_polygons) if source_polygons == &[0]
+        ));
+        let output = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+            &topology,
+            OverlayOp::Union,
+            source.axes(),
+            false,
+            None,
+        )
+        .expect("Q source-only union emits");
+        let Shape::Polygon(polygon) = output else {
+            panic!("Q source-only whole-sphere ring remains a polygon");
+        };
+        let emitted = polygon.shell.coords().iter_coords().collect::<Vec<_>>();
+        let mut expected_bits = source_points
+            .iter()
+            .map(|point| (point.x.to_bits(), point.y.to_bits()))
+            .collect::<Vec<_>>();
+        let mut emitted_bits = emitted
+            .iter()
+            .map(|point| (point.x.to_bits(), point.y.to_bits()))
+            .collect::<Vec<_>>();
+        expected_bits.sort_unstable();
+        emitted_bits.sort_unstable();
+        assert_eq!(emitted_bits, expected_bits);
+        assert_eq!(
+            emitted.first().unwrap().y.to_bits(),
+            emitted.last().unwrap().y.to_bits(),
+            "the full closing source record is retained"
+        );
+        assert_eq!(
+            emitted
+                .iter()
+                .find(|point| point.x == -180.0 && point.y == -0.0)
+                .map(|point| emitted_node_key(frame, point.xy()).unwrap()),
+            Some(EmittedNodeKey::Coordinate(
+                (-180.0_f64).to_bits(),
+                0.0_f64.to_bits()
+            ))
+        );
+    }
+
     #[test]
     fn q_node_ordinates_return_xy_defaults_before_source_metric_access() {
         let frame = GeographicFrame::crs84();
@@ -3025,7 +3189,9 @@ mod tests {
         let metric_accesses = std::cell::Cell::new(0_usize);
         let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
             metric_accesses.set(metric_accesses.get().wrapping_add(1));
-            Err(crate::crs::CrsError::invalid("unexpected source-arc metric request").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected source-arc metric request",
+            ))
         };
 
         let xy = node_ordinates(&topology, CoordinateAxes::XY, Some(&no_metric)).unwrap();

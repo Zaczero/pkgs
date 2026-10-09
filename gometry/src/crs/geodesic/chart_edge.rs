@@ -11,12 +11,16 @@ use crate::geographic::{
     ChartStep, CircularInterval, EdgeDirection, GeographicFrame, Latitude, LongitudeWindows,
     RetainedChartDisplacement,
 };
+use crate::geometry::exact_arith::{
+    retained_delta_scaled, retained_source_interval_initial_piece_count,
+    retained_source_interval_reads_as, retained_source_sheet_site,
+};
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
     CoordinateAxes, GeographicAreaDensity, GeometryErrorKind, HasM, HasZ, MAX_AUTHALIC_HARMONICS,
-    Point, PointEdgeQuery, PointEdgeQueryResult, Segment, SegmentProjection, Unmetered, Work, XY,
-    segment_projection,
+    MOrdinate, Point, PointEdgeQuery, PointEdgeQueryResult, Segment, SegmentProjection, Unmetered,
+    Work, XY, ZOrdinate, segment_projection,
 };
 
 const GL4_NODES: [f64; 4] = [
@@ -32,37 +36,83 @@ const GL4_WEIGHTS: [f64; 4] = [
     0.173_927_422_568_726_93,
 ];
 
-const GK15_NODES: [f64; 8] = [
-    0.991_455_371_120_812_6,
-    0.949_107_912_342_758_5,
-    0.864_864_423_359_769_1,
-    0.741_531_185_599_394_5,
-    0.586_087_235_467_691_1,
-    0.405_845_151_377_397_2,
-    0.207_784_955_007_898_48,
-    0.0,
-];
-const GK15_WEIGHTS: [f64; 8] = [
-    0.022_935_322_010_529_224,
-    0.063_092_092_629_978_55,
-    0.104_790_010_322_250_18,
-    0.140_653_259_715_525_92,
-    0.169_004_726_639_267_9,
-    0.190_350_578_064_785_42,
-    0.204_432_940_075_298_89,
-    0.209_482_141_084_727_82,
-];
-const G7_WEIGHTS: [f64; 4] = [
-    0.129_484_966_168_869_7,
-    0.279_705_391_489_276_67,
-    0.381_830_050_505_118_9,
-    0.417_959_183_673_469_4,
+const GK15_CENTER_KRONROD_WEIGHT: f64 = 0.209_482_141_084_727_82;
+const G7_CENTER_WEIGHT: f64 = 0.417_959_183_673_469_4;
+const GK15_NONCENTRAL_RULE: [(f64, f64, Option<f64>); 7] = [
+    (0.991_455_371_120_812_6, 0.022_935_322_010_529_224, None),
+    (
+        0.949_107_912_342_758_5,
+        0.063_092_092_629_978_55,
+        Some(0.129_484_966_168_869_7),
+    ),
+    (0.864_864_423_359_769_1, 0.104_790_010_322_250_18, None),
+    (
+        0.741_531_185_599_394_5,
+        0.140_653_259_715_525_92,
+        Some(0.279_705_391_489_276_67),
+    ),
+    (0.586_087_235_467_691_1, 0.169_004_726_639_267_9, None),
+    (
+        0.405_845_151_377_397_2,
+        0.190_350_578_064_785_42,
+        Some(0.381_830_050_505_118_9),
+    ),
+    (0.207_784_955_007_898_48, 0.204_432_940_075_298_89, None),
 ];
 
 const MAX_GK15_EVALUATIONS: usize = 5_000;
 const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
 const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct QuadratureTestProgress {
+    pub(crate) seeds: u32,
+    pub(crate) scans: u32,
+    pub(crate) removals: u32,
+    pub(crate) child_pairs: u32,
+    pub(crate) growth_requests: u32,
+    pub(crate) growths: u32,
+    pub(crate) refinements: u32,
+    pub(crate) current_refinements: u32,
+    pub(crate) max_refinements: u32,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static QUADRATURE_TEST_PROGRESS: std::cell::Cell<QuadratureTestProgress> =
+        const { std::cell::Cell::new(QuadratureTestProgress {
+            seeds: 0,
+            scans: 0,
+            removals: 0,
+            child_pairs: 0,
+            growth_requests: 0,
+            growths: 0,
+            refinements: 0,
+            current_refinements: 0,
+            max_refinements: 0,
+        }) };
+}
+
+#[cfg(test)]
+fn update_test_progress(update: impl FnOnce(&mut QuadratureTestProgress)) {
+    QUADRATURE_TEST_PROGRESS.with(|progress| {
+        let mut current = progress.get();
+        update(&mut current);
+        progress.set(current);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn reset_quadrature_test_progress() {
+    QUADRATURE_TEST_PROGRESS.set(QuadratureTestProgress::default());
+}
+
+#[cfg(test)]
+pub(crate) fn quadrature_test_progress() -> QuadratureTestProgress {
+    QUADRATURE_TEST_PROGRESS.get()
+}
 
 #[derive(Clone, Copy, Debug)]
 /// Truncated authalic-q sine series cached with its ellipsoid's geodesic.
@@ -80,6 +130,10 @@ impl AuthalicSeries {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let ratio = (e2 / 4.0).abs();
         let mut harmonics: usize = 1;
+        #[expect(
+            clippy::while_float,
+            reason = "the retained sine-series order ends at the specified relative tail threshold"
+        )]
         while ratio.powi(harmonics as i32) >= AUTHALIC_TAIL_RELATIVE {
             harmonics = harmonics.wrapping_add(1);
         }
@@ -119,10 +173,10 @@ impl AuthalicSeries {
 }
 
 fn binomial(n: usize, k: usize) -> f64 {
-    let k = k.min(n - k);
+    let k = k.min(n.wrapping_sub(k));
     let mut coefficient = 1.0;
     for index in 1..=k {
-        coefficient *= (n + 1 - index) as f64 / index as f64;
+        coefficient *= n.wrapping_add(1).wrapping_sub(index) as f64 / index as f64;
     }
     coefficient
 }
@@ -261,7 +315,7 @@ impl ChartEdge {
         let axis = self.frame.longitude();
         let longitude = self.retained_longitude();
         let site: crate::geographic::RetainedLongitudeSite =
-            axis.native_site_at(&longitude, &parameter)?;
+            axis.native_site_at(&longitude, parameter)?;
         let native = *site.native();
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
@@ -275,7 +329,7 @@ impl ChartEdge {
         Ok(Point::new_raw_xy(longitude, latitude))
     }
 
-    fn retained_longitude(self) -> RetainedChartDisplacement {
+    const fn retained_longitude(self) -> RetainedChartDisplacement {
         self.longitude
     }
 
@@ -439,17 +493,42 @@ impl ChartEdge {
         total_length: Option<f64>,
         geodesic: &Geodesic,
     ) -> Result<Point> {
+        self.witness_with_work(
+            start,
+            end,
+            parameter,
+            total_length,
+            geodesic,
+            &mut Unmetered,
+        )
+    }
+
+    fn witness_with_work(
+        self,
+        start: Point,
+        end: Point,
+        parameter: f64,
+        total_length: Option<f64>,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<Point> {
         if parameter == 0.0 {
             return Ok(start);
         }
         if parameter == 1.0 {
             return Ok(end);
         }
-        let total = match total_length {
-            Some(length) => length,
-            None => self.length(geodesic)?,
+        let axes = CoordinateAxes::new(
+            HasZ(start.z().is_some() && end.z().is_some()),
+            HasM(start.m().is_some() && end.m().is_some()),
+        );
+        let fraction = if axes.has_z() || axes.has_m() {
+            let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
+            Some(self.arclength_fraction_with_work(parameter, Some(total), geodesic, work)?)
+        } else {
+            None
         };
-        self.witness_interior(start, end, parameter, total, geodesic)
+        self.witness_interior(start, end, parameter, axes, fraction)
     }
 
     fn witness_interior(
@@ -457,17 +536,13 @@ impl ChartEdge {
         start: Point,
         end: Point,
         parameter: f64,
-        total: f64,
-        geodesic: &Geodesic,
+        axes: CoordinateAxes,
+        fraction: Option<f64>,
     ) -> Result<Point> {
-        let fraction = self.arclength_fraction(parameter, Some(total), geodesic)?;
         let position = self.chart_position(parameter)?;
-        let axes = CoordinateAxes::new(
-            HasZ(start.z().is_some() && end.z().is_some()),
-            HasM(start.m().is_some() && end.m().is_some()),
-        );
-        let (z, m) =
-            crate::geometry::source_ordinate_values_at_fraction(start, end, axes, fraction);
+        let (z, m) = fraction.map_or((ZOrdinate(None), MOrdinate(None)), |fraction| {
+            crate::geometry::source_ordinate_values_at_fraction(start, end, axes, fraction)
+        });
         let point = Point::new_axes(position.x, position.y, z, m)
             .expect("an admitted chart-edge witness is finite");
         Ok(self
@@ -527,10 +602,7 @@ impl ChartEdge {
         if parameter >= 1.0 {
             return Ok(1.0);
         }
-        let total = match total_length {
-            Some(length) => length,
-            None => self.length_with_work(geodesic, work)?,
-        };
+        let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
         if total == 0.0 {
             return Ok(0.0);
         }
@@ -571,16 +643,10 @@ impl ChartEdge {
             return Ok(0.0);
         }
         if t >= 1.0 {
-            return match total_length {
-                Some(length) => Ok(length),
-                None => self.length_with_work(geodesic, work),
-            };
+            return total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok);
         }
         if self.latitude_delta == 0.0 {
-            let total = match total_length {
-                Some(length) => length,
-                None => self.length_with_work(geodesic, work)?,
-            };
+            let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
             return self.finite_length(total * t);
         }
         if let Some(meridian) = self.meridian {
@@ -641,6 +707,10 @@ impl ChartEdge {
             } else {
                 midpoint
             };
+            #[expect(
+                clippy::float_cmp,
+                reason = "an iterate equal to a bracket endpoint cannot advance past adjacent binary64 values"
+            )]
             if parameter == lower || parameter == upper {
                 break;
             }
@@ -653,8 +723,8 @@ impl ChartEdge {
     pub(crate) fn chart_position(&self, t: f64) -> Result<crate::geometry::Point> {
         let axis = self.frame.longitude();
         let longitude = self.retained_longitude();
-        let site: crate::geographic::RetainedLongitudeSite = axis.native_site_at(&longitude, &t)?;
-        let longitude = axis.lifted_site_longitude(&site)?;
+        let site: crate::geographic::RetainedLongitudeSite = axis.native_site_at(&longitude, t)?;
+        let longitude = axis.lifted_site_longitude(site)?;
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
             self.end_latitude,
@@ -686,12 +756,7 @@ impl ChartEdge {
         let longitude = if source_start.x == source_end.x && retained.periods() == 0 {
             source_start.x
         } else {
-            crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                self.frame.longitude(),
-                parameter,
-            )?
+            retained_source_sheet_site(source_start.x, retained, self.frame.longitude(), parameter)?
         };
         Ok(canonical_point.with_xy_raw(longitude, canonical_point.y))
     }
@@ -708,7 +773,7 @@ impl ChartEdge {
             .longitude()
             .chart_step(start.x, end.x)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        crate::geometry::exact_arith::retained_source_interval_reads_as(
+        retained_source_interval_reads_as(
             self.retained_longitude(),
             self.frame,
             [self.start_latitude, self.end_latitude],
@@ -721,7 +786,7 @@ impl ChartEdge {
     }
 
     pub(crate) fn source_interval_initial_piece_count(&self, from: f64, to: f64) -> Result<usize> {
-        crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
+        retained_source_interval_initial_piece_count(
             self.retained_longitude(),
             self.frame.longitude(),
             from,
@@ -781,18 +846,8 @@ impl ChartEdge {
         if previous.x == end.x {
             let axis = self.frame.longitude();
             let retained = self.retained_longitude();
-            let start_site = crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                axis,
-                from,
-            )?;
-            let end_site = crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                axis,
-                to,
-            )?;
+            let start_site = retained_source_sheet_site(source_start.x, retained, axis, from)?;
+            let end_site = retained_source_sheet_site(source_start.x, retained, axis, to)?;
             // RN is monotone over the exact affine source longitude. When both
             // written endpoints are those rounded sites and are identical, no
             // interior parameter can produce a readable nonzero longitude.
@@ -896,10 +951,10 @@ impl ChartEdge {
         // chart-step delta makes the midpoint the reference for its full lifted span.
         let longitude = self.retained_longitude();
         let midpoint: crate::geographic::RetainedLongitudeSite = axis
-            .native_site_at(&longitude, &0.5)
+            .native_site_at(&longitude, 0.5)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
         let midpoint_longitude = axis
-            .lifted_site_longitude(&midpoint)
+            .lifted_site_longitude(midpoint)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
         let lifted_longitude = axis
             .nearest_longitude_alias(midpoint_longitude, point.x)
@@ -973,21 +1028,46 @@ impl ChartEdge {
 
         let mut total = initial;
         let mut total_error = initial_error;
+        work.charge(2)?;
         let mut intervals = vec![Interval {
             start,
             end,
             value: initial,
             error: initial_error,
         }];
+        #[cfg(test)]
+        update_test_progress(|progress| {
+            progress.seeds = progress.seeds.wrapping_add(1);
+            progress.current_refinements = 0;
+        });
+        #[expect(
+            clippy::while_float,
+            reason = "adaptive quadrature refines until its computed error meets the numerical tolerance"
+        )]
         while total_error > tolerance {
+            work.charge(intervals.len() as u64)?;
             let largest = intervals
                 .iter()
                 .enumerate()
                 .max_by(|(_, left), (_, right)| left.error.total_cmp(&right.error))
                 .map(|(index, _)| index)
                 .expect("an unconverged quadrature has an interval");
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.scans = progress.scans.wrapping_add(1);
+            });
+            let removal_work = if largest < intervals.len().saturating_sub(1) {
+                2
+            } else {
+                1
+            };
+            work.charge(removal_work)?;
             let parent = intervals.swap_remove(largest);
-            if evaluations + 30 > MAX_GK15_EVALUATIONS {
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.removals = progress.removals.wrapping_add(1);
+            });
+            if evaluations.wrapping_add(30) > MAX_GK15_EVALUATIONS {
                 return Err(GeometryErrorKind::message(
                     "chart-edge length quadrature did not converge within 5,000 evaluations",
                 ));
@@ -996,7 +1076,36 @@ impl ChartEdge {
             let middle = f64::midpoint(parent.start, parent.end);
             let (left, left_error) = self.gk15(parent.start, middle, geodesic.a, e2, dphi);
             let (right, right_error) = self.gk15(middle, parent.end, geodesic.a, e2, dphi);
-            evaluations += 30;
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.child_pairs = progress.child_pairs.wrapping_add(1);
+            });
+
+            let needs_growth = intervals.capacity().saturating_sub(intervals.len()) < 2;
+            #[cfg(test)]
+            if needs_growth {
+                update_test_progress(|progress| {
+                    progress.growth_requests = progress.growth_requests.wrapping_add(1);
+                });
+            }
+            // Three scalar updates, two interval writes, and—when reserve
+            // relocates storage—two requested slots plus every live record.
+            // The 5,000-sample cap keeps this billing sum below 174.
+            let refinement_work = if needs_growth {
+                5_u64.wrapping_add(2).wrapping_add(intervals.len() as u64)
+            } else {
+                5
+            };
+            work.charge(refinement_work)?;
+            if needs_growth {
+                intervals.reserve(2);
+                #[cfg(test)]
+                update_test_progress(|progress| {
+                    progress.growths = progress.growths.wrapping_add(1);
+                });
+            }
+
+            evaluations = evaluations.wrapping_add(30);
             total += (left + right) - parent.value;
             total_error = (total_error - parent.error).max(0.0) + left_error + right_error;
             intervals.push(Interval {
@@ -1010,6 +1119,13 @@ impl ChartEdge {
                 end: parent.end,
                 value: right,
                 error: right_error,
+            });
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.refinements = progress.refinements.wrapping_add(1);
+                progress.current_refinements = progress.current_refinements.wrapping_add(1);
+                progress.max_refinements =
+                    progress.max_refinements.max(progress.current_refinements);
             });
         }
         self.finite_length(total)
@@ -1084,15 +1200,15 @@ impl ChartEdge {
         let center = f64::midpoint(start, end);
         let half = (end - start) / 2.0;
         let center_value = self.speed(center, semi_major, e2, dphi);
-        let mut kronrod = center_value * GK15_WEIGHTS[7];
-        let mut gauss = center_value * G7_WEIGHTS[3];
-        for index in 0..7 {
-            let offset = half * GK15_NODES[index];
+        let mut kronrod = center_value * GK15_CENTER_KRONROD_WEIGHT;
+        let mut gauss = center_value * G7_CENTER_WEIGHT;
+        for &(node, kronrod_weight, gauss_weight) in &GK15_NONCENTRAL_RULE {
+            let offset = half * node;
             let pair = self.speed(center - offset, semi_major, e2, dphi)
                 + self.speed(center + offset, semi_major, e2, dphi);
-            kronrod += GK15_WEIGHTS[index] * pair;
-            if index % 2 == 1 {
-                gauss += G7_WEIGHTS[index / 2] * pair;
+            kronrod += kronrod_weight * pair;
+            if let Some(gauss_weight) = gauss_weight {
+                gauss += gauss_weight * pair;
             }
         }
         let value = kronrod * half;
@@ -1158,7 +1274,7 @@ fn retained_longitude_radians(
     if ordinary.is_finite() {
         return ordinary;
     }
-    crate::geometry::exact_arith::retained_delta_scaled(
+    retained_delta_scaled(
         longitude.endpoints()[0].get(),
         longitude.endpoints()[1].get(),
         axis.period(),
@@ -1182,7 +1298,7 @@ impl ChartMetric for super::GeodesicMetric {
         edge.length(&self.geodesic)
     }
 
-    fn chart_edge_length_with_work(&self, edge: &ChartEdge, work: &mut impl Work) -> Result<f64> {
+    fn chart_edge_length_with_work<W: Work>(&self, edge: &ChartEdge, work: &mut W) -> Result<f64> {
         edge.length_with_work(&self.geodesic, work)
     }
 
@@ -1199,12 +1315,12 @@ impl ChartMetric for super::GeodesicMetric {
         edge.arclength_fraction(parameter, total_length, &self.geodesic)
     }
 
-    fn chart_edge_arclength_fraction_with_work(
+    fn chart_edge_arclength_fraction_with_work<W: Work>(
         &self,
         edge: &ChartEdge,
         parameter: f64,
         total_length: Option<f64>,
-        work: &mut impl Work,
+        work: &mut W,
     ) -> Result<f64> {
         edge.arclength_fraction_with_work(parameter, total_length, &self.geodesic, work)
     }
@@ -1332,12 +1448,15 @@ mod tests {
 
     use super::super::GeodesicMetric;
     use super::{AuthalicSeries, ChartEdge, ONE_DEGREE};
+    use crate::crs::geodesic::geographic_metric_frame_at;
     use crate::geographic::{
         AngularFactor, ChartStep, EdgeDirection, GeographicAxisOrientation, GeographicFrame,
-        PeriodicAxis,
+    };
+    use crate::geometry::exact_arith::{
+        retained_source_interval_initial_piece_count, retained_source_sheet_site,
     };
     use crate::geometry::types::{ChartMetric as _, GeodesicMetric as _};
-    use crate::geometry::{GeometryErrorKind, MOrdinate, Point, ZOrdinate};
+    use crate::geometry::{GeometryErrorKind, MOrdinate, Point, Work, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
         GeographicFrame::crs84()
@@ -1366,6 +1485,62 @@ mod tests {
 
     fn wgs84() -> Geodesic {
         Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563)
+    }
+
+    #[derive(Default)]
+    struct CountingWork(u64);
+
+    impl Work for CountingWork {
+        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+            self.0 = self.0.wrapping_add(ticks);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn xy_witness_skips_arclength_but_ordinate_witnesses_compute_it() {
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(0.0, 10.0),
+            Point::new_raw_xy(20.0, 30.0),
+            degrees(),
+        )
+        .unwrap();
+        let geodesic = wgs84();
+
+        let mut work = CountingWork::default();
+        edge.witness_with_work(
+            Point::new_raw_xy(0.0, 10.0),
+            Point::new_raw_xy(20.0, 30.0),
+            0.4,
+            None,
+            &geodesic,
+            &mut work,
+        )
+        .unwrap();
+        assert_eq!(work.0, 0);
+
+        for (start, end) in [
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(None)).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(Some(7.0)), MOrdinate(None)).unwrap(),
+            ),
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(None), MOrdinate(Some(7.0))).unwrap(),
+            ),
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(Some(12.0))).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(17.0))).unwrap(),
+            ),
+        ] {
+            let mut work = CountingWork::default();
+            let witness = edge
+                .witness_with_work(start, end, 0.4, None, &geodesic, &mut work)
+                .unwrap();
+            assert!(work.0 > 0);
+            assert_eq!(witness.z().is_some(), start.z().is_some());
+            assert_eq!(witness.m().is_some(), start.m().is_some());
+        }
     }
 
     fn edge_length(
@@ -1513,8 +1688,8 @@ mod tests {
         ];
         for frame in frames {
             let axis = frame.longitude();
-            let start = Point::new_raw_xy(axis.from_degrees(170.0), frame.pole() * 0.6);
-            let end = Point::new_raw_xy(axis.from_degrees(-170.0), frame.pole() * 0.9);
+            let start = Point::new_raw_xy(axis.degrees_to_native(170.0), frame.pole() * 0.6);
+            let end = Point::new_raw_xy(axis.degrees_to_native(-170.0), frame.pole() * 0.9);
             let edge = ChartEdge::new(start, end, frame).unwrap();
             let bounds = edge.bounds();
             for sample in 0..=64 {
@@ -1662,13 +1837,13 @@ mod tests {
         .unwrap();
         assert_eq!(edge.chart_position(0.5).unwrap().x, 180.0);
         assert_eq!(edge.chart_position(1.0).unwrap().x, 190.0);
-        assert!(
+        drop(
             ChartEdge::new(
                 Point::new_raw_xy(0.0, 10.0),
                 Point::new_raw_xy(180.0, 20.0),
-                frame
+                frame,
             )
-            .is_err()
+            .unwrap_err(),
         );
     }
 
@@ -1691,13 +1866,12 @@ mod tests {
         )
         .unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
-        let proj_radian = crate::crs::geodesic::geographic_metric_frame_at(
+        let proj_radian = geographic_metric_frame_at(
             "GEOGCS[\"WGS 84 rad\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"radian\",1],AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]",
             &state,
         )
         .unwrap();
-        let proj_grad =
-            crate::crs::geodesic::geographic_metric_frame_at("EPSG:4807", &state).unwrap();
+        let proj_grad = geographic_metric_frame_at("EPSG:4807", &state).unwrap();
         let cases = [
             ("degrees", degrees(), 360.0, 10.0, 2.0),
             ("radians", radians(), std::f64::consts::TAU, 0.0, 0.5),
@@ -1766,7 +1940,7 @@ mod tests {
         assert_eq!(to_point.x, 11.5);
         assert_eq!((to_point.x - from_point.x).to_bits(), 1.0_f64.to_bits());
         let exact_interval_delta = 2.0 * (to - from);
-        assert_eq!(exact_interval_delta.to_bits(), 0x3FEFFFFFFFFFFFFE);
+        assert_eq!(exact_interval_delta.to_bits(), 0x3FEF_FFFF_FFFF_FFFE);
         assert_ne!(
             (to_point.x - from_point.x).to_bits(),
             exact_interval_delta.to_bits()
@@ -2105,7 +2279,7 @@ mod tests {
         let large_start = Point::new_raw_xy(360.0 * 2.0_f64.powi(44), 0.0);
         let large_end = Point::new_raw_xy(large_start.x + 5.0, 0.0);
         let large_edge = ChartEdge::new(large_start, large_end, degrees()).unwrap();
-        let large_site = crate::geometry::exact_arith::retained_source_sheet_site(
+        let large_site = retained_source_sheet_site(
             large_start.x,
             large_edge.retained_longitude(),
             degrees().longitude(),
@@ -2132,7 +2306,7 @@ mod tests {
         let huge_start = Point::new_raw_xy(1.0e22, 0.0);
         let huge_end = Point::new_raw_xy(1.0e22_f64.next_up(), 0.0);
         let huge = ChartEdge::new(huge_start, huge_end, degrees()).unwrap();
-        let source_sheet = crate::geometry::exact_arith::retained_source_sheet_site(
+        let source_sheet = retained_source_sheet_site(
             huge_start.x,
             huge.retained_longitude(),
             degrees().longitude(),
@@ -2140,15 +2314,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(source_sheet.to_bits(), huge_start.x.to_bits());
-        assert!(
-            crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
-                huge.retained_longitude(),
-                degrees().longitude(),
-                0.0,
-                0.5,
-            )
-            .is_ok()
-        );
+        let _ = retained_source_interval_initial_piece_count(
+            huge.retained_longitude(),
+            degrees().longitude(),
+            0.0,
+            0.5,
+        )
+        .unwrap();
         let canonical = huge.chart_position(0.5).unwrap();
         let collapsed = huge
             .source_sheet_point(huge_start, huge_end, 0.5, canonical)
@@ -2393,7 +2565,7 @@ mod tests {
         let frames = [degrees(), grads(), radians()];
         let mut state = 0x4D59_5DF4_D0F3_3173_u64;
         for frame in frames {
-            let axis: PeriodicAxis = frame.longitude();
+            let axis = frame.longitude();
             let half = axis.half_period();
             let period = axis.period();
             for (from, to) in [

@@ -968,15 +968,8 @@ pub(crate) fn segment_projection(
     projection_from_classification(point, segment, classify_segment_projection(point, segment))
 }
 
-// This compact decide/decline filter is the projection hot path. Keeping its
-// consumer-specific return handling in the caller removes the otherwise
-// dominant per-segment enum call ABI; the exact fallback remains cold and
-// out-of-line below.
-#[expect(
-    clippy::inline_always,
-    reason = "measured specialization reduced the ordinary distance ABBA ratio from 1.3043x to 1.224192x"
-)]
-#[inline(always)]
+// The compact decide/decline filter handles ordinary projections; unresolved
+// cases continue through the exact fallback.
 fn classify_segment_projection(point: XY, segment: Segment) -> ClassifiedSegmentProjection {
     let Some(dx) = source_difference(segment.end.x, segment.start.x) else {
         return ClassifiedSegmentProjection::Declined;
@@ -1025,10 +1018,7 @@ fn classify_segment_projection(point: XY, segment: Segment) -> ClassifiedSegment
 }
 
 /// Ratio and witness certification is reached only after both endpoint signs
-/// have been decided as strictly interior. Keeping it out of the endpoint
-/// classifier avoids carrying this larger proof through the distance loop's
-/// overwhelmingly common start/end decisions.
-#[inline(never)]
+/// have been decided as strictly interior.
 fn classify_filtered_interior(
     segment: Segment,
     numerator: SourcePair,
@@ -1047,11 +1037,7 @@ fn classify_filtered_interior(
     ClassifiedSegmentProjection::Declined
 }
 
-/// The interval-filter decline is intentionally out of line: keeping limb
-/// construction and exact ratio rounding out of the ordinary projection's
-/// codegen is material in the distance inner loop.
-#[cold]
-#[inline(never)]
+/// The interval-filter decline uses exact stored-dyadic arithmetic.
 fn classify_segment_projection_exact(
     point: XY,
     segment: Segment,
@@ -1413,11 +1399,6 @@ impl PointSegmentSelection {
 /// The single projection owner classifies every clamped parameter before a
 /// metric consumes it. The measurement and selection key both use the source
 /// determinant; projection emission is a later witness operation.
-#[expect(
-    clippy::inline_always,
-    reason = "measured specialization reduced the ordinary distance ABBA ratio from 1.3043x to 1.224192x"
-)]
-#[inline(always)]
 fn point_segment_metric(point: XY, segment: Segment) -> Result<PointSegmentMetric> {
     let classification = classify_segment_projection(point, segment);
     if matches!(&classification, ClassifiedSegmentProjection::Start) {
@@ -1491,11 +1472,7 @@ pub(in crate::geometry) fn point_segment_distance_and_projection(
     }
 }
 
-/// Exact classification and squared-ratio rounding are a decline path. They
-/// stay out of the ordinary metric's frame so a certified endpoint/interior
-/// does not carry heap-backed dyadic state through the distance inner loop.
-#[cold]
-#[inline(never)]
+/// Exact classification and squared-ratio rounding handle filter declines.
 fn point_segment_metric_exact(point: XY, segment: Segment) -> Result<PointSegmentMetric> {
     Ok(match classify_segment_projection_exact(point, segment)? {
         ExactClassifiedSegmentProjection::Start => try_point_distance_squared(point, segment.start)
@@ -1624,13 +1601,18 @@ impl SquaredDistanceKey {
         if self.witness.same_distance_as(other.witness) {
             return Ok(Ordering::Equal);
         }
-        self.filter.disjoint_cmp(other.filter).map_or_else(
-            || exact_distance_witness_cmp(self.witness, other.witness),
-            Ok,
-        )
+        if let Some(order) = self.filter.disjoint_cmp(other.filter) {
+            return Ok(order);
+        }
+        exact_selection_distance_cmp(self.witness, other.witness)
     }
 
     pub(super) fn is_exact_zero(&self) -> Result<bool> {
+        // The source-distance filter's positive lower endpoint certifies
+        // nonzero without materializing its exact dyadic witness.
+        if self.filter.lo > 0.0 {
+            return Ok(false);
+        }
         Ok(self.witness.squared()?.numerator.is_zero())
     }
 
@@ -1684,6 +1666,143 @@ impl SquaredDistanceKey {
     const fn is_bounded(self) -> bool {
         self.filter.lo.is_finite() && self.filter.hi.is_finite()
     }
+}
+
+fn source_dot_difference_interval(normal: [f64; 2], left: XY, right: XY) -> Option<DdInterval> {
+    let [nx, ny] = normal;
+    let dx = DdInterval::difference(left.x, right.x)?;
+    let dy = DdInterval::difference(left.y, right.y)?;
+    DdInterval::exact(nx)
+        .mul(dx)?
+        .add(DdInterval::exact(ny).mul(dy)?)
+}
+
+fn source_dot_difference_exact(normal: [f64; 2], left: XY, right: XY) -> Result<ExactDyadic> {
+    let [nx, ny] = normal;
+    let dx = projection_difference(left.x, right.x)?;
+    let dy = projection_difference(left.y, right.y)?;
+    ExactDyadic::from_f64(nx)
+        .try_product(&dx)?
+        .try_add(ExactDyadic::from_f64(ny).try_product(&dy)?)
+}
+
+pub(crate) fn source_dot_cmp(normal: [f64; 2], left: XY, right: XY) -> Result<Ordering> {
+    if let Some(difference) = source_dot_difference_interval(normal, left, right) {
+        if difference.is_exact_zero() {
+            return Ok(Ordering::Equal);
+        }
+        if let Some(order) = dd_strict_cmp(difference, DdInterval::exact(0.0)) {
+            return Ok(order);
+        }
+    }
+    #[cfg(test)]
+    CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
+    Ok(source_dot_difference_exact(normal, left, right)?.cmp(&ExactDyadic::zero()))
+}
+
+/// `Some(true)` certifies pruning, `Some(false)` certifies retaining the node,
+/// and `None` requires the exact source-ratio comparison.
+fn clearance_strip_filter_result(
+    point: XY,
+    normal: [f64; 2],
+    low: XY,
+    high: XY,
+    incumbent: &SquaredDistanceKey,
+) -> Option<bool> {
+    let low_gap = source_dot_difference_interval(normal, low, point)?;
+    let high_gap = source_dot_difference_interval(normal, point, high)?;
+    let (low_lower, low_upper) = low_gap.outward_bounds();
+    let (high_lower, high_upper) = high_gap.outward_bounds();
+    if low_upper.is_finite() && high_upper.is_finite() && low_upper <= 0.0 && high_upper <= 0.0 {
+        return Some(false);
+    }
+    let gap_lower = low_lower.max(high_lower).max(0.0);
+    let gap_upper = low_upper.max(high_upper).max(0.0);
+    if !gap_lower.is_finite() || !gap_upper.is_finite() {
+        return None;
+    }
+
+    let [nx, ny] = normal;
+    let norm_squared = DdInterval::exact(nx)
+        .square()
+        .and_then(|x| DdInterval::exact(ny).square().and_then(|y| x.add(y)))?;
+    let (norm_lower, norm_upper) = norm_squared.outward_bounds();
+    if !norm_lower.is_finite() || !norm_upper.is_finite() || norm_upper <= 0.0 {
+        return None;
+    }
+    let key_lower = incumbent.filter.lo;
+    let key_upper = incumbent.filter.hi;
+    // A lower strip bound above the key's upper enclosure proves pruning.
+    if gap_lower > 0.0
+        && key_upper.is_finite()
+        && key_upper >= 0.0
+        && let (Some(bound_numerator), Some(incumbent_upper_product)) = (
+            DdInterval::exact(gap_lower).square(),
+            DdInterval::exact(key_upper).mul(DdInterval::exact(norm_upper)),
+        )
+        && dd_strict_cmp(bound_numerator, incumbent_upper_product).is_some_and(Ordering::is_gt)
+    {
+        return Some(true);
+    }
+    // An upper strip bound below the key's lower enclosure proves no-prune.
+    if key_lower.is_finite()
+        && key_lower >= 0.0
+        && norm_lower > 0.0
+        && DdInterval::exact(gap_upper)
+            .square()
+            .zip(DdInterval::exact(key_lower).mul(DdInterval::exact(norm_lower)))
+            .is_some_and(|(bound_numerator, incumbent_lower_product)| {
+                let (_, bound_upper) = bound_numerator.outward_bounds();
+                let (incumbent_lower, _) = incumbent_lower_product.outward_bounds();
+                bound_upper.is_finite()
+                    && incumbent_lower.is_finite()
+                    && bound_upper <= incumbent_lower
+            })
+    {
+        return Some(false);
+    }
+    None
+}
+
+pub(crate) fn clearance_strip_exceeds(
+    point: XY,
+    normal: [f64; 2],
+    low: XY,
+    high: XY,
+    incumbent: &SquaredDistanceKey,
+) -> Result<bool> {
+    if let Some(prunes) = clearance_strip_filter_result(point, normal, low, high, incumbent) {
+        return Ok(prunes);
+    }
+    #[cfg(test)]
+    CLEARANCE_STRIP_EXACT_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
+
+    let low_gap = source_dot_difference_exact(normal, low, point)?;
+    let high_gap = source_dot_difference_exact(normal, point, high)?;
+    let gap = match low_gap.cmp(&high_gap) {
+        Ordering::Greater => low_gap,
+        Ordering::Less | Ordering::Equal => high_gap,
+    };
+    let zero = ExactDyadic::zero();
+    if !gap.cmp(&zero).is_gt() {
+        return Ok(false);
+    }
+    let [nx, ny] = normal;
+    let x = ExactDyadic::from_f64(nx);
+    let y = ExactDyadic::from_f64(ny);
+    let norm_squared = x.try_product(&x)?.try_add(y.try_product(&y)?)?;
+    if norm_squared.cmp(&zero).is_eq() {
+        return Ok(false);
+    }
+    let bound_numerator = gap.try_product(&gap)?;
+    let incumbent = incumbent.witness.squared()?;
+    Ok(compare_ratios(
+        &bound_numerator,
+        &norm_squared,
+        &incumbent.numerator,
+        &incumbent.denominator,
+    )?
+    .is_gt())
 }
 
 pub(super) fn point_pair_distance_key(left: XY, right: XY) -> SquaredDistanceKey {
@@ -1824,7 +1943,12 @@ pub(crate) fn point_segment_selection(
 
 #[cfg(test)]
 std::thread_local! {
-    static EXACT_SELECTION_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static EXACT_SELECTION_FALLBACKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_STRIP_EXACT_FALLBACKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_STRIP_SUPPORT_FALLBACKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 impl ExactDistanceWitness {
@@ -1903,6 +2027,15 @@ pub(super) fn exact_distance_witness_cmp(
     left.squared()?.cmp(&right.squared()?)
 }
 
+fn exact_selection_distance_cmp(
+    left: ExactDistanceWitness,
+    right: ExactDistanceWitness,
+) -> Result<Ordering> {
+    #[cfg(test)]
+    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
+    exact_distance_witness_cmp(left, right)
+}
+
 fn exact_witness_cmp_with_identity(
     left: ExactDistanceWitness,
     right: ExactDistanceWitness,
@@ -1912,9 +2045,7 @@ fn exact_witness_cmp_with_identity(
             .witness_role()?
             .cmp_tie(right.witness_role()?, || Ordering::Equal));
     }
-    #[cfg(test)]
-    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
-    let distance = exact_distance_witness_cmp(left, right)?;
+    let distance = exact_selection_distance_cmp(left, right)?;
     if distance.is_eq() {
         Ok(left
             .witness_role()?
@@ -2889,29 +3020,10 @@ pub(crate) fn finish_planar_squared_min(
     }
 }
 
-/// Honest squared distance point→segment. `None` on overflow or false-zero
-/// underflow (representable positive separation whose `ex²+ey²` collapses to
-/// 0). Magnitude / zero-tests must not treat a bare `0.0` from
-/// [`point_segment_distance_squared`] as contact — use this, or finish via
-/// [`finish_planar_squared_min`].
-pub(super) fn try_point_segment_distance_squared(
-    point: impl Into<XY>,
-    segment: Segment,
-) -> Result<Option<f64>> {
-    let point = point.into();
-    Ok(match point_segment_metric(point, segment)? {
-        PointSegmentMetric::Squared {
-            measurement_squared,
-            ..
-        } => Some(measurement_squared),
-        PointSegmentMetric::Projection(_) => None,
-    })
-}
-
 /// Squared distance from `point` to `segment` — self-contained MEASUREMENT.
 /// Ordering / compare-min callers may use this; a returned `0.0` is **not**
-/// a contact certificate under underflow (use [`try_point_segment_distance_squared`]
-/// or [`finish_planar_squared_min`] for magnitude answers).
+/// a contact certificate under underflow (use [`point_segment_distance`] or
+/// [`finish_planar_squared_min`] for magnitude answers).
 pub(super) fn point_segment_distance_squared(
     point: impl Into<XY>,
     segment: Segment,

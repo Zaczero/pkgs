@@ -1,7 +1,6 @@
 use pyo3::prelude::*;
 
 use crate::dispatch::{Operation, kernels};
-use crate::geometry::storage::packed_columns::resolve_packed_columns;
 use crate::py::numpy::bool_array;
 
 macro_rules! unary_predicate {
@@ -81,8 +80,7 @@ fn try_is_simple_packed(
         Err(error) => return Some(Err(error.into())),
     };
     if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
-        let columns =
-            resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())?;
+        let columns = array.packed_columns()?;
         if !columns.faithful_geographic_predicates(frame) {
             for row in array.row_operation().present_rows() {
                 let route = match row.row().with_shape(|shape| {

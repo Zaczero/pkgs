@@ -216,7 +216,7 @@ fn overlay_all_inner<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
             );
         }
     }
-    overlay_all_with_bounds_certificates_and_metric(geometries, context, op, strictness, true)
+    overlay_all_with_bounds_certificates_and_metric(geometries, &context, op, strictness, true)
 }
 
 pub(crate) fn overlay_intersection_with_rectangle(
@@ -378,7 +378,7 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry:
         strictness,
         true,
         ExactPartitionBudget::Charge,
-        SourceArcContext::new(TopologyDomain::Geographic(frame), metric_access),
+        &SourceArcContext::new(TopologyDomain::Geographic(frame), metric_access),
     )
 }
 
@@ -402,7 +402,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
 ) -> Result<Shape> {
     overlay_all_with_bounds_certificates_and_metric::<S, crate::crs::GeodesicMetric>(
         geometries,
-        SourceArcContext::new(domain, None),
+        &SourceArcContext::new(domain, None),
         op,
         strictness,
         bounds_certificates,
@@ -414,7 +414,7 @@ fn overlay_all_with_bounds_certificates_and_metric<
     M: crate::geometry::ChartMetric,
 >(
     geometries: &[S],
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
     op: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
@@ -482,7 +482,7 @@ fn exact_cartesian_overlay(
         strictness,
         bounds_certificates,
         partition_budget,
-        SourceArcContext::cartesian(),
+        &SourceArcContext::cartesian(),
     )
 }
 
@@ -496,7 +496,12 @@ fn exact_cartesian_binary_overlay(
     bounds_certificates: bool,
     partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
-    puntal_nary_lane!(inputs, operation, strictness, SourceArcContext::cartesian());
+    puntal_nary_lane!(
+        inputs,
+        operation,
+        strictness,
+        &SourceArcContext::cartesian()
+    );
     sort_overlay_inputs!(inputs, operation);
     let sorted_inputs: &[&Shape] = inputs;
     let fast_result = match lane {
@@ -517,7 +522,7 @@ fn exact_cartesian_binary_overlay(
         strictness,
         bounds_certificates,
         partition_budget,
-        SourceArcContext::cartesian(),
+        &SourceArcContext::cartesian(),
     )
 }
 
@@ -531,12 +536,8 @@ fn exact_puntal_nary_overlay<M: crate::geometry::ChartMetric>(
     inputs: &[&Shape],
     operation: OverlayOp,
     strictness: Strictness,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Option<Shape>> {
-    let quotient_frame = match context.domain() {
-        TopologyDomain::Cartesian => None,
-        TopologyDomain::Geographic(frame) => Some(frame),
-    };
     struct Membership {
         xy: XY,
         z: AxisValue,
@@ -544,6 +545,10 @@ fn exact_puntal_nary_overlay<M: crate::geometry::ChartMetric>(
         last_operand: usize,
         odd: bool,
     }
+    let quotient_frame = match context.domain() {
+        TopologyDomain::Cartesian => None,
+        TopologyDomain::Geographic(frame) => Some(frame),
+    };
     let mut membership =
         crate::geometry::HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     let mut points = Vec::new();
@@ -705,7 +710,7 @@ fn exact_partition_overlay_with_bounds_certificates<M: crate::geometry::ChartMet
     strictness: Strictness,
     bounds_certificates: bool,
     partition_budget: ExactPartitionBudget,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     puntal_nary_lane!(&inputs, operation, strictness, context);
     sort_overlay_inputs!(inputs, operation);
@@ -796,7 +801,7 @@ fn exact_cartesian_puntal_overlay(
                 inputs,
                 operation,
                 strictness,
-                SourceArcContext::cartesian(),
+                &SourceArcContext::cartesian(),
             )
             .map(Some)
         },
@@ -837,7 +842,7 @@ fn one_puntal_overlay(
             inputs,
             operation,
             strictness,
-            SourceArcContext::cartesian(),
+            &SourceArcContext::cartesian(),
         )
         .map(Some);
     }
@@ -854,7 +859,7 @@ fn one_puntal_overlay(
         inputs,
         operation,
         strictness,
-        SourceArcContext::cartesian(),
+        &SourceArcContext::cartesian(),
     )?;
     if other.is_empty() {
         return Ok(Some(point_shape));
@@ -879,7 +884,7 @@ fn point_overlay_shape(
     inputs: &[&Shape],
     operation: OverlayOp,
     strictness: Strictness,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     if points.is_empty() {
         return Ok(empty_nary_overlay_shape(inputs, operation));
@@ -1196,7 +1201,7 @@ fn exact_cartesian_line_polygon_overlay(
         inputs,
         operation,
         strictness.is_strict(),
-        SourceArcContext::cartesian(),
+        &SourceArcContext::cartesian(),
     )?;
     shape.normalize().map(Some)
 }
@@ -1893,7 +1898,7 @@ fn exact_partition_overlay<M: crate::geometry::ChartMetric>(
     declared_axes: CoordinateAxes,
     strict: bool,
     partition_budget: ExactPartitionBudget,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let union = if operation == OverlayOp::Union {
         ExactSourceInventory::from_polygonal_union(inputs)?
@@ -1935,7 +1940,7 @@ pub(super) fn full_partition_cartesian_overlay(
         overlay_declared_axes(inputs, operation),
         strictness.is_strict(),
         ExactPartitionBudget::Charge,
-        SourceArcContext::cartesian(),
+        &SourceArcContext::cartesian(),
     )?;
     Ok(if shape.is_empty() {
         empty_nary_overlay_shape(inputs, operation)
@@ -1994,7 +1999,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
         op,
         strictness,
         bounds_certificates,
-        SourceArcContext::new(TopologyDomain::Geographic(originals.frame()), None),
+        &SourceArcContext::new(TopologyDomain::Geographic(originals.frame()), None),
     )
 }
 
@@ -2005,7 +2010,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
     op: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let frame = match context.domain() {
         TopologyDomain::Geographic(frame) => frame,
@@ -2161,7 +2166,7 @@ pub(crate) fn overlay_all_geographic_q_from(
         op,
         strictness,
         bounds_certificates,
-        SourceArcContext::new(TopologyDomain::Geographic(originals.frame()), None),
+        &SourceArcContext::new(TopologyDomain::Geographic(originals.frame()), None),
     )
 }
 
@@ -2171,7 +2176,7 @@ fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
     op: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let frame = match context.domain() {
         TopologyDomain::Geographic(frame) => frame,

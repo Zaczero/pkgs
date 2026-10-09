@@ -14,11 +14,11 @@ use crate::test_support::binary_dispatch_counters::metric_context_acquisition;
 pub(crate) enum MetricResolver {
     /// Pure topology, IO, or coordinate-space ops — no CRS metric model.
     None,
-    /// Antimeridian ops allow CRS-free lon/lat but reject projected CRS. They
-    /// still need the CRS metric model resolved once per call so row kernels do
-    /// not re-derive it for every geometry.
+    /// Antimeridian ops admit their CRS model before row execution; the row
+    /// kernel enforces that projected frames have no antimeridian.
     Antimeridian,
-    /// Distance/area/length/buffer and other CRS-aware measure/constructive ops.
+    /// Distance/area/length/buffer, linear referencing, and other CRS-aware
+    /// measure/constructive ops.
     Metric {
         op: MetricOp,
         unit: Option<DistanceUnit>,
@@ -30,14 +30,6 @@ pub(crate) enum MetricResolver {
         op: MetricOp,
         unit: Option<DistanceUnit>,
     },
-    /// Linear-referencing distances: CRS-aware like [`Self::Metric`], but a
-    /// normalized call uses fractions of line length and therefore rejects
-    /// `unit=`.
-    LineMetric {
-        op: MetricOp,
-        unit: Option<DistanceUnit>,
-        normalized: bool,
-    },
     /// Geographic topology borrows its CRS model and resolves the ellipsoid
     /// only after an attributed interior source arc is admitted.
     GeographicCarry,
@@ -48,26 +40,6 @@ impl MetricResolver {
     /// [`crate::dispatch::Operation::resolver`].
     pub(crate) const fn with_unit(self, unit: Option<DistanceUnit>) -> Self {
         match self {
-            Self::Metric { op, .. } => Self::Metric { op, unit },
-            Self::Metric3d { op, .. } => Self::Metric3d { op, unit },
-            Self::LineMetric { op, normalized, .. } => Self::LineMetric {
-                op,
-                unit,
-                normalized,
-            },
-            Self::Antimeridian => Self::Antimeridian,
-            Self::GeographicCarry => Self::GeographicCarry,
-            other @ Self::None => other,
-        }
-    }
-
-    pub(crate) const fn with_line_unit(self, unit: Option<DistanceUnit>, normalized: bool) -> Self {
-        match self {
-            Self::LineMetric { op, .. } => Self::LineMetric {
-                op,
-                unit,
-                normalized,
-            },
             Self::Metric { op, .. } => Self::Metric { op, unit },
             Self::Metric3d { op, .. } => Self::Metric3d { op, unit },
             Self::Antimeridian => Self::Antimeridian,
@@ -103,9 +75,8 @@ impl MetricResolver {
             Self::Antimeridian => {
                 #[cfg(test)]
                 metric_context_acquisition();
-                let model = crs::metric_model(frame.crs_str())?;
-                let model = scratch.model.get_or_init(|| model);
-                return Ok(MetricCtx::Antimeridian(model));
+                crs::metric_model(frame.crs_str())?;
+                return Ok(MetricCtx::Antimeridian);
             },
             Self::GeographicCarry => {
                 let (_, metric) = self.resolve_topology_ctx(frame, scratch)?;
@@ -117,15 +88,6 @@ impl MetricResolver {
             },
             Self::Metric3d { op, unit } => {
                 crate::broadcast::resolve_metric_3d(frame.crs_str(), unit, op)?
-            },
-            Self::LineMetric {
-                op,
-                unit,
-                normalized,
-            } => {
-                #[cfg(test)]
-                metric_context_acquisition();
-                crate::resolve_line_metric(frame.crs_str(), unit, normalized, op)?
             },
         };
         let metric = match crs::ResolvedMetric::from_model(&model) {
@@ -252,7 +214,7 @@ impl MetricScratch {
 #[derive(Clone, Copy)]
 pub(crate) enum MetricCtx<'a> {
     None,
-    Antimeridian(&'a MetricModel),
+    Antimeridian,
     GeographicCarry {
         scratch: &'a MetricScratch,
     },
@@ -264,22 +226,6 @@ pub(crate) enum MetricCtx<'a> {
 }
 
 impl<'a> MetricCtx<'a> {
-    pub(crate) fn model(self) -> Option<&'a MetricModel> {
-        match self {
-            Self::None => None,
-            Self::Antimeridian(model) | Self::Metric { model, .. } => Some(model),
-            Self::GeographicCarry { scratch } => scratch.model.get(),
-        }
-    }
-
-    pub(crate) fn resolved(self) -> Option<&'a ResolvedMetric> {
-        match self {
-            Self::Metric { metric, .. } => Some(metric),
-            Self::GeographicCarry { scratch } => scratch.metric.get(),
-            Self::None | Self::Antimeridian(_) => None,
-        }
-    }
-
     /// The metric model a metric-resolved kernel is entitled to — the ONE
     /// spelling of the "registry said this op resolves a metric" invariant
     /// (14 kernels used to hand-roll this match with per-op error strings).
@@ -287,7 +233,7 @@ impl<'a> MetricCtx<'a> {
         match self {
             Self::Metric { model, .. } => Ok(model),
             Self::GeographicCarry { scratch } => scratch.metric_model(),
-            Self::None | Self::Antimeridian(_) => Err(crate::crs::CrsError::invalid(format!(
+            Self::None | Self::Antimeridian => Err(crate::crs::CrsError::invalid(format!(
                 "internal dispatch error: {} missing metric context",
                 op.name()
             ))),
@@ -300,7 +246,7 @@ impl<'a> MetricCtx<'a> {
         match self {
             Self::Metric { metric, .. } => Ok(metric),
             Self::GeographicCarry { scratch } => scratch.resolved_metric(),
-            Self::None | Self::Antimeridian(_) => Err(crate::crs::CrsError::invalid(format!(
+            Self::None | Self::Antimeridian => Err(crate::crs::CrsError::invalid(format!(
                 "internal dispatch error: {} missing metric context",
                 op.name()
             ))),
@@ -313,7 +259,7 @@ impl<'a> MetricCtx<'a> {
         let resolved = match self {
             Self::Metric { metric, .. } => metric,
             Self::GeographicCarry { scratch } => scratch.resolved_metric()?,
-            Self::None | Self::Antimeridian(_) => return Ok(None),
+            Self::None | Self::Antimeridian => return Ok(None),
         };
         Ok(match resolved {
             ResolvedMetric::Geodesic(metric) => Some(metric),
@@ -346,7 +292,7 @@ impl<'a> MetricCtx<'a> {
                 scratch.source_chart_metric(source_crs).map(Some)
             },
             Self::GeographicCarry { .. } => self.geographic_chart_metric(),
-            Self::None | Self::Antimeridian(_) => Ok(None),
+            Self::None | Self::Antimeridian => Ok(None),
         }
     }
 }
@@ -384,8 +330,8 @@ pub(crate) struct CachelessRowContext<'a> {
 }
 
 pub(crate) struct LinearReferenceRow<'a> {
-    pub op: CachelessRowContext<'a>,
-    pub model: &'a MetricModel,
+    pub lane: Lane,
+    pub metric: &'a ResolvedMetric,
     pub cache: &'a crate::geometry::FrameDependentCaches,
 }
 
@@ -437,12 +383,12 @@ mod tests {
 
         assert!(matches!(domain, TopologyDomain::Geographic(_)));
         assert!(matches!(
-            metric.model(),
-            Some(MetricModel::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_model(MetricOp::OffsetCurve).unwrap(),
+            MetricModel::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert!(matches!(
-            metric.resolved(),
-            Some(ResolvedMetric::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_resolved(MetricOp::OffsetCurve).unwrap(),
+            ResolvedMetric::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert!(
             context_scratch
@@ -468,12 +414,12 @@ mod tests {
         assert_eq!(source_metric.geodesic.f, 1.0 / 150.0);
         assert_eq!(source_metric.state.generation, generation);
         assert!(matches!(
-            metric.model(),
-            Some(MetricModel::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_model(MetricOp::OffsetCurve).unwrap(),
+            MetricModel::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert!(matches!(
-            metric.resolved(),
-            Some(ResolvedMetric::Planar { to_metre }) if to_metre.get().to_bits() == 1.0_f64.to_bits()
+            metric.require_resolved(MetricOp::OffsetCurve).unwrap(),
+            ResolvedMetric::Planar { to_metre } if to_metre.get().to_bits() == 1.0_f64.to_bits()
         ));
         assert_eq!(
             binary_dispatch_counters::snapshot().runtime_state_snapshots,
@@ -502,7 +448,9 @@ mod tests {
         };
 
         assert!(matches!(domain, TopologyDomain::Geographic(_)));
-        let Some(ResolvedMetric::Geodesic(operation_metric)) = metric.resolved() else {
+        let ResolvedMetric::Geodesic(operation_metric) =
+            metric.require_resolved(MetricOp::OffsetCurve).unwrap()
+        else {
             panic!("geographic operation resolves its geodesic metric");
         };
         let source_metric = metric

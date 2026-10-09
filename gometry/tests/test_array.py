@@ -142,6 +142,15 @@ def test_mixed_axes_arrays_summarize_honestly() -> None:
     assert gm.GeometryArray([]).common_coordinate_axes == 'XY'
 
 
+def test_require_preserves_missing_rows_in_a_geometry_array() -> None:
+    rows = gm.GeometryArray([gm.Point(1.0, 2.0), None])
+
+    required = gm.require(rows)
+
+    assert required.is_missing.tolist() == [False, True]
+    assert required[1] is None
+
+
 @pytest.mark.parametrize(
     'source_wkts',
     [
@@ -588,9 +597,9 @@ def test_scalar_python_index_overflow_is_an_index_error(index: int) -> None:
 
     point = gm.Point(0, 0)
     collection = gm.GeometryCollection([point])
-    coordinates, indexes = gm.get_coordinates(
-        gm.GeometryArray([point, gm.Point(1, 1)]), return_index=True
-    )
+    view = gm.GeometryArray([point, gm.Point(1, 1)]).coords
+    coordinates = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert point.coords[0] == point.coords[-1] == (0.0, 0.0)
     assert collection.parts[0] == collection.parts[-1]
     assert coordinates.tolist() == [[0.0, 0.0], [1.0, 1.0]]

@@ -122,12 +122,14 @@ True";
 method_doc! {
     doc_to_geojson;
     body: concat!(r"Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
-CRS-tagged input must be ``EPSG:4326`` (or ``OGC:CRS84``) — reproject with
-``to_crs(4326)`` first. CRS-free input is explicitly assumed to already be
-WGS84 longitude/latitude: coordinates outside longitude ``[-180, 180]`` or
-latitude ``[-90, 90]`` are rejected, and antimeridian-crossing geometry is
-split according to RFC 7946. If CRS-free coordinates have projected or other
-planar semantics, transform them or choose another format.
+CRS-tagged input must use the 2D longitude/latitude family
+(``EPSG:4326`` or ``OGC:CRS84``) or the 3D longitude/latitude/height family
+(``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first. CRS-free
+input is explicitly assumed to already be WGS84 longitude/latitude:
+coordinates outside longitude ``[-180, 180]`` or latitude ``[-90, 90]`` are
+rejected, and antimeridian-crossing geometry is split according to RFC 7946.
+If CRS-free coordinates have projected or other planar semantics, transform
+them or choose another format.
 
 ", crate::writer_ordinate_policy!(), r"
 
@@ -156,7 +158,7 @@ list of str
     tail: r#"Raises
 ------
 CRSError
-    If the input carries a CRS other than WGS84.
+    If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude family.
 InvalidGeometryError
     If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
 GeometryError

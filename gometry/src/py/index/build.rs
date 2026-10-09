@@ -1,4 +1,5 @@
 use crate::boundary::metadata;
+use crate::geometry::storage::ArrayRows;
 use crate::geometry::{TopologyDomain, storage};
 use crate::py::index::{
     Bound, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows, PackedStore, PyAny,
@@ -36,7 +37,7 @@ fn spatial_index_rows(
             item.map_or_else(
                 || {
                     PyGeometry::with_frame(
-                        PyGeometryArray::missing_placeholder(),
+                        ArrayRows::missing_placeholder(),
                         placeholder_frame.clone(),
                     )
                 },
@@ -336,7 +337,7 @@ pub(crate) fn restore_spatial_index(
             geometry
         } else {
             live.push(0);
-            PyGeometry::with_frame(PyGeometryArray::missing_placeholder(), values.frame.clone())
+            PyGeometry::with_frame(ArrayRows::missing_placeholder(), values.frame.clone())
         };
         rows.push(geometry);
     }
@@ -549,7 +550,6 @@ mod ownership_tests {
         let source = compact_points(vec![true, false, false, true, false, true]);
         let window = source.gather_logical_row_range(1..5).unwrap();
         let index = packed_spatial_index(&window).unwrap().unwrap();
-        assert!(window.is_compact_nullable());
         assert_eq!(index.live_handles_sorted(), [0, 1, 3]);
 
         let mut rows = index.rows.operation();

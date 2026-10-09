@@ -14,7 +14,7 @@ use crate::geometry::{
 
 pub(crate) fn boundary_with_metric<M: crate::geometry::ChartMetric>(
     data: &PreparedPlan,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let domain = context.domain();
     match data.shape() {
@@ -57,7 +57,7 @@ pub(crate) fn boundary_with_metric<M: crate::geometry::ChartMetric>(
 
 fn polygonal_boundary<M: crate::geometry::ChartMetric>(
     data: &PreparedPlan,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let shape = data.shape();
     match context.domain() {
@@ -89,7 +89,7 @@ fn polygonal_boundary<M: crate::geometry::ChartMetric>(
 
 fn exact_partition_boundary<M: crate::geometry::ChartMetric>(
     shape: &Shape,
-    context: SourceArcContext<'_, '_, M>,
+    context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
     let inventory = ExactSourceInventory::from_polygonal_union(&[shape])?
         .expect("the boundary owner receives polygonal input");

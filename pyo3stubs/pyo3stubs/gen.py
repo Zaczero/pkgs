@@ -4,16 +4,17 @@ the toolkit; the check modules validate, this one writes).
 Docstrings live once, in the Rust ``///`` doc comments on the PyO3 surface, and
 become the compiled extension's ``__doc__``. :func:`render_stub_with_docs` copies
 each symbol's runtime ``__doc__`` into the hand-authored stub so IDE hover and the
-docs site render the prose, while preserving the hand-written signatures,
-overloads, and typed annotations untouched.
+docs site render the prose, while preserving hand-written signatures, overloads,
+typed annotations, and annotated descriptor declarations.
 
 Placement contract: **exactly one docstring per symbol.** A non-overloaded def
-carries it directly; an overload set carries it on the *last* variant — the
-canonical union signature (stubs must not have a bare implementation def per
-PEP 484, and duplicating prose across variants is drift surface). Earlier
-variants are stripped. Stub-only overrides of inherited runtime members keep
-their hand-written prose untouched (they narrow types, so they document
-themselves — the doc-contract check enforces their presence).
+carries it directly; an overload set carries it on the *last* authored variant
+as the prose carrier (stubs must not have a bare implementation def per PEP 484,
+and duplicating prose across variants is drift surface). Earlier variants are
+stripped. Reference pages show every accepted variant in source order; the
+carrier is not a universal signature. Stub-only overrides of inherited runtime
+members keep their hand-written prose untouched (they narrow types, so they
+document themselves — the doc-contract check enforces their presence).
 
 Requires ``libcst``. The runtime module and stub path come from the project's
 :class:`~pyo3stubs.config.StubConfig`.
@@ -23,62 +24,25 @@ from __future__ import annotations
 
 import ast
 import inspect
-import types
 from collections import Counter
 from typing import TYPE_CHECKING, TypeVar
 
 import libcst as cst
 
-from pyo3stubs.ast_util import decorator_names, doc_of
+from pyo3stubs.ast_util import (
+    _runtime_doc_for_stub,
+    annotated_data_descriptors,
+    decorator_names,
+)
 from pyo3stubs.context import CheckContext
-from pyo3stubs.rust_scan import constructor_docs
+from pyo3stubs.rust_scan import constructor_doc_sources
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    import types
+    from collections.abc import Iterator, Mapping
 
     from pyo3stubs.config import StubConfig
-
-# PyO3 registers protocol methods as type slots, and CPython synthesises the
-# wrapper — taking the docstring with it. `LRUCache.__getitem__` reads "Return
-# self[key]." no matter what the `///` comment above the Rust said, so injecting
-# the runtime doc would overwrite the stub's own prose with boilerplate.
-#
-# The tell is the descriptor kind, not the text. Everything PyO3 documents
-# itself arrives as a `method_descriptor` (plain methods), `getset_descriptor`
-# (getters) or `classmethod_descriptor`; only CPython-synthesised slots are
-# `types.WrapperDescriptorType` (the type of `object.__lt__`).
-
-#: Docstrings CPython supplies for members a class never wrote. Two dunders slip
-#: past the descriptor-kind test above: `__new__` is a
-#: `builtin_function_or_method` carrying `object.__new__`'s text (PyO3 does not
-#: attach a `#[new]`'s `///` to it at all), and the `__class_getitem__` that
-#: `#[pyclass(generic)]` synthesises carries `dict.__class_getitem__`'s "See PEP
-#: 585". Both were being published into shipped stubs over the Rust prose.
-#:
-#: Read out of the running interpreter rather than written down, so it tracks
-#: CPython's wording instead of pinning one release's phrasing — and consulted
-#: only for dunders, where a hand-written `///` cannot plausibly collide.
-_BUILTIN_DOCS = frozenset(
-    doc
-    for owner in (object, type, dict, list, tuple, str, int)
-    for name in dir(owner)
-    if (doc := doc_of(getattr(owner, name, None))) is not None
-)
-
-
-def _runtime_doc_for_stub(name: str, obj: object) -> str | None:
-    """Runtime ``__doc__`` suitable for stub injection, or ``None`` to leave stub.
-
-    Returning None hands the symbol to the stub-only-override branch, so the
-    hand-written prose survives and `doc-contract` requires it to exist.
-    """
-    if isinstance(obj, types.WrapperDescriptorType):
-        return None
-    doc = doc_of(obj)
-    if doc is not None and name.startswith('__') and doc in _BUILTIN_DOCS:
-        return None
-    return doc
-
+    from pyo3stubs.rust_scan import ConstructorDocSource
 
 #: The two node kinds that can carry a docstring in a stub.
 _Def = TypeVar('_Def', cst.ClassDef, cst.FunctionDef)
@@ -217,6 +181,55 @@ def _def_totals(stub_source: str) -> Counter[tuple[str, str]]:
     return totals
 
 
+def _descriptor_docs(
+    stub_source: str,
+    runtime: types.ModuleType,
+) -> dict[str, dict[str, str]]:
+    """Native prose for annotated data descriptors, keyed by class/member."""
+    docs: dict[str, dict[str, str]] = {}
+    module = ast.parse(stub_source)
+    for node in module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        cls = getattr(runtime, node.name, None)
+        if not isinstance(cls, type):
+            continue
+        for name, _, _, descriptor in annotated_data_descriptors(cls, node.body):
+            if doc := _runtime_doc_for_stub(name, descriptor):
+                docs.setdefault(node.name, {})[name] = doc
+    return docs
+
+
+def _inject_attribute_docs(
+    body: cst.IndentedBlock,
+    docs: dict[str, str],
+    continuation_indent: str,
+) -> cst.IndentedBlock:
+    """Replace adjacent docstrings of native annotated data descriptors."""
+    statements = list(body.body)
+    updated: list[cst.BaseStatement] = []
+    index = 0
+    while index < len(statements):
+        statement = statements[index]
+        attribute = None
+        if (
+            isinstance(statement, cst.SimpleStatementLine)
+            and len(statement.body) == 1
+            and isinstance(statement.body[0], cst.AnnAssign)
+            and isinstance(statement.body[0].target, cst.Name)
+        ):
+            attribute = statement.body[0].target.value
+        doc = docs.get(attribute) if attribute is not None else None
+        updated.append(statement)
+        index += 1
+        if doc is None:
+            continue
+        if index < len(statements) and _is_string_expr(statements[index]):
+            index += 1
+        updated.append(_docstring_statement(doc, continuation_indent))
+    return body.with_changes(body=updated)
+
+
 class DocInjector(cst.CSTTransformer):
     """Copy ``runtime.__doc__`` onto each symbol's docstring-carrier def."""
 
@@ -224,11 +237,13 @@ class DocInjector(cst.CSTTransformer):
         self,
         runtime: types.ModuleType,
         totals: Counter[tuple[str, str]],
-        constructors: dict[str, str],
+        constructors: Mapping[str, ConstructorDocSource],
+        attribute_docs: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self._runtime = runtime
         self._totals = totals
         self._constructors = constructors
+        self._attribute_docs = attribute_docs or {}
         self._seen: Counter[tuple[str, str]] = Counter()
         self._stack: list[str] = []
 
@@ -243,6 +258,16 @@ class DocInjector(cst.CSTTransformer):
         obj = getattr(self._runtime, name, None)
         if obj is None:
             return updated  # stub-only typing helper (protocols)
+        if (attribute_docs := self._attribute_docs.get(name)) and isinstance(
+            updated.body, cst.IndentedBlock
+        ):
+            updated = updated.with_changes(
+                body=_inject_attribute_docs(
+                    updated.body,
+                    attribute_docs,
+                    '    ' * (len(self._stack) + 1),
+                )
+            )
         doc = _runtime_doc_for_stub(name, obj)
         if doc:
             return _apply(updated, doc, '    ' * (len(self._stack) + 1))
@@ -270,23 +295,27 @@ class DocInjector(cst.CSTTransformer):
             cls = getattr(self._runtime, scope, None)
             if cls is None:
                 return updated  # stub-only typing helper (protocols)
-            if name not in vars(cls):
+            constructor = self._constructors.get(scope) if name == '__new__' else None
+            if name not in vars(cls) and constructor is None:
                 # Stub-only override of an inherited runtime member: it narrows
                 # types, so it documents itself — leave the group untouched.
                 return updated
             obj = getattr(cls, name, None)
         else:
             indent = '    '
+            constructor = None
             obj = getattr(self._runtime, name, None)
         if obj is None:
             return updated  # stub-only typing helper
         if not carrier:
             return _without_docstring(updated)
+        if constructor is not None:
+            return (
+                _apply(updated, constructor.prose, indent)
+                if constructor.prose is not None
+                else _without_docstring(updated)
+            )
         doc = _runtime_doc_for_stub(name, obj)
-        if doc is None and name == '__new__':
-            # PyO3 leaves a `#[new]`'s doc comment unreachable at runtime, so
-            # the only place the constructor's prose exists is the Rust source.
-            doc = self._constructors.get(scope)
         if doc:
             return _apply(updated, doc, indent)
         return updated
@@ -301,6 +330,9 @@ def render_stub_with_docs(cfg: StubConfig) -> str:
     ctx = CheckContext(cfg)
     source = ctx.stub_text
     injector = DocInjector(
-        ctx.runtime_module, _def_totals(source), constructor_docs(cfg)
+        ctx.runtime_module,
+        _def_totals(source),
+        constructor_doc_sources(cfg).by_class,
+        _descriptor_docs(source, ctx.runtime_module),
     )
     return cst.parse_module(source).visit(injector).code

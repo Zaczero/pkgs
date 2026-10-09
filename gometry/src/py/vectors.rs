@@ -136,9 +136,9 @@ enum GroupsValues {
 }
 
 /// Shared CSR ragged container: one flat `values` payload plus row `offsets`.
-/// ``groups[i]`` is a zero-copy row view; ``groups[s]`` shares the backing
-/// with a sub-offset window. ``.values``/``.offsets``/``.counts`` expose the
-/// Arrow ListArray columns for vectorized work without copying.
+/// The values payload keeps its actual type (int64, geometry array, or cell
+/// array). A contiguous values window may share backing; offsets for a window
+/// starting after row zero are rebased, and counts are materialized.
 #[pyclass(
     name = "Groups",
     module = "gometry",
@@ -495,7 +495,7 @@ impl Groups {
     fn no_direct_ctor() -> PyResult<Self> {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "Groups is returned by grouping operations (e.g. index queries, \
-             self_intersections, line_interpolate_points), not constructed \
+             self_intersections, line_interpolate(..., count=...)), not constructed \
              directly",
         ))
     }
@@ -543,8 +543,15 @@ impl Groups {
         python_sizeof(std::mem::size_of::<Self>(), self.logical_heap_bytes())
     }
 
-    /// The flat backing column (int64 ndarray, `GeometryArray`, or
-    /// `CellArray`).
+    /// The logical flat payload window (int64 ndarray, `GeometryArray`, or
+    /// `CellArray`), with values in group order. A contiguous source window
+    /// can share backing; gathered values may be materialized.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray or GeometryArray or CellArray
+    ///     The selected flat values window. Numeric values are read-only int64;
+    ///     geometry and cell values retain their immutable array types.
     #[getter]
     fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {
@@ -619,6 +626,12 @@ impl Groups {
 
     /// The `len(self) + 1` row boundaries into ``values`` (CSR offsets
     /// column): row ``i`` is ``values[offsets[i]:offsets[i + 1]]``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A read-only int64 array of row boundaries. Slices are rebased to
+    ///     start at zero; a slice starting after row zero owns a rebased copy.
     #[getter]
     fn offsets(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         if slf.borrow().rows.start == 0 {
@@ -644,6 +657,11 @@ impl Groups {
     }
 
     /// Per-group element counts (`offsets[i + 1] - offsets[i]`).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A materialized, read-only int64 count for each group in row order.
     #[getter]
     fn counts(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let this = slf.borrow();

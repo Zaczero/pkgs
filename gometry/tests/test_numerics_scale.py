@@ -1127,6 +1127,7 @@ def test_native_voronoi_pinned_clip_vertices_exhaust_adjacent_coordinates(
         getattr(source, operation)(clip=clip)
     assert type(raised.value) is gm.GeometryError
     assert raised.value.operation == operation
+    assert raised.value.code == 'output_unrepresentable'
 
 
 def _independent_mrr_reference(

@@ -64,6 +64,9 @@ def test_parse_position_tracks_wkb_cursor(payload: bytes, position: int) -> None
 
 
 def test_structured_error_defaults_and_parse_position() -> None:
+    assert errors.GeometryError('x').code is None
+    assert errors.InvalidGeometryError('x').code is None
+    assert errors.GeometryTypeError('x').code is None
     assert errors.ParseError('x').position is None
     assert errors.GeometryTypeError('x').expected is None
     assert errors.TransformError('x').source is None
@@ -235,7 +238,7 @@ def test_geometry_error_on_grid_parameters() -> None:
     with pytest.raises(errors.GeometryError, match='H3 resolution must be between'):
         gm.h3_cover(square, resolution=99)
     with pytest.raises(errors.GeometryError, match='S2 level'):
-        gm.s2_cover(square, max_cells=4, min_level=99)
+        gm.s2_cover_adaptive(square, max_cells=4, min_level=99)
     with pytest.raises(errors.ParseError, match='invalid H3 cell token') as h3_info:
         gm.H3Cell('zzz')
     assert h3_info.value.format == 'h3'

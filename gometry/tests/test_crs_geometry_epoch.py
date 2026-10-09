@@ -289,6 +289,20 @@ def test_etrs89_ensemble_rejects_epoch() -> None:
     _reject_epoch(4258)
 
 
+def test_epoch_admission_includes_wgs84_derived_crs_and_explicit_targets() -> None:
+    for crs in (4326, 3857, 9000):
+        point = gm.Point(10.0, 50.0, crs=crs, epoch=_GEOMETRY_EPOCH)
+        assert point.epoch == _GEOMETRY_EPOCH
+
+    source = gm.Point(10.0, 50.0, crs=4326, epoch=2020.0)
+    for target in (4326, 3857, 9000):
+        transformed = source.to_crs(target, epoch=2025.5)
+        assert transformed.crs == f'EPSG:{target}'
+        assert transformed.epoch == 2025.5
+
+    _reject_epoch(2180)
+
+
 def test_from_wkb_epoch_after_ewkb_crs() -> None:
     """R16: ``from_wkb`` discovers the EWKB CRS before validating epoch."""
     w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
@@ -302,7 +316,7 @@ def test_from_wkb_epoch_after_ewkb_crs() -> None:
     static = gm.Point(1, 2, crs=2180).to_wkb(include_srid=True)
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a dynamic CRS; EPSG:2180 is static\. Remove epoch= or transform to a dynamic CRS first$',
+        match=r'^a coordinate epoch is not admitted for CRS EPSG:2180; remove epoch= or transform to a CRS that admits coordinate epochs first$',
     ):
         gm.from_wkb([static], epoch=2020.0)
 

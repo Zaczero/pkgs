@@ -833,7 +833,7 @@ def _run_environment(payload: dict[str, Any]) -> dict[str, Any]:
         'cpu_model': metadata.get('cpu_model'),
         'kernel': metadata.get('kernel'),
         'python': python.split()[0] if isinstance(python, str) else None,
-        'git_commit': metadata.get('git_commit'),
+        'harness_commit': metadata.get('harness_commit'),
         'geos_version': metadata.get('geos_version'),
         'proj_version': metadata.get('proj_version'),
         'package_versions': versions,
@@ -850,14 +850,53 @@ def render(
     if not publishable:
         lines.extend((f'> **{SMOKE_BANNER}**', ''))
     if environment is not None and any(environment.values()):
-        commit = environment.get('git_commit') or 'unknown'
+        commit = environment.get('harness_commit') or 'unknown'
         lines.extend((
             '## Run environment',
             '',
             f'Measured on {environment.get("cpu_model") or "an unknown CPU"} with Linux '
             f'{environment.get("kernel") or "unknown"} and CPython '
-            f'{environment.get("python") or "unknown"}, at commit `{commit[:8]}`.',
+            f'{environment.get("python") or "unknown"}. Benchmark harness commit: '
+            f'`{commit[:8]}`.',
         ))
+        producer_commits: set[str] = set()
+        producer_unknown = False
+        for row in rows:
+            for block in row.blocks:
+                for identity in block.arm_identities.values():
+                    implementation = identity.get('implementation')
+                    if (
+                        not isinstance(implementation, dict)
+                        or implementation.get('runtime') != 'gometry'
+                    ):
+                        continue
+                    source_commit = implementation.get('source_commit')
+                    if isinstance(source_commit, str):
+                        producer_commits.add(source_commit)
+                    else:
+                        producer_unknown = True
+        if len(producer_commits) == 1 and not producer_unknown:
+            source_commit = next(iter(producer_commits))
+            lines.append(
+                f'Gometry producer source commit: `{source_commit[:8]}` '
+                '(bound to the loaded wheel by its receipt).'
+            )
+        elif producer_commits:
+            sources = ', '.join(
+                f'`{source_commit[:8]}`' for source_commit in sorted(producer_commits)
+            )
+            suffix = (
+                ' and unknown (producer source is not commit-bound)'
+                if producer_unknown
+                else ''
+            )
+            lines.append(f'Gometry producer source commits: {sources}{suffix}.')
+        else:
+            lines.append(
+                'Gometry producer source commit: unknown '
+                '(producer source is not commit-bound).'
+            )
+        lines.append('')
         versions = [
             f'{name} {version}'
             for name, version in sorted(

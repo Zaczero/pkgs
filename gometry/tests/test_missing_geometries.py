@@ -685,6 +685,34 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     assert invalid_substrings[2].is_empty
 
 
+def test_scalar_invalid_m_line_keeps_ownership_over_query_array() -> None:
+    invalid = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=4326)
+    queries = gm.GeometryArray(
+        [gm.Point(2.0, 0.0, crs=4326), gm.Point(5.0, 0.0, crs=4326)],
+        crs=4326,
+    )
+
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match='measured linear referencing requires every vertex to carry an M ordinate',
+    ):
+        invalid.line_locate(queries, basis='m')
+
+    measured = gm.LineString(
+        [(0.0, 0.0), (10.0, 0.0)],
+        m=[0.0, 100.0],
+        crs=4326,
+    )
+    line_rows = gm.GeometryArray([invalid, measured], crs=4326)
+    query_rows = gm.GeometryArray(
+        [gm.Point(2.0, 0.0, crs=4326), gm.Point(5.0, 0.0, crs=4326)],
+        crs=4326,
+    )
+    located = line_rows.line_locate(query_rows, basis='m')
+    assert math.isnan(located[0])
+    assert located[1] == pytest.approx(50.0)
+
+
 def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:
     points = gm.GeometryArray([
         gm.Point(0.0, 0.0, crs=4326),
@@ -1053,7 +1081,9 @@ def test_masked_voronoi_skips_missing_placeholder() -> None:
 
 def test_masked_coordinates_skip_missing_rows(masked: gm.GeometryArray) -> None:
     assert len(masked.coords) == 2
-    coords, indexes = gm.get_coordinates(masked, return_index=True)
+    view = masked.coords
+    coords = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert coords.shape == (2, 2)
     np.testing.assert_array_equal(indexes, [0, 2])
     np.testing.assert_array_equal(coords, [[0.0, 0.0], [2.0, 2.0]])

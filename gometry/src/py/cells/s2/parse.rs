@@ -3,7 +3,7 @@ use pyo3::{PyAny, PyResult};
 use crate::grid::s2::cellid::S2Level;
 use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
 use crate::py::cells;
-use crate::py::cells::{Bound, PyAnyMethods as _, coverage_ops};
+use crate::py::cells::{Bound, coverage_ops};
 use crate::py::errors::{GeometryError, integer_parameter_error};
 use crate::py_i64_required;
 
@@ -60,24 +60,26 @@ pub(crate) fn validate_s2_level_mod(level_mod: i64) -> PyResult<u8> {
     }
     Ok(level_mod as u8)
 }
-pub(crate) fn parse_s2_level_budget(
-    level: Option<&Bound<'_, PyAny>>,
-    max_cells: Option<i64>,
+pub(crate) fn parse_s2_fixed_budget(level: i64, max_cells: Option<i64>) -> PyResult<S2LevelBudget> {
+    let level = parse_s2_level_value(level)?.get();
+    Ok(S2LevelBudget {
+        min_level: level,
+        max_level: level,
+        level_mod: 1,
+        max_cells: coverage_ops::parse_max_cells(max_cells)?,
+        target_cells: 8,
+    })
+}
+
+pub(crate) fn parse_s2_adaptive_budget(
     target_cells: i64,
-    min_level: Option<&Bound<'_, PyAny>>,
-    max_level: Option<&Bound<'_, PyAny>>,
+    min_level: i64,
+    max_level: i64,
     level_mod: i64,
+    max_cells: Option<i64>,
 ) -> PyResult<S2LevelBudget> {
-    let level = parse_optional_s2_level(level)?;
-    let min_level = parse_optional_s2_level(min_level)?;
-    let max_level = parse_optional_s2_level(max_level)?;
-    if level.is_some() && (min_level.is_some() || max_level.is_some()) {
-        return Err(GeometryError::new_err(
-            "level cannot be combined with min_level or max_level",
-        ));
-    }
-    let min_level = min_level.or(level).unwrap_or(0);
-    let max_level = max_level.or(level).unwrap_or(S2_MAX_LEVEL);
+    let min_level = parse_s2_level_value(min_level)?.get();
+    let max_level = parse_s2_level_value(max_level)?.get();
     if min_level > max_level {
         return Err(GeometryError::new_err("min_level must be <= max_level"));
     }
@@ -101,12 +103,4 @@ pub(crate) fn parse_s2_target_cells(target_cells: i64) -> PyResult<usize> {
     usize::try_from(target_cells).map_err(|_| {
         integer_parameter_error("target_cells is too large", "target_cells", target_cells)
     })
-}
-
-pub(crate) fn parse_optional_s2_level(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<u8>> {
-    match value {
-        None => Ok(None),
-        Some(value) if value.is_none() => Ok(None),
-        Some(value) => parse_s2_level(value).map(Some),
-    }
 }

@@ -1636,6 +1636,7 @@ mod tests {
     #[test]
     fn cached_chart_locate_preserves_source_then_query_domain_error_precedence() {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+        let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();
         let invalid = crate::geometry::PreparedPlan::new(
             crate::io::parse_wkt("LINESTRING (0 100, 1 100)").unwrap(),
         );
@@ -1648,9 +1649,17 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(
-            crate::line_locate_shape(&model, &invalid, &cache, invalid_probe, false)
-                .unwrap_err()
-                .to_string(),
+            crate::py::support::prepare_line_locate(
+                &metric,
+                &invalid,
+                &cache,
+                invalid_probe,
+                false,
+                false,
+            )
+            .map(|(_, located)| located)
+            .unwrap_err()
+            .to_string(),
             source_error,
         );
         let valid = crate::geometry::PreparedPlan::new(
@@ -1665,9 +1674,17 @@ mod tests {
         .to_string();
         for _ in 0..2 {
             assert_eq!(
-                crate::line_locate_shape(&model, &valid, &cache, invalid_probe, false)
-                    .unwrap_err()
-                    .to_string(),
+                crate::py::support::prepare_line_locate(
+                    &metric,
+                    &valid,
+                    &cache,
+                    invalid_probe,
+                    false,
+                    false,
+                )
+                .map(|(_, located)| located)
+                .unwrap_err()
+                .to_string(),
                 query_error,
             );
         }

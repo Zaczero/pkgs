@@ -34,6 +34,10 @@ pub(crate) use bearing::{
 };
 pub(crate) use cache::{with_geodesic_at, with_geodesic_cache_at, with_geodesic_chart_cache_at};
 pub(crate) use chart_edge::{AuthalicSeries, ChartEdge};
+#[cfg(test)]
+pub(crate) use chart_edge::{
+    QuadratureTestProgress, quadrature_test_progress, reset_quadrature_test_progress,
+};
 pub(crate) use distance::{
     geodesic_frechet_at_with_scratch, geodesic_hausdorff_at, geodesic_point_distances,
     geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
@@ -51,8 +55,7 @@ pub(crate) use ellipsoid_metric::{
 };
 pub(crate) use envelope::{GeodesicBoxEnvelopeBound, GeodesicChartBox, GeodesicEnvelopeBound};
 pub(crate) use lrs::{
-    chart_line_interpolate, chart_line_interpolate_coordseq, chart_line_locate,
-    chart_line_locate_coordseq, chart_line_substring, chart_line_substring_coordseq,
+    chart_line_interpolate_coordseq, chart_line_locate_coordseq, chart_line_substring_coordseq,
     metric_interpolate_m, with_geographic_coordseq_collect_rows_at,
     with_geographic_coordseq_metric_at,
 };

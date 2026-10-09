@@ -9,6 +9,7 @@ mod ops;
 pub(crate) mod packed_columns;
 pub(crate) mod replacement;
 pub(crate) mod row;
+mod rows;
 mod types;
 pub(crate) mod validity;
 
@@ -18,6 +19,7 @@ pub(crate) use columns::{
 };
 pub(crate) use ops::reverse_coord_windows;
 pub(crate) use row::ShapeRow;
+pub(crate) use rows::{ArrayRows, LogicalRow, LogicalRows, StorageLayout};
 pub(crate) use types::{
     GeometryArrayStorage, LineRows, PackedRow, PackedStorage, PointRows, RowSelection,
     RowSelectionRef, RowsIter, ShapesIter, admit_packed_coord_count, admit_packed_total,

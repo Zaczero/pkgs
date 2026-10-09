@@ -2,7 +2,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 use crate::crs::frame::Frame;
-use crate::geometry::storage::ValidityMask;
+use crate::geometry::storage::{ArrayRows, ValidityMask};
 use crate::geometry::{Bounds, Shape};
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::{PyGeometry, PyGeometryArray, Typed};
@@ -144,7 +144,7 @@ impl BulkElement for Shape {
     }
 
     fn missing_value() -> Self {
-        PyGeometryArray::missing_placeholder()
+        ArrayRows::missing_placeholder()
     }
 
     fn bulk_into_py_masked(

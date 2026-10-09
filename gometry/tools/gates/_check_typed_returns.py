@@ -5,8 +5,8 @@ must use ``Typed`` (AGENTS.md), never bare ``PyGeometry`` or
 ``PyResult<PyGeometry>`` — the latter silently yields the base ``Geometry``
 class at runtime with no compile error.
 
-Scans ``src/**/*.rs`` with a lightweight Rust item parser (attribute-aware,
-brace-balanced — not a line-regex sweep).
+Scans ``src/**/*.rs`` with the shared Rust grammar, including declarations
+recovered from macro invocations and declarations compiled only under tests.
 
 Usage::
 
@@ -17,25 +17,30 @@ Exit 1 on any violation. The final line is ``TOTAL VIOLATIONS: N``.
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
-from _gatelib import prepend_tools_import_paths
+from _gatelib import (
+    prepend_rust_source_import_paths,
+    rust_source_config,
+)
 
-prepend_tools_import_paths()
+prepend_rust_source_import_paths()
 
-from _gatelib import iter_rust_sources
-from _gatelib import strip_rust_comments as _strip_rust_comments
+from pyo3stubs.rust_scan import iter_sources
 
 SRC = Path(__file__).resolve().parent.parent.parent / 'src'
 
-PYFUNCTION_ATTR = re.compile(r'#\[\s*(?:pyo3::)?pyfunction\b[^\]]*\]')
-PYMETHODS_ATTR = re.compile(r'#\[\s*(?:pyo3::)?pymethods\s*\]')
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from pyo3stubs.rust_scan import Item
+    from tree_sitter import Node
 
 # Internal Rust helpers that legitimately materialize a raw ``PyGeometry`` and
 # are wrapped in ``Typed`` at the Python boundary. Listed so a future
@@ -77,211 +82,60 @@ class Violation:
         )
 
 
-def _line_number(text: str, index: int) -> int:
-    return text.count('\n', 0, index) + 1
-
-
-def _skip_ws_and_attrs(text: str, index: int) -> int:
-    length = len(text)
-    while index < length:
-        while index < length and text[index].isspace():
-            index += 1
-        if index + 1 < length and text[index] == '#' and text[index + 1] == '[':
-            depth = 0
-            index += 2
-            while index < length:
-                if text[index] == '[':
-                    depth += 1
-                elif text[index] == ']':
-                    if depth == 0:
-                        index += 1
-                        break
-                    depth -= 1
-                index += 1
-            continue
-        break
-    return index
-
-
-def _matching_brace(text: str, open_index: int) -> int:
-    """Index after the closing ``}`` matching ``text[open_index] == '{'``."""
-    depth = 0
-    index = open_index
-    length = len(text)
-    while index < length:
-        ch = text[index]
-        if ch in '"\'':
-            quote = ch
-            index += 1
-            while index < length:
-                if text[index] == '\\':
-                    index += 2
-                    continue
-                if text[index] == quote:
-                    index += 1
-                    break
-                index += 1
-            continue
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:
-                return index + 1
-        index += 1
-    return length
-
-
-def _generic_inner(type_text: str, prefix: str) -> str | None:
-    """Inner type of ``Prefix<Inner>`` when ``type_text`` is exactly that."""
-    type_text = type_text.strip()
-    if not type_text.startswith(prefix) or not type_text.endswith('>'):
+def _path_leaf(node: Node | None) -> str | None:
+    if node is None:
         return None
-    start = len(prefix)
-    if start >= len(type_text) or type_text[start] != '<':
+    if node.type in {'identifier', 'type_identifier'}:
+        return node.text.decode() if node.text is not None else ''
+    if node.type == 'generic_type':
+        return _path_leaf(node.child_by_field_name('type'))
+    children = node.named_children
+    return _path_leaf(children[-1]) if children else None
+
+
+def _generic_inner(node: Node, wrapper: str) -> Node | None:
+    if node.type != 'generic_type':
         return None
-    depth = 0
-    for position in range(start, len(type_text)):
-        ch = type_text[position]
-        if ch == '<':
-            depth += 1
-        elif ch == '>':
-            depth -= 1
-            if depth == 0:
-                return type_text[start + 1 : position].strip()
-    return None
+    base = node.child_by_field_name('type')
+    if _path_leaf(base) != wrapper:
+        return None
+    arguments = node.child_by_field_name('type_arguments')
+    if arguments is None:
+        return None
+    types = [child for child in arguments.named_children if child.type != 'lifetime']
+    return types[0] if len(types) == 1 else None
 
 
-def _unwrap_geometry_return_type(return_type: str) -> str:
-    """Peel ``PyResult`` / ``Option`` wrappers down to the leaf type."""
-    current = return_type.strip()
-    while True:
-        peeled: str | None = None
-        for prefix in ('PyResult', 'Option'):
-            inner = _generic_inner(current, prefix)
-            if inner is not None:
-                peeled = inner
-                break
-        if peeled is None:
-            return current
-        current = peeled
+def _is_untyped_geometry_return(return_type: Node | None) -> bool:
+    current = return_type
+    while current is not None:
+        inner = _generic_inner(current, 'PyResult')
+        if inner is None:
+            inner = _generic_inner(current, 'Option')
+        if inner is None:
+            break
+        current = inner
+    return _path_leaf(current) == 'PyGeometry'
 
 
-def _is_untyped_geometry_return(return_type: str) -> bool:
-    leaf = _unwrap_geometry_return_type(return_type)
-    return leaf == 'PyGeometry'
+def _functions(
+    items: tuple[Item, ...], in_pymethods: bool = False
+) -> Iterator[tuple[Item, str]]:
+    for item in items:
+        if item.kind == 'function_item':
+            if item.attr('pyfunction') is not None:
+                yield item, '#[pyfunction]'
+            elif in_pymethods:
+                yield item, '#[pymethods]'
 
-
-def _fn_keyword_at(text: str, index: int) -> int | None:
-    """Start of a ``fn`` item keyword at ``index``, or ``None``."""
-    for keyword in (
-        'pub fn',
-        'pub(crate) fn',
-        'pub(super) fn',
-        'async fn',
-        'unsafe fn',
-        'fn',
-    ):
-        if text.startswith(keyword, index):
-            before = text[index - 1] if index else ' '
-            after = text[index + len(keyword)]
-            if before.isalnum() or before == '_':
-                continue
-            if after.isalnum() or after == '_':
-                continue
-            return index
-    return None
-
-
-def _parse_fn_signature(text: str, fn_start: int) -> tuple[str, str | None, int]:
-    """Return ``(name, return_type, body_open_brace_index)`` for one ``fn`` item."""
-    header_match = re.match(
-        r'(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)',
-        text[fn_start:],
-    )
-    if header_match is None:
-        return '', None, fn_start
-    name = header_match.group(1)
-    index = fn_start + header_match.end()
-    length = len(text)
-    while index < length and text[index].isspace():
-        index += 1
-    if index >= length or text[index] != '(':
-        return '', None, index
-
-    paren_depth = 0
-    angle_depth = 0
-    while index < length:
-        ch = text[index]
-        if ch == '(':
-            paren_depth += 1
-        elif ch == ')':
-            paren_depth -= 1
-            if paren_depth == 0:
-                index += 1
-                break
-        elif ch == '<' and paren_depth > 0:
-            angle_depth += 1
-        elif ch == '>' and angle_depth > 0:
-            angle_depth -= 1
-        index += 1
-
-    return_type: str | None = None
-    while index < length and text[index].isspace():
-        index += 1
-    if text.startswith('->', index):
-        index += 2
-        ret_start = index
-        angle_depth = 0
-        while index < length:
-            ch = text[index]
-            if ch == '<':
-                angle_depth += 1
-            elif ch == '>':
-                angle_depth -= 1
-            elif angle_depth == 0 and (
-                ch == '{' or text[index : index + 6] == 'where '
-            ):
-                break
-            index += 1
-        return_type = text[ret_start:index].strip()
-
-    while index < length and text[index].isspace():
-        index += 1
-    if index < length and text[index] == '{':
-        return name, return_type, index
-    return name, return_type, index
-
-
-def _iter_impl_functions(
-    body: str, body_offset: int, raw_text: str
-) -> list[tuple[str, str | None, int]]:
-    """Top-level ``fn`` items inside an ``impl`` block body (between outer ``{``…``}``)."""
-    items: list[tuple[str, str | None, int]] = []
-    index = 0
-    depth = 0
-    length = len(body)
-    while index < length:
-        ch = body[index]
-        if ch == '{':
-            depth += 1
-            index += 1
-            continue
-        if ch == '}':
-            depth -= 1
-            index += 1
-            continue
-        if depth == 0:
-            fn_at = _fn_keyword_at(body, index)
-            if fn_at is not None:
-                name, return_type, brace = _parse_fn_signature(body, fn_at)
-                if name and brace < length and body[brace] == '{':
-                    line = _line_number(raw_text, body_offset + fn_at)
-                    items.append((name, return_type, line))
-                    index = _matching_brace(body, brace)
-                    continue
-        index += 1
-    return items
+        if item.kind == 'impl_item':
+            child_context = in_pymethods or item.attr('pymethods') is not None
+        elif item.kind == 'macro_invocation':
+            # This wrapper emits the attribute outside its recovered impl body.
+            child_context = in_pymethods or item.name == 'frozen_pymethods'
+        else:
+            child_context = False
+        yield from _functions(item.children, child_context)
 
 
 def _is_allowlisted(rel_path: str, name: str) -> bool:
@@ -289,60 +143,24 @@ def _is_allowlisted(rel_path: str, name: str) -> bool:
     return (rel_path, name) in ALLOWLIST or (suffix, name) in ALLOWLIST
 
 
-def _scan_pymethods(text: str, raw_text: str, rel_path: str) -> list[Violation]:
+def collect_violations(src_root: Path = SRC) -> list[Violation]:
     violations: list[Violation] = []
-    for match in PYMETHODS_ATTR.finditer(text):
-        index = _skip_ws_and_attrs(text, match.end())
-        if not text.startswith('impl', index):
-            continue
-        brace = text.find('{', index)
-        if brace < 0:
-            continue
-        body_end = _matching_brace(text, brace)
-        body = text[brace + 1 : body_end - 1]
-        for name, return_type, line in _iter_impl_functions(body, brace + 1, raw_text):
-            if return_type is None or not _is_untyped_geometry_return(return_type):
+    cfg = rust_source_config(src_root)
+    for source in iter_sources(cfg, scope='all'):
+        for item, surface in _functions(source.items):
+            if not _is_untyped_geometry_return(item.type_node):
                 continue
-            if _is_allowlisted(rel_path, name):
+            if _is_allowlisted(source.rel, item.name):
                 continue
             violations.append(
-                Violation(rel_path, line, name, return_type, '#[pymethods]')
+                Violation(
+                    source.rel,
+                    item.line,
+                    item.name,
+                    item.ty,
+                    surface,
+                )
             )
-    return violations
-
-
-def _scan_pyfunctions(text: str, raw_text: str, rel_path: str) -> list[Violation]:
-    violations: list[Violation] = []
-    for match in PYFUNCTION_ATTR.finditer(text):
-        index = _skip_ws_and_attrs(text, match.end())
-        fn_at = _fn_keyword_at(text, index)
-        if fn_at is None:
-            continue
-        name, return_type, _brace = _parse_fn_signature(text, fn_at)
-        if return_type is None or not _is_untyped_geometry_return(return_type):
-            continue
-        if _is_allowlisted(rel_path, name):
-            continue
-        violations.append(
-            Violation(
-                rel_path,
-                _line_number(raw_text, fn_at),
-                name,
-                return_type,
-                '#[pyfunction]',
-            )
-        )
-    return violations
-
-
-def collect_violations() -> list[Violation]:
-    violations: list[Violation] = []
-    for path in iter_rust_sources(SRC.parent):
-        rel_path = path.relative_to(SRC).as_posix()
-        raw_text = path.read_text()
-        text = _strip_rust_comments(raw_text)
-        violations.extend(_scan_pymethods(text, raw_text, rel_path))
-        violations.extend(_scan_pyfunctions(text, raw_text, rel_path))
     violations.sort(key=lambda item: (item.path, item.line, item.name))
     return violations
 

@@ -176,7 +176,7 @@ pub(crate) fn geographic_intersection_witness_cached<M: ChartMetric>(
         OverlayOp::Intersection,
         Strictness::Lenient,
         false,
-        crate::geometry::SourceArcContext::new(
+        &crate::geometry::SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(frame),
             Some(&metric_access),
         ),
@@ -200,38 +200,41 @@ pub(crate) struct ChartPairMinimum {
 }
 
 #[derive(Clone, Copy)]
-enum ChartTarget {
+enum ChartTarget<'a> {
     Point(Point),
-    Edge { parameter: f64 },
+    Edge {
+        part: &'a ChartEdgePart,
+        parameter: f64,
+    },
 }
 
 #[derive(Clone, Copy)]
-struct ChartPairCandidate {
+struct ChartPairCandidate<'a> {
     distance: f64,
     lower_bound: f64,
-    order: u128,
-    target: ChartTarget,
+    source_ordinal: usize,
+    target: ChartTarget<'a>,
 }
 
-impl ChartPairCandidate {
-    fn role(&self, parts: &ChartParts) -> crate::geometry::WitnessRole {
+impl ChartPairCandidate<'_> {
+    fn role(&self) -> crate::geometry::WitnessRole {
         match self.target {
             ChartTarget::Point(_) => crate::geometry::WitnessRole::Point,
-            ChartTarget::Edge { parameter } => parts.edges[self.order as usize]
-                .edge
-                .witness_role(parameter),
+            ChartTarget::Edge { part, parameter } => part.edge.witness_role(parameter),
         }
     }
 
-    fn precedes(&self, best: Option<&Self>, parts: &ChartParts, query: PointEdgeQuery) -> bool {
+    fn precedes(&self, best: Option<&Self>, query: PointEdgeQuery) -> bool {
         best.is_none_or(|best| {
             self.distance < best.distance
                 || self.distance.total_cmp(&best.distance).is_eq()
                     && match query {
-                        PointEdgeQuery::Minimum { .. } => self.order < best.order,
+                        PointEdgeQuery::Minimum { .. } => self.source_ordinal < best.source_ordinal,
                         PointEdgeQuery::Nearest { .. } | PointEdgeQuery::Locate { .. } => self
-                            .role(parts)
-                            .cmp_tie(best.role(parts), || self.order.cmp(&best.order))
+                            .role()
+                            .cmp_tie(best.role(), || {
+                                self.source_ordinal.cmp(&best.source_ordinal)
+                            })
                             .is_lt(),
                         PointEdgeQuery::Dwithin { .. } => {
                             unreachable!("threshold queries do not select witnesses")
@@ -241,15 +244,15 @@ impl ChartPairCandidate {
     }
 }
 
-fn point_chart_candidate<M>(
+fn point_chart_candidate<'a, M>(
     point: Point,
-    target: &ChartParts,
+    target: &'a ChartParts,
     metric: &M,
     scratch: &mut PointEdgeScratch,
     stack: &mut Vec<(u32, f64)>,
     query: PointEdgeQuery,
     admit_edge: impl Fn(&ChartEdgePart) -> bool,
-) -> Result<Option<ChartPairCandidate>>
+) -> Result<Option<ChartPairCandidate<'a>>>
 where
     M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
 {
@@ -276,7 +279,7 @@ where
             PointEdgeQuery::Nearest { .. } | PointEdgeQuery::Locate { .. }
         ) || best
             .as_ref()
-            .is_none_or(|best: &ChartPairCandidate| (edge_index as u128) < best.order)
+            .is_none_or(|best: &ChartPairCandidate<'a>| edge_index < best.source_ordinal)
         {
             best_distance.next_up()
         } else {
@@ -296,12 +299,13 @@ where
                 let candidate = ChartPairCandidate {
                     distance: minimum.distance,
                     lower_bound: minimum.lower_bound,
-                    order: edge_index as u128,
+                    source_ordinal: edge_index,
                     target: ChartTarget::Edge {
+                        part,
                         parameter: minimum.parameter,
                     },
                 };
-                if candidate.precedes(best.as_ref(), target, query) {
+                if candidate.precedes(best.as_ref(), query) {
                     *best_distance = minimum.distance;
                     best = Some(candidate);
                 }
@@ -341,14 +345,15 @@ where
             continue;
         }
         let distance = metric.segment_length(point, target_point);
-        let order = (target.edges.len() as u128).wrapping_add(index as u128);
+        // Both backing Vecs are non-ZST and allocation-bounded, so this combined ordinal fits usize.
+        let source_ordinal = target.edges.len().wrapping_add(index);
         let candidate = ChartPairCandidate {
             distance,
             lower_bound: point_lower_bound,
-            order,
+            source_ordinal,
             target: ChartTarget::Point(target_point),
         };
-        if candidate.precedes(best.as_ref(), target, query) {
+        if candidate.precedes(best.as_ref(), query) {
             best_distance = best_distance.min(distance);
             best = Some(candidate);
         }
@@ -364,21 +369,16 @@ where
 
 fn materialize_point_chart_candidate<M>(
     point: Point,
-    candidate: &ChartPairCandidate,
-    target: &ChartParts,
+    candidate: &ChartPairCandidate<'_>,
     metric: &M,
 ) -> Result<ChartPairMinimum>
 where
     M: ChartMetric,
 {
-    let role = candidate.role(target);
+    let role = candidate.role();
     let target_point = match candidate.target {
         ChartTarget::Point(point) => point,
-        ChartTarget::Edge { parameter } => {
-            let part = target
-                .edges
-                .get(candidate.order as usize)
-                .expect("candidate ordinal belongs to chart parts");
+        ChartTarget::Edge { part, parameter } => {
             metric.chart_edge_witness(part.start, part.end, &part.edge, parameter, None)?
         },
     };
@@ -394,7 +394,7 @@ where
         lower_bound: candidate.lower_bound,
         intent: ChartStep::Shortest(step),
         role,
-        order: candidate.order,
+        order: candidate.source_ordinal as u128,
     })
 }
 
@@ -419,7 +419,7 @@ where
         },
         |_| true,
     )?
-    .map(|candidate| materialize_point_chart_candidate(point, &candidate, target, metric))
+    .map(|candidate| materialize_point_chart_candidate(point, &candidate, metric))
     .transpose()
 }
 
@@ -470,10 +470,10 @@ where
         admit_edge,
     )?;
     Ok(candidate.map(|candidate| {
-        let ChartTarget::Edge { parameter } = candidate.target else {
+        let ChartTarget::Edge { parameter, .. } = candidate.target else {
             unreachable!("locate searches only stored chart edges");
         };
-        (candidate.order as usize, parameter)
+        (candidate.source_ordinal, parameter)
     }))
 }
 
@@ -680,7 +680,7 @@ where
         else {
             continue;
         };
-        let mut candidate = materialize_point_chart_candidate(point, &raw, right, metric)?;
+        let mut candidate = materialize_point_chart_candidate(point, &raw, metric)?;
         candidate.order = (row as u128)
             .wrapping_mul(right_width)
             .wrapping_add(candidate.order);
@@ -703,7 +703,7 @@ where
         else {
             continue;
         };
-        let mut candidate = materialize_point_chart_candidate(point, &raw, left, metric)?;
+        let mut candidate = materialize_point_chart_candidate(point, &raw, metric)?;
         candidate.order = reverse_order_base
             .wrapping_add((row as u128).wrapping_mul(left_width))
             .wrapping_add(candidate.order);
@@ -941,12 +941,12 @@ mod tests {
         );
     }
 
-    fn selected(
+    fn selected<'a>(
         point: Point,
-        parts: &ChartParts,
+        parts: &'a ChartParts,
         metric: &crate::crs::EllipsoidMetric<'_>,
         query: PointEdgeQuery,
-    ) -> ChartPairCandidate {
+    ) -> ChartPairCandidate<'a> {
         point_chart_candidate(
             point,
             parts,
@@ -1010,7 +1010,7 @@ mod tests {
         let minimum = selected(point, &parts, &metric, PointEdgeQuery::Minimum {
             cutoff: f64::INFINITY,
         });
-        assert_eq!(minimum.order, 0);
+        assert_eq!(minimum.source_ordinal, 0);
         for query in [
             PointEdgeQuery::Nearest {
                 cutoff: f64::INFINITY,
@@ -1020,14 +1020,10 @@ mod tests {
             },
         ] {
             let candidate = selected(point, &parts, &metric, query);
-            assert_eq!(candidate.order, 1);
-            assert_eq!(
-                candidate.role(&parts),
-                crate::geometry::WitnessRole::Interior
-            );
+            assert_eq!(candidate.source_ordinal, 1);
+            assert_eq!(candidate.role(), crate::geometry::WitnessRole::Interior);
             assert_eq!(candidate.distance.to_bits(), minimum.distance.to_bits());
-            let witness =
-                materialize_point_chart_candidate(point, &candidate, &parts, &metric).unwrap();
+            let witness = materialize_point_chart_candidate(point, &candidate, &metric).unwrap();
             assert_eq!(witness.second.z(), Some(40.0));
             assert_eq!(witness.second.m(), Some(400.0));
         }
@@ -1061,7 +1057,7 @@ mod tests {
                 cutoff: f64::INFINITY,
             },
         ] {
-            assert_eq!(selected(point, &farther, &metric, query).order, 0);
+            assert_eq!(selected(point, &farther, &metric, query).source_ordinal, 0);
         }
     }
 
@@ -1140,8 +1136,8 @@ mod tests {
                 },
             ] {
                 let result = selected(point, source, &metric, query);
-                assert_eq!(result.order, 8);
-                assert_eq!(result.role(source), crate::geometry::WitnessRole::Interior);
+                assert_eq!(result.source_ordinal, 8);
+                assert_eq!(result.role(), crate::geometry::WitnessRole::Interior);
             }
         }
     }

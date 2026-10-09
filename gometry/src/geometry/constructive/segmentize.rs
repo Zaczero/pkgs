@@ -737,6 +737,10 @@ pub(crate) enum SegmentPlacementOwned {
     Chart(geographiclib_rs::Geodesic, GeographicFrame),
     Geodesic(geographiclib_rs::Geodesic, GeographicFrame),
     Rhumb {
+        #[expect(
+            clippy::rc_buffer,
+            reason = "reuse the operation metric's canonical CRS allocation without copying the label"
+        )]
         crs: Arc<String>,
         state: Arc<crate::crs::RuntimeState>,
         frame: GeographicFrame,
@@ -1025,7 +1029,7 @@ fn emit_chart_plan(
                     ..
                 })
             ) {
-                GeometryErrorKind::unrepresentable_output("segmentize").into()
+                GeometryErrorKind::unrepresentable_output("segmentize")
             } else {
                 error
             }

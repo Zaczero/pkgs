@@ -6,8 +6,8 @@ use std::simd::{Select as _, StdFloat as _};
 
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::error::{ErrorKind, ResourceError, Result as CoreResult};
-use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactCentroidSums as FixedExactCentroidSums;
+use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, round_sqrt_ratio};
 use crate::geometry::{
     Bounds, Component, CoordSeq, Coordinates as _, Dimension, GeometryErrorKind, Point, Polygon,
@@ -1263,11 +1263,11 @@ impl<'owner> ExactOwnerFold<'owner> {
         }
     }
 
-    fn for_point_chart(chart: crate::geographic::PointSelectionChart) -> Self {
+    fn for_point_chart(chart: &crate::geographic::PointSelectionChart) -> Self {
         Self {
             tier: CentroidDimension::Puntal,
             owners: CentroidOwnerMap::default(),
-            point_chart: Some(chart),
+            point_chart: Some(*chart),
             _owner: PhantomData,
             #[cfg(test)]
             work: CentroidWorkStats::default(),
@@ -1275,14 +1275,11 @@ impl<'owner> ExactOwnerFold<'owner> {
     }
 
     fn point_summary(&self, point: Point) -> CoreResult<GrowableCentroidSums> {
-        let Some(chart) = self.point_chart else {
+        let Some(chart) = self.point_chart.as_ref() else {
             return Ok(exact_point_summary(point));
         };
         let longitude = chart.longitude_site(point.x)?;
-        let x = crate::geometry::exact_arith::retained_site_longitude(
-            chart.frame().longitude(),
-            longitude,
-        )?;
+        let x = retained_site_longitude(chart.frame().longitude(), longitude)?;
         Ok(GrowableCentroidSums {
             measure: ExactDyadic::one(),
             moment_x: x,
@@ -1552,7 +1549,7 @@ fn exact_owner_centroid(shape: &Shape, tier: CentroidDimension) -> CoreResult<Op
 
 pub(crate) fn exact_point_chart_centroid(
     shape: &Shape,
-    chart: crate::geographic::PointSelectionChart,
+    chart: &crate::geographic::PointSelectionChart,
 ) -> CoreResult<Option<(f64, f64)>> {
     let mut fold = ExactOwnerFold::for_point_chart(chart);
     exact_summary_centroid(fold.shape_summary(shape)?, CentroidDimension::Puntal)
@@ -2087,8 +2084,7 @@ pub(crate) fn point_set_center_summary(
         CentroidAttempt::ExactAtRoot(_) => {
             drop(xs);
             drop(ys);
-            Ok(exact_owner_centroid(shape, CentroidDimension::Puntal)?
-                .map(|_| PointSetCenter::Chart(None)))
+            Ok((!centroid_is_empty(shape)).then_some(PointSetCenter::Chart(None)))
         },
         CentroidAttempt::Ready(()) => Ok(point_set_center_columns(&xs, &ys, frame)),
     }

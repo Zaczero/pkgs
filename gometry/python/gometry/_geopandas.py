@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from gometry._lib import (
     Geometry,
@@ -12,12 +12,8 @@ from gometry._lib import (
 )
 from gometry._optional import missing_optional_dependency
 
-TYPE_CHECKING = False
-
 if TYPE_CHECKING:
     import geopandas as gpd
-else:
-    gpd = SimpleNamespace(GeoDataFrame=object, GeoSeries=object)
 
 _GEOPANDAS_INSTALL = "install the 'gometry[geopandas]' extra"
 

@@ -264,7 +264,9 @@ binning behavior), `"overlap"` (default — a complete-coverage superset, safe
 candidate keys), or `"bbox"` (loosest). Use the free predicates
 [`gm.covers(...)`][gometry.covers] / [`gm.contains(...)`][gometry.contains] / [`gm.intersects(...)`][gometry.intersects] against the source
 geometry when exact geometry answers are needed. [`gm.s2_cover(geom, level=...)`][gometry.s2_cover]
-is the S2 analogue.
+is the fixed-level S2 analogue; use
+[`gm.s2_cover_adaptive(geom, ...)`][gometry.s2_cover_adaptive] when the cover
+should refine within a level range.
 
 ### Cell-set algebra
 

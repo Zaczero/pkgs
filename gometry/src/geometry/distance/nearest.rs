@@ -1,8 +1,7 @@
 use crate::geometry::distance::parts_covers_point;
 use crate::geometry::{
     BVH_MIN_INDEXED_SEGMENTS, DistanceParts, FacetBvh, NearestCandidate, NearestTarget, Point,
-    PointEntry, PointSetIndex, Segment, Shape, point_distance_squared, point_pair_distance_key,
-    segment_contact_point,
+    PointSetIndex, Segment, Shape, point_pair_distance_key, segment_contact_point,
 };
 pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
     probe: &DistanceParts,
@@ -31,7 +30,7 @@ pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
         if SQUARED && let Some(index) = target.point_index() {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
-                if let Some((ordinal, distance_squared)) = index.nearest_ordinal(probe_point)? {
+                if let Some(ordinal) = index.nearest_ordinal(probe_point)? {
                     let target_point = *target
                         .point_only
                         .get(ordinal)
@@ -45,7 +44,6 @@ pub(crate) fn nearest_probe_to_parts<const SQUARED: bool>(
                     best = Some(NearestCandidate {
                         probe: probe_point,
                         target: NearestTarget::Point(target_point),
-                        distance_squared,
                         distance_key,
                     });
                     changed = true;
@@ -122,7 +120,6 @@ fn nearest_point_pairs(
             let candidate = NearestCandidate {
                 probe: full_point(ordinal),
                 target: NearestTarget::Point(target),
-                distance_squared: point_distance_squared(probe, target),
                 distance_key,
             };
             limit = point_pair_rejection_limit(&candidate);
@@ -260,7 +257,7 @@ impl DistanceParts {
     /// The cached R-tree over this side's isolated points, built on first use
     /// once the point count clears the crossover (`None` below it — a short
     /// brute scan wins under the rstar bulk-load setup cost).
-    pub(crate) fn point_index(&self) -> Option<&PointSetIndex<PointEntry>> {
+    pub(crate) fn point_index(&self) -> Option<&PointSetIndex> {
         self.point_index
             .get_or_init(|| {
                 (self.point_only.len() >= POINT_INDEX_MIN_POINTS)

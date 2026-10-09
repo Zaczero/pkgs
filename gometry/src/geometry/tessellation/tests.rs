@@ -691,7 +691,7 @@ fn build_area_strict_rejects_mixed_output_axes() {
     .expect("mixed-axis collection is valid");
 
     let error = source
-        .build_area_with_context(true, crate::geometry::SourceArcContext::cartesian())
+        .build_area_with_context(true, &crate::geometry::SourceArcContext::cartesian())
         .expect_err("strict ordinate carry must reject mixed output axes");
     assert!(matches!(
         error.kind(),
@@ -719,7 +719,7 @@ fn polygonize_full_strict_scopes_diagnostic_axes_to_source_rows() {
     let full = Shape::polygonize_full_all_with_context(
         &sources,
         true,
-        crate::geometry::SourceArcContext::cartesian(),
+        &crate::geometry::SourceArcContext::cartesian(),
     )
     .expect("each diagnostic row has one source axis");
 

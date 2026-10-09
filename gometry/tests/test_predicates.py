@@ -728,6 +728,20 @@ def test_polygon_contains_rejects_polygons_inside_holes() -> None:
     assert gm.contains(polygon, gm.box(0.1, 0.1, 0.9, 0.9))
 
 
+def test_scalar_array_predicates_keep_asymmetric_operand_order() -> None:
+    polygons = gm.GeometryArray([gm.box(0, 0, 2, 2), gm.box(10, 10, 12, 12)])
+    point = gm.Point(1, 1)
+
+    np.testing.assert_array_equal(gm.contains(polygons, point), [True, False])
+    np.testing.assert_array_equal(gm.contains(point, polygons), [False, False])
+    np.testing.assert_array_equal(gm.within(point, polygons), [True, False])
+    np.testing.assert_array_equal(gm.within(polygons, point), [False, False])
+
+    points = gm.GeometryArray([point, None])
+    np.testing.assert_array_equal(gm.contains(polygons, points), [True, False])
+    np.testing.assert_array_equal(gm.within(points, polygons), [True, False])
+
+
 def test_binary_predicates_support_strict_array_broadcasting() -> None:
     polygons = gm.GeometryArray([gm.box(-1, -1, 1, 1), gm.box(10, 10, 11, 11)])
     points = gm.points([0, 20], [0, 20])

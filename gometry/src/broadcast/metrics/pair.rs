@@ -1021,7 +1021,6 @@ mod lonlat_points_tests {
         let present = packed_xy(vec![1.0], vec![2.0], Frame::None);
         let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
-        assert!(array.is_compact_nullable());
         let points = lonlat_points(&array).expect("present row is in domain");
         assert!(matches!(points, LonLatPointRows::Columns { .. }));
         assert_eq!(points.len(), 3);
@@ -1084,7 +1083,6 @@ mod lonlat_points_tests {
         );
         let mask = ValidityMask::from_vec(2, vec![true, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
-        assert!(array.is_compact_nullable());
         assert!(
             crate::crs::TransformPlan::new(unavailable, "EPSG:4326").is_err(),
             "counterfactual: building the plan must fail"

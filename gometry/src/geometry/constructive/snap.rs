@@ -611,7 +611,7 @@ impl Shape {
         size: (f64, f64),
         origin: (f64, f64),
         domain: TopologyDomain,
-        context: SourceArcContext<'_, '_>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Self, crate::error::Error> {
         const MAX_PASSES: usize = 8;
         let mut shape = self.snap_to_grid(size, origin)?;

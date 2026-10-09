@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::geographic::chart::{point_set_centroid, point_set_surface};
 use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{
     ChartPole, GeographicError, GeographicFrame, GeographicSupportEnvelope, Latitude,
@@ -20,7 +21,7 @@ fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
 fn split_in_domain(
     shape: &Shape,
     domain: TopologyDomain,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     match domain {
         TopologyDomain::Cartesian => Ok(shape.clone()),
@@ -704,7 +705,7 @@ fn repair_invalid_shape(
     shape: &Shape,
     domain: TopologyDomain,
     method: RepairMethod,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     let repair = |shape: &Shape| match domain {
         TopologyDomain::Cartesian => shape.repair_with_context(method, false, context),
@@ -746,7 +747,7 @@ pub(crate) fn repair_shape_in_frame(
     shape: &Shape,
     domain: TopologyDomain,
     method: RepairMethod,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Option<Shape>> {
     let Some(issue) = validate_shape_in_frame(shape, domain)? else {
         return Ok(None);
@@ -760,7 +761,7 @@ pub(crate) fn repair_data_in_frame(
     data: &PreparedPlan,
     domain: TopologyDomain,
     method: RepairMethod,
-    context: SourceArcContext<'_, '_>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Option<Shape>> {
     let Some(issue) = validate_data_in_frame(data, domain)? else {
         return Ok(None);
@@ -807,12 +808,12 @@ fn rewrap_point(point: Point, frame: GeographicFrame) -> Result<Point> {
 /// or seam-connected geographic geometry. Two strategies, because
 /// unwrap-rewrap cannot serve both:
 ///
-/// * `interior` callers (`point_on_surface`, which must return a point strictly
-///   inside) AND any pole-enclosing geometry route through the seam+pole SPLIT —
-///   the unwrapped form of a polar cap is a degenerate longitude sliver (a
-///   longitude shift can't reconstruct the cap), and the split's planar kernel
-///   yields a point genuinely inside the true region. The split is in the
-///   frame's canonical longitude interval, so no rewrap is needed.
+/// * `interior` callers (`point_on_surface`, which must return a point in or on
+///   the geometry) AND any pole-enclosing geometry route through the seam+pole
+///   SPLIT — the unwrapped form of a polar cap is a degenerate longitude sliver
+///   (a longitude shift can't reconstruct the cap), and the split's planar
+///   kernel yields a point in the true region. The split is in the frame's
+///   canonical longitude interval, so no rewrap is needed.
 ///   `force_2d` keeps the split infallible
 ///   (a Z/M pole closure would otherwise trip the ordinate gate).
 /// * every other crossing `centroid` uses unwrap-rewrap for the planar centroid
@@ -887,7 +888,7 @@ pub(crate) fn unary_antimeridian_derived(
 ) -> Result<Shape> {
     if let TopologyDomain::Geographic(frame) = domain
         && matches!(strategy, DerivedPointStrategy::Interior)
-        && let Some(point) = crate::geographic::chart::point_set_surface(shape, frame)?
+        && let Some(point) = point_set_surface(shape, frame)?
     {
         return Ok(point);
     }
@@ -918,7 +919,7 @@ pub(crate) fn unary_antimeridian_centroid(shape: &Shape, domain: TopologyDomain)
     let TopologyDomain::Geographic(frame) = domain else {
         return shape.centroid();
     };
-    if let Some(point) = crate::geographic::chart::point_set_centroid(shape, frame)? {
+    if let Some(point) = point_set_centroid(shape, frame)? {
         return Ok(point);
     }
     if !matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)) {
@@ -1021,7 +1022,7 @@ mod validity_tests {
             &shape,
             domain,
             RepairMethod::Linework,
-            SourceArcContext::new(domain, None),
+            &SourceArcContext::new(domain, None),
         )
         .expect_err("geographic admission failures cannot be repaired");
         assert!(matches!(

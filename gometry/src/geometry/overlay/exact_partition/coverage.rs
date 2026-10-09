@@ -345,7 +345,7 @@ impl ExactSourceInventory {
         gap_width: f64,
         overlaps: CoverageOverlapRule,
         declared_axes: CoordinateAxes,
-        context: SourceArcContext<'_, '_, M>,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Vec<Shape>> {
         let row_count = self.operand_count();
         if row_areas.len() != row_count {

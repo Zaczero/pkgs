@@ -6,7 +6,7 @@ use crate::geographic::GeographicFrame;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
     ChartPointDistanceSample, GeodesicMetric, GeodesicNumericalPolicy, Point, PointEdgeQuery,
-    PointEdgeQueryResult,
+    PointEdgeQueryResult, Work,
 };
 
 pub(crate) fn inverse_distance(
@@ -196,6 +196,42 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     }
 }
 
+impl GeodesicMetric for crate::crs::GeodesicMetric {
+    fn runtime_generation(&self) -> u64 {
+        self.state.generation
+    }
+
+    fn ensure_shape(&self, shape: &crate::geometry::Shape) -> crate::error::Result<()> {
+        crate::crs::ensure_geographic_domain_in_frame(self.frame, shape)
+    }
+
+    fn segment_length(&self, a: Point, b: Point) -> f64 {
+        geo_distance(
+            &self.geodesic,
+            self.frame
+                .to_geodesic_point(a)
+                .expect("geographic metric received an admitted point"),
+            self.frame
+                .to_geodesic_point(b)
+                .expect("geographic metric received an admitted point"),
+        )
+    }
+
+    fn point_distance_lower_bound(&self, a: Point, b: Point) -> crate::error::Result<f64> {
+        let to_geodesic = |point| {
+            self.frame
+                .to_geodesic_point(point)
+                .expect("geographic metric received an admitted point")
+        };
+        let bound = auxiliary_sphere_bound(&self.geodesic, to_geodesic(a), to_geodesic(b));
+        Ok((bound - GeodesicNumericalPolicy::new(self.geodesic.a).backend_floor()).max(0.0))
+    }
+
+    fn geodesic_numerical_policy(&self) -> GeodesicNumericalPolicy {
+        GeodesicNumericalPolicy::new(self.geodesic.a)
+    }
+}
+
 impl ChartMetric for EllipsoidMetric<'_> {
     type PointEdgeScratch = super::edge_distance::PointEdgeScratch;
 
@@ -211,10 +247,10 @@ impl ChartMetric for EllipsoidMetric<'_> {
         edge.length(self.geodesic)
     }
 
-    fn chart_edge_length_with_work(
+    fn chart_edge_length_with_work<W: Work>(
         &self,
         edge: &ChartEdge,
-        work: &mut impl crate::geometry::Work,
+        work: &mut W,
     ) -> crate::error::Result<f64> {
         edge.length_with_work(self.geodesic, work)
     }
@@ -232,12 +268,12 @@ impl ChartMetric for EllipsoidMetric<'_> {
         edge.arclength_fraction(parameter, total_length, self.geodesic)
     }
 
-    fn chart_edge_arclength_fraction_with_work(
+    fn chart_edge_arclength_fraction_with_work<W: Work>(
         &self,
         edge: &ChartEdge,
         parameter: f64,
         total_length: Option<f64>,
-        work: &mut impl crate::geometry::Work,
+        work: &mut W,
     ) -> crate::error::Result<f64> {
         edge.arclength_fraction_with_work(parameter, total_length, self.geodesic, work)
     }

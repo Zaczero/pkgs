@@ -524,8 +524,6 @@ def test_removed_ordinate_selection_keywords_are_rejected() -> None:
             geometry.to_wkt(output_dimension=2)
         with pytest.raises(TypeError):
             geometry.to_geojson(include_z=False)
-    with pytest.raises(TypeError):
-        gm.get_coordinates(line, axes='XY')
 
 
 @pytest.mark.parametrize(
@@ -930,11 +928,16 @@ def test_geometry_array_and_geometry_item_coercion_accept_wkb_and_geo_interface(
         gm.GeometryArray([wkbs[0], gm.Point(3, 4), GeoInterfaceObject(5, 6)]).bounds,
         [[1, 2, 1, 2], [3, 4, 3, 4], [5, 6, 5, 6]],
     )
-    assert gm.get_coordinates([
+    view = gm.GeometryArray([
         wkbs[0],
         gm.Point(3, 4),
         GeoInterfaceObject(5, 6),
-    ]).tolist() == [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
+    ]).coords
+    assert np.asarray(view, dtype=np.float64).tolist() == [
+        [1.0, 2.0],
+        [3.0, 4.0],
+        [5.0, 6.0],
+    ]
     indexed = gm.SpatialIndex(wkbs)
     np.testing.assert_array_equal(indexed.query(gm.Point(1, 2)), [0])
     geo_index = gm.SpatialIndex([GeoInterfaceObject(1, 2), GeoInterfaceObject(3, 4)])

@@ -255,12 +255,14 @@ def _coordinate_values_and_indices(
     return coordinates, np.asarray(indexes)
 
 
-def _compare_get_coordinates(
+def _compare_coords_matrix_and_row_index(
     left: object, right: object | None, context: OracleContext
 ) -> None:
     if right is None:
-        raise OracleMismatch('get_coordinates requires competitor')
-    l_coords, l_idx = _coordinate_values_and_indices(left, 'get_coordinates')
+        raise OracleMismatch('coords matrix and row_index require competitor')
+    l_coords, l_idx = _coordinate_values_and_indices(
+        left, 'coords matrix and row_index'
+    )
     r_coords, r_idx = right  # type: ignore[misc]
     exact_coordinates(
         l_coords,
@@ -274,7 +276,7 @@ def _compare_get_coordinates(
     )
     if not np.array_equal(np.asarray(l_idx), np.asarray(r_idx)):
         raise OracleMismatch(
-            'get_coordinates index mismatch',
+            'coords row_index mismatch',
             details=f'shapes {np.asarray(l_idx).shape} vs {np.asarray(r_idx).shape}',
         )
 
@@ -339,12 +341,12 @@ def _precondition_validity_dist() -> None:
 def _compare_simplify(
     left: object, right: object | None, context: OracleContext
 ) -> None:
-    import gometry as gm
     import shapely
 
     if right is None:
         raise OracleMismatch('simplify requires competitor')
-    l_coordinates = gm.get_coordinates(left, return_index=True)
+    view = left.coords
+    l_coordinates = (np.asarray(view, dtype=np.float64), view.row_index)
     l_coords, l_idx = _coordinate_values_and_indices(l_coordinates, 'simplify')
     r_coords, r_idx = shapely.get_coordinates(right, include_z=False, return_index=True)
     if len(l_coords) != len(r_coords):
@@ -578,7 +580,6 @@ def _compare_nearest(
 def _compare_from_geojson(
     left: object, right: object | None, context: OracleContext
 ) -> None:
-    import gometry as gm
     import shapely
 
     if right is None:
@@ -596,7 +597,7 @@ def _compare_from_geojson(
     # coordinate count
     n_coords = 0
     for g in left:  # type: ignore[union-attr]
-        n_coords += len(gm.get_coordinates(g))
+        n_coords += len(g.coords)
     if n_coords != 16_604:
         raise OracleMismatch('from_geojson coordinate count', details=str(n_coords))
     # Rowwise geometric equality is required. Equal bounds alone must NOT pass
@@ -777,26 +778,26 @@ def build_to_wkb() -> PublicCase:
     return _case(gometry_call, competitor_call, _compare_to_wkb, kind='exact_bytes')
 
 
-def build_get_coordinates() -> PublicCase:
+def build_coords_matrix_and_index() -> PublicCase:
     gm_roads = roads_10k_gometry()
     sh_roads = roads_10k_shapely()
 
     def gometry_call():
-        import gometry as gm
 
-        return gm.get_coordinates(gm_roads, return_index=True)
+        view = gm_roads.coords
+        return np.asarray(view, dtype=np.float64), view.row_index
 
     def competitor_call():
         import shapely
 
         return shapely.get_coordinates(sh_roads, include_z=False, return_index=True)
 
-    _reg('gometry.get_coordinates/100k_vertices_with_index', gometry_call)
+    _reg('gometry.coords.matrix_and_index/100k_vertices', gometry_call)
     _reg('shapely.get_coordinates/100k_vertices_with_index', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
-        _compare_get_coordinates,
+        _compare_coords_matrix_and_row_index,
         kind='exact_coordinates',
         unit='m',
     )
@@ -1870,7 +1871,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.from_wkb.batch/10k_mixed_ewkb': build_from_wkb,
     'gometry.from_arrow/100k_mixed_10pct_missing': build_from_arrow,
     'gometry.to_wkb.batch/10k_mixed_ewkb': build_to_wkb,
-    'gometry.get_coordinates/100k_vertices_with_index': build_get_coordinates,
+    'gometry.coords.matrix_and_index/100k_vertices': build_coords_matrix_and_index,
     'gometry.points/10k_numpy_xy': build_points,
     'gometry.from_wkt.batch/10k_realistic_mixed_wkt': build_from_wkt,
     'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon': build_contains_xy,

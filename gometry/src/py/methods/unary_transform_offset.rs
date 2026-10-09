@@ -294,8 +294,8 @@ impl PyGeometry {
             default,
             move |data, ctx| {
                 let rect = match ctx.domain {
-                    crate::geometry::TopologyDomain::Geographic(_) => {
-                        Bounds::new_geographic(minx, miny, maxx, maxy)?
+                    crate::geometry::TopologyDomain::Geographic(frame) => {
+                        Bounds::new_geographic(frame, minx, miny, maxx, maxy)?
                     },
                     crate::geometry::TopologyDomain::Cartesian => {
                         Bounds::new(minx, miny, maxx, maxy)?
@@ -616,8 +616,8 @@ impl PyGeometryArray {
             },
             move |data, ctx| {
                 let rect = match ctx.domain {
-                    crate::geometry::TopologyDomain::Geographic(_) => {
-                        Bounds::new_geographic(minx, miny, maxx, maxy)?
+                    crate::geometry::TopologyDomain::Geographic(frame) => {
+                        Bounds::new_geographic(frame, minx, miny, maxx, maxy)?
                     },
                     crate::geometry::TopologyDomain::Cartesian => {
                         Bounds::new(minx, miny, maxx, maxy)?

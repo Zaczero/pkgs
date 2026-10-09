@@ -7,6 +7,8 @@ use crate::array::{
     Arc, BoundsSeed, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, Point,
     PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, Shape, StorageLayout,
 };
+use crate::geographic::PointSelectionChart;
+use crate::geographic::chart::point_set_convex_hull_shape;
 use crate::geometry::storage::builder::PointColumnBuilder;
 use crate::geometry::storage::packed_columns::{
     PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns, XyColumns,
@@ -505,12 +507,8 @@ impl PyGeometryArray {
         self.map_shapes_detached(py, |shape| {
             if let crate::geometry::TopologyDomain::Geographic(frame) = domain
                 && !matches!(shape, Shape::Point(_) | Shape::Empty(..))
-                && crate::geographic::chart::PointSelectionChart::accepts_point_set(shape)
-                && let Some(hull) = crate::geographic::chart::point_set_convex_hull_shape(
-                    shape,
-                    frame,
-                    shape.bounds(),
-                )?
+                && PointSelectionChart::accepts_point_set(shape)
+                && let Some(hull) = point_set_convex_hull_shape(shape, frame, shape.bounds())?
             {
                 return Ok(hull);
             }

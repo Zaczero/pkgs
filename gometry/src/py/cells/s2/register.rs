@@ -10,13 +10,11 @@ use crate::grid::affine_source::{
 };
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::coverer::{CoverRule, Coverer, Covering};
-use crate::py::cells::coverage_ops::{
-    GridCoverError, coverage_factory_shapes, envelope_window_shapes,
-};
+use crate::py::cells::coverage_ops::{GridCoverError, cover_working_shape, envelope_window_shapes};
 use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::s2::functions::{
-    _unpickle_s2_cell_v1, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
-    s2_union,
+    _unpickle_s2_cell_v1, s2_bounding_cell, s2_cells, s2_cover, s2_cover_adaptive, s2_difference,
+    s2_intersection, s2_union,
 };
 use crate::py::cells::s2::parse::S2LevelBudget;
 use crate::py::cells::{Bound, CellRule, PyGeometry, PyModule, PyModuleMethods as _, PyResult};
@@ -187,13 +185,16 @@ fn component_covers(left: &Shape, right: &Shape) -> crate::error::Result<bool> {
 /// No grid proxy is allowed to establish that negative decision.
 fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCoverError> {
     let mut components = Vec::new();
-    source.for_each_component(&mut |component| {
-        components.push(S2SourceComponent {
-            key: s2_component_key(component),
-            shape: component.to_shape(),
-            bounds: None,
-        });
-    });
+    source
+        .try_for_each_first_component(&mut |component| {
+            components.push(S2SourceComponent {
+                key: s2_component_key(component),
+                shape: component.to_shape(),
+                bounds: None,
+            });
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("component collection cannot fail");
     components.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     components.dedup_by(|left, right| left.key == right.key);
 
@@ -455,8 +456,8 @@ fn membership_from_tagged(
     tagged.into_iter().map(|(cell, _)| cell).collect()
 }
 
-/// Build an exact-classified S2 coverage of `geometry` (the
-/// ``s2_cover(...)`` backend).
+/// Build an exact-classified S2 coverage of `geometry` for either public cover
+/// function.
 ///
 /// Visible cells come from the coverer for `cell_rule` only; the tagged
 /// emission has already applied its visibility and finite-budget policy.
@@ -465,8 +466,11 @@ pub(crate) fn build_coverage(
     budget: S2LevelBudget,
     cell_rule: CellRule,
 ) -> Result<Vec<CellId>, GridCoverError> {
-    let cover_shape = coverage_factory_shapes(geometry, "S2")?;
+    if geometry.shape.is_empty() {
+        return Err(GridCoverError::Empty("S2"));
+    }
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
+        let cover_shape = cover_working_shape(&geometry.frame, geometry.shape.as_ref())?;
         let windows = envelope_window_shapes(&cover_shape)?;
         let cells = cover_s2_shapes(
             windows,
@@ -506,7 +510,7 @@ pub(crate) fn build_coverage(
 /// Register the S2 classes, flat functions, and pickle rebuilder.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(m;
-        s2_cells, s2_cover, s2_union,
+        s2_cells, s2_cover, s2_cover_adaptive, s2_union,
         s2_intersection, s2_difference, s2_bounding_cell,
         _unpickle_s2_cell_v1,
     );
@@ -516,7 +520,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod bbox_window_dedup_tests {
-    use super::deduplicate_bbox_windows;
+    use super::{canonical_s2_components, deduplicate_bbox_windows, s2_component_key};
     use crate::geometry::{LineSeq, Point, Shape};
     use crate::py::cells::coverage_ops::envelope_window_shapes;
 
@@ -533,6 +537,76 @@ mod bbox_window_dedup_tests {
     fn windows(lines: Vec<Shape>) -> Vec<Shape> {
         let source = Shape::geometry_collection(lines).expect("valid bbox components");
         envelope_window_shapes(&source).expect("valid bbox query windows")
+    }
+
+    #[test]
+    fn first_owner_canonicalization_matches_occurrence_traversal_for_distinct_owners() {
+        let first = line(-4.0, -2.0, 1.0);
+        let second = line(2.0, 4.0, 1.0);
+        let equal_but_distinct = line(-4.0, -2.0, 1.0);
+        let source = Shape::geometry_collection(vec![first, second, equal_but_distinct])
+            .expect("distinct source components");
+
+        let mut keyed_occurrences = Vec::new();
+        source.for_each_component(&mut |component| {
+            keyed_occurrences.push((s2_component_key(component), component.to_shape()));
+        });
+        let occurrences: Vec<_> = keyed_occurrences
+            .iter()
+            .map(|(_, shape)| shape.clone())
+            .collect();
+        let mut first_owners = Vec::new();
+        source
+            .try_for_each_first_component(&mut |component| {
+                first_owners.push(component.to_shape());
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .expect("component collection cannot fail");
+        assert_eq!(first_owners, occurrences);
+
+        keyed_occurrences.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        keyed_occurrences.dedup_by(|left, right| left.0 == right.0);
+        let expected: Vec<_> = keyed_occurrences
+            .into_iter()
+            .map(|(_, shape)| shape)
+            .collect();
+        assert_eq!(canonical_s2_components(&source).unwrap(), expected);
+    }
+
+    #[test]
+    fn first_owner_canonicalization_visits_a_shared_dag_once() {
+        let mut source = line(-4.0, -2.0, 1.0);
+        for _ in 0..9 {
+            source = Shape::geometry_collection(vec![source.clone(), source])
+                .expect("shared collection node");
+        }
+        let mut occurrences = 0;
+        source.for_each_component(&mut |_| occurrences += 1);
+        let canonical = canonical_s2_components(&source).expect("canonical source");
+        assert_eq!(occurrences, 1 << 9);
+        assert_eq!(canonical.len(), 1);
+    }
+
+    #[test]
+    fn canonicalization_keeps_exact_subset_elimination_between_distinct_owners() {
+        let polygon = crate::io::parse_wkt("POLYGON ((-4 -4, 4 -4, 4 4, -4 4, -4 -4))")
+            .expect("test polygon");
+        let duplicate = crate::io::parse_wkt("POLYGON ((-4 -4, 4 -4, 4 4, -4 4, -4 -4))")
+            .expect("distinct equal polygon");
+        let contained_line = line(-1.0, 1.0, 0.0);
+        let contained_point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let source = Shape::geometry_collection(vec![
+            polygon.clone(),
+            contained_line,
+            contained_point,
+            duplicate,
+        ])
+        .expect("distinct supported components");
+
+        assert_eq!(
+            canonical_s2_components(&source).expect("canonical components"),
+            vec![polygon]
+        );
     }
 
     #[test]

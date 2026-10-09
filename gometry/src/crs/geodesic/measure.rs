@@ -1225,8 +1225,8 @@ mod chart_measure_tests {
         let points = [
             (13.0, 52.5),
             (13.001, 52.501),
-            (13.001, 52.5010000001),
-            (13.0, 52.5000000001),
+            (13.001, 52.501_000_000_1),
+            (13.0, 52.500_000_000_1),
         ];
         let expected =
             0.000_755_688_547_419_930_258_991_880_480_619_221_115_460_111_464_140_957_137_933_622_464_683_107_255_206_770_415_967_871_802_785_631_464_917_801_071_65;
@@ -1584,10 +1584,6 @@ mod chart_measure_tests {
 
     #[test]
     fn chart_area_reference_phase_uses_physical_poles_for_axis_orientations() {
-        #[expect(
-            clippy::excessive_precision,
-            reason = "Independent Decimal integral of the original one-ULP pole-neighbor endpoints"
-        )]
         const EXPECTED: f64 = 2.198_605_450_772_230_784_075_320_676_741_271_294_1e-22;
 
         for (longitude_east, latitude_north) in

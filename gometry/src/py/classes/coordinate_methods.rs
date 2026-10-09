@@ -8,10 +8,9 @@ use crate::py::numpy::float64_matrix;
 use crate::py::row::{RowIndexOrSlice, parse_row_index_or_slice};
 use crate::py::sizeof::python_sizeof;
 use crate::{
-    Arc, Bound, CoordSeq, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError,
-    HeapSize, Point, Py, PyAnyMethods, PyDictMethods, PyErr, PyGeometryArray, PyRef, PyResult,
-    PyTupleMethods, Python, Shape, coordinates, coordinates_object, point_tuple, py_bool, pyclass,
-    pymethods,
+    Bound, CoordSeq, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError, HeapSize,
+    Point, Py, PyAnyMethods, PyDictMethods, PyErr, PyRef, PyResult, PyTupleMethods, Python, Shape,
+    coordinates, coordinates_object, point_tuple, py_bool, pyclass, pymethods,
 };
 
 /// Flat, indexable coordinate sequence behind `geom.coords`:
@@ -156,7 +155,6 @@ mod types;
 
 pub(crate) use helpers::{
     column_axis_to_py, coordinate_axis_order, coordinate_matrix_data, coordinate_tuple,
-    get_coordinates,
 };
 pub(crate) use set_coords::{
     map_coordinates_callback, parse_coordinate_replacement, replace_shape_coordinates,

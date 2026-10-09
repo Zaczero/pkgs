@@ -44,6 +44,52 @@ def _drop_missing_generic(
     return values.drop_missing()
 
 
+def _check_require_row_types(
+    nullable_array: gm.GeometryArray[gm.Point | None],
+    nullable_groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
+    nullable_rows: Iterable[gm.Point | None],
+    foreign_rows: Iterable[gm.Point | str | None],
+) -> None:
+    assert_type(gm.require(nullable_array), gm.GeometryArray[gm.Point | None])
+    assert_type(
+        gm.require(nullable_groups),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(gm.require(nullable_rows), gm.GeometryArray[gm.Point | None])
+    assert_type(
+        gm.require(foreign_rows),
+        gm.GeometryArray[gm.Geometry | None],
+    )
+
+
+def _check_cell_projection_row_types(
+    h3: gm.CellArray[gm.H3Cell],
+    nullable_h3: gm.CellArray[gm.H3Cell | None],
+    s2: gm.CellArray[gm.S2Cell],
+    nullable_s2: gm.CellArray[gm.S2Cell | None],
+    geohash: gm.CellArray[gm.GeohashCell],
+    nullable_geohash: gm.CellArray[gm.GeohashCell | None],
+    tile: gm.CellArray[gm.Tile],
+    nullable_tile: gm.CellArray[gm.Tile | None],
+) -> None:
+    assert_type(h3.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_h3.center, gm.GeometryArray[gm.Point | None])
+    assert_type(h3.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_h3.polygon, gm.GeometryArray[gm.Polygon | None])
+    assert_type(s2.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_s2.center, gm.GeometryArray[gm.Point | None])
+    assert_type(s2.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_s2.polygon, gm.GeometryArray[gm.Polygon | None])
+    assert_type(geohash.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_geohash.center, gm.GeometryArray[gm.Point | None])
+    assert_type(geohash.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_geohash.polygon, gm.GeometryArray[gm.Polygon | None])
+    assert_type(tile.center, gm.GeometryArray[gm.Point])
+    assert_type(nullable_tile.center, gm.GeometryArray[gm.Point | None])
+    assert_type(tile.polygon, gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_tile.polygon, gm.GeometryArray[gm.Polygon | None])
+
+
 def _check_buffer_input_precision(
     dense: gm.GeometryArray[gm.Point],
     nullable: gm.GeometryArray[gm.Point | None],
@@ -537,6 +583,9 @@ assert buffered is not None
 assert_type(buffered.area, float)
 assert_type(gm.require(POINTS.set_crs(4326), crs=4326), gm.GeometryArray[gm.Point])
 assert_type(gm.require(POINTS), gm.GeometryArray[gm.Point])
+assert_type(gm.require(POINT), gm.Point)
+assert_type(gm.require([POINT, None]), gm.GeometryArray[gm.Point | None])
+assert_type(gm.require('POINT (1 1)'), gm.Geometry)
 assert_type(POLY.polylabel(), gm.Point)
 assert_type(POLY.minimum_bounding_radius(), float)
 assert_type(POINTS.minimum_bounding_radius(), npt.NDArray[np.float64])
@@ -570,7 +619,7 @@ assert_type(POINT, gm.Point)
 assert_type(POINTS, gm.GeometryArray[gm.Point])
 assert_type(gm.MultiPoint([POINT, gm.Point(2, 2)]), gm.MultiPoint)
 if TYPE_CHECKING:
-    from collections.abc import Hashable, Mapping
+    from collections.abc import Hashable, Iterable, Mapping
 
     import geopandas as gpd
     import pandas as pd
@@ -656,16 +705,19 @@ if TYPE_CHECKING:
     assert_type(gm.union_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.intersection_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.symmetric_difference_all(geometry_like_rows), gm.Geometry)
-    assert_type(gm.get_coordinates(geometry_like_rows), npt.NDArray[np.float64])
-    assert_type(gm.get_coordinates(POINTS), npt.NDArray[np.float64])
+    foreign_coordinate_view = gm.GeometryArray(geometry_like_rows).coords
     assert_type(
-        gm.get_coordinates(POINTS, return_index=True),
-        tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
+        np.asarray(foreign_coordinate_view, dtype=np.float64),
+        npt.NDArray[np.float64],
     )
-    coordinate_flag: bool = bool(len(POINTS))
+    point_coordinate_view = POINTS.coords
     assert_type(
-        gm.get_coordinates(POINTS, return_index=coordinate_flag),
-        npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
+        np.asarray(point_coordinate_view, dtype=np.float64),
+        npt.NDArray[np.float64],
+    )
+    assert_type(
+        point_coordinate_view.row_index,
+        npt.NDArray[np.int64],
     )
     assert_type(POINTS.parts, gm.Groups[gm.GeometryArray[gm.Geometry]])
     assert_type(POINTS.bounds, npt.NDArray[np.float64])
@@ -795,6 +847,14 @@ assert_type(
 )
 h3_vertices = h3_cell.vertices
 h3_edges = h3_cell.edges
+assert_type(
+    gm.H3VertexArray([h3_vertices[0], h3_vertices[0].id, h3_vertices[0].token]),
+    gm.H3VertexArray,
+)
+assert_type(
+    gm.H3EdgeArray([h3_edges[0], h3_edges[0].id, h3_edges[0].token]),
+    gm.H3EdgeArray,
+)
 assert_type(h3_vertices, gm.H3VertexArray)
 assert_type(h3_vertices[0], gm.H3Vertex)
 assert_type(h3_vertices[:2], gm.H3VertexArray)
@@ -802,6 +862,10 @@ assert_type(h3_vertices[[True, False, True, False, True, False]], gm.H3VertexArr
 assert_type(h3_vertices[np.asarray([0, 1], dtype=np.int64)], gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.token), gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.to_numpy()), gm.H3VertexArray)
+signed_vertex_ids: npt.NDArray[np.int64] = np.asarray(
+    [h3_vertices[0].id], dtype=np.int64
+)
+assert_type(gm.H3VertexArray(signed_vertex_ids), gm.H3VertexArray)
 assert_type(h3_vertices.point, gm.GeometryArray[gm.Point])
 assert_type(h3_vertices[0].point, gm.Point)
 assert_type(h3_edges, gm.H3EdgeArray)
@@ -811,11 +875,17 @@ assert_type(h3_edges[[True, False, True, False, True, False]], gm.H3EdgeArray)
 assert_type(h3_edges[np.asarray([0, 1], dtype=np.int64)], gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.token), gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.to_numpy()), gm.H3EdgeArray)
+signed_edge_ids: npt.NDArray[np.int64] = np.asarray([h3_edges[0].id], dtype=np.int64)
+assert_type(gm.H3EdgeArray(signed_edge_ids), gm.H3EdgeArray)
 assert_type(h3_edges.origin, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.destination, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.reverse(), gm.H3EdgeArray)
 assert_type(h3_edges.line, gm.GeometryArray[gm.LineString])
 assert_type(h3_edges.length, npt.NDArray[np.float64])
+assert_type(
+    gm.SpatialIndex([POINT]).query(POINTS).to_pairs(),
+    tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]],
+)
 h3_cells = gm.h3_cells([1.0, 2.0], [2.0, 3.0], resolution=9)
 assert_type(h3_cells.contains(h3_cell), npt.NDArray[np.bool_])
 assert_type(h3_cells.neighbors, gm.Groups[gm.CellArray[gm.H3Cell]])
@@ -849,6 +919,11 @@ assert_type(
     gm.Groups[gm.CellArray[gm.S2Cell]],
 )
 assert_type(gm.s2_cover(POLY, level=12), gm.CellArray[gm.S2Cell])
+assert_type(
+    gm.s2_cover_adaptive(gm.GeometryArray([POLY])),
+    gm.Groups[gm.CellArray[gm.S2Cell]],
+)
+assert_type(gm.s2_cover_adaptive(POLY), gm.CellArray[gm.S2Cell])
 assert_type(
     gm.geohash_cover(gm.GeometryArray([POLY]), precision=5),
     gm.Groups[gm.CellArray[gm.GeohashCell]],
@@ -917,17 +992,34 @@ assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
 assert_type(LINE.line_interpolate(0.5), gm.Point)
 assert_type(LINE.line_interpolate(at=0.5), gm.Point)
+assert_type(
+    LINE.line_interpolate(0.5, normalized=True, unit='planar'),
+    gm.Point,
+)
 assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate([0.25, 0.75]), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate(count=3), gm.GeometryArray[gm.Point])
+assert_type(
+    LINE.line_interpolate(count=3, unit='meters'),
+    gm.GeometryArray[gm.Point],
+)
 assert_type(MEASURED_LINE.line_interpolate(5.0), gm.Point)
 assert_type(LINE.line_locate(POINT), float)
+assert_type(LINE.line_locate(POINT, normalized=True, unit='meters'), float)
 assert_type(MEASURED_LINE.line_locate(POINT), float)
 assert_type(LINE.line_substring(0.25, 0.75), gm.LineString | gm.Point)
+assert_type(
+    LINE.line_substring(0.25, 0.75, normalized=True, unit='planar'),
+    gm.LineString | gm.Point,
+)
 assert_type(MEASURED_LINE.line_substring(5.0, 10.0), gm.LineString | gm.Point)
 assert_type(LINES.line_interpolate(0.5), gm.GeometryArray[gm.Point])
 assert_type(LINES.line_interpolate(count=3), gm.Groups[gm.GeometryArray[gm.Point]])
 assert_type(LINES.line_interpolate(count=[3]), gm.Groups[gm.GeometryArray[gm.Point]])
+assert_type(
+    LINES.line_interpolate(count=[3], unit='planar'),
+    gm.Groups[gm.GeometryArray[gm.Point]],
+)
 assert_type(POINT.sample_points(3, seed=7), gm.GeometryArray[gm.Point])
 assert_type(
     POINTS.sample_points([2, 3], seed=[11, 12]),
@@ -935,7 +1027,15 @@ assert_type(
 )
 assert_type(LINES.line_locate(POINT), npt.NDArray[np.float64])
 assert_type(
+    LINES.line_locate(POINT, normalized=True, unit='planar'),
+    npt.NDArray[np.float64],
+)
+assert_type(
     LINES.line_substring(0.25, 0.75),
+    gm.GeometryArray[gm.LineString | gm.Point],
+)
+assert_type(
+    LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(np.asarray(POINTS.coords), npt.NDArray[np.float64])
