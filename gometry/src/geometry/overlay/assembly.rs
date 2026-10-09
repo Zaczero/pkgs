@@ -207,7 +207,7 @@ pub(crate) struct CertifiedOverlayOrder {
     pub(crate) polygons: Vec<usize>,
 }
 
-pub(crate) fn build_certified_overlay_shape_with_axes_and_order<W: Work + ?Sized>(
+pub(crate) fn build_certified_overlay_shape_with_axes_and_order<W: Work>(
     points: Vec<Point>,
     lines: Vec<CoordSeq>,
     polygons: Vec<Polygon>,

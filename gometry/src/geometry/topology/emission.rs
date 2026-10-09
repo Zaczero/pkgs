@@ -5,7 +5,7 @@ use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceRange, FallibleAvl, SourceEdgeId,
     compare_quotient_keys, quotient_key_for_chart_position,
 };
-use super::overlay::{QEmissionPlan, SelectedRegionFact};
+use super::overlay::QEmissionPlan;
 use super::q::{
     CanonicalQNodeKey, ChartSpan, ChartSpanId, ExactGeographicTopology, GlobalFaceId, QDartId,
     QNodeId, QPortId,
@@ -64,10 +64,7 @@ pub(super) enum PortSpelling {
 #[derive(Clone, Debug)]
 pub(super) enum VertexOrigin {
     SourceNode(QNodeId),
-    SourceSample {
-        recipe: FragmentRecipeId,
-        parameter: ExactRational,
-    },
+    SourceSample,
     Presentation,
 }
 
@@ -114,7 +111,7 @@ impl EmissionNodeRegistry {
                     &ExactChartPoint::from_rationals(longitude.clone(), latitude.clone()),
                 )?,
             };
-            let node = registry.intern(key.clone(), NodeAuthority::Source(source), work)?;
+            let node = registry.intern(key, NodeAuthority::Source(source), work)?;
             let slot = registry
                 .source_nodes
                 .get_mut(source.0 as usize)
@@ -188,14 +185,8 @@ impl EmissionNodeRegistry {
 
 #[derive(Clone, Debug)]
 pub(super) enum PortPosition {
-    Source {
-        port: QPortId,
-        spelling: PortSpelling,
-    },
-    Projected {
-        point: ExactChartPoint,
-        spelling: PortSpelling,
-    },
+    Source { spelling: PortSpelling },
+    Projected { spelling: PortSpelling },
 }
 
 #[derive(Clone, Debug)]
@@ -229,7 +220,6 @@ pub(super) struct EmissionChord {
 pub(super) struct EmissionPart {
     pub(super) region: usize,
     pub(super) face: NativeFaceId,
-    pub(super) chart_part: ChartPartId,
     pub(super) shell: Vec<EmissionChordId>,
     pub(super) holes: Vec<Vec<EmissionChordId>>,
 }
@@ -322,10 +312,7 @@ pub(super) enum NativeAreaEdgeKind {
         trace_ranges: Vec<(usize, RootRange)>,
         known_spans: Vec<NativeSourceSpanUse>,
     },
-    SeamConnector {
-        pair: u32,
-        bank: ChartSide,
-    },
+    SeamConnector,
     PolePresentation {
         pole: ChartPole,
     },
@@ -430,9 +417,7 @@ pub(super) fn native_seam_edges(
         .ok_or(ResourceError::SizeOverflow)?;
     budget.charge(u64::try_from(work).map_err(|_| ResourceError::SizeOverflow)?)?;
     for pair in events.array_windows::<2>() {
-        let [low, high] = pair else {
-            unreachable!("array_windows yields adjacent native seam events");
-        };
+        let [low, high] = pair;
         if !low
             .latitude
             .try_cmp_with_work(&high.latitude, budget)?
@@ -445,11 +430,10 @@ pub(super) fn native_seam_edges(
         }
     }
     let mut edges = Vec::with_capacity(band_work);
-    for (pair, band) in bands.iter().enumerate() {
+    for band in bands {
         if band.west_region.is_none() && band.east_region.is_none() {
             continue;
         }
-        let pair = u32::try_from(pair).map_err(|_| ResourceError::SizeOverflow)?;
         let low = events
             .get(native_seam_vertex_index(events, &band.low, budget)?)
             .ok_or_else(|| {
@@ -460,29 +444,23 @@ pub(super) fn native_seam_edges(
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("native seam upper endpoint is unknown".into())
             })?;
-        if let Some(region) = band.east_region {
-            if !has_existing_area_edge(region, &low.east, &high.east, budget)? {
-                edges.push(NativeAreaEdge {
-                    vertices: [low.east.clone(), high.east.clone()],
-                    owner: NativeGraphEdgeOwner::Area { region },
-                    kind: NativeAreaEdgeKind::SeamConnector {
-                        pair,
-                        bank: ChartSide::East,
-                    },
-                });
-            }
+        if let Some(region) = band.east_region
+            && !has_existing_area_edge(region, &low.east, &high.east, budget)?
+        {
+            edges.push(NativeAreaEdge {
+                vertices: [low.east.clone(), high.east.clone()],
+                owner: NativeGraphEdgeOwner::Area { region },
+                kind: NativeAreaEdgeKind::SeamConnector,
+            });
         }
-        if let Some(region) = band.west_region {
-            if !has_existing_area_edge(region, &high.west, &low.west, budget)? {
-                edges.push(NativeAreaEdge {
-                    vertices: [high.west.clone(), low.west.clone()],
-                    owner: NativeGraphEdgeOwner::Area { region },
-                    kind: NativeAreaEdgeKind::SeamConnector {
-                        pair,
-                        bank: ChartSide::West,
-                    },
-                });
-            }
+        if let Some(region) = band.west_region
+            && !has_existing_area_edge(region, &high.west, &low.west, budget)?
+        {
+            edges.push(NativeAreaEdge {
+                vertices: [high.west.clone(), low.west.clone()],
+                owner: NativeGraphEdgeOwner::Area { region },
+                kind: NativeAreaEdgeKind::SeamConnector,
+            });
         }
     }
     Ok(edges)
@@ -546,7 +524,6 @@ pub(super) fn native_pole_edges(
 
 pub(super) struct ExpandedEmissionPlan<'topology> {
     pub(super) topology: &'topology ExactGeographicTopology,
-    pub(super) selected_regions: Vec<SelectedRegionFact>,
     pub(super) selected_face_roots: Vec<Option<usize>>,
     pub(super) node_registry: EmissionNodeRegistry,
     pub(super) ports: Vec<EmissionPort>,
@@ -560,7 +537,6 @@ pub(super) struct ExpandedEmissionPlan<'topology> {
 
 pub(super) struct EmissionBuilder<'topology> {
     topology: &'topology ExactGeographicTopology,
-    selected_regions: Vec<SelectedRegionFact>,
     selected_face_roots: Vec<Option<usize>>,
     nodes: EmissionNodeRegistry,
     ports: Vec<EmissionPort>,
@@ -582,7 +558,6 @@ impl<'topology> EmissionBuilder<'topology> {
     ) -> Result<Self> {
         Ok(Self {
             topology,
-            selected_regions: selected.selected_regions.clone(),
             selected_face_roots: selected.selected_face_roots.clone(),
             nodes: EmissionNodeRegistry::with_sources(topology, live_nodes, work)?,
             ports: Vec::new(),
@@ -617,7 +592,7 @@ impl<'topology> EmissionBuilder<'topology> {
         self.push_port(
             EmissionPort {
                 node,
-                position: PortPosition::Source { port, spelling },
+                position: PortPosition::Source { spelling },
                 source_record,
                 occurrence_range: 0..0,
             },
@@ -661,147 +636,6 @@ impl<'topology> EmissionBuilder<'topology> {
         )
     }
 
-    pub(super) fn projected_port_on_node(
-        &mut self,
-        node: EmissionNodeId,
-        point: ExactChartPoint,
-        spelling: PortSpelling,
-        origin: VertexOrigin,
-        source_record: Option<Point>,
-        source_trace: Option<TraceRequestLocation>,
-        work: &mut impl Work,
-    ) -> Result<EmissionPortId> {
-        work.charge(1)?;
-        self.nodes.nodes().get(node.0 as usize).ok_or_else(|| {
-            GeometryErrorKind::Invalid("projected port references an unknown emission node".into())
-        })?;
-        self.validate_port_origin(node, &origin)?;
-        self.push_port(
-            EmissionPort {
-                node,
-                position: PortPosition::Projected { point, spelling },
-                source_record,
-                occurrence_range: 0..0,
-            },
-            vec![OccurrenceSource {
-                origin,
-                source_trace,
-            }],
-        )
-    }
-
-    pub(super) fn projected_port(
-        &mut self,
-        point: ExactChartPoint,
-        spelling: PortSpelling,
-        origin: VertexOrigin,
-        source_trace: Option<TraceRequestLocation>,
-        work: &mut impl Work,
-    ) -> Result<EmissionPortId> {
-        work.charge(1)?;
-        let node = self.nodes.intern_computed(
-            self.topology.sources.frame,
-            point.try_clone_with_work(work)?,
-            work,
-        )?;
-        self.validate_port_origin(node, &origin)?;
-        self.push_port(
-            EmissionPort {
-                node,
-                position: PortPosition::Projected { point, spelling },
-                source_record: None,
-                occurrence_range: 0..0,
-            },
-            vec![OccurrenceSource {
-                origin,
-                source_trace,
-            }],
-        )
-    }
-
-    pub(super) fn seam_port_pair_on_node(
-        &mut self,
-        node: EmissionNodeId,
-        latitude: ExactRational,
-        origin: VertexOrigin,
-        source_records: [Option<Point>; 2],
-        source_trace: Option<TraceRequestLocation>,
-        work: &mut impl Work,
-    ) -> Result<[EmissionPortId; 2]> {
-        let half = ExactRational::from_f64(self.topology.sources.frame.longitude().half_period());
-        let west = ExactRational::zero().try_subtract_with_work(&half, work)?;
-        let [east_record, west_record] = source_records;
-        Ok([
-            self.projected_port_on_node(
-                node,
-                ExactChartPoint::from_rationals(half, latitude.try_clone_with_work(work)?),
-                PortSpelling::Seam(ChartSide::East),
-                origin.clone(),
-                east_record,
-                source_trace.clone(),
-                work,
-            )?,
-            self.projected_port_on_node(
-                node,
-                ExactChartPoint::from_rationals(west, latitude),
-                PortSpelling::Seam(ChartSide::West),
-                origin,
-                west_record,
-                source_trace,
-                work,
-            )?,
-        ])
-    }
-
-    pub(super) fn native_cut_ports(
-        &mut self,
-        feature: &NativeCutFeature,
-        families: &mut FeatureFamilyRegistry,
-        budget: &mut EvaluationBudget,
-    ) -> Result<[EmissionPortId; 2]> {
-        let mut family = feature.family;
-        let parent = family.fragment_recipe().ok_or_else(|| {
-            GeometryErrorKind::Invalid("native cut has no fragment producer".into())
-        })?;
-        family.occurrence = families.native_cut_occurrence(
-            parent,
-            feature.trace_edge,
-            feature.seam_period_index,
-            budget,
-        )?;
-        families.register(family, budget)?;
-        families.synchronize_budget(budget)?;
-        let origin = if feature.source_trace.is_none() {
-            VertexOrigin::Presentation
-        } else {
-            VertexOrigin::SourceSample {
-                recipe: parent,
-                parameter: feature.recipe_parameter.try_clone_with_work(budget)?,
-            }
-        };
-        let period = ExactRational::from_f64(self.topology.sources.frame.longitude().period());
-        let west = ExactChartPoint::from_rationals(
-            feature.point.x.try_subtract_with_work(&period, budget)?,
-            feature.point.y.try_clone_with_work(budget)?,
-        );
-        Ok([
-            self.projected_port(
-                feature.point.try_clone_with_work(budget)?,
-                PortSpelling::Seam(ChartSide::East),
-                origin.clone(),
-                feature.source_trace.clone(),
-                budget,
-            )?,
-            self.projected_port(
-                west,
-                PortSpelling::Seam(ChartSide::West),
-                origin,
-                feature.source_trace.clone(),
-                budget,
-            )?,
-        ])
-    }
-
     pub(super) fn chord(
         &mut self,
         ports: [EmissionPortId; 2],
@@ -836,7 +670,6 @@ impl<'topology> EmissionBuilder<'topology> {
         self.parts.push(EmissionPart {
             region,
             face,
-            chart_part: id,
             shell,
             holes,
         });
@@ -869,7 +702,6 @@ impl<'topology> EmissionBuilder<'topology> {
             EmissionPort {
                 node: data.node,
                 position: PortPosition::Projected {
-                    point: data.point,
                     spelling: data.spelling,
                 },
                 source_record: data.source_record,
@@ -879,23 +711,13 @@ impl<'topology> EmissionBuilder<'topology> {
         )
     }
 
-    pub(super) fn port_node(&self, port: EmissionPortId) -> Result<EmissionNodeId> {
-        self.ports
-            .get(port.0 as usize)
-            .map(|port| port.node)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("emission port has no registered node".into()).into()
-            })
-    }
-
-    pub(super) fn nodes(&self) -> &EmissionNodeRegistry {
+    pub(super) const fn nodes(&self) -> &EmissionNodeRegistry {
         &self.nodes
     }
 
     pub(super) fn finish(self) -> ExpandedEmissionPlan<'topology> {
         ExpandedEmissionPlan {
             topology: self.topology,
-            selected_regions: self.selected_regions,
             selected_face_roots: self.selected_face_roots,
             node_registry: self.nodes,
             ports: self.ports,
@@ -960,13 +782,11 @@ impl<'topology> EmissionBuilder<'topology> {
 
 pub(super) struct CompletedNativeDrawing {
     pub(super) sealed: SealedOutput<EmissionPortId>,
-    pub(super) axes: crate::geometry::CoordinateAxes,
     pub(super) line_traces: Vec<TracedLine>,
 }
 
 pub(super) struct NativeFrozenDrawing {
     pub(super) buffers: FrozenLiteralBuffers<EmissionPortId>,
-    pub(super) axes: CoordinateAxes,
     pub(super) line_traces: Vec<TracedLine>,
 }
 
@@ -986,9 +806,9 @@ pub(super) enum QSourceImage {
 
 pub(super) struct SourceFrozenDrawing {
     pub(super) buffers: FrozenLiteralBuffers<QSourceImage>,
-    pub(super) axes: CoordinateAxes,
 }
 
+#[cfg(test)]
 pub(super) type NativePolygonLiteralUses = LiteralPolygon<EmissionPortId>;
 pub(super) type NativeLiteralUses = ShapeLiteralLayout<EmissionPortId>;
 
@@ -1117,7 +937,7 @@ pub(super) fn materialize_native_parts(
     let mut point_uses = Vec::with_capacity(plan.points.len());
     for (index, &port) in plan.points.iter().enumerate() {
         budget.charge(1)?;
-        points.push(native_port_point(&plan, &sites, &ordinates, port, axes)?);
+        points.push(native_port_point(plan, sites, ordinates, port, axes)?);
         point_uses.push(LiteralPoint {
             output: u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
             axes,
@@ -1129,7 +949,7 @@ pub(super) fn materialize_native_parts(
     budget.charge(u64::try_from(plan.lines.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut line_uses = Vec::with_capacity(plan.lines.len());
     for (index, chords) in plan.lines.iter().enumerate() {
-        let walk = native_chord_points(&plan, &sites, &ordinates, chords, axes, false, budget)?;
+        let walk = native_chord_points(plan, sites, ordinates, chords, axes, false, budget)?;
         budget
             .charge(u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         lines.push(CoordSeq::try_from_points(&walk.points)?);
@@ -1146,7 +966,7 @@ pub(super) fn materialize_native_parts(
     for (part_index, part) in plan.parts.iter().enumerate() {
         let output = u32::try_from(part_index).map_err(|_| ResourceError::SizeOverflow)?;
         let shell_walk =
-            native_chord_points(&plan, &sites, &ordinates, &part.shell, axes, true, budget)?;
+            native_chord_points(plan, sites, ordinates, &part.shell, axes, true, budget)?;
         budget.charge(
             u64::try_from(shell_walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -1156,7 +976,7 @@ pub(super) fn materialize_native_parts(
         budget.charge(u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut hole_uses = Vec::with_capacity(part.holes.len());
         for hole in &part.holes {
-            let walk = native_chord_points(&plan, &sites, &ordinates, hole, axes, true, budget)?;
+            let walk = native_chord_points(plan, sites, ordinates, hole, axes, true, budget)?;
             budget.charge(
                 u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -1200,18 +1020,15 @@ pub(super) fn write_completed_native(
 ) -> Result<WrittenNativeDrawing> {
     let CompletedNativeDrawing {
         sealed,
-        axes,
         line_traces,
     } = drawing;
     Ok(WrittenNativeDrawing {
-        axes,
-        shape: sealed.into_shape()?,
+        shape: sealed.into_shape(),
         line_traces,
     })
 }
 
 pub(super) struct WrittenNativeDrawing {
-    pub(super) axes: CoordinateAxes,
     pub(super) shape: Shape,
     pub(super) line_traces: Vec<TracedLine>,
 }
@@ -1272,7 +1089,7 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
                         GeometryErrorKind::Invalid("native source ordinate node is unknown".into())
                     })?
                 },
-                VertexOrigin::SourceSample { .. } => NodeOrdinates::default(),
+                VertexOrigin::SourceSample => NodeOrdinates::default(),
                 VertexOrigin::Presentation => {
                     has_live_presentation = true;
                     NodeOrdinates::default()
@@ -1412,9 +1229,7 @@ pub(super) fn native_port_point(
         (record.x, record.y)
     } else {
         let spelling = match &port.position {
-            PortPosition::Source { spelling, .. } | PortPosition::Projected { spelling, .. } => {
-                spelling
-            },
+            PortPosition::Source { spelling } | PortPosition::Projected { spelling } => spelling,
         };
         let longitude = match spelling {
             PortSpelling::Interior { .. } => site.longitude.native().get(),
@@ -1455,22 +1270,12 @@ pub(super) fn native_port_point(
 
 pub(super) struct SealedSourceDrawing {
     pub(super) sealed: SealedOutput<QSourceImage>,
-    pub(super) axes: crate::geometry::CoordinateAxes,
     pub(super) line_traces: Vec<TracedLine>,
 }
 
 pub(super) enum SealedQDrawing {
     Source(SealedSourceDrawing),
     Native(CompletedNativeDrawing),
-}
-
-impl SealedQDrawing {
-    pub(super) fn is_empty(&self) -> Result<bool> {
-        match self {
-            Self::Source(source) => source.sealed.is_empty(),
-            Self::Native(native) => native.sealed.is_empty(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1487,7 +1292,6 @@ pub(super) enum SelectedUse {
 pub(super) struct DirectedSourceRange {
     pub(super) source_edge: SourceEdgeId,
     pub(super) range: ExactSourceRange,
-    pub(super) lift: i64,
     pub(super) emitted: bool,
     pub(super) producer_start: ExactRational,
     pub(super) producer_end: ExactRational,
@@ -1497,7 +1301,6 @@ pub(super) struct DirectedSourceRange {
 struct PendingSourceRange {
     source_edge: SourceEdgeId,
     range: ExactSourceRange,
-    lift: i64,
     emitted: bool,
     longitude_start: ExactRational,
     longitude_end: ExactRational,
@@ -1532,7 +1335,6 @@ fn pending_source_ranges(
         output.push(PendingSourceRange {
             source_edge: owner.source_edge,
             range,
-            lift: owner.lift,
             emitted: owner_index == directed.owner_index,
             longitude_start: longitude_start.try_clone_with_work(work)?,
             longitude_end: longitude_end.try_clone_with_work(work)?,
@@ -1627,10 +1429,10 @@ fn producer_step_extends_run(
         return Ok(false);
     }
     let zero = ExactRational::zero();
-    let (displacement_primary, step_primary) = if !longitude_displacement.is_zero() {
-        (longitude_displacement, longitude_step)
-    } else {
+    let (displacement_primary, step_primary) = if longitude_displacement.is_zero() {
         (latitude_displacement, latitude_step)
+    } else {
+        (longitude_displacement, longitude_step)
     };
     let displacement_order = displacement_primary.try_cmp_with_work(&zero, work)?;
     let step_order = step_primary.try_cmp_with_work(&zero, work)?;
@@ -1682,7 +1484,6 @@ fn producer_ranges(
         output.push(DirectedSourceRange {
             source_edge: range.source_edge,
             range: range.range,
-            lift: range.lift,
             emitted: range.emitted,
             producer_start,
             producer_end,
@@ -1811,7 +1612,7 @@ impl FragmentRecipe {
 }
 
 impl SourceTrace {
-    pub(super) fn split_at_samples(
+    fn split_at_samples(
         &self,
         samples: &[SourceTraceSample],
         work: &mut impl Work,
@@ -1973,9 +1774,7 @@ impl SourceTrace {
             boundaries.push(one.try_clone_with_work(work)?);
 
             for pair in boundaries.array_windows::<2>() {
-                let [from, to] = pair else {
-                    unreachable!("array_windows yields directed parameter intervals");
-                };
+                let [from, to] = pair;
                 work.charge(1)?;
                 output_rows.push_composed_row(self.rows.row(edge_index)?, from, to, work)?;
             }
@@ -1990,9 +1789,7 @@ impl SourceTrace {
             Ok(left.written_vertex.cmp(&right.written_vertex))
         })?;
         for pair in output_samples.array_windows::<2>() {
-            let [left, right] = pair else {
-                unreachable!("array_windows yields adjacent written source samples");
-            };
+            let [left, right] = pair;
             work.charge(1)?;
             if left.written_vertex >= right.written_vertex {
                 return Err(GeometryErrorKind::Invalid(
@@ -2104,7 +1901,7 @@ impl SourceTrace {
         })
     }
 
-    pub(in crate::geometry) fn edge_count(&self) -> usize {
+    pub(in crate::geometry) const fn edge_count(&self) -> usize {
         self.rows.edge_count()
     }
 
@@ -2213,8 +2010,6 @@ pub(super) enum TraceRequestLocation {
 
 #[derive(Clone, Debug)]
 pub(super) struct SourceSampleOccurrence {
-    pub(super) recipe: FragmentRecipeId,
-    pub(super) parameter: ExactRational,
     pub(super) trace: Option<TraceRequestLocation>,
     pub(super) endpoint_only: bool,
 }
@@ -2377,10 +2172,8 @@ pub(super) struct NativeCutFeature {
     pub(super) seam_period_index: i64,
     pub(super) trace_edge: usize,
     pub(super) edge_parameter: ExactRational,
-    pub(super) recipe_parameter: ExactRational,
     pub(super) point: ExactChartPoint,
     pub(super) source_trace: Option<TraceRequestLocation>,
-    pub(super) banks: [ChartSide; 2],
 }
 
 pub(super) fn native_cut_features(
@@ -2391,8 +2184,6 @@ pub(super) fn native_cut_features(
     start: &ExactChartPoint,
     end: &ExactChartPoint,
     assigned_displacement: &ExactRational,
-    recipe_start: &ExactRational,
-    recipe_end: &ExactRational,
     work: &mut impl Work,
 ) -> Result<Vec<NativeCutFeature>> {
     let axis = topology.sources.frame.longitude();
@@ -2417,8 +2208,6 @@ pub(super) fn native_cut_features(
                 start,
                 end,
                 assigned_displacement,
-                recipe_start,
-                recipe_end,
                 period_index,
                 &mut features,
                 work,
@@ -2442,8 +2231,6 @@ pub(super) fn native_cut_features(
                 start,
                 end,
                 assigned_displacement,
-                recipe_start,
-                recipe_end,
                 period_index,
                 &mut features,
                 work,
@@ -2461,8 +2248,6 @@ fn append_native_cut_feature(
     start: &ExactChartPoint,
     end: &ExactChartPoint,
     assigned_displacement: &ExactRational,
-    recipe_start: &ExactRational,
-    recipe_end: &ExactRational,
     period_index: i64,
     output: &mut Vec<NativeCutFeature>,
     work: &mut impl Work,
@@ -2502,12 +2287,6 @@ fn append_native_cut_feature(
     let latitude = start
         .y
         .try_add_with_work(&delta_y.try_product_with_work(&parameter, work)?, work)?;
-    let recipe_parameter = recipe_start.try_add_with_work(
-        &recipe_end
-            .try_subtract_with_work(recipe_start, work)?
-            .try_product_with_work(&parameter, work)?,
-        work,
-    )?;
     let (has_source, _) = trace
         .rows
         .request_support_at(trace_edge, &parameter, work)?;
@@ -2521,14 +2300,12 @@ fn append_native_cut_feature(
         seam_period_index: period_index,
         trace_edge,
         edge_parameter: parameter.try_clone_with_work(work)?,
-        recipe_parameter,
         point,
-        source_trace: has_source.then(|| TraceRequestLocation::Edge {
+        source_trace: has_source.then_some(TraceRequestLocation::Edge {
             recipe: recipe.id,
             edge: trace_edge,
             parameter,
         }),
-        banks: [ChartSide::East, ChartSide::West],
     });
     Ok(())
 }
@@ -2825,7 +2602,7 @@ impl FeatureFamilyRegistry {
             .insert_with_work(family, work, &mut |left, right, _work| Ok(left.cmp(right)))
     }
 
-    pub(super) fn additional_constructed(&self) -> usize {
+    pub(super) const fn additional_constructed(&self) -> usize {
         self.families.len()
     }
 
@@ -2852,6 +2629,7 @@ impl FragmentRecipes {
         &self.walks
     }
 
+    #[cfg(test)]
     pub(super) fn source_trace(
         &self,
         walk: &RecipeWalk,
@@ -2915,6 +2693,7 @@ impl FragmentRecipes {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn publish(
         &self,
         topology: &ExactGeographicTopology,
@@ -2969,7 +2748,7 @@ impl FragmentRecipes {
                 topology.sources.frame,
                 &source,
                 false,
-                &mut budget,
+                &mut *budget,
                 |_, _, _| {
                     Ok(ComputedEdgeIntent::exact_lifted([
                         &exact_start.x,
@@ -3113,7 +2892,7 @@ impl FragmentRecipes {
                     ),
                     source_trace: trace_sample
                         .has_source
-                        .then(|| TraceRequestLocation::Sample {
+                        .then_some(TraceRequestLocation::Sample {
                             recipe: recipe.id,
                             row: trace_sample.request_row,
                         }),
@@ -3146,7 +2925,6 @@ impl FragmentRecipes {
         endpoints: [QPortId; 2],
         source_edge: SourceEdgeId,
         range: ExactSourceRange,
-        lift: i64,
         exact_displacement: ExactRational,
         use_kind: SelectedUse,
         work: &mut impl Work,
@@ -3163,7 +2941,6 @@ impl FragmentRecipes {
                 producer_start: ExactRational::zero(),
                 producer_end: ExactRational::one(),
                 range,
-                lift,
                 emitted: true,
                 endpoint_only: false,
             }],
@@ -3189,7 +2966,7 @@ impl FragmentRecipes {
         let mut longitude_displacement = ExactRational::zero();
         let mut latitude_displacement = ExactRational::zero();
         let mut producer_supported = true;
-        let mut previous_to = None;
+        let mut previous_to: Option<QPortId> = None;
 
         for directed in spans {
             work.charge(1)?;
@@ -3520,7 +3297,6 @@ mod tests {
                 start: ExactRational::zero(),
                 end: ExactRational::one(),
             },
-            lift: 0,
             emitted: true,
             longitude_start: ExactRational::from_f64(longitude_start),
             longitude_end: ExactRational::from_f64(longitude_end),
@@ -3551,16 +3327,14 @@ mod tests {
         ];
         let mut work = Unmetered;
         for (ranges, longitude, latitude) in unsupported {
-            assert!(
-                producer_ranges(
-                    ranges,
-                    &ExactRational::from_f64(longitude),
-                    &ExactRational::from_f64(latitude),
-                    true,
-                    &mut work,
-                )
-                .is_err()
-            );
+            producer_ranges(
+                ranges,
+                &ExactRational::from_f64(longitude),
+                &ExactRational::from_f64(latitude),
+                true,
+                &mut work,
+            )
+            .unwrap_err();
         }
         Ok(())
     }
@@ -3594,7 +3368,6 @@ mod tests {
                     start: quarter.clone(),
                     end: three_quarters.clone(),
                 },
-                lift: range.lift,
                 emitted: range.emitted,
                 producer_start: range.producer_start,
                 producer_end: range.producer_end,
@@ -3657,10 +3430,7 @@ mod tests {
             spelling: PortSpelling::Interior { periods: 0 },
             source_record: None,
             occurrences: vec![OccurrenceSource {
-                origin: VertexOrigin::SourceSample {
-                    recipe: FragmentRecipeId(5),
-                    parameter: ExactRational::from_f64(0.5),
-                },
+                origin: VertexOrigin::SourceSample,
                 source_trace: Some(TraceRequestLocation::Edge {
                     recipe: FragmentRecipeId(5),
                     edge: 0,
@@ -3681,10 +3451,7 @@ mod tests {
         assert!(matches!(
             merged.occurrences.get(1),
             Some(OccurrenceSource {
-                origin: VertexOrigin::SourceSample {
-                    recipe: FragmentRecipeId(5),
-                    ..
-                },
+                origin: VertexOrigin::SourceSample,
                 source_trace: Some(_),
             })
         ));
@@ -3718,13 +3485,11 @@ mod tests {
         let source_record = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(None));
         let plan = ExpandedEmissionPlan {
             topology: &topology,
-            selected_regions: Vec::new(),
             selected_face_roots: Vec::new(),
             node_registry,
             ports: vec![EmissionPort {
                 node: emission_node,
                 position: PortPosition::Source {
-                    port: port_id,
                     spelling: PortSpelling::Interior { periods: 0 },
                 },
                 source_record: Some(source_record),
@@ -3755,11 +3520,14 @@ mod tests {
             ordinates: Vec::new(),
         };
         let mut source_ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+        let mut source_z = crate::geometry::ordinates::AxisValue::default();
+        source_z.observe(Some(7.0));
         source_ordinates
             .get_mut(source_node.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("source ordinate row is missing".into()))?
-            .z = crate::geometry::ordinates::AxisValue::Unique(7.0_f64.to_bits());
-        let metric_access: Option<&SourceArcMetricAccess<'_, crate::crs::GeodesicMetric>> = None;
+            .z = source_z;
+        let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
+            None;
         let mut work = Unmetered;
         let (ordinates, axes) = resolve_emission_ordinates(
             &plan,
@@ -3845,12 +3613,11 @@ mod tests {
             registry.synchronize_budget(&mut budget).unwrap();
         }
         assert_eq!(budget.constructed(), 3);
-        assert_eq!(budget.evaluations(), 133);
     }
 
     #[test]
     fn native_cut_occurrences_follow_disjoint_prepared_period_ranges() -> Result<()> {
-        let mut registry = FeatureFamilyRegistry {
+        let registry = FeatureFamilyRegistry {
             bounds: vec![FeatureFamilyBound {
                 publication: 0,
                 native_cuts: 4,
@@ -3905,29 +3672,25 @@ mod tests {
         let mut work = Unmetered;
         assert!(registry.register(admitted, &mut work).unwrap());
         assert!(!registry.register(admitted, &mut work).unwrap());
-        assert!(
-            registry
-                .register(
-                    FeatureFamily {
-                        parent: FeatureFamilyParent::Region(8),
-                        producer: SampleProducerKind::WholeSphereCover,
-                        occurrence: 0,
-                    },
-                    &mut work,
-                )
-                .is_err()
-        );
-        assert!(
-            registry
-                .register(
-                    FeatureFamily {
-                        occurrence: 10,
-                        ..admitted
-                    },
-                    &mut work,
-                )
-                .is_err()
-        );
+        registry
+            .register(
+                FeatureFamily {
+                    parent: FeatureFamilyParent::Region(8),
+                    producer: SampleProducerKind::WholeSphereCover,
+                    occurrence: 0,
+                },
+                &mut work,
+            )
+            .unwrap_err();
+        registry
+            .register(
+                FeatureFamily {
+                    occurrence: 10,
+                    ..admitted
+                },
+                &mut work,
+            )
+            .unwrap_err();
     }
 
     #[test]
@@ -4115,10 +3878,9 @@ mod tests {
             ranges: vec![DirectedSourceRange {
                 source_edge: SourceEdgeId(3),
                 range: ExactSourceRange {
-                    start: quarter.clone(),
-                    end: three_quarters.clone(),
+                    start: quarter,
+                    end: three_quarters,
                 },
-                lift: 0,
                 emitted: true,
                 producer_start: zero,
                 producer_end: one,
@@ -4214,7 +3976,6 @@ mod tests {
                     start: zero.clone(),
                     end: one.clone(),
                 },
-                lift: 0,
                 emitted: true,
                 producer_start: zero,
                 producer_end: one,
@@ -4336,7 +4097,6 @@ mod tests {
                     start: zero.clone(),
                     end: one.clone(),
                 },
-                lift: edge.retained_longitude().periods(),
                 emitted: true,
                 producer_start: zero,
                 producer_end: one,

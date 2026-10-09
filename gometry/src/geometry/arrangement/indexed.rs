@@ -33,7 +33,7 @@ pub(crate) fn indexed_topology_from_edges_with_work<W, C>(
     compare_departures: C,
 ) -> Result<(IndexedTopology, Vec<u32>)>
 where
-    W: Work + ?Sized,
+    W: Work,
     C: FnMut(u32, usize, usize, &mut W) -> Result<Ordering>,
 {
     indexed_topology_from_edge_fn_with_work(
@@ -53,7 +53,7 @@ where
 ///
 /// Slot IDs use the endpoint order supplied for that edge, even though the
 /// topology stores each departure in its owner vertex's cyclic row.
-pub(crate) fn indexed_edge_slots_with_work<W: Work + ?Sized>(
+pub(crate) fn indexed_edge_slots_with_work<W: Work>(
     edge_nodes: &[[u32; 2]],
     topology: &IndexedTopology,
     edge_of_slot: &[u32],
@@ -132,7 +132,7 @@ pub(crate) fn indexed_topology_from_edge_fn_with_work<W, E, C>(
     mut compare_departures: C,
 ) -> Result<(IndexedTopology, Vec<u32>)>
 where
-    W: Work + ?Sized,
+    W: Work,
     E: FnMut(usize) -> Result<[u32; 2]>,
     C: FnMut(u32, usize, usize, &mut W) -> Result<Ordering>,
 {
@@ -219,9 +219,7 @@ where
         })?;
         for pair in row.array_windows::<2>() {
             work.charge(1)?;
-            let [left, right] = pair else {
-                unreachable!("array_windows yields adjacent departure edges");
-            };
+            let [left, right] = pair;
             if compare_departures(node as u32, *left as usize, *right as usize, work)?.is_eq() {
                 return Err(GeometryErrorKind::Invalid(
                     "distinct indexed graph edges share a departure ray".into(),
@@ -347,7 +345,7 @@ impl IndexedTopology {
         clippy::indexing_slicing,
         reason = "edge, vertex, twin, successor, and face slots are derived from the admitted CSR columns built here"
     )]
-    pub(crate) fn finish_with_work<W: Work + ?Sized>(
+    pub(crate) fn finish_with_work<W: Work>(
         &mut self,
         edge_of_slot: &[u32],
         scratch: &mut IndexedTopologyScratch,

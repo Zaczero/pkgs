@@ -5,10 +5,6 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(test)]
-use std::simd::Select as _;
-#[cfg(test)]
-use std::simd::cmp::SimdPartialOrd as _;
 
 mod rdp;
 
@@ -426,45 +422,42 @@ fn push_subdivision_members(
     };
     let source_line_members = item.source_line_members.take();
     let vertex_cut = item.vertex_cut;
-    match member_traces {
-        Some(traces) => {
-            for (member, trace) in members.into_iter().zip(traces).rev() {
-                work.push(SubdivisionWorkItem::with_traces(
-                    member,
-                    None,
-                    None,
-                    vec![trace],
-                    vertex_cut,
-                    item.trace_axes.unwrap_or_else(|| item.shape.axes()),
-                ));
+    if let Some(traces) = member_traces {
+        for (member, trace) in members.into_iter().zip(traces).rev() {
+            work.push(SubdivisionWorkItem::with_traces(
+                member,
+                None,
+                None,
+                vec![trace],
+                vertex_cut,
+                item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+            ));
+        }
+    } else {
+        let member_line_ranges = if let Some(parent_range) = source_line_members
+            && parent_range.len() == source_line_member_count(shape)?
+        {
+            let mut next = parent_range.start;
+            let mut ranges = Vec::with_capacity(members.len());
+            for member in &members {
+                let count = source_line_member_count(member)?;
+                let end = next.checked_add(count).ok_or(ResourceError::SizeOverflow)?;
+                ranges.push(Some(next..end));
+                next = end;
             }
-        },
-        None => {
-            let member_line_ranges = if let Some(parent_range) = source_line_members
-                && parent_range.len() == source_line_member_count(shape)?
-            {
-                let mut next = parent_range.start;
-                let mut ranges = Vec::with_capacity(members.len());
-                for member in &members {
-                    let count = source_line_member_count(member)?;
-                    let end = next.checked_add(count).ok_or(ResourceError::SizeOverflow)?;
-                    ranges.push(Some(next..end));
-                    next = end;
-                }
-                ranges
-            } else {
-                std::iter::repeat_with(|| None)
-                    .take(members.len())
-                    .collect::<Vec<_>>()
-            };
-            for (member, source_line_members) in members.into_iter().zip(member_line_ranges).rev() {
-                work.push(SubdivisionWorkItem::new(
-                    member,
-                    vertex_cut,
-                    source_line_members,
-                ));
-            }
-        },
+            ranges
+        } else {
+            std::iter::repeat_with(|| None)
+                .take(members.len())
+                .collect::<Vec<_>>()
+        };
+        for (member, source_line_members) in members.into_iter().zip(member_line_ranges).rev() {
+            work.push(SubdivisionWorkItem::new(
+                member,
+                vertex_cut,
+                source_line_members,
+            ));
+        }
     }
     Ok(true)
 }
@@ -566,7 +559,7 @@ fn owner_coordinate_count(shape: &Shape, logical_count: Option<usize>) -> usize 
 
 fn source_line_member_count(shape: &Shape) -> Result<usize> {
     let mut count = 0_usize;
-    shape.try_for_each_component(&mut |component| {
+    shape.try_for_each_component(&mut |component| -> Result<()> {
         if matches!(component, Component::LineString(_)) {
             count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
@@ -593,7 +586,7 @@ fn collect_native_line_members_with_known(
 ) -> Result<Vec<(usize, crate::geometry::CoordinateAxes)>> {
     let mut next_member = first_member;
     let mut output = Vec::new();
-    shape.try_for_each_component(&mut |component| {
+    shape.try_for_each_component(&mut |component| -> Result<()> {
         let Component::LineString(line) = component else {
             return Ok(());
         };
@@ -650,7 +643,7 @@ impl SubdivisionWorkItem {
         }
     }
 
-    fn with_traces(
+    const fn with_traces(
         shape: Shape,
         bounds: Option<Bounds>,
         coordinate_count: Option<usize>,
@@ -827,7 +820,7 @@ impl<'a> NativeSubdivisionContext<'a> {
         let lines = match &shape {
             Shape::LineString(_) => vec![shape.clone()],
             Shape::MultiLineString(_) => shape.parts().collect(),
-            Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString) => Vec::new(),
+            Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => Vec::new(),
             _ => {
                 return Err(GeometryErrorKind::Invalid(
                     "native source preparation emitted a non-lineal shape".into(),
@@ -939,7 +932,7 @@ impl<'a> NativeSubdivisionContext<'a> {
             let lines = match &item.shape {
                 Shape::LineString(line) => vec![line.clone()],
                 Shape::MultiLineString(lines) => lines.iter().cloned().collect(),
-                Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString) => {
+                Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
                     Vec::new()
                 },
                 _ => {
@@ -1124,18 +1117,6 @@ pub(crate) fn split<M: crate::geometry::ChartMetric>(
     };
     let mut native = NativeSubdivisionContext::new(&original, frame);
     split_with_context(shape, max_vertices, drop, context, &mut native, out, budget)
-}
-
-pub(crate) fn split_with_native_context<M: crate::geometry::ChartMetric>(
-    shape: Shape,
-    max_vertices: usize,
-    drop: bool,
-    context: &SourceArcContext<'_, '_, M>,
-    native: &mut NativeSubdivisionContext<'_>,
-    out: &mut Vec<Shape>,
-    budget: &mut ExpansionBudget,
-) -> Result<()> {
-    split_with_context(shape, max_vertices, drop, context, native, out, budget)
 }
 
 fn split_with_context<M: crate::geometry::ChartMetric>(

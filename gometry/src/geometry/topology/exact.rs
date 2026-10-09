@@ -322,7 +322,7 @@ fn find_chart_port(ports: &[ChartPort], point: &ExactChartPoint) -> Result<Chart
     clippy::arithmetic_side_effects,
     reason = "binary-search bounds remain within the sorted exact chart-port slice"
 )]
-fn find_chart_port_with_work<W: Work + ?Sized>(
+fn find_chart_port_with_work<W: Work>(
     ports: &[ChartPort],
     point: &ExactChartPoint,
     work: &mut W,
@@ -484,7 +484,7 @@ fn compare_cut_events(left: &CutEvent, right: &CutEvent) -> Result<Ordering> {
     })
 }
 
-fn insert_cut_event<W: Work + ?Sized>(
+fn insert_cut_event<W: Work>(
     cuts: &mut FallibleAvl<CutEvent>,
     piece: &ExactChartPiece,
     parameter: ExactRational,
@@ -534,7 +534,7 @@ fn insert_cut_event<W: Work + ?Sized>(
     Ok(())
 }
 
-fn exact_piece_contacts<W: Work + ?Sized>(
+fn exact_piece_contacts<W: Work>(
     left: &ExactChartPiece,
     right: &ExactChartPiece,
     work: &mut W,
@@ -609,11 +609,6 @@ impl ExactSourceRange {
                 .start
                 .try_add_with_work(&width.try_product_with_work(local_end, work)?, work)?,
         })
-    }
-
-    pub(super) fn try_eq_with_work(&self, other: &Self, work: &mut impl Work) -> Result<bool> {
-        Ok(self.start.try_eq_with_work(&other.start, work)?
-            && self.end.try_eq_with_work(&other.end, work)?)
     }
 }
 
@@ -862,16 +857,18 @@ impl<T> FallibleAvl<T> {
         compare: &mut impl FnMut(&T, &T) -> Result<Ordering>,
     ) -> Result<bool> {
         let mut work = Unmetered;
-        self.insert_with_work(value, &mut work, |left, right, _work| compare(left, right))
+        self.insert_with_work(value, &mut work, &mut |left, right, _work| {
+            compare(left, right)
+        })
     }
 
-    pub(super) fn insert_with_work<W: Work + ?Sized>(
+    pub(super) fn insert_with_work<W: Work>(
         &mut self,
         value: T,
         work: &mut W,
         compare: &mut impl FnMut(&T, &T, &mut W) -> Result<Ordering>,
     ) -> Result<bool> {
-        fn descend<T, W: Work + ?Sized>(
+        fn descend<T, W: Work>(
             tree: &mut FallibleAvl<T>,
             root: Option<usize>,
             value: T,
@@ -927,7 +924,7 @@ impl<T> FallibleAvl<T> {
         })
     }
 
-    pub(super) fn get_with_work<W: Work + ?Sized>(
+    pub(super) fn get_with_work<W: Work>(
         &self,
         value: &T,
         work: &mut W,
@@ -945,10 +942,7 @@ impl<T> FallibleAvl<T> {
         Ok(None)
     }
 
-    pub(super) fn in_order_indices_with_work<W: Work + ?Sized>(
-        &self,
-        work: &mut W,
-    ) -> Result<Vec<usize>> {
+    pub(super) fn in_order_indices_with_work<W: Work>(&self, work: &mut W) -> Result<Vec<usize>> {
         work.charge(u64::try_from(self.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut ordered = Vec::with_capacity(self.nodes.len());
         let mut stack = Vec::with_capacity(self.height(self.root));
@@ -1214,6 +1208,7 @@ impl ExactGeographicChartInventory {
         Self::collect_views(inputs.frame(), inputs.views().iter().copied())
     }
 
+    #[cfg(test)]
     pub(super) fn collect_views<'a>(
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
@@ -1228,14 +1223,6 @@ impl ExactGeographicChartInventory {
         work: &mut impl Work,
     ) -> Result<Self> {
         Self::collect_views_inner(frame, views, false, work)
-    }
-
-    pub(super) fn collect_views_as_set<'a>(
-        frame: GeographicFrame,
-        views: impl ExactSizeIterator<Item = ScalarGeographicView<'a>>,
-    ) -> Result<Self> {
-        let mut work = Unmetered;
-        Self::collect_views_as_set_with_work(frame, views, &mut work)
     }
 
     pub(super) fn collect_views_as_set_with_work<'a>(
@@ -1393,6 +1380,7 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
+    #[cfg(test)]
     fn push_polygon(&mut self, polygon: &Polygon, row: SourceRowId) -> Result<()> {
         let mut work = Unmetered;
         self.push_polygon_with_work(polygon, row, &mut work)
@@ -1407,9 +1395,12 @@ impl ExactGeographicChartInventory {
         let polygon_id = SourcePolygonId(
             u32::try_from(self.polygons.len()).map_err(|_| ResourceError::SizeOverflow)?,
         );
-        work.charge(
-            u64::try_from(polygon.rings().len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
+        let ring_count = polygon
+            .holes
+            .len()
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(u64::try_from(ring_count).map_err(|_| ResourceError::SizeOverflow)?)?;
         let edge_count = polygon.rings().try_fold(0_usize, |count, ring| {
             count
                 .checked_add(ring.coord_count().saturating_sub(1))
@@ -1507,6 +1498,7 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
+    #[cfg(test)]
     fn append_source_edge(
         &mut self,
         start: Point,
@@ -1687,6 +1679,7 @@ impl ExactGeographicChartInventory {
         clippy::arithmetic_side_effects,
         reason = "piece, port, quotient-node, and atom IDs index dense columns emitted by this noder"
     )]
+    #[cfg(test)]
     pub(super) fn node(&self, budget: &mut ExpansionBudget) -> Result<NodedExactChart> {
         let mut work = Unmetered;
         self.node_with_work(budget, &mut work)
@@ -1697,7 +1690,7 @@ impl ExactGeographicChartInventory {
         clippy::arithmetic_side_effects,
         reason = "piece, port, quotient-node, and atom IDs index dense columns emitted by this noder"
     )]
-    pub(super) fn node_with_work<W: Work + ?Sized>(
+    pub(super) fn node_with_work<W: Work>(
         &self,
         budget: &mut ExpansionBudget,
         work: &mut W,
@@ -2098,7 +2091,7 @@ impl ExactGeographicChartInventory {
         })
     }
 
-    fn source_quotient_keys_with_work<W: Work + ?Sized>(
+    fn source_quotient_keys_with_work<W: Work>(
         &self,
         work: &mut W,
     ) -> Result<Vec<ExactQuotientKey>> {
@@ -2148,10 +2141,7 @@ impl ExactGeographicChartInventory {
         Ok(unique)
     }
 
-    fn distinct_source_piece_count_with_work<W: Work + ?Sized>(
-        &self,
-        work: &mut W,
-    ) -> Result<usize> {
+    fn distinct_source_piece_count_with_work<W: Work>(&self, work: &mut W) -> Result<usize> {
         work.charge(u64::try_from(self.pieces.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut endpoints = Vec::with_capacity(self.pieces.len());
         for piece in &self.pieces {
@@ -2196,7 +2186,7 @@ impl ExactGeographicChartInventory {
         clippy::indexing_slicing,
         reason = "seam candidate ordinals index the parallel proxy-ID columns built by this sweep"
     )]
-    fn refine_seam_aliases<W: Work + ?Sized>(
+    fn refine_seam_aliases<W: Work>(
         &self,
         cuts: &mut FallibleAvl<CutEvent>,
         constructed_nodes: &mut FallibleAvl<ExactQuotientKey>,
@@ -2318,7 +2308,7 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
-    fn refine_piece_pair_shifted<W: Work + ?Sized>(
+    fn refine_piece_pair_shifted<W: Work>(
         &self,
         left: usize,
         right: usize,
@@ -2354,7 +2344,7 @@ impl ExactGeographicChartInventory {
         )
     }
 
-    fn refine_source_points<W: Work + ?Sized>(
+    fn refine_source_points<W: Work>(
         &self,
         cuts: &mut FallibleAvl<CutEvent>,
         compare_cuts: &mut impl FnMut(&CutEvent, &CutEvent, &mut W) -> Result<Ordering>,
@@ -2501,7 +2491,7 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
-    fn refine_piece_point<W: Work + ?Sized>(
+    fn refine_piece_point<W: Work>(
         &self,
         piece_index: usize,
         point: &ExactChartPoint,
@@ -2525,7 +2515,7 @@ impl ExactGeographicChartInventory {
         clippy::indexing_slicing,
         reason = "piece indices are generated from the admitted exact chart-piece slice"
     )]
-    fn refine_piece_pair<W: Work + ?Sized>(
+    fn refine_piece_pair<W: Work>(
         &self,
         left: usize,
         right: usize,

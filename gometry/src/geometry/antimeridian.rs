@@ -33,8 +33,8 @@ use linestring::{SeamRing, collect_points, ring_follows_seam, split_ring_at_seam
 pub(crate) use normalize::self_intersections_in_frame;
 pub(super) use normalize::validate_structure;
 pub(crate) use normalize::{
-    DerivedPointStrategy, UnwrapChartError, geographic_crossing_bounds, is_ring_data_in_frame,
+    DerivedPointStrategy, geographic_crossing_bounds, is_ring_data_in_frame,
     is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
     self_intersections_data_in_frame, unary_antimeridian_centroid, unary_antimeridian_derived,
-    unwrap_contact_chart, unwrap_coordinates, validate_data_in_frame, validate_shape_in_frame,
+    unwrap_contact_chart, validate_data_in_frame, validate_shape_in_frame,
 };

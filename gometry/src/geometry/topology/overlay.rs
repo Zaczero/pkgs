@@ -21,7 +21,7 @@ use super::q_embedding::{
 };
 #[cfg(test)]
 use super::q_embedding::{
-    NearestQCertificate, QVariableNode, certify_node_injectivity, certify_q_embedding_nearest,
+    NearestQCertificate, certify_node_injectivity, certify_q_embedding_nearest,
     node_injectivity_collisions,
 };
 use crate::error::{ResourceError, Result};
@@ -48,7 +48,7 @@ use crate::geometry::{
 };
 
 #[derive(Clone, Copy)]
-struct LineStep {
+pub(super) struct LineStep {
     span: usize,
     from_endpoint: SpanEndpoint,
     owner: usize,
@@ -75,11 +75,11 @@ enum QLineOrigin {
 
 pub(super) struct QLinePrimitive<T> {
     origin: QLineOrigin,
-    recipe_walk: RecipeWalkOwner,
-    path: T,
+    pub(super) recipe_walk: RecipeWalkOwner,
+    pub(super) path: T,
 }
 
-type PlannedQLine = QLinePrimitive<Vec<LineStep>>;
+pub(super) type PlannedQLine = QLinePrimitive<Vec<LineStep>>;
 pub(super) type DrawnQLine<'topology> = QLinePrimitive<Vec<EmittedVertex<'topology>>>;
 
 #[derive(Clone, Copy)]
@@ -139,7 +139,7 @@ pub(super) struct QEmissionPlan {
     pub(super) selected_regions: Vec<SelectedRegionFact>,
     pub(super) selected_face_roots: Vec<Option<usize>>,
     pub(super) fragment_recipes: FragmentRecipes,
-    line_paths: Vec<PlannedQLine>,
+    pub(super) line_paths: Vec<PlannedQLine>,
     pub(super) point_nodes: Vec<QNodeId>,
 }
 
@@ -185,15 +185,6 @@ pub(super) struct QEmissionDrawing<'topology> {
 }
 
 impl QEmissionDrawing<'_> {
-    pub(super) const fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-            && self.points.is_empty()
-            && match &self.polygons {
-                DrawnPolygons::WholeSphere(polygons) => polygons.is_empty(),
-                DrawnPolygons::Regions { rings, .. } => rings.is_empty(),
-            }
-    }
-
     pub(super) fn live_node_keys(
         &self,
         frame: crate::geographic::GeographicFrame,
@@ -299,7 +290,6 @@ struct CertifiedQEmission {
 }
 
 struct WrittenQDrawing {
-    axes: CoordinateAxes,
     shape: Shape,
     line_traces: Vec<super::emission::TracedLine>,
     family_state: Option<FeatureFamilyRegistry>,
@@ -309,15 +299,13 @@ fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQD
     let family_state = embedding.family_state;
     match embedding.sealed {
         SealedQDrawing::Source(source) => Ok(WrittenQDrawing {
-            axes: source.axes,
-            shape: source.sealed.into_shape()?,
+            shape: source.sealed.into_shape(),
             line_traces: source.line_traces,
             family_state,
         }),
         SealedQDrawing::Native(native) => {
             let written = write_completed_native(native)?;
             Ok(WrittenQDrawing {
-                axes: written.axes,
                 shape: written.shape,
                 line_traces: written.line_traces,
                 family_state,
@@ -326,7 +314,12 @@ fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQD
     }
 }
 
-fn resolve_q_embedding_certified<'topology, M: crate::geometry::ChartMetric, A: SearchAccount>(
+fn resolve_q_embedding_certified<
+    'topology,
+    'access,
+    M: crate::geometry::ChartMetric,
+    A: SearchAccount,
+>(
     topology: &'topology ExactGeographicTopology,
     plan: &QEmissionPlan,
     source_points: &[Option<EmittedVertex<'topology>>],
@@ -336,7 +329,7 @@ fn resolve_q_embedding_certified<'topology, M: crate::geometry::ChartMetric, A: 
     ordinates_axes: CoordinateAxes,
     strict: bool,
     operation: &'static str,
-    metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+    metric_access: Option<&'access SourceArcMetricAccess<'access, '_, M>>,
     expansion_budget: &mut ExpansionBudget,
     account: &mut A,
 ) -> Result<(super::q_embedding::QEmbeddingPass, Vec<NodeOrdinates>)> {
@@ -363,7 +356,9 @@ fn resolve_q_embedding_certified<'topology, M: crate::geometry::ChartMetric, A: 
         account,
     )? {
         SearchOutcome::Pass(pass) => pass,
-        SearchOutcome::Exhausted => return Err(account.budget_mut().unrepresentable()),
+        SearchOutcome::Exhausted => {
+            return Err(GeometryErrorKind::unrepresentable_output(operation));
+        },
     };
     Ok((pass, ordinates))
 }
@@ -465,7 +460,6 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
         (
             SealedQDrawing::Source(SealedSourceDrawing {
                 sealed,
-                axes: source.axes,
                 line_traces: Vec::new(),
             }),
             None,
@@ -558,7 +552,7 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
     let line_count = match &written.shape {
         Shape::LineString(_) => 1,
         Shape::MultiLineString(lines) => lines.len(),
-        Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString) => 0,
+        Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => 0,
         _ => {
             return Err(GeometryErrorKind::Invalid(
                 "native line preparation emitted a non-lineal shape".into(),
@@ -967,7 +961,8 @@ impl QEmissionPlan {
         work.charge(
             u64::try_from(topology.sources.edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        let mut spans_by_source = vec![Vec::<SourceLineSpan>::new(); topology.sources.edges.len()];
+        let mut spans_by_source = Vec::with_capacity(topology.sources.edges.len());
+        spans_by_source.resize_with(topology.sources.edges.len(), Vec::<SourceLineSpan>::new);
         for (span_index, span) in q.spans.iter().enumerate() {
             work.charge(1)?;
             for (owner_index, owner) in span.owners.iter().enumerate() {
@@ -1041,7 +1036,7 @@ impl QEmissionPlan {
                 }
                 let zero = ExactRational::zero();
                 let one = ExactRational::one();
-                let mut covered_to = zero.clone();
+                let mut covered_to = zero;
                 for source_span in spans.iter() {
                     work.charge(1)?;
                     if source_span.low.try_cmp(&covered_to)?.is_gt() {
@@ -1172,7 +1167,6 @@ impl QEmissionPlan {
         )?;
         Ok(SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
-            axes,
         })
     }
 
@@ -1214,7 +1208,6 @@ impl QEmissionPlan {
                 shape,
                 literal_uses,
             ),
-            axes,
             line_traces,
         })
     }
@@ -1502,7 +1495,7 @@ impl QEmissionPlan {
                                     "whole-sphere source reuse ring is unknown".into(),
                                 )
                             })?;
-                        if source_ring.polygon != source_polygon.id
+                        if source_ring.polygon.0 as usize != polygon_index
                             || drawn.hole != source_ring.hole
                             || drawn.recipe_walk != RecipeWalkOwner::SourceRing(ring_index)
                             || !source_ring_reuse_matches(
@@ -1950,31 +1943,22 @@ fn push_source_edge_recipe(
         crate::geometry::tessellation::exact::ExactDyadic::from_i64(lift),
     );
     let mut displacement = native_delta.try_add(&period.try_product(&period_lift)?)?;
-    let (endpoints, range, directed_lift) = if reverse {
+    let (endpoints, range) = if reverse {
         displacement = ExactRational::zero().try_subtract(&displacement)?;
-        (
-            [ports[1], ports[0]],
-            ExactSourceRange {
-                start: one,
-                end: zero,
-            },
-            lift.checked_neg().ok_or(ResourceError::SizeOverflow)?,
-        )
+        ([ports[1], ports[0]], ExactSourceRange {
+            start: one,
+            end: zero,
+        })
     } else {
-        (
-            ports,
-            ExactSourceRange {
-                start: zero,
-                end: one,
-            },
-            lift,
-        )
+        (ports, ExactSourceRange {
+            start: zero,
+            end: one,
+        })
     };
     recipes.push_source_edge(
         endpoints,
         edge.id,
         range,
-        directed_lift,
         displacement,
         SelectedUse::AreaBoundary,
         work,
@@ -3256,14 +3240,6 @@ fn emitted_point<'topology>(
     })
 }
 
-fn round_canonical_longitude(
-    frame: crate::geographic::GeographicFrame,
-    longitude: &ExactRational,
-) -> Result<f64> {
-    let axis = frame.longitude();
-    crate::geometry::exact_arith::round_native_longitude(axis, longitude)
-}
-
 fn push_line_part<'topology>(
     output: &mut Vec<DrawnQLine<'topology>>,
     origin: QLineOrigin,
@@ -3402,7 +3378,7 @@ fn with_assigned_source_vertex_axes(
     )
 }
 
-fn source_literal_image(
+const fn source_literal_image(
     vertex: EmittedVertex<'_>,
     source_ports: Option<&[Option<ExactChartPoint>]>,
 ) -> QSourceImage {
@@ -3476,9 +3452,7 @@ fn write_source_path(
         images.push(source_literal_image(first, source_ports));
     }
     for (edge_index, pair) in vertices.array_windows::<2>().enumerate() {
-        let [_, end] = pair else {
-            unreachable!("array_windows yields adjacent source path vertices");
-        };
+        let [_, end] = pair;
         work.charge(1)?;
         if let (Some(publication), Some(walk)) = (publication, walk) {
             let recipe = *walk.fragments.get(edge_index).ok_or_else(|| {
@@ -3633,15 +3607,13 @@ fn write_drawing(
                     if source_ring.hole {
                         holes.push(ring);
                         hole_locations.push(locations);
-                    } else {
-                        if shell.replace(ring).is_some()
-                            || shell_locations.replace(locations).is_some()
-                        {
-                            return Err(GeometryErrorKind::Invalid(
-                                "Q source polygon has more than one shell".into(),
-                            )
-                            .into());
-                        }
+                    } else if shell.replace(ring).is_some()
+                        || shell_locations.replace(locations).is_some()
+                    {
+                        return Err(GeometryErrorKind::Invalid(
+                            "Q source polygon has more than one shell".into(),
+                        )
+                        .into());
                     }
                 }
                 let shell = shell.ok_or_else(|| {
@@ -4224,7 +4196,7 @@ fn draw_cycle_vertices<'topology>(
     for_each_q_cycle_vertex(
         topology,
         &cycle.darts,
-        |vertex| {
+        |vertex, work| {
             let owner_index = area_owner_index(topology, vertex.span, work)?;
             vertices.push(emitted_point(
                 topology,
@@ -4402,6 +4374,7 @@ fn draw_points<'topology>(
     Ok(output)
 }
 
+#[cfg(test)]
 fn source_point_coordinates(
     topology: &ExactGeographicTopology,
 ) -> Result<Vec<Option<EmittedVertex<'_>>>> {
@@ -4455,6 +4428,7 @@ fn source_point_coordinates_with_work<'topology>(
     Ok(source_points)
 }
 
+#[cfg(test)]
 fn boundary_source_points(
     topology: &ExactGeographicTopology,
     row: SourceRowId,
@@ -4601,7 +4575,7 @@ mod tests {
         reason = "Result-returning tests use assertions for behavior and ? for fallible setup"
     )]
 
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeSet;
 
     use super::*;
     use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
@@ -4815,9 +4789,7 @@ mod tests {
 
         let mut cut_join = None;
         for pair in line_path.path.array_windows::<2>() {
-            let [left, right] = pair else {
-                unreachable!("array_windows yields adjacent line steps");
-            };
+            let [left, right] = pair;
             let left_span = topology
                 .q
                 .spans
@@ -5014,7 +4986,9 @@ mod tests {
         let metric_accesses = std::cell::Cell::new(0_usize);
         let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
             metric_accesses.set(metric_accesses.get().wrapping_add(1));
-            Err(crate::crs::CrsError::invalid("unexpected source-arc metric request").into())
+            Err(crate::crs::CrsError::invalid(
+                "unexpected source-arc metric request",
+            ))
         };
 
         let mut work = crate::geometry::Unmetered;
@@ -5523,13 +5497,13 @@ mod tests {
             &mut budget,
         )? {
             NearestQCertificate::Pass(output) => output,
-            NearestQCertificate::Repair(_) => {
+            NearestQCertificate::SearchRequired => {
                 return Err(GeometryErrorKind::Invalid(
                     "the midpoint tie fixture should certify at nearest-even".into(),
                 )
                 .into());
             },
-            NearestQCertificate::Unrepresentable { .. } => {
+            NearestQCertificate::Unrepresentable => {
                 return Err(GeometryErrorKind::Invalid(
                     "the midpoint tie fixture should be representable at nearest-even".into(),
                 )
@@ -5537,8 +5511,8 @@ mod tests {
             },
         };
         let expected = match output.sealed {
-            SealedQDrawing::Source(source) => source.sealed.into_shape()?,
-            SealedQDrawing::Native(native) => native.sealed.into_shape()?,
+            SealedQDrawing::Source(source) => source.sealed.into_shape(),
+            SealedQDrawing::Native(native) => native.sealed.into_shape(),
         };
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
@@ -5633,12 +5607,7 @@ mod tests {
         }
 
         let written = write_certified_q_emission(certified)?;
-        let expected = build_certified_overlay_shape_with_axes(
-            written.points,
-            written.lines,
-            written.polygons,
-            written.axes,
-        )?;
+        let expected = written.shape;
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
             OverlayOp::Intersection,
@@ -6280,7 +6249,7 @@ mod tests {
         let embedding =
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding, CoordinateAxes::XY)?;
+        let result = publish_q_overlay(embedding)?;
         assert_eq!(
             crate::io::to_wkb(&result, None, false)?,
             crate::io::to_wkb(&source, None, false)?,
@@ -6331,8 +6300,7 @@ mod tests {
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())
                 .expect("source axis-band ring is representable");
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding, CoordinateAxes::XY)
-            .expect("publish the source axis-band ring");
+        let result = publish_q_overlay(embedding).expect("publish the source axis-band ring");
         assert_eq!(
             crate::io::to_wkb(&result, None, false).expect("serialize Q result"),
             crate::io::to_wkb(&source, None, false).expect("serialize source band")
@@ -6400,7 +6368,7 @@ mod tests {
                 .enumerate()
                 .filter_map(|(index, (before, after))| (before != after).then_some(index))
                 .collect::<Vec<_>>();
-            let result = publish_q_overlay(embedding, CoordinateAxes::XY)?;
+            let result = publish_q_overlay(embedding)?;
             let issue = crate::geometry::validate_shape_in_frame(
                 &result,
                 crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
@@ -6444,7 +6412,7 @@ mod tests {
             OverlayOp::Union.name(),
         )?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding, CoordinateAxes::XY)?;
+        let result = publish_q_overlay(embedding)?;
         assert!(
             crate::geometry::validate_shape_in_frame(
                 &result,
@@ -6538,7 +6506,9 @@ mod tests {
         );
         let mut witness = QCoordinates {
             node: coordinates.node.clone(),
+            longitude_periods: coordinates.longitude_periods.clone(),
             pole_port_longitude: coordinates.pole_port_longitude.clone(),
+            pole_port_periods: coordinates.pole_port_periods.clone(),
         };
         for node in &constructed {
             let xy = witness
@@ -6645,7 +6615,9 @@ mod tests {
             }
             let mut swapped = QCoordinates {
                 node: witness.node.clone(),
+                longitude_periods: witness.longitude_periods.clone(),
                 pole_port_longitude: witness.pole_port_longitude.clone(),
+                pole_port_periods: witness.pole_port_periods.clone(),
             };
             swapped.node.swap(left.0 as usize, right.0 as usize);
             let Ok(mut live) = plan.live_node_keys(&topology, &swapped, &source_points) else {
@@ -6749,7 +6721,7 @@ mod tests {
                 .x
                 .try_add(&ExactRational::from_f64(frame.longitude().period()))
                 .unwrap(),
-            original.y.clone(),
+            original.y,
         );
         let shifted_key = emitted_node_key(
             frame,
@@ -6953,16 +6925,12 @@ mod tests {
             "geographic boundary",
             &mut budget,
         )?;
-        let NearestQCertificate::Repair(seeds) = certificate else {
+        let NearestQCertificate::SearchRequired = certificate else {
             return Err(GeometryErrorKind::Invalid(
                 "the full boundary certificate accepted the reversed hole triangle".into(),
             )
             .into());
         };
-        assert!(
-            seeds.contains(&QVariableNode::Source(apex)),
-            "face/host blame should seed the moved apex: {seeds:?}"
-        );
 
         let accepted = resolve_q_embedding_xy(
             &topology,
@@ -7054,11 +7022,27 @@ mod tests {
             "the searched boundary drawing must restore the exact area face/host structure"
         );
         let written = write_certified_q_emission(embedding)?;
+        let mut line_members = 0_usize;
+        let mut polygon_members = 0_usize;
+        written
+            .shape
+            .try_for_each_component(&mut |component| -> Result<()> {
+                match component {
+                    crate::geometry::Component::LineString(_) => {
+                        line_members = line_members.saturating_add(1);
+                    },
+                    crate::geometry::Component::Polygon(_) => {
+                        polygon_members = polygon_members.saturating_add(1);
+                    },
+                    crate::geometry::Component::Point(_) => {},
+                }
+                Ok(())
+            })?;
         assert!(
-            !written.lines.is_empty(),
+            line_members > 0,
             "the repaired areal boundary publishes linework"
         );
-        assert!(written.polygons.is_empty());
+        assert_eq!(polygon_members, 0);
         Ok(())
     }
 
@@ -7340,7 +7324,7 @@ mod tests {
             .ok_or_else(|| GeometryErrorKind::Invalid("source ring slot is unknown".into()))?
             .y = -0.0;
         let shell = Ring::try_from_closed(CoordSeq::try_from_points(&coordinates)?)?;
-        let mutated = Shape::Polygon(Polygon::new(shell, polygon.holes.clone()));
+        let mutated = Shape::Polygon(Polygon::new(shell, polygon.holes.to_vec()));
         let LiteralCheck::Reject(rejected) = bind_source_shape(&topology, mutated, layout)? else {
             panic!("a final K0 source-ring sign-bit mutation must fail binding");
         };

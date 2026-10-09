@@ -104,6 +104,7 @@ pub(in crate::geometry) trait RayPoints {
     /// Sort items by their points' coordinate on `axis`, reporting each
     /// adjacent pair at one coordinate to `equal`. The rounded coordinate
     /// sorts; exact points break only runs of equal rounded coordinates.
+    #[cfg(test)]
     fn sort_by_axis<T: Copy, P: Fn(T) -> u32, E: FnMut(T, T) -> Result<()>>(
         &self,
         items: &mut [T],
@@ -119,12 +120,7 @@ pub(in crate::geometry) trait RayPoints {
         clippy::indexing_slicing,
         reason = "runs advance within the keyed permutation created from this exact item slice"
     )]
-    fn sort_by_axis_with_work<
-        T: Copy,
-        P: Fn(T) -> u32,
-        E: FnMut(T, T) -> Result<()>,
-        W: Work + ?Sized,
-    >(
+    fn sort_by_axis_with_work<T: Copy, P: Fn(T) -> u32, E: FnMut(T, T) -> Result<()>, W: Work>(
         &self,
         items: &mut [T],
         axis: Axis,
@@ -307,7 +303,7 @@ impl RayPoints for EmittedPoints<'_> {
     }
 }
 
-pub(in crate::geometry) fn compare_departures_with_work<R: RayPoints, W: Work + ?Sized>(
+pub(in crate::geometry) fn compare_departures_with_work<R: RayPoints + ?Sized, W: Work + ?Sized>(
     points: &R,
     origin: u32,
     left: u32,
@@ -355,7 +351,7 @@ pub(in crate::geometry) fn compare_departures_with_work<R: RayPoints, W: Work + 
 /// sequence locates and updates each edge by rank using the exact left-above
 /// and left-below orientation comparisons. Sorting and status work cost
 /// O((n + q) log(n + q)); no update shifts the remaining edges.
-pub(in crate::geometry) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
+pub(in crate::geometry) fn shoot_left<R: RayPoints + ?Sized, E: Fn(usize) -> [u32; 2]>(
     points: &R,
     edge_count: usize,
     edge: E,
@@ -372,9 +368,9 @@ pub(in crate::geometry) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
 }
 
 pub(in crate::geometry) fn shoot_left_with_work<
-    R: RayPoints,
+    R: RayPoints + ?Sized,
     E: Fn(usize) -> Result<[u32; 2]>,
-    W: Work + ?Sized,
+    W: Work,
 >(
     points: &R,
     edge_count: usize,
@@ -394,7 +390,7 @@ pub(in crate::geometry) fn shoot_left_with_work<
     reason = "emitted node IDs index this face graph; its face-side labels and edge ordinals are paired"
 )]
 pub(in crate::geometry) fn visit_component_faces<
-    R: RayPoints,
+    R: RayPoints + ?Sized,
     E: Fn(usize) -> [u32; 2],
     F: Fn(usize) -> [u32; 2],
     V: FnMut(u32, Option<usize>) -> ControlFlow<()>,
@@ -553,9 +549,9 @@ pub(super) fn shoot_left_vector_reference<R: RayPoints, E: Fn(usize) -> [u32; 2]
 )]
 fn shoot_left_with_status<
     S: SweepStatus,
-    R: RayPoints,
+    R: RayPoints + ?Sized,
     E: Fn(usize) -> Result<[u32; 2]>,
-    W: Work + ?Sized,
+    W: Work,
 >(
     points: &R,
     edge_count: usize,
@@ -740,6 +736,7 @@ fn shoot_left_with_status<
     clippy::indexing_slicing,
     reason = "binary-search middle is strictly below high, which starts at items.len()"
 )]
+#[cfg(test)]
 fn first_not_left<T: Copy, L: FnMut(T) -> Result<bool>>(items: &[T], mut left: L) -> Result<usize> {
     let mut work = Unmetered;
     first_not_left_with_work(items, &mut work, |item, _work| left(item))
@@ -749,7 +746,7 @@ fn first_not_left<T: Copy, L: FnMut(T) -> Result<bool>>(items: &[T], mut left: L
     clippy::indexing_slicing,
     reason = "binary-search middle is strictly below high, which starts at items.len()"
 )]
-fn first_not_left_with_work<T: Copy, W: Work + ?Sized, L>(
+fn first_not_left_with_work<T: Copy, W: Work, L>(
     items: &[T],
     work: &mut W,
     mut left: L,

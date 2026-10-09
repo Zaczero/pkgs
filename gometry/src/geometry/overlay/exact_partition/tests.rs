@@ -1,6 +1,6 @@
 use super::*;
 use crate::geometry::embedding_search::{
-    ClassAssignment, GlobalCheck, Problem, Search, SearchAccount, Work,
+    ClassAssignment, GlobalCheck, Problem, Search, SearchAccount,
 };
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;

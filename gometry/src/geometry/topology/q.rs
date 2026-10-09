@@ -2,14 +2,13 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
-use std::ops::{ControlFlow, Range};
+use std::ops::Range;
 
 use super::exact::{
-    ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactSourceEdge,
-    ExactSourceRange, FallibleAvl, NodedExactChart, QuotientNodeId, SourceEdgeId, SourceEdgeKind,
-    SourcePolygonId, SourceRingId, SourceRowId, point_on_exact_segment,
-    point_on_exact_segment_with_work, vector_cross, vector_cross_with_work, vector_difference,
-    vector_difference_with_work,
+    ExactChartPoint, ExactGeographicChartInventory, ExactQuotientKey, ExactSourceRange,
+    FallibleAvl, NodedExactChart, QuotientNodeId, SourceEdgeId, SourceEdgeKind, SourcePolygonId,
+    SourceRingId, SourceRowId, point_on_exact_segment, point_on_exact_segment_with_work,
+    vector_cross, vector_cross_with_work, vector_difference, vector_difference_with_work,
 };
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, GeographicFrame};
@@ -3757,221 +3756,6 @@ impl ExactGeographicQ {
         })
     }
 
-    pub(super) fn global_face_at_point(
-        &self,
-        frame: GeographicFrame,
-        source_point: &ExactChartPoint,
-    ) -> Result<Option<GlobalFaceId>> {
-        let point = lift_query_point(frame, &self.cut, source_point)?;
-        let cut_east = self
-            .cut
-            .try_add(&ExactRational::from_f64(frame.longitude().period()))?;
-        let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
-        let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
-        let interval_face = |latitude: &ExactRational| -> Result<GlobalFaceId> {
-            let interval = self.cut_index.interval_at(latitude, 1)?;
-            self.cut_interval_faces
-                .get(interval.id.0 as usize)
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q cut interval has no global face".into()).into()
-                })
-        };
-        if point.y.try_cmp(&north)?.is_eq() {
-            return interval_face(&north).map(Some);
-        }
-        if point.y.try_cmp(&south)?.is_eq() {
-            return interval_face(&south).map(Some);
-        }
-        let mut face = interval_face(&point.y)?;
-        if point.x.try_cmp(&self.cut)?.is_eq() || point.x.try_cmp(&cut_east)?.is_eq() {
-            return Ok(Some(face));
-        }
-        let ray_start = ExactChartPoint::from_rationals(self.cut.clone(), point.y.clone());
-        let query = outward_segment_proxy(&ray_start, &point)?;
-        let mut crossings = Vec::<(ExactRational, usize)>::new();
-        let mut failure = None;
-        let mut boundary = false;
-        self.spatial_index
-            .for_each_candidate(query, |item| match item {
-                QSpatialItem::Span(span_index) => {
-                    let Some(span) = self.spans.get(span_index) else {
-                        failure = Some(
-                            GeometryErrorKind::Invalid(
-                                "Q face query references an unknown span".into(),
-                            )
-                            .into(),
-                        );
-                        return ControlFlow::Break(());
-                    };
-                    let Some(start) = self.ports.get(span.ports[0].0 as usize) else {
-                        failure = Some(
-                            GeometryErrorKind::Invalid("Q face-query span has no start".into())
-                                .into(),
-                        );
-                        return ControlFlow::Break(());
-                    };
-                    let Some(end) = self.ports.get(span.ports[1].0 as usize) else {
-                        failure = Some(
-                            GeometryErrorKind::Invalid("Q face-query span has no end".into())
-                                .into(),
-                        );
-                        return ControlFlow::Break(());
-                    };
-                    match point_on_exact_segment(&point, &start.point, &end.point) {
-                        Ok(true) => {
-                            boundary = true;
-                            return ControlFlow::Break(());
-                        },
-                        Ok(false) => {},
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    }
-                    let order = match start.point.y.try_cmp(&end.point.y) {
-                        Ok(order) => order,
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                    if order.is_eq() {
-                        return ControlFlow::Continue(());
-                    }
-                    let (low, high) = if order.is_lt() {
-                        (&start.point, &end.point)
-                    } else {
-                        (&end.point, &start.point)
-                    };
-                    let low_order = match point.y.try_cmp(&low.y) {
-                        Ok(order) => order,
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                    let high_order = match point.y.try_cmp(&high.y) {
-                        Ok(order) => order,
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                    if !low_order.is_gt() || !high_order.is_lt() {
-                        return ControlFlow::Continue(());
-                    }
-                    let delta_y = match high.y.try_subtract(&low.y) {
-                        Ok(delta) => delta,
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                    let delta_x = match high.x.try_subtract(&low.x) {
-                        Ok(delta) => delta,
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                    let hit_x = match point.y.try_subtract(&low.y).and_then(|offset| {
-                        delta_x
-                            .try_product(&offset.try_quotient(&delta_y)?)
-                            .and_then(|scaled| low.x.try_add(&scaled))
-                    }) {
-                        Ok(longitude) => longitude,
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    };
-                    match hit_x.try_cmp(&self.cut) {
-                        Ok(order) if order.is_gt() => {},
-                        Ok(_) => return ControlFlow::Continue(()),
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    }
-                    match hit_x.try_cmp(&point.x) {
-                        Ok(Ordering::Less) => crossings.push((hit_x, span_index)),
-                        Ok(Ordering::Equal) => {
-                            boundary = true;
-                            return ControlFlow::Break(());
-                        },
-                        Ok(Ordering::Greater) => {},
-                        Err(error) => {
-                            failure = Some(error);
-                            return ControlFlow::Break(());
-                        },
-                    }
-                },
-                QSpatialItem::Point(port_id) => {
-                    let Some(port) = self.ports.get(port_id.0 as usize) else {
-                        failure = Some(
-                            GeometryErrorKind::Invalid(
-                                "Q face query references an unknown port".into(),
-                            )
-                            .into(),
-                        );
-                        return ControlFlow::Break(());
-                    };
-                    match port.point.same_position(&point) {
-                        Ok(true) => {
-                            boundary = true;
-                            ControlFlow::Break(())
-                        },
-                        Ok(false) => ControlFlow::Continue(()),
-                        Err(error) => {
-                            failure = Some(error);
-                            ControlFlow::Break(())
-                        },
-                    }
-                },
-            })?;
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        if boundary {
-            return Ok(None);
-        }
-        try_sort_by(&mut crossings, |left, right| left.0.try_cmp(&right.0))?;
-        for adjacent in crossings.windows(2) {
-            let [(left, _), (right, _)] = adjacent else {
-                unreachable!("windows(2) contains adjacent Q ray crossings");
-            };
-            if left.try_cmp(right)?.is_eq() {
-                return Ok(None);
-            }
-        }
-        for (_, span_index) in crossings {
-            let span = self
-                .spans
-                .get(span_index)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q face-ray span is unknown".into()))?;
-            let faces = self
-                .span_global_faces
-                .get(span_index)
-                .and_then(|faces| *faces)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q face-ray span has no global face pair".into())
-                })?;
-            let start = self.ports.get(span.ports[0].0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q face-ray span has no start port".into())
-            })?;
-            let end = self.ports.get(span.ports[1].0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q face-ray span has no end port".into())
-            })?;
-            face = if start.point.y.try_cmp(&end.point.y)?.is_lt() {
-                faces[1]
-            } else {
-                faces[0]
-            };
-        }
-        Ok(Some(face))
-    }
-
     fn locate_point(
         &self,
         topology: &ExactGeographicTopology,
@@ -4505,10 +4289,6 @@ pub(super) enum CanonicalQNodeKey<'a> {
 }
 
 impl ExactGeographicTopology {
-    pub(super) fn into_source_edges(self) -> Vec<ExactSourceEdge> {
-        self.sources.edges
-    }
-
     pub(super) fn canonical_node_key(&self, node: QNodeId) -> Result<CanonicalQNodeKey<'_>> {
         let q_node = self.q.nodes.get(node.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("canonical Q coordinate references an unknown node".into())
@@ -4542,15 +4322,6 @@ impl ExactGeographicTopology {
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
         let mut work = crate::geometry::Unmetered;
         Self::from_views_with_work_and_expansion_budget(frame, views, &mut budget, &mut work)
-    }
-
-    pub(crate) fn from_views_with_expansion_budget<'a>(
-        frame: GeographicFrame,
-        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
-        budget: &mut ExpansionBudget,
-    ) -> Result<Self> {
-        let mut work = crate::geometry::Unmetered;
-        Self::from_views_with_work_and_expansion_budget(frame, views, budget, &mut work)
     }
 
     pub(crate) fn from_views_with_work_and_expansion_budget<'a>(
@@ -6964,6 +6735,19 @@ pub(super) fn compare_qnode_keys(left: &QNodeKey, right: &QNodeKey) -> Result<Or
     }
 }
 
+pub(super) fn compare_qnode_keys_with_work(
+    left: &QNodeKey,
+    right: &QNodeKey,
+    work: &mut impl Work,
+) -> Result<Ordering> {
+    match (left, right) {
+        (QNodeKey::Source(left), QNodeKey::Source(right)) => Ok(left.cmp(right)),
+        (QNodeKey::Source(_), QNodeKey::Cut(_)) => Ok(Ordering::Less),
+        (QNodeKey::Cut(_), QNodeKey::Source(_)) => Ok(Ordering::Greater),
+        (QNodeKey::Cut(left), QNodeKey::Cut(right)) => left.try_cmp_with_work(right, work),
+    }
+}
+
 fn canonical_source_node_key(chart: &NodedExactChart, node: QuotientNodeId) -> Result<QNodeKey> {
     if chart.nodes.get(node.0 as usize).is_none() {
         return Err(GeometryErrorKind::Invalid(
@@ -7399,8 +7183,7 @@ mod tests {
     use crate::geometry::overlay::{OverlayOp, Strictness, overlay_all};
     use crate::geometry::topology::overlay::exact_geographic_overlay;
     use crate::geometry::{
-        CoordSeq, CoordinateAxes, ExpansionBudget, LineSeq, MultiMember, MultiPolygon, Polygon,
-        Ring,
+        CoordSeq, CoordinateAxes, LineSeq, MultiMember, MultiPolygon, Polygon, Ring,
     };
 
     fn degrees() -> GeographicFrame {

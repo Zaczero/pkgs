@@ -1349,10 +1349,13 @@ impl GlobalFaces {
         work: &mut W,
     ) -> Result<Vec<Vec<u32>>> {
         let slots = topology.targets.len();
+        let walk_count = topology.face_starts.len().checked_sub(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("indexed graph face starts have no sentinel".into())
+        })?;
         if topology.face_of.len() != slots
             || topology.owners.len() != slots
             || topology.twins.len() != slots
-            || self.walk_faces.len() != topology.face_of.len()
+            || self.walk_faces.len() != walk_count
             || topology.starts.len()
                 != topology
                     .component_of

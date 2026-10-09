@@ -281,7 +281,7 @@ impl<'a> PointArena<'a> {
         self.order_along_with_work(segment, items, point, equal, &mut work)
     }
 
-    pub(in crate::geometry) fn order_along_with_work<T: Copy, W: Work + ?Sized>(
+    pub(in crate::geometry) fn order_along_with_work<T: Copy, W: Work>(
         &self,
         segment: Segment,
         items: &mut [T],

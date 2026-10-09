@@ -701,6 +701,7 @@ impl EvaluationBudget {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(in crate::geometry) const fn constructed(&self) -> usize {
         self.constructed
     }

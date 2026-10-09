@@ -44,16 +44,14 @@ pub(crate) fn resolve_source_root<M: ChartMetric>(
     fraction: &mut Option<f64>,
     work: &mut impl Work,
 ) -> Result<NodeOrdinates> {
-    let request =
-        SourceArcRequest::new_with_work(frame, source, axes, parameter, || Ok(longitude), work)?;
+    let request = SourceArcRequest::new(frame, source, axes, parameter, || Ok(longitude))?;
     source_arc_ordinates(
         &request,
         || match metric_access {
             Some(access) => access(),
             None => Err(crate::crs::CrsError::invalid(
                 "geographic source-ordinate carry requires the operation's CRS metric authority",
-            )
-            .into()),
+            )),
         },
         state,
         fraction,
@@ -71,6 +69,7 @@ pub(crate) struct RootRange {
 }
 
 impl RootRange {
+    #[cfg(test)]
     pub(crate) fn whole(root: RootId) -> Self {
         Self {
             root,
@@ -81,20 +80,7 @@ impl RootRange {
         }
     }
 
-    pub(crate) fn from_bounds(
-        root: RootId,
-        start: ExactRational,
-        end: ExactRational,
-    ) -> Result<Self> {
-        Self::from_mapped(
-            root,
-            start,
-            end,
-            ExactRational::zero(),
-            ExactRational::one(),
-        )
-    }
-
+    #[cfg(test)]
     pub(crate) fn from_mapped(
         root: RootId,
         source_start: ExactRational,
@@ -143,6 +129,23 @@ impl RootRange {
         })
     }
 
+    pub(crate) fn try_eq_with_work(&self, other: &Self, work: &mut impl Work) -> Result<bool> {
+        if self.root != other.root {
+            return Ok(false);
+        }
+        Ok(self
+            .source_start
+            .try_eq_with_work(&other.source_start, work)?
+            && self.source_end.try_eq_with_work(&other.source_end, work)?
+            && self
+                .producer_start
+                .try_eq_with_work(&other.producer_start, work)?
+            && self
+                .producer_end
+                .try_eq_with_work(&other.producer_end, work)?)
+    }
+
+    #[cfg(test)]
     pub(crate) fn point(
         root: RootId,
         source_parameter: ExactRational,
@@ -169,6 +172,7 @@ impl RootRange {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn compose(
         &self,
         local_start: &ExactRational,
@@ -287,14 +291,6 @@ impl RootRange {
         )
     }
 
-    pub(crate) fn parameter_at(
-        &self,
-        producer_parameter: &ExactRational,
-    ) -> Result<Option<ExactRational>> {
-        let mut work = crate::geometry::Unmetered;
-        self.parameter_at_with_work(producer_parameter, &mut work)
-    }
-
     pub(crate) fn parameter_at_with_work(
         &self,
         producer_parameter: &ExactRational,
@@ -343,6 +339,7 @@ impl RootRange {
         )?))
     }
 
+    #[cfg(test)]
     pub(crate) fn request_at(
         &self,
         producer_parameter: &ExactRational,
@@ -385,11 +382,6 @@ impl RootRange {
         &self.producer_end
     }
 
-    pub(crate) fn is_point_support(&self) -> Result<bool> {
-        let mut work = crate::geometry::Unmetered;
-        self.is_point_support_with_work(&mut work)
-    }
-
     pub(crate) fn is_point_support_with_work(&self, work: &mut impl Work) -> Result<bool> {
         Ok(self
             .source_start
@@ -409,11 +401,6 @@ pub(crate) struct RootRequest {
 }
 
 impl RootRequest {
-    pub(crate) fn new(root: RootId, parameter: ExactRational) -> Result<Self> {
-        let mut work = crate::geometry::Unmetered;
-        Self::new_with_work(root, parameter, &mut work)
-    }
-
     pub(crate) fn new_with_work(
         root: RootId,
         parameter: ExactRational,
@@ -527,7 +514,7 @@ impl RootRequestTable {
         })?;
 
         work.charge(u64::try_from(request_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut records = Vec::with_capacity(request_count);
+        let mut records: Vec<UniqueRootRequest> = Vec::with_capacity(request_count);
         let mut roots = Vec::new();
         work.charge(u64::try_from(request_count).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut row_requests = vec![None; request_count];
@@ -654,7 +641,7 @@ impl RootRequestTable {
         })
     }
 
-    pub(crate) fn root_count(&self) -> usize {
+    pub(crate) const fn root_count(&self) -> usize {
         self.roots.len()
     }
 
@@ -747,13 +734,14 @@ impl TraceRows {
             })
     }
 
-    pub(crate) fn edge_count(&self) -> usize {
+    pub(crate) const fn edge_count(&self) -> usize {
         self.offsets
             .len()
             .checked_sub(1)
             .expect("TraceRows has its initial zero offset")
     }
 
+    #[cfg(test)]
     pub(crate) fn owner_count(&self) -> usize {
         *self
             .offsets
@@ -805,29 +793,6 @@ impl TraceRows {
         work: &mut impl Work,
     ) -> Result<Vec<RootRequest>> {
         Ok(unique_requests_at(self.sample_row(sample)?, &ExactRational::zero(), work)?.0)
-    }
-
-    pub(crate) fn resolve_at<M: ChartMetric, C: RootCatalog>(
-        &self,
-        edge: usize,
-        local: &ExactRational,
-        roots: &C,
-        axes: CoordinateAxes,
-        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
-        work: &mut impl Work,
-    ) -> Result<NodeOrdinates> {
-        let requests = self.requests_at(edge, local, work)?;
-        resolve_request_rows(
-            &[RequestRowInput { axes, requests }],
-            roots,
-            metric_access,
-            work,
-        )?
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            GeometryErrorKind::Invalid("source request resolution omitted its row".into()).into()
-        })
     }
 }
 
@@ -1150,7 +1115,7 @@ mod tests {
                 axes: CoordinateAxes::XYZM,
                 requests: vec![RootRequest {
                     root,
-                    parameter: half.clone(),
+                    parameter: half,
                 }],
             },
             RequestRowInput {
@@ -1254,16 +1219,14 @@ mod tests {
 
     #[test]
     fn point_producer_support_cannot_cover_a_source_interval() -> Result<()> {
-        assert!(
-            RootRange::from_mapped(
-                RootId::from_index(8),
-                ExactRational::zero(),
-                ExactRational::one(),
-                ExactRational::from_f64(0.5),
-                ExactRational::from_f64(0.5),
-            )
-            .is_err()
-        );
+        RootRange::from_mapped(
+            RootId::from_index(8),
+            ExactRational::zero(),
+            ExactRational::one(),
+            ExactRational::from_f64(0.5),
+            ExactRational::from_f64(0.5),
+        )
+        .unwrap_err();
         Ok(())
     }
 
@@ -1397,7 +1360,7 @@ mod tests {
             half.clone(),
             one.clone(),
             half.clone(),
-            one.clone(),
+            one,
         )?;
         let mut rows = TraceRowsBuilder::new();
         rows.push_row([left.clone(), right.clone()])?;

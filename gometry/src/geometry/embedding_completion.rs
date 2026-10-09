@@ -15,9 +15,6 @@ use crate::geometry::overlay::{
     graph_global_faces_with_work,
 };
 use crate::geometry::segments::try_sort_by_with_work;
-use crate::geometry::storage::{
-    PackedRow, PackedStorage, line_logical_len, point_logical_len, polygon_logical_len,
-};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::{
     ExactChartPoint, exact_segments_intersect, vector_cross, vector_difference,
@@ -38,6 +35,7 @@ pub(super) struct ExactPoints {
 }
 
 impl ExactPoints {
+    #[cfg(test)]
     pub(super) fn from_exact(exact: Vec<ExactChartPoint>, work: &mut impl Work) -> Result<Self> {
         work.charge(u64::try_from(exact.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut rounded = Vec::with_capacity(exact.len());
@@ -221,7 +219,7 @@ impl LogicalLayout {
         Ok(Self { areal_walks })
     }
 
-    pub(super) fn has_areal_walks(&self) -> bool {
+    pub(super) const fn has_areal_walks(&self) -> bool {
         !self.areal_walks.is_empty()
     }
 }
@@ -241,21 +239,9 @@ pub(super) struct ArealProof {
     signature: ArealSignature,
 }
 
-impl ArealProof {
-    pub(super) fn host_by_vertex(&self) -> &[u32] {
-        &self.signature.host_by_vertex
-    }
-}
-
 pub(super) struct AdmittedLayout {
     layout: LogicalLayout,
     pub(super) areal: Option<ArealProof>,
-}
-
-impl AdmittedLayout {
-    pub(super) fn has_areal_walks(&self) -> bool {
-        self.areal.is_some()
-    }
 }
 
 /// Admit identities and all-graph contacts first. Dimension-specific fan and
@@ -271,13 +257,6 @@ pub(super) struct AdmittedGraph {
 
 pub(super) struct AdmittedCandidate<'a> {
     pub(super) points: &'a ExactPoints,
-    pub(super) topology: IndexedTopology,
-    pub(super) edge_of_slot: Vec<u32>,
-    pub(super) areal: Option<ArealHostProof>,
-}
-
-pub(super) struct ArealHostProof {
-    pub(super) host_by_vertex: Vec<u32>,
 }
 
 pub(super) fn exact_chord_fraction(
@@ -386,34 +365,10 @@ fn reorder_rows<T>(rows: Vec<T>, order: &[usize], work: &mut impl Work) -> Resul
     Ok(output)
 }
 
-pub(super) struct PackedLiteralRow {
-    pub(super) logical_row: u32,
-    pub(super) output: u32,
-    pub(super) axes: CoordinateAxes,
-}
-
-pub(super) struct PackedLiteralLocation<I> {
-    pub(super) logical_row: u32,
-    pub(super) ring: Option<u32>,
-    pub(super) ordinal: u32,
-    pub(super) image: I,
-}
-
-pub(super) struct PackedLiteralLayout<I> {
-    pub(super) rows: Vec<PackedLiteralRow>,
-    pub(super) locations: Vec<PackedLiteralLocation<I>>,
-}
-
 /// Owns the real finalized sink and its physical-slot-to-logical-use map.
-pub(super) enum FrozenLiteralBuffers<I> {
-    Shapes {
-        shape: Shape,
-        layout: ShapeLiteralLayout<I>,
-    },
-    Packed {
-        storage: PackedStorage,
-        layout: PackedLiteralLayout<I>,
-    },
+pub(super) struct FrozenLiteralBuffers<I> {
+    shape: Shape,
+    layout: ShapeLiteralLayout<I>,
 }
 
 /// Created only by the actual-buffer binder; it moves the same sink onward.
@@ -435,7 +390,7 @@ pub(super) trait CheckedImages<I> {
 pub(super) struct CheckedAssignment<R>(R);
 
 impl<R> CheckedAssignment<R> {
-    pub(super) fn new(receipt: R) -> Self {
+    pub(super) const fn new(receipt: R) -> Self {
         Self(receipt)
     }
 }
@@ -459,64 +414,21 @@ pub(super) trait LiteralChart<I> {
 }
 
 impl<I> FrozenLiteralBuffers<I> {
-    pub(super) fn shapes(shape: Shape, locations: ShapeLiteralLayout<I>) -> Self {
-        Self::Shapes {
+    pub(super) const fn shapes(shape: Shape, locations: ShapeLiteralLayout<I>) -> Self {
+        Self {
             shape,
-            layout: locations,
-        }
-    }
-
-    pub(super) fn packed(storage: PackedStorage, locations: PackedLiteralLayout<I>) -> Self {
-        Self::Packed {
-            storage,
             layout: locations,
         }
     }
 }
 
 impl<I> SealedOutput<I> {
-    pub(super) fn shape(&self) -> Result<&Shape> {
-        match &self.buffers {
-            FrozenLiteralBuffers::Shapes { shape, .. } => Ok(shape),
-            FrozenLiteralBuffers::Packed { .. } => Err(GeometryErrorKind::Invalid(
-                "packed literal output has no Shape view".into(),
-            )
-            .into()),
-        }
+    pub(super) const fn shape_layout(&self) -> &ShapeLiteralLayout<I> {
+        &self.buffers.layout
     }
 
-    pub(super) fn shape_layout(&self) -> Result<&ShapeLiteralLayout<I>> {
-        match &self.buffers {
-            FrozenLiteralBuffers::Shapes { layout, .. } => Ok(layout),
-            FrozenLiteralBuffers::Packed { .. } => Err(GeometryErrorKind::Invalid(
-                "packed literal output has no Shape slot map".into(),
-            )
-            .into()),
-        }
-    }
-
-    pub(super) fn is_empty(&self) -> Result<bool> {
-        Ok(self.shape()?.is_empty())
-    }
-
-    pub(super) fn into_shape(self) -> Result<Shape> {
-        match self.buffers {
-            FrozenLiteralBuffers::Shapes { shape, .. } => Ok(shape),
-            FrozenLiteralBuffers::Packed { .. } => Err(GeometryErrorKind::Invalid(
-                "packed literal output cannot be transferred as a Shape".into(),
-            )
-            .into()),
-        }
-    }
-
-    pub(super) fn into_packed(self) -> Result<PackedStorage> {
-        match self.buffers {
-            FrozenLiteralBuffers::Packed { storage, .. } => Ok(storage),
-            FrozenLiteralBuffers::Shapes { .. } => Err(GeometryErrorKind::Invalid(
-                "Shape literal output cannot be transferred as packed storage".into(),
-            )
-            .into()),
-        }
+    pub(super) fn into_shape(self) -> Shape {
+        self.buffers.shape
     }
 }
 
@@ -551,15 +463,8 @@ where
             }
             Ok(())
         };
-    match &buffers {
-        FrozenLiteralBuffers::Shapes { shape, layout } => {
-            validate_shape_layout(layout, work)?;
-            visit_shape_literals(shape, layout, work, &mut check)?;
-        },
-        FrozenLiteralBuffers::Packed { storage, layout } => {
-            visit_packed_literals(storage, layout, work, &mut check)?;
-        },
-    }
+    validate_shape_layout(&buffers.layout, work)?;
+    visit_shape_literals(&buffers.shape, &buffers.layout, work, &mut check)?;
     if rejected.is_empty() {
         Ok(LiteralCheck::Pass(SealedOutput { buffers }))
     } else {
@@ -782,7 +687,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                 Ok(())
             },
             Shape::GeometryCollection(collection) => {
-                for part in collection.iter() {
+                for part in collection {
                     visit_shape(part, layout, point_row, line_row, polygon_row, work, visit)?;
                 }
                 Ok(())
@@ -813,210 +718,6 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
         .into());
     }
     Ok(())
-}
-
-fn visit_packed_literals<I: Copy, W: Work>(
-    storage: &PackedStorage,
-    layout: &PackedLiteralLayout<I>,
-    work: &mut W,
-    visit: &mut impl FnMut(u32, I, Point, CoordinateAxes, CoordinateAxes, &mut W) -> Result<()>,
-) -> Result<()> {
-    let logical_len = match storage {
-        PackedStorage::Points { coords, row_map } => point_logical_len(coords, row_map.as_deref()),
-        PackedStorage::Lines {
-            offsets, row_map, ..
-        } => line_logical_len(offsets.as_slice(), row_map.as_deref()),
-        PackedStorage::Polygons {
-            polygon_offsets,
-            row_map,
-            ..
-        } => polygon_logical_len(polygon_offsets.as_slice(), row_map.as_deref()),
-    };
-    if layout.rows.len() != logical_len {
-        return Err(GeometryErrorKind::Invalid(
-            "packed literal output rows do not match the final row map".into(),
-        )
-        .into());
-    }
-    validate_dense_output_ids(
-        layout.rows.iter().map(|row| row.output),
-        layout.rows.len(),
-        work,
-    )?;
-    for (logical, row) in layout.rows.iter().enumerate() {
-        work.charge(1)?;
-        if row.logical_row as usize != logical {
-            return Err(GeometryErrorKind::Invalid(
-                "packed literal output rows are not in logical row order".into(),
-            )
-            .into());
-        }
-    }
-    work.charge(u64::try_from(layout.locations.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut locations = layout.locations.iter().collect::<Vec<_>>();
-    try_sort_by_with_work(&mut locations, work, |left, right, work| {
-        work.charge(1)?;
-        Ok((left.logical_row, left.ring, left.ordinal).cmp(&(
-            right.logical_row,
-            right.ring,
-            right.ordinal,
-        )))
-    })?;
-    if locations.windows(2).any(|pair| {
-        pair[0].logical_row == pair[1].logical_row
-            && pair[0].ring == pair[1].ring
-            && pair[0].ordinal == pair[1].ordinal
-    }) {
-        return Err(GeometryErrorKind::Invalid(
-            "packed literal map assigns one physical slot more than once".into(),
-        )
-        .into());
-    }
-
-    let mut location_cursor = 0_usize;
-    for logical in 0..logical_len {
-        let row = PackedRow::from_storage(storage, logical);
-        let output = layout
-            .rows
-            .get(logical)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("packed literal logical row is missing".into())
-            })?
-            .output;
-        let expected_axes = layout
-            .rows
-            .get(logical)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("packed literal logical row is missing".into())
-            })?
-            .axes;
-        match row {
-            PackedRow::Points {
-                coords, physical, ..
-            } => {
-                let location =
-                    next_packed_location(&locations, &mut location_cursor, logical, None, 0)?;
-                work.charge(1)?;
-                visit(
-                    output,
-                    location.image,
-                    coords.point_at(physical),
-                    expected_axes,
-                    row.axes(),
-                    work,
-                )?;
-            },
-            PackedRow::Lines {
-                coords,
-                vertices_start,
-                vertices_end,
-                ..
-            } => {
-                let count = vertices_end
-                    .checked_sub(vertices_start)
-                    .ok_or(ResourceError::SizeOverflow)?;
-                for ordinal in 0..count {
-                    let location = next_packed_location(
-                        &locations,
-                        &mut location_cursor,
-                        logical,
-                        None,
-                        ordinal,
-                    )?;
-                    let physical = vertices_start
-                        .checked_add(ordinal)
-                        .ok_or(ResourceError::SizeOverflow)?;
-                    work.charge(1)?;
-                    visit(
-                        output,
-                        location.image,
-                        coords.point_at(physical),
-                        expected_axes,
-                        row.axes(),
-                        work,
-                    )?;
-                }
-            },
-            PackedRow::Polygons {
-                coords,
-                rings_start,
-                rings_end,
-                ..
-            } => {
-                let ring_count = rings_end
-                    .checked_sub(rings_start)
-                    .ok_or(ResourceError::SizeOverflow)?;
-                for relative_ring in 0..ring_count {
-                    let absolute_ring = rings_start
-                        .checked_add(relative_ring)
-                        .ok_or(ResourceError::SizeOverflow)?;
-                    let vertices = row.polygon_ring_window(absolute_ring).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "packed polygon ring has no final coordinate window".into(),
-                        )
-                    })?;
-                    for ordinal in 0..vertices.len() {
-                        let location = next_packed_location(
-                            &locations,
-                            &mut location_cursor,
-                            logical,
-                            Some(relative_ring),
-                            ordinal,
-                        )?;
-                        let physical = vertices
-                            .start
-                            .checked_add(ordinal)
-                            .ok_or(ResourceError::SizeOverflow)?;
-                        work.charge(1)?;
-                        visit(
-                            output,
-                            location.image,
-                            coords.point_at(physical),
-                            expected_axes,
-                            row.axes(),
-                            work,
-                        )?;
-                    }
-                }
-            },
-        }
-    }
-    if location_cursor != locations.len() {
-        return Err(GeometryErrorKind::Invalid(
-            "packed literal map contains locations outside final storage".into(),
-        )
-        .into());
-    }
-    Ok(())
-}
-
-fn next_packed_location<'a, I>(
-    locations: &[&'a PackedLiteralLocation<I>],
-    cursor: &mut usize,
-    logical_row: usize,
-    ring: Option<usize>,
-    ordinal: usize,
-) -> Result<&'a PackedLiteralLocation<I>> {
-    let location = locations.get(*cursor).copied().ok_or_else(|| {
-        GeometryErrorKind::Invalid("packed final slot has no literal location".into())
-    })?;
-    let expected_row = u32::try_from(logical_row).map_err(|_| ResourceError::SizeOverflow)?;
-    let expected_ring = ring
-        .map(u32::try_from)
-        .transpose()
-        .map_err(|_| ResourceError::SizeOverflow)?;
-    let expected_ordinal = u32::try_from(ordinal).map_err(|_| ResourceError::SizeOverflow)?;
-    if location.logical_row != expected_row
-        || location.ring != expected_ring
-        || location.ordinal != expected_ordinal
-    {
-        return Err(GeometryErrorKind::Invalid(
-            "packed literal locations do not match actual row/CSR order".into(),
-        )
-        .into());
-    }
-    *cursor = cursor.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-    Ok(location)
 }
 
 /// Admit a producer-known graph without assigning it a dimension's face law.
@@ -1141,21 +842,9 @@ pub(super) fn admit_candidate<'a>(
         if !stable_areal_signatures_match(&areal_reference.signature, &areal) {
             return Ok(None);
         }
-        return Ok(Some(AdmittedCandidate {
-            points,
-            topology,
-            edge_of_slot,
-            areal: Some(ArealHostProof {
-                host_by_vertex: areal.host_by_vertex,
-            }),
-        }));
+        return Ok(Some(AdmittedCandidate { points }));
     }
-    Ok(Some(AdmittedCandidate {
-        points,
-        topology,
-        edge_of_slot,
-        areal: None,
-    }))
+    Ok(Some(AdmittedCandidate { points }))
 }
 
 fn stable_areal_signatures_match(reference: &ArealSignature, candidate: &ArealSignature) -> bool {
@@ -1292,9 +981,7 @@ fn identities_are_injective(
     })?;
     for pair in order.array_windows::<2>() {
         work.charge(1)?;
-        let [left, right] = pair else {
-            unreachable!("array_windows yields adjacent graph identities");
-        };
+        let [left, right] = pair;
         if left.1 != right.1
             && points
                 .exact
@@ -1574,9 +1261,7 @@ fn stable_wall_face_keys(
     })?;
     for pair in face_order.array_windows::<2>() {
         work.charge(1)?;
-        let [left, right] = pair else {
-            unreachable!("array_windows yields adjacent global face IDs");
-        };
+        let [left, right] = pair;
         let left_key = face_keys
             .get(*left)
             .ok_or_else(|| GeometryErrorKind::Invalid("stable left face key is unknown".into()))?;
@@ -1687,34 +1372,23 @@ fn build_areal_signature(
             projected_edge_of_slot.as_slice(),
         )
     };
-    let mut computed_faces = None;
-    let faces = if all_atoms_are_walls {
-        if let Some(faces) = full_graph_faces {
-            faces
-        } else {
-            computed_faces = Some(global_faces(
-                points,
-                wall_topology,
-                wall_edges,
-                wall_edge_of_slot,
-                work,
-            )?);
-            computed_faces.as_ref().ok_or_else(|| {
-                GeometryErrorKind::Invalid("full areal wall faces were not constructed".into())
-            })?
-        }
+    let computed_faces = if all_atoms_are_walls && full_graph_faces.is_some() {
+        None
     } else {
-        computed_faces = Some(global_faces(
+        Some(global_faces(
             points,
             wall_topology,
             wall_edges,
             wall_edge_of_slot,
             work,
-        )?);
-        computed_faces.as_ref().ok_or_else(|| {
-            GeometryErrorKind::Invalid("projected areal wall faces were not constructed".into())
-        })?
+        )?)
     };
+    let faces = full_graph_faces
+        .filter(|_| all_atoms_are_walls)
+        .or(computed_faces.as_ref())
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("required areal wall faces were not constructed".into())
+        })?;
     let (face_keys, stable_face_id) = stable_wall_face_keys(
         wall_topology,
         faces,
@@ -1724,7 +1398,7 @@ fn build_areal_signature(
         work,
     )?;
     // `graph_global_faces_with_work` reserves global face 0 for Exterior.
-    let exterior_face = *stable_face_id.get(0).ok_or_else(|| {
+    let exterior_face = *stable_face_id.first().ok_or_else(|| {
         GeometryErrorKind::Invalid("areal wall graph has no Exterior face".into())
     })?;
 
@@ -2322,12 +1996,12 @@ mod tests {
         let midpoint_x = ratio(two_to_53 + 1, two_to_53);
         let upper_x = ratio(two_to_53 + 2, two_to_53);
         let reference_points = exact_points(&[
-            (one.clone(), zero.clone()),          // A
-            (midpoint_x.clone(), half.clone()),   // B
-            (upper_x.clone(), one.clone()),       // C
-            (midpoint_x.clone(), three_quarters), // F
-            (one.clone(), half.clone()),          // D
-            (one, quarter),                       // E
+            (one.clone(), zero),                // A
+            (midpoint_x.clone(), half.clone()), // B
+            (upper_x.clone(), one.clone()),     // C
+            (midpoint_x, three_quarters),       // F
+            (one.clone(), half),                // D
+            (one, quarter),                     // E
         ]);
         let mut work = Unmetered;
         let graph = admit_known_graph(
@@ -2914,8 +2588,7 @@ mod tests {
                 .is_some()
         );
 
-        let polygon_graph =
-            admit_known_graph(reference, edges.clone(), identities, &mut work).unwrap();
+        let polygon_graph = admit_known_graph(reference, edges, identities, &mut work).unwrap();
         let layout = polygon_layout(&polygon_graph, &[0, 1, 2, 0]);
         assert!(
             admit_candidate(&polygon_graph, &layout, &reversed, &[], &mut work)
@@ -2992,10 +2665,9 @@ mod tests {
             LiteralCheck::Pass(sealed) => sealed,
             LiteralCheck::Reject(_) => panic!("actual closed-line slots match their images"),
         };
-        assert!(matches!(sealed.into_shape().unwrap(), Shape::LineString(_)));
+        assert!(matches!(sealed.into_shape(), Shape::LineString(_)));
 
-        let polygon_graph =
-            admit_known_graph(reference, edges.clone(), identities, &mut work).unwrap();
+        let polygon_graph = admit_known_graph(reference, edges, identities, &mut work).unwrap();
         let layout = polygon_layout(&polygon_graph, &[0, 1, 2, 0]);
         assert!(
             admit_candidate(&polygon_graph, &layout, &reversed, &[], &mut work)

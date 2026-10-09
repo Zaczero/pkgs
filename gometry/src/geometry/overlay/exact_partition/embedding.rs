@@ -936,7 +936,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 ) {
                     proximity_pairs.push((left_index.min(right), left_index.max(right)));
                 }
-                ControlFlow::<std::convert::Infallible>::Continue(())
+                ControlFlow::Continue(())
             })?;
         if let Some(error) = callback_error {
             return Err(error);
@@ -1185,7 +1185,9 @@ impl ExactPartition<'_> {
             budget.include_constructed(constructed)?;
             match run_with_budget(&mut problem, budget)? {
                 SearchOutcome::Pass(assignment) => Ok(assignment),
-                SearchOutcome::Exhausted => Err(budget.unrepresentable()),
+                SearchOutcome::Exhausted => {
+                    Err(GeometryErrorKind::unrepresentable_output(operation))
+                },
             }
         })
     }

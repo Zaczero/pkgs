@@ -46,9 +46,7 @@ pub(in crate::geometry) use exact::{
     ExactChartPoint, point_on_exact_segment, vector_cross, vector_difference,
 };
 mod emission;
-pub(in crate::geometry) use emission::{
-    FeatureFamilyRegistry, PreparedNativeSource, SourceTrace, TracedLine,
-};
+pub(in crate::geometry) use emission::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
 pub(in crate::geometry) mod overlay;
 mod q;
 pub(in crate::geometry) use q::exact_segments_intersect;

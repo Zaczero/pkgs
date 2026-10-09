@@ -27,7 +27,6 @@ pub(in crate::geometry) struct ExactNativeLongitude(ExactRational);
 /// exact root relation.
 pub(crate) struct RetainedComputedSample {
     pub(crate) longitude: crate::geographic::CanonicalLongitude,
-    pub(crate) exact_chart_longitude: ExactRational,
     pub(crate) chart_longitude: ExactRational,
 }
 
@@ -130,6 +129,7 @@ impl Sealed for ExactNativeLongitude {}
 
 impl crate::geographic::RetainedNativeLongitude for ExactNativeLongitude {}
 
+#[cfg(test)]
 pub(in crate::geometry) fn round_native_longitude(
     axis: crate::geographic::PeriodicAxis,
     longitude: &ExactRational,
@@ -175,28 +175,25 @@ pub(in crate::geometry) struct RoundedNativeSite {
     pub periods: i64,
 }
 
-pub(in crate::geometry) fn rounded_native_neighbors(
-    axis: crate::geographic::PeriodicAxis,
-    longitude: &ExactRational,
-) -> crate::error::Result<[RoundedNativeSite; 3]> {
-    let mut work = crate::geometry::Unmetered;
-    rounded_native_neighbors_with_work(axis, longitude, &mut work)
-}
-
 pub(in crate::geometry) fn rounded_native_neighbors_with_work(
     axis: crate::geographic::PeriodicAxis,
     longitude: &ExactRational,
     work: &mut impl crate::geometry::Work,
 ) -> crate::error::Result<[RoundedNativeSite; 3]> {
     let exact = retained_exact_native_site_with_work(axis, longitude, work)?;
-    let native = exact.native().rational().round_with_work(work)?;
+    let (native, initial_adjustment) =
+        ExactNativeLongitude::round_native_with_work(axis, exact.native(), work)?;
+    let native = native.get();
+    let base_periods = exact
+        .periods()
+        .checked_add(i64::from(initial_adjustment))
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
     let period = axis.period();
     let half_period = axis.half_period();
-    let mut round_candidate = |candidate| {
+    let mut round_candidate = |candidate: f64| -> crate::error::Result<RoundedNativeSite> {
         let (native, adjustment) =
             fold_rounded_native_site_with_work(candidate, period, half_period, work)?;
-        let periods = exact
-            .periods()
+        let periods = base_periods
             .checked_add(i64::from(adjustment))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
         let native = axis
@@ -677,7 +674,6 @@ fn written_exact_longitude(
     )?;
     Ok(RetainedComputedSample {
         longitude: written,
-        exact_chart_longitude: position.clone(),
         chart_longitude,
     })
 }
@@ -707,11 +703,9 @@ pub(crate) fn retained_native_publisher_sample(
     }
     let [start, end] = *edge.endpoints();
     if parameter == 0.0 {
-        let exact_chart_longitude = ExactRational::from_f64(start.get());
         return Ok(RetainedComputedSample {
             longitude: start,
-            exact_chart_longitude: exact_chart_longitude.clone(),
-            chart_longitude: exact_chart_longitude,
+            chart_longitude: ExactRational::from_f64(start.get()),
         });
     }
     if parameter == 1.0 {
@@ -722,7 +716,6 @@ pub(crate) fn retained_native_publisher_sample(
         )?;
         return Ok(RetainedComputedSample {
             longitude: end,
-            exact_chart_longitude: exact_end.clone(),
             chart_longitude: exact_end,
         });
     }
@@ -1138,8 +1131,7 @@ pub(in crate::geometry) fn split_rational_native_site_with_work<'position>(
     if !(period.is_finite() && period > 0.0 && half_period.is_finite() && half_period > 0.0) {
         return Err(crate::geometry::GeometryErrorKind::message(
             "retained chart period must be positive and finite",
-        )
-        .into());
+        ));
     }
     let half = ExactRational::from_f64(half_period);
     let negative_half = ExactRational::from_f64(-half_period);
@@ -1171,15 +1163,6 @@ pub(in crate::geometry) fn split_rational_native_site_with_work<'position>(
         (native, lift)
     };
     Ok((std::borrow::Cow::Owned(native), lift))
-}
-
-fn fold_rounded_native_site(
-    native: f64,
-    period: f64,
-    half_period: f64,
-) -> crate::error::Result<(f64, i8)> {
-    let mut work = crate::geometry::Unmetered;
-    fold_rounded_native_site_with_work(native, period, half_period, &mut work)
 }
 
 fn fold_rounded_native_site_with_work(

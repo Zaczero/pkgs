@@ -2754,7 +2754,7 @@ impl ExactSourceInventory {
         Ok(runs)
     }
 
-    fn emit_traced_source_line_shape<W: Work + ?Sized>(
+    fn emit_traced_source_line_shape<W: Work>(
         &self,
         source_kind: GeometryKind,
         runs: Vec<SourceLineRun>,
@@ -2774,7 +2774,13 @@ impl ExactSourceInventory {
         for run in &runs {
             line_nodes.extend(run.nodes.iter().copied());
         }
-        let line_axes = bucket_axes(&line_nodes, by_node, declared_axes, strict, "subdivide")?;
+        let line_axes = bucket_axes(
+            line_nodes.iter().copied(),
+            by_node,
+            declared_axes,
+            strict,
+            "subdivide",
+        )?;
         let coordinates = by_node.coordinates();
         let mut lines = Vec::with_capacity(runs.len());
         for run in &runs {
@@ -5050,7 +5056,7 @@ pub(in crate::geometry) fn graph_global_faces_with_work<R, E, W>(
 where
     R: RayPoints + ?Sized,
     E: Fn(usize) -> Result<[u32; 2]>,
-    W: Work + ?Sized,
+    W: Work,
 {
     let node_count = topology.component_of.len();
     let slots = edge_count
@@ -5127,7 +5133,7 @@ where
         work.charge(1)?;
         vec![None]
     } else {
-        shoot_left_with_work(points, edge_count, |edge| edge_nodes(edge), &roots, work)?
+        shoot_left_with_work(points, edge_count, &edge_nodes, &roots, work)?
     };
     if hits.len() != roots.len() {
         return Err(GeometryErrorKind::Invalid(

@@ -1295,7 +1295,7 @@ pub(crate) enum RetainedLongitudeClass {
     Major(TurnDirection),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 /// North or south by the sign of the native chart latitude, independent of axis orientation.
 pub(crate) enum ChartPole {
     North,

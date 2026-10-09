@@ -313,12 +313,24 @@ impl AxisValue {
     pub(in crate::geometry) fn value(self) -> Option<f64> {
         (!self.conflict).then_some(self.value).flatten()
     }
+
+    pub(in crate::geometry) const fn merge(&mut self, other: Self) {
+        self.conflict |= other.conflict;
+        self.observe(other.value);
+    }
 }
 
 #[derive(Clone, Copy, Default)]
 pub(in crate::geometry) struct NodeOrdinates {
     pub(in crate::geometry) z: AxisValue,
     pub(in crate::geometry) m: AxisValue,
+}
+
+impl NodeOrdinates {
+    pub(in crate::geometry) const fn merge(&mut self, other: Self) {
+        self.z.merge(other.z);
+        self.m.merge(other.m);
+    }
 }
 
 /// The original root's frame and retained branch stay separate from the lazy
