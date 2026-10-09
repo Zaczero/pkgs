@@ -4,6 +4,7 @@
 )]
 #[cfg(test)]
 use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::simd::Select as _;
 #[cfg(test)]
@@ -12,17 +13,21 @@ use std::simd::cmp::SimdPartialOrd as _;
 mod rdp;
 
 use crate::NonNegative;
-use crate::error::Result;
-use crate::geographic::{ChartSpanGuard, PeriodicAxis};
+use crate::error::{ResourceError, Result};
+use crate::geographic::{ChartSpanGuard, GeographicFrame, GeographicInputs, PeriodicAxis};
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
-use crate::geometry::overlay::{ExactSourceInventory, rect_polygon};
+use crate::geometry::overlay::{ExactSourceInventory, SubdivisionPart, rect_polygon};
+use crate::geometry::topology::{
+    FeatureFamilyRegistry, PreparedNativeSource, SourceTrace, TracedLine,
+};
 use crate::geometry::{
-    Bounds, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
-    GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Orientation, Point,
-    PointKey, Polygon, Ring, Segment, Shape, ShapeCountQuery, SharedShapeOwners, TopologyGuard, XY,
-    dedup_consecutive_points, line_segments, open_point_cycle_winding, orientation,
-    point_segment_distance, same_point, simplified_polygon_delta_is_simple, simplify_chain_guarded,
-    triangle_area, vw_area_tolerance,
+    Bounds, Component, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget,
+    GeometryErrorKind, GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon,
+    Orientation, Point, PointKey, Polygon, Ring, Segment, Shape, ShapeCountQuery,
+    SharedShapeOwners, TopologyGuard, Unmetered, Work, XY, dedup_consecutive_points,
+    line_segments, open_point_cycle_winding, orientation, point_segment_distance, same_point,
+    simplified_polygon_delta_is_simple, simplify_chain_guarded, triangle_area,
+    vw_area_tolerance,
 };
 #[cfg(test)]
 use crate::geometry::{REDUCE_LANES, ReduceSimd, point_on_segment, point_segment_distance_squared};
@@ -583,10 +588,11 @@ fn source_ordinates(shape: &Shape, split_x: bool, owner_coordinate_count: usize)
 }
 
 fn push_subdivision_members(
-    shape: &Shape,
+    item: &mut SubdivisionWorkItem,
     max_vertices: usize,
     work: &mut Vec<SubdivisionWorkItem>,
-) -> bool {
+) -> Result<bool> {
+    let shape = &item.shape;
     if !matches!(
         shape,
         Shape::MultiPoint(_)
@@ -594,7 +600,7 @@ fn push_subdivision_members(
             | Shape::MultiPolygon(_)
             | Shape::GeometryCollection(_)
     ) {
-        return false;
+        return Ok(false);
     }
     if matches!(shape, Shape::MultiPolygon(_))
         && shape.parts().any(|member| {
@@ -603,37 +609,149 @@ fn push_subdivision_members(
                 .is_none_or(|count| count > max_vertices)
         })
     {
-        return false;
+        return Ok(false);
     }
-    let mut members = shape.parts().rev();
-    let Some(first) = members.next() else {
-        return false;
+    let members = shape.parts().collect::<Vec<_>>();
+    if members.is_empty() {
+        return Ok(false);
+    }
+    let member_traces = match item.traces.take() {
+        Some(traces) if traces.len() == members.len() => Some(traces),
+        Some(_) => {
+            return Err(GeometryErrorKind::Invalid(
+                "subdivision source traces do not match multipart members".into(),
+            )
+            .into());
+        },
+        None => None,
     };
-    work.push(SubdivisionWorkItem::new(first, false));
-    for member in &mut members {
-        work.push(SubdivisionWorkItem::new(member, false));
+    let source_line_members = item.source_line_members.take();
+    let vertex_cut = item.vertex_cut;
+    match member_traces {
+        Some(traces) => {
+            for (member, trace) in members.into_iter().zip(traces).rev() {
+                work.push(SubdivisionWorkItem::with_traces(
+                    member,
+                    None,
+                    None,
+                    vec![trace],
+                    vertex_cut,
+                    item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+                ));
+            }
+        },
+        None => {
+            let member_line_ranges = if let Some(parent_range) = source_line_members
+                && parent_range.len() == source_line_member_count(shape)?
+            {
+                let mut next = parent_range.start;
+                let mut ranges = Vec::with_capacity(members.len());
+                for member in &members {
+                    let count = source_line_member_count(member)?;
+                    let end = next.checked_add(count).ok_or(ResourceError::SizeOverflow)?;
+                    ranges.push(Some(next..end));
+                    next = end;
+                }
+                ranges
+            } else {
+                std::iter::repeat_with(|| None)
+                    .take(members.len())
+                    .collect::<Vec<_>>()
+            };
+            for (member, source_line_members) in
+                members.into_iter().zip(member_line_ranges).rev()
+            {
+                work.push(SubdivisionWorkItem::new(
+                    member,
+                    vertex_cut,
+                    source_line_members,
+                ));
+            }
+        },
     }
-    true
+    Ok(true)
 }
 
-fn stage_line_vertices(shape: &Shape, max_vertices: usize, staged: &mut Vec<Shape>) -> bool {
-    let Shape::LineString(line) = shape else {
-        return false;
+fn stage_line_vertices(
+    item: &SubdivisionWorkItem,
+    max_vertices: usize,
+    work: &mut impl Work,
+    staged: &mut Vec<SubdivisionWorkItem>,
+) -> Result<bool> {
+    let Shape::LineString(line) = &item.shape else {
+        return Ok(false);
     };
     if line.len() <= max_vertices || max_vertices < 2 {
-        return false;
+        return Ok(false);
     }
+    let trace = match item.traces.as_deref() {
+        Some([trace]) => Some(trace),
+        Some(_) => {
+            return Err(GeometryErrorKind::Invalid(
+                "one line-string item has multiple source traces".into(),
+            )
+            .into());
+        },
+        None => None,
+    };
     let mut start = 0;
     while start < line.len().saturating_sub(1) {
         let end = start.saturating_add(max_vertices).min(line.len());
         let window = CoordWindow::from_range(start..end, line.len());
-        staged.push(Shape::LineString(LineSeq::row_view(
-            line.as_coords(),
-            window,
-        )));
+        let shape = Shape::LineString(LineSeq::row_view(line.as_coords(), window));
+        let coordinate_count = Some(end.saturating_sub(start));
+        let bounds = shape.bounds();
+        let traces = if let Some(trace) = trace {
+            let mut slices = Vec::with_capacity(end.saturating_sub(start).saturating_sub(1));
+            for edge in start..end.saturating_sub(1) {
+                work.charge(1)?;
+                slices.push((
+                    edge,
+                    crate::geometry::tessellation::exact::ExactRational::zero(),
+                    crate::geometry::tessellation::exact::ExactRational::one(),
+                ));
+            }
+            Some(vec![trace.compose_edges(&slices, work)?])
+        } else {
+            None
+        };
+        staged.push(match traces {
+            Some(traces) => SubdivisionWorkItem::with_traces(
+                shape,
+                bounds,
+                coordinate_count,
+                traces,
+                item.vertex_cut,
+                item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+            ),
+            None => SubdivisionWorkItem {
+                shape,
+                bounds,
+                coordinate_count,
+                traces: None,
+                source_line_members: None,
+                trace_axes: None,
+                vertex_cut: item.vertex_cut,
+            },
+        });
         start = end.saturating_sub(1);
     }
-    true
+    Ok(true)
+}
+
+fn stage_line_vertices_with_operation_work(
+    item: &SubdivisionWorkItem,
+    max_vertices: usize,
+    native: &mut NativeSubdivisionContext<'_>,
+    staged: &mut Vec<SubdivisionWorkItem>,
+) -> Result<bool> {
+    if item.traces.is_some()
+        && let Some(work) = native.budget.as_mut()
+    {
+        return stage_line_vertices(item, max_vertices, work, staged);
+    }
+    let mut work = Unmetered;
+    stage_line_vertices(item, max_vertices, &mut work, staged)
 }
 
 fn owner_coordinate_count(shape: &Shape, logical_count: Option<usize>) -> usize {
@@ -649,23 +767,555 @@ fn owner_coordinate_count(shape: &Shape, logical_count: Option<usize>) -> usize 
     count
 }
 
+fn source_line_member_count(shape: &Shape) -> Result<usize> {
+    let mut count = 0_usize;
+    shape.try_for_each_component(&mut |component| {
+        if matches!(component, Component::LineString(_)) {
+            count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        }
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+fn collect_native_line_members(
+    shape: &Shape,
+    frame: GeographicFrame,
+    max_vertices: usize,
+    first_member: usize,
+) -> Result<Vec<(usize, crate::geometry::CoordinateAxes)>> {
+    collect_native_line_members_with_known(shape, frame, max_vertices, first_member, &[])
+}
+
+fn collect_native_line_members_with_known(
+    shape: &Shape,
+    frame: GeographicFrame,
+    max_vertices: usize,
+    first_member: usize,
+    known: &[(usize, crate::geometry::CoordinateAxes)],
+) -> Result<Vec<(usize, crate::geometry::CoordinateAxes)>> {
+    let mut next_member = first_member;
+    let mut output = Vec::new();
+    shape.try_for_each_component(&mut |component| {
+        let Component::LineString(line) = component else {
+            return Ok(());
+        };
+        let member = next_member;
+        next_member = next_member
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        if line.len() <= max_vertices {
+            return Ok(());
+        }
+        if let Ok(index) = known.binary_search_by_key(&member, |&(member, _)| member) {
+            output.push((member, known[index].1));
+            return Ok(());
+        }
+        let source = Shape::LineString(line.clone());
+        let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(&source))
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        if crate::geometry::geographic_topology_route(inputs.views().iter().copied())
+            == crate::geometry::GeographicTopologyRoute::Quotient
+        {
+            output.push((member, source.axes()));
+        }
+        Ok(())
+    })?;
+    Ok(output)
+}
+
 struct SubdivisionWorkItem {
     shape: Shape,
     bounds: Option<Bounds>,
     coordinate_count: Option<usize>,
+    traces: Option<Vec<SourceTrace>>,
+    source_line_members: Option<std::ops::Range<usize>>,
+    trace_axes: Option<crate::geometry::CoordinateAxes>,
     vertex_cut: bool,
 }
 
 impl SubdivisionWorkItem {
-    fn new(shape: Shape, vertex_cut: bool) -> Self {
+    fn new(
+        shape: Shape,
+        vertex_cut: bool,
+        source_line_members: Option<std::ops::Range<usize>>,
+    ) -> Self {
         let bounds = shape.bounds();
         let coordinate_count = ShapeCountQuery::default().coordinate_count(&shape);
         Self {
             shape,
             bounds,
             coordinate_count,
+            traces: None,
+            source_line_members,
+            trace_axes: None,
             vertex_cut,
         }
+    }
+
+    fn with_traces(
+        shape: Shape,
+        bounds: Option<Bounds>,
+        coordinate_count: Option<usize>,
+        traces: Vec<SourceTrace>,
+        vertex_cut: bool,
+        trace_axes: crate::geometry::CoordinateAxes,
+    ) -> Self {
+        Self {
+            shape,
+            bounds,
+            coordinate_count,
+            traces: Some(traces),
+            source_line_members: None,
+            trace_axes: Some(trace_axes),
+            vertex_cut,
+        }
+    }
+}
+
+struct PreparedNativeLine {
+    shape: Shape,
+    traces: Vec<SourceTrace>,
+    trace_axes: crate::geometry::CoordinateAxes,
+}
+
+struct TracedLineReconstruction {
+    item: usize,
+    lines: Vec<LineSeq>,
+    row_ranges: Vec<std::ops::Range<usize>>,
+    declared_axes: crate::geometry::CoordinateAxes,
+}
+
+pub(crate) struct NativeSubdivisionContext<'a> {
+    original: &'a Shape,
+    frame: Option<GeographicFrame>,
+    topology: Option<crate::geometry::ExactGeographicTopology>,
+    budget: Option<crate::geometry::embedding_search::EvaluationBudget>,
+    prepared: BTreeMap<usize, PreparedNativeLine>,
+    skipped: BTreeSet<usize>,
+    selected_members: BTreeSet<usize>,
+    family_state: Option<FeatureFamilyRegistry>,
+    initialized: bool,
+}
+
+impl<'a> NativeSubdivisionContext<'a> {
+    pub(crate) const fn new(original: &'a Shape, frame: Option<GeographicFrame>) -> Self {
+        Self {
+            original,
+            frame,
+            topology: None,
+            budget: None,
+            prepared: BTreeMap::new(),
+            skipped: BTreeSet::new(),
+            selected_members: BTreeSet::new(),
+            family_state: None,
+            initialized: false,
+        }
+    }
+
+    fn prepare(
+        &mut self,
+        max_vertices: usize,
+        expansion_budget: &mut ExpansionBudget,
+        known_candidates: &[(usize, crate::geometry::CoordinateAxes)],
+    ) -> Result<()> {
+        if self.initialized {
+            return Ok(());
+        }
+        let Some(frame) = self.frame else {
+            return Err(GeometryErrorKind::Invalid(
+                "Cartesian subdivision cannot prepare native geographic lines".into(),
+            )
+            .into());
+        };
+        let inputs = GeographicInputs::try_from_shapes(frame, std::iter::once(self.original))
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        let selected = collect_native_line_members_with_known(
+            self.original,
+            frame,
+            max_vertices,
+            0,
+            known_candidates,
+        )?;
+        let selected_members = selected
+            .iter()
+            .map(|(member, _)| *member)
+            .collect::<BTreeSet<_>>();
+        if known_candidates
+            .iter()
+            .any(|(member, _)| !selected_members.contains(member))
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "the admitted Native root inventory omitted the selected source line".into(),
+            )
+            .into());
+        }
+        if selected.is_empty() {
+            return Err(GeometryErrorKind::Invalid(
+                "native subdivision entry has no oversized nonordinary source line".into(),
+            )
+            .into());
+        }
+        let selected_axes = selected.iter().copied().collect::<BTreeMap<_, _>>();
+        if selected_axes.len() != selected.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "native source member was selected more than once".into(),
+            )
+            .into());
+        }
+
+        let mut budget =
+            crate::geometry::embedding_search::EvaluationBudget::new("subdivide", 0)?;
+        let topology =
+            crate::geometry::ExactGeographicTopology::from_views_with_work_and_expansion_budget(
+                frame,
+                inputs.views().iter().copied(),
+                expansion_budget,
+                &mut budget,
+            )?;
+
+        let mut prepared = BTreeMap::new();
+        let members = selected_axes.keys().copied().collect::<Vec<_>>();
+        let mut native = crate::geometry::topology::overlay::prepare_native_source_lines::<
+            crate::crs::GeodesicMetric,
+        >(
+            &topology,
+            &members,
+            crate::geometry::CoordinateAxes::XY,
+            false,
+            "subdivide",
+            None,
+            expansion_budget,
+            &mut budget,
+        )?;
+        let family_state = native.family_state.take();
+        let prepared_members =
+            Self::collect_prepared_lines(native, &mut prepared, &selected_axes)?;
+        if prepared.len() != prepared_members.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "native source preparation did not retain every noded line member".into(),
+            )
+            .into());
+        }
+        let skipped = selected_members
+            .difference(&prepared_members)
+            .copied()
+            .collect();
+        self.topology = Some(topology);
+        self.budget = Some(budget);
+        self.prepared = prepared;
+        self.skipped = skipped;
+        self.selected_members = selected_members;
+        self.family_state = family_state;
+        self.initialized = true;
+        Ok(())
+    }
+
+    fn collect_prepared_lines(
+        prepared: PreparedNativeSource,
+        output: &mut BTreeMap<usize, PreparedNativeLine>,
+        selected_axes: &BTreeMap<usize, crate::geometry::CoordinateAxes>,
+    ) -> Result<BTreeSet<usize>> {
+        let shape = prepared.shape;
+        let source_member_count = prepared.source_members.len();
+        let source_members = prepared.source_members.into_iter().collect::<BTreeSet<_>>();
+        if source_members.len() != source_member_count
+            || source_members
+                .iter()
+                .any(|member| !selected_axes.contains_key(member))
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "native source plan has duplicated or unselected line members".into(),
+            )
+            .into());
+        }
+        let lines = match &shape {
+            Shape::LineString(_) => vec![shape.clone()],
+            Shape::MultiLineString(_) => shape.parts().collect(),
+            Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString) => Vec::new(),
+            _ => {
+                return Err(GeometryErrorKind::Invalid(
+                    "native source preparation emitted a non-lineal shape".into(),
+                )
+                .into());
+            },
+        };
+        if lines.len() != prepared.line_traces.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "native source line traces do not match their literal members".into(),
+            )
+            .into());
+        }
+        let mut grouped = BTreeMap::<
+            usize,
+            (Vec<LineSeq>, Vec<SourceTrace>),
+        >::new();
+        for (line, traced) in lines.into_iter().zip(prepared.line_traces) {
+            if !source_members.contains(&traced.member) {
+                return Err(GeometryErrorKind::Invalid(
+                    "native line trace references an unprepared source member".into(),
+                )
+                .into());
+            }
+            let Shape::LineString(line) = line else {
+                return Err(GeometryErrorKind::Invalid(
+                    "native source member is not a line string".into(),
+                )
+                .into());
+            };
+            let entry = grouped
+                .entry(traced.member)
+                .or_insert_with(|| (Vec::new(), Vec::new()));
+            entry.0.push(line);
+            entry.1.push(traced.trace);
+        }
+        let axes = shape.axes();
+        let grouped_len = grouped.len();
+        for (member, (lines, traces)) in grouped {
+            let line = Shape::narrow_lines(axes, lines);
+            let trace_axes = *selected_axes.get(&member).ok_or_else(|| {
+                GeometryErrorKind::Invalid("native line has no original axis mask".into())
+            })?;
+            if output
+                .insert(
+                    member,
+                    PreparedNativeLine {
+                        shape: line,
+                        traces,
+                        trace_axes,
+                    },
+                )
+                .is_some()
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "native source line member was prepared more than once".into(),
+                )
+                .into());
+            }
+        }
+        if grouped_len != source_members.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "native source member has no written line trace".into(),
+            )
+            .into());
+        }
+        Ok(source_members)
+    }
+
+    fn has_prepared_member(&self, members: &std::ops::Range<usize>) -> bool {
+        self.prepared.range(members.clone()).next().is_some()
+    }
+
+    fn take_prepared_member(&mut self, member: usize) -> Option<PreparedNativeLine> {
+        self.prepared.remove(&member)
+    }
+
+    fn has_skipped_member(&self, members: &std::ops::Range<usize>) -> bool {
+        self.skipped.range(members.clone()).next().is_some()
+    }
+
+    fn has_selected_member(&self, members: &std::ops::Range<usize>) -> bool {
+        self.selected_members.range(members.clone()).next().is_some()
+    }
+
+    fn finalize(
+        &mut self,
+        staged: &mut [SubdivisionWorkItem],
+        strict: bool,
+        metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+    ) -> Result<()> {
+        if !self.initialized {
+            return Ok(());
+        }
+        let topology = self.topology.as_ref().ok_or_else(|| {
+            GeometryErrorKind::Invalid("native subdivision lost its root topology".into())
+        })?;
+        let budget = self.budget.as_mut().ok_or_else(|| {
+            GeometryErrorKind::Invalid("native subdivision lost its operation budget".into())
+        })?;
+        let zero = crate::geometry::tessellation::exact::ExactRational::zero();
+        let one = crate::geometry::tessellation::exact::ExactRational::one();
+        let mut request_rows = Vec::new();
+        let mut reconstructions = Vec::new();
+        for (item_index, item) in staged.iter().enumerate() {
+            let Some(traces) = item.traces.as_ref() else {
+                continue;
+            };
+            let declared_axes = item.trace_axes.ok_or_else(|| {
+                GeometryErrorKind::Invalid("native source line lost its ordinate axes".into())
+            })?;
+            let lines = match &item.shape {
+                Shape::LineString(line) => vec![line.clone()],
+                Shape::MultiLineString(lines) => lines.iter().cloned().collect(),
+                Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString) => {
+                    Vec::new()
+                },
+                _ => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native source trace is attached to a non-lineal result".into(),
+                    )
+                    .into());
+                },
+            };
+            if lines.len() != traces.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "native source traces do not match the final line members".into(),
+                )
+                .into());
+            }
+            let mut row_ranges = Vec::with_capacity(lines.len());
+            for (line, trace) in lines.iter().zip(traces) {
+                let edge_count = line
+                    .len()
+                    .checked_sub(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                if trace.edge_count() != edge_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native source trace edge count differs from its final line".into(),
+                    )
+                    .into());
+                }
+                budget.charge(
+                    u64::try_from(line.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
+                let row_start = request_rows.len();
+                for vertex in 0..line.len() {
+                    let mut row = crate::geometry::ordinates::RequestRowInput {
+                        axes: declared_axes,
+                        requests: Vec::new(),
+                    };
+                    if vertex > 0 {
+                        let incoming = trace.requests_at(vertex - 1, &one, budget)?;
+                        budget.charge(
+                            u64::try_from(incoming.len())
+                                .map_err(|_| ResourceError::SizeOverflow)?,
+                        )?;
+                        row.requests.extend(incoming);
+                    }
+                    if vertex < edge_count {
+                        let outgoing = trace.requests_at(vertex, &zero, budget)?;
+                        budget.charge(
+                            u64::try_from(outgoing.len())
+                                .map_err(|_| ResourceError::SizeOverflow)?,
+                        )?;
+                        row.requests.extend(outgoing);
+                    }
+                    request_rows.push(row);
+                }
+                row_ranges.push(row_start..request_rows.len());
+            }
+            reconstructions.push(TracedLineReconstruction {
+                item: item_index,
+                lines,
+                row_ranges,
+                declared_axes,
+            });
+        }
+        if request_rows.is_empty() {
+            return Ok(());
+        }
+        let ordinates = if reconstructions.iter().all(|reconstruction| {
+            !reconstruction.declared_axes.has_z() && !reconstruction.declared_axes.has_m()
+        }) {
+            vec![crate::geometry::ordinates::NodeOrdinates::default(); request_rows.len()]
+        } else {
+            crate::geometry::ordinates::resolve_request_rows(
+                &request_rows,
+                topology,
+                metric_access,
+                budget,
+            )?
+        };
+        if ordinates.len() != request_rows.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "native root resolution did not return one row per line vertex".into(),
+            )
+            .into());
+        }
+        for reconstruction in reconstructions {
+            let mut has_z = reconstruction.declared_axes.has_z();
+            let mut has_m = reconstruction.declared_axes.has_m();
+            for range in &reconstruction.row_ranges {
+                for row in ordinates.get(range.clone()).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("native line ordinate rows are incomplete".into())
+                })? {
+                    has_z &= row.z.value().is_some();
+                    has_m &= row.m.value().is_some();
+                }
+            }
+            let axes = crate::geometry::CoordinateAxes::new(
+                crate::geometry::HasZ(has_z),
+                crate::geometry::HasM(has_m),
+            );
+            if strict && axes != reconstruction.declared_axes {
+                return Err(GeometryErrorKind::ordinate_dropped("subdivide"));
+            }
+            let item = staged.get_mut(reconstruction.item).ok_or_else(|| {
+                GeometryErrorKind::Invalid("native output item is unknown".into())
+            })?;
+            let mut output_lines = Vec::with_capacity(reconstruction.lines.len());
+            for (line, range) in reconstruction.lines.into_iter().zip(reconstruction.row_ranges) {
+                budget.charge(
+                    u64::try_from(line.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
+                let mut points = Vec::with_capacity(line.len());
+                for (point, ordinate_index) in line
+                    .as_coords()
+                    .iter_coords()
+                    .zip(range)
+                {
+                    let ordinate = *ordinates.get(ordinate_index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("native line ordinate row is unknown".into())
+                    })?;
+                    points.push(Point::new_raw_axes(
+                        point.x,
+                        point.y,
+                        crate::geometry::ZOrdinate(
+                            axes.has_z().then(|| ordinate.z.value()).flatten(),
+                        ),
+                        crate::geometry::MOrdinate(
+                            axes.has_m().then(|| ordinate.m.value()).flatten(),
+                        ),
+                    ));
+                }
+                output_lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
+            }
+            item.shape = Shape::narrow_lines(axes, output_lines);
+            item.bounds = item.shape.bounds();
+            item.coordinate_count = ShapeCountQuery::default().coordinate_count(&item.shape);
+            item.trace_axes = Some(axes);
+            item.traces = None;
+        }
+        Ok(())
+    }
+
+    fn ensure_consumed(&self) -> Result<()> {
+        if self.initialized && (self.topology.is_none() || self.budget.is_none()) {
+            return Err(GeometryErrorKind::Invalid(
+                "native subdivision lost its operation-owned topology or budget".into(),
+            )
+            .into());
+        }
+        if self.initialized
+            && self
+                .selected_members
+                .difference(&self.skipped)
+                .next()
+                .is_some()
+            && self.family_state.is_none()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "native subdivision lost its frozen feature-family history".into(),
+            )
+            .into());
+        }
+        if self.prepared.is_empty() {
+            return Ok(());
+        }
+        Err(GeometryErrorKind::Invalid(
+            "native source members were prepared but never reached subdivision".into(),
+        )
+        .into())
     }
 }
 
@@ -674,13 +1324,106 @@ pub(crate) fn split(
     max_vertices: usize,
     drop: bool,
     geographic_frame: Option<crate::geographic::GeographicFrame>,
+    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+    out: &mut Vec<Shape>,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    split_with_traces(
+        shape,
+        max_vertices,
+        drop,
+        geographic_frame,
+        metric_access,
+        None,
+        out,
+        budget,
+    )
+}
+
+pub(crate) fn split_with_traces(
+    shape: Shape,
+    max_vertices: usize,
+    drop: bool,
+    geographic_frame: Option<crate::geographic::GeographicFrame>,
+    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+    source_traces: Option<Vec<SourceTrace>>,
+    out: &mut Vec<Shape>,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    let original = shape.clone();
+    let mut native = NativeSubdivisionContext::new(&original, geographic_frame);
+    split_with_context(
+        shape,
+        max_vertices,
+        drop,
+        metric_access,
+        source_traces,
+        &mut native,
+        out,
+        budget,
+    )
+}
+
+pub(crate) fn split_with_native_context(
+    shape: Shape,
+    max_vertices: usize,
+    drop: bool,
+    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+    native: &mut NativeSubdivisionContext<'_>,
+    out: &mut Vec<Shape>,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    split_with_context(
+        shape,
+        max_vertices,
+        drop,
+        metric_access,
+        None,
+        native,
+        out,
+        budget,
+    )
+}
+
+fn split_with_context(
+    shape: Shape,
+    max_vertices: usize,
+    drop: bool,
+    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+    source_traces: Option<Vec<SourceTrace>>,
+    native: &mut NativeSubdivisionContext<'_>,
     out: &mut Vec<Shape>,
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
     let mut work = Vec::with_capacity(1);
     let mut staged = Vec::new();
-    work.push(SubdivisionWorkItem::new(shape, false));
-    while let Some(item) = work.pop() {
+    let source_line_count = source_line_member_count(&shape)?;
+    let source_axes = shape.axes();
+    let item = match source_traces {
+        Some(traces) => {
+            let members = match &shape {
+                Shape::LineString(_) => 1,
+                Shape::MultiLineString(lines) => lines.len(),
+                Shape::Empty(GeometryKind::LineString) => 0,
+                _ => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source traces can only enter lineal subdivision".into(),
+                    )
+                    .into());
+                },
+            };
+            if traces.len() != members {
+                return Err(GeometryErrorKind::Invalid(
+                    "source trace rows do not match the input line members".into(),
+                )
+                .into());
+            }
+            SubdivisionWorkItem::with_traces(shape, None, None, traces, false, source_axes)
+        },
+        None => SubdivisionWorkItem::new(shape, false, Some(0..source_line_count)),
+    };
+    work.push(item);
+    while let Some(mut item) = work.pop() {
         #[cfg(test)]
         SUBDIVISION_WORK.with(|work| {
             let (items, splits) = work.get();
@@ -689,21 +1432,93 @@ pub(crate) fn split(
         if item.shape.is_empty() {
             continue;
         }
-        let item_coordinate_count = item.coordinate_count;
+        let mut item_coordinate_count = item.coordinate_count;
         if item_coordinate_count.is_some_and(|count| count <= max_vertices) {
-            staged.push(item.shape);
+            staged.push(item);
+            continue;
+        }
+        if max_vertices >= 2
+            && item.traces.is_none()
+            && let (Some(frame), Some(line_members)) =
+                (native.frame, item.source_line_members.clone())
+        {
+            let line_count = source_line_member_count(&item.shape)?;
+            if line_members.len() != line_count {
+                return Err(GeometryErrorKind::Invalid(
+                    "subdivision source line members do not match the current source shape".into(),
+                )
+                .into());
+            }
+            if !native.initialized {
+                let candidates = collect_native_line_members(
+                    &item.shape,
+                    frame,
+                    max_vertices,
+                    line_members.start,
+                )?;
+                if !candidates.is_empty() {
+                    native.prepare(
+                        max_vertices,
+                        budget,
+                        &candidates,
+                    )?;
+                }
+            }
+            if native.has_selected_member(&line_members) {
+                if matches!(&item.shape, Shape::LineString(_)) {
+                    let member = line_members.start;
+                    if let Some(prepared) = native.take_prepared_member(member) {
+                        item = SubdivisionWorkItem::with_traces(
+                            prepared.shape,
+                            None,
+                            None,
+                            prepared.traces,
+                            item.vertex_cut,
+                            prepared.trace_axes,
+                        );
+                        item.bounds = item.shape.bounds();
+                        item.coordinate_count =
+                            ShapeCountQuery::default().coordinate_count(&item.shape);
+                        item_coordinate_count = item.coordinate_count;
+                    } else if !native.skipped.contains(&member) {
+                        return Err(GeometryErrorKind::Invalid(
+                            "selected native source line has neither a prepared trace nor a no-span classification"
+                                .into(),
+                        )
+                        .into());
+                    }
+                } else if native.has_prepared_member(&line_members) {
+                    if push_subdivision_members(&mut item, max_vertices, &mut work)? {
+                        continue;
+                    }
+                    return Err(GeometryErrorKind::Invalid(
+                        "native source line is not reachable through its member path".into(),
+                    )
+                    .into());
+                } else if !native.has_skipped_member(&line_members) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native source line is not reachable through its member path".into(),
+                    )
+                    .into());
+                } else {
+                    // Source lines with no Q span stay on the ordinary path.
+                }
+            }
+        }
+        if item_coordinate_count.is_some_and(|count| count <= max_vertices) {
+            staged.push(item);
             continue;
         }
         if matches!(&item.shape, Shape::MultiPolygon(_))
-            && push_subdivision_members(&item.shape, max_vertices, &mut work)
+            && push_subdivision_members(&mut item, max_vertices, &mut work)?
         {
             continue;
         }
         let Some(bounds) = item.bounds else {
-            if push_subdivision_members(&item.shape, max_vertices, &mut work) {
+            if push_subdivision_members(&mut item, max_vertices, &mut work)? {
                 continue;
             }
-            if stage_line_vertices(&item.shape, max_vertices, &mut staged) {
+            if stage_line_vertices_with_operation_work(&item, max_vertices, native, &mut staged)? {
                 continue;
             }
             return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
@@ -742,10 +1557,10 @@ pub(crate) fn split(
                 });
                 continue;
             }
-            if push_subdivision_members(&item.shape, max_vertices, &mut work) {
+            if push_subdivision_members(&mut item, max_vertices, &mut work)? {
                 continue;
             }
-            if stage_line_vertices(&item.shape, max_vertices, &mut staged) {
+            if stage_line_vertices_with_operation_work(&item, max_vertices, native, &mut staged)? {
                 continue;
             }
             return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
@@ -756,19 +1571,45 @@ pub(crate) fn split(
         let sources = [&item.shape, &left_rect, &right_rect];
         let inventory = ExactSourceInventory::from_shapes(&sources)?;
         let mut partition = inventory.partition(budget)?;
-        if let Some(frame) = geographic_frame {
+        if let Some(frame) = native.frame {
             partition.set_geographic_frame(frame);
         }
-        let children = inventory.subdivision_parts(
-            &partition,
-            &item.shape,
-            item.shape.axes(),
-            drop,
-            [1, 2],
-            geographic_frame,
-            budget,
-        )?;
-        if children.iter().all(Shape::is_empty) {
+        let trace_rooted = item.traces.is_some() && native.topology.is_some();
+        let children = {
+            let frame = native.frame;
+            if trace_rooted {
+                let trace_work = native.budget.as_mut().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "native traced subdivision has no operation budget".into(),
+                    )
+                })?;
+                inventory.subdivision_parts_with_budget(
+                    &partition,
+                    &item.shape,
+                    item.traces.as_deref(),
+                    crate::geometry::CoordinateAxes::XY,
+                    false,
+                    [1, 2],
+                    frame,
+                    budget,
+                    metric_access,
+                    trace_work,
+                )?
+            } else {
+                inventory.subdivision_parts(
+                    &partition,
+                    &item.shape,
+                    item.traces.as_deref(),
+                    item.shape.axes(),
+                    drop,
+                    [1, 2],
+                    frame,
+                    budget,
+                    metric_access,
+                )?
+            }
+        };
+        if children.iter().all(|child| child.shape.is_empty()) {
             // A cut that cannot be represented by the exact arrangement must
             // not silently lose the source support or violate the size bound.
             if !item.vertex_cut {
@@ -778,10 +1619,10 @@ pub(crate) fn split(
                 });
                 continue;
             }
-            if stage_line_vertices(&item.shape, max_vertices, &mut staged) {
+            if stage_line_vertices_with_operation_work(&item, max_vertices, native, &mut staged)? {
                 continue;
             }
-            if push_subdivision_members(&item.shape, max_vertices, &mut work) {
+            if push_subdivision_members(&mut item, max_vertices, &mut work)? {
                 continue;
             }
             return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
@@ -790,8 +1631,8 @@ pub(crate) fn split(
             let mut counts = ShapeCountQuery::default();
             let [left, right] = &children;
             [
-                (!left.is_empty()).then(|| counts.coordinate_count(left)),
-                (!right.is_empty()).then(|| counts.coordinate_count(right)),
+                (!left.shape.is_empty()).then(|| counts.coordinate_count(&left.shape)),
+                (!right.shape.is_empty()).then(|| counts.coordinate_count(&right.shape)),
             ]
         };
         #[cfg(test)]
@@ -802,7 +1643,7 @@ pub(crate) fn split(
             let Some(child_coordinate_count) = child_coordinate_count else {
                 continue;
             };
-            let child_bounds = child.bounds();
+            let child_bounds = child.shape.bounds();
             let progress = child_bounds.is_some_and(|child_bounds| {
                 let envelope_progress = if split_x {
                     if child_bounds.maxx() <= cut {
@@ -832,9 +1673,12 @@ pub(crate) fn split(
                 progressed |= progress;
             }
             work.push(SubdivisionWorkItem {
-                shape: child,
+                shape: child.shape,
                 bounds: child_bounds,
                 coordinate_count: child_coordinate_count,
+                traces: child.traces,
+                source_line_members: None,
+                trace_axes: item.trace_axes,
                 vertex_cut: !progress,
             });
         }
@@ -846,8 +1690,10 @@ pub(crate) fn split(
             });
         }
     }
+    native.finalize(&mut staged, drop, metric_access)?;
+    native.ensure_consumed()?;
     out.reserve(staged.len());
-    out.append(&mut staged);
+    out.extend(staged.into_iter().map(|item| item.shape));
     Ok(())
 }
 
@@ -2324,8 +3170,11 @@ mod subdivision_tests {
             crate::geographic::AngularFactor::try_new("latitude", std::f64::consts::PI / 2000.0)
                 .unwrap();
         let frame = crate::geographic::GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
+        let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
+            Err(crate::crs::CrsError::invalid("unexpected source-arc metric access").into())
+        };
         let parts = shape
-            .subdivide_in_geographic_frame(8, false, frame)
+            .subdivide_in_geographic_frame(8, false, frame, &no_metric)
             .unwrap();
         assert!(parts.len() >= 2);
         let mut counts = ShapeCountQuery::default();

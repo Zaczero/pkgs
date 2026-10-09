@@ -50,6 +50,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
                 (grid_size, grid_size),
                 (0.0, 0.0),
                 crate::geometry::TopologyDomain::Cartesian,
+                None,
             )?);
         }
     } else {
@@ -96,6 +97,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
 pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
     domain: crate::geometry::TopologyDomain,
+    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
 ) -> Result<Shape> {
     let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
         return coverage_union_inner(coverage);
@@ -116,7 +118,7 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
         }) {
             shape.clone()
         } else {
-            shape.split_antimeridian_in_frame(frame)?
+            shape.split_antimeridian_in_frame_with_metric(frame, metric_access)?
         };
         split_owned.push(split);
     }
@@ -537,7 +539,11 @@ mod tests {
                 .iter()
                 .all(Shape::is_empty)
         );
-        crate::geometry::coverage_union_topo(&cleaned, crate::geometry::TopologyDomain::Cartesian)
-            .expect("dissolve accepts the repaired jittered coverage");
+        crate::geometry::coverage_union_topo(
+            &cleaned,
+            crate::geometry::TopologyDomain::Cartesian,
+            None,
+        )
+        .expect("dissolve accepts the repaired jittered coverage");
     }
 }

@@ -32,27 +32,28 @@ use crate::error::ResourceError;
 use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search,
-    build_proximity_classes as build_search_proximity_classes, exact_chord_radius,
-    possible_swept_bounds, proximity_limit,
+    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, ProximityClasses,
+    Search, SearchAccount, SearchAssignment, SearchOutcome, Work,
+    build_proximity_classes as build_search_proximity_classes, build_proximity_classes_with_work,
+    exact_chord_radius, possible_swept_bounds, proximity_limit, run_with_budget,
 };
 use crate::geometry::overlay::exact_partition::emission::emitted_pair_preserves_incidence;
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     Bounds, Contact, GeometryErrorKind, PointKey, Result, Segment, XY, for_each_candidate_pair,
-    for_each_overlapping_bounds_cross_pair, segment_contact_exact, single_chain,
+    for_each_overlapping_bounds_cross_pair_with_work, segment_contact_exact, single_chain,
 };
 
 /// The coordinate domain of a partition's output embedding.
 #[derive(Clone, Copy, Debug)]
-pub(super) enum EmbeddingDomain {
+pub(in crate::geometry) enum EmbeddingDomain {
     Plane,
     Rectangle(Bounds),
     Geographic(GeographicFrame),
 }
 
 impl EmbeddingDomain {
-    pub(super) fn admits(self, nearest: XY, candidate: XY) -> bool {
+    pub(in crate::geometry) fn admits(self, nearest: XY, candidate: XY) -> bool {
         if !candidate.x.is_finite() || !candidate.y.is_finite() {
             return false;
         }
@@ -572,7 +573,68 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         partition: &'p ExactPartition<'s>,
         emissions: &[&'e Emission],
         seeds: &[NodeId],
+        movable_cache: Vec<Option<bool>>,
+    ) -> Result<Self> {
+        Self::new_with_proximity(
+            partition,
+            emissions,
+            seeds,
+            movable_cache,
+            |search_chords, incident_chords, seed_nodes, movable_cache| {
+                build_search_proximity_classes(
+                    partition.node_count(),
+                    search_chords,
+                    incident_chords,
+                    seed_nodes,
+                    movable_cache,
+                    |node| exact_movable_node(partition, NodeId(node)),
+                    |left, right| partition.compare_nodes(NodeId(left), NodeId(right)),
+                    segments_within_chebyshev,
+                )
+            },
+        )
+    }
+
+    pub(super) fn new_with_work<A: SearchAccount>(
+        partition: &'p ExactPartition<'s>,
+        emissions: &[&'e Emission],
+        seeds: &[NodeId],
+        movable_cache: Vec<Option<bool>>,
+        account: &mut A,
+    ) -> Result<Self> {
+        Self::new_with_proximity(
+            partition,
+            emissions,
+            seeds,
+            movable_cache,
+            |search_chords, incident_chords, seed_nodes, movable_cache| {
+                build_proximity_classes_with_work(
+                    partition.node_count(),
+                    search_chords,
+                    incident_chords,
+                    seed_nodes,
+                    movable_cache,
+                    |node| exact_movable_node(partition, NodeId(node)),
+                    |left, right| partition.compare_nodes(NodeId(left), NodeId(right)),
+                    segments_within_chebyshev,
+                    account,
+                    |account, _initial_evaluations, units| account.charge_evaluations(units),
+                )
+            },
+        )
+    }
+
+    fn new_with_proximity(
+        partition: &'p ExactPartition<'s>,
+        emissions: &[&'e Emission],
+        seeds: &[NodeId],
         mut movable_cache: Vec<Option<bool>>,
+        build_proximity: impl FnOnce(
+            &[ProximityChord],
+            &[Vec<usize>],
+            &[u32],
+            &mut [Option<bool>],
+        ) -> Result<ProximityClasses>,
     ) -> Result<Self> {
         let item_refs = unique_emission_items(emissions)?;
         let mut item_chords: Vec<Vec<usize>> = emissions
@@ -651,15 +713,11 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             .map(|chord| proximity_chord(partition, chord))
             .collect();
         let seed_nodes: Vec<_> = seeds.iter().map(|node| node.0).collect();
-        let proximity = build_search_proximity_classes(
-            partition.node_count(),
+        let proximity = build_proximity(
             &search_chords,
             &incident_chords,
             &seed_nodes,
             &mut movable_cache,
-            |node| exact_movable_node(partition, NodeId(node)),
-            |left, right| partition.compare_nodes(NodeId(left), NodeId(right)),
-            segments_within_chebyshev,
         )?;
         let classes = proximity
             .classes
@@ -691,7 +749,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         class: usize,
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut impl SearchAccount,
     ) -> Result<bool> {
         let proximity = self.proximity.borrow();
         let proximity_pairs = &proximity
@@ -703,7 +761,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             .get(rank)
             .expect("rank belongs to its class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let &(left, right) = proximity_pairs
                 .get(pair_index)
                 .expect("class pair index belongs to the problem");
@@ -743,7 +801,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         class: usize,
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut impl SearchAccount,
     ) -> Result<bool> {
         // Prune local fan inversions before G composes the candidate face table.
         for &row_index in class_state
@@ -751,7 +809,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             .get(rank)
             .expect("rank belongs to its class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let row = self
                 .fan_rows
                 .get(row_index)
@@ -774,16 +832,16 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
     }
 
     #[cfg(test)]
-    pub(super) fn check_local_without_fans(
+    pub(super) fn check_local_without_fans<A: SearchAccount>(
         &self,
         class_state: &PlanarClassState,
         class: usize,
         _variables: &[NodeId],
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
-        self.check_local_pairs(class_state, class, rank, assigned, budget)
+        self.check_local_pairs(class_state, class, rank, assigned, account)
     }
 
     fn chord_has_member(&self, chord: PlanarChord) -> bool {
@@ -796,11 +854,11 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         })
     }
 
-    fn prepare_proximity(&self, budget: &mut EvaluationBudget) -> Result<()> {
+    fn prepare_proximity<A: SearchAccount>(&self, account: &mut A) -> Result<()> {
         if self.proximity.borrow().is_some() {
             return Ok(());
         }
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(self.chords.len().div_ceil(16))
                 .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -816,12 +874,15 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         let mut proximity_pairs = Vec::new();
         let mut radius_cache = self.radius_cache.borrow_mut();
         let mut movable_cache = self.movable_cache.borrow_mut();
-        let mut callback_error = None;
-        let flow =
-            for_each_overlapping_bounds_cross_pair(&left_bounds, &all_bounds, |left, right| {
+        let flow = for_each_overlapping_bounds_cross_pair_with_work(
+            &left_bounds,
+            &all_bounds,
+            account,
+            |left, right, work| {
+                work.charge(1)?;
                 let left_index = left_indices[left];
                 if left_index == right {
-                    return ControlFlow::Continue(());
+                    return Ok(ControlFlow::Continue(()));
                 }
                 let left_chord = self
                     .chords
@@ -831,32 +892,20 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                     .chords
                     .get(right)
                     .expect("cross-pair right index belongs to the planar chord table");
-                let left_radius = match exact_planar_chord_radius(
+                let left_radius = exact_planar_chord_radius(
                     self.partition,
                     left_index,
                     left_chord,
                     &mut radius_cache,
                     &mut movable_cache,
-                ) {
-                    Ok(radius) => radius,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return ControlFlow::Break(());
-                    },
-                };
-                let right_radius = match exact_planar_chord_radius(
+                )?;
+                let right_radius = exact_planar_chord_radius(
                     self.partition,
                     right,
                     right_chord,
                     &mut radius_cache,
                     &mut movable_cache,
-                ) {
-                    Ok(radius) => radius,
-                    Err(error) => {
-                        callback_error = Some(error);
-                        return ControlFlow::Break(());
-                    },
-                };
+                )?;
                 if segments_within_chebyshev(
                     left_chord.nearest,
                     right_chord.nearest,
@@ -864,11 +913,9 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 ) {
                     proximity_pairs.push((left_index.min(right), left_index.max(right)));
                 }
-                ControlFlow::Continue(())
-            })?;
-        if let Some(error) = callback_error {
-            return Err(error);
-        }
+                Ok(ControlFlow::<std::convert::Infallible>::Continue(()))
+            },
+        )?;
         debug_assert!(flow.is_continue());
         proximity_pairs.sort_unstable();
         proximity_pairs.dedup();
@@ -1082,6 +1129,50 @@ impl ExactPartition<'_> {
         emissions: &[&Emission],
         operation: &'static str,
     ) -> Result<Embedding<'p>> {
+        self.embed_with_search(emissions, |seeds, movable_cache| {
+            let problem = PlanarProblem::new(self, emissions, seeds, movable_cache)?;
+            let constructed = problem.classes.iter().try_fold(0_usize, |count, class| {
+                count
+                    .checked_add(class.len())
+                    .ok_or(ResourceError::SizeOverflow)
+            })?;
+            Search::new(problem, operation, constructed)?.run()
+        })
+    }
+
+    pub(super) fn embed_with_budget<'p>(
+        &'p self,
+        emissions: &[&Emission],
+        operation: &'static str,
+        budget: &mut EvaluationBudget,
+    ) -> Result<Embedding<'p>> {
+        self.embed_with_search(emissions, |seeds, movable_cache| {
+            let mut problem =
+                PlanarProblem::new_with_work(self, emissions, seeds, movable_cache, budget)?;
+            let constructed = problem.classes.iter().try_fold(0_usize, |count, class| {
+                count
+                    .checked_add(class.len())
+                    .ok_or(ResourceError::SizeOverflow)
+            })?;
+            budget.include_constructed(constructed)?;
+            match run_with_budget(&mut problem, budget)? {
+                SearchOutcome::Pass(assignment) => Ok(assignment),
+                SearchOutcome::Exhausted => Err(budget.unrepresentable()),
+            }
+        })
+    }
+
+    fn embed_with_search<'p, F>(
+        &'p self,
+        emissions: &[&Emission],
+        solve: F,
+    ) -> Result<Embedding<'p>>
+    where
+        F: FnOnce(
+            &[NodeId],
+            Vec<Option<bool>>,
+        ) -> Result<SearchAssignment<NodeId, XY, ()>>,
+    {
         let embedding = Embedding::nearest(self);
         let mut needs_certificate = false;
         for emission in emissions {
@@ -1122,13 +1213,7 @@ impl ExactPartition<'_> {
                 if seeds.is_empty() {
                     return Err(first_witness.into_error());
                 }
-                let problem = PlanarProblem::new(self, emissions, &seeds, movable_cache)?;
-                let constructed = problem.classes.iter().try_fold(0_usize, |count, class| {
-                    count
-                        .checked_add(class.len())
-                        .ok_or(ResourceError::SizeOverflow)
-                })?;
-                let assignment = Search::new(problem, operation, constructed)?.run()?;
+                let assignment = solve(&seeds, movable_cache)?;
                 let mut coordinates = embedding.coordinates().to_vec();
                 for class in assignment.classes {
                     for (node, candidate) in class.variables.into_iter().zip(class.values) {
@@ -1440,14 +1525,22 @@ impl Problem for PlanarProblem<'_, '_, '_> {
     type Candidate = XY;
     type Key = PointKey;
     type ClassState = PlanarClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         &self.classes
     }
 
-    fn fixed_keys(&self, class: usize, _variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        _variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        work.charge_product(self.live_nodes.len(), 1)?;
         let mut keys = Vec::with_capacity(self.live_nodes.len());
         for &node in &self.live_nodes {
+            work.charge(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -1455,6 +1548,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
+                work.charge(1)?;
                 keys.push(PointKey::new(self.partition.nearest_xy(node)));
             }
         }
@@ -1465,26 +1559,49 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         self.partition.compare_nodes(left, right)
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
         let nearest = self.partition.nearest_xy(node);
-        let x_values = [nearest.x.next_down(), nearest.x, nearest.x.next_up()];
-        let y_values = [nearest.y.next_down(), nearest.y, nearest.y.next_up()];
-        let x_count =
-            if self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal {
-                1
+        work.charge(2)?;
+        let x_exact = self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal;
+        let y_exact = self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal;
+        let x_values = [
+            if x_exact {
+                nearest.x
             } else {
-                3
-            };
-        let y_count =
-            if self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal {
-                1
+                nearest.x.next_down()
+            },
+            nearest.x,
+            if x_exact {
+                nearest.x
             } else {
-                3
-            };
+                nearest.x.next_up()
+            },
+        ];
+        let y_values = [
+            if y_exact {
+                nearest.y
+            } else {
+                nearest.y.next_down()
+            },
+            nearest.y,
+            if y_exact {
+                nearest.y
+            } else {
+                nearest.y.next_up()
+            },
+        ];
+        let x_count: usize = if x_exact { 1 } else { 3 };
+        let y_count: usize = if y_exact { 1 } else { 3 };
+        let candidate_count = x_count
+            .checked_mul(y_count)
+            .expect("candidate axis counts are each one or three");
+        work.charge_product(candidate_count, 1)?;
+        candidates.reserve(candidate_count);
         for &x in x_values
             .get(..x_count)
             .expect("candidate axis count is one or three")
@@ -1522,13 +1639,13 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         PointKey::new(candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         _variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        self.prepare_proximity(budget)?;
+        self.prepare_proximity(account)?;
         let prepared = self.proximity.borrow();
         Ok(prepared
             .as_ref()
@@ -1539,32 +1656,32 @@ impl Problem for PlanarProblem<'_, '_, '_> {
             .clone())
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         _variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
-        if !self.check_local_pairs(class_state, class, rank, assigned, budget)? {
+        if !self.check_local_pairs(class_state, class, rank, assigned, account)? {
             return Ok(false);
         }
-        self.check_local_fans(class_state, class, rank, assigned, budget)
+        self.check_local_fans(class_state, class, rank, assigned, account)
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         if self
             .emissions
             .iter()
             .all(|emission| emission.faces.is_none())
         {
-            return Ok(GlobalCheck::Pass);
+            return Ok(GlobalCheck::Pass(()));
         }
         let mut coordinates = Embedding::nearest(self.partition).coordinates().to_vec();
         for assignment in assignments {
@@ -1579,7 +1696,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
             let Some(faces) = &emission.faces else {
                 continue;
             };
-            budget.charge(
+            account.charge_evaluations(
                 u64::try_from(emission.items.len().div_ceil(16))
                     .map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -1638,7 +1755,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 return Ok(GlobalCheck::Reject(classes));
             }
         }
-        Ok(GlobalCheck::Pass)
+        Ok(GlobalCheck::Pass(()))
     }
 
     fn initial_evaluations(&self) -> u64 {

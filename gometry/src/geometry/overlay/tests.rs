@@ -836,8 +836,24 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
     );
 
     assert_eq!(
-        shape_wkb(&shared.node(Strictness::Lenient).unwrap()),
-        shape_wkb(&expanded.node(Strictness::Lenient).unwrap()),
+        shape_wkb(
+            &shared
+                .node_with_metric::<crate::crs::GeodesicMetric>(
+                    TopologyDomain::Cartesian,
+                    Strictness::Lenient,
+                    None,
+                )
+                .unwrap(),
+        ),
+        shape_wkb(
+            &expanded
+                .node_with_metric::<crate::crs::GeodesicMetric>(
+                    TopologyDomain::Cartesian,
+                    Strictness::Lenient,
+                    None,
+                )
+                .unwrap(),
+        ),
         "node: {name}, depth {depth}"
     );
     assert_eq!(
@@ -4402,11 +4418,18 @@ mod exact_geographic_nary_tests {
             Point::new_raw_xy(180.0, -1.0),
             Point::new_raw_xy(180.0, 1.0),
         ]);
-        let output = super::super::nary::overlay_all(
+        let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
+        let resolved = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+        let crate::crs::ResolvedMetric::Geodesic(metric) = resolved else {
+            unreachable!("EPSG:4326 resolves to a geodesic chart metric")
+        };
+        let metric_access = || Ok(&metric);
+        let output = crate::geometry::overlay_all_with_metric(
             &[&crossing, &meridian],
             TopologyDomain::Geographic(frame()),
             OverlayOp::Intersection,
             Strictness::Strict,
+            &metric_access,
         )
         .unwrap();
         let Shape::Point(point) = output else {

@@ -597,8 +597,13 @@ impl ExactSourceInventory {
             .collect();
         let emission_refs: Vec<_> = emissions.iter().collect();
         let embedding = partition.embed(&emission_refs, "coverage_clean")?;
-        let by_node =
-            self.resolve_node_points(partition, &embedding, &output_nodes, declared_axes)?;
+        let by_node = self.resolve_node_points::<crate::crs::GeodesicMetric>(
+            partition,
+            &embedding,
+            &output_nodes,
+            declared_axes,
+            None,
+        )?;
 
         let mut outputs = Vec::with_capacity(row_count);
         for (plan, emission) in plans.into_iter().zip(&emissions) {

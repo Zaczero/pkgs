@@ -763,10 +763,12 @@ mod wkt;
 
 #[cfg(test)]
 pub(crate) use geojson::parse_geojson;
+#[cfg(test)]
+pub(crate) use geojson::to_geojson_string;
 pub(crate) use geojson::{
     DefiningMembers, GEOJSON_M_ERROR, GeoJsonCrs, GeoJsonMemberKind, LegacyGeoJsonCrsPolicy,
-    geojson_domain, geojson_interface_error, parse_geojson_at, reject_rfc7946_cross_type_members,
-    reject_rfc7946_value_object, to_geojson_string, validate_geojson_bbox,
+    geojson_interface_error, parse_geojson_at, reject_rfc7946_cross_type_members,
+    reject_rfc7946_value_object, to_geojson_string_with_metric, validate_geojson_bbox,
     validate_geojson_bbox_member, validate_geojson_feature_id, validate_geojson_feature_members,
     validate_geojson_feature_properties,
 };

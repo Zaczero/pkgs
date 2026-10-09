@@ -454,18 +454,27 @@ impl PyGeometryArray {
             ));
         }
         let array = self.clone();
-        let domain = crate::io::geojson_domain(self.crs_str())?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) =
+            crate::py::support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic GeoJSON source ordinates require the array CRS metric",
+                )
+                .into()
+            })
+        };
         let geometry_texts = py
             .detach(move || {
-                let mut texts = Vec::with_capacity(array.len());
+                let mut texts: Vec<Option<String>> = Vec::with_capacity(array.len());
                 for row in array.row_operation().rows_with_missing(|| ()) {
-                    let text =
-                        match row {
-                            ArrayRow::Missing { .. } => None,
-                            ArrayRow::Present(row) => Some(row.row().try_with_shape(|shape| {
-                                crate::io::to_geojson_string(shape, domain)
-                            })?),
-                        };
+                    let text = match row {
+                        ArrayRow::Missing { .. } => None,
+                        ArrayRow::Present(row) => Some(row.row().try_with_shape(|shape| {
+                            crate::io::to_geojson_string_with_metric(shape, domain, &metric_access)
+                        })?),
+                    };
                     texts.push(text);
                 }
                 Ok::<_, crate::error::Error>(texts)

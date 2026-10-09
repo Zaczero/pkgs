@@ -362,11 +362,12 @@ fn bounds_disjoint(left: Bounds, right: Bounds) -> bool {
 
 /// Overlay already-charted geographic split parts with exact planar topology
 /// while retaining vertices that still define geographic metric edges.
-pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>>(
+pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry::ChartMetric>(
     geometries: &[S],
     frame: GeographicFrame,
     op: OverlayOp,
     strictness: Strictness,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     if geometries.is_empty() {
         return Err(GeometryErrorKind::EmptyGeometrySequence {
@@ -376,13 +377,14 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>>(
     }
     let mut inputs = Vec::with_capacity(geometries.len());
     inputs.extend(geometries.iter().map(std::borrow::Borrow::borrow));
-    exact_partition_overlay_with_bounds_certificates(
+    exact_partition_overlay_with_bounds_certificates::<M>(
         inputs,
         op,
         strictness,
         true,
         Some(frame),
         ExactPartitionBudget::Charge,
+        metric_access,
     )
 }
 
@@ -482,13 +484,14 @@ fn exact_cartesian_overlay(
     {
         return Ok((**input).clone());
     }
-    exact_partition_overlay_with_bounds_certificates(
+    exact_partition_overlay_with_bounds_certificates::<crate::crs::GeodesicMetric>(
         inputs,
         operation,
         strictness,
         bounds_certificates,
         None,
         partition_budget,
+        None,
     )
 }
 
@@ -517,13 +520,14 @@ fn exact_cartesian_binary_overlay(
         return Ok(shape);
     }
 
-    exact_partition_overlay_with_bounds_certificates(
+    exact_partition_overlay_with_bounds_certificates::<crate::crs::GeodesicMetric>(
         sorted_inputs.to_vec(),
         operation,
         strictness,
         bounds_certificates,
         None,
         partition_budget,
+        None,
     )
 }
 
@@ -701,13 +705,14 @@ fn compare_puntal_sources(
     order
 }
 
-fn exact_partition_overlay_with_bounds_certificates(
+fn exact_partition_overlay_with_bounds_certificates<M: crate::geometry::ChartMetric>(
     mut inputs: Vec<&Shape>,
     operation: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
     geographic: Option<GeographicFrame>,
     partition_budget: ExactPartitionBudget,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     puntal_nary_lane!(&inputs, operation, strictness, None);
     sort_overlay_inputs!(inputs, operation);
@@ -728,13 +733,14 @@ fn exact_partition_overlay_with_bounds_certificates(
         None
     };
     let shape = match components {
-        None => exact_partition_overlay(
+        None => exact_partition_overlay::<M>(
             inputs,
             operation,
             declared_axes,
             strict,
             geographic,
             partition_budget,
+            metric_access,
         )?,
         Some(components) => {
             let mut shapes = Vec::with_capacity(components.len());
@@ -747,13 +753,14 @@ fn exact_partition_overlay_with_bounds_certificates(
                     reason = "component ordinals are returned from the same input-sized bounds array"
                 )]
                 subset.extend(component.iter().map(|&index| inputs[index]));
-                shapes.push(exact_partition_overlay(
+                shapes.push(exact_partition_overlay::<M>(
                     &subset,
                     operation,
                     declared_axes,
                     strict,
                     geographic,
                     partition_budget,
+                    metric_access,
                 )?);
             }
             join_components(&shapes)?
@@ -1862,13 +1869,14 @@ fn append_overlay_parts(
 }
 
 /// One exact Cartesian partition over the already canonical-ordered inputs.
-fn exact_partition_overlay(
+fn exact_partition_overlay<M: crate::geometry::ChartMetric>(
     inputs: &[&Shape],
     operation: OverlayOp,
     declared_axes: CoordinateAxes,
     strict: bool,
     geographic: Option<GeographicFrame>,
     partition_budget: ExactPartitionBudget,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Shape> {
     let union = if operation == OverlayOp::Union {
         ExactSourceInventory::from_polygonal_union(inputs)?
@@ -1892,7 +1900,7 @@ fn exact_partition_overlay(
         // edges, so exact planar simplification must not merge them.
         partition.set_geographic_frame(frame);
     }
-    inventory.overlay_shape(&partition, operation, declared_axes, strict)
+    inventory.overlay_shape(&partition, operation, declared_axes, strict, metric_access)
 }
 
 #[cfg(test)]
@@ -1904,13 +1912,14 @@ pub(super) fn full_partition_cartesian_overlay(
     let mut inputs = inputs.to_vec();
     sort_overlay_inputs!(inputs, operation);
     let inputs = inputs.as_slice();
-    let shape = exact_partition_overlay(
+    let shape = exact_partition_overlay::<crate::crs::GeodesicMetric>(
         inputs,
         operation,
         overlay_declared_axes(inputs, operation),
         strictness.is_strict(),
         None,
         ExactPartitionBudget::Charge,
+        None,
     )?;
     Ok(if shape.is_empty() {
         empty_nary_overlay_shape(inputs, operation)
@@ -1990,13 +1999,14 @@ pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
     if crate::geometry::geographic_topology_route(originals.views().iter().copied())
         == GeographicTopologyRoute::ExactPartition
     {
-        return exact_partition_overlay_with_bounds_certificates(
+        return exact_partition_overlay_with_bounds_certificates::<M>(
             original_refs,
             op,
             strictness,
             bounds_certificates,
             Some(originals.frame()),
             ExactPartitionBudget::Charge,
+            metric_access,
         );
     }
     exact_geographic_q_overlay::<M>(

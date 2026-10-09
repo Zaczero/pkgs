@@ -358,8 +358,20 @@ impl PyGeometry {
             return Err(PyTypeError::new_err(crate::io::geojson_interface_error()));
         }
         let shape = std::sync::Arc::clone(&self.shape);
-        let domain = crate::io::geojson_domain(self.crs_str())?;
-        let text = py.detach(move || crate::io::to_geojson_string(shape.shape(), domain))?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) =
+            crate::py::support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic GeoJSON source ordinates require the geometry CRS metric",
+                )
+                .into()
+            })
+        };
+        let text = py.detach(move || {
+            crate::io::to_geojson_string_with_metric(shape.shape(), domain, &metric_access)
+        })?;
         let geometry = crate::boundary::json_text_to_py(py, &text)?;
         Ok(geometry.bind(py).clone().cast_into()?)
     }

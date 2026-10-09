@@ -106,6 +106,7 @@ mod areal;
 mod assembly;
 mod clip;
 mod exact_partition;
+pub(in crate::geometry) use exact_partition::EmbeddingDomain;
 mod nary;
 mod noding;
 mod rect;
@@ -115,7 +116,8 @@ pub(in crate::geometry) use areal::ray_crossing;
 #[cfg(test)]
 pub(in crate::geometry) use areal::{binary_areal_overlay, build_areal_arrangement};
 pub(crate) use assembly::{
-    build_certified_overlay_shape, build_certified_overlay_shape_with_axes, merge_chains,
+    build_certified_overlay_shape, build_certified_overlay_shape_with_axes,
+    build_certified_overlay_shape_with_axes_and_order, merge_chains, CertifiedOverlayOrder,
 };
 pub(crate) use clip::intersect_rectangular_polygonal;
 pub(super) use clip::polygon_parts_to_shape;
@@ -123,10 +125,11 @@ pub(super) use clip::polygon_parts_to_shape;
 pub(crate) use exact_partition::cartesian_support_nonempty;
 pub(in crate::geometry) use exact_partition::{
     AreaLocationStrategy, ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport,
-    ExactPartition, ExactPointForest, ExactSourceInventory, NodeId, RayAxis, RayPoints,
-    StagedExactSources, StagedRelationItem, StagedSourceComponent, clip_polygonal_rectangle,
-    emitted_pair_preserves_incidence, homogeneous_midpoint, segments_within_chebyshev, shoot_left,
-    visit_component_faces,
+    ExactPartition, ExactPointForest, ExactSourceInventory, GlobalFaces, NodeId, RayAxis,
+    RayPoints, StagedExactSources, StagedRelationItem, StagedSourceComponent, SubdivisionPart,
+    clip_polygonal_rectangle, compare_departures_with_work, emitted_pair_preserves_incidence,
+    graph_global_faces_with_work, homogeneous_midpoint, segments_within_chebyshev, shoot_left,
+    shoot_left_with_work, visit_component_faces, walk_is_shell_with_work,
 };
 pub(crate) use exact_partition::{
     exact_intersects_bounds, occupied_cartesian_area, occupied_cartesian_support,

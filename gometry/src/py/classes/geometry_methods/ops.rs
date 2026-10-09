@@ -90,9 +90,23 @@ impl PyGeometry {
         // public writer always selects the RFC 7946 geographic rules.
         let shape = Arc::clone(&self.shape);
         let frame = self.frame.clone();
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) =
+            crate::py::support::geojson_domain_metric(frame.crs_str(), &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic GeoJSON source ordinates require the geometry CRS metric",
+                )
+                .into()
+            })
+        };
         py.detach(move || {
-            let domain = io::geojson_domain(frame.crs_str())?;
-            Ok(io::to_geojson_string(&shape, domain)?)
+            Ok(io::to_geojson_string_with_metric(
+                &shape,
+                domain,
+                &metric_access,
+            )?)
         })
     }
 
@@ -107,9 +121,21 @@ impl PyGeometry {
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Typed> {
-        let domain = geometry::topology_domain(&self.frame)?;
-        let repaired =
-            py.detach(|| geometry::repair_data_in_frame(&self.prepared_plan(), domain, method))?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic repair source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        let plan = self.prepared_plan();
+        let repaired = py.detach(move || {
+            geometry::repair_data_in_frame(&plan, domain, method, Some(&metric_access))
+        })?;
         Ok(Typed(repaired.map_or_else(
             || self.clone(),
             |shape| self.with_shape(shape),
@@ -315,16 +341,25 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         let max_vertices = validate_subdivide_max_vertices(max_vertices)?;
         let shape = Arc::clone(&self.shape);
-        let geographic_frame = match crate::geometry::topology_domain(&self.frame)? {
-            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
-            crate::geometry::TopologyDomain::Cartesian => None,
-        };
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         let parts = py.detach(move || {
-            geographic_frame.map_or_else(
-                || shape.subdivide(max_vertices, false),
-                |frame| shape.subdivide_in_geographic_frame(max_vertices, false, frame),
-            )
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic subdivision source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
+            match domain {
+                crate::geometry::TopologyDomain::Cartesian => shape.subdivide(max_vertices, false),
+                crate::geometry::TopologyDomain::Geographic(frame) => shape
+                    .subdivide_in_geographic_frame(max_vertices, false, frame, &metric_access),
+            }
         })?;
+        drop(metric_scratch);
         self.parts_to_array(parts)
     }
 }

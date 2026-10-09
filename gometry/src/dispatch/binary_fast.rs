@@ -1,8 +1,8 @@
 use pyo3::prelude::*;
 
 use crate::broadcast::{
-    GeometryInput, SimilarityOp, array_crs_distances, array_crs_dwithin, classify_required,
-    predicate_pairwise_arrays, predicate_scalar_vs_array,
+    GeometryInput, OverlayOutput, SimilarityOp, array_crs_distances, array_crs_dwithin,
+    classify_required, predicate_pairwise_arrays, predicate_scalar_vs_array,
 };
 use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::binary::{
@@ -75,7 +75,7 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
 /// Overlay set-ops use the shared geometry kernel over array rows.
 pub(crate) struct OverlayFastPath;
 
-impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
+impl BinaryArrayFastPath<OverlayOutput> for OverlayFastPath {
     fn is_eligible(
         &self,
         _left: &crate::PyGeometryArray,
@@ -466,7 +466,8 @@ mod tests {
     use crate::array::PyGeometryArray;
     use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::storage::{
-        ValidityMask, reset_shape_iter_materializations, shape_iter_materializations,
+        GeometryArrayStorage, ValidityMask, reset_shape_iter_materializations,
+        shape_iter_materializations,
     };
     use crate::geometry::{LineSeq, Point, Shape};
     use crate::predicates::engine::Predicate;
@@ -531,6 +532,36 @@ mod tests {
                 "{message}"
             );
             assert!(!message.contains("geographic shape"), "{message}");
+        });
+    }
+
+    #[test]
+    fn geographic_array_overlay_keeps_the_bound_shape_sink_mixed() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+                .expect("EPSG:4326 is a valid geographic frame");
+            let polygon = crate::io::parse_wkt(
+                "POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))",
+            )
+            .expect("the geographic polygon parses");
+            let left = PyGeometryArray::from_shapes(vec![polygon.clone()], frame.clone())
+                .expect("the input array is admitted");
+            let right = PyGeometry::with_frame(polygon, frame);
+            let left = Bound::new(py, left).unwrap().into_any();
+            let right = Bound::new(py, right).unwrap().into_any();
+
+            let result = super::dispatch_overlay(py, &left, &right, crate::OverlayOp::Union)
+                .expect("the geographic overlay completes");
+            let output = result
+                .bind(py)
+                .cast::<PyGeometryArray>()
+                .expect("an array operand returns a GeometryArray")
+                .get();
+            assert!(
+                matches!(output.storage(), GeometryArrayStorage::Mixed(_)),
+                "the bound geographic Shape sink must not be packed after acceptance"
+            );
         });
     }
 

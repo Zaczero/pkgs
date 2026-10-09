@@ -19,7 +19,7 @@ use crate::{
     parse_geojson_geometry_value, point_distance, scalar_vs_shapes,
 };
 mod element;
-pub(crate) use element::BulkElement;
+pub(crate) use element::{BulkElement, OverlayOutput};
 
 use crate::error::Result;
 use crate::predicates::PredicateSpec;
@@ -86,8 +86,8 @@ where
         left,
         right,
         op_name,
-        crate::dispatch::MetricResolver::None,
-        &crate::dispatch::OverlayFastPath,
+        crate::dispatch::MetricResolver::GeographicCarry,
+        &crate::dispatch::NoBinaryFastPath,
         move |left, right, _ctx| kernel(left, right),
     )
 }

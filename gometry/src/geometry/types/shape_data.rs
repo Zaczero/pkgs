@@ -6,9 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::HeapSize;
 use crate::crs::ChartEdge;
 use crate::error::Result;
-use crate::geographic::{
-    GeodeticPole, GeographicFrame, RetainedChartDisplacement, ScalarGeographicView,
-};
+use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
 use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
@@ -22,7 +20,7 @@ use crate::geometry::types::{Bounds, Point, Segment, Shape, XY};
 use crate::geometry::{
     ChartLineIndex, DistanceParts, GeographicAreaDensity, GeographicMetricKey, GeographicPrepared,
     GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
-    PlanarMetric,
+    PlanarMetric, Work,
 };
 
 fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
@@ -1485,19 +1483,21 @@ pub(crate) trait ChartMetric {
 
     fn chart_frame(&self) -> GeographicFrame;
     fn chart_edge(&self, start: Point, end: Point) -> Result<ChartEdge>;
-    fn chart_edge_from_retained(
-        &self,
-        start: Point,
-        end: Point,
-        longitude: RetainedChartDisplacement,
-    ) -> Result<ChartEdge>;
     fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64>;
+    fn chart_edge_length_with_work(&self, edge: &ChartEdge, work: &mut impl Work) -> Result<f64>;
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64>;
     fn chart_edge_arclength_fraction(
         &self,
         edge: &ChartEdge,
         parameter: f64,
         total_length: Option<f64>,
+    ) -> Result<f64>;
+    fn chart_edge_arclength_fraction_with_work(
+        &self,
+        edge: &ChartEdge,
+        parameter: f64,
+        total_length: Option<f64>,
+        work: &mut impl Work,
     ) -> Result<f64>;
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64>;
     /// Measure a source edge interval without rounding exact chart-cut points.

@@ -133,7 +133,9 @@ mod distance;
 pub(in crate::geometry) use distance::{ExactPoint, point_segment_distance_squared_exact};
 pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch};
 pub(crate) use types::coordinate_columns_eq;
+pub(in crate::geometry) mod embedding_completion;
 mod embedding_search;
+pub(crate) use embedding_search::{Unmetered, Work};
 mod facet_bvh;
 mod generated_budget;
 mod line_index;
@@ -141,7 +143,8 @@ mod linear;
 mod linear_3d;
 mod ordinates;
 pub(crate) use ordinates::{
-    ParallelSourceArcMetricAccess, SourceArcMetricAccess, source_ordinate_values_at_fraction,
+    ParallelSourceArcMetricAccess, RootMetricState, SourceArcMetricAccess,
+    source_ordinate_values_at_fraction,
 };
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
@@ -326,7 +329,8 @@ pub(crate) use relate::{
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
 pub(crate) use segment_index::{PointEntry, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 #[cfg(test)]
@@ -353,7 +357,7 @@ pub(crate) use segments::{
     interpolate_subdivision_ordinate,
 };
 pub(crate) use segments::{point_segment_distance, point_segment_selection, segment_projection};
-pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
+pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::{CdtRefinement, VoronoiPolygonOutput, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;

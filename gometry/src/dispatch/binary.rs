@@ -22,7 +22,9 @@ use crate::geometry::storage::{ShapeRow, ValidityMask, validity as missing};
 use crate::geometry::{PreparedPlan, Shape, ShapeData, TopologyDomain};
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
-use crate::{PyGeometry, PyGeometryArray, Typed};
+#[cfg(test)]
+use crate::PyGeometry;
+use crate::PyGeometryArray;
 
 type FramedMaskedRows<R> = (Vec<R>, Option<ValidityMask>, Frame);
 
@@ -783,13 +785,23 @@ where
 fn split_operand_arc_for_topology(
     domain: TopologyDomain,
     geometry: &PyGeometry,
+    metric: MetricCtx<'_>,
 ) -> Result<Arc<PreparedPlan>> {
     let plan = geometry.prepared_plan();
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
     {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic topology split source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+        };
         Ok(Arc::new(PreparedPlan::new(ShapeData::from(
-            plan.shape().split_antimeridian_in_frame(frame)?,
+            plan.shape()
+                .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))?,
         ))))
     } else {
         Ok(plan)
@@ -799,6 +811,7 @@ fn split_operand_arc_for_topology(
 /// The shared antimeridian gate for geometry-returning binary lanes.
 fn invoke_topology_geometry_kernel<K>(
     domain: TopologyDomain,
+    metric: MetricCtx<'_>,
     left: &PreparedPlan,
     right: &PreparedPlan,
     kernel: &K,
@@ -818,15 +831,34 @@ where
             unreachable!("Cartesian topology cannot cross the antimeridian")
         };
         let left_split = if left_crosses {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic topology split source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
             Some(PreparedPlan::new(ShapeData::from(
-                left.shape().split_antimeridian_in_frame(frame)?,
+                left.shape()
+                    .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))?,
             )))
         } else {
             None
         };
         let right_split = if right_crosses {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic topology split source ordinates require the operation's CRS metric",
+                    )
+                    .into()
+                })
+            };
             Some(PreparedPlan::new(ShapeData::from(
-                right.shape().split_antimeridian_in_frame(frame)?,
+                right
+                    .shape()
+                    .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))?,
             )))
         } else {
             None
@@ -841,19 +873,20 @@ where
 }
 
 /// Geometry-returning binary dispatch with topology split.
-pub(crate) fn dispatch_binary_geometry<F>(
+pub(crate) fn dispatch_binary_geometry<R, F>(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: MetricResolver,
     fast_path: &F,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
     + Send
     + Sync,
 ) -> PyResult<Py<PyAny>>
 where
-    F: BinaryArrayFastPath<Shape>,
+    R: BulkElement,
+    F: BinaryArrayFastPath<R>,
 {
     let admission = admit_binary(left, right, op_name)?;
     dispatch_binary_geometry_admitted_with_resolver(
@@ -861,40 +894,19 @@ where
     )
 }
 
-pub(crate) fn dispatch_binary_geometry_admitted<F>(
-    py: Python<'_>,
-    admission: &BinaryAdmission<'_>,
-    op_name: &str,
-    fast_path: &F,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
-    + Send
-    + Sync,
-) -> PyResult<Py<PyAny>>
-where
-    F: BinaryArrayFastPath<Shape>,
-{
-    dispatch_binary_geometry_admitted_with_resolver(
-        py,
-        admission,
-        op_name,
-        MetricResolver::None,
-        fast_path,
-        kernel,
-    )
-}
-
-fn dispatch_binary_geometry_admitted_with_resolver<F>(
+pub(crate) fn dispatch_binary_geometry_admitted_with_resolver<R, F>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
     op_name: &str,
     resolver: MetricResolver,
     fast_path: &F,
-    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
+    kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R>
     + Send
     + Sync,
 ) -> PyResult<Py<PyAny>>
 where
-    F: BinaryArrayFastPath<Shape>,
+    R: BulkElement,
+    F: BinaryArrayFastPath<R>,
 {
     use GeometryInput::{Many, One};
 
@@ -919,15 +931,16 @@ where
                 };
                 let left_shape = left.prepared_plan();
                 let right_shape = right.prepared_plan();
-                invoke_topology_geometry_kernel(domain, &left_shape, &right_shape, &|l, r| {
-                    kernel(l, r, &ctx)
-                })
+                invoke_topology_geometry_kernel(
+                    domain,
+                    metric,
+                    &left_shape,
+                    &right_shape,
+                    &|l, r| kernel(l, r, &ctx),
+                )
             };
             drop(metric_scratch);
-            let shape = result?;
-            Ok(Typed(PyGeometry::with_frame(shape, frame))
-                .into_pyobject(py)?
-                .unbind())
+            R::into_py(result?, py, &frame)
         },
         (One(left), Many(right)) => {
             let frame = admission.frame.clone();
@@ -958,7 +971,7 @@ where
                             return Err(error);
                         },
                     };
-                let left_fixed = match split_operand_arc_for_topology(domain, left) {
+                let left_fixed = match split_operand_arc_for_topology(domain, left, metric) {
                     Ok(left_fixed) => left_fixed,
                     Err(error) => {
                         drop(metric_scratch);
@@ -978,6 +991,7 @@ where
                         let right_data = products.warm_prepared_at(row, right_row, known_bounds)?;
                         invoke_topology_geometry_kernel(
                             domain,
+                            metric,
                             &left_fixed,
                             &right_data,
                             &|l, r| kernel(l, r, ctx),
@@ -986,8 +1000,8 @@ where
                 )
             };
             drop(metric_scratch);
-            let shapes = result.map_err(rows_err)?;
-            Shape::bulk_into_py_masked(shapes, py, &output_frame, right.missing())
+            let values = result.map_err(rows_err)?;
+            R::bulk_into_py_masked(values, py, &output_frame, right.missing())
         },
         (Many(left), right_in) => {
             let frame = admission.frame.clone();
@@ -1010,18 +1024,18 @@ where
             let mut scratch = MetricScratch::default();
             let result = {
                 let (domain, metric) = resolver.resolve_topology_ctx(&frame, &mut scratch)?;
-                geometry_kernel_over_array_admitted(
+                geometry_rows_over_array_admitted(
                     py, left, right_in, &frame, domain, metric, kernel,
                 )
             };
             drop(scratch);
-            let array = result?;
-            Ok(array.into_pyobject(py)?.unbind().into())
+            let (values, missing, output_frame) = result?;
+            R::bulk_into_py_masked(values, py, &output_frame, missing.as_ref())
         },
     }
 }
 
-fn geometry_kernel_over_array_admitted<K>(
+fn geometry_rows_over_array_admitted<R, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: GeometryInput<'_>,
@@ -1029,9 +1043,10 @@ fn geometry_kernel_over_array_admitted<K>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> PyResult<PyGeometryArray>
+) -> PyResult<FramedMaskedRows<R>>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
+    R: BulkElement,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     use GeometryInput::{Many, One};
     let row_box = |bounds: &Option<crate::array::ElementBounds>,
@@ -1043,9 +1058,9 @@ where
     // a pure overlay of two packed point arrays must not retain multi-MiB
     // element-bounds sidecars on the inputs. Cold rows use `quick_bounds`.
     let left_bounds = left.existing_element_bounds();
-    let result = match right {
+    let values = match right {
         One(right) => {
-            let right_shape = match split_operand_arc_for_topology(domain, right) {
+            let right_shape = match split_operand_arc_for_topology(domain, right, metric) {
                 Ok(right_shape) => right_shape,
                 Err(error) => return Err(PyErr::from(error)),
             };
@@ -1060,11 +1075,16 @@ where
                 move |row, left_row, ctx, products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     let left_data = products.warm_prepared_at(row, left_row, left_box)?;
-                    invoke_topology_geometry_kernel(domain, &left_data, &right_shape, &|l, r| {
-                        kernel(l, r, ctx)
-                    })
+                    invoke_topology_geometry_kernel(
+                        domain,
+                        metric,
+                        &left_data,
+                        &right_shape,
+                        &|l, r| kernel(l, r, ctx),
+                    )
                 },
             )
+            .map_err(rows_err)?
         },
         Many(right) => {
             let right_bounds = right.existing_element_bounds();
@@ -1081,19 +1101,23 @@ where
                         row_box(&right_bounds, row).or_else(|| right_row.quick_bounds());
                     let left_data = left_products.warm_prepared_at(row, left_row, left_box)?;
                     let right_data = right_products.warm_prepared_at(row, right_row, right_box)?;
-                    invoke_topology_geometry_kernel(domain, &left_data, &right_data, &|l, r| {
-                        kernel(l, r, ctx)
-                    })
+                    invoke_topology_geometry_kernel(
+                        domain,
+                        metric,
+                        &left_data,
+                        &right_data,
+                        &|l, r| kernel(l, r, ctx),
+                    )
                 },
             )
+            .map_err(rows_err)?
         },
     };
-    let shapes = result.map_err(rows_err)?;
     let output_missing = match right {
         One(_) => left.missing().cloned(),
         Many(right) => missing::union_many([left.missing(), right.missing()]),
     };
-    Ok(PyGeometryArray::from_shapes(shapes, frame.clone())?.with_missing_mask(output_missing)?)
+    Ok((values, output_missing, frame.clone()))
 }
 
 pub(crate) fn geometry_kernel_over_array<K>(
@@ -1111,7 +1135,7 @@ where
     let mut scratch = MetricScratch::default();
     let result = {
         let metric = resolver.resolve_ctx(&admission.frame, &mut scratch)?;
-        geometry_kernel_over_array_admitted(
+        geometry_rows_over_array_admitted(
             py,
             left,
             admission.right,
@@ -1122,7 +1146,8 @@ where
         )
     };
     drop(scratch);
-    result
+    let (shapes, missing, frame) = result?;
+    Ok(PyGeometryArray::from_shapes(shapes, frame)?.with_missing_mask(missing)?)
 }
 
 #[cfg(test)]

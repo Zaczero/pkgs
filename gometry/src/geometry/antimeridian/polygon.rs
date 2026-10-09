@@ -9,10 +9,10 @@ use crate::geometry::antimeridian::{
     SeamRing, collect_points, ring_follows_seam, segment_coords, split_ring_at_seam,
 };
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
+    ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
     MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, ShapeOwnerKey,
-    Strictness, TopologyDomain, ZOrdinate, interpolate_optional_ordinate, open_point_cycle_winding,
-    polygon_is_valid, ring_encloses_pole, ring_winding, same_point,
+    SourceArcMetricAccess, Strictness, TopologyDomain, ZOrdinate, interpolate_optional_ordinate,
+    open_point_cycle_winding, polygon_is_valid, ring_encloses_pole, ring_winding, same_point,
 };
 
 #[derive(Default)]
@@ -39,9 +39,17 @@ impl Shape {
     /// coordinates exist only for this operation; source coordinates remain
     /// the storage authority.
     pub(crate) fn split_antimeridian_in_frame(&self, frame: GeographicFrame) -> Result<Self> {
+        self.split_antimeridian_in_frame_with_metric::<crate::crs::GeodesicMetric>(frame, None)
+    }
+
+    pub(crate) fn split_antimeridian_in_frame_with_metric<M: ChartMetric>(
+        &self,
+        frame: GeographicFrame,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    ) -> Result<Self> {
         let view =
             ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
-        split_geographic_view(view)
+        split_geographic_view(view, metric_access)
     }
 
     pub fn split_antimeridian(&self) -> Result<Self> {
@@ -53,7 +61,11 @@ impl Shape {
     /// own seam sign), with affine chart crossings and automatic pole closure.
     /// Geometries that do not cross are returned unchanged.
     /// The caller supplies an already-admitted canonical operation chart.
-    fn split_antimeridian_chart(&self, memo: &mut ShapeTransformMemo) -> Result<Self> {
+    fn split_antimeridian_chart<M: ChartMetric>(
+        &self,
+        memo: &mut ShapeTransformMemo,
+        metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+    ) -> Result<Self> {
         match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(self.clone()),
             Self::LineString(points) => {
@@ -101,7 +113,7 @@ impl Shape {
                 )?))
             },
             Self::Polygon(polygon) => {
-                let polygons = split_polygon(self, polygon, PoleClosure::Auto)?;
+                let polygons = split_polygon(self, polygon, PoleClosure::Auto, metric_access)?;
                 Ok(Self::narrow_polygons(polygon.axes(), polygons))
             },
             Self::MultiPolygon(polygons) => {
@@ -115,6 +127,7 @@ impl Shape {
                                     self,
                                     &polygons.as_slice()[index],
                                     PoleClosure::Auto,
+                                    metric_access,
                                 )?
                                 .into_iter()
                                 .map(MultiMember::Value),
@@ -134,9 +147,9 @@ impl Shape {
                 if let Some(split) = memo.get(owner) {
                     return Ok(split);
                 }
-                let split = Self::GeometryCollection(
-                    geometries.try_map_members(|member| member.split_antimeridian_chart(memo))?,
-                );
+                let split = Self::GeometryCollection(geometries.try_map_members(|member| {
+                    member.split_antimeridian_chart(memo, metric_access)
+                })?);
                 memo.insert(owner, split.clone());
                 Ok(split)
             },
@@ -163,7 +176,12 @@ impl Shape {
         };
         match self {
             Self::Polygon(polygon) => {
-                let polygons = split_polygon(self, polygon, closure)?;
+                let polygons = split_polygon(
+                    self,
+                    polygon,
+                    closure,
+                    None::<&SourceArcMetricAccess<'_, crate::crs::GeodesicMetric>>,
+                )?;
                 Ok(Self::narrow_polygons(polygon.axes(), polygons))
             },
             Self::MultiPolygon(polygons) => {
@@ -173,9 +191,14 @@ impl Shape {
                         MultiMember::Empty => split.push(MultiMember::Empty),
                         MultiMember::Value(index) => {
                             split.extend(
-                                split_polygon(self, &polygons.as_slice()[index], closure)?
-                                    .into_iter()
-                                    .map(MultiMember::Value),
+                                split_polygon(
+                                    self,
+                                    &polygons.as_slice()[index],
+                                    closure,
+                                    None::<&SourceArcMetricAccess<'_, crate::crs::GeodesicMetric>>,
+                                )?
+                                .into_iter()
+                                .map(MultiMember::Value),
                             );
                         },
                     }
@@ -212,7 +235,10 @@ fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
     canonical
 }
 
-pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Shape> {
+pub(crate) fn split_geographic_view<M: ChartMetric>(
+    view: ScalarGeographicView<'_>,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Shape> {
     let frame = view.frame();
     let canonical = source_longitudes_are_canonical(view);
     if frame == GeographicFrame::crs84() && canonical && !view.shape().crosses_antimeridian() {
@@ -234,7 +260,8 @@ pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Sh
     {
         return Ok(view.shape().clone());
     }
-    let split = chart.split_antimeridian_chart(&mut ShapeTransformMemo::default())?;
+    let split =
+        chart.split_antimeridian_chart(&mut ShapeTransformMemo::default(), metric_access)?;
     map_xy_with_shared_owners(
         &split,
         &|x, y| {
@@ -542,28 +569,34 @@ fn ring_is_ccw(coords: &[Point]) -> bool {
 /// the ring encircles); `Auto` infers it and retries the other direction only
 /// if the inference is invalid. Z/M is rejected only when a pole cap actually
 /// survives into the output (see [`reject_fabricated_pole_ordinates`]).
-fn split_polygon(
+fn split_polygon<M: ChartMetric>(
     source: &Shape,
     polygon: &Polygon,
     preferred: PoleClosure,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Vec<Polygon>> {
     let preferred = match preferred {
         PoleClosure::Auto => pole_closure_for_ring(&polygon.shell),
         closure => closure,
     };
-    let polygons = split_polygon_inner(polygon, preferred)?;
+    let polygons = split_polygon_inner(polygon, preferred, metric_access)?;
     reject_fabricated_pole_ordinates(source, &polygons)?;
     Ok(polygons)
 }
 
-fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<Polygon>> {
-    split_polygon_inner_in_mode(polygon, preferred, HoleOverlayMode::Select)
+fn split_polygon_inner<M: ChartMetric>(
+    polygon: &Polygon,
+    preferred: PoleClosure,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
+) -> Result<Vec<Polygon>> {
+    split_polygon_inner_in_mode(polygon, preferred, HoleOverlayMode::Select, metric_access)
 }
 
-fn split_polygon_inner_in_mode(
+fn split_polygon_inner_in_mode<M: ChartMetric>(
     polygon: &Polygon,
     preferred: PoleClosure,
     mut overlay_mode: HoleOverlayMode,
+    metric_access: Option<&SourceArcMetricAccess<'_, M>>,
 ) -> Result<Vec<Polygon>> {
     // Split crossing holes as independent areal operands, then subtract them
     // from the split shell.  Treating shell and hole seam fragments as one
@@ -591,7 +624,8 @@ fn split_polygon_inner_in_mode(
     if !crossing_holes.is_empty() {
         let axes = polygon.shell.coords().axes();
         let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes);
-        let shell_parts = split_polygon_inner_in_mode(&shell_only, preferred, overlay_mode)?;
+        let shell_parts =
+            split_polygon_inner_in_mode(&shell_only, preferred, overlay_mode, metric_access)?;
         let mut result = Shape::narrow_polygons(axes, shell_parts);
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
@@ -600,6 +634,7 @@ fn split_polygon_inner_in_mode(
                 &Polygon::new(hole, Vec::new()),
                 hole_closure,
                 overlay_mode,
+                metric_access,
             )?;
             let hole_shape = Shape::narrow_polygons(hole_axes, hole_parts);
             let frame = GeographicFrame::crs84();
@@ -614,18 +649,28 @@ fn split_polygon_inner_in_mode(
             };
             result = if use_quotient {
                 overlay_mode = HoleOverlayMode::Quotient;
-                crate::geometry::overlay_all(
-                    &operands,
-                    TopologyDomain::Geographic(frame),
-                    crate::geometry::OverlayOp::Difference,
-                    Strictness::Strict,
-                )?
+                match metric_access {
+                    Some(metric_access) => crate::geometry::overlay_all_with_metric(
+                        &operands,
+                        TopologyDomain::Geographic(frame),
+                        crate::geometry::OverlayOp::Difference,
+                        Strictness::Strict,
+                        metric_access,
+                    )?,
+                    None => crate::geometry::overlay_all(
+                        &operands,
+                        TopologyDomain::Geographic(frame),
+                        crate::geometry::OverlayOp::Difference,
+                        Strictness::Strict,
+                    )?,
+                }
             } else {
                 crate::geometry::overlay_all_geographic_chart(
                     &operands,
                     frame,
                     crate::geometry::OverlayOp::Difference,
                     Strictness::Strict,
+                    metric_access,
                 )?
             };
         }
@@ -641,6 +686,7 @@ fn split_polygon_inner_in_mode(
                 &polygon,
                 closure,
                 HoleOverlayMode::Chart,
+                metric_access,
             )?);
         }
         return Ok(charted);
@@ -1044,8 +1090,10 @@ mod tests {
     use crate::geographic::{
         AngularFactor, ChartPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame,
     };
+    use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::{
-        CoordSeq, Coordinates as _, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, ZOrdinate,
+        ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, LineSeq, MOrdinate, Point,
+        Polygon, Ring, Shape, ZOrdinate,
     };
     use crate::test_support::allocation_count;
 
@@ -1063,6 +1111,50 @@ mod tests {
             CoordSeq::try_from_vecs(xs.to_vec(), ys.to_vec(), None, None).unwrap(),
         )
         .unwrap()
+    }
+
+    fn xyzm_ring(coordinates: &[(f64, f64, f64, f64)]) -> Ring {
+        let points = coordinates
+            .iter()
+            .map(|&(x, y, z, m)| {
+                Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m))).unwrap()
+            })
+            .collect::<Vec<_>>();
+        Ring::closed_coordseq(CoordSeq::try_from_points(&points).unwrap()).unwrap()
+    }
+
+    fn independent_meridian_fraction(
+        parameter: f64,
+        start_degrees: f64,
+        end_degrees: f64,
+        flattening: f64,
+    ) -> f64 {
+        fn integrate(limit: f64, start_degrees: f64, delta_radians: f64, flattening: f64) -> f64 {
+            let intervals = 4096;
+            let step = limit / intervals as f64;
+            let eccentricity_squared = flattening * (2.0 - flattening);
+            let weighted = (0..=intervals)
+                .map(|index| {
+                    let parameter = index as f64 * step;
+                    let latitude =
+                        (start_degrees + parameter * delta_radians.to_degrees()).to_radians();
+                    let denominator = 1.0 - eccentricity_squared * latitude.sin() * latitude.sin();
+                    let radius = (1.0 - eccentricity_squared) / denominator.powf(1.5);
+                    let weight = if index == 0 || index == intervals {
+                        1.0
+                    } else if index % 2 == 0 {
+                        2.0
+                    } else {
+                        4.0
+                    };
+                    weight * radius * delta_radians
+                })
+                .sum::<f64>();
+            step * weighted / 3.0
+        }
+        let delta_radians = (end_degrees - start_degrees).to_radians();
+        integrate(parameter, start_degrees, delta_radians, flattening)
+            / integrate(1.0, start_degrees, delta_radians, flattening)
     }
 
     fn split_crs84(shape: &Shape) -> Shape {
@@ -1388,6 +1480,135 @@ mod tests {
             }
         });
         assert_eq!(witnesses, [true, true], "{split:?}");
+    }
+
+    #[test]
+    fn crossing_hole_uses_the_original_grad_ellipsoid_in_the_temporary_degree_chart() {
+        const CRS: &str = r#"GEOGCS["Custom grad",DATUM["Custom datum",SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],UNIT["grad",0.015707963267948967],AXIS["Longitude",EAST],AXIS["Latitude",NORTH]]"#;
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let frame = crate::crs::info_with_state(CRS, &state)
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        assert_eq!(frame.longitude().period().to_bits(), 400.0_f64.to_bits());
+        let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
+            * frame.latitude_orientation_sign();
+        let chart_bottom = -50.0 * latitude_scale;
+        let chart_top = 80.0 * latitude_scale;
+        let lower_latitude = 0.0 * latitude_scale;
+        let upper_latitude = 50.0 * latitude_scale;
+        let parameter_at = |latitude: f64| {
+            let numerator = ExactDyadic::from_f64(latitude)
+                .try_subtract(ExactDyadic::from_f64(chart_bottom))
+                .unwrap();
+            let denominator = ExactDyadic::from_f64(chart_top)
+                .try_subtract(ExactDyadic::from_f64(chart_bottom))
+                .unwrap();
+            ExactRational::new(numerator, denominator)
+                .unwrap()
+                .round()
+                .unwrap()
+        };
+
+        let shell = xyzm_ring(&[
+            (150.0, -50.0, 0.0, 0.0),
+            (-150.0, -50.0, 0.0, 0.0),
+            (-150.0, 80.0, 100.0, 1000.0),
+            (150.0, 80.0, 100.0, 1000.0),
+            (150.0, -50.0, 0.0, 0.0),
+        ]);
+        let shell_only = Shape::Polygon(Polygon::new(shell.clone(), Vec::new()));
+        let lower_parameter = parameter_at(lower_latitude);
+        let upper_parameter = parameter_at(upper_latitude);
+        let (lower_z, lower_m, upper_z, upper_m) =
+            crate::crs::with_ellipsoid_metric_at(CRS, &[&shell_only], &state, |metric| {
+                let ramp_start = Point::new_axes(
+                    180.0,
+                    chart_bottom,
+                    ZOrdinate(Some(0.0)),
+                    MOrdinate(Some(0.0)),
+                )?;
+                let ramp_end = Point::new_axes(
+                    180.0,
+                    chart_top,
+                    ZOrdinate(Some(100.0)),
+                    MOrdinate(Some(1000.0)),
+                )?;
+                let edge =
+                    crate::crs::ChartEdge::new(ramp_start, ramp_end, GeographicFrame::crs84())?;
+                let length = metric.chart_edge_length(&edge)?;
+                let lower_fraction =
+                    metric.chart_edge_arclength_fraction(&edge, lower_parameter, Some(length))?;
+                let upper_fraction =
+                    metric.chart_edge_arclength_fraction(&edge, upper_parameter, Some(length))?;
+                let (lower_z, lower_m) = crate::geometry::source_ordinate_values_at_fraction(
+                    ramp_start,
+                    ramp_end,
+                    CoordinateAxes::XYZM,
+                    lower_fraction,
+                );
+                let (upper_z, upper_m) = crate::geometry::source_ordinate_values_at_fraction(
+                    ramp_start,
+                    ramp_end,
+                    CoordinateAxes::XYZM,
+                    upper_fraction,
+                );
+                Ok((
+                    lower_z.0.expect("fixture has Z"),
+                    lower_m.0.expect("fixture has M"),
+                    upper_z.0.expect("fixture has Z"),
+                    upper_m.0.expect("fixture has M"),
+                ))
+            })
+            .unwrap();
+        let hole = xyzm_ring(&[
+            (160.0, 0.0, lower_z, lower_m),
+            (160.0, 50.0, upper_z, upper_m),
+            (200.0, 50.0, upper_z, upper_m),
+            (200.0, 0.0, lower_z, lower_m),
+            (160.0, 0.0, lower_z, lower_m),
+        ]);
+        let source = Shape::Polygon(Polygon::new(shell, vec![hole]));
+        let split = crate::crs::with_ellipsoid_metric_at(CRS, &[&source], &state, |metric| {
+            let metric_access = || Ok(metric);
+            source.split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))
+        })
+        .unwrap();
+        assert_eq!(split.axes(), CoordinateAxes::XYZM);
+
+        let custom_flattening = 1.0 / 150.0;
+        let wgs84_flattening = 1.0 / 298.257_223_563;
+        for (native_latitude, degree_latitude, parameter) in [
+            (0.0, lower_latitude, lower_parameter),
+            (50.0, upper_latitude, upper_parameter),
+        ] {
+            let fraction = independent_meridian_fraction(
+                parameter,
+                chart_bottom,
+                chart_top,
+                custom_flattening,
+            );
+            let chart_fraction = (degree_latitude - chart_bottom) / (chart_top - chart_bottom);
+            let wgs84_fraction =
+                independent_meridian_fraction(parameter, chart_bottom, chart_top, wgs84_flattening);
+            assert!((fraction - chart_fraction).abs() > 1.0e-5);
+            assert!((fraction - wgs84_fraction).abs() > 1.0e-7);
+
+            let mut seam_values = Vec::new();
+            split.for_each_point(|point| {
+                if point.x.abs() == 200.0 && point.y == native_latitude {
+                    seam_values.push((point.z(), point.m()));
+                }
+            });
+            assert!(
+                !seam_values.is_empty(),
+                "missing seam cut at {native_latitude}"
+            );
+            for (z, m) in seam_values {
+                assert!((z.expect("split retains Z") - 100.0 * fraction).abs() <= 2.0e-8);
+                assert!((m.expect("split retains M") - 1000.0 * fraction).abs() <= 2.0e-7);
+            }
+        }
     }
 
     #[test]

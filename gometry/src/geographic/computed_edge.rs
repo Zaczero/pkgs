@@ -4,6 +4,7 @@ use crate::geometry::{
     CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
     interpolate_optional_ordinate, interpolate_subdivision_ordinate,
 };
+use crate::geometry::tessellation::exact::ExactRational;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ComputedLongitudeIntent {
@@ -91,6 +92,19 @@ pub(crate) struct ComputedEdgeInterval {
     pub(crate) start: Point,
     pub(crate) end: Point,
     pub(crate) delta: f64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ComputedEdgeSample {
+    pub(crate) edge_index: usize,
+    pub(crate) local_parameter: ExactRational,
+    pub(crate) written_vertex: usize,
+    pub(crate) point: Point,
+}
+
+pub(crate) struct ComputedPublication {
+    pub(crate) replacement: Option<Vec<Point>>,
+    pub(crate) samples: Vec<ComputedEdgeSample>,
 }
 
 #[derive(Clone, Copy)]
@@ -331,6 +345,7 @@ pub(crate) fn publish_computed_chain<P: Coordinates + ?Sized>(
         |_, start, end, intended_delta, start_t, end_t| {
             interpolate_chart_interval(start, end, intended_delta, start_t, end_t)
         },
+        &mut |_, _, _, _| Ok(()),
         &[],
     )
 }
@@ -390,6 +405,67 @@ pub(crate) fn publish_computed_chain_with_vertex_intents_and_intervals<P: Coordi
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
     interval: impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
 ) -> Result<Option<Vec<Point>>> {
+    publish_computed_chain_with_vertex_intents_and_sample_sink(
+        frame,
+        points,
+        closed_ring,
+        budget,
+        intent,
+        vertex_intent,
+        interval,
+        &mut |_, _, _, _| Ok(()),
+    )
+}
+
+pub(crate) fn publish_computed_chain_with_vertex_intents_and_trace<
+    P: Coordinates + ?Sized,
+>(
+    frame: GeographicFrame,
+    points: &P,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent>,
+    vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
+    interval: impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
+) -> Result<ComputedPublication> {
+    let mut samples = Vec::new();
+    let replacement = {
+        let mut record_sample = |edge_index, parameter: f64, written_vertex, point| {
+            samples.push(ComputedEdgeSample {
+                edge_index,
+                local_parameter: ExactRational::from_f64(parameter),
+                written_vertex,
+                point,
+            });
+            Ok(())
+        };
+        publish_computed_chain_with_vertex_intents_and_sample_sink(
+            frame,
+            points,
+            closed_ring,
+            budget,
+            intent,
+            vertex_intent,
+            interval,
+            &mut record_sample,
+        )?
+    };
+    Ok(ComputedPublication {
+        replacement,
+        samples,
+    })
+}
+
+fn publish_computed_chain_with_vertex_intents_and_sample_sink<P: Coordinates + ?Sized>(
+    frame: GeographicFrame,
+    points: &P,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent>,
+    vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
+    interval: impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
+    sample: &mut impl FnMut(usize, f64, usize, Point) -> Result<()>,
+) -> Result<Option<Vec<Point>>> {
     let point_count = points.coord_count();
     if point_count == 0 {
         return Ok(None);
@@ -423,6 +499,7 @@ pub(crate) fn publish_computed_chain_with_vertex_intents_and_intervals<P: Coordi
         },
         vertex_intent,
         interval,
+        sample,
         &zero_aliases,
     )
 }
@@ -435,6 +512,7 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
     intent: impl Fn(usize, Point, Point) -> Result<ComputedEdgeIntent>,
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
     mut interval: impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
+    sample: &mut impl FnMut(usize, f64, usize, Point) -> Result<()>,
     zero_aliases: &[ZeroLongitudeAlias],
 ) -> Result<Option<Vec<Point>>> {
     let point_count = points.coord_count();
@@ -521,6 +599,7 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
                     budget,
                     &mut interval,
                     &vertex_intent,
+                    sample,
                     zero_aliases,
                     &mut output,
                 )?;
@@ -539,6 +618,7 @@ fn publish_chain_with_aliases<P: Coordinates + ?Sized>(
                     budget,
                     &mut interval,
                     &vertex_intent,
+                    sample,
                     zero_aliases,
                     &mut output,
                 )?;
@@ -590,6 +670,7 @@ fn publish_stored_edge<P: Coordinates + ?Sized>(
     budget: &mut ExpansionBudget,
     interval: &mut impl FnMut(usize, Point, Point, f64, f64, f64) -> Result<ComputedEdgeInterval>,
     vertex_intent: &impl Fn(usize, Point) -> ComputedVertexIntent,
+    sample: &mut impl FnMut(usize, f64, usize, Point) -> Result<()>,
     zero_aliases: &[ZeroLongitudeAlias],
     output: &mut Option<Vec<Point>>,
 ) -> Result<()> {
@@ -655,10 +736,14 @@ fn publish_stored_edge<P: Coordinates + ?Sized>(
         if piece_delta.abs() < frame.longitude().half_period()
             && edge_reads_correctly(frame, start, end, piece_delta)?
         {
-            output
+            let emitted = output
                 .as_mut()
-                .expect("subdivision allocates the output chain before visiting pieces")
-                .push(end);
+                .expect("subdivision allocates the output chain before visiting pieces");
+            let written_vertex = emitted.len();
+            emitted.push(end);
+            if end_t.to_bits() != 1.0_f64.to_bits() {
+                sample(edge_index, end_t, written_vertex, end)?;
+            }
             continue;
         }
 
@@ -689,7 +774,7 @@ fn preflight_edge_expansion(
     clippy::float_cmp,
     reason = "the stored chart step must equal the retained producer displacement, including signed zero equivalence"
 )]
-fn edge_reads_correctly(
+pub(crate) fn edge_reads_correctly(
     frame: GeographicFrame,
     start: Point,
     end: Point,
@@ -824,8 +909,10 @@ mod tests {
         EdgeDirection, GeographicFrame, TurnDirection, publish_computed_chain,
         publish_computed_chain_with_vertex_intents,
         publish_computed_chain_with_vertex_intents_and_intervals,
+        publish_computed_chain_with_vertex_intents_and_trace,
     };
     use crate::geometry::{ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate};
+    use crate::geometry::tessellation::exact::ExactRational;
 
     fn degrees() -> GeographicFrame {
         GeographicFrame::crs84()
@@ -1260,6 +1347,97 @@ mod tests {
             Point::new_raw_xy(135.0, 30.0),
             Point::new_raw_xy(-100.0, 40.0),
         ]);
+    }
+
+    #[test]
+    fn publication_trace_records_only_the_accepted_leaf_midpoint() {
+        let points = [
+            Point::new_raw_xy(10.0, 20.0),
+            Point::new_raw_xy(260.0, 40.0),
+        ];
+        let frame = degrees();
+        let mut budget = ExpansionBudget::new("trace interval", "computed edges");
+        let interval_calls = std::cell::Cell::new(0_usize);
+        let publication = publish_computed_chain_with_vertex_intents_and_trace(
+            frame,
+            points.as_slice(),
+            false,
+            &mut budget,
+            |_, _, _| Ok(ComputedEdgeIntent::displacement(250.0)),
+            |_, _| ComputedVertexIntent::Canonical,
+            |_, _, _, delta, start_t, end_t| {
+                interval_calls.set(interval_calls.get().saturating_add(1));
+                let point_at = |parameter| {
+                    Point::new_raw_xy(
+                        10.0 + 250.0 * parameter,
+                        20.0 + 20.0 * parameter,
+                    )
+                };
+                Ok(ComputedEdgeInterval {
+                    start: point_at(start_t),
+                    end: point_at(end_t),
+                    delta: delta * (end_t - start_t),
+                })
+            },
+        )
+        .unwrap();
+
+        let [sample] = publication.samples.as_slice() else {
+            panic!("the accepted dyadic midpoint is the only new written vertex");
+        };
+        assert_eq!(sample.edge_index, 0);
+        assert_eq!(sample.written_vertex, 1);
+        assert!(
+            sample
+                .local_parameter
+                .try_cmp(&ExactRational::from_f64(0.5))
+                .unwrap()
+                .is_eq()
+        );
+        assert_eq!(sample.point, Point::new_raw_xy(135.0, 30.0));
+        assert_eq!(interval_calls.get(), 3);
+        assert_eq!(
+            publication.replacement,
+            Some(vec![
+                Point::new_raw_xy(10.0, 20.0),
+                Point::new_raw_xy(135.0, 30.0),
+                Point::new_raw_xy(-100.0, 40.0),
+            ])
+        );
+    }
+
+    #[test]
+    fn publication_trace_stays_empty_when_canonical_writing_inserts_nothing() {
+        let points = [
+            Point::new_raw_xy(10.0, 20.0),
+            Point::new_raw_xy(20.0, 30.0),
+        ];
+        let mut budget = ExpansionBudget::new("unchanged trace", "computed edges");
+        let publication = publish_computed_chain_with_vertex_intents_and_trace(
+            degrees(),
+            points.as_slice(),
+            false,
+            &mut budget,
+            |_, start, end| Ok(ComputedEdgeIntent::displacement(end.x - start.x)),
+            |_, _| ComputedVertexIntent::Canonical,
+            |_, start, end, delta, start_t, end_t| {
+                Ok(ComputedEdgeInterval {
+                    start: start.with_xy_raw(
+                        start.x + delta * start_t,
+                        start.y + (end.y - start.y) * start_t,
+                    ),
+                    end: start.with_xy_raw(
+                        start.x + delta * end_t,
+                        start.y + (end.y - start.y) * end_t,
+                    ),
+                    delta: delta * (end_t - start_t),
+                })
+            },
+        )
+        .unwrap();
+
+        assert!(publication.replacement.is_none());
+        assert!(publication.samples.is_empty());
     }
 
     #[test]

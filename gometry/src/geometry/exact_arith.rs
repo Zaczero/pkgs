@@ -16,13 +16,12 @@ pub(crate) mod bounded;
 pub(crate) mod product_sum;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg(test)]
 pub(in crate::geometry) struct ExactNativeLongitude(
     crate::geometry::tessellation::exact::ExactRational,
 );
 
-#[cfg(test)]
 impl ExactNativeLongitude {
+    #[cfg(test)]
     pub(in crate::geometry) fn from_rational(
         axis: crate::geographic::PeriodicAxis,
         value: crate::geometry::tessellation::exact::ExactRational,
@@ -50,6 +49,7 @@ impl ExactNativeLongitude {
         &self.0
     }
 
+    #[cfg(test)]
     /// Round a mathematical site for publication without losing the exact
     /// site used to choose its native-window quotient.
     pub(in crate::geometry) fn round_site(
@@ -71,12 +71,21 @@ impl ExactNativeLongitude {
     }
 }
 
-#[cfg(test)]
 pub(in crate::geometry) fn retained_exact_native_site(
     axis: crate::geographic::PeriodicAxis,
     longitude: &crate::geometry::tessellation::exact::ExactRational,
 ) -> crate::error::Result<crate::geographic::RetainedLongitudeSite<ExactNativeLongitude>> {
-    let (native, lift) = split_rational_native_site(longitude, axis.period(), axis.half_period())?;
+    let mut work = crate::geometry::Unmetered;
+    retained_exact_native_site_with_work(axis, longitude, &mut work)
+}
+
+pub(in crate::geometry) fn retained_exact_native_site_with_work(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &crate::geometry::tessellation::exact::ExactRational,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<crate::geographic::RetainedLongitudeSite<ExactNativeLongitude>> {
+    let (native, lift) =
+        split_rational_native_site_with_work(longitude, axis.period(), axis.half_period(), work)?;
     let periods = exact_integer_i64(&lift)?;
     Ok(crate::geographic::RetainedLongitudeSite::new(
         ExactNativeLongitude(native.into_owned()),
@@ -84,18 +93,73 @@ pub(in crate::geometry) fn retained_exact_native_site(
     ))
 }
 
-#[cfg(test)]
 impl crate::geographic::retained_native_private::Sealed for ExactNativeLongitude {}
 
-#[cfg(test)]
 impl crate::geographic::RetainedNativeLongitude for ExactNativeLongitude {}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::geometry) struct RoundedNativeSite {
+    pub native: f64,
+    pub periods: i64,
+}
+
+/// Enumerate the exact native coordinate's nearest binary64 and its adjacent
+/// native values before folding them into the published longitude window.
+pub(in crate::geometry) fn rounded_native_neighbors(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &crate::geometry::tessellation::exact::ExactRational,
+) -> crate::error::Result<[RoundedNativeSite; 3]> {
+    let mut work = crate::geometry::Unmetered;
+    rounded_native_neighbors_with_work(axis, longitude, &mut work)
+}
+
+pub(in crate::geometry) fn rounded_native_neighbors_with_work(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &crate::geometry::tessellation::exact::ExactRational,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<[RoundedNativeSite; 3]> {
+    let exact = retained_exact_native_site_with_work(axis, longitude, work)?;
+    let native = exact.native().rational().round_with_work(work)?;
+    let period = axis.period();
+    let half_period = axis.half_period();
+    let mut round_candidate = |candidate| {
+        let (native, adjustment) =
+            fold_rounded_native_site_with_work(candidate, period, half_period, work)?;
+        let periods = exact
+            .periods()
+            .checked_add(i64::from(adjustment))
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let native = axis
+            .canonicalize(native)
+            .map_err(|error| crate::geometry::GeometryErrorKind::Invalid(error.to_string().into()))?
+            .get();
+        Ok(RoundedNativeSite { native, periods })
+    };
+    Ok([
+        round_candidate(native.next_down())?,
+        round_candidate(native)?,
+        round_candidate(native.next_up())?,
+    ])
+}
 
 pub(in crate::geometry) fn round_native_longitude(
     axis: crate::geographic::PeriodicAxis,
     longitude: &crate::geometry::tessellation::exact::ExactRational,
 ) -> crate::error::Result<f64> {
-    let (native, _) = split_rational_native_site(longitude, axis.period(), axis.half_period())?;
-    let (rounded, _) = round_native_site(&native, axis.period(), axis.half_period())?;
+    let mut work = crate::geometry::Unmetered;
+    round_native_longitude_with_work(axis, longitude, &mut work)
+}
+
+pub(in crate::geometry) fn round_native_longitude_with_work(
+    axis: crate::geographic::PeriodicAxis,
+    longitude: &crate::geometry::tessellation::exact::ExactRational,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<f64> {
+    let (native, _) =
+        split_rational_native_site_with_work(longitude, axis.period(), axis.half_period(), work)?;
+    let rounded = native.round_with_work(work)?;
+    let (rounded, _) =
+        fold_rounded_native_site_with_work(rounded, axis.period(), axis.half_period(), work)?;
     Ok(rounded)
 }
 
@@ -219,10 +283,223 @@ pub(crate) fn retained_native_site(
     Ok((rounded, exact_integer_i64(&lift)?))
 }
 
-fn split_rational_native_site(
+fn retained_edge_displacement(
+    edge: crate::geographic::RetainedChartDisplacement,
+    axis: crate::geographic::PeriodicAxis,
+) -> crate::error::Result<crate::geometry::tessellation::exact::ExactDyadic> {
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
+    let [start, end] = *edge.endpoints();
+    ExactDyadic::from_f64(end.get())
+        .try_subtract(ExactDyadic::from_f64(start.get()))?
+        .try_add(
+            ExactDyadic::from_f64(axis.period())
+                .try_product(&ExactDyadic::from_i64(edge.periods()))?,
+        )
+}
+
+fn round_retained_source_sheet_value(
+    value: &crate::geometry::tessellation::exact::ExactDyadic,
+) -> crate::error::Result<f64> {
+    use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio};
+
+    match round_ratio(value, &ExactDyadic::one()) {
+        Ok(value) => Ok(value),
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(
+                    crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                )
+            ) =>
+        {
+            Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+                "computed edge",
+            ))
+        },
+        Err(error) => Err(error),
+    }
+}
+
+/// Publish one retained chart site on the source's absolute longitude sheet.
+///
+/// Metric consumers use the edge's relative retained lift to avoid
+/// cancellation at large source aliases. A source-aligned output adds the
+/// absolute sheet only at this publication boundary, in exact arithmetic,
+/// then rounds the complete coordinate once.
+pub(crate) fn retained_source_sheet_site(
+    source_start: f64,
+    edge: crate::geographic::RetainedChartDisplacement,
+    axis: crate::geographic::PeriodicAxis,
+    parameter: f64,
+) -> crate::error::Result<f64> {
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
+    let period = axis.period();
+    if !(source_start.is_finite()
+        && period.is_finite()
+        && period > 0.0
+        && parameter.is_finite()
+        && (0.0..=1.0).contains(&parameter))
+    {
+        return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+            "computed edge",
+        ));
+    }
+    let [start, _] = *edge.endpoints();
+    let start = ExactDyadic::from_f64(start.get());
+    let period = ExactDyadic::from_f64(period);
+    let source_start = ExactDyadic::from_f64(source_start);
+    let parameter = ExactDyadic::from_f64(parameter);
+    let source_sheet = source_start
+        .try_subtract(start.clone())?
+        .nearest_integer_quotient_ties_to_zero(&period)?;
+    let relative_displacement = retained_edge_displacement(edge, axis)?;
+    let relative_site = start.try_add(relative_displacement.try_product(&parameter)?)?;
+    let absolute_site = relative_site.try_add(period.try_product(&source_sheet)?)?;
+    round_retained_source_sheet_value(&absolute_site)
+}
+
+/// Check that the written chart step preserves the exact source interval's
+/// direction and branch class.
+///
+/// The displacement remains exact through classification. Comparing it to the
+/// subtraction of rounded output coordinates would reject correctly rounded
+/// source sites whenever those two rounding operations do not commute.
+#[expect(
+    clippy::float_cmp,
+    reason = "zero and nonzero retained branch classes are discrete"
+)]
+pub(crate) fn retained_source_interval_reads_as(
+    edge: crate::geographic::RetainedChartDisplacement,
+    axis: crate::geographic::PeriodicAxis,
+    from: f64,
+    to: f64,
+    readback: crate::geographic::ChartStep,
+) -> crate::error::Result<bool> {
+    use std::cmp::Ordering;
+
+    use crate::geographic::{ChartStep, EdgeDirection, TurnDirection};
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
+    if !(from.is_finite()
+        && to.is_finite()
+        && (0.0..=1.0).contains(&from)
+        && (0.0..=1.0).contains(&to)
+        && from <= to)
+    {
+        return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+            "computed edge",
+        ));
+    }
+    let parameter_delta = ExactDyadic::from_f64(to).try_subtract(ExactDyadic::from_f64(from))?;
+    let delta = retained_edge_displacement(edge, axis)?.try_product(&parameter_delta)?;
+    if delta.is_zero() {
+        return Ok(matches!(
+            readback,
+            ChartStep::Shortest(EdgeDirection::Minor(value)) if value == 0.0
+        ));
+    }
+
+    let negative = delta.negative;
+    let direction_matches = |direction| {
+        matches!(
+            (direction, negative),
+            (TurnDirection::Negative, true) | (TurnDirection::Positive, false)
+        )
+    };
+    let magnitude = delta.abs();
+    let half_period = ExactDyadic::from_f64(axis.half_period());
+    let period = ExactDyadic::from_f64(axis.period());
+    Ok(match readback {
+        ChartStep::Shortest(EdgeDirection::Minor(value)) => {
+            magnitude.cmp(&half_period) != Ordering::Greater
+                && value != 0.0
+                && value.is_sign_negative() == negative
+        },
+        ChartStep::Shortest(EdgeDirection::HalfTurn(direction)) => {
+            magnitude.cmp(&half_period) == Ordering::Equal && direction_matches(direction)
+        },
+        ChartStep::Circle(direction) => {
+            magnitude.cmp(&period) == Ordering::Equal && direction_matches(direction)
+        },
+    })
+}
+
+fn exact_nonnegative_usize(
+    value: &crate::geometry::tessellation::exact::ExactDyadic,
+) -> crate::error::Result<usize> {
+    if value.is_zero() {
+        return Ok(0);
+    }
+    if value.negative || value.exponent < 0 {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
+    let magnitude = value
+        .small_magnitude()
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let shift =
+        u32::try_from(value.exponent).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+    if shift >= usize::BITS || magnitude > (usize::MAX as u128 >> shift) {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
+    Ok((magnitude as usize) << shift)
+}
+
+/// Initial equal-parameter intervals with exact longitude displacement no
+/// greater than a half-period. The written chain is checked separately and
+/// may need further subdivision after source-sheet rounding.
+pub(crate) fn retained_source_interval_initial_piece_count(
+    edge: crate::geographic::RetainedChartDisplacement,
+    axis: crate::geographic::PeriodicAxis,
+    from: f64,
+    to: f64,
+) -> crate::error::Result<usize> {
+    use std::cmp::Ordering;
+
+    use crate::geometry::tessellation::exact::ExactDyadic;
+
+    if !(from.is_finite()
+        && to.is_finite()
+        && (0.0..=1.0).contains(&from)
+        && (0.0..=1.0).contains(&to)
+        && from <= to)
+    {
+        return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
+            "line_substring",
+        ));
+    }
+    let parameter_delta = ExactDyadic::from_f64(to).try_subtract(ExactDyadic::from_f64(from))?;
+    let displacement = retained_edge_displacement(edge, axis)?;
+    let exact_delta = displacement.try_product(&parameter_delta)?.abs();
+    let half_period = ExactDyadic::from_f64(axis.half_period());
+    let nearest = exact_delta.nearest_integer_quotient_ties_to_zero(&half_period)?;
+    let nearest_span = half_period.try_product(&nearest)?;
+    let ceiling = if nearest_span.cmp(&exact_delta) == Ordering::Less {
+        nearest.try_add(ExactDyadic::one())?
+    } else {
+        nearest
+    };
+    Ok(exact_nonnegative_usize(&ceiling)?.max(1))
+}
+
+pub(in crate::geometry) fn split_rational_native_site(
     position: &crate::geometry::tessellation::exact::ExactRational,
     period: f64,
     half_period: f64,
+) -> crate::error::Result<(
+    std::borrow::Cow<'_, crate::geometry::tessellation::exact::ExactRational>,
+    crate::geometry::tessellation::exact::ExactDyadic,
+)> {
+    let mut work = crate::geometry::Unmetered;
+    split_rational_native_site_with_work(position, period, half_period, &mut work)
+}
+
+pub(in crate::geometry) fn split_rational_native_site_with_work(
+    position: &crate::geometry::tessellation::exact::ExactRational,
+    period: f64,
+    half_period: f64,
+    work: &mut impl crate::geometry::Work,
 ) -> crate::error::Result<(
     std::borrow::Cow<'_, crate::geometry::tessellation::exact::ExactRational>,
     crate::geometry::tessellation::exact::ExactDyadic,
@@ -239,23 +516,31 @@ fn split_rational_native_site(
     }
     let half = ExactRational::from_f64(half_period);
     let negative_half = ExactRational::from_f64(-half_period);
-    if position.try_cmp(&negative_half)? != Ordering::Less
-        && position.try_cmp(&half)? == Ordering::Less
+    if position.try_cmp_with_work(&negative_half, work)? != Ordering::Less
+        && position.try_cmp_with_work(&half, work)? == Ordering::Less
     {
         return Ok((std::borrow::Cow::Borrowed(position), ExactDyadic::zero()));
     }
     let (numerator, denominator) = position.parts();
-    let quotient_denominator = denominator.try_product(&ExactDyadic::from_f64(period))?;
-    let mut lift = numerator.nearest_integer_quotient_ties_to_zero(&quotient_denominator)?;
+    let quotient_denominator =
+        denominator.try_product_with_work(&ExactDyadic::from_f64(period), work)?;
+    let mut lift = numerator
+        .nearest_integer_quotient_ties_to_zero_with_work(&quotient_denominator, work)?;
     let exact_period = ExactRational::from_f64(period);
     let native = position
-        .try_subtract(&exact_period.try_product(&ExactRational::from_dyadic(lift.clone()))?)?;
-    let (native, lift) = if native.try_cmp(&half)? != Ordering::Less {
-        lift = lift.try_add(ExactDyadic::one())?;
-        (native.try_subtract(&exact_period)?, lift)
-    } else if native.try_cmp(&negative_half)? == Ordering::Less {
-        lift = lift.try_subtract(ExactDyadic::one())?;
-        (native.try_add(&exact_period)?, lift)
+        .try_subtract_with_work(
+            &exact_period.try_product_with_work(
+                &ExactRational::from_dyadic(lift.try_clone_with_work(work)?),
+                work,
+            )?,
+            work,
+        )?;
+    let (native, lift) = if native.try_cmp_with_work(&half, work)? != Ordering::Less {
+        lift = lift.try_add_with_work(ExactDyadic::one(), work)?;
+        (native.try_subtract_with_work(&exact_period, work)?, lift)
+    } else if native.try_cmp_with_work(&negative_half, work)? == Ordering::Less {
+        lift = lift.try_subtract_with_work(ExactDyadic::one(), work)?;
+        (native.try_add_with_work(&exact_period, work)?, lift)
     } else {
         (native, lift)
     };
@@ -267,22 +552,34 @@ fn fold_rounded_native_site(
     period: f64,
     half_period: f64,
 ) -> crate::error::Result<(f64, i8)> {
-    use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio};
+    let mut work = crate::geometry::Unmetered;
+    fold_rounded_native_site_with_work(native, period, half_period, &mut work)
+}
+
+fn fold_rounded_native_site_with_work(
+    native: f64,
+    period: f64,
+    half_period: f64,
+    work: &mut impl crate::geometry::Work,
+) -> crate::error::Result<(f64, i8)> {
+    use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio_with_work};
 
     let (folded, adjustment) = if native >= half_period {
         (
-            ExactDyadic::from_f64(native).try_subtract_ref(&ExactDyadic::from_f64(period))?,
+            ExactDyadic::from_f64(native)
+                .try_subtract_ref_with_work(&ExactDyadic::from_f64(period), work)?,
             1,
         )
     } else if native < -half_period {
         (
-            ExactDyadic::from_f64(native).try_add(ExactDyadic::from_f64(period))?,
+            ExactDyadic::from_f64(native)
+                .try_add_with_work(ExactDyadic::from_f64(period), work)?,
             -1,
         )
     } else {
         return Ok((if native == 0.0 { 0.0 } else { native }, 0));
     };
-    let folded = round_ratio(&folded, &ExactDyadic::one())?;
+    let folded = round_ratio_with_work(&folded, &ExactDyadic::one(), work)?;
     Ok((if folded == 0.0 { 0.0 } else { folded }, adjustment))
 }
 
@@ -659,6 +956,33 @@ mod tests {
     use super::*;
     use crate::geographic::{GeographicFrame, RetainedChartDisplacement, RetainedLongitudeSite};
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
+
+    #[test]
+    fn exact_nonnegative_usize_admits_zero_and_rejects_fractional_negative_and_overflow() {
+        assert_eq!(exact_nonnegative_usize(&ExactDyadic::zero()).unwrap(), 0);
+        assert_eq!(exact_nonnegative_usize(&ExactDyadic::one()).unwrap(), 1);
+        assert_eq!(
+            exact_nonnegative_usize(&ExactDyadic::from_i64(2)).unwrap(),
+            2
+        );
+        assert_eq!(
+            exact_nonnegative_usize(&ExactDyadic::from_parts(false, vec![u64::MAX], 0,)).unwrap(),
+            usize::MAX
+        );
+
+        for invalid in [
+            ExactDyadic::from_f64(0.5),
+            ExactDyadic::from_i64(-1),
+            ExactDyadic::from_parts(false, vec![0, 1], 0),
+            ExactDyadic::from_parts(false, vec![1], i64::from(usize::BITS)),
+            ExactDyadic::from_parts(false, vec![3], i64::from(usize::BITS - 1)),
+        ] {
+            assert!(matches!(
+                exact_nonnegative_usize(&invalid).unwrap_err().kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            ));
+        }
+    }
 
     #[test]
     fn scalar_and_retained_projection_share_exact_rounding_without_lift_narrowing() {

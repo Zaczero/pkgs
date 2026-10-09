@@ -81,6 +81,10 @@ use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::{CrsError, preserve_resource_error};
 #[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
+#[cfg(test)]
+pub(crate) use geodesic::{
+    QuadratureTestProgress, quadrature_test_progress, reset_quadrature_test_progress,
+};
 pub(crate) use geodesic::{
     ChartEdge, DistanceMode, EllipsoidMetric, GeodesicBoxEnvelopeBound, GeodesicCalculation,
     GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel, PointEdgeScratch,

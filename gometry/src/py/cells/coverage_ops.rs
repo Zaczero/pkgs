@@ -671,12 +671,15 @@ pub(crate) fn parse_max_cells(max_cells: Option<i64>) -> PyResult<Option<usize>>
 
 pub(crate) fn cover_working_shape(frame: &Frame, lonlat: &Shape) -> Result<Shape, GridCoverError> {
     let domain = crate::geometry::topology_domain(frame)?;
+    // Cell membership observes XY only; this temporary working image never
+    // publishes source ordinates.
+    let lonlat = lonlat.force_2d()?;
     if let TopologyDomain::Geographic(frame) = domain
-        && crate::geometry::crosses_antimeridian_in_frame(lonlat, frame)
+        && crate::geometry::crosses_antimeridian_in_frame(&lonlat, frame)
     {
         Ok(lonlat.split_antimeridian_in_frame(frame)?)
     } else {
-        Ok(lonlat.clone())
+        Ok(lonlat)
     }
 }
 

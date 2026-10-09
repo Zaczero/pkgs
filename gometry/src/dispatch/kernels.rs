@@ -1,7 +1,7 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
+use crate::broadcast::{OverlayOutput, degrade_linref_linestring, degrade_linref_point};
 use crate::crs::local::{
     metric_concave_hull, metric_constructive_shape_budgeted, metric_maximum_inscribed_circle,
     metric_minimum_bounding_circle, metric_minimum_bounding_radius,
@@ -508,12 +508,30 @@ pub(crate) fn unary_split_antimeridian(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
-    data.shape().split_antimeridian_in_frame(frame)
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic antimeridian source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    data.shape()
+        .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))
 }
 
 /// ``node`` kernel shared by the spine-routed free function.
-pub(crate) fn unary_node(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    data.shape().node(Strictness::Lenient)
+pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic node source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    data.shape()
+        .node_with_metric(ctx.domain, Strictness::Lenient, Some(&metric_access))
 }
 
 /// Build-area kernel shared by the scalar and array unary method spine.
@@ -856,7 +874,16 @@ pub(crate) fn unary_snap_to_grid(
     repair: bool,
 ) -> Result<Shape> {
     if repair {
-        data.shape().snap_to_grid_repaired(size, origin, ctx.domain)
+        let metric_access = || {
+            ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic snap_to_grid repair requires the operation's CRS metric",
+                )
+                .into()
+            })
+        };
+        data.shape()
+            .snap_to_grid_repaired(size, origin, ctx.domain, Some(&metric_access))
     } else {
         data.shape().snap_to_grid(size, origin)
     }
@@ -911,7 +938,7 @@ pub(crate) fn unary_clip_by_rect(
     ctx: &CachelessRowContext<'_>,
     rect: Bounds,
     drop: bool,
-) -> Result<Shape> {
+) -> Result<OverlayOutput> {
     if let crate::geometry::TopologyDomain::Geographic(frame) = ctx.domain {
         let metric_access = || {
             ctx.metric
@@ -922,9 +949,11 @@ pub(crate) fn unary_clip_by_rect(
         };
         return data
             .shape()
-            .clip_by_rect_in_geographic_frame(rect, drop, frame, &metric_access);
+            .clip_by_rect_in_geographic_frame(rect, drop, frame, &metric_access)
+            .map(OverlayOutput::PreserveShape);
     }
     data.clip_by_rect_with_bounds(rect, drop, data.bounds())
+        .map(OverlayOutput::Packable)
 }
 
 /// Bounds kernel shared by the spine-routed free function.
@@ -1034,9 +1063,11 @@ pub(crate) fn binary_overlay(
     ctx: &CachelessRowContext<'_>,
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
-) -> Result<Shape> {
+) -> Result<OverlayOutput> {
     match ctx.domain {
-        TopologyDomain::Cartesian => op.apply(left.shape(), right.shape(), strictness),
+        TopologyDomain::Cartesian => op
+            .apply(left.shape(), right.shape(), strictness)
+            .map(OverlayOutput::Packable),
         TopologyDomain::Geographic(_) => {
             let metric_access = || {
                 ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
@@ -1053,6 +1084,7 @@ pub(crate) fn binary_overlay(
                 strictness,
                 &metric_access,
             )
+            .map(OverlayOutput::PreserveShape)
         },
     }
 }

@@ -10,10 +10,16 @@ use crate::geographic::RetainedChartDisplacement;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
-    OverlayOp, Point, PointKey, RunIdentity, Segment, Shape, XY, ZOrdinate, axis_pow2_scale,
-    interpolate_optional_ordinate, overlay, point_distance, point_on_segment,
+    OverlayOp, Point, PointKey, RunIdentity, Segment, Shape, Unmetered, Work, XY, ZOrdinate,
+    axis_pow2_scale, interpolate_optional_ordinate, overlay, point_distance, point_on_segment,
     point_segment_distance_and_projection, same_point, scaled_residual, segment_projection,
 };
+
+mod trace;
+pub(crate) use trace::{
+    resolve_source_root, RootCatalog, RootId, RootRange, RootRequest, TraceRows, TraceRowsBuilder,
+};
+
 /// Z/M lookup table built from an operation's input vertices and segments,
 /// used to restore ordinates on XY-only geometry-engine output. Exact vertex
 /// matches — the overwhelmingly common case (engine output keeps input
@@ -126,7 +132,9 @@ impl OrdinateSource {
         {
             return Ok((z.value(), m.value()));
         }
-        if self.segments.is_empty() || (z.conflict && m.conflict) {
+        if self.segments.is_empty()
+            || (z == AxisValue::Conflict && m == AxisValue::Conflict)
+        {
             return Ok((z.value(), m.value()));
         }
         let pad = self.tolerance;
@@ -157,10 +165,12 @@ impl OrdinateSource {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub(in crate::geometry) struct AxisValue {
-    value: Option<f64>,
-    conflict: bool,
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::geometry) enum AxisValue {
+    #[default]
+    Missing,
+    Unique(u64),
+    Conflict,
 }
 
 impl AxisValue {
@@ -168,15 +178,23 @@ impl AxisValue {
         let Some(candidate) = candidate else {
             return;
         };
-        match self.value {
-            None => self.value = Some(candidate),
-            Some(value) if value.to_bits() == candidate.to_bits() => {},
-            Some(_) => self.conflict = true,
-        }
+        self.merge(Self::Unique(candidate.to_bits()));
     }
 
-    pub(in crate::geometry) fn value(self) -> Option<f64> {
-        (!self.conflict).then_some(self.value).flatten()
+    pub(in crate::geometry) const fn merge(&mut self, other: Self) {
+        *self = match (*self, other) {
+            (Self::Conflict, _) | (_, Self::Conflict) => Self::Conflict,
+            (Self::Missing, value) | (value, Self::Missing) => value,
+            (Self::Unique(left), Self::Unique(right)) if left == right => Self::Unique(left),
+            (Self::Unique(_), Self::Unique(_)) => Self::Conflict,
+        };
+    }
+
+    pub(in crate::geometry) const fn value(self) -> Option<f64> {
+        match self {
+            Self::Missing | Self::Conflict => None,
+            Self::Unique(bits) => Some(f64::from_bits(bits)),
+        }
     }
 }
 
@@ -186,7 +204,15 @@ pub(in crate::geometry) struct NodeOrdinates {
     pub(in crate::geometry) m: AxisValue,
 }
 
-/// The source-side information needed to emit one Q node's ordinates.
+impl NodeOrdinates {
+    pub(in crate::geometry) const fn merge(&mut self, other: Self) {
+        self.z.merge(other.z);
+        self.m.merge(other.m);
+    }
+}
+
+/// The source coordinates' frame and retained branch stay separate from the
+/// lazily accessed ellipsoid metric used to measure their chart edge.
 pub(in crate::geometry) enum SourceArcRequest<'a> {
     NoOrdinates,
     Endpoint {
@@ -195,6 +221,7 @@ pub(in crate::geometry) enum SourceArcRequest<'a> {
     },
     Interior {
         source: &'a [Point; 2],
+        source_frame: crate::geographic::GeographicFrame,
         longitude: RetainedChartDisplacement,
         chart_parameter: &'a ExactRational,
         axes: CoordinateAxes,
@@ -209,17 +236,39 @@ pub(crate) type ParallelSourceArcMetricAccess<'a> =
 
 impl<'a> SourceArcRequest<'a> {
     pub(in crate::geometry) fn new(
+        source_frame: crate::geographic::GeographicFrame,
         source: &'a [Point; 2],
         axes: CoordinateAxes,
         chart_parameter: &'a ExactRational,
         longitude: impl FnOnce() -> crate::error::Result<RetainedChartDisplacement>,
+    ) -> crate::error::Result<Self> {
+        let mut work = Unmetered;
+        Self::new_with_work(
+            source_frame,
+            source,
+            axes,
+            chart_parameter,
+            longitude,
+            &mut work,
+        )
+    }
+
+    pub(in crate::geometry) fn new_with_work(
+        source_frame: crate::geographic::GeographicFrame,
+        source: &'a [Point; 2],
+        axes: CoordinateAxes,
+        chart_parameter: &'a ExactRational,
+        longitude: impl FnOnce() -> crate::error::Result<RetainedChartDisplacement>,
+        work: &mut impl Work,
     ) -> crate::error::Result<Self> {
         if !axes.has_z() && !axes.has_m() {
             return Ok(Self::NoOrdinates);
         }
         let zero = ExactRational::zero();
         let one = ExactRational::one();
-        if chart_parameter.try_cmp(&zero)?.is_lt() || chart_parameter.try_cmp(&one)?.is_gt() {
+        if chart_parameter.try_cmp_with_work(&zero, work)?.is_lt()
+            || chart_parameter.try_cmp_with_work(&one, work)?.is_gt()
+        {
             return Err(GeometryErrorKind::Invalid(
                 "source chart parameter is outside the retained edge".into(),
             )
@@ -246,6 +295,7 @@ impl<'a> SourceArcRequest<'a> {
         }
         Ok(Self::Interior {
             source,
+            source_frame,
             longitude: longitude()?,
             chart_parameter,
             axes: eligible_axes,
@@ -253,34 +303,84 @@ impl<'a> SourceArcRequest<'a> {
     }
 }
 
+/// Cached chart geometry for one original source root.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RootMetricState {
+    edge: Option<crate::crs::ChartEdge>,
+    total_length: Option<f64>,
+}
+
 /// Resolve one source vertex's available axes from partial/total chart-edge
-/// arclength. The metric accessor runs only for an interior request with at
-/// least one eligible source axis.
+/// arclength. The caller owns a root-keyed state and an exact-request fraction
+/// slot. Eligible interior requests resolve metric authority before rounding or
+/// consulting a cached fraction, and use the same `Work` account for both
+/// rounding and chart-edge measurement.
 pub(in crate::geometry) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
     request: &SourceArcRequest<'_>,
     metric: impl FnOnce() -> crate::error::Result<&'m M>,
+    state: &mut RootMetricState,
+    fraction: &mut Option<f64>,
+    work: &mut impl Work,
 ) -> crate::error::Result<NodeOrdinates> {
     match request {
         SourceArcRequest::NoOrdinates => Ok(NodeOrdinates::default()),
         SourceArcRequest::Endpoint { point, axes } => Ok(node_ordinates_at(*point, *axes)),
         SourceArcRequest::Interior {
             source,
+            source_frame,
             longitude,
             chart_parameter,
             axes,
         } => {
             let metric = metric()?;
-            let parameter = chart_parameter.round()?;
             let [start, end] = **source;
-            let edge = metric.chart_edge_from_retained(start, end, *longitude)?;
-            let fraction = metric.chart_edge_arclength_fraction(&edge, parameter, None)?;
-            let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, fraction);
+            let value = if let Some(fraction) = *fraction {
+                fraction
+            } else {
+                let parameter = chart_parameter.round_with_work(work)?;
+                let edge = if let Some(edge) = state.edge {
+                    edge
+                } else {
+                    work.charge(1)?;
+                    let edge = crate::crs::ChartEdge::from_retained(
+                        start,
+                        end,
+                        *source_frame,
+                        *longitude,
+                    )?;
+                    state.edge = Some(edge);
+                    edge
+                };
+                if parameter > 0.0 && parameter < 1.0 && state.total_length.is_none() {
+                    state.total_length = Some(metric.chart_edge_length_with_work(&edge, work)?);
+                }
+                let value = metric.chart_edge_arclength_fraction_with_work(
+                    &edge,
+                    parameter,
+                    state.total_length,
+                    work,
+                )?;
+                *fraction = Some(value);
+                value
+            };
+            let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, value);
             let mut ordinates = NodeOrdinates::default();
             ordinates.z.observe(z.0);
             ordinates.m.observe(m.0);
             Ok(ordinates)
         },
     }
+}
+
+/// Resolve one request with a fresh root/fraction slot and unmetered work.
+pub(in crate::geometry) fn source_arc_ordinates_unmetered<'m, M: ChartMetric + 'm>(
+    request: &SourceArcRequest<'_>,
+    metric: impl FnOnce() -> crate::error::Result<&'m M>,
+) -> crate::error::Result<NodeOrdinates> {
+    let mut state = RootMetricState::default();
+    let mut fraction = None;
+    let mut work = Unmetered;
+    source_arc_ordinates(request, metric, &mut state, &mut fraction, &mut work)
 }
 
 fn node_ordinates_at(point: Point, axes: CoordinateAxes) -> NodeOrdinates {
@@ -568,6 +668,22 @@ fn output_axes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::embedding_search::EvaluationBudget;
+
+    #[derive(Default)]
+    struct CountingWork {
+        ticks: u64,
+    }
+
+    impl Work for CountingWork {
+        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+            self.ticks = self
+                .ticks
+                .checked_add(ticks)
+                .expect("test work count fits in u64");
+            Ok(())
+        }
+    }
 
     fn retained_source_longitude(
         frame: crate::geographic::GeographicFrame,
@@ -578,6 +694,45 @@ mod tests {
             .chart_connection(source[0].x, source[1].x)
             .expect("source test endpoints are admitted")
             .retained()
+    }
+
+    #[test]
+    fn ordinate_conflicts_are_absorbing_across_every_merge_order() {
+        let values = [
+            AxisValue::Unique(7.0_f64.to_bits()),
+            AxisValue::Unique(11.0_f64.to_bits()),
+            AxisValue::Unique(13.0_f64.to_bits()),
+        ];
+        for [first, second, third] in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut left_fold = values[first];
+            left_fold.merge(values[second]);
+            left_fold.merge(values[third]);
+
+            let mut right_fold = values[second];
+            right_fold.merge(values[third]);
+            let mut grouped = values[first];
+            grouped.merge(right_fold);
+
+            assert_eq!(left_fold, AxisValue::Conflict);
+            assert_eq!(grouped, AxisValue::Conflict);
+            assert_eq!(left_fold, grouped);
+        }
+
+        let mut source = NodeOrdinates::default();
+        source.z.observe(Some(7.0));
+        let mut requested = NodeOrdinates::default();
+        requested.z.observe(Some(11.0));
+        requested.z.observe(Some(13.0));
+        source.merge(requested);
+        assert_eq!(source.z, AxisValue::Conflict);
+        assert_eq!(source.z.value(), None);
     }
 
     #[test]
@@ -612,12 +767,13 @@ mod tests {
             let parameter = range_start.try_add(&range_delta.try_product(&local_parameter)?)?;
             assert_eq!(parameter, ExactRational::from_f64(0.25));
             let mut longitude_accesses = 0;
-            let request = SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
-                longitude_accesses += 1;
-                Ok(retained_source_longitude(frame, &source))
-            })?;
+            let request =
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XYZM, &parameter, || {
+                    longitude_accesses += 1;
+                    Ok(retained_source_longitude(frame, &source))
+                })?;
             let mut metric_accesses = 0;
-            let ordinates = source_arc_ordinates(&request, || {
+            let ordinates = source_arc_ordinates_unmetered(&request, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;
@@ -640,6 +796,81 @@ mod tests {
     }
 
     #[test]
+    fn source_arc_uses_original_root_frame_not_metric_chart_frame() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let runtime = crate::crs::runtime_state_snapshot().unwrap();
+        let grad =
+            crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 200.0)
+                .unwrap();
+        let source_frame = crate::geographic::GeographicFrame::try_new_with_orientation(
+            grad,
+            grad,
+            0.17,
+            crate::geographic::GeographicAxisOrientation::from_axis_directions(false, false),
+        )
+        .unwrap();
+
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &runtime, |metric| {
+            let metric_frame = metric.chart_frame();
+            assert_ne!(source_frame, metric_frame);
+            let source = [
+                Point::new_axes(-30.0, -10.0, ZOrdinate(Some(3.0)), MOrdinate(Some(17.0)))?,
+                Point::new_axes(50.0, -80.0, ZOrdinate(Some(49.0)), MOrdinate(Some(881.0)))?,
+            ];
+            let longitude = retained_source_longitude(source_frame, &source);
+            let parameter = ExactRational::from_f64(0.375);
+            let request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &parameter,
+                || Ok(longitude),
+            )?;
+            let source_edge = crate::crs::ChartEdge::from_retained(
+                source[0],
+                source[1],
+                source_frame,
+                longitude,
+            )?;
+            let expected_fraction =
+                metric.chart_edge_arclength_fraction(&source_edge, 0.375, None)?;
+
+            let metric_longitude = retained_source_longitude(metric_frame, &source);
+            let metric_frame_edge = crate::crs::ChartEdge::from_retained(
+                source[0],
+                source[1],
+                metric_frame,
+                metric_longitude,
+            )?;
+            let metric_frame_fraction =
+                metric.chart_edge_arclength_fraction(&metric_frame_edge, 0.375, None)?;
+            assert_ne!(expected_fraction.to_bits(), metric_frame_fraction.to_bits());
+
+            let mut root = RootMetricState::default();
+            let mut fraction = None;
+            let mut work = Unmetered;
+            let ordinates =
+                source_arc_ordinates(&request, || Ok(metric), &mut root, &mut fraction, &mut work)?;
+            let expected = source_ordinate_values_at_fraction(
+                source[0],
+                source[1],
+                CoordinateAxes::XYZM,
+                expected_fraction,
+            );
+            assert_eq!(
+                ordinates.z.value().map(f64::to_bits),
+                expected.0.0.map(f64::to_bits)
+            );
+            assert_eq!(
+                ordinates.m.value().map(f64::to_bits),
+                expected.1.0.map(f64::to_bits)
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn source_endpoint_records_do_not_acquire_an_interior_metric() {
         const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
         let state = crate::crs::runtime_state_snapshot().unwrap();
@@ -651,12 +882,13 @@ mod tests {
             ];
             let parameter = ExactRational::zero();
             let mut longitude_accesses = 0;
-            let request = SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
-                longitude_accesses += 1;
-                Ok(retained_source_longitude(frame, &source))
-            })?;
+            let request =
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XYZM, &parameter, || {
+                    longitude_accesses += 1;
+                    Ok(retained_source_longitude(frame, &source))
+                })?;
             let mut metric_accesses = 0;
-            let ordinates = source_arc_ordinates(&request, || {
+            let ordinates = source_arc_ordinates_unmetered(&request, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;
@@ -667,12 +899,17 @@ mod tests {
             assert_eq!(ordinates.m.value().unwrap().to_bits(), 101.0_f64.to_bits());
 
             let end_parameter = ExactRational::one();
-            let end_request =
-                SourceArcRequest::new(&source, CoordinateAxes::XYZM, &end_parameter, || {
+            let end_request = SourceArcRequest::new(
+                frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &end_parameter,
+                || {
                     longitude_accesses += 1;
                     Ok(retained_source_longitude(frame, &source))
-                })?;
-            let end_ordinates = source_arc_ordinates(&end_request, || {
+                },
+            )?;
+            let end_ordinates = source_arc_ordinates_unmetered(&end_request, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;
@@ -680,6 +917,438 @@ mod tests {
             assert_eq!(longitude_accesses, 0);
             assert_eq!(end_ordinates.z.value(), None);
             assert_eq!(end_ordinates.m.value().unwrap(), 701.0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn xy_occurrence_leaves_the_exact_request_fraction_for_later_eligible_axes() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let runtime = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &runtime, |metric| {
+            let source_frame = metric.chart_frame();
+            let source = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(101.0)))?,
+                Point::new_axes(85.0, 70.0, ZOrdinate(Some(47.0)), MOrdinate(Some(701.0)))?,
+            ];
+            let longitude = retained_source_longitude(source_frame, &source);
+            let parameter = ExactRational::from_f64(0.25);
+            let xy_request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XY,
+                &parameter,
+                || Ok(longitude),
+            )?;
+            let eligible_request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &parameter,
+                || Ok(longitude),
+            )?;
+            let mut root = RootMetricState::default();
+            let mut fraction = None;
+            let mut work = Unmetered;
+            let mut xy_metric_accesses = 0;
+            crate::crs::reset_quadrature_test_progress();
+            let xy = source_arc_ordinates(
+                &xy_request,
+                || {
+                    xy_metric_accesses += 1;
+                    Ok(metric)
+                },
+                &mut root,
+                &mut fraction,
+                &mut work,
+            )?;
+            assert!(xy.z.value().is_none() && xy.m.value().is_none());
+            assert_eq!(xy_metric_accesses, 0);
+            assert!(fraction.is_none());
+            assert!(root.edge.is_none() && root.total_length.is_none());
+            assert_eq!(crate::crs::quadrature_test_progress().seeds, 0);
+
+            let eligible = source_arc_ordinates(
+                &eligible_request,
+                || Ok(metric),
+                &mut root,
+                &mut fraction,
+                &mut work,
+            )?;
+            assert!(eligible.z.value().is_some() && eligible.m.value().is_some());
+            assert!(fraction.is_some());
+            assert!(root.edge.is_some() && root.total_length.is_some());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn exact_requests_reuse_root_total_without_collapsing_rounded_parameters() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let runtime = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &runtime, |metric| {
+            let source_frame = metric.chart_frame();
+            let source = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(101.0)))?,
+                Point::new_axes(85.0, 70.0, ZOrdinate(Some(47.0)), MOrdinate(Some(701.0)))?,
+            ];
+            let longitude = retained_source_longitude(source_frame, &source);
+            let quarter = ExactRational::from_f64(0.25);
+            let epsilon = ExactRational::from_f64(f64::from_bits(0x3C30_0000_0000_0000));
+            let nearby_quarter = quarter.try_add(&epsilon)?;
+            assert_ne!(quarter, nearby_quarter);
+            assert_eq!(quarter.round()?, nearby_quarter.round()?);
+            assert_eq!(nearby_quarter.round()?, 0.25);
+            let three_quarters = ExactRational::from_f64(0.75);
+
+            let first_request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &quarter,
+                || Ok(longitude),
+            )?;
+            let nearby_request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &nearby_quarter,
+                || Ok(longitude),
+            )?;
+            let later_request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &three_quarters,
+                || Ok(longitude),
+            )?;
+
+            let mut root = RootMetricState::default();
+            let mut first_fraction = None;
+            let mut first_work = Unmetered;
+            let first = source_arc_ordinates(
+                &first_request,
+                || Ok(metric),
+                &mut root,
+                &mut first_fraction,
+                &mut first_work,
+            )?;
+            let total_length = root
+                .total_length
+                .expect("first interior request measures total");
+            assert!(root.edge.is_some());
+            assert!(first_fraction.is_some());
+            let root_edge_before_rejection = format!("{:?}", root.edge);
+
+            let mut nearby_fraction = None;
+            let mut rejected_work =
+                EvaluationBudget::with_remaining_ticks_for_test("source_arc_test", 1, 0)?;
+            let mut rejected_metric_accesses = 0;
+            let rejected = source_arc_ordinates(
+                &nearby_request,
+                || {
+                    rejected_metric_accesses += 1;
+                    Ok(metric)
+                },
+                &mut root,
+                &mut nearby_fraction,
+                &mut rejected_work,
+            );
+            match rejected {
+                Err(refusal)
+                    if matches!(
+                        refusal.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            crate::geometry::GeometryErrorKind::ExactEmbeddingSearchLimit {
+                                operation: "source_arc_test",
+                                ..
+                            }
+                        )
+                    ) => {},
+                Err(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "distinct exact source request failed for a reason other than Work exhaustion",
+                    ));
+                },
+                Ok(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "distinct exact source request reused another request's fraction",
+                    ));
+                },
+            }
+            assert_eq!(rejected_metric_accesses, 1);
+            assert!(nearby_fraction.is_none());
+            assert!(root.edge.is_some());
+            assert_eq!(format!("{:?}", root.edge), root_edge_before_rejection);
+            assert_eq!(
+                root.total_length.map(f64::to_bits),
+                Some(total_length.to_bits())
+            );
+
+            let mut rounding_work = CountingWork::default();
+            let rounded_parameter = nearby_quarter.round_with_work(&mut rounding_work)?;
+            assert!(rounding_work.ticks > 0);
+            let edge = root.edge.expect("the first request retains its ChartEdge");
+            let mut fraction_work = CountingWork::default();
+            let expected_fraction = metric.chart_edge_arclength_fraction_with_work(
+                &edge,
+                rounded_parameter,
+                Some(total_length),
+                &mut fraction_work,
+            )?;
+            assert!(fraction_work.ticks > 0);
+            let remaining_ticks = u128::from(rounding_work.ticks) + u128::from(fraction_work.ticks);
+            let mut nearby_work = EvaluationBudget::with_remaining_ticks_for_test(
+                "source_arc_test",
+                1,
+                remaining_ticks,
+            )?;
+            let nearby = match source_arc_ordinates(
+                &nearby_request,
+                || Ok(metric),
+                &mut root,
+                &mut nearby_fraction,
+                &mut nearby_work,
+            ) {
+                Ok(nearby) => nearby,
+                Err(error) => {
+                    return Err(crate::crs::CrsError::invalid(format!(
+                        "cached root total reuse exceeded fraction-only Work: {error}"
+                    )));
+                },
+            };
+            assert_eq!(
+                first_fraction.map(f64::to_bits),
+                nearby_fraction.map(f64::to_bits)
+            );
+            assert_eq!(
+                nearby_fraction.map(f64::to_bits),
+                Some(expected_fraction.to_bits())
+            );
+            assert_eq!(
+                root.total_length.map(f64::to_bits),
+                Some(total_length.to_bits())
+            );
+            assert_eq!(
+                first.z.value().map(f64::to_bits),
+                nearby.z.value().map(f64::to_bits)
+            );
+            assert_eq!(
+                first.m.value().map(f64::to_bits),
+                nearby.m.value().map(f64::to_bits)
+            );
+
+            let mut duplicate_work =
+                EvaluationBudget::with_remaining_ticks_for_test("source_arc_test", 1, 0)?;
+            let mut duplicate_metric_accesses = 0;
+            let duplicate = source_arc_ordinates(
+                &nearby_request,
+                || {
+                    duplicate_metric_accesses += 1;
+                    Ok(metric)
+                },
+                &mut root,
+                &mut nearby_fraction,
+                &mut duplicate_work,
+            )?;
+            assert_eq!(duplicate_metric_accesses, 1);
+            assert_eq!(
+                duplicate.z.value().map(f64::to_bits),
+                nearby.z.value().map(f64::to_bits)
+            );
+            assert_eq!(
+                duplicate.m.value().map(f64::to_bits),
+                nearby.m.value().map(f64::to_bits)
+            );
+
+            let mut shared_root_work = Unmetered;
+            let mut later_fraction = None;
+            let shared_root_result = source_arc_ordinates(
+                &later_request,
+                || Ok(metric),
+                &mut root,
+                &mut later_fraction,
+                &mut shared_root_work,
+            )?;
+            let mut fresh_root = RootMetricState::default();
+            let mut fresh_fraction = None;
+            let mut fresh_root_work = Unmetered;
+            let fresh_root_result = source_arc_ordinates(
+                &later_request,
+                || Ok(metric),
+                &mut fresh_root,
+                &mut fresh_fraction,
+                &mut fresh_root_work,
+            )?;
+            assert_eq!(
+                shared_root_result.z.value().map(f64::to_bits),
+                fresh_root_result.z.value().map(f64::to_bits)
+            );
+            assert_eq!(
+                shared_root_result.m.value().map(f64::to_bits),
+                fresh_root_result.m.value().map(f64::to_bits)
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn cached_exact_request_fraction_still_requires_metric_authority() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let runtime = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &runtime, |metric| {
+            let source_frame = metric.chart_frame();
+            let source = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(101.0)))?,
+                Point::new_axes(85.0, 70.0, ZOrdinate(Some(47.0)), MOrdinate(Some(701.0)))?,
+            ];
+            let longitude = retained_source_longitude(source_frame, &source);
+            let parameter = ExactRational::from_f64(0.25);
+            let request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &parameter,
+                || Ok(longitude),
+            )?;
+            let mut root = RootMetricState::default();
+            let mut fraction = None;
+            let mut initial_work = Unmetered;
+            let original = source_arc_ordinates(
+                &request,
+                || Ok(metric),
+                &mut root,
+                &mut fraction,
+                &mut initial_work,
+            )?;
+            assert!(fraction.is_some());
+
+            let mut metric_accesses = 0;
+            let mut cached_work = Unmetered;
+            crate::crs::reset_quadrature_test_progress();
+            let duplicate = source_arc_ordinates(
+                &request,
+                || {
+                    metric_accesses += 1;
+                    Ok(metric)
+                },
+                &mut root,
+                &mut fraction,
+                &mut cached_work,
+            )?;
+            assert_eq!(metric_accesses, 1);
+            assert_eq!(crate::crs::quadrature_test_progress().seeds, 0);
+            assert_eq!(
+                duplicate.z.value().map(f64::to_bits),
+                original.z.value().map(f64::to_bits)
+            );
+            assert_eq!(
+                duplicate.m.value().map(f64::to_bits),
+                original.m.value().map(f64::to_bits)
+            );
+
+            let mut rejected_work =
+                EvaluationBudget::with_remaining_ticks_for_test("source_arc_test", 1, 0)?;
+            let Err(unavailable) = source_arc_ordinates(
+                &request,
+                || {
+                    metric_accesses += 1;
+                    if metric_accesses == 2 {
+                        Err(crate::crs::CrsError::invalid(
+                            "cached source fraction still requires metric authority",
+                        ))
+                    } else {
+                        Ok(metric)
+                    }
+                },
+                &mut root,
+                &mut fraction,
+                &mut rejected_work,
+            ) else {
+                return Err(crate::crs::CrsError::invalid(
+                    "cached fraction must not bypass metric authority",
+                ));
+            };
+            assert!(
+                unavailable
+                    .to_string()
+                    .contains("cached source fraction still requires metric authority")
+            );
+            assert_eq!(metric_accesses, 2);
+            assert_eq!(crate::crs::quadrature_test_progress().seeds, 0);
+            assert!(fraction.is_some());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn exact_parameter_rounding_is_paid_before_chart_edge_mutation() {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let runtime = crate::crs::runtime_state_snapshot().unwrap();
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &runtime, |metric| {
+            let source_frame = metric.chart_frame();
+            let source = [
+                Point::new_axes(0.0, -30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(101.0)))?,
+                Point::new_axes(85.0, 70.0, ZOrdinate(Some(47.0)), MOrdinate(Some(701.0)))?,
+            ];
+            let longitude = retained_source_longitude(source_frame, &source);
+            let parameter = ExactRational::from_f64(0.25);
+            let request = SourceArcRequest::new(
+                source_frame,
+                &source,
+                CoordinateAxes::XYZM,
+                &parameter,
+                || Ok(longitude),
+            )?;
+            let mut rounding_work = CountingWork::default();
+            parameter.round_with_work(&mut rounding_work)?;
+            assert!(rounding_work.ticks > 0);
+
+            let mut budget = EvaluationBudget::with_remaining_ticks_for_test(
+                "source_arc_test",
+                1,
+                u128::from(rounding_work.ticks),
+            )?;
+            let mut root = RootMetricState::default();
+            let mut fraction = None;
+            crate::crs::reset_quadrature_test_progress();
+            let resolution = source_arc_ordinates(
+                &request,
+                || Ok(metric),
+                &mut root,
+                &mut fraction,
+                &mut budget,
+            );
+            match resolution {
+                Err(refusal)
+                    if matches!(
+                        refusal.kind(),
+                        crate::error::ErrorKind::Geometry(
+                            crate::geometry::GeometryErrorKind::ExactEmbeddingSearchLimit {
+                                operation: "source_arc_test",
+                                ..
+                            }
+                        )
+                    ) => {},
+                Err(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "source arclength failed for a reason other than Work exhaustion",
+                    ));
+                },
+                Ok(_) => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "the exact-round allowance funded later source-edge work",
+                    ));
+                },
+            }
+            assert!(root.edge.is_none());
+            assert_eq!(crate::crs::quadrature_test_progress().seeds, 0);
+            assert!(root.total_length.is_none());
+            assert!(fraction.is_none());
             Ok(())
         })
         .unwrap();
@@ -698,25 +1367,25 @@ mod tests {
             let parameter = ExactRational::from_f64(0.25);
             let mut longitude_accesses = 0;
             let unavailable_request =
-                SourceArcRequest::new(&source, CoordinateAxes::XYZM, &parameter, || {
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XYZM, &parameter, || {
                     longitude_accesses += 1;
                     Ok(retained_source_longitude(frame, &source))
                 })?;
             let mut metric_accesses = 0;
-            let ordinate_less = source_arc_ordinates(&SourceArcRequest::NoOrdinates, || {
+            let ordinate_less = source_arc_ordinates_unmetered(&SourceArcRequest::NoOrdinates, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;
-            let unavailable = source_arc_ordinates(&unavailable_request, || {
+            let unavailable = source_arc_ordinates_unmetered(&unavailable_request, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;
             let xy_request =
-                SourceArcRequest::new(&source, CoordinateAxes::XY, &parameter, || {
+                SourceArcRequest::new(frame, &source, CoordinateAxes::XY, &parameter, || {
                     longitude_accesses += 1;
                     Ok(retained_source_longitude(frame, &source))
                 })?;
-            let xy = source_arc_ordinates(&xy_request, || {
+            let xy = source_arc_ordinates_unmetered(&xy_request, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;
@@ -741,22 +1410,24 @@ mod tests {
                 Point::new_axes(0.0, 70.0, ZOrdinate(None), MOrdinate(None))?,
             ];
             let near_start_request = SourceArcRequest::new(
+                frame,
                 &interior_start_missing,
                 CoordinateAxes::XYZM,
                 &near_zero,
                 || Ok(retained_source_longitude(frame, &interior_start_missing)),
             )?;
             let near_end_request = SourceArcRequest::new(
+                frame,
                 &interior_start_missing,
                 CoordinateAxes::XYZM,
                 &near_one,
                 || Ok(retained_source_longitude(frame, &interior_start_missing)),
             )?;
-            let near_start = source_arc_ordinates(&near_start_request, || {
+            let near_start = source_arc_ordinates_unmetered(&near_start_request, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;
-            let near_end = source_arc_ordinates(&near_end_request, || {
+            let near_end = source_arc_ordinates_unmetered(&near_end_request, || {
                 metric_accesses += 1;
                 Ok(metric)
             })?;

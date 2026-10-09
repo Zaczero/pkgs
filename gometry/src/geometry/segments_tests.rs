@@ -1,8 +1,93 @@
 use crate::geometry::segments::{
     EXACT_SELECTION_FALLBACKS, compare_along_segment, segment_nearest_points,
+    try_sort_by_with_work,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
-use crate::geometry::*;
+use crate::geometry::{*, Unmetered, Work};
+
+#[derive(Debug, Eq, PartialEq)]
+struct SortRecord {
+    key: u8,
+    ordinal: u8,
+}
+
+#[test]
+fn fallible_work_sort_is_stable_across_merged_runs() -> crate::error::Result<()> {
+    let mut records: Vec<_> = (0..48_u8)
+        .map(|ordinal| SortRecord {
+            key: (ordinal.wrapping_mul(7)) % 3,
+            ordinal,
+        })
+        .collect();
+    let mut work = Unmetered;
+    try_sort_by_with_work(&mut records, &mut work, |left, right, _| {
+        Ok(left.key.cmp(&right.key))
+    })?;
+
+    assert!(records.windows(2).all(|pair| pair[0].key <= pair[1].key));
+    assert!(records.windows(2).all(|pair| {
+        pair[0].key != pair[1].key || pair[0].ordinal < pair[1].ordinal
+    }));
+    Ok(())
+}
+
+#[test]
+fn fallible_work_sort_stops_at_the_first_comparator_error() {
+    let mut records: Vec<_> = (0..48_u8)
+        .rev()
+        .map(|ordinal| SortRecord {
+            key: ordinal % 3,
+            ordinal,
+        })
+        .collect();
+    let mut work = Unmetered;
+    let mut comparisons = 0;
+    let result = try_sort_by_with_work(&mut records, &mut work, |left, right, _| {
+        comparisons += 1;
+        if comparisons == 4 {
+            Err(crate::error::ResourceError::SizeOverflow.into())
+        } else {
+            Ok(left.key.cmp(&right.key))
+        }
+    });
+
+    assert!(result.is_err());
+    assert_eq!(comparisons, 4);
+}
+
+struct LimitedSortWork {
+    remaining: u64,
+    calls: usize,
+}
+
+impl Work for LimitedSortWork {
+    fn charge(&mut self, units: u64) -> crate::error::Result<()> {
+        self.calls += 1;
+        self.remaining = self
+            .remaining
+            .checked_sub(units)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        Ok(())
+    }
+}
+
+#[test]
+fn fallible_work_sort_debits_before_the_comparator() {
+    let mut records = [SortRecord { key: 1, ordinal: 0 }, SortRecord { key: 0, ordinal: 1 }];
+    let mut work = LimitedSortWork {
+        remaining: 0,
+        calls: 0,
+    };
+    let mut comparisons = 0;
+    let result = try_sort_by_with_work(&mut records, &mut work, |left, right, _| {
+        comparisons += 1;
+        Ok(left.key.cmp(&right.key))
+    });
+
+    assert!(result.is_err());
+    assert_eq!(work.calls, 1);
+    assert_eq!(comparisons, 0);
+}
 
 #[test]
 fn cuts_sort_by_directed_coordinate_at_float_extremes() {

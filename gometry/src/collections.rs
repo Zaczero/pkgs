@@ -19,6 +19,9 @@
 use std::hash::{BuildHasher as _, BuildHasherDefault, Hash, Hasher};
 use std::sync::{LazyLock, OnceLock};
 
+use crate::error::Result;
+use crate::geometry::{Unmetered, Work};
+
 pub(crate) mod csr;
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
@@ -139,7 +142,8 @@ pub(crate) fn python_hasher() -> impl std::hash::Hasher {
 /// Minimal union-find for cycle detection over small node sets (the
 /// validity ring-touch graph, clustering components): path-halving find,
 /// rank-union. `union` reports whether the two nodes were ALREADY
-/// connected — adding such an edge closes a cycle.
+/// connected — adding such an edge closes a cycle. The `*_with_work` methods
+/// account for graph traversal when a caller has an operation budget.
 pub(crate) struct UnionFind {
     parent: Vec<usize>,
     rank: Vec<u8>,
@@ -153,11 +157,22 @@ impl UnionFind {
         }
     }
 
-    pub(crate) fn find(&mut self, mut node: usize) -> usize {
+    pub(crate) fn find(&mut self, node: usize) -> usize {
+        let mut work = Unmetered;
+        self.find_with_work(node, &mut work)
+            .expect("Unmetered work cannot fail")
+    }
+
+    pub(crate) fn find_with_work(
+        &mut self,
+        mut node: usize,
+        work: &mut impl Work,
+    ) -> Result<usize> {
         loop {
+            work.charge(1)?;
             let parent = *self.parent.get(node).expect("union-find node exists");
             if parent == node {
-                return node;
+                return Ok(node);
             }
             let grandparent = *self.parent.get(parent).expect("union-find parent exists");
             *self.parent.get_mut(node).expect("union-find node exists") = grandparent;
@@ -176,10 +191,25 @@ impl UnionFind {
     /// Join `a` and `b`; `true` when they were ALREADY connected — adding
     /// such an edge closes a cycle.
     pub(crate) fn union(&mut self, a: usize, b: usize) -> bool {
-        let (root_a, root_b) = (self.find(a), self.find(b));
+        let mut work = Unmetered;
+        self.union_with_work(a, b, &mut work)
+            .expect("Unmetered work cannot fail")
+    }
+
+    pub(crate) fn union_with_work(
+        &mut self,
+        a: usize,
+        b: usize,
+        work: &mut impl Work,
+    ) -> Result<bool> {
+        let (root_a, root_b) = (
+            self.find_with_work(a, work)?,
+            self.find_with_work(b, work)?,
+        );
         if root_a == root_b {
-            return true;
+            return Ok(true);
         }
+        work.charge(1)?;
         let rank_a = *self.rank.get(root_a).expect("union-find root exists");
         let rank_b = *self.rank.get(root_b).expect("union-find root exists");
         let (big, small) = if rank_a >= rank_b {
@@ -187,12 +217,13 @@ impl UnionFind {
         } else {
             (root_b, root_a)
         };
+        work.charge(if rank_a == rank_b { 2 } else { 1 })?;
         *self.parent.get_mut(small).expect("union-find root exists") = big;
         if rank_a == rank_b {
             // Rank r requires at least 2^r nodes, so rank is below usize::BITS.
             *self.rank.get_mut(big).expect("union-find root exists") = rank_a.wrapping_add(1);
         }
-        false
+        Ok(false)
     }
 }
 
@@ -245,6 +276,29 @@ mod row_id_sort_tests {
         assert!(!graph.union(appended, 3));
         assert!(graph.union(5, appended));
         assert!(graph.union(appended, appended));
+    }
+
+    #[test]
+    fn exhausted_work_does_not_link_union_find_roots() {
+        struct RemainingWork(u64);
+
+        impl crate::geometry::Work for RemainingWork {
+            fn charge(&mut self, units: u64) -> crate::error::Result<()> {
+                if units > self.0 {
+                    return Err(crate::geometry::GeometryErrorKind::Invalid(
+                        "test work budget exhausted".into(),
+                    )
+                    .into());
+                }
+                self.0 -= units;
+                Ok(())
+            }
+        }
+
+        let mut graph = super::UnionFind::new(2);
+        let mut work = RemainingWork(3);
+        graph.union_with_work(0, 1, &mut work).unwrap_err();
+        assert!(!graph.union(0, 1));
     }
 
     #[test]

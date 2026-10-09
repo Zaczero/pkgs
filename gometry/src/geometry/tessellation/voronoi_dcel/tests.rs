@@ -2327,7 +2327,7 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
         problem
             .check_global(&accepted_assignment, &mut budget)
             .unwrap(),
-        GlobalCheck::Pass
+        GlobalCheck::Pass(())
     ));
 
     for (candidate, ring) in [(XY::new(12.0, 5.0), 0), (XY::new(5.0, 5.0), 1)] {

@@ -55,6 +55,68 @@ pub(crate) trait SegmentMetric {
     ) -> Result<Point> {
         self.interpolate(part.start, part.end, length, fraction, provenance)
     }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "substring boundaries at exact prefix endpoints preserve authentic source points"
+    )]
+    fn append_embedded_interval(
+        &self,
+        start: Point,
+        end: Point,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let from = if from_fraction == 0.0 {
+            start
+        } else if from_fraction == 1.0 {
+            end
+        } else {
+            self.interpolate(
+                start,
+                end,
+                length,
+                from_fraction,
+                InterpolationProvenance::Embedded,
+            )?
+        };
+        let to = if to_fraction == 0.0 {
+            start
+        } else if to_fraction == 1.0 {
+            end
+        } else {
+            self.interpolate(
+                start,
+                end,
+                length,
+                to_fraction,
+                InterpolationProvenance::Embedded,
+            )?
+        };
+        push_distinct_active_position(output, from);
+        push_distinct_active_position(output, to);
+        Ok(())
+    }
+
+    fn append_embedded_prepared_interval(
+        &self,
+        part: &ChartEdgePart,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        self.append_embedded_interval(
+            part.start,
+            part.end,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
+    }
 }
 
 /// Planar (coordinate-unit) metric.
@@ -225,6 +287,89 @@ impl<M: ChartMetric> SegmentMetric for M {
             self, part.start, part.end, &part.edge, length, fraction, provenance,
         )
     }
+
+    fn append_embedded_interval(
+        &self,
+        start: Point,
+        end: Point,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let edge = self.chart_edge(start, end)?;
+        append_chart_embedded_interval(
+            self,
+            start,
+            end,
+            &edge,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
+    }
+
+    fn append_embedded_prepared_interval(
+        &self,
+        part: &ChartEdgePart,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        append_chart_embedded_interval(
+            self,
+            part.start,
+            part.end,
+            &part.edge,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
+    }
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "substring endpoints at exact source parameters preserve authentic vertices"
+)]
+fn append_chart_embedded_interval<M: ChartMetric>(
+    metric: &M,
+    start: Point,
+    end: Point,
+    edge: &ChartEdge,
+    length: f64,
+    from_fraction: f64,
+    to_fraction: f64,
+    output: &mut Vec<Point>,
+) -> Result<()> {
+    let parameter_at = |fraction: f64| {
+        if fraction == 0.0 {
+            Ok(0.0)
+        } else if fraction == 1.0 {
+            Ok(1.0)
+        } else {
+            metric.chart_edge_locate_t(edge, length * fraction, length)
+        }
+    };
+
+    let from = parameter_at(from_fraction)?;
+    let to = parameter_at(to_fraction)?;
+    edge.publish_source_interval(
+        start,
+        end,
+        from,
+        to,
+        |parameter| metric.chart_edge_witness(start, end, edge, parameter, Some(length)),
+        |_, point, _| {
+            push_distinct_active_position(output, point);
+            Ok(())
+        },
+        "line_substring",
+    )?;
+    Ok(())
 }
 
 fn interpolate_chart_edge(
@@ -241,13 +386,7 @@ fn interpolate_chart_edge(
     if provenance == InterpolationProvenance::Independent {
         return Ok(point);
     }
-    let lifted_position = edge.chart_position(parameter)?;
-    let longitude = metric
-        .chart_frame()
-        .longitude()
-        .nearest_longitude_alias(lifted_position.x, point.x)
-        .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
-    Ok(point.with_xy_raw(longitude, point.y))
+    edge.source_sheet_point(start, end, parameter, point)
 }
 
 /// Cache slot for a built (or unbuildable) [`LineIndex`].
@@ -313,6 +452,15 @@ pub(crate) trait LineSegments: HeapSize {
         fraction: f64,
         provenance: InterpolationProvenance,
     ) -> Result<Point>;
+    fn append_embedded_interval<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()>;
 }
 
 impl LineSegments for Box<[OrdinateSegment]> {
@@ -338,6 +486,26 @@ impl LineSegments for Box<[OrdinateSegment]> {
     ) -> Result<Point> {
         let segment = self.segment(index);
         metric.interpolate(segment.start, segment.end, length, fraction, provenance)
+    }
+
+    fn append_embedded_interval<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let segment = self.segment(index);
+        metric.append_embedded_interval(
+            segment.start,
+            segment.end,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
     }
 }
 
@@ -374,6 +542,22 @@ impl LineSegments for std::sync::Arc<ChartParts> {
             .get(index)
             .expect("chart-edge ordinal belongs to the route");
         metric.interpolate_prepared(part, length, fraction, provenance)
+    }
+
+    fn append_embedded_interval<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let part = self
+            .edges
+            .get(index)
+            .expect("chart-edge ordinal belongs to the route");
+        metric.append_embedded_prepared_interval(part, length, from_fraction, to_fraction, output)
     }
 }
 
@@ -807,29 +991,14 @@ impl<S: LineSegments> LineIndex<S> {
                 }
                 continue;
             }
-            // Boundary fractions resolve to the exact stored endpoints — no
-            // metric call (the interior windows of a substring walk are all
-            // full segments, so this skips their edge evaluations). The
-            // comparisons are exact by design: `from`/`to` are clamped to
-            // the same prefix values they compare against.
-            #[expect(clippy::float_cmp, reason = "exact prefix boundary identity")]
-            let at = |target: f64| -> Result<Point> {
-                if target == segment_start {
-                    Ok(segment.start)
-                } else if target == segment_end {
-                    Ok(segment.end)
-                } else {
-                    self.segments.interpolate(
-                        index,
-                        metric,
-                        length,
-                        (target - segment_start) / length,
-                        InterpolationProvenance::Embedded,
-                    )
-                }
-            };
-            push_distinct_active_position(&mut result, at(from)?);
-            push_distinct_active_position(&mut result, at(to)?);
+            self.segments.append_embedded_interval(
+                index,
+                metric,
+                length,
+                (from - segment_start) / length,
+                (to - segment_start) / length,
+                &mut result,
+            )?;
         }
 
         Ok(match result.as_slice() {

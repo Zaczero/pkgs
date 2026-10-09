@@ -6,8 +6,8 @@ use crate::geographic::{
 };
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExactGeographicTopology, GeographicDerivedPointScan,
-    GeometryErrorKind, Point, Polygon, PreparedPlan, RepairMethod, Shape, TopologyDomain,
-    ValidationIssue, same_point, shape_encloses_pole_in_frame,
+    GeometryErrorKind, Point, Polygon, PreparedPlan, RepairMethod, Shape, SourceArcMetricAccess,
+    TopologyDomain, ValidationIssue, same_point, shape_encloses_pole_in_frame,
 };
 
 fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
@@ -17,10 +17,19 @@ fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
     }
 }
 
-fn split_in_domain(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
+fn split_in_domain(
+    shape: &Shape,
+    domain: TopologyDomain,
+    metric_access: Option<&SourceArcMetricAccess<'_>>,
+) -> Result<Shape> {
     match domain {
         TopologyDomain::Cartesian => Ok(shape.clone()),
-        TopologyDomain::Geographic(frame) => shape.split_antimeridian_in_frame(frame),
+        TopologyDomain::Geographic(frame) => match metric_access {
+            Some(metric_access) => {
+                shape.split_antimeridian_in_frame_with_metric(frame, Some(metric_access))
+            },
+            None => shape.split_antimeridian_in_frame(frame),
+        },
     }
 }
 
@@ -698,6 +707,7 @@ fn repair_invalid_shape(
     shape: &Shape,
     domain: TopologyDomain,
     method: RepairMethod,
+    metric_access: Option<&SourceArcMetricAccess<'_>>,
 ) -> Result<Shape> {
     let repair = |shape: &Shape| match domain {
         TopologyDomain::Cartesian => shape.repair(method, false),
@@ -707,7 +717,7 @@ fn repair_invalid_shape(
         // Preserve source Z/M on ordinary seam crossings. Polar closure with
         // Z/M remains an honest error: no source ordinate exists at a
         // fabricated pole vertex.
-        let split = split_in_domain(shape, domain)?;
+        let split = split_in_domain(shape, domain, metric_access)?;
         repair(&split)
     } else {
         repair(shape)
@@ -737,12 +747,13 @@ pub(crate) fn repair_shape_in_frame(
     shape: &Shape,
     domain: TopologyDomain,
     method: RepairMethod,
+    metric_access: Option<&SourceArcMetricAccess<'_>>,
 ) -> Result<Option<Shape>> {
     let Some(issue) = validate_shape_in_frame(shape, domain)? else {
         return Ok(None);
     };
     reject_ambiguous_ring_repair(&issue)?;
-    repair_invalid_shape(shape, domain, method).map(Some)
+    repair_invalid_shape(shape, domain, method, metric_access).map(Some)
 }
 
 /// Cached-handle twin of [`repair_shape_in_frame`].
@@ -750,12 +761,13 @@ pub(crate) fn repair_data_in_frame(
     data: &PreparedPlan,
     domain: TopologyDomain,
     method: RepairMethod,
+    metric_access: Option<&SourceArcMetricAccess<'_>>,
 ) -> Result<Option<Shape>> {
     let Some(issue) = validate_data_in_frame(data, domain)? else {
         return Ok(None);
     };
     reject_ambiguous_ring_repair(&issue)?;
-    repair_invalid_shape(data.shape(), domain, method).map(Some)
+    repair_invalid_shape(data.shape(), domain, method, metric_access).map(Some)
 }
 
 /// Shift canonical western longitudes by one native full turn so a crossing
@@ -997,7 +1009,7 @@ mod validity_tests {
                 .map(|issue| issue.code),
             Some("latitude_out_of_range")
         );
-        let repair = repair_shape_in_frame(&shape, domain, RepairMethod::Linework)
+        let repair = repair_shape_in_frame(&shape, domain, RepairMethod::Linework, None)
             .expect_err("geographic admission failures cannot be repaired");
         assert!(matches!(
             repair.kind(),

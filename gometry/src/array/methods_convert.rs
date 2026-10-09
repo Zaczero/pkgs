@@ -350,13 +350,29 @@ impl PyGeometryArray {
         let size = size.into();
         let origin = origin.into();
         if repair {
-            let domain = match geometry::topology_domain(&self.frame) {
-                Ok(domain) => domain,
-                Err(error) => return Some(Err(error.into())),
+            let mut metric_scratch = crate::dispatch::MetricScratch::default();
+            let (domain, metric) = match crate::dispatch::MetricResolver::GeographicCarry
+                .resolve_topology_ctx(&self.frame, &mut metric_scratch)
+            {
+                Ok(context) => context,
+                Err(error) => return Some(Err(error)),
+            };
+            let metric_access = move || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic snap_to_grid repair requires the operation's CRS metric",
+                    )
+                    .into()
+                })
             };
             return Some(Python::attach(|py| {
                 self.map_shapes_detached(py, move |shape| {
-                    shape.snap_to_grid_repaired(size.tuple(), origin.tuple(), domain)
+                    shape.snap_to_grid_repaired(
+                        size.tuple(),
+                        origin.tuple(),
+                        domain,
+                        Some(&metric_access),
+                    )
                 })
             }));
         }
@@ -456,12 +472,16 @@ impl PyGeometryArray {
         domain: TopologyDomain,
         metric_access: &ParallelSourceArcMetricAccess<'_>,
     ) -> PyResult<Self> {
-        self.map_shapes_detached(py, move |shape| {
-            if let TopologyDomain::Geographic(frame) = domain {
-                shape.clip_by_rect_in_geographic_frame(rect, false, frame, metric_access)
-            } else {
-                shape.clip_by_rect(rect, false)
-            }
-        })
+        match domain {
+            TopologyDomain::Geographic(frame) => self.map_shapes_detached_mixed(
+                py,
+                move |shape| {
+                    shape.clip_by_rect_in_geographic_frame(rect, false, frame, metric_access)
+                },
+            ),
+            TopologyDomain::Cartesian => {
+                self.map_shapes_detached(py, move |shape| shape.clip_by_rect(rect, false))
+            },
+        }
     }
 }

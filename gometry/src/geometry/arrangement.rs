@@ -11,7 +11,10 @@ mod walk;
 #[cfg(test)]
 mod winding;
 
-pub(crate) use indexed::{IndexedTopology, IndexedTopologyScratch};
+pub(crate) use indexed::{
+    IndexedTopology, IndexedTopologyScratch, indexed_edge_slots_with_work,
+    indexed_topology_from_edge_fn_with_work, indexed_topology_from_edges_with_work,
+};
 #[cfg(test)]
 pub(crate) use loop_ops::{order_single_loop_rows, positional_loop_cuts, positional_loop_pieces};
 pub(crate) use walk::compare_departures;

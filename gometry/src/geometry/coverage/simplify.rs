@@ -6,8 +6,8 @@ use crate::geometry::coverage::{AABB, HashMap, Reverse, valid_coverage_rows};
 use crate::geometry::overlay::{ExactChainView, ExactPartition, ExactSourceInventory, NodeId};
 use crate::geometry::{
     BulkRTree, CoordSeq, Coordinates as _, GeometryErrorKind, Orientation, Point, PointKey,
-    Polygon, Ring, Segment, Shape, SimplifyMethod, XY, dedup_consecutive_points, line_segments,
-    orientation, point_segment_distance, same_point, same_topological_coordinate,
+    Polygon, Ring, Segment, Shape, SimplifyMethod, Unmetered, XY, dedup_consecutive_points,
+    line_segments, orientation, point_segment_distance, same_point, same_topological_coordinate,
     segment_contact_exact, undirected_segment_edge_key,
 };
 
@@ -669,7 +669,8 @@ pub(crate) fn coverage_simplify_with_frame<S: std::borrow::Borrow<Shape>>(
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_simplify", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     let views = partition.coverage_chain_views(inventory.source_operands())?;
-    let source_spans = partition.source_span_views(inventory.source_segments())?;
+    let mut work = Unmetered;
+    let source_spans = partition.source_span_views(inventory.source_segments(), &mut work)?;
     let mut chain_sources = vec![Vec::new(); views.chains.len()];
     for (source, spans) in source_spans.iter().enumerate() {
         for &(span, _) in spans {

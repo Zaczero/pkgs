@@ -93,15 +93,29 @@ fn serialize_feature_shapes(
     py: Python<'_>,
     shapes: Vec<Option<(Shape, Option<String>)>>,
 ) -> PyResult<Vec<Option<String>>> {
+    // `to_feature_collection_impl` admits only WGS84-family geometries, and
+    // GeoJSON serializes those coordinates in CRS84 regardless of their label.
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::py::support::geojson_domain_metric(
+        Some(crate::crs::frame::WGS84_LONLAT),
+        &mut metric_scratch,
+    )?;
+    let metric_access = move || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "GeoJSON source ordinates require the RFC 7946 CRS84 metric",
+            )
+            .into()
+        })
+    };
     py.detach(
         move || -> std::result::Result<_, (usize, crate::error::Error)> {
             let mut output = Vec::with_capacity(shapes.len());
             for (logical, shape) in shapes.into_iter().enumerate() {
                 output.push(
                     shape
-                        .map(|(shape, crs)| {
-                            let domain = crate::io::geojson_domain(crs.as_deref())?;
-                            crate::io::to_geojson_string(&shape, domain)
+                        .map(|(shape, _crs)| {
+                            crate::io::to_geojson_string_with_metric(&shape, domain, &metric_access)
                         })
                         .transpose()
                         .map_err(|error| (logical, error))?,
@@ -118,7 +132,17 @@ fn serialize_array_feature_shapes(
     array: crate::PyGeometryArray,
     crs: Option<String>,
 ) -> PyResult<Vec<Option<String>>> {
-    let domain = py.detach(move || crate::io::geojson_domain(crs.as_deref()))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) =
+        crate::py::support::geojson_domain_metric(crs.as_deref(), &mut metric_scratch)?;
+    let metric_access = move || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic GeoJSON source ordinates require the feature array CRS metric",
+            )
+            .into()
+        })
+    };
     py.detach(move || {
         let mut output = Vec::with_capacity(array.len());
         for row in array.row_operation().rows_with_missing(|| ()) {
@@ -128,7 +152,13 @@ fn serialize_array_feature_shapes(
                     let logical = row.logical();
                     Some(
                         row.row()
-                            .try_with_shape(|shape| crate::io::to_geojson_string(shape, domain))
+                            .try_with_shape(|shape| {
+                                crate::io::to_geojson_string_with_metric(
+                                    shape,
+                                    domain,
+                                    &metric_access,
+                                )
+                            })
                             .map_err(|error| (logical, error))?,
                     )
                 },
@@ -273,13 +303,20 @@ pub(crate) fn to_feature(
         errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature")?;
         require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         let shape = geometry.shape.shape().clone();
-        Some(
-            py.detach(move || {
-                let domain = crate::io::geojson_domain(crs.as_deref())?;
-                crate::io::to_geojson_string(&shape, domain)
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) =
+            crate::py::support::geojson_domain_metric(crs.as_deref(), &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic GeoJSON source ordinates require the feature CRS metric",
+                )
+                .into()
             })
-            .map_err(PyErr::from)?,
-        )
+        };
+        Some(py.detach(move || {
+            crate::io::to_geojson_string_with_metric(&shape, domain, &metric_access)
+        })?)
     } else {
         None
     };

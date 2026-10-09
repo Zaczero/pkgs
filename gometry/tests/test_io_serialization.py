@@ -223,6 +223,31 @@ def test_geo_interface_uses_to_geojson_geographic_preparation() -> None:
         _ = projected.__geo_interface__
 
 
+def test_geojson_writers_resolve_metric_for_constant_z_polar_annulus() -> None:
+    longitudes = (0.0, 60.0, 120.0, 180.0, -120.0, -60.0)
+    shell = [(longitude, 70.0, 5.0) for longitude in longitudes]
+    hole = [(longitude, 80.0, 5.0) for longitude in longitudes]
+    annulus = gm.Polygon(shell, holes=[hole], crs=4326)
+    array = gm.GeometryArray([annulus])
+    outputs = [
+        annulus.to_geojson(),
+        annulus.__geo_interface__,
+        array.to_geojson()[0],
+        array.__geo_interface__['features'][0]['geometry'],
+        gm.to_feature(annulus)['geometry'],
+        gm.to_feature_collection([annulus])['features'][0]['geometry'],
+    ]
+
+    for output in outputs:
+        serialized = json.loads(output) if isinstance(output, str) else output
+        geometry = gm.from_geojson(serialized)
+        coordinates = gm.get_coordinates(geometry).tolist()
+        assert geometry.geometry_type in {'Polygon', 'MultiPolygon'}
+        assert geometry.coordinate_axes == 'XYZ'
+        assert len(coordinates) > 0
+        assert all(row[2] == 5.0 for row in coordinates)
+
+
 # ---------------------------------------------------------------------------
 # B2 — GeoJSON default CRS84 matches GeoParquet absent-CRS default
 # ---------------------------------------------------------------------------

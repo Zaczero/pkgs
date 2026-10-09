@@ -397,8 +397,21 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
             .into(),
         );
     }
-    let domain = crate::geometry::topology_domain(&metadata)?;
-    let shape = py.detach(move || crate::geometry::coverage_union_topo(&shapes, domain))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let metric_access = move || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic coverage_union source ordinates require the operation's CRS metric",
+            )
+            .into()
+        })
+    };
+    let shape = py.detach(move || {
+        crate::geometry::coverage_union_topo(&shapes, domain, Some(&metric_access))
+    })?;
+    drop(metric_scratch);
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 

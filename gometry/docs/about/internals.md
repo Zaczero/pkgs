@@ -31,6 +31,31 @@ always X/Y even when an authority definition declares a different native axis
 order. See [CRS, units & measurement](../guide/crs.md) for the user-facing
 frame and operation-family rules.
 
+## Geographic quotient embedding
+
+Geographic overlay selects boundaries in an exact quotient graph, where seam
+aliases and pole ports share their topological identities. Coordinate emission
+is a separate step: the nearest-even binary64 table is tried first and is
+serialized unchanged when it preserves the exact chart. The Q certificate
+checks live-node identity, exact port lifts and cut pairing, segment incidence,
+cyclic fan order, global face and host correspondence, and shell/hole roles.
+
+If nearest rounding fails those checks, the shared deterministic embedding
+search moves constructed nodes among adjacent binary64 coordinates. Stored
+source vertices and graph segmentation remain fixed. One accepted node table
+feeds polygon, line, and point publication; no alternate rounded noder or
+coordinate grid is used.
+
+Ordinary cycle roles use an independent winding proof over continuously lifted
+exact ports. Quotient closures use the shared chart-turn and bounded-pole
+classification. A full-period non-seam edge retains its directed circle, while
+the two seam spellings identify one quotient point. Candidate roles are checked
+against the published ring's shared domain facts.
+
+Frame-aware validity checks the quotient topology without recharting stored
+coordinates. It therefore preserves narrow edges whose distinct binary64
+longitudes would merge after a period translation.
+
 ## Hard boundaries
 
 Gometry owns geometry semantics and kernels, not application storage or query

@@ -10,9 +10,11 @@ mod view;
 
 pub(crate) use chain::ChartSpanGuard;
 pub(crate) use computed_edge::{
-    ComputedEdgeIntent, ComputedEdgeInterval, ComputedVertexIntent, publish_certified_minor_chain,
-    publish_computed_chain, publish_computed_chain_with_vertex_intents,
+    ComputedEdgeIntent, ComputedEdgeInterval, ComputedEdgeSample, ComputedPublication,
+    ComputedVertexIntent, publish_certified_minor_chain, publish_computed_chain,
+    publish_computed_chain_with_vertex_intents,
     publish_computed_chain_with_vertex_intents_and_intervals,
+    publish_computed_chain_with_vertex_intents_and_trace, edge_reads_correctly,
 };
 pub(crate) use envelope::GeographicSupportEnvelope;
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
@@ -25,7 +27,6 @@ pub(crate) use value::{
     QuotientVertex, RetainedChartDisplacement, RetainedLongitudeSite, RingTurn, SeamIdentity,
     TurnDirection,
 };
-#[cfg(test)]
 pub(crate) use value::{RetainedNativeLongitude, retained_native_private};
 #[cfg(test)]
 pub(crate) use view::GeographicAdmissionWork;

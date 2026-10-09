@@ -16,8 +16,8 @@ use crate::geometry::tessellation::exact::{
     ExactDyadic, compare_ratios, round_ratio, round_sqrt_ratio,
 };
 use crate::geometry::{
-    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, XY, ZOrdinate,
-    axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
+    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Unmetered, Work, XY,
+    ZOrdinate, axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
 };
 
 mod exact;
@@ -365,12 +365,35 @@ pub(in crate::geometry) fn try_sort_by<T>(
     items: &mut [T],
     mut compare: impl FnMut(&T, &T) -> Result<Ordering>,
 ) -> Result<()> {
+    let mut work = Unmetered;
+    try_sort_by_with_work(items, &mut work, |left, right, _| compare(left, right))
+}
+
+fn charge_sort_work<W: Work + ?Sized>(work: &mut W, amount: usize) -> Result<()> {
+    work.charge(u64::try_from(amount).map_err(|_| crate::error::ResourceError::SizeOverflow)?)
+}
+
+/// The same stable fallible sort with all scalar progress, movement and
+/// comparator work charged to the operation that owns the records.
+pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work + ?Sized>(
+    items: &mut [T],
+    work: &mut W,
+    mut compare: impl FnMut(&T, &T, &mut W) -> Result<Ordering>,
+) -> Result<()> {
     const RUN: usize = 16;
     for run in items.chunks_mut(RUN) {
         for index in 1..run.len() {
+            work.charge(1)?;
             let mut cursor = index;
-            while cursor > 0 && compare(&run[cursor - 1], &run[cursor])? == Ordering::Greater {
+            while cursor > 0 {
+                work.charge(1)?;
+                work.charge(1)?;
+                if compare(&run[cursor - 1], &run[cursor], work)? != Ordering::Greater {
+                    break;
+                }
+                work.charge(3)?;
                 run.swap(cursor - 1, cursor);
+                work.charge(1)?;
                 cursor -= 1;
             }
         }
@@ -379,45 +402,80 @@ pub(in crate::geometry) fn try_sort_by<T>(
     if len <= RUN {
         return Ok(());
     }
+    charge_sort_work(work, len.checked_mul(2).ok_or(crate::error::ResourceError::SizeOverflow)?)?;
     let mut order = Vec::with_capacity(len);
     let mut merged = Vec::with_capacity(len);
     order.extend(0..len);
     merged.resize(len, 0);
     let mut width = RUN;
     while width < len {
-        for start in (0..len).step_by(2 * width) {
-            let middle = (start + width).min(len);
-            let end = (start + 2 * width).min(len);
+        work.charge(1)?;
+        let stride = width
+            .checked_mul(2)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        for start in (0..len).step_by(stride) {
+            work.charge(1)?;
+            let middle = start
+                .checked_add(width)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+                .min(len);
+            let end = start
+                .checked_add(stride)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+                .min(len);
             let (mut left, mut right) = (start, middle);
             for slot in &mut merged[start..end] {
+                work.charge(1)?;
                 // Only a strictly smaller right item overtakes: ties keep
                 // their input order.
-                let take_right = left == middle
-                    || (right < end
-                        && compare(&items[order[left]], &items[order[right]])?
-                            == Ordering::Greater);
-                *slot = if take_right {
+                let take_right = if left == middle {
+                    true
+                } else if right < end {
+                    work.charge(1)?;
+                    compare(&items[order[left]], &items[order[right]], work)?
+                        == Ordering::Greater
+                } else {
+                    false
+                };
+                if take_right {
+                    work.charge(1)?;
                     right += 1;
+                } else {
+                    work.charge(1)?;
+                    left += 1;
+                }
+                work.charge(1)?;
+                *slot = if take_right {
                     order[right - 1]
                 } else {
-                    left += 1;
                     order[left - 1]
                 };
             }
         }
+        work.charge(3)?;
         std::mem::swap(&mut order, &mut merged);
-        width *= 2;
+        width = width
+            .checked_mul(2)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
     }
     // Position `k` takes the item at `order[k]`; each cycle is walked once.
     for start in 0..len {
+        work.charge(1)?;
         let mut current = start;
-        while order[current] != current {
+        loop {
+            work.charge(1)?;
+            if order[current] == current {
+                break;
+            }
             let source = order[current];
+            work.charge(1)?;
             order[current] = current;
             if source == start {
                 break;
             }
+            work.charge(3)?;
             items.swap(current, source);
+            work.charge(1)?;
             current = source;
         }
     }
