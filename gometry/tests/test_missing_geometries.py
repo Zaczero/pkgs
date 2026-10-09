@@ -1187,11 +1187,11 @@ def test_masked_string_and_xy_predicate_surfaces() -> None:
     assert gm.relate(rows, probe)[1] is None
     assert gm.relate(probe, rows)[1] is None
     np.testing.assert_array_equal(
-        gm.contains_xy(probe, [0.0, 9.0, 2.0], [0.0, 9.0, 2.0]),
+        gm.contains(probe, x=[0.0, 9.0, 2.0], y=[0.0, 9.0, 2.0]),
         [True, False, False],
     )
     np.testing.assert_array_equal(
-        gm.intersects_xy(probe, [0.0, 9.0, 2.0], [0.0, 9.0, 2.0]),
+        gm.intersects(probe, x=[0.0, 9.0, 2.0], y=[0.0, 9.0, 2.0]),
         [True, False, False],
     )
 

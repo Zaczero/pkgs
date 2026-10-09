@@ -1665,13 +1665,15 @@ def _latitude_ring(latitude: float) -> list[tuple[float, float]]:
 def test_xy_predicates_auto_split_antimeridian() -> None:
     poly = _crossing_band()
     for x, y in [(178, 0), (-178, 0), (175, 5)]:
-        assert gm.contains_xy(poly, x, y) == gm.contains(poly, gm.Point(x, y, crs=4326))
-        assert gm.intersects_xy(poly, x, y) == gm.intersects(
+        assert gm.contains(poly, x=x, y=y) == gm.contains(
             poly, gm.Point(x, y, crs=4326)
         )
-    assert not gm.contains_xy(poly, 0, 0)
-    assert list(gm.contains_xy(poly, [178, 0, -178], [0, 0, 0])) == [True, False, True]
-    assert gm.contains_xy(poly, 178, 0)
+        assert gm.intersects(poly, x=x, y=y) == gm.intersects(
+            poly, gm.Point(x, y, crs=4326)
+        )
+    assert not gm.contains(poly, x=0, y=0)
+    assert list(gm.contains(poly, x=[178, 0, -178], y=[0, 0, 0])) == [True, False, True]
+    assert gm.contains(poly, x=178, y=0)
 
 
 def test_vertex_at_pole_predicates_are_consistent() -> None:
@@ -1699,17 +1701,17 @@ def test_xy_predicates_match_full_topology_at_poles() -> None:
     cap = gm.Polygon(_latitude_ring(80), crs=4326)
     for longitude in (0.0, 180.0, -180.0):
         pole = gm.Point(longitude, 90, crs=4326)
-        assert gm.contains_xy(cap, longitude, 90) == gm.contains(cap, pole) is True
-        assert gm.intersects_xy(cap, longitude, 90) == gm.intersects(cap, pole) is True
-        assert gm.contains_xy(cap, longitude, 90) is True
-        assert gm.intersects_xy(cap, longitude, 90) is True
+        assert gm.contains(cap, x=longitude, y=90) == gm.contains(cap, pole) is True
+        assert gm.intersects(cap, x=longitude, y=90) == gm.intersects(cap, pole) is True
+        assert gm.contains(cap, x=longitude, y=90) is True
+        assert gm.intersects(cap, x=longitude, y=90) is True
 
     boundary = gm.Polygon([(-10, 80), (10, 80), (0, 90)], crs=4326)
     for longitude in (0.0, 180.0, -180.0):
-        assert gm.contains_xy(boundary, longitude, 90) is False
-        assert gm.intersects_xy(boundary, longitude, 90) is True
-        assert gm.contains_xy(boundary, longitude, 90) is False
-        assert gm.intersects_xy(boundary, longitude, 90) is True
+        assert gm.contains(boundary, x=longitude, y=90) is False
+        assert gm.intersects(boundary, x=longitude, y=90) is True
+        assert gm.contains(boundary, x=longitude, y=90) is False
+        assert gm.intersects(boundary, x=longitude, y=90) is True
 
 
 def test_polar_prepared_and_free_point_batches_keep_original_topology() -> None:
@@ -1733,18 +1735,18 @@ def test_xy_pole_broadcast_array_and_missing_rows() -> None:
     rows = gm.GeometryArray([north, south, None, annulus], crs=4326)
 
     np.testing.assert_array_equal(
-        gm.contains_xy(rows, [0, 0, 0, 180], [90, -90, 90, 75]),
+        gm.contains(rows, x=[0, 0, 0, 180], y=[90, -90, 90, 75]),
         [True, True, False, True],
     )
     np.testing.assert_array_equal(
-        gm.intersects_xy(rows, [0, 0, 0, 180], [90, -90, 90, 75]),
+        gm.intersects(rows, x=[0, 0, 0, 180], y=[90, -90, 90, 75]),
         [True, True, False, True],
     )
     np.testing.assert_array_equal(
-        gm.contains_xy(rows, 0, 90), [True, False, False, False]
+        gm.contains(rows, x=0, y=90), [True, False, False, False]
     )
     np.testing.assert_array_equal(
-        gm.contains_xy(rows, [0, 180, 0, 180], 90),
+        gm.contains(rows, x=[0, 180, 0, 180], y=90),
         [True, False, False, False],
     )
     probes = gm.GeometryArray(
@@ -1774,18 +1776,18 @@ def test_polar_annulus_split_membership_bounds_and_index() -> None:
             point = gm.Point(longitude, latitude, crs=4326)
             assert gm.contains(annulus, point) is expected
             assert gm.contains(split, point) is expected
-            assert gm.contains_xy(annulus, longitude, latitude) is expected
-            assert gm.contains_xy(split, longitude, latitude) is expected
+            assert gm.contains(annulus, x=longitude, y=latitude) is expected
+            assert gm.contains(split, x=longitude, y=latitude) is expected
         for latitude in (70.0, 80.0):
             point = gm.Point(longitude, latitude, crs=4326)
             assert not gm.contains(annulus, point)
             assert not gm.contains(split, point)
             assert gm.intersects(annulus, point)
             assert gm.intersects(split, point)
-            assert not gm.contains_xy(annulus, longitude, latitude)
-            assert not gm.contains_xy(split, longitude, latitude)
-            assert gm.intersects_xy(annulus, longitude, latitude)
-            assert gm.intersects_xy(split, longitude, latitude)
+            assert not gm.contains(annulus, x=longitude, y=latitude)
+            assert not gm.contains(split, x=longitude, y=latitude)
+            assert gm.intersects(annulus, x=longitude, y=latitude)
+            assert gm.intersects(split, x=longitude, y=latitude)
 
     index = gm.SpatialIndex([cap, annulus])
     assert list(index.query(gm.Point(180, 89, crs=4326), predicate='intersects')) == [0]
@@ -1838,8 +1840,8 @@ def test_polar_annulus_split_preserves_chart_area_length_and_membership(
             point = gm.Point(longitude, latitude, crs=4326)
             assert gm.contains(annulus, point) is expected
             assert gm.contains(split, point) is expected
-            assert gm.contains_xy(annulus, longitude, latitude) is expected
-            assert gm.contains_xy(split, longitude, latitude) is expected
+            assert gm.contains(annulus, x=longitude, y=latitude) is expected
+            assert gm.contains(split, x=longitude, y=latitude) is expected
 
 
 def test_split_seam_donut_preserves_area_and_membership() -> None:
@@ -1866,8 +1868,8 @@ def test_split_seam_donut_preserves_area_and_membership() -> None:
         point = gm.Point(longitude, latitude, crs=4326)
         assert gm.contains(donut, point) is expected
         assert gm.contains(split, point) is expected
-        assert gm.contains_xy(donut, longitude, latitude) is expected
-        assert gm.contains_xy(split, longitude, latitude) is expected
+        assert gm.contains(donut, x=longitude, y=latitude) is expected
+        assert gm.contains(split, x=longitude, y=latitude) is expected
 
 
 def test_split_polar_annulus_carries_resolvable_zm() -> None:
@@ -2010,10 +2012,10 @@ def test_artificial_seam_is_not_a_topological_boundary() -> None:
         point = gm.Point(longitude, 0, crs=4326)
         assert gm.contains(crossing, point)
         assert not gm.touches(crossing, point)
-        assert gm.contains_xy(crossing, longitude, 0)
+        assert gm.contains(crossing, x=longitude, y=0)
     assert gm.covers(endpoint, gm.Point(180, 0, crs=4326))
     assert gm.touches(endpoint, gm.Point(180, 0, crs=4326))
-    assert not gm.contains_xy(endpoint, 180, 0)
+    assert not gm.contains(endpoint, x=180, y=0)
 
 
 def test_derived_points_and_bounds_handle_pole_enclosure() -> None:

@@ -349,7 +349,9 @@ pub(crate) fn dispatch_binary<R>(
 where
     R: BulkElement,
 {
-    let admission = admit_binary(left, right, op_name)?;
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let admission = admit_binary(&left, &right, op_name)?;
     dispatch_binary_admitted(py, &admission, resolver, kernel)
 }
 
@@ -836,7 +838,9 @@ pub(crate) fn dispatch_binary_geometry(
     + Send
     + Sync,
 ) -> PyResult<Py<PyAny>> {
-    let admission = admit_binary(left, right, op_name)?;
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let admission = admit_binary(&left, &right, op_name)?;
     dispatch_binary_geometry_admitted_with_resolver(py, &admission, resolver, kernel)
 }
 

@@ -1281,7 +1281,7 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
     probed = _regular_polygon(0.0, 0.0, vertices=256)
     cold_size = sys.getsizeof(probed)
     assert cold_size > probed.nbytes
-    gm.contains_xy(probed, [0.0, 2.0], [0.0, 2.0])
+    gm.contains(probed, x=[0.0, 2.0], y=[0.0, 2.0])
     assert sys.getsizeof(probed) >= cold_size
     line = gm.LineString([(float(i), 0.0) for i in range(128)])
     line_cold_size = sys.getsizeof(line)

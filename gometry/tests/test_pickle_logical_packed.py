@@ -398,12 +398,12 @@ def test_pickle_packed_polygon_drop_missing_gather_filter_round_trip() -> None:
 def test_pickle_malformed_wkb_polygon_stays_mixed_not_packed() -> None:
     """The mixed WKB unpickler must not opportunistically pack.
 
-    Uses a *valid, pack-admissible* polygon WKB so swapping
-    ``mixed`` for ``pack_or_mixed`` would produce packed storage and fail
+    Uses a *valid, pack-admissible* polygon WKB so replacing the mixed
+    unpickler with ``PyGeometryArray::from_shapes`` would produce packed storage and fail
     the reduce-name check (malformed WKB demotes under pack_admission and
     would not detect that swap).
     """
-    # Closed 4-vertex polygon — would pack under pack_or_mixed.
+    # Closed 4-vertex polygon — the standard shape builder packs it.
     wkb = gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)]).to_wkb()
     arr = _lib._unpickle_geometry_array_v1([wkb], None, None, None)
     assert len(arr) == 1

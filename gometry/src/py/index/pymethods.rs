@@ -1,5 +1,5 @@
 use pyo3::exceptions::{PyKeyError, PyTypeError};
-use pyo3::types::{PyBool, PyTuple, PyTupleMethods as _};
+use pyo3::types::{PyBool, PyDict, PyTuple, PyTupleMethods as _};
 use pyo3::{IntoPyObjectExt as _, PyErr};
 
 use super::impl_nearest::NearestVisited;
@@ -275,6 +275,25 @@ impl PySpatialIndex {
         self.geometry_at_handle(handle)
     }
 
+    /// Compare live handles and geometries using mapping value semantics.
+    pub(crate) fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let mapping = py.import("collections.abc")?.getattr("Mapping")?;
+        if !other.is_instance(&mapping)? {
+            return Ok(false);
+        }
+        if other.len()? != self.__len__() {
+            return Ok(false);
+        }
+        let values = PyDict::new(py);
+        for handle in self.rows.live_handles.iter() {
+            values.set_item(
+                handle,
+                self.geometry_at_handle(handle)?.into_pyobject(py)?.unbind(),
+            )?;
+        }
+        values.eq(other)
+    }
+
     /// Whether ``handle`` is a live geometry handle.
     ///
     /// Non-integer probes return ``False`` instead of raising, matching
@@ -358,7 +377,7 @@ impl PySpatialIndex {
     ///
     /// Parameters
     /// ----------
-    /// handle : int
+    /// handle : SupportsIndex
     ///     A non-negative integer/index handle (positional-only; ``bool`` is
     ///     rejected). Invalid or negative handles raise instead of returning
     ///     ``default``.
@@ -416,18 +435,20 @@ impl PySpatialIndex {
         python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
     }
 
-    /// Return exact predicate-refined matches for a query geometry or array.
+    /// Return exact predicate-refined matches for a query geometry, array, or
+    /// iterable of geometry rows.
     ///
     /// Candidates are refined with predicate (`'intersects'` by
     /// default); distance is accepted only with `'dwithin'`. Use
     /// candidates for a bounding-box-only prefilter. A single geometry
-    /// returns an int64 ndarray; a GeometryArray returns
-    /// Groups — one id row per row, CSR-grouped.
+    /// returns an int64 ndarray; arrays and iterables return Groups, with one
+    /// id row per input row.
     ///
     /// Parameters
     /// ----------
-    /// geom : Geometry or GeometryArray
-    ///     The query geometry, or one query per array element.
+    /// geom : Geometry, GeometryArray, or iterable of Geometry or None
+    ///     One query geometry or one query per sequence row. Missing rows
+    ///     produce empty result groups and retain their logical positions.
     /// predicate : str, default 'intersects'
     ///     Spatial relation each match must satisfy, evaluated as
     ///     ``predicate(query_geometry, indexed_geometry)`` (``'dwithin'``
@@ -472,13 +493,14 @@ impl PySpatialIndex {
     ) -> PyResult<Py<PyAny>> {
         let predicate = IndexPredicate::parse(predicate)?;
         let distance = query_distance(Some(predicate), distance)?;
-        if let Some(geometry) = exact_geometry(geom) {
+        let geom = crate::normalize_geometry_batch(py, geom)?;
+        if let Some(geometry) = exact_geometry(&geom) {
             let geometry = geometry.clone();
             let matches =
                 py.detach(move || self.query_exact(&geometry, predicate, distance, unit))?;
             return usize_array(py, matches);
         }
-        if let Some(array) = exact_geometry_array(geom) {
+        if let Some(array) = exact_geometry_array(&geom) {
             let array = array.clone();
             if !array.is_compact_nullable()
                 && let Some(points) = array.storage().point_rows()
@@ -595,7 +617,7 @@ impl PySpatialIndex {
     ///
     /// Parameters
     /// ----------
-    /// queries : Geometry, GeometryArray, or iterable of Geometry
+    /// queries : Geometry, GeometryArray, or iterable of Geometry or None
     ///     Left-side geometries to join against the indexed rows.
     /// predicate : str, default 'intersects'
     ///     Spatial predicate each returned pair must satisfy.
@@ -701,17 +723,18 @@ impl PySpatialIndex {
         Ok((int64_array(py, left)?, int64_array(py, right)?))
     }
 
-    /// Bounding-box candidate matches for a query geometry or array (not
+    /// Bounding-box candidate matches for a query geometry, array, or iterable (not
     /// exact). If you refine these candidates with a directional predicate,
     /// evaluate it as ``predicate(query_geometry, indexed_geometry)``.
     ///
-    /// A single geometry returns an `int64` ndarray; a `GeometryArray`
-    /// returns `Groups` — one candidate row per row.
+    /// A single geometry returns an `int64` ndarray; arrays and iterables
+    /// return `Groups` — one candidate row per input row.
     ///
     /// Parameters
     /// ----------
-    /// geom : Geometry or GeometryArray
-    ///     The query geometry, or one query per array element.
+    /// geom : Geometry, GeometryArray, or iterable of Geometry or None
+    ///     One query geometry or one query per sequence row. Missing rows
+    ///     produce empty groups and retain their logical positions.
     /// distance : float, optional
     ///     Expand the query envelope by this much, in ``unit``. Finite
     ///     non-negative expansions and positive infinity are accepted;
@@ -746,11 +769,12 @@ impl PySpatialIndex {
         unit: Option<DistanceUnit>,
     ) -> PyResult<Py<PyAny>> {
         let distance = query_distance(None, distance)?;
-        if let Some(geometry) = exact_geometry(geom) {
+        let geom = crate::normalize_geometry_batch(py, geom)?;
+        if let Some(geometry) = exact_geometry(&geom) {
             let matches = self.candidate_ids_sorted(geometry, distance, unit)?;
             return usize_array(py, matches);
         }
-        if let Some(array) = exact_geometry_array(geom) {
+        if let Some(array) = exact_geometry_array(&geom) {
             if !array.is_compact_nullable()
                 && let Some(points) = array.storage().point_rows()
             {
@@ -845,8 +869,9 @@ impl PySpatialIndex {
     ///
     /// Parameters
     /// ----------
-    /// geom : Geometry or GeometryArray
-    ///     The query geometry, or one query per array element.
+    /// geom : Geometry, GeometryArray, or iterable of Geometry or None
+    ///     One query geometry or one query per sequence row. Missing rows
+    ///     produce empty groups and retain their logical positions.
     /// k : int, default 1
     ///     How many nearest neighbors to return; ``0`` returns no neighbors.
     /// max_distance : float, optional
@@ -903,7 +928,8 @@ impl PySpatialIndex {
     ) -> PyResult<Py<PyAny>> {
         let k = validate_nearest_k(k)?;
         let max_distance = parse_max_distance(max_distance)?;
-        if let Some(geometry) = exact_geometry(geom) {
+        let geom = crate::normalize_geometry_batch(py, geom)?;
+        if let Some(geometry) = exact_geometry(&geom) {
             let geometry = geometry.clone();
             let pairs = py.detach(move || {
                 self.nearest_one(&geometry, k, unit, max_distance, NearestOptions {
@@ -913,7 +939,7 @@ impl PySpatialIndex {
             })?;
             return format_nearest(py, pairs, return_distance);
         }
-        if let Some(array) = exact_geometry_array(geom) {
+        if let Some(array) = exact_geometry_array(&geom) {
             let array = array.clone();
             // One frame check and metric resolution for the whole array;
             // every storage's rows drive `nearest_core` on stack handles —
@@ -1087,7 +1113,7 @@ impl PySpatialIndex {
     ///
     /// Parameters
     /// ----------
-    /// handle : int
+    /// handle : SupportsIndex
     ///     The handle returned by ``insert`` (or a position from building).
     ///
     /// Returns

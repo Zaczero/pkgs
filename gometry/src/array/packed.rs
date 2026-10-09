@@ -715,28 +715,13 @@ impl PyGeometryArray {
         }))
     }
 
-    /// Build an array, packing into `Points`, `Lines`, or `Polygons` storage
-    /// when every element is a uniform-axes primitive of that kind (so
-    /// `array([points])`, line-returning ops, and polygon-returning ops
-    /// auto-pack), otherwise `Mixed`.
-    pub(crate) fn pack_or_mixed(
-        items: Vec<PyGeometry>,
-        frame: Frame,
-    ) -> crate::error::Result<Self> {
-        let shapes = items
-            .into_iter()
-            .map(|item| item.shape.shape().clone())
-            .collect();
-        Self::from_shapes(shapes, frame)
-    }
-
     /// Build storage straight from kernel-output `Shape`s. Uniform packing can
     /// return a resource error; structural admission failures fall through to
     /// `Mixed` without publishing a partially packed result.
     pub(crate) fn storage_from_shapes(
         shapes: Vec<Shape>,
     ) -> crate::error::Result<GeometryArrayStorage> {
-        // First-kind dispatch, exactly like `pack_or_mixed`.
+        // Use the first row kind to select a uniform column packer.
         match shapes.first() {
             Some(Shape::Point(_)) => {
                 if let Some(column) = Self::uniform_point_column(shapes.iter())? {

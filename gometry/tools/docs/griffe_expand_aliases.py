@@ -36,6 +36,7 @@ _STUB_LOCAL = (
     '_FloatColumn1D',
     '_FloatScalarInput',
     '_GeoJsonScalar',
+    '_GeometryBatch',
     '_GeometryLike',
     '_IdArray',
     '_IndexLane',

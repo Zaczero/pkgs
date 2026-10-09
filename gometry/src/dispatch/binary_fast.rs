@@ -23,8 +23,10 @@ pub(crate) fn dispatch_predicate(
 ) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
 
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
     let operation = Operation::Predicate(predicate);
-    let admission = super::binary::admit_binary(left, right, operation.name())?;
+    let admission = super::binary::admit_binary(&left, &right, operation.name())?;
     let spec = predicate.spec();
     match (admission.left, admission.right) {
         (One(left), One(right)) => {
@@ -166,7 +168,9 @@ fn dispatch_metric_binary<R>(
 where
     R: Send + crate::broadcast::BulkElement,
 {
-    let admission = super::binary::admit_binary(left, right, op.name())?;
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let admission = super::binary::admit_binary(&left, &right, op.name())?;
     dispatch_metric_binary_admitted(
         py,
         &admission,

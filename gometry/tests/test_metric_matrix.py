@@ -342,6 +342,30 @@ def test_exact_crs_metric_foot_native_and_meters_and_crs_free(op: str) -> None:
         free_meters_run()
 
 
+def test_pairwise_metrics_preserve_nullable_iterable_rows() -> None:
+    origin = gm.Point(0, 0)
+    target = gm.Point(3, 4)
+    values = [origin, None, target]
+
+    distances = gm.distance(iter(values), origin)
+    assert distances[0] == 0.0
+    assert math.isnan(distances[1])
+    assert distances[2] == 5.0
+    np.testing.assert_array_equal(
+        gm.dwithin(values, origin, [0.0, 0.0, 5.0]), [True, False, True]
+    )
+
+    left_points, right_points = gm.nearest_points(values, origin)
+    assert left_points[1] is None and right_points[1] is None
+    assert left_points[2] == target and right_points[2] == origin
+    assert gm.relate(values, origin)[1] is None
+
+    lines = [gm.LineString([(0, 0), (2, 0)]), None, gm.LineString([(4, 0), (6, 0)])]
+    shared = gm.shared_paths(lines, gm.LineString([(1, 0), (5, 0)]))
+    assert len(shared) == 3
+    assert shared[1] is None
+
+
 # ---------------------------------------------------------------------------
 # Local-projection constructive metrics
 # ---------------------------------------------------------------------------

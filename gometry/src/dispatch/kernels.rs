@@ -1143,9 +1143,6 @@ pub(crate) fn binary_distance_3d(
             to_metre,
         ));
     }
-    if ctx.lane.is_array() {
-        return Ok(f64::NAN);
-    }
     Ok(scale_length(left.distance_3d(right)?, to_metre))
 }
 

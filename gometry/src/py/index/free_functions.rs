@@ -2,7 +2,7 @@ use pyo3::IntoPyObjectExt as _;
 
 use crate::py::index::{
     Bound, DistanceUnit, DwithinDistance, IndexPredicate, PreparedIndexQuery, Py, PyAny, PyResult,
-    PySpatialIndex, Python, build_spatial_index, exact_geometry_array, geometry_items, pyfunction,
+    PySpatialIndex, Python, build_spatial_index, exact_geometry, exact_geometry_array, pyfunction,
     query_distance,
 };
 use crate::py::numpy::int64_array;
@@ -15,10 +15,11 @@ use crate::py::numpy::int64_array;
 ///
 /// Parameters
 /// ----------
-/// values : sequence of Geometry or GeometryArray
+/// values : Geometry, GeometryArray, or iterable of geometry-like values or None
 ///     Candidate geometries to index and search.
-/// geom : Geometry or GeometryArray
-///     Query geometry (or array of queries).
+/// geom : Geometry, GeometryArray, or iterable of Geometry or None
+///     Query geometry or one query per sequence row. Missing rows produce
+///     empty result groups and retain their logical positions.
 /// k : int, default 1
 ///     Number of nearest neighbors to return per query; ``0`` returns no
 ///     neighbors.
@@ -41,10 +42,10 @@ use crate::py::numpy::int64_array;
 /// -------
 /// int64 numpy.ndarray, Groups, or tuple
 ///     Indices into `values` of the nearest geometries — an ``int64`` ndarray
-///     for a scalar query, CSR ``Groups`` for an array query. With
+///     for a scalar query, CSR ``Groups`` for an array or iterable query. With
 ///     ``return_distance=True``, plain tuple field order is ``(indices,
 ///     distances)`` for a scalar query or ``(matches, distances)`` for an
-///     array query (distances parallel to ``matches.values``).
+///     array or iterable query (distances parallel to ``matches.values``).
 ///
 /// Raises
 /// ------
@@ -88,7 +89,7 @@ pub(crate) fn nearest(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry, GeometryArray, or sequence of Geometry
+/// left, right : Geometry, GeometryArray, or iterable of geometry-like values or None
 ///     The two geometry collections to join. Missing rows produce no pairs;
 ///     their original row positions are preserved in every returned id.
 /// predicate : str, default 'intersects'
@@ -175,11 +176,22 @@ pub(crate) fn join_pair_columns(
 ) -> PyResult<(Vec<i64>, Vec<i64>)> {
     // Matching is the native work `SpatialIndex.query` already detaches; only
     // pulling the operands out of Python needs the interpreter.
+    if let Some(geometry) = exact_geometry(left) {
+        return py.detach(|| {
+            join_item_pairs(
+                std::slice::from_ref(geometry),
+                index,
+                predicate,
+                distance,
+                unit,
+            )
+        });
+    }
     if let Some(array) = exact_geometry_array(left) {
         return py.detach(|| join_array_pairs(array, index, predicate, distance, unit));
     }
-    let left_items = geometry_items(left)?;
-    py.detach(|| join_item_pairs(&left_items, index, predicate, distance, unit))
+    let array = crate::PyGeometryArray::new(left, None, None)?;
+    py.detach(|| join_array_pairs(&array, index, predicate, distance, unit))
 }
 
 pub(super) fn append_join_matches(

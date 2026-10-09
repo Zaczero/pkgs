@@ -1060,7 +1060,7 @@ pub(super) fn push_point_on_source(
 ) -> Result<()> {
     if same_point(segment.start, segment.end)
         || !point_in_segment_envelope(point, segment)
-        || window.is_some_and(|bounds| !bounds.contains_xy(point))
+        || window.is_some_and(|bounds| !bounds.contains_point(point))
     {
         return Ok(());
     }
@@ -1118,7 +1118,7 @@ pub(super) fn classify_pair_into(
                 },
                 TouchLocation::Shared(_) => unreachable!("shared endpoints do not cut a segment"),
             };
-            if window.is_none_or(|bounds| bounds.contains_xy(point)) {
+            if window.is_none_or(|bounds| bounds.contains_point(point)) {
                 push_contact(contacts, index, handle)?;
             }
         }};

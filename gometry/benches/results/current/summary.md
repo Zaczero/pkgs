@@ -168,7 +168,7 @@ Dimension `holes` in `holes`; each point is an independent paired workload.
 
 Endpoint growth (250 → 4k): gometry median 16.598x, comparator median 16.836x, gometry/work 1.037x, comparator/work 1.052x.
 
-#### contains_xy: certified batch boundary
+#### contains coordinate probes: certified batch boundary
 
 Dimension `probe-count` in `probes`; each point is an independent paired workload.
 

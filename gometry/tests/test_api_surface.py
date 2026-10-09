@@ -389,27 +389,27 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: sites.voronoi_polygons(tolerance=huge), OverflowError, None),
         (lambda: sites.voronoi_edges(tolerance=huge), OverflowError, None),
         (
-            lambda: gm.contains_xy(geom, huge, 0),
+            lambda: gm.contains(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.intersects_xy(geom, huge, 0),
+            lambda: gm.intersects(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.contains_xy(geom, huge, 0),
+            lambda: gm.contains(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.contains_xy(geom, huge, 0),
+            lambda: gm.contains(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.intersects_xy(geom, huge, 0),
+            lambda: gm.intersects(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
@@ -568,7 +568,7 @@ def test_readme_quickstart_stays_executable() -> None:
     assert multi.bounds == area.bounds
     np.testing.assert_array_equal(area.coords.row_index, [0, 0, 0, 0, 0])
     np.testing.assert_array_equal(
-        gm.intersects_xy(area, [21.0, 30.0], [52.0, 52.0]), [True, False]
+        gm.intersects(area, x=[21.0, 30.0], y=[52.0, 52.0]), [True, False]
     )
     distance_m = gm.distance(point, gm.Point(22.0, 52.0, crs=4326))
     bearing_deg = gm.bearing(point, gm.Point(22.0, 52.0, crs=4326))
@@ -681,7 +681,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'boxes',
         'contains',
         'contains_properly',
-        'contains_xy',
         'coverage_clean',
         'coverage_invalid_edges',
         'coverage_is_valid',
@@ -716,7 +715,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'intersection',
         'intersection_all',
         'intersects',
-        'intersects_xy',
         'join',
         'length',
         'length_3d',

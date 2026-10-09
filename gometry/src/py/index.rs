@@ -48,7 +48,11 @@ pub(crate) fn checked_index_handle_end(start: usize, count: usize) -> crate::err
 }
 
 fn cover_count_exceptions(entries: &[IndexEntry]) -> BTreeMap<usize, usize> {
-    debug_assert!(entries.windows(2).all(|pair| pair[0].idx <= pair[1].idx));
+    debug_assert!(entries.windows(2).all(|pair| {
+        pair.first()
+            .zip(pair.get(1))
+            .is_some_and(|(left, right)| left.idx <= right.idx)
+    }));
     let mut counts = BTreeMap::new();
     let mut start = 0;
     while let Some(entry) = entries.get(start) {

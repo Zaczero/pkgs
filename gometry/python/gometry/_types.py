@@ -759,10 +759,12 @@ def _restore_features_v1(
 class Extremes(NamedTuple, Generic[_ExtremeT]):
     """The westmost/southmost/eastmost/northmost vertices of a geometry.
 
-    Returned by `Geometry.extremes` (four `Point` fields) and
-    `GeometryArray.extremes` (four row-aligned ``GeometryArray[Point]``
-    columns); unpacks as ``(west, south, east, north)``, or use the named
-    fields. Ties keep the first vertex in storage order; Z/M ride along.
+    Returned by `Geometry.extremes()` (four scalar `Point` fields, or ``None``
+    for an empty geometry) and `GeometryArray.extremes()` (four row-aligned
+    ``GeometryArray[Point | None]`` columns; missing rows remain missing and
+    present empty rows contain empty points). Unpacks as ``(west, south, east,
+    north)``; ties keep the first vertex in storage order, and Z/M ordinates are
+    carried through.
     """
 
     west: _ExtremeT

@@ -141,6 +141,7 @@ from gometry._types import (
 _GeometryT = TypeVar('_GeometryT', bound=Geometry)
 _GeometryOtherT = TypeVar('_GeometryOtherT', bound=Geometry)
 _GeometryRowT = TypeVar('_GeometryRowT', bound=Geometry | None)
+_GeometryBatch: TypeAlias = GeometryArray[_GeometryRowT] | Iterable[_GeometryRowT]
 # Dissolve group key element type (the `by` iterable's element type).
 _GroupKeyT = TypeVar('_GroupKeyT', bound=Hashable)
 _DefaultT = TypeVar('_DefaultT')
@@ -211,7 +212,6 @@ __all__ = [
     'boxes',
     'contains',
     'contains_properly',
-    'contains_xy',
     'coverage_clean',
     'coverage_invalid_edges',
     'coverage_is_valid',
@@ -275,7 +275,6 @@ __all__ = [
     'intersection',
     'intersection_all',
     'intersects',
-    'intersects_xy',
     'join',
     'length',
     'length_3d',
@@ -3350,7 +3349,7 @@ class Geometry:
         (0.0, 0.0, 2.0, 2.0)
         """
 
-    def extremes(self) -> Extremes | None:
+    def extremes(self) -> Extremes[Point] | None:
         """Return the west, south, east, and north extreme vertices of the
         geometry (numeric X/Y; ties keep the first vertex in storage order).
 
@@ -3361,11 +3360,6 @@ class Geometry:
             geometry — the same contract as ``bounds`` and the other extent
             accessors.
 
-
-        Raises
-        ------
-        InvalidGeometryError
-            If the geometry is empty.
 
         Examples
         --------
@@ -7184,9 +7178,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ``1`` for a single point/line/polygon, including a typed empty; the
         member count for a multi/collection, and ``0`` for an empty multipart
         or collection. Explicit empty members still count in their multipart's
-        member count. Missing rows use Shapely's ``None``-geometry sentinel
-        ``0``; use `.is_missing` to distinguish them from present empty
-        geometries.
+        member count. Missing rows have count ``0``; use `.is_missing` to
+        distinguish them from present empty geometries.
 
         Returns
         -------
@@ -7194,7 +7187,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One count per input geometry.
         """
     @property
-    def num_coordinates(self) -> npt.NDArray[np.int64]:
+    def num_coordinates(self) -> npt.NDArray[np.int64] | npt.NDArray[np.object_]:
         """Per-geometry coordinate count. Missing rows are ``0``.
 
         Returns
@@ -7278,9 +7271,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @property
     def topological_dimension(self) -> npt.NDArray[np.int64]:
         """Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
-        areal (see `Geometry.topological_dimension`). Missing rows use
-        Shapely's ``None``-geometry sentinel ``-1``; use `.is_missing` to
-        distinguish them from present point-like geometries.
+        areal (see `Geometry.topological_dimension`). Missing rows use ``-1``;
+        use `.is_missing` to distinguish them from present point-like
+        geometries.
 
         Returns
         -------
@@ -10024,11 +10017,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
             empty point per column.
 
 
-        Raises
-        ------
-        InvalidGeometryError
-            If the geometry is empty.
-
         Examples
         --------
         >>> import gometry as gm
@@ -11402,9 +11390,10 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
 
         Returns
         -------
-        numpy.ndarray or GeometryArray or CellArray
-            The selected flat values window. Numeric values are read-only int64;
-            geometry and cell values retain their immutable array types.
+        Same payload type
+            The selected flat values window, retaining the payload's array type.
+            Numeric values are read-only int64; geometry and cell values retain
+            their immutable array types.
         """
     @property
     def offsets(self) -> npt.NDArray[np.int64]:
@@ -11605,6 +11594,18 @@ class SpatialIndex(Mapping[int, Geometry]):
     geographic frame, native linear units on a projected frame, raw coordinate
     units when CRS-free.
     """
+
+    __hash__: ClassVar[None]  # type: ignore[assignment]
+    """A packed STR-tree over geometries sharing one CRS/epoch frame.
+
+    Built by ``SpatialIndex(geoms)``: ask set questions against the indexed
+    geometries — exact predicate matches (``idx.query(geom)``), bounding-box
+    candidates (``idx.candidates(geom)``), proximity (``idx.nearest(geom)``),
+    self-joins (``idx.self_join()``) — and mutate it incrementally with
+    ``insert``/``remove``. Distances follow the indexed CRS: meters on a
+    geographic frame, native linear units on a projected frame, raw coordinate
+    units when CRS-free.
+    """
     def __new__(
         cls,
         values: Geometry
@@ -11693,7 +11694,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
-    def __getitem__(self, handle: int, /) -> Geometry:
+    def __eq__(self, other: object, /) -> bool: ...
+    def __getitem__(self, handle: SupportsIndex, /) -> Geometry:
         """Return the geometry at a live handle.
 
         The handle must be a non-negative integer accepted by ``__index__``;
@@ -11764,16 +11766,16 @@ class SpatialIndex(Mapping[int, Geometry]):
         0
         """
     @overload
-    def get(self, handle: int, /) -> Geometry | None: ...
+    def get(self, handle: SupportsIndex, /) -> Geometry | None: ...
     @overload
     def get(
-        self, handle: int, /, default: Geometry | _DefaultT
+        self, handle: SupportsIndex, /, default: Geometry | _DefaultT
     ) -> Geometry | _DefaultT:
         """Return the geometry at handle, or default when it is not live.
 
         Parameters
         ----------
-        handle : int
+        handle : SupportsIndex
             A non-negative integer/index handle (positional-only; ``bool`` is
             rejected). Invalid or negative handles raise instead of returning
             ``default``.
@@ -11806,7 +11808,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         predicate: Literal['dwithin'],
         distance: float,
@@ -11824,24 +11826,26 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
     ) -> Groups[npt.NDArray[np.int64]]:
-        """Return exact predicate-refined matches for a query geometry or array.
+        """Return exact predicate-refined matches for a query geometry, array, or
+        iterable of geometry rows.
 
         Candidates are refined with predicate (`'intersects'` by
         default); distance is accepted only with `'dwithin'`. Use
         candidates for a bounding-box-only prefilter. A single geometry
-        returns an int64 ndarray; a GeometryArray returns
-        Groups — one id row per row, CSR-grouped.
+        returns an int64 ndarray; arrays and iterables return Groups, with one
+        id row per input row.
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            The query geometry, or one query per array element.
+        geom : Geometry, GeometryArray, or iterable of Geometry or None
+            One query geometry or one query per sequence row. Missing rows
+            produce empty result groups and retain their logical positions.
         predicate : str, default 'intersects'
             Spatial relation each match must satisfy, evaluated as
             ``predicate(query_geometry, indexed_geometry)`` (``'dwithin'``
@@ -11888,7 +11892,9 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def join(
         self,
-        queries: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+        queries: Geometry
+        | _GeometryBatch[Geometry | None]
+        | Iterable[_GeometryLike | None],
         *,
         predicate: Literal['dwithin'],
         distance: float,
@@ -11897,7 +11903,9 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def join(
         self,
-        queries: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+        queries: Geometry
+        | _GeometryBatch[Geometry | None]
+        | Iterable[_GeometryLike | None],
         *,
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
@@ -11913,7 +11921,7 @@ class SpatialIndex(Mapping[int, Geometry]):
 
         Parameters
         ----------
-        queries : Geometry, GeometryArray, or iterable of Geometry
+        queries : Geometry, GeometryArray, or iterable of Geometry or None
             Left-side geometries to join against the indexed rows.
         predicate : str, default 'intersects'
             Spatial predicate each returned pair must satisfy.
@@ -12027,7 +12035,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def candidates(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
@@ -12035,22 +12043,23 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def candidates(
         self,
-        geom: Geometry | GeometryArray[Geometry | None],
+        geom: Geometry | _GeometryBatch[Geometry | None],
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
     ) -> npt.NDArray[np.int64] | Groups[npt.NDArray[np.int64]]:
-        """Bounding-box candidate matches for a query geometry or array (not
+        """Bounding-box candidate matches for a query geometry, array, or iterable (not
         exact). If you refine these candidates with a directional predicate,
         evaluate it as ``predicate(query_geometry, indexed_geometry)``.
 
-        A single geometry returns an `int64` ndarray; a `GeometryArray`
-        returns `Groups` — one candidate row per row.
+        A single geometry returns an `int64` ndarray; arrays and iterables
+        return `Groups` — one candidate row per input row.
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            The query geometry, or one query per array element.
+        geom : Geometry, GeometryArray, or iterable of Geometry or None
+            One query geometry or one query per sequence row. Missing rows
+            produce empty groups and retain their logical positions.
         distance : float, optional
             Expand the query envelope by this much, in ``unit``. Finite
             non-negative expansions and positive infinity are accepted;
@@ -12113,7 +12122,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -12125,7 +12134,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -12137,7 +12146,36 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: Geometry | GeometryArray[Geometry | None],
+        geom: Geometry,
+        *,
+        k: int = 1,
+        max_distance: float | None = None,
+        return_distance: bool = False,
+        unit: DistanceUnit | None = None,
+        exclusive: bool = False,
+        ties: bool = False,
+    ) -> (
+        npt.NDArray[np.int64] | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]
+    ): ...
+    @overload
+    def nearest(
+        self,
+        geom: _GeometryBatch[Geometry | None],
+        *,
+        k: int = 1,
+        max_distance: float | None = None,
+        return_distance: bool = False,
+        unit: DistanceUnit | None = None,
+        exclusive: bool = False,
+        ties: bool = False,
+    ) -> (
+        Groups[npt.NDArray[np.int64]]
+        | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+    ): ...
+    @overload
+    def nearest(
+        self,
+        geom: Geometry | _GeometryBatch[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -12155,8 +12193,9 @@ class SpatialIndex(Mapping[int, Geometry]):
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            The query geometry, or one query per array element.
+        geom : Geometry, GeometryArray, or iterable of Geometry or None
+            One query geometry or one query per sequence row. Missing rows
+            produce empty groups and retain their logical positions.
         k : int, default 1
             How many nearest neighbors to return; ``0`` returns no neighbors.
         max_distance : float, optional
@@ -12257,14 +12296,14 @@ class SpatialIndex(Mapping[int, Geometry]):
         >>> idx.insert(gm.Point(1, 1))
         0
         """
-    def remove(self, handle: int) -> bool:
+    def remove(self, handle: SupportsIndex) -> bool:
         """Remove a geometry by its handle. Returns ``True`` if a live geometry
         was removed, ``False`` if the handle is unknown or was already removed.
         Removed handles are not reused, so surviving handles stay stable.
 
         Parameters
         ----------
-        handle : int
+        handle : SupportsIndex
             The handle returned by ``insert`` (or a position from building).
 
         Returns
@@ -16480,15 +16519,15 @@ def multi_polygons(
 def area(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def area(
-    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
+    geom: _GeometryBatch[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def area(
-    geom: Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Iterable[_GeometryLike | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def area(
-    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    geom: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -16502,8 +16541,9 @@ def area(
 
     Parameters
     ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values
-        Input geometry, array, or iterable materialized as an array.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+        Input geometry, array, or iterable materialized as a row-preserving
+        array. Missing rows return ``nan``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -16543,15 +16583,15 @@ def area(
 def length(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def length(
-    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
+    geom: _GeometryBatch[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length(
-    geom: Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Iterable[_GeometryLike | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length(
-    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    geom: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -16579,8 +16619,9 @@ def length(
 
     Parameters
     ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values
-        Input geometry, array, or iterable materialized as an array.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+        Input geometry, array, or iterable materialized as a row-preserving
+        array. Missing rows return ``nan``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -16620,15 +16661,15 @@ def length(
 def length_3d(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def length_3d(
-    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
+    geom: _GeometryBatch[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length_3d(
-    geom: Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Iterable[_GeometryLike | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length_3d(
-    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    geom: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -16636,8 +16677,9 @@ def length_3d(
 
     Parameters
     ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values
-        Input geometry, array, or iterable materialized as an array.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+        Input geometry, array, or iterable materialized as a row-preserving
+        array. Missing rows return ``nan``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -17074,44 +17116,45 @@ def shared_paths(left: Geometry, right: Geometry) -> GeometryCollection: ...
 @overload
 def shared_paths(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
 ) -> GeometryArray[GeometryCollection]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
 ) -> GeometryArray[GeometryCollection]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[GeometryCollection]: ...
 @overload
 def shared_paths(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
 ) -> GeometryArray[GeometryCollection | None]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
 ) -> GeometryArray[GeometryCollection | None]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[GeometryCollection | None]: ...
 @overload
 def shared_paths(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> GeometryCollection | GeometryArray[GeometryCollection | None]:
     """Shared paths between two lineal geometries.
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Two lineal geometries.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Two lineal operands. Scalar and sequence inputs broadcast pairwise;
+        sequences must have equal length and compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17206,22 +17249,78 @@ def from_polyline(
     """
 
 @overload
-def contains(left: Geometry, right: Geometry) -> bool: ...
+def contains(
+    left: Geometry,
+    right: Geometry,
+    *,
+    x: None = None,
+    y: None = None,
+) -> bool: ...
 @overload
 def contains(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry,
+    right: _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry,
+    right: None = None,
+    *,
+    x: _FloatScalarInput,
+    y: _FloatScalarInput,
+) -> bool: ...
+@overload
+def contains(
+    left: Geometry,
+    right: None = None,
+    *,
+    x: _FloatColumn1D,
+    y: FloatInput,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: Geometry,
+    right: None = None,
+    *,
+    x: FloatInput,
+    y: _FloatColumn1D,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
+    x: FloatInput,
+    y: FloatInput,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
+    x: FloatInput,
+    y: FloatInput,
+) -> bool | npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> bool | npt.NDArray[np.bool_]:
-    """Test whether ``left`` contains ``right``.
+    """Test whether ``left`` contains ``right`` or contains the point ``(x, y)``.
 
     Returns ``True`` if no point of ``right`` lies outside ``left`` and the
     interiors of the two geometries share a point.
@@ -17230,10 +17329,15 @@ def contains(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Container (``left``) and candidate (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left : Geometry, GeometryArray, or iterable of Geometry or None
+        Container geometry. Array and iterable rows retain their logical
+        positions.
+    right : Geometry, GeometryArray, iterable of Geometry or None, optional
+        Candidate geometry; scalar and sequence operands broadcast pairwise,
+        and two sequences must have equal lengths and compatible frames.
+    x, y : float or sequence of float, keyword-only
+        Raw coordinates in ``left``'s CRS. Supply both instead of ``right``;
+        provide exactly one input mode.
 
     Returns
     -------
@@ -17244,11 +17348,18 @@ def contains(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    InvalidGeometryError
+        If ``x`` or ``y`` contains a non-finite coordinate, or the coordinate
+        columns have incompatible lengths.
+    TypeError
+        If ``right`` is combined with ``x`` or ``y``, or if only one coordinate
+        keyword is supplied.
 
     See Also
     --------
     within : Inverse relation.
     covers : Boundary-inclusive containment.
+    intersects : Boundary-inclusive point test.
 
     Examples
     --------
@@ -17258,23 +17369,25 @@ def contains(
     True
     >>> gm.contains(square, gm.Point(2, 1))  # boundary: not contained
     False
+    >>> gm.contains(square, x=1, y=1)
+    True
     """
 
 @overload
 def contains_properly(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def contains_properly(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right`` with no boundary contact.
 
@@ -17285,10 +17398,9 @@ def contains_properly(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Container (``left``) and candidate (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Container and candidate rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17315,17 +17427,17 @@ def contains_properly(
 def within(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def within(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` lies within ``right``; inverse of ``contains``.
 
@@ -17334,10 +17446,9 @@ def within(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Candidate (``left``) and container (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Candidate and container rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17364,17 +17475,17 @@ def within(
 def covers(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def covers(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` covers ``right``: every point of ``right`` lies in
     ``left``.
@@ -17384,10 +17495,9 @@ def covers(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Container (``left``) and candidate (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Container and candidate rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17415,17 +17525,17 @@ def covers(
 def covered_by(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def covered_by(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` is covered by ``right``; inverse of ``covers``.
 
@@ -17434,10 +17544,9 @@ def covered_by(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Candidate (``left``) and container (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Candidate and container rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17461,144 +17570,94 @@ def covered_by(
     """
 
 @overload
-def contains_xy(geom: Geometry, x: _FloatScalarInput, y: _FloatScalarInput) -> bool: ...
-@overload
-def contains_xy(
-    geom: Geometry,
-    x: _FloatColumn1D,
-    y: FloatInput,
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def contains_xy(
-    geom: Geometry,
-    x: FloatInput,
-    y: _FloatColumn1D,
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def contains_xy(
-    geom: GeometryArray[Geometry | None],
-    x: FloatInput,
-    y: FloatInput,
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def contains_xy(
-    geom: Geometry | GeometryArray[Geometry | None],
-    x: FloatInput,
-    y: FloatInput,
-) -> bool | npt.NDArray[np.bool_]:
-    """Test whether a geometry contains each ``(x, y)`` point (vectorized).
-
-    Parameters
-    ----------
-    geom : Geometry or GeometryArray
-        The geometry row(s) to test against.
-    x, y : float or sequence of float
-        Finite coordinates in ``geom``'s CRS. Geographic antimeridian seams
-        and poles use the same topology as point-geometry predicates.
-
-    Returns
-    -------
-    bool or numpy.ndarray
-        A single bool for scalar geometry and coordinates, otherwise one result
-        per broadcast row.
-
-    Raises
-    ------
-    InvalidGeometryError
-        If ``x``/``y`` are non-finite or differ in length.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.contains_xy(gm.box(0, 0, 2, 2), 1, 1)
-    True
-    """
-
-@overload
-def intersects_xy(
-    geom: Geometry, x: _FloatScalarInput, y: _FloatScalarInput
+def intersects(
+    left: Geometry,
+    right: Geometry,
+    *,
+    x: None = None,
+    y: None = None,
 ) -> bool: ...
 @overload
-def intersects_xy(
-    geom: Geometry,
+def intersects(
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def intersects(
+    left: Geometry,
+    right: _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def intersects(
+    left: Geometry,
+    right: None = None,
+    *,
+    x: _FloatScalarInput,
+    y: _FloatScalarInput,
+) -> bool: ...
+@overload
+def intersects(
+    left: Geometry,
+    right: None = None,
+    *,
     x: _FloatColumn1D,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects_xy(
-    geom: Geometry,
+def intersects(
+    left: Geometry,
+    right: None = None,
+    *,
     x: FloatInput,
     y: _FloatColumn1D,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects_xy(
-    geom: GeometryArray[Geometry | None],
+def intersects(
+    left: _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
     x: FloatInput,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects_xy(
-    geom: Geometry | GeometryArray[Geometry | None],
+def intersects(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
     x: FloatInput,
     y: FloatInput,
+) -> bool | npt.NDArray[np.bool_]: ...
+@overload
+def intersects(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> bool | npt.NDArray[np.bool_]:
-    """Test whether a geometry intersects each ``(x, y)`` point (vectorized).
-
-    Boundary-inclusive (unlike ``contains_xy``), and skips building point
-    geometries.
-
-    Parameters
-    ----------
-    geom : Geometry or GeometryArray
-        The geometry row(s) to test against.
-    x, y : float or sequence of float
-        Finite coordinates in ``geom``'s CRS. Geographic antimeridian seams
-        and poles use the same topology as point-geometry predicates.
-
-    Returns
-    -------
-    bool or numpy.ndarray
-        A single bool for scalar geometry and coordinates, otherwise one result
-        per broadcast row.
-
-    Raises
-    ------
-    InvalidGeometryError
-        If ``x``/``y`` are non-finite or differ in length.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.intersects_xy(gm.box(0, 0, 2, 2), 3, 3)
-    False
-    """
-
-@overload
-def intersects(left: Geometry, right: Geometry) -> bool: ...
-@overload
-def intersects(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def intersects(
-    left: Geometry, right: GeometryArray[Geometry | None]
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def intersects(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
-) -> bool | npt.NDArray[np.bool_]:
-    """Test whether ``left`` and ``right`` share any point.
+    """Test whether ``left`` and ``right`` share any point, or whether ``left``
+    intersects the point ``(x, y)``.
 
     Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
     longitude and pole quotient.
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left : Geometry, GeometryArray, or iterable of Geometry or None
+        Geometry being tested. Array and iterable rows retain their logical
+        positions.
+    right : Geometry, GeometryArray, iterable of Geometry or None, optional
+        Geometry compared with ``left``. Scalar and sequence operands broadcast
+        pairwise, and two sequences must have equal lengths and compatible frames.
+    x, y : float or sequence of float, keyword-only
+        Raw coordinates in ``left``'s CRS. Supply both instead of ``right``;
+        provide exactly one input mode.
 
     Returns
     -------
@@ -17609,6 +17668,12 @@ def intersects(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    InvalidGeometryError
+        If ``x`` or ``y`` contains a non-finite coordinate, or the coordinate
+        columns have incompatible lengths.
+    TypeError
+        If ``right`` is combined with ``x`` or ``y``, or if only one coordinate
+        keyword is supplied.
 
     See Also
     --------
@@ -17619,23 +17684,25 @@ def intersects(
     >>> import gometry as gm
     >>> gm.intersects(gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3))
     True
+    >>> gm.intersects(gm.box(0, 0, 2, 2), x=2, y=1)
+    True
     """
 
 @overload
 def disjoint(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def disjoint(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share no point; negation of
     ``intersects``.
@@ -17645,9 +17712,9 @@ def disjoint(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17674,17 +17741,17 @@ def disjoint(
 def touches(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def touches(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` touch only at boundaries.
 
@@ -17693,9 +17760,9 @@ def touches(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17718,17 +17785,17 @@ def touches(
 def crosses(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def crosses(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` cross.
 
@@ -17741,9 +17808,9 @@ def crosses(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17768,17 +17835,17 @@ def crosses(
 def overlaps(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def overlaps(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` overlap (same dimension, partial
     interior overlap).
@@ -17788,9 +17855,9 @@ def overlaps(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17813,17 +17880,17 @@ def overlaps(
 def relate(left: Geometry, right: Geometry) -> str: ...
 @overload
 def relate(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> list[str | None]: ...
 @overload
 def relate(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> list[str | None]: ...
 @overload
 def relate(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> str | list[str | None]:
     """Compute the DE-9IM intersection matrix string for ``left`` and
     ``right``.
@@ -17833,9 +17900,9 @@ def relate(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17859,20 +17926,20 @@ def relate(
 def relate_pattern(left: Geometry, right: Geometry, pattern: str) -> bool: ...
 @overload
 def relate_pattern(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     pattern: str,
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether two geometries' DE-9IM matrix matches a pattern.
@@ -17882,9 +17949,9 @@ def relate_pattern(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     pattern : str
         A DE-9IM pattern string (``T``/``F``/``*``/``0``/``1``/``2`` per cell).
 
@@ -17911,17 +17978,17 @@ def relate_pattern(
 def equals(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def equals(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` are spatially equal.
 
@@ -17930,9 +17997,9 @@ def equals(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17958,17 +18025,17 @@ def equals(
 def equals_identical(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def equals_identical(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_identical(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_identical(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test full value identity elementwise: the vectorized ``==``.
 
@@ -17981,8 +18048,9 @@ def equals_identical(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        The two operands (scalar/array broadcasting).
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        The two operands. Scalar and sequence inputs broadcast pairwise;
+        sequences must have equal length.
 
     Returns
     -------
@@ -18009,8 +18077,8 @@ def equals_exact(
 ) -> bool: ...
 @overload
 def equals_exact(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -18019,7 +18087,7 @@ def equals_exact(
 @overload
 def equals_exact(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -18027,8 +18095,8 @@ def equals_exact(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_exact(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -18045,8 +18113,9 @@ def equals_exact(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        The two operands (scalar/array broadcasting).
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        The two operands. Scalar and sequence inputs broadcast pairwise;
+        sequences must have equal length and compatible CRS/epoch frames.
     tolerance : float or sequence of float, default 0.0
         Maximum permitted per-ordinate difference — a scalar applies to every
         pair, or pass one value per geometry.
@@ -18078,22 +18147,22 @@ def distance(
 ) -> float: ...
 @overload
 def distance(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -18107,9 +18176,9 @@ def distance(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18159,22 +18228,22 @@ def distance_3d(
 ) -> float: ...
 @overload
 def distance_3d(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance_3d(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance_3d(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -18193,9 +18262,9 @@ def distance_3d(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18245,8 +18314,8 @@ def hausdorff_distance(
 ) -> float: ...
 @overload
 def hausdorff_distance(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     max_error: float | None = None,
     unit: DistanceUnit | None = None,
@@ -18254,15 +18323,15 @@ def hausdorff_distance(
 @overload
 def hausdorff_distance(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     max_error: float | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def hausdorff_distance(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     max_error: float | None = None,
     unit: DistanceUnit | None = None,
@@ -18285,9 +18354,9 @@ def hausdorff_distance(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     max_error : float, optional
         Positive finite scalar absolute error bound in final result units.
         Planar results default to a certified relative error of at most
@@ -18353,8 +18422,8 @@ def frechet_distance(
 ) -> float: ...
 @overload
 def frechet_distance(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -18362,15 +18431,15 @@ def frechet_distance(
 @overload
 def frechet_distance(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def frechet_distance(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -18382,8 +18451,8 @@ def frechet_distance(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        The two linestrings.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        The line operands; scalar and sequence inputs broadcast pairwise.
     densify : float, optional
         Subdivide every segment into pieces no longer than this
         fraction of its length (in ``(0, 1]``) before measuring,
@@ -18440,49 +18509,49 @@ def nearest_points(
 @overload
 def nearest_points(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
 @overload
 def nearest_points(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> (
@@ -18507,9 +18576,10 @@ def nearest_points(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch. Unpack order is point on ``left``, then on ``right``.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames. Unpack order is point on
+        ``left``, then on ``right``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18557,49 +18627,49 @@ def shortest_line(
 @overload
 def shortest_line(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString]: ...
 @overload
 def shortest_line(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString | None]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString | None]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString | None]: ...
 @overload
 def shortest_line(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> LineString | GeometryArray[LineString | None]:
@@ -18629,9 +18699,9 @@ def shortest_line(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18752,8 +18822,8 @@ def dwithin(
 ) -> bool: ...
 @overload
 def dwithin(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
@@ -18761,15 +18831,15 @@ def dwithin(
 @overload
 def dwithin(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def dwithin(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
@@ -18783,9 +18853,9 @@ def dwithin(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     distance : float or sequence of float
         CRS-aware distance threshold: geodesic meters on a geographic CRS,
         native linear units on a projected CRS, raw coordinate units when
@@ -18864,7 +18934,7 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    geom: GeometryArray[Geometry | None],
+    geom: _GeometryBatch[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -18876,7 +18946,7 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    geom: GeometryArray[Geometry | None],
+    geom: _GeometryBatch[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -18888,7 +18958,34 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    geom: Geometry | GeometryArray[Geometry | None],
+    geom: Geometry,
+    *,
+    k: int = 1,
+    max_distance: float | None = None,
+    return_distance: bool = False,
+    unit: DistanceUnit | None = None,
+    exclusive: bool = False,
+    ties: bool = False,
+) -> npt.NDArray[np.int64] | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
+@overload
+def nearest(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: _GeometryBatch[Geometry | None],
+    *,
+    k: int = 1,
+    max_distance: float | None = None,
+    return_distance: bool = False,
+    unit: DistanceUnit | None = None,
+    exclusive: bool = False,
+    ties: bool = False,
+) -> (
+    Groups[npt.NDArray[np.int64]]
+    | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+): ...
+@overload
+def nearest(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: Geometry | _GeometryBatch[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -18906,10 +19003,11 @@ def nearest(
 
     Parameters
     ----------
-    values : sequence of Geometry or GeometryArray
+    values : Geometry, GeometryArray, or iterable of geometry-like values or None
         Candidate geometries to index and search.
-    geom : Geometry or GeometryArray
-        Query geometry (or array of queries).
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
+        Query geometry or one query per sequence row. Missing rows produce
+        empty result groups and retain their logical positions.
     k : int, default 1
         Number of nearest neighbors to return per query; ``0`` returns no
         neighbors.
@@ -18941,10 +19039,10 @@ def nearest(
     -------
     int64 numpy.ndarray, Groups, or tuple
         Indices into `values` of the nearest geometries — an ``int64`` ndarray
-        for a scalar query, CSR ``Groups`` for an array query. With
+        for a scalar query, CSR ``Groups`` for an array or iterable query. With
         ``return_distance=True``, plain tuple field order is ``(indices,
         distances)`` for a scalar query or ``(matches, distances)`` for an
-        array query (distances parallel to ``matches.values``).
+        array or iterable query (distances parallel to ``matches.values``).
 
     Raises
     ------
@@ -18965,8 +19063,8 @@ def nearest(
 
 @overload
 def join(
-    left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
-    right: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    left: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
+    right: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     predicate: Literal['dwithin'],
     distance: float,
@@ -18974,8 +19072,8 @@ def join(
 ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
 @overload
 def join(
-    left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
-    right: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    left: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
+    right: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     predicate: TopologicalPredicate = 'intersects',
     distance: None = None,
@@ -18985,7 +19083,7 @@ def join(
 
     Parameters
     ----------
-    left, right : Geometry, GeometryArray, or sequence of Geometry
+    left, right : Geometry, GeometryArray, or iterable of geometry-like values or None
         The two geometry collections to join. Missing rows produce no pairs;
         their original row positions are preserved in every returned id.
     predicate : str, default 'intersects'

@@ -2,15 +2,17 @@ use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::PyBytes;
 
 use crate::boundary::FloatInput;
-use crate::geometry::{MOrdinate, ZOrdinate};
+use crate::geometry::storage::ValidityMask;
+use crate::geometry::{MOrdinate, Point, Shape, ZOrdinate};
 use crate::py::errors;
 use crate::py::errors::GeometryError;
 use crate::py::numpy::reject_masked_array;
 use crate::py::support::{
-    Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Point, Polygon, PyAny,
-    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape,
+    Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Polygon, Py, PyAny,
+    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Python, Ring,
     Value, classify_input, coerce_geometry, exact_geometry, float_values_at_most,
-    float_values_exact, is_mapping_like, is_py_bytes_or_bytearray, parse_geojson_geometry_value,
+    float_values_exact, is_mapping_like, is_py_bytes_or_bytearray, note_array_row,
+    parse_geojson_geometry_value,
 };
 
 pub(crate) fn point_xy(shape: &Shape) -> PyResult<(f64, f64)> {
@@ -48,14 +50,14 @@ pub(crate) fn exact_backed_bytes(value: &Bound<'_, PyAny>) -> Option<PyBackedByt
 /// required; only the foreign/general iterable lane is coerced eagerly. This
 /// keeps aggregate and index-like operations from rediscovering the same
 /// three-way classification.
-pub(crate) enum GeometryValues<'a> {
+enum GeometryValues<'a> {
     One(&'a PyGeometry),
     Array(&'a PyGeometryArray),
     Collected(Vec<PyGeometry>),
 }
 
 impl<'a> GeometryValues<'a> {
-    pub(crate) fn parse(values: &'a Bound<'_, PyAny>) -> PyResult<Self> {
+    fn parse(values: &'a Bound<'_, PyAny>) -> PyResult<Self> {
         match classify_input(values) {
             Some(GeometryInput::One(geometry)) => Ok(Self::One(geometry)),
             Some(GeometryInput::Many(array)) => Ok(Self::Array(array)),
@@ -71,7 +73,7 @@ impl<'a> GeometryValues<'a> {
         }
     }
 
-    pub(crate) fn into_items(self) -> PyResult<Vec<PyGeometry>> {
+    fn into_items(self) -> PyResult<Vec<PyGeometry>> {
         match self {
             Self::One(geometry) => Ok(vec![geometry.clone()]),
             Self::Array(array) if array.has_missing() => Err(missing_geometry_items_error()),
@@ -83,6 +85,80 @@ impl<'a> GeometryValues<'a> {
 
 pub(crate) fn geometry_items(values: &Bound<'_, PyAny>) -> PyResult<Vec<PyGeometry>> {
     GeometryValues::parse(values)?.into_items()
+}
+
+/// Normalize a scalar, native array, or iterable of native geometry rows to
+/// the representation used by pairwise operations. Multipart geometries are
+/// classified before iteration because they implement Python iteration too.
+pub(crate) fn normalize_geometry_batch<'py>(
+    py: Python<'py>,
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    if classify_input(value).is_some() {
+        return Ok(value.clone());
+    }
+    let capacity = value
+        .get_type()
+        .getattr_opt(pyo3::intern!(py, "__len__"))?
+        .map(|_| value.len())
+        .transpose()?
+        .unwrap_or_default();
+    let iterator = value
+        .try_iter()
+        .map_err(|_| crate::broadcast::expected_geometry_or_array_for(value))?;
+    let mut rows = Vec::with_capacity(capacity);
+    for (logical_row, item) in iterator.enumerate() {
+        let item = item?;
+        if item.is_none() {
+            rows.push(None);
+            continue;
+        }
+        let Some(geometry) = exact_geometry(&item) else {
+            return Err(note_array_row(
+                PyTypeError::new_err("iterable rows must be Geometry or None"),
+                logical_row,
+            ));
+        };
+        rows.push(Some(geometry.clone()));
+    }
+
+    let first = rows.iter().flatten().next();
+    let frame = first.map_or(Frame::None, |geometry| geometry.frame.clone());
+    if let Some(first) = first {
+        for (logical_row, geometry) in rows
+            .iter()
+            .enumerate()
+            .filter_map(|(row, value)| value.as_ref().map(|geometry| (row, geometry)))
+        {
+            Frame::compatible_parts(
+                first.crs_ref(),
+                first.epoch(),
+                geometry.crs_ref(),
+                geometry.epoch(),
+                "GeometryArray",
+            )
+            .map_err(PyErr::from)
+            .map_err(|error| note_array_row(error, logical_row))?;
+        }
+    }
+
+    let fallback = rows.iter().flatten().next().map_or_else(
+        || Shape::Point(Point::new(0.0, 0.0).expect("zero coordinates are finite")),
+        |geometry| geometry.shape.shape().clone(),
+    );
+    let mut missing = Vec::with_capacity(rows.len());
+    let mut shapes = Vec::with_capacity(rows.len());
+    for geometry in rows {
+        missing.push(geometry.is_none());
+        shapes.push(geometry.map_or_else(
+            || fallback.clone(),
+            |geometry| geometry.shape.shape().clone(),
+        ));
+    }
+    let row_count = shapes.len();
+    let array = PyGeometryArray::from_shapes(shapes, frame)?
+        .with_missing_mask(ValidityMask::from_vec(row_count, missing))?;
+    Ok(Py::new(py, array)?.into_any().bind(py).clone())
 }
 
 pub(crate) fn missing_geometry_items_error() -> PyErr {

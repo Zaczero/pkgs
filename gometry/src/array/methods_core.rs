@@ -696,9 +696,8 @@ impl PyGeometryArray {
     /// ``1`` for a single point/line/polygon, including a typed empty; the
     /// member count for a multi/collection, and ``0`` for an empty multipart
     /// or collection. Explicit empty members still count in their multipart's
-    /// member count. Missing rows use Shapely's ``None``-geometry sentinel
-    /// ``0``; use `.is_missing` to distinguish them from present empty
-    /// geometries.
+    /// member count. Missing rows have count ``0``; use `.is_missing` to
+    /// distinguish them from present empty geometries.
     ///
     /// Returns
     /// -------
@@ -864,9 +863,9 @@ impl PyGeometryArray {
         replace_array_coordinates(self, py, replacement)
     }
     /// Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
-    /// areal (see `Geometry.topological_dimension`). Missing rows use
-    /// Shapely's ``None``-geometry sentinel ``-1``; use `.is_missing` to
-    /// distinguish them from present point-like geometries.
+    /// areal (see `Geometry.topological_dimension`). Missing rows use ``-1``;
+    /// use `.is_missing` to distinguish them from present point-like
+    /// geometries.
     ///
     /// Returns
     /// -------

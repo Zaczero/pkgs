@@ -381,8 +381,9 @@ impl ValidityMask {
     }
 
     pub(crate) fn present_in_range(&self, rows: std::ops::Range<usize>) -> usize {
+        assert!(rows.start <= rows.end, "validity range must be ordered");
         assert!(
-            rows.start <= rows.end && rows.end <= self.len,
+            rows.end <= self.len,
             "validity range must be within its logical rows"
         );
         count_valid(

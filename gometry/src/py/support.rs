@@ -82,10 +82,11 @@ pub(crate) use constructive::{
     voronoi_flatten,
 };
 pub(crate) use extract::{
-    GeometryValues, OwnedBytes, coerce_present_geometry_items, copy_wkb_payload,
-    ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate, extract_coordinate_or_empty,
-    extract_lines, extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
-    optional_coordinates, own_geometry_item, parse_owned_geometry_item, point_xy,
+    OwnedBytes, coerce_present_geometry_items, copy_wkb_payload, ensure_homogeneous_axes,
+    exact_backed_bytes, extract_coordinate, extract_coordinate_or_empty, extract_lines,
+    extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
+    normalize_geometry_batch, optional_coordinates, own_geometry_item, parse_owned_geometry_item,
+    point_xy,
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,

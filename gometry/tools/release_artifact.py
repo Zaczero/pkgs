@@ -2626,7 +2626,7 @@ missing = gm.GeometryArray([point, None])
 assert missing.is_missing.tolist() == [False, True]
 assert missing[1] is None
 
-mask = gm.contains_xy(gm.box(20, 51, 22, 53), [21.0, 30.0], [52.0, 52.0])
+mask = gm.contains(gm.box(20, 51, 22, 53), x=[21.0, 30.0], y=[52.0, 52.0])
 assert isinstance(mask, np.ndarray)
 assert mask.flags.writeable is False
 np.testing.assert_array_equal(mask, [True, False])

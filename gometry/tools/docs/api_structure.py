@@ -86,7 +86,6 @@ PAGES: tuple[Page, ...] = (
             section(
                 'contains',
                 'contains_properly',
-                'contains_xy',
                 'covered_by',
                 'covers',
                 'crosses',
@@ -96,7 +95,6 @@ PAGES: tuple[Page, ...] = (
                 'equals_exact',
                 'equals_identical',
                 'intersects',
-                'intersects_xy',
                 'overlaps',
                 'relate',
                 'relate_pattern',

@@ -325,11 +325,6 @@ Extremes
 
 ";
     tail: r"
-Raises
-------
-InvalidGeometryError
-    If the geometry is empty.
-
 Examples
 --------
 >>> import gometry as gm

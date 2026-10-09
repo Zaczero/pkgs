@@ -364,7 +364,7 @@ cells = gm.h3_cover(area, resolution=5)
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 print('covers:', repr(gm.covers(area, points)))
 print('edge point:', gm.covers(area, gm.Point(20.0, 52.0, crs=4326)), '| strictly inside:', gm.contains(area, gm.Point(20.0, 52.0, crs=4326)))
-print('raw lon/lat stream:', repr(gm.intersects_xy(area, [21.0, 30.0], [52.0, 52.0])))
+print('raw lon/lat stream:', repr(gm.intersects(area, x=[21.0, 30.0], y=[52.0, 52.0])))
 
 ```
 
@@ -531,7 +531,8 @@ the total returned cells. Discarded candidates do not consume the cap. Pass
 `max_cells=None` for an unlimited cover (bounded only by memory). The cap does
 not bound classifier or traversal CPU work. The cells are a spatial key
 materialized according to `cell_rule`; exact geometry predicates remain free
-functions such as `gm.covers` and [`gm.contains_xy`][gometry.contains_xy].
+functions such as `gm.covers` and [`gm.contains`][gometry.contains] with its
+coordinate-keyword form.
 
 ### Cell-set algebra
 

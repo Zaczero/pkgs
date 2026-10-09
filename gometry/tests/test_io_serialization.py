@@ -451,13 +451,13 @@ def test_from_polyline_accepts_crs84() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Z1 — contains_xy / intersects_xy do not double-drain one-shot iters
+# Coordinate keyword predicates drain one-shot iterables once
 # ---------------------------------------------------------------------------
 
 
-def test_z1_contains_xy_one_shot_iterators() -> None:
+def test_coordinate_predicates_drain_one_shot_iterators_once() -> None:
     poly = gm.from_wkt('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')
-    result = gm.contains_xy(poly, iter([0.5, 2.0]), iter([0.5, 2.0]))
+    result = gm.contains(poly, x=iter([0.5, 2.0]), y=iter([0.5, 2.0]))
     assert np.asarray(result).tolist() == [True, False]
-    result_i = gm.intersects_xy(poly, iter([0.5, 2.0]), iter([0.5, 2.0]))
+    result_i = gm.intersects(poly, x=iter([0.5, 2.0]), y=iter([0.5, 2.0]))
     assert np.asarray(result_i).tolist() == [True, False]

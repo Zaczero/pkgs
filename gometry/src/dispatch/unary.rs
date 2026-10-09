@@ -391,8 +391,7 @@ pub(crate) fn unary_array_linref_with_model(
     model: &crate::crs::MetricModel,
     kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
-    let frame = array.frame.clone();
-    let output_frame = frame.clone();
+    let output_frame = array.frame.clone();
     let output_missing = array.missing().cloned();
     let array = array.clone();
     let result = py.detach(move || {

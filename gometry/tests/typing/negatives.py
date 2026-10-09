@@ -208,7 +208,7 @@ if TYPE_CHECKING:
     # --- High-value free-function overload groups (manifest: _OVERLOAD_TARGETS) ---
     # Binary predicates reject non-geometry operands.
     gm.contains(POINT, 1.0)  # type: ignore[call-overload]
-    gm.intersects(POINT, 'not-a-geom')  # type: ignore[call-overload]
+    gm.intersects(POINT, 'not-a-geom')  # type: ignore[arg-type]
     gm.distance(POINT, 0)  # type: ignore[call-overload]
     # from_wkt/from_wkb reject wrong payload types.
     gm.from_wkt(123)  # type: ignore[call-overload]

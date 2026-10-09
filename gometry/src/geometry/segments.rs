@@ -566,7 +566,7 @@ pub(in crate::geometry) fn clip_segment_rect_interval(
 ) -> Result<Option<SegmentClipInterval>> {
     let (start, end) = (segment.start, segment.end);
     if same_point(start, end) {
-        return Ok(rect.contains_xy(start).then_some(SegmentClipInterval {
+        return Ok(rect.contains_point(start).then_some(SegmentClipInterval {
             start: SegmentClipPoint {
                 point: start,
                 exact: None,
@@ -577,7 +577,7 @@ pub(in crate::geometry) fn clip_segment_rect_interval(
             },
         }));
     }
-    if rect.contains_xy(start) && rect.contains_xy(end) {
+    if rect.contains_point(start) && rect.contains_point(end) {
         return Ok(Some(SegmentClipInterval {
             start: SegmentClipPoint {
                 point: start,

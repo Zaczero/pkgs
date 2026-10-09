@@ -3375,8 +3375,8 @@ pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<b
             continue;
         }
         let segment = partition.unique[span.unique as usize];
-        if bounds.contains_xy(segment.start)
-            || bounds.contains_xy(segment.end)
+        if bounds.contains_point(segment.start)
+            || bounds.contains_point(segment.end)
             || rectangle
                 .iter()
                 .copied()

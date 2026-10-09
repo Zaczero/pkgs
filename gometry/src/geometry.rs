@@ -1047,7 +1047,7 @@ impl Bounds {
         ]
     }
 
-    pub(crate) fn contains_xy(self, point: XY) -> bool {
+    pub(crate) fn contains_point(self, point: XY) -> bool {
         point.x >= self.minx()
             && point.x <= self.maxx()
             && point.y >= self.miny()

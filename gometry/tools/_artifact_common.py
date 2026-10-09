@@ -103,20 +103,11 @@ def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) 
         cwd=cwd,
         env=env,
         check=False,
-        capture_output=True,
-        text=True,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
     )
-    if result.stdout:
-        sys.stderr.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
     if result.returncode:
-        raise subprocess.CalledProcessError(
-            result.returncode,
-            cmd,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
+        raise subprocess.CalledProcessError(result.returncode, cmd)
 
 
 def sha256_file(path: Path) -> str:

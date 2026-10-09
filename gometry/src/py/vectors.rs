@@ -549,9 +549,10 @@ impl Groups {
     ///
     /// Returns
     /// -------
-    /// numpy.ndarray or GeometryArray or CellArray
-    ///     The selected flat values window. Numeric values are read-only int64;
-    ///     geometry and cell values retain their immutable array types.
+    /// Same payload type
+    ///     The selected flat values window, retaining the payload's array type.
+    ///     Numeric values are read-only int64; geometry and cell values retain
+    ///     their immutable array types.
     #[getter]
     fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {

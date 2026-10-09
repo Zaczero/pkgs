@@ -1402,11 +1402,11 @@ def test_geohash_and_tile_coverage_classify_exactly() -> None:
         assert all(gm.intersects(box, cell.polygon) for cell in inter)
         assert gm.contains(box, gm.Point(13.4, 52.5, crs=4326))
         assert not gm.contains(box, gm.Point(0, 0, crs=4326))
-        assert gm.contains_xy(box, 13.4, 52.5)
+        assert gm.contains(box, x=13.4, y=52.5)
         np.testing.assert_array_equal(
-            gm.contains_xy(box, [13.4, 0.0], [52.5, 0.0]), [True, False]
+            gm.contains(box, x=[13.4, 0.0], y=[52.5, 0.0]), [True, False]
         )
-        assert gm.intersects_xy(box, 13.2, 52.4)
+        assert gm.intersects(box, x=13.2, y=52.4)
         polys = coverage.polygon
         assert len(polys) == len(coverage)
         assert all(p.geometry_type == 'Polygon' for p in polys)

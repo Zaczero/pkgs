@@ -372,7 +372,11 @@ pub(crate) fn restore_spatial_index_v2(
             "spatial index pickle handle must be less than next_handle",
         ));
     }
-    if handles.windows(2).any(|pair| pair[0] >= pair[1]) {
+    if handles.windows(2).any(|pair| {
+        pair.first()
+            .zip(pair.get(1))
+            .is_some_and(|(previous, next)| previous >= next)
+    }) {
         return Err(GeometryError::new_err(
             "spatial index pickle handles must be strictly increasing",
         ));
@@ -828,16 +832,20 @@ mod ownership_tests {
         )
         .unwrap();
         let mut index =
-            restore_spatial_index_v2(&values, vec![7, 63, 65_537], 70_000, false).unwrap();
+            restore_spatial_index_v2(&values, vec![7, 63, 0x0001_0001], 70_000, false).unwrap();
 
         assert!(matches!(&index.rows.boxed, BoxedRows::Sparse(_)));
         assert_eq!(index.rows.next_handle, 70_000);
-        assert_eq!(index.live_handles_sorted(), [7, 63, 65_537]);
+        assert_eq!(index.live_handles_sorted(), [7, 63, 0x0001_0001]);
         let mut rows = index.rows.operation();
         assert_eq!(rows.row(7).unwrap().quick_bounds().unwrap().minx(), 7.0);
         assert_eq!(rows.row(63).unwrap().quick_bounds().unwrap().minx(), 63.0);
         assert_eq!(
-            rows.row(65_537).unwrap().quick_bounds().unwrap().minx(),
+            rows.row(0x0001_0001)
+                .unwrap()
+                .quick_bounds()
+                .unwrap()
+                .minx(),
             65_537.0
         );
 
@@ -890,7 +898,7 @@ mod ownership_tests {
             Frame::None,
         )
         .unwrap();
-        let handles = [7, 63, 65_537];
+        let handles = [7, 63, 0x0001_0001];
         let small = restore_spatial_index_v2(&values, handles.to_vec(), 70_000, false).unwrap();
         let large = restore_spatial_index_v2(&values, handles.to_vec(), 1 << 40, false).unwrap();
 
@@ -916,12 +924,12 @@ mod ownership_tests {
         let mut small_rows = small.rows.operation();
         let (small_bounds, small_resolve_allocations) =
             crate::test_support::allocation_count(|| {
-                small_rows.row(65_537).unwrap().quick_bounds()
+                small_rows.row(0x0001_0001).unwrap().quick_bounds()
             });
         let mut large_rows = large.rows.operation();
         let (large_bounds, large_resolve_allocations) =
             crate::test_support::allocation_count(|| {
-                large_rows.row(65_537).unwrap().quick_bounds()
+                large_rows.row(0x0001_0001).unwrap().quick_bounds()
             });
         assert_eq!(small_bounds, large_bounds);
         assert!(small_bounds.is_some());

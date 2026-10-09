@@ -476,7 +476,7 @@ def test_shared_set_operations_match_unshared_wkb_expansion(
     for predicate in (gm.intersects, gm.disjoint, gm.covers):
         assert predicate(shared, probe) == predicate(expanded, probe), (name, depth)
     assert gm.covered_by(probe, shared) == gm.covered_by(probe, expanded), (name, depth)
-    assert gm.intersects_xy(shared, x, y) == gm.intersects_xy(expanded, x, y), (
+    assert gm.intersects(shared, x=x, y=y) == gm.intersects(expanded, x=x, y=y), (
         name,
         depth,
     )

@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast
+from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast, reveal_type
 
 import gometry as gm
 import gometry._types as sht
@@ -29,9 +29,15 @@ import numpy.typing as npt
 
 POINT = gm.Point(1, 1)
 LINE = gm.LineString([(0, 0), (1, 1), (2, 0)])
+GEOGRAPHIC_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=4326)
+METER_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=3857)
+METER_POINT = gm.Point(1, 1, crs=3857)
+METER_LINES = gm.GeometryArray([METER_LINE])
 MEASURED_LINE = gm.LineString([(0, 0, 0, 0), (1, 1, 0, 10), (2, 0, 0, 20)])
 POLY = gm.box(0, 0, 2, 2)
 POINTS = gm.GeometryArray([POINT, gm.Point(2, 2)])
+NULLABLE_POINTS = gm.GeometryArray([POINT, None])
+BATCH_POINTS: list[gm.Point | None] = [POINT, None, gm.Point(3, 4)]
 LINES = gm.GeometryArray([LINE])
 POLYS = gm.GeometryArray([POLY])
 
@@ -651,7 +657,7 @@ if TYPE_CHECKING:
         0, dtype=np.int64
     )
     assert_type(POINTS[integer_index_0d], gm.Point)
-    assert_type(gm.contains_xy(POLY, np.float32(1.0), np.int64(1)), bool)
+    assert_type(gm.contains(POLY, x=np.float32(1.0), y=np.int64(1)), bool)
     assert_type(
         gm.crs_transform(4326, 3857, np.float32(1.0), np.float64(2.0)),
         tuple[float, float],
@@ -949,8 +955,71 @@ INDEX = gm.SpatialIndex(POINTS)
 assert_type(INDEX.crs, gm.CRS | None)
 assert_type(INDEX.epoch, float | None)
 assert_type(INDEX.query(POINT), npt.NDArray[np.int64])
+assert_type(INDEX[np.int64(0)], gm.Geometry)
+assert_type(INDEX.get(np.int64(0)), gm.Geometry | None)
 assert_type(POINTS[INDEX.query(POINT)], gm.GeometryArray[gm.Point])
 if TYPE_CHECKING:
+    # Python interpreters see only these declarations' runtime-neutral type
+    # probes; pyright reports their inferred types for every migrated overload.
+    reveal_type(gm.contains(POLY, POINT))
+    reveal_type(gm.contains(BATCH_POINTS, POINT))
+    reveal_type(gm.contains(NULLABLE_POINTS, POINT))
+    reveal_type(gm.contains(POLY, x=np.float64(1), y=np.float64(1)))
+    reveal_type(gm.contains(POLY, x=[0.0, 1.0], y=0.0))
+    reveal_type(gm.contains(POLYS, x=0.0, y=0.0))
+    reveal_type(gm.intersects(POLY, POINT))
+    reveal_type(gm.intersects(BATCH_POINTS, POINT))
+    reveal_type(gm.intersects(NULLABLE_POINTS, POINT))
+    reveal_type(gm.intersects(POLY, x=1.0, y=1.0))
+    reveal_type(gm.intersects(POLY, x=0.0, y=[0.0, 1.0]))
+    reveal_type(gm.intersects(POLYS, x=0.0, y=0.0))
+    reveal_type(gm.contains_properly(BATCH_POINTS, POINT))
+    reveal_type(gm.covered_by(BATCH_POINTS, POINT))
+    reveal_type(gm.covers(BATCH_POINTS, POINT))
+    reveal_type(gm.crosses(BATCH_POINTS, POINT))
+    reveal_type(gm.disjoint(BATCH_POINTS, POINT))
+    reveal_type(gm.dwithin(BATCH_POINTS, POINT, [1.0, 2.0, 3.0]))
+    reveal_type(gm.equals(BATCH_POINTS, POINT))
+    reveal_type(gm.equals_exact(BATCH_POINTS, POINT))
+    reveal_type(gm.equals_identical(BATCH_POINTS, POINT))
+    reveal_type(gm.overlaps(BATCH_POINTS, POINT))
+    reveal_type(gm.touches(BATCH_POINTS, POINT))
+    reveal_type(gm.within(BATCH_POINTS, POINT))
+    reveal_type(gm.relate(BATCH_POINTS, POINT))
+    reveal_type(gm.relate_pattern(BATCH_POINTS, POINT, 'T********'))
+    reveal_type(gm.distance(BATCH_POINTS, POINT))
+    reveal_type(gm.distance_3d(BATCH_POINTS, POINT))
+    reveal_type(gm.hausdorff_distance(BATCH_POINTS, POINT))
+    reveal_type(gm.frechet_distance([LINE, None], LINE))
+    reveal_type(gm.nearest_points(BATCH_POINTS, POINT))
+    reveal_type(gm.shortest_line(BATCH_POINTS, POINT))
+    reveal_type(gm.shared_paths([LINE, None], LINE))
+    reveal_type(gm.area(BATCH_POINTS))
+    reveal_type(gm.length(BATCH_POINTS))
+    reveal_type(gm.length_3d(BATCH_POINTS))
+    reveal_type(INDEX.query(BATCH_POINTS))
+    reveal_type(INDEX.candidates(BATCH_POINTS))
+    reveal_type(INDEX.nearest(POINT, return_distance=False))
+    reveal_type(INDEX.nearest(POINT, return_distance=True))
+    reveal_type(INDEX.nearest(POINTS, return_distance=False))
+    reveal_type(INDEX.nearest(POINTS, return_distance=True))
+    reveal_type(INDEX.remove(np.int64(0)))
+    reveal_type(INDEX == {0: POINT})
+    reveal_type(INDEX.__hash__)
+    reveal_type(gm.nearest(POINTS, POINT, return_distance=True))
+    reveal_type(gm.nearest(POINTS, POINT, return_distance=False))
+    reveal_type(gm.nearest(POINTS, NULLABLE_POINTS, return_distance=False))
+    reveal_type(gm.nearest(POINTS, NULLABLE_POINTS, return_distance=True))
+    reveal_type(gm.join(BATCH_POINTS, BATCH_POINTS))
+    reveal_type(NULLABLE_POINTS.num_coordinates)
+    reveal_type(POLY.extremes())
+    reveal_type(NULLABLE_POINTS.extremes())
+
+    def _reveal_dynamic_nearest_flag(flag: bool) -> None:
+        reveal_type(INDEX.nearest(POINT, return_distance=flag))
+        reveal_type(INDEX.nearest(POINTS, return_distance=flag))
+        reveal_type(gm.nearest(POINTS, POINT, return_distance=flag))
+
     assert_type(INDEX.query(POINTS), gm.Groups[npt.NDArray[np.int64]])
 else:
     assert isinstance(INDEX.query(POINTS), gm.Groups)
@@ -985,11 +1054,14 @@ assert_type(POINTS.sort_by_spatial_key(), gm.GeometryArray[gm.Point])
 assert_type(POINTS.sort_by_spatial_key(curve='morton'), gm.GeometryArray[gm.Point])
 assert_type(LINE.segmentize(0.5), gm.LineString)
 assert_type(LINE.segmentize(fraction=0.5), gm.LineString)
-assert_type(LINE.segmentize(0.5, path='geodesic'), gm.LineString)
-assert_type(LINE.segmentize(fraction=0.5, path='rhumb'), gm.LineString)
+assert_type(GEOGRAPHIC_LINE.segmentize(0.5, path='geodesic'), gm.LineString)
+assert_type(GEOGRAPHIC_LINE.segmentize(fraction=0.5, path='rhumb'), gm.LineString)
 assert_type(LINES.segmentize(0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
-assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
+assert_type(
+    gm.GeometryArray([GEOGRAPHIC_LINE]).segmentize(0.5, path='geodesic'),
+    gm.GeometryArray[gm.LineString],
+)
 assert_type(LINE.line_interpolate(0.5), gm.Point)
 assert_type(LINE.line_interpolate(at=0.5), gm.Point)
 assert_type(
@@ -1000,12 +1072,12 @@ assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate([0.25, 0.75]), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate(count=3), gm.GeometryArray[gm.Point])
 assert_type(
-    LINE.line_interpolate(count=3, unit='meters'),
+    METER_LINE.line_interpolate(count=3, unit='meters'),
     gm.GeometryArray[gm.Point],
 )
 assert_type(MEASURED_LINE.line_interpolate(5.0), gm.Point)
 assert_type(LINE.line_locate(POINT), float)
-assert_type(LINE.line_locate(POINT, normalized=True, unit='meters'), float)
+assert_type(METER_LINE.line_locate(METER_POINT, normalized=True, unit='meters'), float)
 assert_type(MEASURED_LINE.line_locate(POINT), float)
 assert_type(LINE.line_substring(0.25, 0.75), gm.LineString | gm.Point)
 assert_type(
@@ -1035,7 +1107,7 @@ assert_type(
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(
-    LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
+    METER_LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(np.asarray(POINTS.coords), npt.NDArray[np.float64])
@@ -1252,8 +1324,8 @@ assert_type(gm.overlaps(POLY, POINTS), npt.NDArray[np.bool_])
 assert_type(gm.overlaps(POINTS, POLY), npt.NDArray[np.bool_])
 assert_type(gm.equals(POLY, POINTS), npt.NDArray[np.bool_])
 assert_type(gm.equals(POINTS, POLY), npt.NDArray[np.bool_])
-assert_type(gm.intersects_xy(POLY, 0.0, 0.0), bool)
-assert_type(gm.intersects_xy(POLY, [0.0], [0.0]), npt.NDArray[np.bool_])
+assert_type(gm.intersects(POLY, x=0.0, y=0.0), bool)
+assert_type(gm.intersects(POLY, x=[0.0], y=[0.0]), npt.NDArray[np.bool_])
 assert_type(gm.equals(POLY, POLY), bool)
 assert_type(gm.dwithin(POLY, POLY, 0.0), bool)
 assert_type(gm.equals_exact(POLY, POLY), bool)

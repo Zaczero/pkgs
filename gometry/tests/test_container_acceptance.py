@@ -21,7 +21,7 @@ def test_float_lanes_accept_iterators_and_buffers() -> None:
     )
     box = gm.box(0, 0, 2, 2)
     np.testing.assert_array_equal(
-        gm.contains_xy(box, iter([0.5, 9.0]), iter([0.5, 9.0])), [True, False]
+        gm.contains(box, x=iter([0.5, 9.0]), y=iter([0.5, 9.0])), [True, False]
     )
     out = gm.crs_transform(4326, 4326, iter([1.0]), iter([2.0]))
     assert out[:, 0].tolist() == [1.0]

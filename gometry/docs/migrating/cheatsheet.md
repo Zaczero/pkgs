@@ -63,8 +63,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `a.equals(b)` | [`gm.equals(a, b)`][gometry.equals] |
 | normalized equality | [`gm.equals_exact(a.normalize(), b.normalize())`][gometry.equals_exact] |
 | `a.relate(b)` / `a.relate_pattern(b, p)` | [`gm.relate(a, b)`][gometry.relate] / [`gm.relate_pattern(a, b, p)`][gometry.relate_pattern] |
-| `shapely.contains_xy(g, x, y)` | [`gm.contains_xy(g, x, y)`][gometry.contains_xy] |
-| `shapely.intersects_xy(g, x, y)` | [`gm.intersects_xy(g, x, y)`][gometry.intersects_xy] |
+| `shapely.contains_xy(g, x, y)` | [`gm.contains(g, x=x, y=y)`][gometry.contains] |
+| `shapely.intersects_xy(g, x, y)` | [`gm.intersects(g, x=x, y=y)`][gometry.intersects] |
 | `a.dwithin(b, d)` | [`gm.dwithin(a, b, distance, unit=…)`][gometry.dwithin] / [`idx.query(..., predicate="dwithin", distance=..., unit=...)`][gometry.SpatialIndex.query] |
 
 ### Measurement

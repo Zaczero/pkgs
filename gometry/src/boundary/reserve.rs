@@ -29,10 +29,7 @@ pub(crate) fn py_iter_or_error<'py>(
     value: &Bound<'py, PyAny>,
     error: impl FnOnce() -> PyErr,
 ) -> PyResult<Bound<'py, PyIterator>> {
-    match py_iter_or_none(value)? {
-        Some(iter) => Ok(iter),
-        None => Err(error()),
-    }
+    py_iter_or_none(value)?.ok_or_else(error)
 }
 
 /// Acquire a Python iterator, returning `None` only when the value has neither

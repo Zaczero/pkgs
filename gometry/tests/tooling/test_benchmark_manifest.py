@@ -177,7 +177,9 @@ def test_revised_operations_and_labels() -> None:
     assert any('point_on_surface' in row for row in rows)
     intersects = next(op for op in RELEASE_OPERATIONS if 'intersects' in op.gometry)
     assert '12k' in intersects.workload and '12k' in intersects.gometry
-    prepared = next(op for op in RELEASE_OPERATIONS if 'contains_xy' in op.gometry)
+    prepared = next(
+        op for op in RELEASE_OPERATIONS if 'contains/coordinate' in op.gometry
+    )
     assert prepared.competitor.startswith('shapely.contains_xy.prepared')
     destination = next(op for op in RELEASE_OPERATIONS if 'destination' in op.gometry)
     assert 'Shapely' in destination.competitor and 'GeoPandas' in destination.competitor

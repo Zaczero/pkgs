@@ -140,10 +140,10 @@ H3 `resolution`, S2 `level`, geohash `precision`, tile `zoom` — because those
 are the terms every upstream API, paper, and dataset uses; renaming them to
 one invented word would make gometry consistent with itself and inconsistent
 with everything its users read. Bing quadkeys are `tile.token` (no `.quadkey`
-alias); slippy-map zoom is `tile.zoom` (no `.z` alias). Two deliberate gaps in the symmetry: only [`contains_xy`][gometry.contains_xy] / [`intersects_xy`][gometry.intersects_xy] get coordinate-pair
-specialized paths (the point-probe operations; the other predicates against a point
-degenerate to these or to [`touches`][gometry.touches], and a full `_xy` matrix would multiply
-surface without a workload behind it).
+alias); slippy-map zoom is `tile.zoom` (no `.z` alias). Coordinate probes are
+keyword overloads of [`contains`][gometry.contains] and
+[`intersects`][gometry.intersects], so raw coordinates use the specialized
+point-probe kernels without a second spelling or a duplicated predicate matrix.
 
 **Equality is a three-way vocabulary, each axis real.** [`equals(a, b)`][gometry.equals] is the
 *topological* test (order-independent, spatial); [`equals_exact(a, b, tolerance)`][gometry.equals_exact]
