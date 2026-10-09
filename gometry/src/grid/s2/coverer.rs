@@ -505,6 +505,13 @@ impl Coverer {
         rule: CoverRule,
     ) -> Result<Covering, CoverError> {
         debug_assert_eq!(affine.target(), SphericalGridTarget::S2);
+        if rule == CoverRule::Within && !affine.has_polygon() {
+            return Ok(Covering {
+                cells: Vec::new(),
+                #[cfg(test)]
+                stats: CoverStats::default(),
+            });
+        }
         let ctx = CoverContext::prepare(working, affine, relation)?;
         self.cover_prepared(&ctx, rule)
     }

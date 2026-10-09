@@ -1045,18 +1045,67 @@ def test_s2_within_certifies_against_the_complete_component_union() -> None:
     assert cell in gm.s2_cover(source, level=6, cell_rule='within')
 
 
-def test_s2_within_line_drops_invisible_candidates_at_every_level_mod() -> None:
+def test_s2_within_line_is_empty_at_every_level_mod_and_budget() -> None:
     line = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
     for level_mod in (1, 2, 3):
-        assert not gm.s2_cover(
-            line,
-            cell_rule='within',
-            min_level=0,
-            max_level=9,
-            level_mod=level_mod,
-            max_cells=None,
-        )
+        for max_cells in (None, 1):
+            assert not gm.s2_cover(
+                line,
+                cell_rule='within',
+                min_level=0,
+                max_level=9,
+                level_mod=level_mod,
+                max_cells=max_cells,
+            )
+    for max_cells in (None, 1):
+        assert not gm.s2_cover(line, level=8, cell_rule='within', max_cells=max_cells)
     assert gm.s2_cover(line, level=8, cell_rule='overlap')
+
+
+def test_s2_within_nonpolygon_still_validates_coordinates_and_level() -> None:
+    invalid_latitude = gm.LineString([(0.0, 95.0), (1.0, 96.0)], crs=4326)
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
+        gm.s2_cover(invalid_latitude, level=8, cell_rule='within')
+
+    line = gm.LineString([(-1.0, 0.0), (1.0, 0.0)], crs=4326)
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
+        gm.s2_cover(
+            gm.GeometryArray([line, invalid_latitude], crs=4326),
+            level=8,
+            cell_rule='within',
+            max_cells=1,
+        )
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.s2_cover(
+            gm.GeometryArray(
+                [line, gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326), invalid_latitude],
+                crs=4326,
+            ),
+            level=8,
+            cell_rule='within',
+            max_cells=1,
+        )
+
+    with pytest.raises(gm.GeometryError, match='S2 level'):
+        gm.s2_cover(line, level=31, cell_rule='within')
+
+
+def test_s2_within_keeps_scalar_empty_rejection_and_array_rows() -> None:
+    empty = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match='non-empty geometry'):
+        gm.s2_cover(empty, level=8, cell_rule='within')
+
+    groups = gm.s2_cover(
+        gm.GeometryArray([empty, None], crs=4326), level=8, cell_rule='within'
+    )
+    assert isinstance(groups, gm.Groups)
+    assert len(groups) == 2
+    assert len(groups[0]) == 0
+    assert len(groups[1]) == 0
 
 
 def test_s2_bowtie_cover_keeps_both_filled_lobes() -> None:
@@ -1068,6 +1117,12 @@ def test_s2_bowtie_cover_keeps_both_filled_lobes() -> None:
     for longitude, latitude in ((0.5, 1.5), (1.5, 0.5)):
         owner = gm.S2Cell(longitude, latitude, level=8)
         assert any(cell.contains(owner) for cell in covering)
+    # The L8 lower witness touches the source edge; L9 fits strictly in both lobes.
+    within = gm.s2_cover(bowtie, level=9, cell_rule='within')
+    for latitude in (0.25, 1.75):
+        owner = gm.S2Cell(1.0, latitude, level=9)
+        assert owner in within
+        assert gm.within(owner.polygon, bowtie)
 
 
 def test_s2_set_utilities_mirror_h3() -> None:
