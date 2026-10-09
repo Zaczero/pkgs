@@ -230,10 +230,12 @@ GeometryArray
     based (Douglas-Peucker).
 
 preserve_topology : bool, default True
-    Guarantee the output keeps the input's topology: a polygon stays valid
-    and non-collapsed, a simple line stays simple. The raw algorithm runs
-    first (the fast path); a guarded pass only kicks in when it broke
-    something. ``False`` is the raw algorithm.";
+    Preserve topology within each geometry checked: valid polygonal components
+    stay valid and non-collapsed, and simple lineal components stay simple. A
+    ``GeometryCollection`` is checked child by child; relationships between
+    separate children are not preserved. The raw algorithm runs first (the
+    fast path); a guarded pass only runs when a component fails those checks.
+    ``False`` skips the guarded check; collapsed areal rings are still removed.";
     tail: r"
 Raises
 ------

@@ -197,11 +197,12 @@ impl PyCoordinates {
     }
 
     /// Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
-    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``): every tuple/column has that
-    /// shape. Nested/tuple output uses ``None`` where a coordinate lacks the
-    /// requested Z/M; ndarray columns and ``numpy.asarray`` use ``NaN`` there.
-    /// `select` changes which ordinates nested output, iteration, ndarray/dict
-    /// exports, and coordinate equality see; it does not change the geometry.
+    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``). This layout defines the schema
+    /// of coordinate tuples, nested output, matrices, dictionaries, and equality.
+    /// Tuple/nested output uses ``None`` where a coordinate lacks the requested
+    /// Z/M; matrices and dictionary columns use ``NaN`` there. Independent axis
+    /// accessors such as ``.z`` continue to read the source view, regardless of
+    /// the selected layout. Selection does not change the geometry.
     ///
     /// Parameters
     /// ----------
