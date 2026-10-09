@@ -220,6 +220,15 @@ impl PreparedLinework {
         )
     }
 
+    /// Global vertex index for a facet-local source vertex.
+    pub(crate) fn facet_vertex_index(&self, facet: Facet, local: usize) -> usize {
+        self.chain_vertex_offsets
+            .get(facet.chain as usize)
+            .expect("facet chain belongs to prepared linework")
+            .wrapping_add(facet.first_vertex as usize)
+            .wrapping_add(local)
+    }
+
     /// Total linework vertex count across every chain.
     pub(crate) fn vertex_count(&self) -> usize {
         self.chains.last().map_or(0, |chain| {

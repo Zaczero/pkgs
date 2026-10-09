@@ -1680,6 +1680,140 @@ impl SquaredDistanceKey {
     }
 }
 
+fn source_dot_difference_interval(normal: [f64; 2], left: XY, right: XY) -> Option<DdInterval> {
+    let [nx, ny] = normal;
+    let dx = DdInterval::difference(left.x, right.x)?;
+    let dy = DdInterval::difference(left.y, right.y)?;
+    DdInterval::exact(nx)
+        .mul(dx)?
+        .add(DdInterval::exact(ny).mul(dy)?)
+}
+
+fn source_dot_difference_exact(normal: [f64; 2], left: XY, right: XY) -> Result<ExactDyadic> {
+    let [nx, ny] = normal;
+    let dx = projection_difference(left.x, right.x)?;
+    let dy = projection_difference(left.y, right.y)?;
+    ExactDyadic::from_f64(nx)
+        .try_product(&dx)?
+        .try_add(ExactDyadic::from_f64(ny).try_product(&dy)?)
+}
+
+pub(crate) fn source_dot_cmp(normal: [f64; 2], left: XY, right: XY) -> Result<Ordering> {
+    if let Some(difference) = source_dot_difference_interval(normal, left, right)
+        && let Some(order) = dd_strict_cmp(difference, DdInterval::exact(0.0))
+    {
+        return Ok(order);
+    }
+    #[cfg(test)]
+    CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
+    Ok(source_dot_difference_exact(normal, left, right)?.cmp(&ExactDyadic::zero()))
+}
+
+/// `Some(true)` certifies pruning, `Some(false)` certifies retaining the node,
+/// and `None` requires the exact source-ratio comparison.
+fn clearance_strip_filter_result(
+    point: XY,
+    normal: [f64; 2],
+    low: XY,
+    high: XY,
+    incumbent: &SquaredDistanceKey,
+) -> Option<bool> {
+    let low_gap = source_dot_difference_interval(normal, low, point)?;
+    let high_gap = source_dot_difference_interval(normal, point, high)?;
+    let (low_lower, low_upper) = low_gap.outward_bounds();
+    let (high_lower, high_upper) = high_gap.outward_bounds();
+    if low_upper.is_finite() && high_upper.is_finite() && low_upper <= 0.0 && high_upper <= 0.0 {
+        return Some(false);
+    }
+    let gap_lower = low_lower.max(high_lower).max(0.0);
+    let gap_upper = low_upper.max(high_upper).max(0.0);
+    if !gap_lower.is_finite() || !gap_upper.is_finite() {
+        return None;
+    }
+
+    let [nx, ny] = normal;
+    let norm_squared = DdInterval::exact(nx)
+        .square()
+        .and_then(|x| DdInterval::exact(ny).square().and_then(|y| x.add(y)))?;
+    let (norm_lower, norm_upper) = norm_squared.outward_bounds();
+    if !norm_lower.is_finite() || !norm_upper.is_finite() || norm_upper <= 0.0 {
+        return None;
+    }
+    let key_lower = incumbent.filter.lo;
+    let key_upper = incumbent.filter.hi;
+    // A lower strip bound above the key's upper enclosure proves pruning.
+    if gap_lower > 0.0
+        && key_upper.is_finite()
+        && key_upper >= 0.0
+        && let (Some(bound_numerator), Some(incumbent_upper_product)) = (
+            DdInterval::exact(gap_lower).square(),
+            DdInterval::exact(key_upper).mul(DdInterval::exact(norm_upper)),
+        )
+        && dd_strict_cmp(bound_numerator, incumbent_upper_product).is_some_and(Ordering::is_gt)
+    {
+        return Some(true);
+    }
+    // An upper strip bound below the key's lower enclosure proves no-prune.
+    if key_lower.is_finite()
+        && key_lower >= 0.0
+        && norm_lower > 0.0
+        && DdInterval::exact(gap_upper)
+            .square()
+            .zip(DdInterval::exact(key_lower).mul(DdInterval::exact(norm_lower)))
+            .is_some_and(|(bound_numerator, incumbent_lower_product)| {
+                let (_, bound_upper) = bound_numerator.outward_bounds();
+                let (incumbent_lower, _) = incumbent_lower_product.outward_bounds();
+                bound_upper.is_finite()
+                    && incumbent_lower.is_finite()
+                    && bound_upper <= incumbent_lower
+            })
+    {
+        return Some(false);
+    }
+    None
+}
+
+pub(crate) fn clearance_strip_exceeds(
+    point: XY,
+    normal: [f64; 2],
+    low: XY,
+    high: XY,
+    incumbent: &SquaredDistanceKey,
+) -> Result<bool> {
+    if let Some(prunes) = clearance_strip_filter_result(point, normal, low, high, incumbent) {
+        return Ok(prunes);
+    }
+    #[cfg(test)]
+    CLEARANCE_STRIP_EXACT_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
+
+    let low_gap = source_dot_difference_exact(normal, low, point)?;
+    let high_gap = source_dot_difference_exact(normal, point, high)?;
+    let gap = match low_gap.cmp(&high_gap) {
+        Ordering::Greater => low_gap,
+        Ordering::Less | Ordering::Equal => high_gap,
+    };
+    let zero = ExactDyadic::zero();
+    if !gap.cmp(&zero).is_gt() {
+        return Ok(false);
+    }
+    let [nx, ny] = normal;
+    let x = ExactDyadic::from_f64(nx);
+    let y = ExactDyadic::from_f64(ny);
+    let norm_squared = x.try_product(&x)?.try_add(y.try_product(&y)?)?;
+    if norm_squared.cmp(&zero).is_eq() {
+        return Ok(false);
+    }
+    let bound_numerator = gap.try_product(&gap)?;
+    let incumbent = incumbent.witness.squared()?;
+    Ok(compare_ratios(
+        &bound_numerator,
+        &norm_squared,
+        &incumbent.numerator,
+        &incumbent.denominator,
+    )?
+    .is_gt())
+}
+
 pub(super) fn point_pair_distance_key(left: XY, right: XY) -> SquaredDistanceKey {
     let witness = ExactDistanceWitness::Points(left, right);
     let dx = left.x - right.x;
@@ -1818,7 +1952,12 @@ pub(crate) fn point_segment_selection(
 
 #[cfg(test)]
 std::thread_local! {
-    static EXACT_SELECTION_FALLBACKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static EXACT_SELECTION_FALLBACKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_STRIP_EXACT_FALLBACKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_STRIP_SUPPORT_FALLBACKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 impl ExactDistanceWitness {

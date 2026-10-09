@@ -12,12 +12,14 @@
 //! every segment pair. See `distance_disjoint_with_parts` for the convexity
 //! argument.
 //!
-//! Minimum-clearance traversal uses a separately directed AABB lower
-//! enclosure and exact source-distance keys; approximate facet residuals do
-//! not reject clearance candidates. The other distance paths retain their
-//! squared/hypot kernels and established pruning bounds. The SIMD kernel
-//! computes the same clamped-projection distance as the scalar kernel (lane
-//! math may reassociate — measurement arithmetic per the project float policy).
+//! Minimum-clearance traversal builds the same facet count in source order
+//! and augments its nodes with exact-source-supported direction strips. Directed
+//! AABB and strip bounds reject only when a certified source-space lower bound
+//! strictly exceeds the exact incumbent; uncertain comparisons use exact
+//! arithmetic. The other distance paths retain their squared/hypot kernels and
+//! established pruning bounds. The SIMD kernel computes the same
+//! clamped-projection distance as the scalar kernel (lane math may reassociate —
+//! measurement arithmetic per the project float policy).
 
 mod aabb;
 mod engine;
@@ -30,7 +32,7 @@ pub(crate) use aabb::{
 #[cfg(test)]
 pub(crate) use engine::NEAREST_WORK;
 pub(crate) use engine::{
-    Facet, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
+    ClearanceFacetBvh, Facet, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
     facet_point_distance_columns, update_nearest_candidate,
 };
 pub(crate) use simd::simd_point_facet_distance_squared;

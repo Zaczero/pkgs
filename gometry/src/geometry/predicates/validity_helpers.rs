@@ -7,11 +7,12 @@ use crate::geometry::HashMap;
 use crate::geometry::PointKey;
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    Component, CoordSeq, Coordinates, FacetBvh, Ordering, Point, PointSetIndex, Polygon,
-    PreparedLinework, RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape,
-    ShapeCountQuery, SquaredDistanceKey, VertexProvenance, XY, point_distance,
-    point_distance_squared, point_in_ccw_triangle, point_pair_distance_key, point_segment_distance,
-    point_segment_exact_distance_key, ring_winding, same_point, segment_projection,
+    ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, Coordinates, FacetBvh, Ordering,
+    Point, PointSetIndex, Polygon, PreparedLinework, RefinedChainProvenance,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery, SquaredDistanceKey, VertexProvenance,
+    XY, point_distance, point_distance_squared, point_in_ccw_triangle, point_pair_distance_key,
+    point_segment_distance, point_segment_exact_distance_key, ring_winding, same_point,
+    segment_projection,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -388,11 +389,12 @@ fn minimum_clearance_witness_indexed(
     keep: &impl Fn(Point, usize, Segment) -> bool,
 ) -> crate::error::Result<Option<MinimumClearanceCandidate>> {
     let vertex_index = PointSetIndex::build_clearance_with_ordinals(points);
+    let mut vertex_query: ClearancePointQuery<'_> = vertex_index.clearance_query();
     let mut best: Option<MinimumClearanceCandidate> = None;
     for (point_index, point) in points.iter().enumerate() {
         let incumbent = best.as_ref().map(|candidate| &candidate.distance_key);
         if let Some((other, distance_key)) =
-            vertex_index.nearest_clearance_neighbor(*point, incumbent)?
+            vertex_query.nearest_clearance_neighbor(*point, incumbent)?
         {
             let (first, second) = if point_index < other {
                 (point_index, other)
@@ -406,7 +408,7 @@ fn minimum_clearance_witness_indexed(
         }
     }
     let linework = PreparedLinework::build_all(shape)?;
-    let bvh = FacetBvh::build(&linework);
+    let bvh: Option<ClearanceFacetBvh> = FacetBvh::build_for_clearance(&linework)?;
     if bvh.is_none() && !segments.is_empty() {
         return Err(crate::error::ResourceError::SizeOverflow.into());
     }
@@ -853,15 +855,36 @@ mod clearance_index_tests {
     #[test]
     fn indexed_tiny_and_huge_clearance_keep_exact_point_pairs() {
         for spacing in [2.0_f64.powi(-700), 2.0_f64.powi(600)] {
-            let points: Vec<_> = (0..64)
-                .map(|index| Point::new_raw_xy(f64::from(index) * spacing, 0.0))
-                .collect();
-            let shape = line(&points);
-            let candidate = assert_indexed_matches_exact_exhaustive(&shape);
-            assert!(matches!(candidate.source, ClearanceSource::PointPair {
-                first: 0,
-                second: 1
-            }));
+            for count in [64_u16, 128, 256] {
+                let points: Vec<_> = (0..count)
+                    .map(|index| Point::new_raw_xy(f64::from(index) * spacing, 0.0))
+                    .collect();
+                let shape = line(&points);
+                crate::geometry::CLEARANCE_POINT_BUILD_SITES.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_NODES.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_LEAVES.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_RECHECKS.with(|work| work.set(0));
+                crate::geometry::CLEARANCE_POINT_EXACT_FALLBACKS.with(|work| work.set(0));
+                let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+                assert!(matches!(candidate.source, ClearanceSource::PointPair {
+                    first: 0,
+                    second: 1
+                }));
+                let build_sites =
+                    crate::geometry::CLEARANCE_POINT_BUILD_SITES.with(std::cell::Cell::get);
+                let nodes = crate::geometry::CLEARANCE_POINT_NODES.with(std::cell::Cell::get);
+                let leaves = crate::geometry::CLEARANCE_POINT_LEAVES.with(std::cell::Cell::get);
+                let rechecks = crate::geometry::CLEARANCE_POINT_RECHECKS.with(std::cell::Cell::get);
+                let exact_fallbacks =
+                    crate::geometry::CLEARANCE_POINT_EXACT_FALLBACKS.with(std::cell::Cell::get);
+                eprintln!(
+                    "point clearance: spacing={spacing:e}, {count} sites ({build_sites} build visits), {nodes} node bounds, {leaves} leaf bounds, {rechecks} rechecks, {exact_fallbacks} exact fallbacks",
+                );
+                assert!(
+                    nodes > 0 && leaves > 0,
+                    "point query did not visit the source tree"
+                );
+            }
         }
     }
 
@@ -888,6 +911,34 @@ mod clearance_index_tests {
             point: 0,
             segment: 0
         }));
+    }
+
+    #[test]
+    fn indexed_oblique_strip_bound_preserves_exact_exhaustive_winner() {
+        let mut parts = vec![
+            Shape::Point(Point::new_raw_xy(0.625, 0.625)),
+            line(&[Point::new_raw_xy(-1.0, 1.0), Point::new_raw_xy(1.0, -1.0)]),
+            Shape::Point(Point::new_raw_xy(100.0, 100.0)),
+            Shape::Point(Point::new_raw_xy(101.0, 100.0)),
+        ];
+        parts.extend((0..60).map(|index| {
+            Shape::Point(Point::new_raw_xy(1000.0 + 10.0 * f64::from(index), 1000.0))
+        }));
+        let shape = Shape::geometry_collection(parts).unwrap();
+        let candidate = assert_indexed_matches_exact_exhaustive(&shape);
+        let point_pair = point_pair_distance_key(XY::new(100.0, 100.0), XY::new(101.0, 100.0));
+
+        assert!(matches!(candidate.source, ClearanceSource::PointSegment {
+            point: 0,
+            segment: 0
+        }));
+        assert!(
+            candidate
+                .distance_key
+                .cmp_distance(&point_pair)
+                .unwrap()
+                .is_lt()
+        );
     }
 
     #[test]

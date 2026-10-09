@@ -6,14 +6,25 @@ use crate::geometry::facet_bvh::{
     aabb_max_distance_squared, aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 use crate::geometry::{
-    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, point_on_segment,
-    point_segment_distance_squared, point_segment_exact_distance_key, point_segment_selection,
-    segment_projection, segments_intersect,
+    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, axis_pow2_scale, clearance_strip_exceeds,
+    point_on_segment, point_pair_distance_key, point_segment_distance_squared,
+    point_segment_exact_distance_key, point_segment_selection, scaled_residual, segment_projection,
+    segments_intersect, source_dot_cmp,
 };
 
 #[cfg(test)]
 std::thread_local! {
     pub(crate) static NEAREST_WORK: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    static CLEARANCE_BVH_NODES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    static CLEARANCE_BVH_SEGMENTS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    static CLEARANCE_BVH_FACETS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    static CLEARANCE_STRIP_TESTS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    static CLEARANCE_STRIP_BUILD_VERTICES: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
@@ -157,11 +168,120 @@ pub(crate) struct FacetBvh {
     codes: Box<[u32]>,
 }
 
+#[derive(Clone, Copy)]
+struct ClearanceStrip {
+    normal: [f64; 2],
+    low_support: usize,
+    high_support: usize,
+}
+
+pub(crate) struct ClearanceFacetBvh {
+    tree: FacetBvh,
+    strips: Box<[ClearanceStrip]>,
+}
+
 fn facet_for_leaf(linework: &PreparedLinework, index: usize) -> Facet {
     *linework
         .facets
         .get(index)
         .expect("BVH leaf facet index is within its prepared linework")
+}
+
+fn clearance_normal_for_facet(
+    linework: &PreparedLinework,
+    facet: Facet,
+) -> crate::error::Result<[f64; 2]> {
+    // The normal selects a projection direction; source supports, not an exact
+    // perpendicular or a unit-length assumption, define the bound.
+    let mut longest: Option<(Segment, SquaredDistanceKey)> = None;
+    for offset in 0..facet.segment_count as usize {
+        let segment = linework.segment(facet, offset);
+        let key = point_pair_distance_key(segment.start, segment.end);
+        let replace = match longest.as_ref() {
+            None => true,
+            Some((_, incumbent)) => key.cmp_distance(incumbent)?.is_gt(),
+        };
+        if replace {
+            longest = Some((segment, key));
+        }
+    }
+    let Some((segment, _)) = longest else {
+        return Ok([1.0, 0.0]);
+    };
+    let mut dx = segment.end.x - segment.start.x;
+    let mut dy = segment.end.y - segment.start.y;
+    if !dx.is_finite() || !dy.is_finite() {
+        let scale = axis_pow2_scale(
+            segment
+                .start
+                .x
+                .abs()
+                .max(segment.start.y.abs())
+                .max(segment.end.x.abs())
+                .max(segment.end.y.abs()),
+        );
+        dx = scaled_residual(segment.end.x, segment.start.x, scale);
+        dy = scaled_residual(segment.end.y, segment.start.y, scale);
+    }
+    let magnitude = dx.abs().max(dy.abs());
+    if magnitude == 0.0 || !magnitude.is_finite() {
+        return Ok([1.0, 0.0]);
+    }
+    let [mut normal_x, mut normal_y] = [-dy / magnitude, dx / magnitude];
+    if normal_y.total_cmp(&0.0).is_lt()
+        || normal_y.total_cmp(&0.0).is_eq() && normal_x.total_cmp(&0.0).is_lt()
+    {
+        normal_x = -normal_x;
+        normal_y = -normal_y;
+    }
+    Ok([normal_x, normal_y])
+}
+
+fn clearance_strip_for_facets(
+    linework: &PreparedLinework,
+    ids: &[u32],
+) -> crate::error::Result<ClearanceStrip> {
+    let representative = *ids
+        .get(ids.len() / 2)
+        .expect("clearance node facet range is nonempty");
+    let normal =
+        clearance_normal_for_facet(linework, facet_for_leaf(linework, representative as usize))?;
+    let mut low: Option<(usize, Point)> = None;
+    let mut high: Option<(usize, Point)> = None;
+    for &id in ids {
+        let facet = facet_for_leaf(linework, id as usize);
+        for local in 0..=facet.segment_count as usize {
+            #[cfg(test)]
+            CLEARANCE_STRIP_BUILD_VERTICES.with(|count| {
+                count.set(count.get().saturating_add(1));
+            });
+            let index = linework.facet_vertex_index(facet, local);
+            let point = linework.vertex_at(index);
+            match low {
+                None => low = Some((index, point)),
+                Some((_, source)) => {
+                    if source_dot_cmp(normal, point.xy(), source.xy())?.is_lt() {
+                        low = Some((index, point));
+                    }
+                },
+            }
+            match high {
+                None => high = Some((index, point)),
+                Some((_, source)) => {
+                    if source_dot_cmp(normal, point.xy(), source.xy())?.is_gt() {
+                        high = Some((index, point));
+                    }
+                },
+            }
+        }
+    }
+    let (low_support, _) = low.expect("clearance node contains a facet vertex");
+    let (high_support, _) = high.expect("clearance node contains a facet vertex");
+    Ok(ClearanceStrip {
+        normal,
+        low_support,
+        high_support,
+    })
 }
 
 impl FacetBvh {
@@ -170,6 +290,36 @@ impl FacetBvh {
     /// first-child code would read as a leaf (those astronomically large
     /// shapes keep the flat facet scans, which are index-width-agnostic).
     pub(crate) fn build(linework: &PreparedLinework) -> Option<Self> {
+        let (mut tree, facet_aabbs, mut ids) = Self::build_parts(linework)?;
+        let mut next = 1;
+        tree.fill_node(0, &mut next, &facet_aabbs, &mut ids);
+        Some(tree)
+    }
+
+    pub(crate) fn build_for_clearance(
+        linework: &PreparedLinework,
+    ) -> crate::error::Result<Option<ClearanceFacetBvh>> {
+        let Some((mut tree, facet_aabbs, mut ids)) = Self::build_parts(linework) else {
+            return Ok(None);
+        };
+        let mut strips = vec![
+            ClearanceStrip {
+                normal: [1.0, 0.0],
+                low_support: 0,
+                high_support: 0,
+            };
+            tree.aabbs.len()
+        ];
+        let mut next = 1;
+        tree.fill_clearance_node(0, &mut next, &facet_aabbs, &mut ids, linework, &mut strips)?;
+        debug_assert_eq!(next, tree.aabbs.len());
+        Ok(Some(ClearanceFacetBvh {
+            tree,
+            strips: strips.into_boxed_slice(),
+        }))
+    }
+
+    fn build_parts(linework: &PreparedLinework) -> Option<(Self, Vec<[f64; 4]>, Vec<u32>)> {
         let facet_count = u32::try_from(linework.facets.len()).ok()?;
         if facet_count == 0 || facet_count > BvhCode::LEAF_BIT / 2 {
             return None;
@@ -179,16 +329,13 @@ impl FacetBvh {
             .iter()
             .map(|&facet| linework.facet_aabb(facet))
             .collect();
-        let mut ids: Vec<u32> = (0..facet_count).collect();
+        let ids: Vec<u32> = (0..facet_count).collect();
         let node_count = (facet_count as usize).wrapping_mul(2).wrapping_sub(1);
-        let mut tree = Self {
+        let tree = Self {
             aabbs: vec![[0.0; 4]; node_count].into_boxed_slice(),
             codes: vec![0; node_count].into_boxed_slice(),
         };
-        // Root at 0; children allocated in adjacent pairs from the cursor.
-        let mut next = 1;
-        tree.fill_node(0, &mut next, &facet_aabbs, &mut ids);
-        Some(tree)
+        Some((tree, facet_aabbs, ids))
     }
 
     /// Median split of facet centers into the node slot `node`.
@@ -234,6 +381,45 @@ impl FacetBvh {
         self.codes[node] = BvhCode::internal(first_child as u32).raw();
         self.fill_node(first_child, next, facet_aabbs, lower);
         self.fill_node(first_child + 1, next, facet_aabbs, upper);
+    }
+
+    /// Median split of consecutive source facets for the clearance hierarchy.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Facet ids and recursive node ids are builder-produced and stay below the allocated bounds/codes"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "facet_count <= LEAF_BIT/2 keeps 2F-1 in usize; next advances only across allocated sibling pairs"
+    )]
+    fn fill_clearance_node(
+        &mut self,
+        node: usize,
+        next: &mut usize,
+        facet_aabbs: &[[f64; 4]],
+        ids: &mut [u32],
+        linework: &PreparedLinework,
+        strips: &mut [ClearanceStrip],
+    ) -> crate::error::Result<()> {
+        let aabb = ids
+            .iter()
+            .map(|&id| facet_aabbs[id as usize])
+            .reduce(union_aabb)
+            .expect("clearance node facet range is nonempty");
+        self.aabbs[node] = aabb;
+        strips[node] = clearance_strip_for_facets(linework, ids)?;
+        if let [id] = ids {
+            self.codes[node] = BvhCode::leaf(*id as usize).raw();
+            return Ok(());
+        }
+
+        let mid = ids.len() / 2;
+        let (lower, upper) = ids.split_at_mut(mid);
+        let first_child = *next;
+        *next += 2;
+        self.codes[node] = BvhCode::internal(first_child as u32).raw();
+        self.fill_clearance_node(first_child, next, facet_aabbs, lower, linework, strips)?;
+        self.fill_clearance_node(first_child + 1, next, facet_aabbs, upper, linework, strips)
     }
 
     fn node_aabb(&self, index: u32) -> [f64; 4] {
@@ -762,68 +948,6 @@ impl FacetBvh {
         Ok(changed_any)
     }
 
-    /// Nearest positive eligible source segment by exact source distance.
-    /// Node AABBs prune only when their downward enclosure exceeds the exact
-    /// candidate key's upper enclosure; facets and leaves add no approximate
-    /// rejection tests.
-    pub(crate) fn nearest_clearance_segment_with_stack_and_ordinal(
-        &self,
-        linework: &PreparedLinework,
-        probe: Point,
-        keep: &impl Fn(Point, usize, Segment) -> bool,
-        incumbent: Option<&SquaredDistanceKey>,
-        stack: &mut Vec<u32>,
-    ) -> crate::error::Result<Option<(usize, SquaredDistanceKey)>> {
-        let mut best: Option<(usize, SquaredDistanceKey)> = None;
-        let probe_aabb = point_aabb(probe.x, probe.y);
-        let lower_bound = |aabb: [f64; 4]| aabb_distance_squared_lower(aabb, probe_aabb);
-        let incumbent_upper = incumbent.map_or(f64::INFINITY, SquaredDistanceKey::upper_bound);
-        stack.clear();
-        stack.push(0);
-        while let Some(index) = stack.pop() {
-            #[cfg(test)]
-            NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
-            let limit = best.as_ref().map_or(incumbent_upper, |(_, key)| {
-                key.upper_bound().min(incumbent_upper)
-            });
-            if lower_bound(self.node_aabb(index)) > limit {
-                continue;
-            }
-            match self.decode_node(index) {
-                BvhNode::Leaf(facet_index) => {
-                    let facet = facet_for_leaf(linework, facet_index);
-                    for offset in 0..facet.segment_count as usize {
-                        #[cfg(test)]
-                        NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
-                        let segment = linework.segment(facet, offset);
-                        let ordinal = linework.segment_ordinal(facet, offset);
-                        if !keep(probe, ordinal, segment) {
-                            continue;
-                        }
-                        let key = point_segment_exact_distance_key(probe.xy(), segment);
-                        if key.is_exact_zero()? {
-                            continue;
-                        }
-                        let replace = match best.as_ref() {
-                            None => true,
-                            Some((best_ordinal, best_key)) => {
-                                let order = key.cmp_distance(best_key)?;
-                                order.is_lt() || order.is_eq() && ordinal < *best_ordinal
-                            },
-                        };
-                        if replace {
-                            best = Some((ordinal, key));
-                        }
-                    }
-                },
-                BvhNode::Internal(first_child) => {
-                    self.push_nearer_last(stack, first_child as u32, &lower_bound);
-                },
-            }
-        }
-        Ok(best)
-    }
-
     #[expect(
         clippy::indexing_slicing,
         reason = "first_child is builder-produced and first_child + 1 is below self.aabbs.len()"
@@ -889,6 +1013,114 @@ impl FacetBvh {
     }
 }
 
+fn clearance_segment_limit<'a>(
+    local: Option<&'a SquaredDistanceKey>,
+    global: Option<&'a SquaredDistanceKey>,
+) -> crate::error::Result<Option<&'a SquaredDistanceKey>> {
+    match (local, global) {
+        (None, None) => Ok(None),
+        (Some(local), None) => Ok(Some(local)),
+        (None, Some(global)) => Ok(Some(global)),
+        (Some(local), Some(global)) => {
+            if local.cmp_distance(global)?.is_lt() {
+                Ok(Some(local))
+            } else {
+                Ok(Some(global))
+            }
+        },
+    }
+}
+
+impl ClearanceFacetBvh {
+    /// Nearest positive eligible source segment by exact source distance.
+    /// AABBs reject first; source-supported strips resolve radial box slack.
+    pub(crate) fn nearest_clearance_segment_with_stack_and_ordinal(
+        &self,
+        linework: &PreparedLinework,
+        probe: Point,
+        keep: &impl Fn(Point, usize, Segment) -> bool,
+        incumbent: Option<&SquaredDistanceKey>,
+        stack: &mut Vec<u32>,
+    ) -> crate::error::Result<Option<(usize, SquaredDistanceKey)>> {
+        let mut best: Option<(usize, SquaredDistanceKey)> = None;
+        let probe_aabb = point_aabb(probe.x, probe.y);
+        let lower_bound = |aabb: [f64; 4]| aabb_distance_squared_lower(aabb, probe_aabb);
+        stack.clear();
+        stack.push(0);
+        while let Some(index) = stack.pop() {
+            #[cfg(test)]
+            {
+                NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
+                CLEARANCE_BVH_NODES.with(|work| work.set(work.get().saturating_add(1)));
+            }
+            let local = best.as_ref().map(|(_, key)| key);
+            let limit = clearance_segment_limit(local, incumbent)?;
+            if let Some(limit) = limit
+                && lower_bound(self.tree.node_aabb(index)) > limit.upper_bound()
+            {
+                continue;
+            }
+            let node = self.tree.decode_node(index);
+            if let Some(limit) = limit {
+                #[cfg(test)]
+                CLEARANCE_STRIP_TESTS.with(|work| work.set(work.get().saturating_add(1)));
+                let strip = *self
+                    .strips
+                    .get(index as usize)
+                    .expect("clearance BVH node has its source-supported strip");
+                if clearance_strip_exceeds(
+                    probe.xy(),
+                    strip.normal,
+                    linework.vertex_at(strip.low_support).xy(),
+                    linework.vertex_at(strip.high_support).xy(),
+                    limit,
+                )? {
+                    continue;
+                }
+            }
+            match node {
+                BvhNode::Leaf(facet_index) => {
+                    let facet = facet_for_leaf(linework, facet_index);
+                    #[cfg(test)]
+                    CLEARANCE_BVH_FACETS.with(|work| work.set(work.get().saturating_add(1)));
+                    for offset in 0..facet.segment_count as usize {
+                        #[cfg(test)]
+                        {
+                            NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
+                            CLEARANCE_BVH_SEGMENTS
+                                .with(|work| work.set(work.get().saturating_add(1)));
+                        }
+                        let segment = linework.segment(facet, offset);
+                        let ordinal = linework.segment_ordinal(facet, offset);
+                        if !keep(probe, ordinal, segment) {
+                            continue;
+                        }
+                        let key = point_segment_exact_distance_key(probe.xy(), segment);
+                        if key.is_exact_zero()? {
+                            continue;
+                        }
+                        let replace = match best.as_ref() {
+                            None => true,
+                            Some((best_ordinal, best_key)) => {
+                                let order = key.cmp_distance(best_key)?;
+                                order.is_lt() || order.is_eq() && ordinal < *best_ordinal
+                            },
+                        };
+                        if replace {
+                            best = Some((ordinal, key));
+                        }
+                    }
+                },
+                BvhNode::Internal(first_child) => {
+                    self.tree
+                        .push_nearer_last(stack, first_child as u32, &lower_bound);
+                },
+            }
+        }
+        Ok(best)
+    }
+}
+
 impl HeapSize for FacetBvh {
     fn heap_bytes(&self) -> usize {
         self.aabbs
@@ -897,12 +1129,26 @@ impl HeapSize for FacetBvh {
     }
 }
 
+impl HeapSize for ClearanceFacetBvh {
+    fn heap_bytes(&self) -> usize {
+        self.tree.heap_bytes().saturating_add(
+            self.strips
+                .len()
+                .saturating_mul(std::mem::size_of::<ClearanceStrip>()),
+        )
+    }
+}
+
 #[cfg(test)]
 mod public_nearest_work_tests {
     use pyo3::prelude::*;
     use pyo3::types::PyList;
 
-    use super::NEAREST_WORK;
+    use super::{
+        CLEARANCE_BVH_FACETS, CLEARANCE_BVH_NODES, CLEARANCE_BVH_SEGMENTS,
+        CLEARANCE_STRIP_BUILD_VERTICES, CLEARANCE_STRIP_TESTS, NEAREST_WORK,
+    };
+    use crate::geometry::CLEARANCE_STRIP_SUPPORT_FALLBACKS;
 
     #[test]
     fn public_clearance_bounds_radial_candidate_work() {
@@ -911,7 +1157,8 @@ mod public_nearest_work_tests {
             let module = PyModule::new(py, "gometry._lib").unwrap();
             crate::lib(&module).unwrap();
             let mut previous = None;
-            for count in [1024_usize, 4096] {
+            let mut previous_count = None;
+            for count in [128_usize, 512, 1024, 4096] {
                 let coords = PyList::empty(py);
                 for index in 0..count {
                     let radius = 0.5 + (index.wrapping_mul(17) % 31) as f64 / 31.0;
@@ -927,6 +1174,12 @@ mod public_nearest_work_tests {
                     .unwrap();
                 for operation in ["minimum_clearance", "minimum_clearance_line"] {
                     NEAREST_WORK.with(|work| work.set(0));
+                    CLEARANCE_BVH_NODES.with(|work| work.set(0));
+                    CLEARANCE_BVH_SEGMENTS.with(|work| work.set(0));
+                    CLEARANCE_BVH_FACETS.with(|work| work.set(0));
+                    CLEARANCE_STRIP_TESTS.with(|work| work.set(0));
+                    CLEARANCE_STRIP_BUILD_VERTICES.with(|work| work.set(0));
+                    CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(|work| work.set(0));
                     let result = polygon.call_method0(operation).unwrap();
                     if operation == "minimum_clearance" {
                         assert!(result.extract::<f64>().unwrap() > 0.0);
@@ -940,19 +1193,36 @@ mod public_nearest_work_tests {
                         );
                     }
                     let work = NEAREST_WORK.with(std::cell::Cell::get);
-                    eprintln!("{operation}: {count} vertices, {work} candidate visits");
+                    let nodes = CLEARANCE_BVH_NODES.with(std::cell::Cell::get);
+                    let segments = CLEARANCE_BVH_SEGMENTS.with(std::cell::Cell::get);
+                    let facets = CLEARANCE_BVH_FACETS.with(std::cell::Cell::get);
+                    let strips = CLEARANCE_STRIP_TESTS.with(std::cell::Cell::get);
+                    let build_vertices = CLEARANCE_STRIP_BUILD_VERTICES.with(std::cell::Cell::get);
+                    let support_fallbacks =
+                        CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(std::cell::Cell::get);
+                    assert_eq!(work, nodes.saturating_add(segments));
+                    assert!(facets > 0, "clearance BVH did not reach a facet");
+                    assert!(strips > 0, "clearance BVH did not test a source strip");
+                    assert!(build_vertices > 0);
+                    eprintln!(
+                        "{operation}: {count} vertices, {nodes} BVH nodes, {facets} facets, {segments} segments, {strips} strip tests, {build_vertices} support-vertex visits, {support_fallbacks} support exact fallbacks",
+                    );
                     assert!(
                         work > count,
                         "the public call did not reach nearest queries"
                     );
-                    if let Some(previous) = previous {
+                    if let Some(previous) = previous
+                        && ((previous_count == Some(128) && count == 512)
+                            || (previous_count == Some(1024) && count == 4096))
+                    {
                         assert!(
                             work < previous * 6,
-                            "{count} radial vertices took {work} visits versus {previous} at one quarter the size",
+                            "{count} radial vertices took {work} visits versus {previous} at the previous fourfold checkpoint",
                         );
                     }
                     if operation == "minimum_clearance_line" {
                         previous = Some(work);
+                        previous_count = Some(count);
                     }
                 }
             }
@@ -1006,5 +1276,81 @@ mod public_nearest_work_tests {
                 previous = Some(work);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod clearance_strip_tests {
+    use super::{BvhNode, ClearanceFacetBvh, FacetBvh};
+    use crate::geometry::{CoordSeq, Point, PreparedLinework, source_dot_cmp};
+
+    fn collect_descendant_facets(tree: &ClearanceFacetBvh, node: usize, facets: &mut Vec<usize>) {
+        match tree
+            .tree
+            .decode_node(u32::try_from(node).expect("clearance node IDs fit u32"))
+        {
+            BvhNode::Leaf(facet) => facets.push(facet),
+            BvhNode::Internal(first_child) => {
+                collect_descendant_facets(tree, first_child, facets);
+                collect_descendant_facets(tree, first_child.wrapping_add(1), facets);
+            },
+        }
+    }
+
+    #[test]
+    fn clearance_strip_supports_enclose_every_source_vertex() {
+        let maximum = f64::MAX;
+        let points = [
+            Point::new_raw_xy(-maximum, -maximum),
+            Point::new_raw_xy(maximum, maximum),
+            Point::new_raw_xy(maximum, -maximum),
+            Point::new_raw_xy(-maximum, maximum),
+            Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
+            Point::new_raw_xy(2.0_f64.powi(600), -(2.0_f64.powi(600))),
+            Point::new_raw_xy(-maximum, -maximum),
+            Point::new_raw_xy(maximum, maximum),
+            Point::new_raw_xy(maximum, -maximum),
+            Point::new_raw_xy(-maximum, maximum),
+            Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
+            Point::new_raw_xy(2.0_f64.powi(600), -(2.0_f64.powi(600))),
+            Point::new_raw_xy(-maximum, -maximum),
+            Point::new_raw_xy(maximum, maximum),
+            Point::new_raw_xy(maximum, -maximum),
+            Point::new_raw_xy(-maximum, maximum),
+            Point::new_raw_xy(-(2.0_f64.powi(600)), 2.0_f64.powi(600)),
+        ];
+        let first_chain =
+            CoordSeq::try_from_points(points.get(..9).expect("first facet chain exists")).unwrap();
+        let second_chain =
+            CoordSeq::try_from_points(points.get(9..).expect("second facet chain exists")).unwrap();
+        let linework = PreparedLinework::from_chains(vec![first_chain, second_chain]).unwrap();
+        let clearance = FacetBvh::build_for_clearance(&linework)
+            .unwrap()
+            .expect("linework has facets");
+
+        for (node, strip) in clearance.strips.iter().enumerate() {
+            let low = linework.vertex_at(strip.low_support).xy();
+            let high = linework.vertex_at(strip.high_support).xy();
+            let mut facets = Vec::new();
+            collect_descendant_facets(&clearance, node, &mut facets);
+            for facet_index in facets {
+                let facet = *linework
+                    .facets
+                    .get(facet_index)
+                    .expect("clearance leaf refers to prepared linework");
+                for local in 0..=facet.segment_count as usize {
+                    let vertex_index = linework.facet_vertex_index(facet, local);
+                    let vertex = linework.vertex_at(vertex_index).xy();
+                    assert!(
+                        !source_dot_cmp(strip.normal, low, vertex).unwrap().is_gt(),
+                        "node {node} low support excludes source vertex {vertex_index}"
+                    );
+                    assert!(
+                        !source_dot_cmp(strip.normal, vertex, high).unwrap().is_gt(),
+                        "node {node} high support excludes source vertex {vertex_index}"
+                    );
+                }
+            }
+        }
     }
 }

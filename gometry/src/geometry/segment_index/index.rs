@@ -1,8 +1,10 @@
 use ahash::HashSetExt as _;
-use rstar::{AABB, PointDistance, RTreeObject};
+use rstar::{AABB, PointDistance, RTreeNode, RTreeObject};
 
 use crate::HeapSize;
 use crate::collections::HashSet;
+#[cfg(test)]
+use crate::geometry::EXACT_SELECTION_FALLBACKS;
 #[cfg(test)]
 use crate::geometry::point_on_segment;
 use crate::geometry::{
@@ -108,6 +110,30 @@ pub(crate) struct PointSetIndex {
     tree: BulkRTree<PointEntry>,
 }
 
+struct ClearancePointNode<'a> {
+    node: &'a RTreeNode<PointEntry>,
+    lower_bound: SquaredDistanceKey,
+}
+
+pub(crate) struct ClearancePointQuery<'a> {
+    tree: &'a BulkRTree<PointEntry>,
+    stack: Vec<ClearancePointNode<'a>>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static CLEARANCE_POINT_BUILD_SITES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_POINT_NODES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_POINT_LEAVES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_POINT_RECHECKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static CLEARANCE_POINT_EXACT_FALLBACKS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// A point-index leaf retains its position in the full-ordinate source.
 pub(crate) struct PointEntry {
     coords: [f64; 2],
@@ -129,7 +155,7 @@ impl PointDistance for PointEntry {
 }
 
 fn consider_clearance_neighbor(
-    best: &mut (usize, SquaredDistanceKey),
+    best: &mut Option<(usize, SquaredDistanceKey)>,
     point: Point,
     entry: &PointEntry,
 ) -> crate::error::Result<()> {
@@ -138,9 +164,141 @@ fn consider_clearance_neighbor(
         return Ok(());
     }
     let key = point_pair_distance_key(point.xy(), target.xy());
-    let order = key.cmp_distance(&best.1)?;
-    if order.is_lt() || order.is_eq() && entry.ordinal < best.0 {
-        *best = (entry.ordinal, key);
+    let replace = match best.as_ref() {
+        None => true,
+        Some((ordinal, incumbent)) => {
+            let order = clearance_point_cmp(&key, incumbent)?;
+            order.is_lt() || order.is_eq() && entry.ordinal < *ordinal
+        },
+    };
+    if replace {
+        *best = Some((entry.ordinal, key));
+    }
+    Ok(())
+}
+
+fn clearance_point_cmp(
+    left: &SquaredDistanceKey,
+    right: &SquaredDistanceKey,
+) -> crate::error::Result<std::cmp::Ordering> {
+    #[cfg(test)]
+    let before = EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get);
+    let result = left.cmp_distance(right);
+    #[cfg(test)]
+    {
+        let after = EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get);
+        CLEARANCE_POINT_EXACT_FALLBACKS.with(|count| {
+            count.set(count.get().saturating_add(after.saturating_sub(before)));
+        });
+    }
+    result
+}
+
+fn clearance_node_envelope(node: &RTreeNode<PointEntry>) -> AABB<[f64; 2]> {
+    match node {
+        RTreeNode::Leaf(entry) => entry.envelope(),
+        RTreeNode::Parent(parent) => parent.envelope(),
+    }
+}
+
+fn clearance_node_lower_bound(point: Point, node: &RTreeNode<PointEntry>) -> SquaredDistanceKey {
+    let envelope = clearance_node_envelope(node);
+    let [lower_x, lower_y] = envelope.lower();
+    let [upper_x, upper_y] = envelope.upper();
+    // An invalid envelope carries no pruning evidence.
+    if !point.x.is_finite()
+        || !point.y.is_finite()
+        || !lower_x.is_finite()
+        || !lower_y.is_finite()
+        || !upper_x.is_finite()
+        || !upper_y.is_finite()
+        || lower_x > upper_x
+        || lower_y > upper_y
+    {
+        return point_pair_distance_key(XY::new(0.0, 0.0), XY::new(0.0, 0.0));
+    }
+    let x = if point.x < lower_x {
+        lower_x
+    } else if point.x > upper_x {
+        upper_x
+    } else {
+        point.x
+    };
+    let y = if point.y < lower_y {
+        lower_y
+    } else if point.y > upper_y {
+        upper_y
+    } else {
+        point.y
+    };
+    point_pair_distance_key(point.xy(), XY::new(x, y))
+}
+
+fn nearer_clearance_limit<'a>(
+    local: Option<&'a SquaredDistanceKey>,
+    global: Option<&'a SquaredDistanceKey>,
+) -> crate::error::Result<Option<&'a SquaredDistanceKey>> {
+    match (local, global) {
+        (None, None) => Ok(None),
+        (Some(local), None) => Ok(Some(local)),
+        (None, Some(global)) => Ok(Some(global)),
+        (Some(local), Some(global)) => {
+            if clearance_point_cmp(local, global)?.is_lt() {
+                Ok(Some(local))
+            } else {
+                Ok(Some(global))
+            }
+        },
+    }
+}
+
+fn push_clearance_children<'a>(
+    point: Point,
+    children: &'a [RTreeNode<PointEntry>],
+    incumbent: Option<&SquaredDistanceKey>,
+    local: Option<&SquaredDistanceKey>,
+    stack: &mut Vec<ClearancePointNode<'a>>,
+) -> crate::error::Result<()> {
+    let limit = nearer_clearance_limit(local, incumbent)?;
+    let first_child = stack.len();
+    for node in children {
+        #[cfg(test)]
+        match node {
+            RTreeNode::Parent(_) => {
+                CLEARANCE_POINT_NODES.with(|work| work.set(work.get().saturating_add(1)));
+            },
+            RTreeNode::Leaf(_) => {
+                CLEARANCE_POINT_LEAVES.with(|work| work.set(work.get().saturating_add(1)));
+            },
+        }
+        let lower_bound = clearance_node_lower_bound(point, node);
+        if let Some(limit) = limit
+            && clearance_point_cmp(&lower_bound, limit)?.is_gt()
+        {
+            continue;
+        }
+        stack.push(ClearancePointNode { node, lower_bound });
+    }
+
+    let mut index = first_child.wrapping_add(1);
+    while index < stack.len() {
+        let mut current = index;
+        while current > first_child {
+            let current_bound = &stack
+                .get(current)
+                .expect("inserted clearance child remains in the stack")
+                .lower_bound;
+            let previous_bound = &stack
+                .get(current.wrapping_sub(1))
+                .expect("previous clearance child remains in the stack")
+                .lower_bound;
+            if !clearance_point_cmp(current_bound, previous_bound)?.is_gt() {
+                break;
+            }
+            stack.swap(current, current.wrapping_sub(1));
+            current = current.wrapping_sub(1);
+        }
+        index = index.wrapping_add(1);
     }
     Ok(())
 }
@@ -154,6 +312,10 @@ impl PointSetIndex {
             .copied()
             .enumerate()
             .filter_map(|(ordinal, point)| {
+                #[cfg(test)]
+                CLEARANCE_POINT_BUILD_SITES.with(|work| {
+                    work.set(work.get().saturating_add(1));
+                });
                 let unique =
                     point.x.is_nan() || point.y.is_nan() || seen.insert(PointKey::new(point));
                 unique.then_some(PointEntry {
@@ -179,6 +341,13 @@ impl PointSetIndex {
             .collect();
         Self {
             tree: BulkRTree::bulk_load_with_params(entries),
+        }
+    }
+
+    pub(crate) const fn clearance_query(&self) -> ClearancePointQuery<'_> {
+        ClearancePointQuery {
+            tree: &self.tree,
+            stack: Vec::new(),
         }
     }
 
@@ -208,83 +377,61 @@ impl PointSetIndex {
         }
         Ok(best.map(|(ordinal, _)| ordinal))
     }
+}
 
+impl ClearancePointQuery<'_> {
     /// Nearest distinct XY source that can improve `incumbent`, ordered by
-    /// exact source distance and then by source ordinal. With no incumbent,
-    /// returns the nearest distinct source. The clearance tree stores only
-    /// the first source ordinal for each XY alias. Its first neighbor and the
-    /// incumbent supply conservative coordinate-envelope bounds; uncertain
-    /// bounds use a full leaf scan if the radius cannot be certified or the
-    /// coordinate envelope is unbounded.
+    /// exact source distance and then by source ordinal. Node envelopes use
+    /// the exact source-coordinate distance to their clamped closest point.
     pub(crate) fn nearest_clearance_neighbor(
-        &self,
+        &mut self,
         point: Point,
         incumbent: Option<&SquaredDistanceKey>,
     ) -> crate::error::Result<Option<(usize, SquaredDistanceKey)>> {
-        let Some((seed, _)) = self
-            .tree
-            .nearest_neighbor_iter_with_distance_2([point.x, point.y])
-            .find(|&(entry, _)| {
-                !same_point(point, Point::new_raw_xy(entry.coords[0], entry.coords[1]))
-            })
-        else {
-            return Ok(None);
-        };
-        let mut best = (
-            seed.ordinal,
-            point_pair_distance_key(point.xy(), XY::new(seed.coords[0], seed.coords[1])),
-        );
-        let seed_upper = best.1.upper_bound();
-        let upper = incumbent.map_or_else(|| seed_upper, |key| seed_upper.min(key.upper_bound()));
-
-        if upper.is_finite() {
-            let search_key = if let Some(incumbent) = incumbent {
-                if best.1.cmp_distance(incumbent)?.is_gt() {
-                    incumbent
-                } else {
-                    &best.1
-                }
-            } else {
-                &best.1
-            };
-            let radius = upper.sqrt().next_up();
-            let radius_covers_search = if radius.is_finite() {
-                let radius_key = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(radius, 0.0));
-                !radius_key.cmp_distance(search_key)?.is_lt()
-            } else {
-                false
-            };
-            let lower = [
-                (point.x - radius).next_down(),
-                (point.y - radius).next_down(),
-            ];
-            let upper = [(point.x + radius).next_up(), (point.y + radius).next_up()];
-            if radius_covers_search
-                && lower
-                    .iter()
-                    .chain(&upper)
-                    .all(|coordinate| coordinate.is_finite())
-            {
-                let envelope = AABB::from_corners(lower, upper);
-                for entry in self.tree.locate_in_envelope_intersecting(envelope) {
-                    consider_clearance_neighbor(&mut best, point, entry)?;
-                }
-            } else {
-                for entry in &self.tree {
-                    consider_clearance_neighbor(&mut best, point, entry)?;
+        self.stack.clear();
+        let tree = self.tree;
+        push_clearance_children(
+            point,
+            tree.root().children(),
+            incumbent,
+            None,
+            &mut self.stack,
+        )?;
+        let mut best: Option<(usize, SquaredDistanceKey)> = None;
+        while let Some(node) = self.stack.pop() {
+            let local = best.as_ref().map(|(_, key)| key);
+            if let Some(limit) = nearer_clearance_limit(local, incumbent)? {
+                #[cfg(test)]
+                CLEARANCE_POINT_RECHECKS.with(|work| work.set(work.get().saturating_add(1)));
+                if clearance_point_cmp(&node.lower_bound, limit)?.is_gt() {
+                    continue;
                 }
             }
-        } else {
-            for entry in &self.tree {
-                consider_clearance_neighbor(&mut best, point, entry)?;
+            match node.node {
+                RTreeNode::Leaf(entry) => {
+                    consider_clearance_neighbor(&mut best, point, entry)?;
+                },
+                RTreeNode::Parent(parent) => {
+                    let local = best.as_ref().map(|(_, key)| key);
+                    push_clearance_children(
+                        point,
+                        parent.children(),
+                        incumbent,
+                        local,
+                        &mut self.stack,
+                    )?;
+                },
             }
         }
+        let Some((ordinal, key)) = best else {
+            return Ok(None);
+        };
         if let Some(incumbent) = incumbent
-            && !best.1.cmp_distance(incumbent)?.is_lt()
+            && !clearance_point_cmp(&key, incumbent)?.is_lt()
         {
             return Ok(None);
         }
-        Ok(Some(best))
+        Ok(Some((ordinal, key)))
     }
 }
 
@@ -454,6 +601,7 @@ mod query_tests {
         ];
         for points in cases {
             let index = PointSetIndex::build_clearance_with_ordinals(&points);
+            let mut query = index.clearance_query();
             for (probe_ordinal, probe) in points.iter().copied().enumerate() {
                 let mut expected: Option<(usize, SquaredDistanceKey)> = None;
                 for (ordinal, target) in points.iter().copied().enumerate() {
@@ -474,7 +622,7 @@ mod query_tests {
                         expected = Some((ordinal, key));
                     }
                 }
-                let actual = index.nearest_clearance_neighbor(probe, None).unwrap();
+                let actual = query.nearest_clearance_neighbor(probe, None).unwrap();
                 assert_eq!(
                     actual.as_ref().map(|(ordinal, _)| *ordinal),
                     expected.as_ref().map(|(ordinal, _)| *ordinal),
