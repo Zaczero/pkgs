@@ -35,9 +35,6 @@ from __future__ import annotations
 import collections.abc as _cabc
 from typing import get_type_hints as _get_type_hints
 
-TYPE_CHECKING = False
-del TYPE_CHECKING
-
 from gometry._cpu import ensure_supported_cpu as _ensure_supported_cpu
 
 _ensure_supported_cpu()
