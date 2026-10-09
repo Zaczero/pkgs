@@ -46,10 +46,7 @@ mod bindings {
     #[cfg(all(not(feature = "nobuild"), feature = "buildtime_bindgen"))]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-    #[cfg(all(feature = "nobuild", not(feature = "buildtime_bindgen")))]
-    include!("bindings_docs-rs.rs");
-
-    #[cfg(all(not(feature = "nobuild"), not(feature = "buildtime_bindgen")))]
+    #[cfg(not(feature = "buildtime_bindgen"))]
     include!("bundled_bindings.rs");
 }
 
