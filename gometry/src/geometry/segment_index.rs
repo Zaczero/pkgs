@@ -54,10 +54,12 @@ pub(in crate::geometry) use chord::take_contact_visits;
 pub(in crate::geometry) use hull::StoredHull;
 #[cfg(test)]
 pub(crate) use index::{
-    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_EXACT_FALLBACKS, CLEARANCE_POINT_LEAVES,
-    CLEARANCE_POINT_NODES, CLEARANCE_POINT_RECHECKS,
+    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
+    CLEARANCE_POINT_RECHECKS,
 };
-pub(crate) use index::{ClearancePointQuery, PointSetIndex, SegmentIndex};
+pub(crate) use index::{
+    ClearancePointQuery, PointSetIndex, SegmentIndex, clearance_aabb_lower_bound,
+};
 pub(in crate::geometry) use order_tree::OrderTree;
 pub(in crate::geometry) use persistent_order::PersistentOrder;
 pub(crate) use stabbing::{

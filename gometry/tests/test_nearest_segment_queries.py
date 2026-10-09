@@ -41,6 +41,25 @@ def test_indexed_minimum_clearance_keeps_tiny_and_huge_source_pairs(
     )
 
 
+@pytest.mark.parametrize(
+    'spacing',
+    [2.0**-700, 1.0, 2.0**600],
+    ids=['tiny-segments', 'ordinary-segments', 'huge-segments'],
+)
+def test_indexed_clearance_bit_reversal_keeps_first_equal_source_segment(
+    spacing: float,
+) -> None:
+    order = [int(f'{index:06b}'[::-1], 2) for index in range(64)]
+    lines = [
+        gm.LineString([(10 * index * spacing, 0.0), ((10 * index + 1) * spacing, 0.0)])
+        for index in order
+    ]
+    shape = gm.MultiLineString(lines)
+
+    assert shape.minimum_clearance() == spacing
+    assert shape.minimum_clearance_line().to_wkb() == lines[0].to_wkb()
+
+
 @pytest.mark.parametrize('extra', [0, 58], ids=['small', 'indexed'])
 def test_clearance_equal_probes_retain_first_improving_probe(extra: int) -> None:
     shape = gm.GeometryCollection([
