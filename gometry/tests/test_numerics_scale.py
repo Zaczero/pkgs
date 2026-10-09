@@ -1352,9 +1352,8 @@ def test_constrained_triangle_uses_the_exact_stored_double_sign() -> None:
 def test_rhumb_adjacent_longitude_nonzero() -> None:
     lon1 = 45.0
     lon2 = math.nextafter(45.0, -math.inf)
-    d = gm.rhumb_distance(
-        gm.Point(lon1, 0.0, crs=4326),
-        gm.Point(lon2, 0.0, crs=4326),
+    d = gm.distance(
+        gm.Point(lon1, 0.0, crs=4326), gm.Point(lon2, 0.0, crs=4326), path='rhumb'
     )
     assert d > 0.0
     assert math.isfinite(d)

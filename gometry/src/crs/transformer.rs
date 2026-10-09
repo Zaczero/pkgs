@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use smol_str::SmolStr;
 
-use crate::crs::frame::GeometryTransformFrame;
+#[cfg(test)]
+use crate::crs::frame::crs_arc_static;
+use crate::crs::frame::{Frame, GeometryTransformFrame};
 use crate::crs::transform::{
     BoundsInterpretation, BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d,
     identity_bounds_2d, identity_bounds_3d, transform_in_core_xy_with_domains,
@@ -98,7 +100,7 @@ impl TransformPlan {
         Ok(plan)
     }
 
-    pub(crate) fn output_frame(&self) -> &crate::crs::frame::Frame {
+    pub(crate) fn output_frame(&self) -> &Frame {
         &self
             .geometry_frame
             .as_ref()
@@ -817,14 +819,10 @@ mod tests {
         target: &'static str,
         options: TransformOptions,
     ) -> TransformPlan {
-        let source_frame = crate::crs::frame::Frame::Crs(crate::crs::frame::crs_arc_static(source));
-        let frame = GeometryTransformFrame::new(
-            &source_frame,
-            crate::crs::frame::crs_arc_static(target),
-            None,
-            options,
-        )
-        .unwrap();
+        let source_frame = Frame::Crs(crs_arc_static(source));
+        let frame =
+            GeometryTransformFrame::new(&source_frame, crs_arc_static(target), None, options)
+                .unwrap();
         TransformPlan::from_geometry_frame(frame).unwrap()
     }
 

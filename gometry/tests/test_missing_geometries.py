@@ -732,7 +732,7 @@ def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:
 
     for op in (
         gm.bearing,
-        gm.rhumb_distance,
+        lambda left, right: gm.distance(left, right, path='rhumb'),
         lambda left, right: gm.bearing(left, right, path='rhumb'),
     ):
         left_array = op(points, target)

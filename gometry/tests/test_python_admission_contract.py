@@ -293,7 +293,7 @@ def test_line_interpolate_drains_at_provider_before_processing_array_rows() -> N
         pytest.param(
             lambda: gm.Point(0, 0).buffer(1, quadrant_segments=True), id='count'
         ),
-        pytest.param(lambda: gm.crs_search('WGS', limit=True), id='limit'),
+        pytest.param(lambda: gm.crs_catalog('WGS', limit=True), id='limit'),
         pytest.param(lambda: gm.pluscode_encode(0, 0, length=True), id='length'),
         pytest.param(
             lambda: gm.H3Cell('8928308280fffff').cell_from_local_ij(True, 0),

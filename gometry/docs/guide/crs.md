@@ -152,6 +152,15 @@ The raw-coordinate [`CRS.factors`][gometry.CRS.factors] retains its documented
 degree/radian argument switch; the native-frame rule above describes geometry
 metrics and topology.
 
+### CRS inputs
+
+Constructors, metadata assignment, transforms, and CRS exporters accept the same
+CRS-like inputs: authority, WKT, or PROJ strings; non-boolean integer-like EPSG
+codes; two-item authority/code pairs; PROJJSON or CF mappings; and objects that
+provide CRS conversion methods such as `to_authority()`, `to_epsg()`, `to_wkt()`,
+or `to_json()`. Objects may also expose a nested `.crs` or `.srs` value in one of
+those forms. Invalid codes and definitions raise `CRSError`.
+
 ### Polar rings and full-turn edges
 
 Geographic topology distinguishes an explicit one-period edge between ordinary
@@ -487,6 +496,9 @@ geographic CRS these operations are
 geodesic; on a projected or CRS-free point they are planar.
 
 - [`gm.bearing(pt, other)`][gometry.bearing] — initial heading (degrees) from one point to another.
+- [`gm.distance(a, b, path='rhumb')`][gometry.distance] — constant-bearing distance
+  in meters between points on a geographic CRS. This route option applies only
+  to point operands and does not accept a `unit` override.
 - [`pt.destination(bearing, distance)`][gometry.Point.destination] — walk `distance` in CRS-natural units
   (meters on a geographic CRS; native linear units when projected; coordinate
   units when CRS-free; override with `unit=`) along `bearing` degrees and return
@@ -504,6 +516,11 @@ import gometry as gm
 start = gm.Point(2.3522, 48.8566, crs=4326)
 arrival = start.destination(45.0, 100_000.0)
 print(arrival.to_wkt())
+print(round(gm.distance(
+    gm.Point(-73.8, 40.6, crs=4326),
+    gm.Point(-0.5, 51.6, crs=4326),
+    path='rhumb',
+) / 1000))
 
 ```
 
@@ -1074,15 +1091,22 @@ print("gometry reads as (lon, lat):", list(p.coords))
 Round-trip a CRS to the standard text formats with
 [`CRS.to_wkt`][gometry.CRS.to_wkt] ([ISO 19162](https://www.iso.org/standard/76496.html)
 / OGC WKT for CRS — not geometry WKT), [`CRS.to_proj`][gometry.CRS.to_proj], and
-the PROJJSON helpers:
+[`CRS.to_projjson`][gometry.CRS.to_projjson]. The PROJJSON exporter returns text
+by default; use `as_dict=True` for a fresh Python mapping.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 print(gm.CRS(4326).to_proj())
 print(gm.CRS(4326).to_wkt()[:60], "...")
+print(gm.CRS(4326).to_projjson(as_dict=True)['type'])
 
 ```
+
+Use [`gm.crs_catalog`][gometry.crs_catalog] to inspect the PROJ CRS database.
+Its optional `name` filter composes with authority, CRS kind, area, deprecation,
+and celestial-body filters. Results are complete `CrsCatalogInfo` records;
+without `limit`, the catalogue returns every matching record.
 
 ## Raw coordinate transforms
 

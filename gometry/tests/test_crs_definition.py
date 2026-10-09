@@ -20,7 +20,7 @@ def _angular_unit(factor: float, name: str = 'authored angle') -> dict[str, Any]
 
 
 def _mixed_geographic(order: str, directions: str) -> gm.CRS:
-    definition = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(4326).to_projjson(as_dict=True))
     axes = definition['coordinate_system']['axis']
     axes[0]['unit'] = _angular_unit(DEGREE, 'latitude unit')
     axes[1]['unit'] = _angular_unit(0.02, 'longitude unit')
@@ -91,7 +91,7 @@ def test_authored_axes_execute_independent_units_order_and_sign(
 def test_authored_near_degree_factor_survives_json_and_wkt_reentry(
     factor: float,
 ) -> None:
-    definition = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(4326).to_projjson(as_dict=True))
     for axis in definition['coordinate_system']['axis']:
         axis['unit'] = _angular_unit(factor, 'authored degree')
     crs = gm.CRS(definition)
@@ -112,7 +112,7 @@ def test_authored_near_degree_factor_survives_json_and_wkt_reentry(
 def test_authored_projected_axes_use_independent_linear_factors_both_directions() -> (
     None
 ):
-    definition = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(3857).to_projjson(as_dict=True))
     axes = definition['coordinate_system']['axis']
     axes[0]['unit'] = {'type': 'LinearUnit', 'name': 'x unit', 'conversion_factor': 2.0}
     axes[1]['unit'] = {'type': 'LinearUnit', 'name': 'y unit', 'conversion_factor': 3.0}
@@ -136,7 +136,7 @@ def test_authored_projected_axes_use_independent_linear_factors_both_directions(
 def test_near_utm_parameters_do_not_use_approximate_compact_recognition(
     parameter_code: int, value: float
 ) -> None:
-    definition = copy.deepcopy(gm.CRS(32632).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(32632).to_projjson(as_dict=True))
     parameter = next(
         item
         for item in definition['conversion']['parameters']
@@ -166,7 +166,7 @@ def test_near_utm_parameters_do_not_use_approximate_compact_recognition(
 def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name() -> (
     None
 ):
-    geographic = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
+    geographic = copy.deepcopy(gm.CRS(4326).to_projjson(as_dict=True))
     ensemble = geographic.pop('datum_ensemble')
     ensemble['type'] = 'GeodeticReferenceFrame'
     geographic['datum'] = ensemble
@@ -183,7 +183,7 @@ def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name()
     assert prime_meridian.info['prime_meridian']['longitude'] == 1.0e-11
     assert gm.crs_transform(prime_meridian, 3857, 100.0, 0.5) == expected
 
-    projected = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
+    projected = copy.deepcopy(gm.CRS(3857).to_projjson(as_dict=True))
     projected['base_crs']['datum_ensemble']['ellipsoid']['semi_major_axis'] = (
         7_000_000.0
     )
@@ -204,7 +204,7 @@ def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name()
     ids=['decimal-offset', 'adjacent-offset', 'negative-offset'],
 )
 def test_authored_projection_offset_keeps_exact_binary64_value(offset: float) -> None:
-    definition = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(3857).to_projjson(as_dict=True))
     parameter = next(
         item
         for item in definition['conversion']['parameters']
@@ -217,7 +217,7 @@ def test_authored_projection_offset_keeps_exact_binary64_value(offset: float) ->
 
 
 def test_authored_near_pole_parameter_is_not_clamped() -> None:
-    definition = copy.deepcopy(gm.CRS(32661).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(32661).to_projjson(as_dict=True))
     parameter = next(
         item
         for item in definition['conversion']['parameters']
@@ -234,8 +234,8 @@ def test_authored_near_pole_parameter_is_not_clamped() -> None:
 
 
 def test_authored_compound_child_definition_is_exposed_and_used_for_metrics() -> None:
-    horizontal = _mixed_geographic('lat-lon', 'east-north').to_projjson_dict()
-    vertical = gm.CRS(5703).to_projjson_dict()
+    horizontal = _mixed_geographic('lat-lon', 'east-north').to_projjson(as_dict=True)
+    vertical = gm.CRS(5703).to_projjson(as_dict=True)
     compound = gm.CRS({
         'type': 'CompoundCRS',
         'name': 'authored compound',

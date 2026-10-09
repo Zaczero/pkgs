@@ -13,6 +13,6 @@ pub(crate) use metrics::{
     length_natural_array, length_natural_scalar, snap,
 };
 pub(crate) use point_nav::{
-    bearing, cross_track_distance, destination, destination_point_receiver, point_between,
-    reject_rhumb_unit, rhumb_destination_point_receiver, rhumb_distance,
+    bearing, cross_track_distance, destination, destination_point_receiver, distance_rhumb,
+    point_between, reject_rhumb_unit, rhumb_destination_point_receiver,
 };

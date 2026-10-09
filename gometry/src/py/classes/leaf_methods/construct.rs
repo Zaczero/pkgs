@@ -49,8 +49,8 @@ impl PyPoint {
     /// m : float, optional
     ///     M (measure) ordinate, producing an ``XYM`` or ``XYZM`` point.
     ///
-    /// crs : str or int, optional
-    ///     CRS as an EPSG code or authority/WKT. Declares; no transform.
+    /// crs : CRS-like, optional
+    ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
     /// epoch : float, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
@@ -112,7 +112,7 @@ impl PyPoint {
     /// z, m : float or None, optional
     ///     Replace or clear the Z/M ordinates.
     ///
-    /// crs : str or int or None, optional
+    /// crs : CRS-like or None, optional
     ///     Replace or clear the CRS label.
     ///
     /// epoch : float or None, optional
@@ -246,8 +246,8 @@ impl PyLineString {
     /// z, m : sequence of float, optional
     ///     Per-vertex Z and M ordinates, as an alternative to inline tuples.
     ///
-    /// crs : str or int, optional
-    ///     CRS as an EPSG code or authority/WKT. Declares; no transform.
+    /// crs : CRS-like, optional
+    ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
     /// epoch : float, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
@@ -319,8 +319,8 @@ impl PyPolygon {
     /// z, m : sequence of float, optional
     ///     Per-vertex Z and M ordinates for the exterior ring.
     ///
-    /// crs : str or int, optional
-    ///     CRS as an EPSG code or authority/WKT. Declares; no transform.
+    /// crs : CRS-like, optional
+    ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
     /// epoch : float, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
@@ -384,8 +384,8 @@ impl PyMultiPoint {
     /// z, m : sequence of float, optional
     ///     Per-point Z and M ordinates, as an alternative to inline tuples.
     ///
-    /// crs : str or int, optional
-    ///     CRS as an EPSG code or authority/WKT. Declares; no transform.
+    /// crs : CRS-like, optional
+    ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
     /// epoch : float, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
@@ -447,8 +447,8 @@ impl PyMultiLineString {
     ///     Each member is an ordered coordinate sequence (a line) or an
     ///     already-built ``LineString``. Omit for an empty multilinestring.
     ///
-    /// crs : str or int, optional
-    ///     CRS as an EPSG code or authority/WKT. Declares; no transform.
+    /// crs : CRS-like, optional
+    ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
     /// epoch : float, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
@@ -500,8 +500,8 @@ impl PyMultiPolygon {
     ///     Each member is ``[shell]`` or ``[shell, *holes]`` of coordinate rings,
     ///     or an already-built ``Polygon``. Omit for an empty multipolygon.
     ///
-    /// crs : str or int, optional
-    ///     CRS as an EPSG code or authority/WKT. Declares; no transform.
+    /// crs : CRS-like, optional
+    ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
     /// epoch : float, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
@@ -554,8 +554,8 @@ impl PyGeometryCollection {
     /// geometries : sequence of Geometry, optional
     ///     Member geometries; may be of mixed types. Omit for an empty collection.
     ///
-    /// crs : str or int, optional
-    ///     CRS as an EPSG code or authority/WKT. Declares; no transform.
+    /// crs : CRS-like, optional
+    ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
     /// epoch : float, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.

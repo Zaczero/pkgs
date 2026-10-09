@@ -314,7 +314,7 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 /// precision : int, default 5
 ///     Decimal digits encoded per ordinate (``0`` to ``11``); 5 is the
 ///     classic default, 6 the high-resolution variant.
-/// crs : str or int or None, default 'OGC:CRS84'
+/// crs : CRS-like or None, default 'OGC:CRS84'
 ///     Frame for the decoded longitude/latitude coordinates. Only WGS84
 ///     longitude/latitude CRS are valid; pass ``None`` for CRS-free output.
 /// epoch : float, optional

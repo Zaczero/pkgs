@@ -285,7 +285,7 @@ def test_cross_track_distance_signs_and_gates() -> None:
     assert gm.cross_track_distance(gm.Point(0.5, 0, crs=4326), start, end) == 0.0
     with pytest.raises(gm.CRSError, match='geographic'):
         gm.cross_track_distance(gm.Point(0.5, 0.1), gm.Point(0, 0), gm.Point(1, 0))
-    with pytest.raises(gm.InvalidGeometryError, match='distinct'):
+    with pytest.raises(gm.InvalidGeometryError, match='unique great circle'):
         gm.cross_track_distance(gm.Point(0.5, 0.1, crs=4326), start, start)
     with pytest.raises(gm.CRSMismatchError):
         gm.cross_track_distance(gm.Point(0.5, 0.1, crs=4326), gm.Point(0, 0), end)
@@ -294,13 +294,15 @@ def test_cross_track_distance_signs_and_gates() -> None:
 def test_rhumb_trio_matches_rhumbsolve_oracles() -> None:
     jfk = gm.Point(-73.8, 40.6, crs=4326)
     lhr = gm.Point(-0.5, 51.6, crs=4326)
-    assert gm.rhumb_distance(jfk, lhr) == pytest.approx(5771083.383328027, abs=0.0001)
+    assert gm.distance(jfk, lhr, path='rhumb') == pytest.approx(
+        5771083.383328027, abs=0.0001
+    )
     assert gm.bearing(jfk, lhr, path='rhumb') == pytest.approx(
         77.768389710256, abs=1e-09
     )
     jfk_exact = gm.Point(-73.778888888889, 40.639722222222, crs=4326)
     sin = gm.Point(103.989444444444, 1.359166666667, crs=4326)
-    assert gm.rhumb_distance(jfk_exact, sin) == pytest.approx(
+    assert gm.distance(jfk_exact, sin, path='rhumb') == pytest.approx(
         18523563.04237743, abs=0.001
     )
     assert gm.bearing(jfk_exact, sin, path='rhumb') == pytest.approx(
@@ -308,7 +310,9 @@ def test_rhumb_trio_matches_rhumbsolve_oracles() -> None:
     )
     east = gm.Point(170.0, 15.0, crs=4326)
     west = gm.Point(-170.0, 15.0, crs=4326)
-    assert gm.rhumb_distance(east, west) == pytest.approx(2151009.774334714, abs=0.0001)
+    assert gm.distance(east, west, path='rhumb') == pytest.approx(
+        2151009.774334714, abs=0.0001
+    )
     assert gm.bearing(east, west, path='rhumb') == pytest.approx(90.0, abs=1e-09)
     assert gm.bearing(west, east, path='rhumb') == pytest.approx(270.0, abs=1e-09)
     end = jfk.destination(51.0, 5500000.0, path='rhumb')
@@ -347,11 +351,11 @@ def test_rhumb_trio_error_gates() -> None:
     with pytest.raises(gm.InvalidGeometryError, match='crosses a pole'):
         gm.Point(0, 89, crs=4326).destination(0.0, 200000.0, path='rhumb')
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
-        gm.rhumb_distance(gm.Point(0, 0), gm.Point(1, 1))
+        gm.distance(gm.Point(0, 0), gm.Point(1, 1), path='rhumb')
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
         gm.bearing(gm.Point(0, 0, crs=3857), gm.Point(1, 1, crs=3857), path='rhumb')
-    with pytest.raises(gm.CRSMismatchError, match='rhumb_distance'):
-        gm.rhumb_distance(gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=3857))
+    with pytest.raises(gm.CRSMismatchError, match="distance\\(path='rhumb'\\)"):
+        gm.distance(gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=3857), path='rhumb')
     with pytest.raises(gm.GeometryError, match='non-negative'):
         gm.Point(0, 0, crs=4326).destination(90.0, -1.0, path='rhumb')
     with pytest.raises(gm.GeometryError, match='bearing'):
@@ -374,11 +378,11 @@ def test_rhumb_trio_error_gates() -> None:
 
 def test_rhumb_pole_endpoints_and_slope_continuity() -> None:
     pole = gm.Point(0, 90, crs=4326)
-    assert gm.rhumb_distance(pole, gm.Point(10, 90, crs=4326)) == 0.0
-    expected = gm.rhumb_distance(pole, gm.Point(0, 80, crs=4326))
-    assert gm.rhumb_distance(pole, gm.Point(180, 80, crs=4326)) == pytest.approx(
-        expected, abs=1e-06
-    )
+    assert gm.distance(pole, gm.Point(10, 90, crs=4326), path='rhumb') == 0.0
+    expected = gm.distance(pole, gm.Point(0, 80, crs=4326), path='rhumb')
+    assert gm.distance(
+        pole, gm.Point(180, 80, crs=4326), path='rhumb'
+    ) == pytest.approx(expected, abs=1e-06)
     assert gm.bearing(pole, gm.Point(180, 80, crs=4326), path='rhumb') == 180.0
     assert (
         gm.bearing(gm.Point(10, 89, crs=4326), gm.Point(20, 90, crs=4326), path='rhumb')
@@ -387,8 +391,8 @@ def test_rhumb_pole_endpoints_and_slope_continuity() -> None:
     p = gm.Point(0, 89.999, crs=4326)
     q1 = gm.Point(0.01, 89.99957238483734, crs=4326)
     q2 = gm.Point(0.01, 89.99957353075293, crs=4326)
-    assert gm.rhumb_distance(p, q1) == pytest.approx(63.931941671, abs=0.001)
-    assert gm.rhumb_distance(p, q2) == pytest.approx(64.059933538, abs=0.001)
+    assert gm.distance(p, q1, path='rhumb') == pytest.approx(63.931941671, abs=0.001)
+    assert gm.distance(p, q2, path='rhumb') == pytest.approx(64.059933538, abs=0.001)
 
 
 def test_interpolate_m_stations_by_geographic_chart_edge_length() -> None:
