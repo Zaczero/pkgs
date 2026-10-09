@@ -117,7 +117,7 @@ def _complete_identity() -> dict[str, object]:
         'kind': 'release',
         'path': '/checkout/release-manifest.json',
         'sha256': '0' * 64,
-        'profile': 'release',
+        'profile': 'release-dist',
         'package_root': '/site',
         'facade': facade,
         'extension': extension,

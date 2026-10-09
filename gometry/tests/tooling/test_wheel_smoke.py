@@ -9,6 +9,7 @@ import io
 import json
 import os
 import platform
+import shutil
 import struct
 import subprocess
 import sys
@@ -22,11 +23,14 @@ import pytest
 
 GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 TOOLS = GOMETRY_ROOT / 'tools'
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
+BENCHMARK_SUPPORT = GOMETRY_ROOT / 'benches' / 'support'
+for _path in (TOOLS, BENCHMARK_SUPPORT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import _artifact_common as artifact_common  # noqa: E402
 import artifact_content  # noqa: E402
+import benchmark_runtime  # noqa: E402
 import quality_runtime  # noqa: E402
 import release_artifact  # noqa: E402
 import runtime_artifact  # noqa: E402
@@ -776,6 +780,65 @@ def test_runtime_completion_rechecks_admitted_package_bytes(
     monkeypatch.setattr(runtime_artifact, 'python_member_hashes', lambda _path: {})
     with pytest.raises(AssertionError, match='Python files changed'):
         runtime_artifact.verify_runtime_completion(admission, runtime)
+
+
+@pytest.mark.parametrize(
+    ('member', 'message'),
+    [
+        ('gometry/__init__.py', 'Python package differs'),
+        ('extension', 'native extension differs'),
+        ('metadata-owner', 'one gometry distribution'),
+    ],
+    ids=('facade-only-change', 'wrong-worktree-extension', 'metadata-owner-mismatch'),
+)
+def test_runtime_admission_rejects_package_or_extension_from_another_tree(
+    tmp_path: Path,
+    member: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_artifact, '_resident_gometry_modules', dict)
+    quality_receipt = quality_runtime.read_quality_receipt(GOMETRY_ROOT)
+    original_root = Path(quality_receipt['package_root'])
+    alternate_root = tmp_path / 'alternate-site-packages'
+
+    def link_or_copy(source: str, destination: str) -> str:
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+        return destination
+
+    shutil.copytree(original_root, alternate_root, copy_function=link_or_copy)
+    if member == 'metadata-owner':
+        shutil.copytree(
+            next(original_root.glob('gometry*.dist-info')),
+            alternate_root / 'second-gometry.dist-info',
+            copy_function=link_or_copy,
+        )
+    elif member == 'extension':
+        member = quality_receipt['wheel']['extension_member']
+    if member != 'metadata-owner':
+        changed_file = alternate_root / member
+        payload = (
+            bytearray(changed_file.read_bytes()) if not member.endswith('.py') else None
+        )
+        changed_file.unlink()
+        if member.endswith('.py'):
+            changed_file.write_bytes(b'from __future__ import annotations\n')
+        else:
+            assert payload is not None
+            payload[-1] ^= 1
+            changed_file.write_bytes(payload)
+
+    quality_receipt['package_root'] = str(alternate_root)
+    wheel_path = (GOMETRY_ROOT.parent / quality_receipt['wheel']['path']).resolve()
+    with pytest.raises(runtime_artifact.QualityPreparationRequired, match=message):
+        runtime_artifact.inspect_runtime_inputs(
+            GOMETRY_ROOT,
+            expected_wheel=wheel_path,
+            build_receipt=quality_receipt,
+        )
 
 
 def test_installed_wheel_runtime_projection_preserves_the_existing_shape() -> None:
@@ -1585,119 +1648,121 @@ def test_native_receipt_rejects_embedded_python_abi_mismatch(
         )
 
 
-def test_benchmark_source_binding_accepts_null_commit_and_requires_matching_bytes() -> (
-    None
-):
-    extension = {
-        'path': '/venv/lib/python3.14/site-packages/gometry/_lib.cpython-314.so',
-        'sha256': 'a' * 64,
-        'size_bytes': 91,
-        'build_info': {
-            'source_inputs_sha256': 'b' * 64,
-            'native_source_inputs_sha256': 'c' * 64,
-        },
-    }
-    receipt = {
-        'path': '/bench/release/gometry-release-manifest.json',
-        'receipt_sha256': 'd' * 64,
-        'source': {
-            'commit': 'e' * 40,
-            'version': '1.0.0',
-            'source_inputs_sha256': 'b' * 64,
-            'native_source_inputs_sha256': 'c' * 64,
-        },
-        'wheels': [
-            {
-                'filename': 'gometry-1.0.0-cp314-cp314-manylinux_2_17_x86_64.whl',
-                'sha256': 'f' * 64,
-                'extension_member': 'gometry/_lib.cpython-314.so',
-                'extension_sha256': 'a' * 64,
-            },
-        ],
-    }
-    distribution = {'name': 'gometry', 'version': '1.0.0'}
+def test_null_commit_still_binds_actual_python_and_wheel_bytes(
+    tmp_path: Path,
+) -> None:
+    receipt_path = quality_runtime.quality_receipt_path(GOMETRY_ROOT)
+    subject = benchmark_runtime.load_subject(receipt_path)
+    receipt = subject['runtime_receipt']
+    root = receipt_path.parents[2]
+    wheel_path = (root.parent / receipt['wheel']['path']).resolve()
+    admission = runtime_artifact.inspect_runtime_inputs(
+        root,
+        expected_wheel=wheel_path,
+        build_receipt=receipt,
+    )
+    runtime = runtime_artifact.verify_admitted_runtime(admission)
+    session = benchmark_runtime.BenchmarkRuntime(
+        subject=subject,
+        admission=admission,
+        runtime=runtime,
+        receipt_path=receipt_path.resolve(),
+        receipt_sha256=subject['receipt_sha256'],
+        wheel_path=wheel_path,
+        wheel_item=subject['wheel'],
+        package_root=Path(subject['package_root']).resolve(),
+    )
+    identity = session.collect_identity()
+    binding = identity['runtime_binding']
+    package = identity['packages']['gometry']
 
-    binding = release_artifact.match_benchmark_receipt(
-        receipt,
-        extension,
-        distribution,
+    matched = release_artifact.match_benchmark_receipt(
+        subject,
+        identity['extension'],
+        package['distribution'],
+        runtime_binding=binding,
     )
 
-    assert binding['source_commit'] == 'e' * 40
-    assert binding['wheel_sha256'] == 'f' * 64
+    assert matched['source_commit'] is None
+    assert identity['source_commit'] is None
+    assert identity['source_receipt'] is None
+    assert identity['source_wheel'] is None
 
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
+    wrong_facade = json.loads(json.dumps(binding))
+    wrong_facade['facade']['sha256'] = '0' * 64
+    with pytest.raises(AssertionError, match='facade differs'):
         release_artifact.match_benchmark_receipt(
-            receipt,
-            {**extension, 'sha256': '0' * 64},
-            distribution,
+            subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=wrong_facade,
         )
 
-    unbound_receipt = json.loads(json.dumps(receipt))
-    unbound_receipt['source']['commit'] = None
-    binding = release_artifact.match_benchmark_receipt(
-        unbound_receipt,
-        extension,
-        distribution,
-    )
-    assert binding['source_commit'] is None
-    assert binding['wheel_sha256'] == 'f' * 64
-
-    wrong_source = json.loads(json.dumps(unbound_receipt))
-    wrong_source['source']['source_inputs_sha256'] = '0' * 64
-    with pytest.raises(AssertionError, match='source/native identity differs'):
+    wrong_extension = json.loads(json.dumps(binding))
+    wrong_extension['extension']['sha256'] = '0' * 64
+    with pytest.raises(AssertionError, match='runtime files differ'):
         release_artifact.match_benchmark_receipt(
-            wrong_source,
-            extension,
-            distribution,
-        )
-    wrong_native_source = json.loads(json.dumps(unbound_receipt))
-    wrong_native_source['source']['native_source_inputs_sha256'] = '0' * 64
-    with pytest.raises(AssertionError, match='source/native identity differs'):
-        release_artifact.match_benchmark_receipt(
-            wrong_native_source,
-            extension,
-            distribution,
+            subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=wrong_extension,
         )
 
-    with pytest.raises(AssertionError, match='loaded distribution'):
-        release_artifact.match_benchmark_receipt(
-            unbound_receipt,
-            extension,
-            {'name': 'gometry', 'version': '2.0.0'},
-        )
-
-    wrong_member = json.loads(json.dumps(unbound_receipt))
+    wrong_member = json.loads(json.dumps(subject))
     wrong_member['wheels'][0]['extension_member'] = 'gometry/_other.so'
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
+    with pytest.raises(AssertionError, match='uniquely bind'):
         release_artifact.match_benchmark_receipt(
             wrong_member,
-            extension,
-            distribution,
-        )
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
-        release_artifact.match_benchmark_receipt(
-            unbound_receipt,
-            {**extension, 'sha256': '0' * 64},
-            distribution,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=binding,
         )
 
-    malformed_archive = json.loads(json.dumps(unbound_receipt))
-    malformed_archive['wheels'][0]['sha256'] = 'not-a-digest'
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
+    wrong_archive = json.loads(json.dumps(binding))
+    wrong_archive['wheel']['archive']['sha256'] = '0' * 64
+    with pytest.raises(AssertionError, match='uniquely bind'):
         release_artifact.match_benchmark_receipt(
-            malformed_archive,
-            extension,
-            distribution,
+            subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=wrong_archive,
         )
 
-    missing_commit = json.loads(json.dumps(unbound_receipt))
-    del missing_commit['source']['commit']
-    with pytest.raises(AssertionError, match='no commit field'):
+    altered_root = tmp_path / 'gometry'
+    altered_receipt_path = altered_root / 'target' / 'quality-runtime' / 'receipt.json'
+    altered_receipt_path.parent.mkdir(parents=True)
+    altered_wheel_path = tmp_path / binding['wheel']['filename']
+    with zipfile.ZipFile(wheel_path) as original:
+        members = [
+            (member.filename, original.read(member.filename))
+            for member in reversed(original.infolist())
+        ]
+    with zipfile.ZipFile(
+        altered_wheel_path, 'w', compression=zipfile.ZIP_STORED
+    ) as changed:
+        for name, payload in members:
+            changed.writestr(name, payload)
+    altered_receipt = json.loads(json.dumps(receipt))
+    altered_receipt['wheel']['path'] = altered_wheel_path.name
+    altered_receipt_path.write_text(
+        json.dumps(altered_receipt),
+        encoding='utf-8',
+    )
+    altered_subject = release_artifact._quality_benchmark_subject(
+        altered_root,
+        altered_receipt,
+        hashlib.sha256(altered_receipt_path.read_bytes()).hexdigest(),
+    )
+    altered_binding = json.loads(json.dumps(binding))
+    altered_binding['path'] = str(altered_receipt_path)
+    altered_binding['sha256'] = altered_subject['receipt_sha256']
+    altered_binding['wheel']['path'] = str(altered_wheel_path)
+    with pytest.raises(AssertionError, match='archive bytes differ'):
         release_artifact.match_benchmark_receipt(
-            missing_commit,
-            extension,
-            distribution,
+            altered_subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=altered_binding,
         )
 
 
