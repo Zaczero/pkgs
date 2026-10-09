@@ -121,6 +121,18 @@ def finish_measurement() -> dict[str, Any]:
         raise AssertionError('focused case completed without driver authorization')
     if _MEASUREMENT_FINISHED:
         raise AssertionError('focused case measurement completion was reported twice')
+    identity_digest = identity_sha256(_IDENTITY)
+    measurement_done = {
+        'type': 'measurement-done',
+        'invocation_id': _INVOCATION_ID,
+        'pid': os.getpid(),
+        'case': _CASE_FACTS,
+        'identity_sha256': identity_digest,
+    }
+    print(
+        json.dumps({'benchmark_control': measurement_done}, sort_keys=True),
+        flush=True,
+    )
     identity = _RUNTIME.complete()
     if identity is not _COMMON_IDENTITY:
         raise AssertionError('focused case identity changed after driver permission')
@@ -132,7 +144,7 @@ def finish_measurement() -> dict[str, Any]:
         'invocation_id': _INVOCATION_ID,
         'pid': os.getpid(),
         'case': _CASE_FACTS,
-        'identity_sha256': identity_sha256(_IDENTITY),
+        'identity_sha256': identity_digest,
     }
     print(
         json.dumps({'benchmark_control': completed}, sort_keys=True),

@@ -148,6 +148,7 @@ def _run_case_process(
     return {
         'observation': result['observation'],
         'started_monotonic_ns': result['started_monotonic_ns'],
+        'measurement_done_monotonic_ns': result['measurement_done_monotonic_ns'],
         'ended_monotonic_ns': result['ended_monotonic_ns'],
         'provenance_before': result['producer_identity'],
         'provenance_after': result['producer_identity'],

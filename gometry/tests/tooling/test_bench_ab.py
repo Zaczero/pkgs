@@ -235,6 +235,11 @@ def test_wrapper_selected_case_process_supplies_identity_without_a_probe(
     )
     assert identity['runtime_binding']['path'] == subject['path']
     assert result['case_process']['pid'] != os.getpid()
+    assert (
+        result['started_monotonic_ns']
+        <= result['measurement_done_monotonic_ns']
+        <= result['ended_monotonic_ns']
+    )
     assert len(wrapper_log.read_text(encoding='utf-8').splitlines()) == 1
     assert ' -c' not in wrapper_log.read_text(encoding='utf-8')
 
@@ -354,6 +359,13 @@ Path({str(marker)!r}).write_text('permission granted')
 identity_sha256 = hashlib.sha256(
     json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()
 ).hexdigest()
+print(json.dumps({{'benchmark_control': {{
+    'type': 'measurement-done',
+    'invocation_id': invocation,
+    'pid': os.getpid(),
+    'case': case,
+    'identity_sha256': identity_sha256,
+}}}}), flush=True)
 print(json.dumps({{'benchmark_control': {{
     'type': 'done',
     'invocation_id': invocation,

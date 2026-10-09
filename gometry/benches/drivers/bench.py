@@ -328,6 +328,9 @@ def _run(
             'stderr_tail': controlled['stderr_tail'],
             'case_process': controlled['case_process'],
             'producer_identity': controlled['producer_identity'],
+            'measurement_done_monotonic_ns': controlled[
+                'measurement_done_monotonic_ns'
+            ],
         }
     process = subprocess.Popen(
         command,

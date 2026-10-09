@@ -603,14 +603,16 @@ def run_controlled_process(
     stdout_lines: list[bytes] = []
     stderr_bytes = bytearray()
     ready: dict[str, Any] | None = None
+    measurement_done: dict[str, Any] | None = None
     done: dict[str, Any] | None = None
     result_line: bytes | None = None
     started_ns: int | None = None
+    measurement_done_ns: int | None = None
     ended_ns: int | None = None
     deadline = time.monotonic() + timeout
 
     def consume_stdout(line: bytes) -> None:
-        nonlocal ready, done, result_line
+        nonlocal ready, measurement_done, done, result_line
         try:
             payload = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -647,8 +649,34 @@ def run_controlled_process(
                     raise SystemExit(f'{case}: ready identity changed during admission')
                 ready = control
                 return
+            if control.get('type') == 'measurement-done':
+                if (
+                    ready is None
+                    or measurement_done is not None
+                    or done is not None
+                    or result_line is not None
+                ):
+                    raise SystemExit(
+                        f'{case}: measurement completion arrived out of order'
+                    )
+                if (
+                    control.get('pid') != ready.get('pid')
+                    or control.get('case') != ready.get('case')
+                    or control.get('identity_sha256')
+                    != identity_sha256(ready['identity'])
+                ):
+                    raise SystemExit(
+                        f'{case}: measurement completion differs from ready identity'
+                    )
+                measurement_done = control
+                return
             if control.get('type') == 'done':
-                if ready is None or done is not None or result_line is not None:
+                if (
+                    ready is None
+                    or measurement_done is None
+                    or done is not None
+                    or result_line is not None
+                ):
                     raise SystemExit(f'{case}: completion arrived out of order')
                 if (
                     control.get('pid') != ready.get('pid')
@@ -707,6 +735,8 @@ def run_controlled_process(
                         )
                         process.stdin.flush()
                         process.stdin.close()
+                    if measurement_done is not None and measurement_done_ns is None:
+                        measurement_done_ns = time.monotonic_ns()
                     if done is not None and ended_ns is None:
                         ended_ns = time.monotonic_ns()
             if process.poll() is not None and not selector.get_map():
@@ -719,8 +749,17 @@ def run_controlled_process(
                 f'{case}: controlled case failed with status {returncode}; '
                 f'stdout={stdout!r}; stderr={stderr[-400:]!r}'
             )
-        if ready is None or done is None or started_ns is None or ended_ns is None:
-            raise SystemExit(f'{case}: controlled case omitted ready or completion')
+        if (
+            ready is None
+            or measurement_done is None
+            or done is None
+            or started_ns is None
+            or measurement_done_ns is None
+            or ended_ns is None
+        ):
+            raise SystemExit(
+                f'{case}: controlled case omitted ready, measurement completion, or final completion'
+            )
         if result_path is None:
             if result_line is None:
                 raise SystemExit(f'{case}: controlled case omitted its observation')
@@ -765,6 +804,7 @@ def run_controlled_process(
             'timeout': False,
             'elapsed_seconds': (ended_ns - started_ns) / 1_000_000_000,
             'started_monotonic_ns': started_ns,
+            'measurement_done_monotonic_ns': measurement_done_ns,
             'ended_monotonic_ns': ended_ns,
             'stdout_tail': stdout[-10_000:],
             'stderr_tail': stderr[-10_000:],
