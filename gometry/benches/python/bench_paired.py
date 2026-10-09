@@ -20,7 +20,8 @@ _PYTHON = Path(__file__).resolve().parent
 _BENCHES = _PYTHON.parent
 _SUPPORT = _BENCHES / 'support'
 _DRIVERS = _BENCHES / 'drivers'
-for _path in (_PYTHON, _SUPPORT, _DRIVERS):
+_TOOLS = _PYTHON.parents[1] / 'tools'
+for _path in (_PYTHON, _SUPPORT, _DRIVERS, _TOOLS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
@@ -36,6 +37,7 @@ from bench_doctor import (
     _loaded_native_libraries,
     _package_identity,
     _source_inputs_digest,
+    benchmark_source_inputs_identity,
     _run,
     _uv_lock_identity,
     implementation_identity,
@@ -45,6 +47,7 @@ from benchmark_identity import (
     identity_for_arm,
 )
 from benchmark_observation import make_observation
+import release_artifact as artifact_release
 
 _DEPENDENCIES = (
     'gometry',
@@ -61,21 +64,35 @@ _OUTPUT_SINK = 0
 PAIR_ARTIFACT_SCHEMA_VERSION = 1
 
 
-def producer_identity() -> dict[str, Any]:
+def producer_identity(
+    receipt_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Capture immutable producer facts, not transient host load."""
     import gometry._lib as lib
 
     extension = _extension_identity()
-    source_digest = _source_inputs_digest()
     build_info = extension.get('build_info')
-    if (
-        isinstance(build_info, dict)
-        and source_digest is not None
-        and build_info.get('source_inputs_sha256') != source_digest
+    checkout_source_digest = _source_inputs_digest()
+    expected_source_digest = (
+        receipt_binding['source']['source_inputs_sha256']
+        if receipt_binding is not None
+        else os.environ.get('GOMETRY_BENCH_SOURCE_INPUTS_SHA256')
+    )
+    try:
+        source_digest = benchmark_source_inputs_identity(
+            build_info,
+            checkout_source_digest,
+            expected_source_digest,
+        )
+    except (TypeError, ValueError) as error:
+        raise SystemExit(f'paired block producer identity is stale: {error}') from error
+    if receipt_binding is not None and (
+        not isinstance(build_info, dict)
+        or build_info.get('native_source_inputs_sha256')
+        != receipt_binding['source']['native_source_inputs_sha256']
     ):
         raise SystemExit(
-            'paired block producer identity is stale: embedded source input digest '
-            f'{build_info.get("source_inputs_sha256")!r} != live {source_digest!r}'
+            'paired block producer native inputs do not match the validated receipt'
         )
     if not isinstance(getattr(lib, '__build_info__', None), dict):
         raise SystemExit('paired block producer identity lacks embedded build info')
@@ -86,7 +103,7 @@ def producer_identity() -> dict[str, Any]:
     }
     identity = {
         'identity_schema_version': IDENTITY_SCHEMA_VERSION,
-        'git_commit': _run(['git', 'rev-parse', 'HEAD']),
+        'harness_commit': _run(['git', 'rev-parse', 'HEAD']),
         'source_inputs_sha256': source_digest,
         'extension': extension,
         'uv_lock': _uv_lock_identity(),
@@ -105,6 +122,33 @@ def producer_identity() -> dict[str, Any]:
             },
         },
     }
+    if receipt_binding is None:
+        identity.update({
+            'source_commit': None,
+            'source_receipt': None,
+            'source_wheel': None,
+        })
+    else:
+        receipt_facts = artifact_release.match_benchmark_receipt(
+            receipt_binding,
+            extension,
+            packages.get('gometry', {}).get('distribution'),
+        )
+        identity['source_commit'] = receipt_facts['source_commit']
+        if receipt_facts['source_commit'] is None:
+            identity['source_receipt'] = None
+            identity['source_wheel'] = None
+        else:
+            identity['source_receipt'] = {
+                'path': receipt_facts['receipt_path'],
+                'sha256': receipt_facts['receipt_sha256'],
+            }
+            identity['source_wheel'] = {
+                'filename': receipt_facts['wheel_filename'],
+                'sha256': receipt_facts['wheel_sha256'],
+                'extension_member': receipt_facts['extension_member'],
+                'extension_sha256': receipt_facts['extension_sha256'],
+            }
     return identity
 
 
@@ -134,6 +178,21 @@ def _arm_identity(
         distribution=implementation['distribution'],
         native_libraries=implementation['native_libraries'],
         native_library_status=implementation['native_library_status'],
+        source_commit=(
+            identity.get('source_commit')
+            if implementation['runtime'] == 'gometry'
+            else None
+        ),
+        source_receipt=(
+            identity.get('source_receipt')
+            if implementation['runtime'] == 'gometry'
+            else None
+        ),
+        source_wheel=(
+            identity.get('source_wheel')
+            if implementation['runtime'] == 'gometry'
+            else None
+        ),
     )
 
 
@@ -357,6 +416,12 @@ def run_block(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gometry', required=True)
+    parser.add_argument(
+        '--gometry-receipt',
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument('--receipt-sha256', help=argparse.SUPPRESS)
     parser.add_argument('--pair-id', required=True)
     parser.add_argument('--block-id', required=True)
     parser.add_argument('--lead', choices=('ab', 'ba'), required=True)
@@ -369,6 +434,17 @@ def main(argv: list[str] | None = None) -> int:
             'paired benchmark timing requires GOMETRY_BENCH_ORACLE_OK=1 '
             '(the driver oracle must pass first)'
         )
+    if (args.gometry_receipt is None) != (args.receipt_sha256 is None):
+        parser.error('--gometry-receipt and --receipt-sha256 must be supplied together')
+    receipt_binding = (
+        None
+        if args.gometry_receipt is None
+        else artifact_release.read_benchmark_receipt(
+            args.gometry_receipt,
+            args.receipt_sha256,
+        )
+    )
+    producer_identity(receipt_binding)
     operation = operation_for_row(args.gometry)
     if operation is None or operation.gometry != args.gometry:
         raise SystemExit(f'unknown gometry public row: {args.gometry}')
@@ -379,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         lead=args.lead,
         warmups=args.warmups,
         repetitions=args.repetitions,
+        identity=lambda: producer_identity(receipt_binding),
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as stream:

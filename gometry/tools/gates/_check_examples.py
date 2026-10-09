@@ -35,6 +35,14 @@ _DEPRECATED_SOURCE_DISPLAY = re.compile(
     re.MULTILINE,
 )
 _EXAMPLES = Path(__file__).resolve().parent.parent.parent / 'examples'
+_ROOT = Path(__file__).resolve().parents[2]
+_TOOLS = _ROOT / 'tools'
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
 
 
 def _ensure_examples_path() -> None:
@@ -47,6 +55,7 @@ _ensure_examples_path()
 
 
 def main() -> int:
+    require_runtime(_ROOT)
     _ensure_examples_path()
     failures = 0
     docs = sorted(Path('docs').rglob('*.md'))

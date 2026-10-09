@@ -46,7 +46,7 @@ jobs:
           python3 .github/scripts/matrix.py "$PACKAGE"
 
   source:
-    needs: resolve
+    needs: [resolve, test]
     if: inputs.package == 'gometry'
     runs-on: ubuntu-latest
     env:
@@ -60,6 +60,7 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: false
+          python-version: "3.14"
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
@@ -75,18 +76,20 @@ jobs:
         with:
           tool: cargo-about@0.8.4
 
-      - name: Install Maturin
+      - name: Install quality build tools
         shell: bash
         run: |
           set -euo pipefail
-          uv tool run --from maturin==1.14.1 maturin --version
+          cd gometry
+          uv sync --group ci --no-install-project --python 3.14
 
       - name: Stage source distribution
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/gometry-source"
-          python3 gometry/tools/wheel_smoke.py \
+          cd gometry
+          uv run --no-sync --python 3.14 python tools/wheel_smoke.py \
             --stage-sdist "$RUNNER_TEMP/gometry-source"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -131,14 +134,8 @@ jobs:
         with:
           enable-cache: false
 
-      # Rust tests that touch the Python boundary run an embedded interpreter,
-      # which does not inherit a launcher-configured module search path -- the
-      # package's own runtime dependencies have to be handed to it explicitly.
-      # No `python-version` above and no PYO3_PYTHON here: pyo3 links whatever
-      # `python3` the runner provides, and installing for that same interpreter
-      # is what keeps the wheel ABI matching. Installing for a different one
-      # fails as an *incompatible* extension module rather than a missing
-      # package, which reads nothing like the real cause.
+      # PyO3, dependency installation and each Nextest run use one selected
+      # interpreter. The unit test reports its running ELF identity.
       - name: Install embedded interpreter dependencies
         if: needs.resolve.outputs.type != 'rust'
         shell: bash
@@ -152,6 +149,8 @@ jobs:
           uv pip install --python "$python" --target "$RUNNER_TEMP/embedded-deps" \
             -r "$RUNNER_TEMP/embedded-requirements.txt"
           echo "PYTHONPATH=$RUNNER_TEMP/embedded-deps" >> "$GITHUB_ENV"
+          echo "PYO3_PYTHON=$python" >> "$GITHUB_ENV"
+          echo "GOMETRY_EMBEDDED_PYTHON=$python" >> "$GITHUB_ENV"
 
       # Rust behavior tests only; source-quality checks run through tools/check.py.
       - name: Test Rust debug
@@ -159,7 +158,25 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          if [ "${{ needs.resolve.outputs.type }}" = rust ]; then
+          if [ "$PACKAGE" = gometry ]; then
+            run_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+            evidence="$RUNNER_TEMP/gometry-native-debug-$run_id"
+            mkdir -p "$evidence"
+            cat > "$evidence/nextest.toml" <<EOF
+          [profile.default.junit]
+          path = "$evidence/junit.xml"
+          EOF
+            PYO3_PYTHON="$GOMETRY_EMBEDDED_PYTHON" \
+              GOMETRY_NATIVE_TEST_RECEIPT="$evidence/binary.json" \
+              GOMETRY_NATIVE_TEST_RUN_ID="$run_id" \
+              cargo nextest run --locked -p "$PACKAGE" --no-tests fail \
+                --profile default \
+                --tool-config-file "gometry:$evidence/nextest.toml"
+            python3 tools/wheel_smoke.py --write-native-test-receipt \
+              "$evidence/binary.json" "$evidence/junit.xml" "$evidence/receipt.json" \
+              "$GOMETRY_EMBEDDED_PYTHON" --runner "${{ matrix.runner }}" \
+              --profile debug --run-id "$run_id"
+          elif [ "${{ needs.resolve.outputs.type }}" = rust ]; then
             cargo nextest run --locked -p "$PACKAGE"
           else
             cargo nextest run --no-tests pass
@@ -170,12 +187,38 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          if [ "${{ needs.resolve.outputs.type }}" = rust ]; then
+          if [ "$PACKAGE" = gometry ]; then
+            run_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+            evidence="$RUNNER_TEMP/gometry-native-release-$run_id"
+            mkdir -p "$evidence"
+            cat > "$evidence/nextest.toml" <<EOF
+          [profile.default.junit]
+          path = "$evidence/junit.xml"
+          EOF
+            PYO3_PYTHON="$GOMETRY_EMBEDDED_PYTHON" \
+              GOMETRY_NATIVE_TEST_RECEIPT="$evidence/binary.json" \
+              GOMETRY_NATIVE_TEST_RUN_ID="$run_id" \
+              cargo nextest run --locked -p "$PACKAGE" --release \
+                --no-tests fail \
+                --profile default \
+                --tool-config-file "gometry:$evidence/nextest.toml"
+            python3 tools/wheel_smoke.py --write-native-test-receipt \
+              "$evidence/binary.json" "$evidence/junit.xml" "$evidence/receipt.json" \
+              "$GOMETRY_EMBEDDED_PYTHON" --runner "${{ matrix.runner }}" \
+              --profile release --run-id "$run_id"
+          elif [ "${{ needs.resolve.outputs.type }}" = rust ]; then
             cargo nextest run --locked -p "$PACKAGE" --release
             cargo clippy --locked -p "$PACKAGE" --all-targets -- -D warnings
           else
             cargo nextest run --no-tests pass --release
           fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && inputs.package == 'gometry'
+        with:
+          name: gometry-native-tests-${{ matrix.runner }}
+          path: ${{ runner.temp }}/gometry-native-*
+          if-no-files-found: warn
 
   test:
     needs: resolve
@@ -230,6 +273,12 @@ jobs:
         shell: bash
         run: echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
 
+      - name: Install Gometry license generator
+        if: inputs.package == 'gometry'
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-about@0.8.4
+
       - name: Install SQLite command-line shell
         if: inputs.package == 'gometry' && runner.os == 'Windows'
         shell: pwsh
@@ -256,12 +305,38 @@ jobs:
             export MATURIN_PEP517_ARGS="--profile dev"
             export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} -n 0"
           fi
-          uv sync ${{ matrix.uv-sync-args }} --python "${{ matrix.python-version }}"
-          if [ "$FREETHREADED" = "true" ]; then
-            uv run --python "${{ matrix.python-version }}" python -c \
-              'import importlib, sys; importlib.import_module("${{ needs.resolve.outputs.import-name }}"); assert not sys._is_gil_enabled()'
+          if [ "$PACKAGE" = gometry ]; then
+            uv sync --group ci --no-install-project --python "${{ matrix.python-version }}"
+            uv run --no-sync --python "${{ matrix.python-version }}" python -c '
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "tools")
+          import quality_runtime
+          quality_runtime.prepare_quality_runtime(
+              Path.cwd(),
+              scratch=Path("target/quality-runtime"),
+          )
+          '
+            runtime_root="$(uv run --no-sync --python "${{ matrix.python-version }}" python -c '
+          import json
+          from pathlib import Path
+          receipt = json.loads(Path("target/quality-runtime/receipt.json").read_text())
+          print(receipt["package_root"])
+          ')"
+            export PYTHONPATH="$runtime_root${PYTHONPATH:+:$PYTHONPATH}"
+            if [ "$FREETHREADED" = "true" ]; then
+              uv run --no-sync --python "${{ matrix.python-version }}" python -c \
+                'import sys; assert not sys._is_gil_enabled()'
+            fi
+            uv run --no-sync --python "${{ matrix.python-version }}" python -m pytest tests
+          else
+            uv sync ${{ matrix.uv-sync-args }} --python "${{ matrix.python-version }}"
+            if [ "$FREETHREADED" = "true" ]; then
+              uv run --python "${{ matrix.python-version }}" python -c \
+                'import importlib, sys; importlib.import_module("${{ needs.resolve.outputs.import-name }}"); assert not sys._is_gil_enabled()'
+            fi
+            uv run --python "${{ matrix.python-version }}" python -m pytest tests
           fi
-          uv run --python "${{ matrix.python-version }}" python -m pytest tests
 
       - name: Show compiler cache statistics
         if: always() && needs.resolve.outputs.is-rusty == 'true' && env.SCCACHE_GHA_RW_MODE == 'READ_WRITE'
@@ -275,8 +350,15 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PACKAGE"
-          uv run --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
-            python tools/check.py --no-fix
+          if [ "$PACKAGE" = gometry ]; then
+            runtime_root="$(python3 -c 'import json; from pathlib import Path; print(json.loads(Path("target/quality-runtime/receipt.json").read_text())["package_root"])')"
+            PYTHONPATH="$runtime_root${PYTHONPATH:+:$PYTHONPATH}" \
+              uv run --no-sync --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
+              python tools/check.py --no-fix
+          else
+            uv run --python "${{ matrix.python-version }}" --with 'pyright>=1.1.411' \
+              python tools/check.py --no-fix
+          fi
 
   build:
     needs: [resolve, source]
@@ -296,23 +378,6 @@ jobs:
       # Native arch only — avoids win32 from auto on windows-latest; pairs with
       # windows-11-arm for ARM64 wheels.
       CIBW_ARCHS: native
-      CIBW_BUILD_FRONTEND: build[uv]
-      CIBW_ENVIRONMENT_LINUX: PATH="$HOME/.cargo/bin:$PATH"
-      CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET="11.0"
-      CIBW_ENVIRONMENT_PASS_LINUX: ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH
-      CIBW_TEST_COMMAND: >-
-        ${{ inputs.package == 'gometry'
-            && 'python "{project}/tools/wheel_smoke.py" --installed'
-            || format('python -c "import {0}"', needs.resolve.outputs.import-name) }}
-      # Wheels built here are what publish. x86_64 targets use x86-64-v2;
-      # arm64 keeps its native target. maturin's PEP 517 default is `--release`,
-      # which is now the fast local profile (thin LTO, unstripped) — publishing that
-      # would ship a ~5x larger artifact. `release-dist` is the published configuration:
-      # fat LTO, one codegen unit, DWARF dropped, symbol table kept for named frames.
-      MATURIN_PEP517_ARGS: >-
-        ${{ inputs.package == 'gometry'
-            && '--locked --profile release-dist'
-            || '--profile release-dist' }}
       RUSTUP_TOOLCHAIN: ${{ needs.resolve.outputs.rust-toolchain }}
       SCCACHE_GHA_ENABLED: "on"
       SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
@@ -368,7 +433,7 @@ jobs:
         shell: bash
         run: python3 .github/scripts/render_pypi_readme.py "$PACKAGE" "${{ github.ref_name }}"
 
-      - name: Verify staged gometry source
+      - name: Prepare extracted gometry source and test context
         if: inputs.package == 'gometry'
         shell: bash
         run: |
@@ -379,100 +444,21 @@ jobs:
             echo "expected exactly one staged gometry sdist" >&2
             exit 1
           fi
-          python3 gometry/tools/wheel_smoke.py \
-            --verify-source "${sdists[0]}" source/gometry-source-manifest.json
-
-      - name: Export staged gometry source identity
-        if: inputs.package == 'gometry'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - source/gometry-source-manifest.json >> "$GITHUB_ENV" <<'PY'
-          import json
+          python3 - "${sdists[0]}" source/gometry-source-manifest.json \
+            "$RUNNER_TEMP/gometry-cibw-context" >> "$GITHUB_ENV" <<'PY'
+          from pathlib import Path
           import sys
 
-          with open(sys.argv[1], encoding='utf-8') as stream:
-              manifest = json.load(stream)
-          source = manifest["sdist"]
-          for key, value in {
-              "GOMETRY_SMOKE_EXPECTED_VERSION": source["version"],
-              "GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256": manifest["source_inputs_sha256"],
-              "GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256": manifest["native_source_inputs_sha256"],
-          }.items():
-              print(f"{key}={value}")
-          PY
-
-      - name: Configure gometry x86-64-v2 release target
-        if: inputs.package == 'gometry'
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$RUNNER_OS:$RUNNER_ARCH" in
-            Linux:X64) target=x86_64-unknown-linux-gnu ;;
-            Linux:ARM64) target=aarch64-unknown-linux-gnu ;;
-            macOS:X64) target=x86_64-apple-darwin ;;
-            macOS:ARM64) target=aarch64-apple-darwin ;;
-            Windows:X64) target=x86_64-pc-windows-msvc ;;
-            Windows:ARM64) target=aarch64-pc-windows-msvc ;;
-            *) echo "unsupported gometry release runner: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
-          esac
-          python3 - "$target" "$RUNNER_OS" >> "$GITHUB_ENV" <<'PY'
-          import os
-          import shlex
-          import sys
           sys.path.insert(0, "gometry/tools")
-          import wheel_smoke
-
-          target, runner_os = sys.argv[1:]
-          policy = wheel_smoke.release_target_policy(target)
-          flags = {
-              "RUSTFLAGS": wheel_smoke._flag_text(policy["rustflags"]),
-              "CFLAGS": wheel_smoke._flag_text(policy["cflags"]),
-              "CXXFLAGS": wheel_smoke._flag_text(policy["cxxflags"]),
-          }
-          for key, value in {
-              "GOMETRY_RELEASE_TARGET": policy["target"],
-              "GOMETRY_RELEASE_TARGET_POLICY": policy["target_policy"],
-              "GOMETRY_RELEASE_RUSTFLAGS": flags["RUSTFLAGS"],
-              "GOMETRY_RELEASE_CFLAGS": flags["CFLAGS"],
-              "GOMETRY_RELEASE_CXXFLAGS": flags["CXXFLAGS"],
-              "GOMETRY_SMOKE_EXPECTED_TARGET": policy["target"],
-              "GOMETRY_SMOKE_EXPECTED_ARCHITECTURE": policy["architecture"],
-          }.items():
-              print(f"{key}={value}")
-
-          assignments = [
-              f"{key}={shlex.quote(value)}"
-              for key, value in {
-                  "RUSTFLAGS": flags["RUSTFLAGS"],
-                  f"CFLAGS_{target.replace('-', '_')}": flags["CFLAGS"],
-                  f"CXXFLAGS_{target.replace('-', '_')}": flags["CXXFLAGS"],
-                  "CPPFLAGS": "",
-                  "TARGET_CFLAGS": "",
-                  "TARGET_CXXFLAGS": "",
-                  "HOST_CFLAGS": "",
-                  "HOST_CXXFLAGS": "",
-                  "CMAKE_ARGS": "",
-                  "GOMETRY_RELEASE_TARGET": policy["target"],
-                  "GOMETRY_RELEASE_TARGET_POLICY": policy["target_policy"],
-                  "GOMETRY_SMOKE_EXPECTED_VERSION": os.environ["GOMETRY_SMOKE_EXPECTED_VERSION"],
-                  "GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256": os.environ["GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256"],
-                  "GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256": os.environ["GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256"],
-                  "GOMETRY_SMOKE_EXPECTED_TARGET": policy["target"],
-                  "GOMETRY_SMOKE_EXPECTED_ARCHITECTURE": policy["architecture"],
-              }.items()
-          ]
-          environment = " ".join(assignments)
-          if runner_os == "Linux":
-              print(f"GOMETRY_CIBW_RELEASE_ENV={environment}")
-          elif runner_os == "macOS":
-              print(
-                  "CIBW_ENVIRONMENT_MACOS="
-                  + 'MACOSX_DEPLOYMENT_TARGET="11.0" '
-                  + environment
-              )
-          else:
-              print(f"CIBW_ENVIRONMENT_WINDOWS={environment}")
+          import release_artifact
+          sdist, manifest, project_root = (Path(arg) for arg in sys.argv[1:])
+          package_dir = release_artifact.prepare_cibw_project(
+              sdist,
+              manifest,
+              project_root,
+          )
+          print(f"GOMETRY_CIBW_PROJECT_ROOT={package_dir}")
+          print(f"GOMETRY_CIBW_PACKAGE_DIR={package_dir}")
           PY
 
       - name: Plan gometry wheels
@@ -480,15 +466,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          sdists=(source/gometry-*.tar.gz)
-          if [ "${#sdists[@]}" -ne 1 ]; then
-            echo "expected exactly one staged gometry sdist" >&2
-            exit 1
-          fi
           uv tool run \
             --from "cibuildwheel==$CIBUILDWHEEL_VERSION" cibuildwheel \
-            --print-build-identifiers "${sdists[0]}" \
+            --print-build-identifiers "$GOMETRY_CIBW_PACKAGE_DIR" \
             > "$RUNNER_TEMP/gometry-identifiers.txt"
           test -s "$RUNNER_TEMP/gometry-identifiers.txt"
 
@@ -510,28 +490,114 @@ jobs:
         run: |
           set -euo pipefail
           echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> "$GITHUB_ENV"
-          if [ "$RUNNER_OS" != Linux ]; then
-            exit
-          fi
-
-          sccache_dir=$(dirname "$SCCACHE_PATH")
           if [ "$PACKAGE" = gometry ]; then
-            test_command='python "{project}/tools/wheel_smoke.py" --installed'
+            evidence_dir="$RUNNER_TEMP/gometry-evidence/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            config_path="$RUNNER_TEMP/gometry-cibw.toml"
+            build_log="$evidence_dir/build.log"
+            output_dir="$GITHUB_WORKSPACE/dist"
+            package_dir="$GOMETRY_CIBW_PACKAGE_DIR"
+            python3 - "$RUNNER_TEMP/gometry-identifiers.txt" \
+              source/gometry-source-manifest.json "$evidence_dir" "$config_path" \
+              "$GOMETRY_CIBW_PROJECT_ROOT" "$package_dir" "$output_dir" \
+              "$RUNNER_TEMP" "${{ matrix.runner }}" "$GITHUB_ENV" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "gometry/tools")
+          import release_artifact
+
+          (
+              identifiers,
+              source_manifest,
+              evidence_dir,
+              config_path,
+              project_root,
+              package_dir,
+              output_dir,
+              runner_temp,
+              runner,
+              github_env,
+          ) = sys.argv[1:]
+          command = [
+              "uv",
+              "tool",
+              "run",
+              "--from",
+              f"cibuildwheel=={release_artifact.CIBUILDWHEEL_VERSION}",
+              "cibuildwheel",
+              "--output-dir",
+              output_dir,
+              "--config-file",
+              config_path,
+              package_dir,
+          ]
+          release_artifact.prepare_cibw_evidence(
+              Path(identifiers),
+              Path(source_manifest),
+              Path(evidence_dir),
+              Path(config_path),
+              runner=runner,
+              project_root=Path(project_root),
+              package_dir=Path(package_dir),
+              cibw_argv=command,
+          )
+          with Path(github_env).open("a", encoding="utf-8") as stream:
+              for key, value in {
+                  "GOMETRY_CIBW_EVIDENCE": evidence_dir,
+                  "GOMETRY_CIBW_CONFIG": config_path,
+                  "GOMETRY_CIBW_BUILD_LOG": f"{evidence_dir}/build.log",
+                  "GOMETRY_CIBW_ARGV_JSON": json.dumps(command, separators=(",", ":")),
+                  "GOMETRY_BUILD_RUNNER": runner,
+                  "GOMETRY_CIBW_OUTPUT": output_dir,
+              }.items():
+                  stream.write(f"{key}={value}\n")
+          PY
+            if [ "$RUNNER_OS" = Linux ]; then
+              sccache_dir=$(dirname "$SCCACHE_PATH")
+              {
+                printf '%s\n' \
+                  "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $sccache_dir:/opt/sccache:ro --volume $evidence_dir:/gometry-evidence"
+              } >> "$GITHUB_ENV"
+            fi
           else
             test_command='python -c "import ${{ needs.resolve.outputs.import-name }}"'
+            if [ "$RUNNER_OS" = Linux ] && [ "$SCCACHE_GHA_RW_MODE" = READ_WRITE ]; then
+              test_command+=" && /opt/sccache/sccache --show-stats"
+            fi
+            {
+              printf '%s\n' 'CIBW_BUILD_FRONTEND=build[uv]'
+              printf '%s\n' 'MATURIN_PEP517_ARGS=--profile release-dist'
+              printf '%s\n' \
+                'CIBW_ENVIRONMENT_LINUX=PATH="$HOME/.cargo/bin:$PATH" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH'
+              printf '%s\n' 'CIBW_ENVIRONMENT_MACOS=MACOSX_DEPLOYMENT_TARGET="11.0"'
+              printf '%s\n' \
+                'CIBW_ENVIRONMENT_PASS_LINUX=ACTIONS_RESULTS_URL ACTIONS_RUNTIME_TOKEN MATURIN_PEP517_ARGS RUSTUP_TOOLCHAIN SCCACHE_GHA_ENABLED SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH'
+              printf '%s\n' "CIBW_TEST_COMMAND=$test_command"
+            } >> "$GITHUB_ENV"
+            if [ "$RUNNER_OS" = Linux ]; then
+              sccache_dir=$(dirname "$SCCACHE_PATH")
+              printf '%s\n' \
+                "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $sccache_dir:/opt/sccache:ro" \
+                >> "$GITHUB_ENV"
+            fi
           fi
-          if [ "$SCCACHE_GHA_RW_MODE" = READ_WRITE ]; then
-            test_command+=" && /opt/sccache/sccache --show-stats"
-          fi
-          gometry_environment=""
-          if [ "$PACKAGE" = gometry ]; then
-            gometry_environment=" $GOMETRY_CIBW_RELEASE_ENV"
-          fi
-          {
-            printf '%s\n' "CIBW_CONTAINER_ENGINE=docker; create_args: --volume $sccache_dir:/opt/sccache:ro"
-            printf '%s\n' "CIBW_ENVIRONMENT_LINUX=PATH=\"\$HOME/.cargo/bin:\$PATH\" RUSTC_WRAPPER=/opt/sccache/sccache SCCACHE_GHA_RW_MODE=$SCCACHE_GHA_RW_MODE SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH$gometry_environment"
-            printf '%s\n' "CIBW_TEST_COMMAND=$test_command"
-          } >> "$GITHUB_ENV"
+
+      - name: Confirm generated gometry CIBW plan
+        if: inputs.package == 'gometry'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GOMETRY_CIBW_PROJECT_ROOT"
+          uv tool run \
+            --from "cibuildwheel==$CIBUILDWHEEL_VERSION" cibuildwheel \
+            --config-file "$GOMETRY_CIBW_CONFIG" \
+            --print-build-identifiers "$GOMETRY_CIBW_PACKAGE_DIR" \
+            > "$RUNNER_TEMP/gometry-identifiers-final.txt"
+          cmp "$RUNNER_TEMP/gometry-identifiers.txt" \
+            "$RUNNER_TEMP/gometry-identifiers-final.txt"
+          echo "GOMETRY_CIBW_IDENTIFIERS=$RUNNER_TEMP/gometry-identifiers-final.txt" \
+            >> "$GITHUB_ENV"
 
       - name: Generate license files
         if: needs.resolve.outputs.is-release == 'true' && inputs.package != 'gometry'
@@ -543,6 +609,7 @@ jobs:
       - name: Build wheels
         if: needs.resolve.outputs.is-rusty == 'true'
         env:
+          GOMETRY_BUILD_RUNNER: ${{ matrix.runner }}
           # PyPy opt-in only (cibuildwheel 4 default is no pp*). Free-threaded
           # 3.14t wheels need no enable (cpython-freethreading removed in 4.x).
           CIBW_ENABLE: ${{ needs.resolve.outputs.pypy == 'true' && 'pypy' || '' }}
@@ -552,36 +619,61 @@ jobs:
           if [ -z "${CIBW_ENABLE}" ]; then
             unset CIBW_ENABLE
           fi
-          package_path="$PACKAGE"
           if [ "$PACKAGE" = gometry ]; then
-            shopt -s nullglob
-            sdists=(source/gometry-*.tar.gz)
-            if [ "${#sdists[@]}" -ne 1 ]; then
-              echo "expected exactly one staged gometry sdist" >&2
-              exit 1
+            rm -rf "$GOMETRY_CIBW_OUTPUT"
+            mkdir -p "$GOMETRY_CIBW_OUTPUT"
+            printf 'cibuildwheel dispatch: %s\n' "$GOMETRY_CIBW_ARGV_JSON" \
+              > "$GOMETRY_CIBW_BUILD_LOG"
+            cd "$GOMETRY_CIBW_PROJECT_ROOT"
+            set +e
+            python3 -c '
+          import json
+          import os
+          arguments = json.loads(os.environ["GOMETRY_CIBW_ARGV_JSON"])
+          os.execvp(arguments[0], arguments)
+          ' 2>&1 | tee -a "$GOMETRY_CIBW_BUILD_LOG"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            cibw_status="${pipeline_status[0]}"
+            capture_status="${pipeline_status[1]}"
+            set +e
+            cd "$GITHUB_WORKSPACE"
+            python3 gometry/tools/wheel_smoke.py \
+              --write-wheel-receipt \
+              "$GOMETRY_CIBW_OUTPUT" "$GOMETRY_CIBW_IDENTIFIERS" \
+              source/gometry-source-manifest.json \
+              --evidence-dir "$GOMETRY_CIBW_EVIDENCE" \
+              --build-log "$GOMETRY_CIBW_BUILD_LOG" \
+              --build-exit-code "$cibw_status" \
+              --capture-exit-code "$capture_status"
+            receipt_status=$?
+            set -e
+            if [ "$cibw_status" -ne 0 ]; then
+              exit "$cibw_status"
             fi
-            package_path="${sdists[0]}"
+            if [ "$capture_status" -ne 0 ]; then
+              exit "$capture_status"
+            fi
+            exit "$receipt_status"
           fi
           uv tool run \
             --from "cibuildwheel==$CIBUILDWHEEL_VERSION" cibuildwheel \
             --output-dir dist \
-            "$package_path"
+            "$PACKAGE"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && inputs.package == 'gometry'
+        with:
+          name: gometry-build-evidence-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/gometry-evidence/**/build.log
+            ${{ runner.temp }}/gometry-evidence/**/wheel-item.json
+          if-no-files-found: warn
 
       - name: Build package
         if: needs.resolve.outputs.is-rusty == 'false'
         shell: bash
         run: uv build -o dist "$PACKAGE"
-
-      - name: Write gometry wheel receipt
-        if: inputs.package == 'gometry'
-        env:
-          GOMETRY_BUILD_RUNNER: ${{ matrix.runner }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 gometry/tools/wheel_smoke.py \
-            --write-wheel-receipt \
-            dist "$RUNNER_TEMP/gometry-identifiers.txt" source/gometry-source-manifest.json
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: inputs.package == 'gometry'

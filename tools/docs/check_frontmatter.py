@@ -67,10 +67,21 @@ def collect_errors(docs: Path) -> list[str]:
 
 
 def on_pre_build(*, config: ProperDocsConfig) -> None:
-    """Reject malformed frontmatter before ProperDocs reads any pages."""
+    """Reject frontmatter and stale Gometry imports before ProperDocs reads pages."""
     from properdocs.exceptions import PluginError
 
-    errors = collect_errors(Path(config.docs_dir))
+    docs = Path(config.docs_dir).resolve()
+    package_root = docs.parent
+    if (package_root / 'tools' / 'wheel_smoke.py').is_file():
+        tools = package_root / 'tools'
+        if str(tools) not in sys.path:
+            sys.path.insert(0, str(tools))
+        from _gatelib import prepend_tools_import_paths
+        from runtime_artifact import require_runtime
+
+        prepend_tools_import_paths()
+        require_runtime(package_root)
+    errors = collect_errors(docs)
     if errors:
         raise PluginError(
             'Malformed YAML frontmatter:\n'

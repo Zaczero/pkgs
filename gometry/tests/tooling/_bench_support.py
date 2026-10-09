@@ -90,10 +90,13 @@ def producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
         'distribution': packages[package_name]['distribution'],
         'native_libraries': native_libraries,
         'native_library_status': 'identified' if native_libraries else 'not-applicable',
+        'source_commit': None,
+        'source_receipt': None,
+        'source_wheel': None,
     }
     return {
-        'identity_schema_version': 1,
-        'git_commit': 'deadbeef',
+        'identity_schema_version': 2,
+        'harness_commit': 'deadbeef',
         'source_inputs_sha256': HASH,
         'extension': extension,
         'uv_lock': {'path': lock_path, 'sha256': HASH, 'size_bytes': 1},

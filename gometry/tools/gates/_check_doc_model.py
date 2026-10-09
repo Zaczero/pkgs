@@ -1073,6 +1073,14 @@ def collect_errors() -> list[str]:
 
 
 def main() -> int:
+    _TOOLS = ROOT / 'tools'
+    if str(_TOOLS) not in sys.path:
+        sys.path.insert(0, str(_TOOLS))
+    from _gatelib import prepend_tools_import_paths
+    from runtime_artifact import require_runtime
+
+    prepend_tools_import_paths()
+    require_runtime(ROOT)
     errors = collect_errors()
     if errors:
         print(f'doc model: {len(errors)} issue(s):', file=sys.stderr)

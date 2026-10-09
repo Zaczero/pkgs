@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import copy
 import re
+from pathlib import Path
 from typing import Any
 
-IDENTITY_SCHEMA_VERSION = 1
+IDENTITY_SCHEMA_VERSION = 2
 _SHA256 = re.compile(r'^[0-9a-f]{64}$')
 
 
@@ -81,8 +82,9 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
         raise _fail('top level must be an object')
     if value.get('identity_schema_version') != IDENTITY_SCHEMA_VERSION:
         raise _fail('unsupported identity schema version')
-    if not isinstance(value.get('git_commit'), str) or not value['git_commit']:
-        raise _fail('git_commit must be a non-empty string')
+    harness_commit = value.get('harness_commit')
+    if not isinstance(harness_commit, str) or not harness_commit:
+        raise _fail('harness_commit must be a non-empty string')
     _sha256(value.get('source_inputs_sha256'), label='source_inputs_sha256')
     extension = value.get('extension')
     _file_identity(extension, label='extension')
@@ -123,9 +125,18 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
         raise _fail('implementation attribution is missing')
     if implementation.get('runtime') not in {'gometry', 'comparator'}:
         raise _fail('implementation.runtime must be gometry or comparator')
+    for field in ('source_commit', 'source_receipt', 'source_wheel'):
+        if field not in implementation:
+            raise _fail(f'implementation.{field} is missing')
     for field in ('row', 'module_name', 'native_library_status'):
         if not isinstance(implementation.get(field), str) or not implementation[field]:
             raise _fail(f'implementation.{field} must be a non-empty string')
+    source_commit = implementation.get('source_commit')
+    if source_commit is not None and (
+        not isinstance(source_commit, str)
+        or re.fullmatch(r'[0-9a-f]{40,64}', source_commit) is None
+    ):
+        raise _fail('implementation.source_commit must be a source commit or null')
     module = implementation.get('module')
     _file_identity(module, label='implementation.module', allow_none=True)
     distribution = implementation.get('distribution')
@@ -136,6 +147,57 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
         raise _fail('implementation.native_libraries must be a list')
     for index, item in enumerate(native):
         _file_identity(item, label=f'implementation.native_libraries[{index}]')
+    source_receipt = implementation.get('source_receipt')
+    source_wheel = implementation.get('source_wheel')
+    if source_commit is None:
+        if source_receipt is not None or source_wheel is not None:
+            raise _fail('source receipt/wheel facts require a producer source commit')
+    else:
+        if (
+            not isinstance(source_receipt, dict)
+            or set(source_receipt) != {'path', 'sha256'}
+            or not isinstance(source_receipt.get('path'), str)
+            or not source_receipt['path']
+        ):
+            raise _fail('implementation.source_receipt is malformed')
+        _sha256(
+            source_receipt.get('sha256'),
+            label='implementation.source_receipt.sha256',
+        )
+        if (
+            not isinstance(source_wheel, dict)
+            or set(source_wheel)
+            != {
+                'filename',
+                'sha256',
+                'extension_member',
+                'extension_sha256',
+            }
+            or not isinstance(source_wheel.get('filename'), str)
+            or not source_wheel['filename']
+            or not isinstance(source_wheel.get('extension_member'), str)
+            or not source_wheel['extension_member']
+        ):
+            raise _fail('implementation.source_wheel is malformed')
+        _sha256(source_wheel.get('sha256'), label='implementation.source_wheel.sha256')
+        _sha256(
+            source_wheel.get('extension_sha256'),
+            label='implementation.source_wheel.extension_sha256',
+        )
+        if implementation['runtime'] != 'gometry':
+            raise _fail('source receipt attribution is only valid for gometry')
+        if not any(
+            item.get('sha256') == source_wheel['extension_sha256'] for item in native
+        ):
+            raise _fail('source receipt extension differs from arm native identity')
+        if not any(
+            isinstance(item.get('path'), str)
+            and Path(item['path']).name
+            == source_wheel['extension_member'].rsplit('/', 1)[-1]
+            and item.get('sha256') == source_wheel['extension_sha256']
+            for item in native
+        ):
+            raise _fail('source receipt member differs from loaded extension path')
     arm = value.get('arm')
     if not isinstance(arm, dict) or arm.get('side') not in {'A', 'B'}:
         raise _fail('arm attribution must name side A or B')
@@ -149,7 +211,13 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
 def common_identity(value: dict[str, Any]) -> dict[str, Any]:
     """Project the process/build identity without side-specific attribution."""
     return {
-        key: item for key, item in value.items() if key not in {'implementation', 'arm'}
+        key: item
+        for key, item in value.items()
+        if key
+        not in {
+            'implementation',
+            'arm',
+        }
     }
 
 
@@ -163,9 +231,14 @@ def identity_for_arm(
     distribution: dict[str, Any] | None,
     native_libraries: list[dict[str, Any]],
     native_library_status: str,
+    source_commit: str | None = None,
+    source_receipt: dict[str, Any] | None = None,
+    source_wheel: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attach explicit implementation and arm attribution to common facts."""
     value = copy.deepcopy(common)
+    for field in ('source_commit', 'source_receipt', 'source_wheel'):
+        value.pop(field, None)
     value['implementation'] = {
         'runtime': runtime,
         'row': row,
@@ -176,6 +249,9 @@ def identity_for_arm(
         'distribution': distribution,
         'native_libraries': native_libraries,
         'native_library_status': native_library_status,
+        'source_commit': source_commit,
+        'source_receipt': source_receipt,
+        'source_wheel': source_wheel,
     }
     value['arm'] = {'side': side, 'row': row}
     return validate_producer_identity(value)

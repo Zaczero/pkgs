@@ -12,12 +12,11 @@ from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import gometry as gm
-
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
 from _gatelib import prepend_rust_source_import_paths
+from runtime_artifact import require_runtime
 
 prepend_rust_source_import_paths()
 from pyo3stubs.cli import load_config
@@ -31,6 +30,8 @@ from pyo3stubs.doc_structure import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+_ROOT = _TOOLS_ROOT.parent
 
 ERROR_EXPORTS = frozenset({
     'CRSError',
@@ -414,6 +415,7 @@ def check_mirrored_raises(subjects: Iterable[DocSubject]) -> list[str]:
 
 
 def main() -> int:
+    gm, _, _ = require_runtime(_ROOT)
     cfg = load_config(_TOOLS_ROOT / 'stubs' / 'stubconfig.py')
     ctx = CheckContext(cfg)
     subjects = tuple(iter_doc_subjects(ctx, runtime_module=gm))

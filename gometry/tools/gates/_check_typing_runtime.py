@@ -27,10 +27,19 @@ import typing
 from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
 
+_ROOT = Path(__file__).resolve().parent.parent.parent
+_TOOLS = _ROOT / 'tools'
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
+require_runtime(_ROOT)
+
 import gometry
 from gometry import _types
 
-_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFORMANCE = _ROOT / 'tests/typing/test_conformance.py'
 _NEGATIVES = _ROOT / 'tests/typing/negatives.py'
 _PYRIGHT_PRECISION = _ROOT / 'tests/typing/pyright_precision.py'

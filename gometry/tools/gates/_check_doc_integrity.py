@@ -135,7 +135,10 @@ def collect_errors(
 
 
 def main() -> int:
-    errors = collect_errors()
+    from runtime_artifact import require_runtime
+
+    runtime, _, _ = require_runtime(ROOT)
+    errors = collect_errors(runtime_module=runtime)
     if errors:
         print(
             f'doc-integrity: {len(errors)} duplicate doc section(s):',

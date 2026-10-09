@@ -35,6 +35,13 @@ import textwrap
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
+_TOOLS = _ROOT / 'tools'
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
 # Use the interpreter running this gate so the pyright import path matches the
 # runtime that supplied gometry and its installed stubs. The project environment
 # is owned by the caller (uv, Nix, or another supported runner).
@@ -90,6 +97,7 @@ xy: npt.NDArray[np.float64]
 def _public_objects() -> list[tuple[str, object]]:
     import types
 
+    require_runtime(_ROOT)
     import gometry
 
     objects: list[tuple[str, object]] = [('gometry', gometry)]
