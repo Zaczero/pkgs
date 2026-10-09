@@ -178,7 +178,6 @@ def test_prepare_runs_preparation_sequence_without_checks(
     assert status == 0
     assert capsys.readouterr().out == f'{package_root}\n'
     assert events == [
-        *(('run', ' '.join(step)) for step in quality_check.FIXES),
         ('prepare', str(GOMETRY_ROOT)),
         ('read', str(GOMETRY_ROOT)),
         ('run', ' '.join(quality_check.GENERATE_STUBS)),
@@ -186,11 +185,75 @@ def test_prepare_runs_preparation_sequence_without_checks(
         ('refresh', str(GOMETRY_ROOT)),
         ('read', str(GOMETRY_ROOT)),
     ]
+    assert runtime_calls == [True, False]
+
+
+def test_default_mode_runs_fixers_before_shared_runtime_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, 'argv', ['tools/check.py'])
+    package_root = tmp_path / 'prepared' / 'gometry'
+    receipt = {'package_root': str(package_root)}
+    events: list[tuple[str, str]] = []
+    runtime_calls: list[bool] = []
+
+    def run(
+        arguments: tuple[str, ...],
+        *,
+        environment: dict[str, str] | None = None,
+        require_runtime: bool = False,
+    ) -> bool:
+        events.append(('run', ' '.join(arguments)))
+        runtime_calls.append(require_runtime)
+        return True
+
+    def prepare(root: Path, *, scratch: Path) -> dict[str, str]:
+        events.append(('prepare', str(root)))
+        assert scratch == GOMETRY_ROOT / 'target' / 'quality-runtime'
+        return receipt
+
+    def read(root: Path) -> dict[str, str]:
+        events.append(('read', str(root)))
+        return receipt
+
+    def refresh(root: Path) -> dict[str, str]:
+        events.append(('refresh', str(root)))
+        return receipt
+
+    monkeypatch.setattr(quality_check, 'run', run)
+    monkeypatch.setattr(
+        quality_check,
+        '_quality_runtime_module',
+        lambda: SimpleNamespace(
+            prepare_quality_runtime=prepare,
+            read_quality_receipt=read,
+            refresh_quality_runtime=refresh,
+        ),
+    )
+
+    status = quality_check.main()
+
+    assert status == 0
+    assert capsys.readouterr().out == ''
+    assert events == [
+        *(('run', ' '.join(step)) for step in quality_check.FIXES),
+        ('prepare', str(GOMETRY_ROOT)),
+        ('read', str(GOMETRY_ROOT)),
+        ('run', ' '.join(quality_check.GENERATE_STUBS)),
+        ('run', 'ruff format --quiet python/gometry/_lib.pyi'),
+        ('refresh', str(GOMETRY_ROOT)),
+        ('read', str(GOMETRY_ROOT)),
+        *(('run', ' '.join(step)) for step, _ in quality_check.CHECKS),
+    ]
     assert runtime_calls == [
         *([False] * len(quality_check.FIXES)),
         True,
         False,
+        *(runtime_required for _, runtime_required in quality_check.CHECKS),
     ]
+    assert ('run', 'ruff check .') in events
 
 
 def test_prepare_and_no_fix_are_mutually_exclusive(
