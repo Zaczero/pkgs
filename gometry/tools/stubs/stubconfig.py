@@ -5,6 +5,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+_TOOLS_ROOT = Path(__file__).resolve().parents[1]
+if str(_TOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_ROOT))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
+_STUBS = Path(__file__).resolve().parent
+ROOT = _TOOLS_ROOT.parent
+require_runtime(ROOT)
+
 import gometry as gm
 from pyo3stubs import (
     DualityConfig,
@@ -14,14 +25,6 @@ from pyo3stubs import (
     TokenConfig,
 )
 
-_TOOLS_ROOT = Path(__file__).resolve().parents[1]
-if str(_TOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_ROOT))
-from _gatelib import prepend_tools_import_paths
-
-prepend_tools_import_paths()
-_STUBS = Path(__file__).resolve().parent
-ROOT = _TOOLS_ROOT.parent
 STUB = ROOT / 'python' / 'gometry' / '_lib.pyi'
 SRC = ROOT / 'src'
 

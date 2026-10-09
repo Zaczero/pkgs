@@ -33,14 +33,15 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import gometry as gm
-
 _TOOLS_ROOT = Path(__file__).resolve().parents[1]
 if str(_TOOLS_ROOT) not in sys.path:
     sys.path.insert(0, str(_TOOLS_ROOT))
 from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
 
 prepend_tools_import_paths()
+_ROOT = _TOOLS_ROOT.parent
+
 ERROR_EXPORTS = frozenset({
     'CRSError',
     'CRSMismatchError',
@@ -68,13 +69,6 @@ _DOC_COVERAGE_SKIP = ERROR_EXPORTS | frozenset({
     'PolygonizeResult',
     'ValidationReport',
 })
-CLASSES = tuple(
-    sorted(
-        name
-        for name in gm.__all__
-        if name not in _DOC_COVERAGE_SKIP and isinstance(getattr(gm, name, None), type)
-    )
-)
 _NUMPYDOC_SECTION = re.compile('^([A-Z][A-Za-z ]+)\\n-+$', re.MULTILINE)
 _GOOGLE_SECTION = re.compile('^(Args|Arguments|Returns|Yields|Raises):$', re.MULTILINE)
 _DOC_DEFAULT = re.compile('(?:,\\s*|\\()default(?:\\s+|=)(.+?)\\)?\\s*$')
@@ -543,8 +537,17 @@ def _is_property_like(cls: type, name: str) -> bool:
 
 
 def main() -> int:
+    gm, _, _ = require_runtime(_ROOT)
+    classes = tuple(
+        sorted(
+            name
+            for name in gm.__all__
+            if name not in _DOC_COVERAGE_SKIP
+            and isinstance(getattr(gm, name, None), type)
+        )
+    )
     errors: list[str] = []
-    for cls_name in CLASSES:
+    for cls_name in classes:
         cls = getattr(gm, cls_name, None)
         if cls is None:
             errors.append(f'{cls_name}: class missing from gometry')

@@ -30,8 +30,10 @@ from typing import TYPE_CHECKING, Any
 
 GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 _SUPPORT = GOMETRY_ROOT / 'benches' / 'support'
-if str(_SUPPORT) not in sys.path:
-    sys.path.insert(0, str(_SUPPORT))
+_TOOLS = GOMETRY_ROOT / 'tools'
+for _path in (_SUPPORT, _TOOLS):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from bench_doctor import (
     benchmark_source_inputs_identity,
@@ -44,8 +46,9 @@ from benchmark_statistics import (
     bootstrap_median_interval,
     percentile,
 )
-from benchmark_identity import identity_for_arm
+from benchmark_identity import IDENTITY_SCHEMA_VERSION, identity_for_arm
 from benchmark_observation import metric_spec, measurement_summary, validate_observation
+import release_artifact as artifact_release
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -81,7 +84,11 @@ def expand_perf_events(events: Sequence[str] | None = None) -> tuple[str, ...]:
     return expanded
 
 
-def identify_build(python: str) -> dict[str, Any]:
+def identify_build(
+    python: str,
+    *,
+    receipt_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Identify the loaded runtime and verify its embedded source digest.
 
     An executable wrapper may set ``GOMETRY_BENCH_SOURCE_INPUTS_SHA256`` when
@@ -92,10 +99,12 @@ def identify_build(python: str) -> dict[str, Any]:
 import json, os, platform, sys, sysconfig
 from pathlib import Path
 sys.path.insert(0, 'benches/drivers')
+sys.path.insert(0, 'benches/support')
 import gometry._lib as lib
 from bench_doctor import (_extension_identity, _loaded_native_libraries,
                           _package_identity, _run,
                           _source_inputs_digest, _uv_lock_identity)
+from benchmark_identity import IDENTITY_SCHEMA_VERSION
 packages = {}
 for name in ('gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarrow', 'mercantile', 'pygeohash'):
     identity = _package_identity(name)
@@ -103,8 +112,8 @@ for name in ('gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarro
         packages[name] = identity
 extension = _extension_identity()
 print(json.dumps({
-    'identity_schema_version': 1,
-    'git_commit': _run(['git', 'rev-parse', 'HEAD']),
+    'identity_schema_version': IDENTITY_SCHEMA_VERSION,
+    'harness_commit': _run(['git', 'rev-parse', 'HEAD']),
     'source_inputs_sha256': _source_inputs_digest(),
     'requested_source_inputs_sha256': os.environ.get('GOMETRY_BENCH_SOURCE_INPUTS_SHA256'),
     'extension': extension,
@@ -132,6 +141,16 @@ print(json.dumps({
         text=True,
         check=True,
         timeout=IDENTIFY_TIMEOUT_SECONDS,
+        env=(
+            os.environ.copy()
+            if receipt_binding is None
+            else {
+                **os.environ,
+                'GOMETRY_BENCH_SOURCE_INPUTS_SHA256': (
+                    receipt_binding['source']['source_inputs_sha256']
+                ),
+            }
+        ),
     )
     identity = json.loads(result.stdout)
     extension = identity.get('extension')
@@ -141,6 +160,47 @@ print(json.dumps({
         identity.get('source_inputs_sha256'),
         identity.pop('requested_source_inputs_sha256', None),
     )
+    if receipt_binding is None:
+        identity['source_commit'] = None
+        identity['source_receipt'] = None
+        identity['source_wheel'] = None
+    else:
+        gometry_package = identity.get('packages', {}).get('gometry', {})
+        distribution = (
+            gometry_package.get('distribution')
+            if isinstance(gometry_package, dict)
+            else None
+        )
+        source = receipt_binding['source']
+        build_info = extension.get('build_info')
+        if (
+            not isinstance(build_info, dict)
+            or build_info.get('native_source_inputs_sha256')
+            != source['native_source_inputs_sha256']
+        ):
+            raise SystemExit(
+                'loaded extension native source identity differs from receipt'
+            )
+        receipt_facts = artifact_release.match_benchmark_receipt(
+            receipt_binding,
+            extension,
+            distribution,
+        )
+        identity['source_commit'] = receipt_facts['source_commit']
+        if receipt_facts['source_commit'] is None:
+            identity['source_receipt'] = None
+            identity['source_wheel'] = None
+        else:
+            identity['source_receipt'] = {
+                'path': receipt_facts['receipt_path'],
+                'sha256': receipt_facts['receipt_sha256'],
+            }
+            identity['source_wheel'] = {
+                'filename': receipt_facts['wheel_filename'],
+                'sha256': receipt_facts['wheel_sha256'],
+                'extension_member': receipt_facts['extension_member'],
+                'extension_sha256': receipt_facts['extension_sha256'],
+            }
     return identity
 
 
@@ -174,6 +234,21 @@ def _attribute_build(
         distribution=implementation['distribution'],
         native_libraries=implementation['native_libraries'],
         native_library_status=implementation['native_library_status'],
+        source_commit=(
+            identity.get('source_commit')
+            if implementation['runtime'] == 'gometry'
+            else None
+        ),
+        source_receipt=(
+            identity.get('source_receipt')
+            if implementation['runtime'] == 'gometry'
+            else None
+        ),
+        source_wheel=(
+            identity.get('source_wheel')
+            if implementation['runtime'] == 'gometry'
+            else None
+        ),
     )
 
 
@@ -218,8 +293,14 @@ def _parse_observation_stdout(case: Path, stdout: str, stderr: str) -> dict[str,
     return observation
 
 
-def run_case(python: str, case: Path, extra: list[str]) -> dict[str, Any]:
-    producer_before = identify_build(python)
+def run_case(
+    python: str,
+    case: Path,
+    extra: list[str],
+    *,
+    receipt_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    producer_before = identify_build(python, receipt_binding=receipt_binding)
     started_monotonic_ns = time.monotonic_ns()
     try:
         result = subprocess.run(
@@ -235,13 +316,13 @@ def run_case(python: str, case: Path, extra: list[str]) -> dict[str, Any]:
             f'{case}: exceeded the {CASE_TIMEOUT_SECONDS}s per-block timeout'
         ) from error
     ended_monotonic_ns = time.monotonic_ns()
-    producer_after = identify_build(python)
+    producer_after = identify_build(python, receipt_binding=receipt_binding)
     if producer_before != producer_after:
         raise SystemExit(f'{case}: producer identity changed during the measured arm')
     observation = _parse_observation_stdout(case, result.stdout, result.stderr)
     producer_before = _attribute_build(producer_before, side='A', row=str(case))
     producer_after = _attribute_build(producer_after, side='A', row=str(case))
-    if producer_before.get('identity_schema_version') == 1:
+    if producer_before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION:
         observation['producer_identity'] = producer_before
     return {
         'observation': observation,
@@ -719,12 +800,13 @@ def _run_case_with_perf_group(
     extra: list[str],
     events: Sequence[str],
     *,
+    receipt_binding: dict[str, Any] | None = None,
     perf_binary: str = PERF_BINARY,
     minimum_coverage: float = MIN_COUNTER_COVERAGE,
 ) -> dict[str, Any]:
     """Run one validated case under one non-multiplexed perf event group."""
     requested = expand_perf_events(events)
-    producer_before = identify_build(python)
+    producer_before = identify_build(python, receipt_binding=receipt_binding)
     started_monotonic_ns = time.monotonic_ns()
     with tempfile.TemporaryFile() as perf_log:
         log_fd = perf_log.fileno()
@@ -765,7 +847,7 @@ def _run_case_with_perf_group(
         perf_log.seek(0)
         perf_output = perf_log.read().decode(errors='replace')
     ended_monotonic_ns = time.monotonic_ns()
-    producer_after = identify_build(python)
+    producer_after = identify_build(python, receipt_binding=receipt_binding)
     if producer_before != producer_after:
         raise SystemExit(f'{case}: producer identity changed during the perf arm')
     counters = parse_perf_output(
@@ -814,6 +896,7 @@ def run_case_with_perf(
     extra: list[str],
     events: Sequence[str],
     *,
+    receipt_binding: dict[str, Any] | None = None,
     perf_binary: str = PERF_BINARY,
     minimum_coverage: float = MIN_COUNTER_COVERAGE,
     event_groups: Sequence[Sequence[str]] | None = None,
@@ -835,6 +918,7 @@ def run_case_with_perf(
             case,
             extra,
             group,
+            receipt_binding=receipt_binding,
             perf_binary=perf_binary,
             minimum_coverage=minimum_coverage,
         )
@@ -887,6 +971,7 @@ def run_blocks(
     warmup: int,
     rounds: int,
     seed: int,
+    receipt_bindings: dict[str, dict[str, Any] | None] | None = None,
     runner: Callable[[str, Path, list[str]], dict[str, Any]] = run_case,
     clock_ns: Callable[[], int] = time.monotonic_ns,
 ) -> dict[str, Any]:
@@ -897,11 +982,22 @@ def run_blocks(
         block_started = clock_ns()
         arms = {}
         for side in order:
-            arms[side] = runner(sides[side], case, extra)
+            if receipt_bindings is not None and runner is run_case:
+                arms[side] = run_case(
+                    sides[side],
+                    case,
+                    extra,
+                    receipt_binding=receipt_bindings.get(side),
+                )
+            else:
+                arms[side] = runner(sides[side], case, extra)
             arm = arms[side]
             before = arm.get('provenance_before')
             after = arm.get('provenance_after')
-            if isinstance(before, dict) and before.get('identity_schema_version') == 1:
+            if (
+                isinstance(before, dict)
+                and before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION
+            ):
                 attributed_before = _attribute_build(before, side=side, row=str(case))
                 attributed_after = _attribute_build(
                     after if isinstance(after, dict) else before,
@@ -954,6 +1050,7 @@ def run_blocks_with_perf(
     warmup: int,
     rounds: int,
     seed: int,
+    receipt_bindings: dict[str, dict[str, Any] | None] | None = None,
     runner: Callable[
         [str, Path, list[str], Sequence[str]], dict[str, Any]
     ] = run_case_with_perf,
@@ -975,7 +1072,25 @@ def run_blocks_with_perf(
         arms: dict[str, Any] = {}
         for side in order:
             if event_groups is None:
-                result = runner(sides[side], case, extra, requested)
+                if receipt_bindings is not None and runner is run_case_with_perf:
+                    result = run_case_with_perf(
+                        sides[side],
+                        case,
+                        extra,
+                        requested,
+                        receipt_binding=receipt_bindings.get(side),
+                    )
+                else:
+                    result = runner(sides[side], case, extra, requested)
+            elif receipt_bindings is not None and runner is run_case_with_perf:
+                result = run_case_with_perf(
+                    sides[side],
+                    case,
+                    extra,
+                    requested,
+                    receipt_binding=receipt_bindings.get(side),
+                    event_groups=event_groups,
+                )
             else:
                 result = runner(
                     sides[side],
@@ -986,7 +1101,10 @@ def run_blocks_with_perf(
                 )
             before = result.get('provenance_before')
             after = result.get('provenance_after')
-            if isinstance(before, dict) and before.get('identity_schema_version') == 1:
+            if (
+                isinstance(before, dict)
+                and before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION
+            ):
                 result['provenance_before'] = _attribute_build(
                     before, side=side, row=str(case)
                 )
@@ -1385,6 +1503,16 @@ def main() -> int:
         help='Python or wrapper for side B (candidate build)',
     )
     parser.add_argument(
+        '--a-receipt',
+        type=Path,
+        help='release manifest or runner-wheel bundle with its source manifest for side A',
+    )
+    parser.add_argument(
+        '--b-receipt',
+        type=Path,
+        help='release manifest or runner-wheel bundle with its source manifest for side B',
+    )
+    parser.add_argument(
         '--case',
         required=True,
         type=Path,
@@ -1421,6 +1549,14 @@ def main() -> int:
     if not args.case.is_file():
         parser.error(f'case does not exist: {args.case}')
 
+    receipt_bindings = {
+        side: (
+            None
+            if path is None
+            else artifact_release.validate_benchmark_receipt(path.resolve())
+        )
+        for side, path in (('A', args.a_receipt), ('B', args.b_receipt))
+    }
     perf_events = (
         expand_perf_events(args.perf_events) if args.perf or args.perf_events else None
     )
@@ -1442,6 +1578,7 @@ def main() -> int:
             warmup=args.warmup,
             rounds=args.rounds,
             seed=args.seed,
+            receipt_bindings=receipt_bindings,
         )
     else:
         perf_capability = check_perf_capability(perf_events)
@@ -1480,6 +1617,7 @@ def main() -> int:
             warmup=args.warmup,
             rounds=args.rounds,
             seed=args.seed,
+            receipt_bindings=receipt_bindings,
             event_groups=perf_capability['event_groups'],
         )
         block_run = perf_run
@@ -1520,7 +1658,10 @@ def main() -> int:
         'case_sha256': hashlib.sha256(args.case.read_bytes()).hexdigest(),
         'extra': args.extra,
         'python': {'A': args.a, 'B': args.b},
-        'build': {'A': identify_build(args.a), 'B': identify_build(args.b)},
+        'build': {
+            'A': identify_build(args.a, receipt_binding=receipt_bindings['A']),
+            'B': identify_build(args.b, receipt_binding=receipt_bindings['B']),
+        },
         'environment': {
             'cpu': cpu,
             'platform': platform.platform(),

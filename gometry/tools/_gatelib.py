@@ -33,11 +33,19 @@ ROOT = TOOLS_DIR.parent
 
 
 def prepend_tools_import_paths() -> None:
-    """Prepend ``tools/`` and subdirs so sibling imports resolve from any gate."""
+    """Prepend checkout tool paths and an available workspace tool dependency."""
     for entry in TOOL_IMPORT_DIRS:
         path = str(entry)
         if path not in sys.path:
             sys.path.insert(0, path)
+    sibling_package = ROOT.parent / 'pyo3stubs'
+    if (sibling_package / 'pyo3stubs' / '__init__.py').is_file():
+        path = str(sibling_package)
+        if path in sys.path:
+            sys.path.remove(path)
+        last_tools_path = max(sys.path.index(str(entry)) for entry in TOOL_IMPORT_DIRS)
+        # Editable installs can resolve another worktree; select this sibling before site-packages.
+        sys.path.insert(last_tools_path + 1, path)
 
 
 def strip_rust_comments(text: str) -> str:

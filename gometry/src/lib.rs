@@ -72,6 +72,8 @@ mod error;
 mod geographic;
 mod geometry;
 #[cfg(test)]
+mod native_test_identity;
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 #[global_allocator]

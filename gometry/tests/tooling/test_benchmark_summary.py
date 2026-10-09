@@ -184,7 +184,9 @@ def _with_identity(payload: dict, side: str, identity: dict) -> dict:
     [
         (
             lambda payload: _with_identity(
-                payload, 'B', {**producer('shapely.op/10k', 'B'), 'git_commit': 'other'}
+                payload,
+                'B',
+                {**producer('shapely.op/10k', 'B'), 'harness_commit': 'other'},
             ),
             'mismatched common producer identities',
         ),
@@ -198,7 +200,7 @@ def _with_identity(payload: dict, side: str, identity: dict) -> dict:
             lambda payload: payload['arms']['B'].update(
                 provenance_after={
                     **producer('shapely.op/10k', 'B'),
-                    'git_commit': 'other',
+                    'harness_commit': 'other',
                 }
             ),
             'producer identity changed',
@@ -215,6 +217,26 @@ def test_arm_identity_disagreement_fails_closed(
     path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(SystemExit, match=message):
         _load([path])
+
+
+def test_summary_distinguishes_harness_commit_from_unbound_producer_commit() -> None:
+    lines = sb.render(
+        [],
+        publishable=False,
+        environment={
+            'harness_commit': '12345678abcdef',
+            'cpu_model': 'test cpu',
+            'kernel': 'test kernel',
+            'python': '3.14',
+            'package_versions': {},
+        },
+    )
+
+    assert any('Benchmark harness commit: `12345678`' in line for line in lines)
+    assert any(
+        'producer source commit: unknown (producer source is not commit-bound).' in line
+        for line in lines
+    )
 
 
 def test_arm_metric_type_disagreement_fails_closed(tmp_path: Path) -> None:

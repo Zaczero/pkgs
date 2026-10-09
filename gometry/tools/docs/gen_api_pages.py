@@ -10,10 +10,20 @@ import inspect
 import pathlib
 import sys
 
+_HERE = pathlib.Path(__file__).resolve().parent
+_TOOLS = _HERE.parent
+_ROOT = _TOOLS.parent
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
+require_runtime(_ROOT)
+
 import gometry as gm
 import mkdocs_gen_files
 
-_HERE = pathlib.Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 

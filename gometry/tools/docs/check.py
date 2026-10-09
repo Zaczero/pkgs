@@ -19,8 +19,6 @@ from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
 
-import gometry as gm
-
 ROOT = Path(__file__).resolve().parents[2]
 SITE = ROOT / 'site'
 API_SITE = SITE / 'api'
@@ -77,6 +75,8 @@ def _plain(fragment: str) -> str:
 
 def collect_errors(site: Path = SITE) -> list[str]:
     """Return structural problems in an already-built site."""
+    import gometry as gm
+
     api_site = site / 'api'
     if not api_site.is_dir():
         return ['site/api is missing; run `properdocs build --strict` first']
@@ -166,6 +166,14 @@ def collect_errors(site: Path = SITE) -> list[str]:
 
 
 def main() -> int:
+    tools = ROOT / 'tools'
+    if str(tools) not in sys.path:
+        sys.path.insert(0, str(tools))
+    from _gatelib import prepend_tools_import_paths
+    from runtime_artifact import require_runtime
+
+    prepend_tools_import_paths()
+    require_runtime(ROOT)
     errors = collect_errors()
     lychee = shutil.which('lychee')
     if lychee is None:

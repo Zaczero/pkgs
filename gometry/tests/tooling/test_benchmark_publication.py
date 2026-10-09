@@ -137,8 +137,9 @@ def _build_result(tmp_path: Path) -> dict[str, object]:
     )
     artifacts.insert(0, str(oracle))
     metadata = {
-        'git_commit': 'deadbeef',
+        'harness_commit': 'deadbeef',
         'source_inputs_sha256': HASH,
+        'native_source_inputs_sha256': HASH,
         'python_executable': '/python',
         'python': '3.14',
         'python_version': '3.14 test build',
