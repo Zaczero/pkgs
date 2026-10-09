@@ -1421,21 +1421,17 @@ def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
             gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
             (-190, -1, 170, 1),
         ),
-        (
-            gm.LineString([(-199, 0), (199, 0)], crs=4807),
-            (198, -1, -198, 1),
-        ),
     ],
-    ids=['ordered-alias', 'crossing-alias', 'west-out-of-domain', 'grad-native'],
+    ids=['ordered-alias', 'crossing-alias', 'west-out-of-domain'],
 )
-def test_geographic_clip_by_rect_rejects_noncanonical_longitudes(
+def test_geographic_clip_by_rect_rejects_endpoints_outside_the_frame(
     shape: gm.Geometry, rect: tuple[float, float, float, float]
 ) -> None:
     for clipped in (
         lambda: shape.clip_by_rect(*rect),
         lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
     ):
-        with pytest.raises(ValueError, match='clip rectangle bounds'):
+        with pytest.raises(ValueError, match='geographic rectangle bounds'):
             clipped()
 
 
@@ -1446,18 +1442,41 @@ def test_geographic_clip_by_rect_rejects_unordered_latitudes_scalar_and_array() 
         lambda: shape.clip_by_rect(*rect),
         lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
     ):
-        with pytest.raises(ValueError, match='clip rectangle bounds'):
+        with pytest.raises(ValueError, match='geographic rectangle bounds'):
             clipped()
 
 
-def test_packed_geographic_clip_declines_crossing_grad_rectangle() -> None:
-    grad_line = gm.LineString([(-2, 0), (2, 0)], crs=4807)
-    grad_rect = (1, -1, -1, 1)
-    grad_expected = gm.from_wkt('MULTILINESTRING ((-2 0, -1 0), (1 0, 2 0))', crs=4807)
-    assert gm.equals(grad_line.clip_by_rect(*grad_rect), grad_expected)
-    assert gm.equals(
-        gm.GeometryArray([grad_line]).clip_by_rect(*grad_rect)[0], grad_expected
-    )
+def test_grad_clip_by_rect_matches_wrapped_box_in_scalar_mixed_and_packed_paths() -> (
+    None
+):
+    point = gm.Point(195, 0, crs=4807)
+    rect = (190, -1, -190, 1)
+    wrapped = gm.box(*rect, crs=4807, wrap='split')
+    expected = gm.intersection(point, wrapped)
+
+    scalar = point.clip_by_rect(*rect)
+    assert scalar.to_wkb() == expected.to_wkb()
+    assert gm.equals(scalar, point)
+
+    mixed = gm.GeometryArray([
+        point,
+        gm.LineString([(-199, 0), (199, 0)], crs=4807),
+    ])[0:1]
+    mixed_result = mixed.clip_by_rect(*rect)[0]
+    assert mixed_result.to_wkb() == expected.to_wkb()
+
+    packed = gm.GeometryArray([point]).clip_by_rect(*rect)[0]
+    assert packed.to_wkb() == expected.to_wkb()
+
+    wrapped_rows = gm.boxes([190], [-1], [-190], [1], crs=4807, wrap='split')
+    assert gm.equals(wrapped_rows[0], wrapped)
+
+    with pytest.raises(ValueError, match='geographic rectangle bounds'):
+        point.clip_by_rect(201, -1, 190, 1)
+    with pytest.raises(ValueError, match='geographic rectangle bounds'):
+        gm.box(201, -1, 190, 1, crs=4807, wrap='split')
+    with pytest.raises(ValueError, match='geographic rectangle bounds'):
+        point.clip_by_rect(190, -1, -190, 101)
 
 
 def test_packed_geographic_clip_preserves_canonical_rows_and_missingness() -> None:

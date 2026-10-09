@@ -753,6 +753,25 @@ mod tests {
     }
 
     #[test]
+    fn point_summary_uses_nonempty_admission_for_a_shared_nonfinite_dag() {
+        let mut shape = Shape::Point(point(f64::NAN, 0.0));
+        for _ in 0..8 {
+            shape = Shape::geometry_collection(vec![shape.clone(), shape])
+                .expect("shared point collection");
+        }
+
+        assert!(matches!(
+            crate::geometry::point_set_center_summary(&shape, GeographicFrame::crs84())
+                .expect("summary needs only point presence"),
+            Some(PointSetCenter::Chart(None))
+        ));
+        let error = point_set_centroid(&shape, GeographicFrame::crs84())
+            .expect_err("the chart owner rejects the nonfinite point")
+            .to_string();
+        assert!(error.contains("longitude"), "{error}");
+    }
+
+    #[test]
     fn point_summary_keeps_first_source_error_for_late_nonfinite_data() {
         let len = 4_105;
         let mut xs = vec![10.0; len];

@@ -585,14 +585,10 @@ impl PyGeometryArray {
             )?;
             return value.into_pyobject(py).map(|value| value.unbind().into());
         }
-        let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
         let distance = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
         distance.ensure_finite("at")?;
-        let resolver = op.resolver_with_unit(unit);
-        let model = resolver
-            .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
-            .require_model(MetricOp::LineInterpolate)?
-            .clone();
+        let model =
+            crate::broadcast::resolve_metric(self.crs_str(), unit, MetricOp::LineInterpolate)?;
         let packed = crate::dispatch::PackedLinearReference::InterpolatePoint {
             distance: distance.clone(),
             normalized,
@@ -634,16 +630,12 @@ impl PyGeometryArray {
                 move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end),
             );
         }
-        let op = crate::dispatch::Operation::Metric(MetricOp::LineSubstring);
         let start_distance = F64Param::parse_raw(start, "start", unary_len!(array, self))?;
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(array, self))?;
         start_distance.ensure_finite("start")?;
         end_distance.ensure_finite("end")?;
-        let resolver = op.resolver_with_unit(unit);
-        let model = resolver
-            .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
-            .require_model(MetricOp::LineSubstring)?
-            .clone();
+        let model =
+            crate::broadcast::resolve_metric(self.crs_str(), unit, MetricOp::LineSubstring)?;
         let packed = crate::dispatch::PackedLinearReference::Substring {
             start_distance: start_distance.clone(),
             end_distance: end_distance.clone(),

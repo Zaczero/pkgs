@@ -425,8 +425,8 @@ pub(crate) fn try_unary_packed_array(
             let result = match resolver.resolve_topology_ctx(&array.frame, &mut scratch) {
                 Ok((domain, metric)) => {
                     let rect = match domain {
-                        TopologyDomain::Geographic(_) => {
-                            Bounds::new_geographic(*minx, *miny, *maxx, *maxy)
+                        TopologyDomain::Geographic(frame) => {
+                            Bounds::new_geographic(frame, *minx, *miny, *maxx, *maxy)
                         },
                         TopologyDomain::Cartesian => Bounds::new(*minx, *miny, *maxx, *maxy),
                     };
@@ -552,12 +552,20 @@ fn linref_point_between_packed_inner(
     // Parameter errors raise on BOTH surfaces: the coordseq row loop below
     // clamps out-of-range stationing by design, so a non-finite distance
     // must be rejected here (the scalar path's kernel owns its own check).
-    if let MetricModel::Geodesic { crs, state, .. } = model {
-        crate::crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
-            (0..len)
+    if let MetricModel::Geodesic { crs, frame, state } = model {
+        if len != 0 {
+            let first_line = GeometryArrayStorage::line_view(coords, offsets, row_map, 0);
+            crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
+                .map_err(|error| (0, error))?;
+        }
+        let rows = crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+            let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
-                    let point = crate::crs::chart_line_interpolate_coordseq(
+                    if row != 0 {
+                        crate::crs::ensure_geographic_coordseq_in_frame(*frame, &line)?;
+                    }
+                    let point = crate::crs::chart_line_interpolate_coordseq_admitted(
                         &line,
                         distance.get(row),
                         normalized,
@@ -565,8 +573,11 @@ fn linref_point_between_packed_inner(
                     );
                     degrade_linref_point(point.map(Shape::Point), Lane::Array(row))
                 })
-                .collect_rows()
+                .collect_rows();
+            Ok(rows)
         })
+        .map_err(|error| (0, error))?;
+        rows
     } else {
         (0..len)
             .map(|row| {
@@ -617,21 +628,33 @@ fn linref_substring_packed_inner(
     end_distance: &F64Param,
     normalized: bool,
 ) -> Result<Vec<Shape>, (usize, crate::error::Error)> {
-    if let MetricModel::Geodesic { crs, state, .. } = model {
-        crate::crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
-            (0..len)
+    if let MetricModel::Geodesic { crs, frame, state } = model {
+        if len != 0 {
+            let first_line = GeometryArrayStorage::line_view(coords, offsets, row_map, 0);
+            crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
+                .map_err(|error| (0, error))?;
+        }
+        let rows = crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+            let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
+                    if row != 0 {
+                        crate::crs::ensure_geographic_coordseq_in_frame(*frame, &line)?;
+                    }
                     let range = MeasureRange::substring_distance(
                         start_distance.get(row),
                         end_distance.get(row),
                     )?;
-                    let substring =
-                        crate::crs::chart_line_substring_coordseq(&line, range, normalized, metric);
+                    let substring = crate::crs::chart_line_substring_coordseq_admitted(
+                        &line, range, normalized, metric,
+                    );
                     degrade_linref_linestring(substring, Lane::Array(row))
                 })
-                .collect_rows()
+                .collect_rows();
+            Ok(rows)
         })
+        .map_err(|error| (0, error))?;
+        rows
     } else {
         (0..len)
             .map(|row| {

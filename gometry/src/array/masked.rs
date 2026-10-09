@@ -1,4 +1,4 @@
-use crate::array::{Arc, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, coordinates};
+use crate::array::{Py, PyAny, PyGeometryArray, PyResult, Python, Shape, coordinates};
 use crate::geometry::storage::ValidityMask;
 
 impl PyGeometryArray {
@@ -49,10 +49,7 @@ impl PyGeometryArray {
 
     /// Coordinate view that skips missing rows while preserving source row ids.
     pub(crate) fn coordinate_view(&self) -> coordinates::CoordinateView {
-        coordinates::CoordinateView::from_array_masked(
-            Arc::clone(self.storage_arc()),
-            self.missing().cloned(),
-        )
+        coordinates::CoordinateView::from_array_rows(self.row_owner().clone())
     }
 
     /// Reattach this array's missing mask to a row-aligned geometry result that

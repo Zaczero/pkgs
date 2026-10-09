@@ -712,6 +712,33 @@ def test_geodesic_distance_scalar_batch_latitude_domain_parity() -> None:
         gm.distance(gm.GeometryArray([outside]), end)
 
 
+def test_line_interpolate_count_admits_source_before_ellipsoid_resolution() -> None:
+    unsupported = '+proj=longlat +a=6378137 +f=0.1 +type=crs'
+
+    invalid_source = gm.LineString([(0.0, 0.0), (0.0, 95.0)], crs=unsupported)
+    two_faults = gm.GeometryArray([invalid_source], crs=unsupported)
+    with pytest.raises(gm.InvalidGeometryError, match=LATITUDE_DOMAIN_MSG) as excinfo:
+        two_faults.line_interpolate(count=1)
+    assert excinfo.value.__notes__ == ['while processing array element 0']
+
+    valid_source = gm.LineString([(0.0, 0.0), (0.0, 1.0)], crs=unsupported)
+    with pytest.raises(
+        gm.CRSError, match='order-six binary64 series domain'
+    ) as excinfo:
+        gm.GeometryArray([valid_source], crs=unsupported).line_interpolate(count=1)
+    assert excinfo.value.__notes__ == ['while processing array element 0']
+
+    wgs84_invalid_source = gm.LineString([(0.0, 0.0), (0.0, 95.0)], crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match=LATITUDE_DOMAIN_MSG) as excinfo:
+        gm.GeometryArray([wgs84_invalid_source], crs=4326).line_interpolate(count=1)
+    assert excinfo.value.__notes__ == ['while processing array element 0']
+
+    nullable = gm.GeometryArray([None, invalid_source], crs=unsupported)
+    with pytest.raises(gm.InvalidGeometryError, match=LATITUDE_DOMAIN_MSG) as excinfo:
+        nullable.line_interpolate(count=1)
+    assert excinfo.value.__notes__ == ['while processing array element 1']
+
+
 def test_packed_geodesic_measures_validate_present_line_and_polygon_rows() -> None:
     valid_line = gm.LineString([(0, 0), (1, 0)], crs=4326)
     invalid_line = gm.LineString([(0, 0), (0, 95)], crs=4326)

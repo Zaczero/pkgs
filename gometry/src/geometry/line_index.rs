@@ -1135,6 +1135,16 @@ impl<S: LineSegments> HeapSize for LineIndex<S> {
 mod tests {
     use super::*;
 
+    fn cached_planar_locate(
+        prepared: &crate::geometry::PreparedPlan,
+        point: Point,
+        normalized: bool,
+    ) -> crate::error::Result<f64> {
+        prepared
+            .line_index()?
+            .locate_point_prepared(point, normalized, || prepared.distance_parts())
+    }
+
     #[test]
     fn planar_locate_orders_segments_by_source_distance() {
         let points = [
@@ -1145,7 +1155,10 @@ mod tests {
         let line = Shape::LineString(
             LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
         );
-        assert_eq!(line.line_locate_point(points[2], true).unwrap(), 1.0);
+        assert_eq!(
+            line.line_locate_point_streaming(points[2], true).unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -1156,9 +1169,8 @@ mod tests {
         .expect("valid multipart line");
         let probe = Point::new_raw_xy(0.0, 0.0);
         let prepared = crate::geometry::PreparedPlan::new(shape);
-        let station = prepared
-            .line_locate_point(probe, false)
-            .expect("prepared nearest search");
+        let station =
+            cached_planar_locate(&prepared, probe, false).expect("prepared nearest search");
         // The nearest endpoint is the start of segment 1. Segment 0 has
         // horizontal length 1 - 2^-27, which is exactly representable.
         assert_eq!(
@@ -1187,7 +1199,9 @@ mod tests {
         let probe = Point::new_raw_xy(-1e308, 0.5);
         let prepared = crate::geometry::PreparedPlan::new(shape);
         assert_eq!(
-            prepared.line_locate_point(probe, false).unwrap().to_bits(),
+            cached_planar_locate(&prepared, probe, false)
+                .unwrap()
+                .to_bits(),
             0.5_f64.to_bits(),
         );
         assert_eq!(
@@ -1222,8 +1236,7 @@ mod tests {
         let probe = Point::new_raw_xy(0.0, 0.0);
         let prepared = crate::geometry::PreparedPlan::new(shape);
         assert_eq!(
-            prepared
-                .line_locate_point(probe, false)
+            cached_planar_locate(&prepared, probe, false)
                 .expect("exact nearest tie")
                 .to_bits(),
             2.414_213_562_373_095_f64.to_bits(),
@@ -1235,7 +1248,7 @@ mod tests {
         prepared: &crate::geometry::PreparedPlan,
         probe: Point,
     ) {
-        let station = prepared.line_locate_point(probe, false).unwrap();
+        let station = cached_planar_locate(prepared, probe, false).unwrap();
         let Shape::Point(interpolated) = prepared.line_interpolate_point(station, false).unwrap()
         else {
             unreachable!("line interpolation returns a point")
@@ -1327,8 +1340,7 @@ mod tests {
         );
         let prepared = crate::geometry::PreparedPlan::new(shape);
         assert_eq!(
-            prepared
-                .line_locate_point(Point::new_raw_xy(12.0, 1.0), false)
+            cached_planar_locate(&prepared, Point::new_raw_xy(12.0, 1.0), false)
                 .unwrap()
                 .to_bits(),
             6.0_f64.to_bits(),
@@ -1431,8 +1443,7 @@ mod tests {
                     locate_planar_route(shape.linework().unwrap().into_iter(), probe, normalized)
                         .expect("one-shot streaming reference");
                 assert_eq!(
-                    prepared
-                        .line_locate_point(probe, normalized)
+                    cached_planar_locate(&prepared, probe, normalized)
                         .expect("prepared nearest search")
                         .to_bits(),
                     expected.to_bits(),
@@ -1441,16 +1452,14 @@ mod tests {
             }
         }
         assert_eq!(
-            prepared
-                .line_locate_point(Point::new_raw_xy(0.0, 0.0), false)
+            cached_planar_locate(&prepared, Point::new_raw_xy(0.0, 0.0), false)
                 .expect("exact nearest tie")
                 .to_bits(),
             1.0_f64.to_bits(),
             "the first source segment wins an exact distance tie across multipart EMPTY members"
         );
         assert_eq!(
-            prepared
-                .line_locate_point(Point::new_raw_xy(100.0, 100.0), false)
+            cached_planar_locate(&prepared, Point::new_raw_xy(100.0, 100.0), false)
                 .expect("zero-length segment is not a locate candidate")
                 .to_bits(),
             5.0_f64.to_bits(),
@@ -1474,8 +1483,7 @@ mod tests {
             )
             .expect("packed one-shot reference");
             assert_eq!(
-                seeded_prepared
-                    .line_locate_point(probe, false)
+                cached_planar_locate(&seeded_prepared, probe, false)
                     .expect("prepared nearest search")
                     .to_bits(),
                 expected.to_bits(),
@@ -1636,6 +1644,7 @@ mod tests {
     #[test]
     fn cached_chart_locate_preserves_source_then_query_domain_error_precedence() {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+        let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();
         let invalid = crate::geometry::PreparedPlan::new(
             crate::io::parse_wkt("LINESTRING (0 100, 1 100)").unwrap(),
         );
@@ -1648,9 +1657,17 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(
-            crate::line_locate_shape(&model, &invalid, &cache, invalid_probe, false)
-                .unwrap_err()
-                .to_string(),
+            crate::py::support::prepare_line_locate(
+                &metric,
+                &invalid,
+                &cache,
+                invalid_probe,
+                false,
+                false,
+            )
+            .map(|(_, located)| located)
+            .unwrap_err()
+            .to_string(),
             source_error,
         );
         let valid = crate::geometry::PreparedPlan::new(
@@ -1665,9 +1682,17 @@ mod tests {
         .to_string();
         for _ in 0..2 {
             assert_eq!(
-                crate::line_locate_shape(&model, &valid, &cache, invalid_probe, false)
-                    .unwrap_err()
-                    .to_string(),
+                crate::py::support::prepare_line_locate(
+                    &metric,
+                    &valid,
+                    &cache,
+                    invalid_probe,
+                    false,
+                    false,
+                )
+                .map(|(_, located)| located)
+                .unwrap_err()
+                .to_string(),
                 query_error,
             );
         }

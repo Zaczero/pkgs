@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use smol_str::SmolStr;
 
+use crate::crs::frame::GeometryTransformFrame;
 use crate::crs::transform::{
     BoundsInterpretation, BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d,
     identity_bounds_2d, identity_bounds_3d, transform_in_core_xy_with_domains,
@@ -82,7 +83,27 @@ impl TransformPlan {
             options: plan_options,
             source_domain,
             target_domain,
+            geometry_frame: None,
         })
+    }
+
+    pub(crate) fn from_geometry_frame(frame: GeometryTransformFrame) -> Result<Self> {
+        let mut plan = Self::new_with_options_at(
+            frame.source.as_str(),
+            frame.target.as_str(),
+            frame.options.clone(),
+            Arc::clone(&frame.state),
+        )?;
+        plan.geometry_frame = Some(frame);
+        Ok(plan)
+    }
+
+    pub(crate) fn output_frame(&self) -> &crate::crs::frame::Frame {
+        &self
+            .geometry_frame
+            .as_ref()
+            .expect("geometry transform plans retain their admitted output frame")
+            .output
     }
 
     pub(crate) fn execution(&self) -> TransformExecution {
@@ -130,13 +151,12 @@ impl TransformPlan {
     }
 
     /// Lazily resolve the output CRS ellipsoid against this plan's runtime snapshot.
-    pub(crate) fn target_metric_scratch<'a>(
-        &'a self,
-        target_crs: &'a str,
-    ) -> TransformMetricScratch<'a> {
+    pub(crate) fn target_metric_scratch(&self) -> TransformMetricScratch<'_> {
         TransformMetricScratch {
-            target_crs,
-            state: &self.state,
+            frame: self
+                .geometry_frame
+                .as_ref()
+                .expect("computed geometry publication retains its admitted target frame"),
             metric: None,
         }
     }
@@ -185,12 +205,8 @@ impl TransformPlan {
         Ok(())
     }
 
-    pub(crate) fn transform_shape_with_computed_edges(
-        &self,
-        shape: &Shape,
-        target_crs: &str,
-    ) -> Result<Shape> {
-        self.transform_shapes_with_computed_edges_indexed(&[shape], target_crs)
+    pub(crate) fn transform_shape_with_computed_edges(&self, shape: &Shape) -> Result<Shape> {
+        self.transform_shapes_with_computed_edges_indexed(&[shape])
             .map_err(|failure| failure.error)?
             .into_iter()
             .next()
@@ -205,7 +221,6 @@ impl TransformPlan {
     pub(crate) fn transform_shapes_with_computed_edges_indexed(
         &self,
         shapes: &[&Shape],
-        target_crs: &str,
     ) -> std::result::Result<Vec<Shape>, TransformFailure> {
         let mut output = self.transform_shapes_indexed_mode(shapes, true)?;
         if self.is_identity() {
@@ -214,7 +229,7 @@ impl TransformPlan {
         let Some(frame) = self.computed_geographic_frame() else {
             return Ok(output);
         };
-        let mut metric = self.target_metric_scratch(target_crs);
+        let mut metric = self.target_metric_scratch();
         for (index, (source, transformed)) in shapes.iter().zip(&mut output).enumerate() {
             *transformed = crate::geometry::publish_transformed_shape(
                 source,
@@ -743,20 +758,21 @@ pub(crate) struct TransformPlan {
     options: TransformOptions,
     source_domain: TopologyDomain,
     target_domain: TopologyDomain,
+    geometry_frame: Option<GeometryTransformFrame>,
 }
 
 /// One transform's target metric, materialized only when a generated sample
 /// carries an ordinate.
 pub(crate) struct TransformMetricScratch<'a> {
-    target_crs: &'a str,
-    state: &'a RuntimeState,
+    frame: &'a GeometryTransformFrame,
     metric: Option<crate::crs::GeodesicMetric>,
 }
 
 impl TransformMetricScratch<'_> {
     pub(crate) fn geodesic_metric(&mut self) -> Result<&crate::crs::GeodesicMetric> {
         if self.metric.is_none() {
-            let model = crate::crs::metric_model_at(Some(self.target_crs), self.state)?;
+            let model =
+                crate::crs::metric_model_at(Some(self.frame.target.as_str()), &self.frame.state)?;
             let metric = match crate::crs::ResolvedMetric::from_model(&model)? {
                 crate::crs::ResolvedMetric::Geodesic(metric) => metric,
                 crate::crs::ResolvedMetric::Planar { .. } => {
@@ -795,6 +811,39 @@ pub(super) enum TransformOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn computed_transform_plan(
+        source: &'static str,
+        target: &'static str,
+        options: TransformOptions,
+    ) -> TransformPlan {
+        let source_frame = crate::crs::frame::Frame::Crs(crate::crs::frame::crs_arc_static(source));
+        let frame = GeometryTransformFrame::new(
+            &source_frame,
+            crate::crs::frame::crs_arc_static(target),
+            None,
+            options,
+        )
+        .unwrap();
+        TransformPlan::from_geometry_frame(frame).unwrap()
+    }
+
+    #[test]
+    fn target_metric_comes_from_the_output_frame_owned_by_the_plan() {
+        let plan = computed_transform_plan("EPSG:3857", "EPSG:4326", TransformOptions::default());
+        assert_eq!(plan.output_frame().crs_str(), Some("EPSG:4326"));
+
+        let mut metric = plan.target_metric_scratch();
+        let target_metric = metric.geodesic_metric().unwrap();
+        assert_eq!(
+            target_metric.frame,
+            plan.computed_geographic_frame().unwrap(),
+        );
+        assert_eq!(
+            target_metric.state.generation,
+            plan.geometry_frame.as_ref().unwrap().state.generation,
+        );
+    }
 
     #[test]
     fn proj_numeric_target_geographic_output_canonicalizes_only_longitude() {
@@ -1063,10 +1112,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let plan = TransformPlan::new("EPSG:3857", "EPSG:4326").unwrap();
-        let output = plan
-            .transform_shape_with_computed_edges(&source, "EPSG:4326")
-            .unwrap();
+        let plan = computed_transform_plan("EPSG:3857", "EPSG:4326", TransformOptions::default());
+        let output = plan.transform_shape_with_computed_edges(&source).unwrap();
         let crate::geometry::Shape::LineString(output) = output else {
             panic!("to_crs retains a linestring result");
         };
@@ -1099,15 +1146,12 @@ mod tests {
             )
             .unwrap(),
         );
-        let plan = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
+        let plan = computed_transform_plan("EPSG:3857", "EPSG:4326", TransformOptions {
             force_over: true,
             ..TransformOptions::default()
-        })
-        .unwrap();
+        });
         let raw = plan.transform_shape(&source).unwrap();
-        let output = plan
-            .transform_shape_with_computed_edges(&source, "EPSG:4326")
-            .unwrap();
+        let output = plan.transform_shape_with_computed_edges(&source).unwrap();
         assert_eq!(output, raw);
         let crate::geometry::Shape::LineString(line) = output else {
             panic!("a raw transform retains its line");

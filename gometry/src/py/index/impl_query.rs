@@ -50,15 +50,16 @@ impl PySpatialIndex {
     /// immutable overflow runs.
     pub(crate) fn live_entries(&self) -> impl Iterator<Item = &IndexEntry> {
         self.bulk
-            .live_entries(&self.rows.live)
-            .chain(self.overflow.live_entries(&self.rows.live))
+            .live_entries(&self.rows.live_handles)
+            .chain(self.overflow.live_entries(&self.rows.live_handles))
     }
 
     /// Append every live handle whose envelope intersects `query`.
     pub(crate) fn collect_intersecting(&self, query: &AABB<[f64; 2]>, out: &mut Vec<usize>) {
-        self.bulk.append_intersecting(&self.rows.live, query, out);
+        self.bulk
+            .append_intersecting(&self.rows.live_handles, query, out);
         self.overflow
-            .append_intersecting(&self.rows.live, query, out);
+            .append_intersecting(&self.rows.live_handles, query, out);
     }
 
     /// Append every live handle whose envelope lies within squared distance
@@ -70,9 +71,9 @@ impl PySpatialIndex {
         out: &mut Vec<usize>,
     ) {
         self.bulk
-            .append_within_distance_2(&self.rows.live, point, max_distance_2, out);
+            .append_within_distance_2(&self.rows.live_handles, point, max_distance_2, out);
         self.overflow
-            .append_within_distance_2(&self.rows.live, point, max_distance_2, out);
+            .append_within_distance_2(&self.rows.live_handles, point, max_distance_2, out);
     }
 
     /// Append the handles whose envelopes meet `bounds`, ascending and unique
@@ -86,11 +87,11 @@ impl PySpatialIndex {
     /// Order the handles appended after `start` ascending, one per row — the
     /// form every candidate producer hands on. Retaining refinement keeps it.
     fn finish_candidates(&self, out: &mut Vec<usize>, start: usize) {
-        sort_unique_row_ids(out, start, self.rows.len());
+        sort_unique_row_ids(out, start, self.rows.next_handle);
     }
 
     fn append_live_handles(&self, out: &mut Vec<usize>) {
-        out.extend(self.live_entries().map(|entry| entry.idx));
+        self.rows.live_handles.append_ordered(out);
     }
 
     /// Visit each live row's matching higher handles for a symmetric predicate.
@@ -113,10 +114,9 @@ impl PySpatialIndex {
             None
         };
         let radius = distance.map_or(0.0, DwithinDistance::get);
-        let live = self.live_handles_sorted();
         let mut candidates = Vec::new();
         let mut products = self.rows.operation();
-        for &i in &live {
+        for i in self.rows.live_handles.iter() {
             // Symmetric relation: keep only j > i *before* the exact refine,
             // so each unordered pair is refined exactly once.
             let row = products.row(i)?;
@@ -1334,8 +1334,37 @@ mod tests {
     use super::*;
     use crate::array::BoundsSeed;
     use crate::crs::frame;
-    use crate::geometry::{CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel};
+    use crate::geometry::{
+        CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel, SharedSlice,
+    };
     use crate::py::index::{build_spatial_index, spatial_index};
+
+    fn public_point<'py>(py: Python<'py>, x: f64, y: f64) -> Bound<'py, PyAny> {
+        crate::Typed(PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(x, y))),
+            Frame::None,
+        ))
+        .into_pyobject(py)
+        .expect("point binds as its public typed geometry")
+        .into_any()
+    }
+
+    fn public_ids(value: &Bound<'_, PyAny>) -> Vec<i64> {
+        value
+            .call_method0("tolist")
+            .expect("index result supports tolist")
+            .extract::<Vec<i64>>()
+            .expect("index result contains signed handles")
+    }
+
+    fn assert_no_compact_point_rank(logical_len: usize, operation: &str) -> usize {
+        let bytes = crate::geometry::storage::validity::count_valid_bytes();
+        assert_eq!(
+            bytes, 0,
+            "compact nullable point {operation} scanned {bytes} validity bytes at M={logical_len}"
+        );
+        bytes
+    }
 
     #[test]
     fn refinement_kind_gate_precedes_geographic_admission() {
@@ -1479,6 +1508,333 @@ mod tests {
                     .extract::<Vec<i64>>()
                     .expect("query handles are integers"),
                 [0],
+            );
+        });
+    }
+
+    #[test]
+    fn compact_nullable_point_index_resolves_sparse_handles_without_span_rank() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let sys = py.import("sys").expect("sys module");
+            let copy_module = py.import("copy").expect("copy module");
+            let pickle_module = py.import("pickle").expect("pickle module");
+            let mut retained_deltas = Vec::new();
+            let mut allocation_counts = Vec::new();
+
+            for logical_len in [1_000_usize, 1_000_000, 100_000_000] {
+                let handles = [7_usize, 63, logical_len.wrapping_sub(1)];
+                let mut bitmap = vec![0_u8; logical_len.div_ceil(8)];
+                for &handle in &handles {
+                    *bitmap
+                        .get_mut(handle / 8)
+                        .expect("present handle is within the bitmap") |= 1 << (handle % 8);
+                }
+                let mask = crate::geometry::storage::ValidityMask::from_bitmap(
+                    SharedSlice::from_vec(bitmap),
+                    0,
+                    logical_len,
+                )
+                .expect("the fixture contains missing rows");
+                let present = PyGeometryArray::packed_points(
+                    CoordSeq::try_from_vecs(
+                        vec![10.0, 20.0, 30.0],
+                        vec![1.0, 2.0, 3.0],
+                        None,
+                        None,
+                    )
+                    .expect("three present point rows"),
+                    Frame::None,
+                )
+                .expect("packed present points");
+                let source_array = PyGeometryArray::scatter_present_rows(&present, mask)
+                    .expect("compact nullable point source");
+                assert_eq!(source_array.storage().len(), handles.len());
+                assert_eq!(
+                    source_array.missing().unwrap().present_count(),
+                    handles.len()
+                );
+                let source = Bound::new(py, source_array)
+                    .expect("source array binds")
+                    .into_any();
+                let native_index = build_spatial_index(py, &source)
+                    .expect("public spatial-index construction path");
+                assert_eq!(native_index.rows.next_handle, logical_len);
+                let packed = native_index
+                    .rows
+                    .packed
+                    .as_ref()
+                    .expect("compact points remain packed");
+                let directory = match &packed.addressing {
+                    super::super::PackedRowAddressing::PresentOrdinals(directory) => directory,
+                    super::super::PackedRowAddressing::Logical => {
+                        panic!("compact nullable points require original-present ordinals")
+                    },
+                };
+                assert_eq!(&**directory, &handles);
+                assert_eq!(directory.len(), handles.len());
+                assert_eq!(native_index.live_handles_sorted(), handles);
+                let index = Bound::new(py, native_index).expect("index binds");
+                let builtins = py.import("builtins").expect("builtins module");
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let listed = builtins
+                    .getattr("list")
+                    .unwrap()
+                    .call1((&index,))
+                    .expect("public index iteration");
+                assert_eq!(
+                    listed.extract::<Vec<usize>>().unwrap(),
+                    handles,
+                    "iteration preserves original present IDs at M={logical_len}"
+                );
+                assert_no_compact_point_rank(logical_len, "iteration");
+
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let source_size = sys
+                    .call_method1("getsizeof", (&source,))
+                    .expect("source size")
+                    .extract::<usize>()
+                    .expect("source size is an integer");
+                let index_size = sys
+                    .call_method1("getsizeof", (&index,))
+                    .expect("index size")
+                    .extract::<usize>()
+                    .expect("index size is an integer");
+                let retained_delta = index_size
+                    .checked_sub(source_size)
+                    .expect("the index includes its retained source");
+                assert_no_compact_point_rank(logical_len, "size");
+                retained_deltas.push(retained_delta);
+
+                let rows = [
+                    (7, 10.0, 1.0),
+                    (63, 20.0, 2.0),
+                    (logical_len - 1, 30.0, 3.0),
+                ];
+                let queries: Vec<_> = rows
+                    .iter()
+                    .map(|&(_, x, y)| public_point(py, x, y))
+                    .collect();
+                let dwithin = PyDict::new(py);
+                dwithin
+                    .set_item("predicate", "dwithin")
+                    .expect("dwithin predicate");
+                dwithin.set_item("distance", 0.0).expect("zero distance");
+
+                // The first public lookup is deliberately cold: it must not
+                // construct the source-wide compact validity rank directory.
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let first = index
+                    .call_method1("__getitem__", (7_usize,))
+                    .expect("cold public index lookup");
+                assert_no_compact_point_rank(logical_len, "cold lookup");
+                assert_eq!(first.getattr("x").unwrap().extract::<f64>().unwrap(), 10.0);
+                assert_eq!(first.getattr("y").unwrap().extract::<f64>().unwrap(), 1.0);
+
+                let mut validity_counts = Vec::new();
+                for ((handle, x, y), query) in rows.iter().zip(&queries) {
+                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    let item = index
+                        .call_method1("__getitem__", (*handle,))
+                        .expect("public index lookup");
+                    assert_no_compact_point_rank(logical_len, "lookup");
+                    assert_eq!(item.getattr("x").unwrap().extract::<f64>().unwrap(), *x);
+                    assert_eq!(item.getattr("y").unwrap().extract::<f64>().unwrap(), *y);
+                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+
+                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    let matched = index
+                        .call_method1("query", (query,))
+                        .expect("public exact query");
+                    assert_eq!(public_ids(&matched), [i64::try_from(*handle).unwrap()]);
+                    assert_no_compact_point_rank(logical_len, "query");
+                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+
+                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    let nearest = index
+                        .call_method1("nearest", (query,))
+                        .expect("public nearest");
+                    assert_eq!(public_ids(&nearest), [i64::try_from(*handle).unwrap()]);
+                    assert_no_compact_point_rank(logical_len, "nearest");
+                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+
+                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    let within = index
+                        .call_method("query", (query,), Some(&dwithin))
+                        .expect("public exact dwithin");
+                    assert_eq!(public_ids(&within), [i64::try_from(*handle).unwrap()]);
+                    assert_no_compact_point_rank(logical_len, "dwithin");
+                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+                }
+
+                let (looked_up, lookup_allocations) = crate::test_support::allocation_count(|| {
+                    index
+                        .call_method1("__getitem__", (7_usize,))
+                        .expect("warmed public lookup")
+                });
+                assert_no_compact_point_rank(logical_len, "measured lookup");
+                drop(looked_up);
+                let (matched, query_allocations) = crate::test_support::allocation_count(|| {
+                    index
+                        .call_method1("query", (&queries[0],))
+                        .expect("warmed public query")
+                });
+                assert_eq!(public_ids(&matched), [7]);
+                assert_no_compact_point_rank(logical_len, "measured query");
+                let (nearest, nearest_allocations) = crate::test_support::allocation_count(|| {
+                    index
+                        .call_method1("nearest", (&queries[0],))
+                        .expect("warmed public nearest")
+                });
+                assert_eq!(public_ids(&nearest), [7]);
+                assert_no_compact_point_rank(logical_len, "measured nearest");
+                let (within, dwithin_allocations) = crate::test_support::allocation_count(|| {
+                    index
+                        .call_method("query", (&queries[0],), Some(&dwithin))
+                        .expect("warmed public dwithin")
+                });
+                assert_eq!(public_ids(&within), [7]);
+                assert_no_compact_point_rank(logical_len, "measured dwithin");
+                allocation_counts.push([
+                    lookup_allocations,
+                    query_allocations,
+                    nearest_allocations,
+                    dwithin_allocations,
+                    0,
+                    0,
+                    0,
+                ]);
+
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let (copied, copy_allocations) = crate::test_support::allocation_count(|| {
+                    copy_module
+                        .call_method1("copy", (&index,))
+                        .expect("public copy")
+                });
+                assert_no_compact_point_rank(logical_len, "copy");
+                allocation_counts.last_mut().unwrap()[4] = copy_allocations;
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                assert!(
+                    copied
+                        .call_method1("remove", (7_usize,))
+                        .expect("remove from copy")
+                        .extract::<bool>()
+                        .expect("remove returns bool")
+                );
+                assert_no_compact_point_rank(logical_len, "copy removal");
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                assert_eq!(
+                    public_ids(&index.call_method1("query", (&queries[0],)).unwrap()),
+                    [7]
+                );
+                assert_no_compact_point_rank(logical_len, "query after copy removal");
+
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let (serialized, pickle_write_allocations) =
+                    crate::test_support::allocation_count(|| {
+                        pickle_module
+                            .call_method1("dumps", (&index,))
+                            .expect("public pickle write")
+                    });
+                assert_no_compact_point_rank(logical_len, "pickle write");
+                allocation_counts.last_mut().unwrap()[5] = pickle_write_allocations;
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let (restored, pickle_read_allocations) =
+                    crate::test_support::allocation_count(|| {
+                        pickle_module
+                            .call_method1("loads", (&serialized,))
+                            .expect("public pickle restore")
+                    });
+                assert_no_compact_point_rank(logical_len, "pickle restore");
+                allocation_counts.last_mut().unwrap()[6] = pickle_read_allocations;
+                let restored_low = restored.call_method1("__getitem__", (7_usize,)).unwrap();
+                assert_eq!(
+                    public_ids(&restored.call_method1("query", (&restored_low,)).unwrap()),
+                    [7]
+                );
+
+                let restored_high = restored
+                    .call_method1("__getitem__", (logical_len - 1,))
+                    .unwrap();
+                assert_eq!(
+                    public_ids(&restored.call_method1("query", (&restored_high,)).unwrap()),
+                    [i64::try_from(logical_len - 1).unwrap()]
+                );
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let restored_next = restored
+                    .call_method1("insert", (&restored_high,))
+                    .expect("restored index insert")
+                    .extract::<usize>()
+                    .expect("insert returns a handle");
+                assert_eq!(restored_next, logical_len);
+                assert_no_compact_point_rank(logical_len, "restored insertion");
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                assert_eq!(
+                    public_ids(&restored.call_method1("query", (&restored_high,)).unwrap()),
+                    [
+                        i64::try_from(logical_len - 1).unwrap(),
+                        i64::try_from(logical_len).unwrap(),
+                    ]
+                );
+                assert_no_compact_point_rank(logical_len, "restored boxed query");
+
+                for handle in [7_usize, 63] {
+                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    assert!(
+                        index
+                            .call_method1("remove", (handle,))
+                            .expect("public removal")
+                            .extract::<bool>()
+                            .expect("remove returns bool")
+                    );
+                    assert_no_compact_point_rank(logical_len, "remove");
+                }
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let last = index
+                    .call_method1("__getitem__", (logical_len - 1,))
+                    .expect("last sparse point remains addressable");
+                assert_eq!(last.getattr("x").unwrap().extract::<f64>().unwrap(), 30.0);
+                assert_no_compact_point_rank(logical_len, "lookup after removals");
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let last_nearest = index
+                    .call_method1("nearest", (&queries[2],))
+                    .expect("last point remains nearest");
+                assert_eq!(public_ids(&last_nearest), [
+                    i64::try_from(logical_len - 1).unwrap()
+                ]);
+                assert_no_compact_point_rank(logical_len, "nearest after removals");
+
+                let inserted_point = public_point(py, 40.0, 4.0);
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let inserted = index
+                    .call_method1("insert", (&inserted_point,))
+                    .expect("boxed insertion")
+                    .extract::<usize>()
+                    .expect("insert returns a handle");
+                assert_eq!(inserted, logical_len);
+                assert_no_compact_point_rank(logical_len, "boxed insertion");
+                crate::geometry::storage::validity::reset_count_valid_bytes();
+                let inserted_query = index
+                    .call_method1("query", (&inserted_point,))
+                    .expect("boxed query after packed rows");
+                assert_eq!(public_ids(&inserted_query), [
+                    i64::try_from(logical_len).unwrap()
+                ]);
+                assert_no_compact_point_rank(logical_len, "boxed query");
+
+                eprintln!(
+                    "compact_point_span M={logical_len} retained_delta={retained_delta} validity_counts={validity_counts:?} allocation_requests={:?}",
+                    allocation_counts.last().expect("measured operations")
+                );
+            }
+
+            assert!(
+                retained_deltas.windows(2).all(|pair| pair[0] == pair[1]),
+                "index-minus-source retained heap must not grow with M: {retained_deltas:?}"
+            );
+            assert!(
+                allocation_counts.windows(2).all(|pair| pair[0] == pair[1]),
+                "warmed public operation allocation requests must not grow with M: {allocation_counts:?}"
             );
         });
     }

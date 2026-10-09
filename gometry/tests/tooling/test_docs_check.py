@@ -10,19 +10,21 @@ Drives the real shipped helpers in ``tools/docs/``:
 from __future__ import annotations
 
 import ast
+import html
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import griffe
+import pytest
 from jinja2 import (
     ChoiceLoader,
     DictLoader,
     Environment,
     FileSystemLoader,
     TemplateNotFound,
-    pass_context,
 )
 from markupsafe import Markup, escape
 
@@ -32,8 +34,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
+_CHECK: Any = None
+
+
 def _check():
-    return load_tool('docs_check', GOMETRY_ROOT / 'tools/docs/check.py')
+    global _CHECK
+    if _CHECK is None:
+        _CHECK = load_tool('docs_check', GOMETRY_ROOT / 'tools/docs/check.py')
+    return _CHECK
 
 
 def _write_site(tmp_path: Path, pages: dict[str, str]) -> Path:
@@ -45,40 +53,18 @@ def _write_site(tmp_path: Path, pages: dict[str, str]) -> Path:
     return site
 
 
-def _render_signature_block(function: Any) -> tuple[str, tuple[Any, ...]]:
-    forms = tuple(function.overloads or ()) or (function,)
-    markers = {id(form): f'form-{index}' for index, form in enumerate(forms)}
+_EXPAND: Any = None
 
-    def format_signature(_body: str, form: Any, *_args: Any, **_kwargs: Any) -> Markup:
-        return Markup('<span data-form="{}"></span>').format(markers[id(form)])
 
-    template_dir = GOMETRY_ROOT / 'overrides/mkdocstrings/python/material'
-    environment = Environment(
-        loader=ChoiceLoader([
-            FileSystemLoader(str(template_dir)),
-            DictLoader({
-                '_base/function.html.jinja': (
-                    '{% block signature scoped %}{% endblock signature %}'
-                ),
-            }),
-        ]),
-        autoescape=True,
-    )
-    environment.filters['format_signature'] = format_signature
-    template = environment.get_template('function.html.jinja')
-    rendered = template.render(
-        function=function,
-        config=SimpleNamespace(
-            separate_signature=True,
-            line_length=88,
-            signature_crossrefs=True,
-        ),
-    )
-    return rendered, forms
+def _expand():
+    global _EXPAND
+    if _EXPAND is None:
+        _EXPAND = load_tool('griffe_expand_aliases')
+    return _EXPAND
 
 
 def _load_griffe_model() -> griffe.Module:
-    expand = load_tool('griffe_expand_aliases')
+    expand = _expand()
     loader = griffe.GriffeLoader(
         search_paths=[str(GOMETRY_ROOT / 'python')],
         extensions=griffe.Extensions(
@@ -95,6 +81,115 @@ def _load_griffe_model() -> griffe.Module:
     return pkg
 
 
+def _handler_environment(*, line_length: int = 88) -> tuple[Environment, Any]:
+    from mkdocstrings_handlers.python._internal.config import PythonOptions
+    from mkdocstrings_handlers.python._internal.rendering import (
+        do_format_signature,
+        do_split_path,
+        do_stash_crossref,
+    )
+    from pygments import highlight
+    from pygments.formatters import HtmlFormatter
+    from pygments.lexers import get_lexer_by_name
+
+    template_root = (
+        Path(do_format_signature.__code__.co_filename).parents[1] / 'templates/material'
+    )
+    template_dir = GOMETRY_ROOT / 'overrides/mkdocstrings/python/material'
+    environment = Environment(
+        loader=ChoiceLoader([
+            FileSystemLoader(str(template_dir)),
+            DictLoader({
+                '_base/class.html.jinja': (
+                    '<div class="doc doc-object doc-class">'
+                    '<h2 id="{{ class.path }}">{{ class.name }}</h2>'
+                    '{% block signature scoped %}{% endblock signature %}'
+                    '{% block docstring scoped %}{% endblock docstring %}'
+                    '</div>'
+                ),
+                '_base/function.html.jinja': (
+                    '<div class="doc doc-object doc-function">'
+                    '<h3 id="{{ function.path }}">{{ function.name }}</h3>'
+                    '{% block signature scoped %}{% endblock signature %}'
+                    '</div>'
+                ),
+            }),
+            FileSystemLoader(str(template_root)),
+        ]),
+        autoescape=True,
+    )
+    environment.filters['split_path'] = do_split_path
+    environment.filters['stash_crossref'] = do_stash_crossref
+    environment.filters['any'] = any
+    environment.filters['convert_markdown'] = lambda value, *_args, **_kwargs: escape(
+        str(value)
+    )
+    environment.filters['heading'] = lambda *_args, **_kwargs: ''
+
+    def pygments_highlight(
+        source: Any,
+        *,
+        language: str,
+        inline: bool = False,
+        classes: Iterable[str] = (),
+        linenums: bool = False,
+        **_kwargs: Any,
+    ) -> Markup:
+        del inline
+        return Markup(  # noqa: S704
+            highlight(
+                html.unescape(str(source)),
+                get_lexer_by_name(language),
+                HtmlFormatter(
+                    cssclass=' '.join(classes) or 'highlight',
+                    linenos=linenums,
+                ),
+            )
+        )
+
+    environment.filters['highlight'] = pygments_highlight
+    environment.filters['format_signature'] = do_format_signature
+    environment.globals['AutorefsHook'] = lambda *_args: object()
+    environment.globals['log'] = SimpleNamespace(debug=lambda *_args: '')
+    environment.globals['locale'] = 'en'
+    environment.tests['existing_template'] = lambda name: _template_exists(
+        environment,
+        name,
+    )
+    options = PythonOptions.from_data(
+        merge_init_into_class=True,
+        separate_signature=True,
+        show_signature_annotations=True,
+        show_signature_type_parameters=True,
+        signature_crossrefs=True,
+        parameter_headings=False,
+        line_length=line_length,
+        docstring_section_style='table',
+    )
+    return environment, options
+
+
+def _render_function_reference(
+    function: griffe.Function,
+    *,
+    line_length: int = 88,
+) -> str:
+    from mkdocstrings_handlers.python._internal.rendering import do_stash_crossref
+
+    environment, options = _handler_environment(line_length=line_length)
+    do_stash_crossref.stash.clear()
+    try:
+        return environment.get_template('function.html.jinja').render(
+            function=function,
+            config=options,
+            heading_level=2,
+            root=True,
+            root_members=True,
+        )
+    finally:
+        do_stash_crossref.stash.clear()
+
+
 class _ClassReference(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -102,7 +197,6 @@ class _ClassReference(HTMLParser):
         self.disclosures: list[dict[str, Any]] = []
         self.disclosure: dict[str, Any] | None = None
         self.summary: list[str] | None = None
-        self.signature: list[str] | None = None
         self.rows: list[list[str]] = []
         self.row: list[str] | None = None
         self.cell: list[str] | None = None
@@ -118,16 +212,10 @@ class _ClassReference(HTMLParser):
             self.disclosure = {
                 'open': 'open' in attrs,
                 'summary': [],
-                'signatures': [],
             }
             self.disclosures.append(self.disclosure)
         elif tag == 'summary' and self.disclosure is not None:
             self.summary = self.disclosure['summary']
-        elif (
-            tag == 'pre' and 'doc-signature' in classes and self.disclosure is not None
-        ):
-            self.signature = []
-            self.disclosure['signatures'].append(self.signature)
         elif tag == 'tr' and 'doc-section-item' in classes:
             self.row = []
         elif tag == 'td' and self.row is not None:
@@ -136,8 +224,6 @@ class _ClassReference(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag == 'summary':
             self.summary = None
-        elif tag == 'pre':
-            self.signature = None
         elif tag == 'td' and self.cell is not None and self.row is not None:
             self.row.append(' '.join(''.join(self.cell).split()))
             self.cell = None
@@ -150,111 +236,147 @@ class _ClassReference(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self.summary is not None:
             self.summary.append(data)
-        if self.signature is not None:
-            self.signature.append(data)
         if self.cell is not None:
             self.cell.append(data)
 
 
-def _render_class_reference(class_obj: griffe.Class) -> str:
-    from mkdocstrings_handlers.python._internal.config import PythonOptions
-    from mkdocstrings_handlers.python._internal.rendering import (
-        do_format_signature,
-        do_split_path,
-        do_stash_crossref,
-    )
+def _render_class_reference(
+    class_obj: griffe.Class,
+    *,
+    line_length: int = 88,
+) -> str:
+    from mkdocstrings_handlers.python._internal.rendering import do_stash_crossref
 
-    template_root = (
-        Path(do_format_signature.__code__.co_filename).parents[1] / 'templates/material'
-    )
-    loader = ChoiceLoader([
-        FileSystemLoader(str(GOMETRY_ROOT / 'overrides/mkdocstrings/python/material')),
-        DictLoader({
-            '_base/class.html.jinja': (
-                '<h2 id="{{ class.path }}">{{ class.name }}</h2>'
-                '{% block signature scoped %}{% endblock signature %}'
-                '{% block docstring scoped %}{% endblock docstring %}'
-            ),
-        }),
-        FileSystemLoader(str(template_root)),
-    ])
-    environment = Environment(loader=loader, autoescape=True)
-    environment.filters['split_path'] = do_split_path
-    environment.filters['stash_crossref'] = do_stash_crossref
-    environment.filters['any'] = any
-    environment.filters['convert_markdown'] = lambda value, *_args, **_kwargs: escape(
-        str(value)
-    )
-    environment.filters['heading'] = lambda *_args, **_kwargs: ''
+    environment, options = _handler_environment(line_length=line_length)
+    do_stash_crossref.stash.clear()
+    try:
+        return environment.get_template('class.html.jinja').render(**{
+            'class': class_obj,
+            'class_name': class_obj.name,
+            'config': options,
+            'heading_level': 2,
+            'html_id': class_obj.path,
+            'locale': 'en',
+            'root': True,
+            'root_members': True,
+        })
+    finally:
+        do_stash_crossref.stash.clear()
 
-    def highlight(
-        source: Any, *, classes: Iterable[str] = (), **_kwargs: Any
-    ) -> Markup:
-        class_names = ' '.join(classes)
-        # The formatter escapes signature text before this test highlighter wraps it.
-        rendered = str(source)
-        name, _, tail = rendered.partition('(')
-        parameters, separator, suffix = tail.rpartition(')')
-        if not separator:
-            parameters, suffix = tail, ''
-        # Preserve escaped formatter text and expose its terminal punctuation.
-        code = Markup(  # noqa: S704
-            f'<span class="nf">{name}</span><span class="p">(</span>'
-            f'<span class="n">{parameters}</span><span class="p">)</span>{suffix}'
+
+def _source_class_call_forms(
+    stub: Path,
+    class_name: str,
+) -> tuple[Any, ...]:
+    check = _check()
+    tree = ast.parse(stub.read_text(encoding='utf-8'))
+    class_node = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    constructor_name = next(
+        (
+            name
+            for name in ('__new__', '__init__')
+            if any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == name
+                for node in class_node.body
+            )
+        ),
+        None,
+    )
+    assert constructor_name is not None
+    definitions = [
+        node
+        for node in class_node.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == constructor_name
+    ]
+    overloads = [
+        node
+        for node in definitions
+        if any(
+            isinstance(decorator, ast.Name) and decorator.id == 'overload'
+            for decorator in node.decorator_list
         )
-        return Markup('<div class="highlight"><pre class="{}">{}</pre></div>').format(
-            class_names,
-            code,
-        )
-
-    @pass_context
-    def format_signature(
-        context: Any,
-        callable_path: Markup,
-        function: griffe.Function,
-        line_length: int,
-        **kwargs: Any,
-    ) -> Markup:
-        # The installed formatter returns its trusted highlighted signature HTML.
-        return Markup(  # noqa: S704
-            do_format_signature(
-                context,
-                callable_path,
-                function,
-                line_length,
-                **kwargs,
+    ]
+    forms = overloads or definitions
+    result = []
+    for function in forms:
+        args = function.args
+        positional = [*args.posonlyargs, *args.args]
+        defaults: list[ast.expr | None] = [None] * (
+            len(positional) - len(args.defaults)
+        ) + list(args.defaults)
+        positional = positional[1:]
+        defaults = defaults[1:]
+        parameters = []
+        for index, (argument, default) in enumerate(
+            zip(positional, defaults, strict=True)
+        ):
+            parameters.append((
+                'positional-only'
+                if index < max(0, len(args.posonlyargs) - 1)
+                else 'positional or keyword',
+                argument.arg,
+                ast.unparse(argument.annotation)
+                if argument.annotation is not None
+                else None,
+                ast.unparse(default) if default is not None else None,
+            ))
+        if args.vararg is not None:
+            parameters.append((
+                'variadic positional',
+                args.vararg.arg,
+                ast.unparse(args.vararg.annotation)
+                if args.vararg.annotation is not None
+                else None,
+                None,
+            ))
+        for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+            parameters.append((
+                'keyword-only',
+                argument.arg,
+                ast.unparse(argument.annotation)
+                if argument.annotation is not None
+                else None,
+                ast.unparse(default) if default is not None else None,
+            ))
+        if args.kwarg is not None:
+            parameters.append((
+                'variadic keyword',
+                args.kwarg.arg,
+                ast.unparse(args.kwarg.annotation)
+                if args.kwarg.annotation is not None
+                else None,
+                None,
+            ))
+        returns = (
+            class_name
+            if constructor_name == '__init__'
+            or (
+                isinstance(function.returns, ast.Name) and function.returns.id == 'Self'
+            )
+            else (
+                ast.unparse(function.returns) if function.returns is not None else None
             )
         )
+        result.append(check.RenderedCallForm(tuple(parameters), returns))
+    return tuple(result)
 
-    environment.filters['highlight'] = highlight
-    environment.filters['format_signature'] = format_signature
-    environment.globals['AutorefsHook'] = lambda *_args: object()
-    environment.globals['log'] = SimpleNamespace(debug=lambda *_args: '')
-    environment.globals['locale'] = 'en'
-    environment.tests['existing_template'] = lambda name: _template_exists(
-        environment,
-        name,
+
+def _form_shape(
+    form: Any,
+) -> tuple[tuple[tuple[str, str, str | None], ...], str | None]:
+    return (
+        tuple(
+            (kind, name, default)
+            for kind, name, _annotation, default in form.parameters
+        ),
+        form.returns,
     )
-    options = PythonOptions.from_data(
-        merge_init_into_class=True,
-        separate_signature=True,
-        show_signature_annotations=True,
-        show_signature_type_parameters=False,
-        signature_crossrefs=False,
-        line_length=4096,
-        parameter_headings=False,
-        docstring_section_style='table',
-    )
-    return environment.get_template('class.html.jinja').render(**{
-        'class': class_obj,
-        'class_name': class_obj.name,
-        'config': options,
-        'heading_level': 2,
-        'html_id': class_obj.path,
-        'locale': 'en',
-        'root': True,
-        'root_members': True,
-    })
 
 
 def _template_exists(environment: Environment, name: str) -> bool:
@@ -323,6 +445,129 @@ def test_rendered_see_also_links_target_public_symbols(tmp_path: Path) -> None:
     invalid_errors = check.collect_errors(invalid)
     assert any('does not target a public API symbol' in e for e in invalid_errors), (
         invalid_errors
+    )
+
+
+def test_rendered_signature_parser_keeps_tokens_and_parameter_kinds() -> None:
+    check = _check()
+    source = """\
+<div class="doc doc-object doc-class">
+  <h2 id="gometry.Widget">Widget</h2>
+  <div class="doc doc-object doc-function">
+    <h3 id="gometry.Widget.build">build</h3>
+    <div class="doc-signature highlight"><pre>
+      <span class="n">build</span><span class="p">(</span><span class="n">in</span><span class="n">t</span><span class="p">:</span>
+      <span class="n">int</span><span class="p">,</span> <span class="o">/</span><span class="p">,</span>
+      <span class="n">flag</span><span class="p">:</span> <span class="n">bool</span> <span class="o">=</span>
+      <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span>
+      <span class="n">name</span><span class="p">:</span> <span class="n">str</span> <span class="o">=</span>
+      <span class="s1">&#39;a/b&#39;</span><span class="p">)</span><span class="o">-&gt;</span> <span class="nb">str</span>
+    </pre></div>
+  </div>
+</div>
+"""
+    parsed = check.rendered_call_forms(source)
+    assert set(parsed) == {'gometry.Widget.build'}
+    signature = parsed['gometry.Widget.build'][0]
+    assert signature.form == check.RenderedCallForm(
+        (
+            ('positional-only', 'int', 'int', None),
+            ('positional or keyword', 'flag', 'bool', 'None'),
+            ('keyword-only', 'name', 'str', "'a/b'"),
+        ),
+        'str',
+    )
+
+    missing_slash = check._signature_form(signature.source.replace(', /', '', 1))
+    assert missing_slash != signature.form
+    missing_star = check._signature_form(signature.source.replace('*,', '', 1))
+    assert missing_star != signature.form
+
+
+def test_real_handler_renders_parameter_kinds_and_default_states(
+    tmp_path: Path,
+) -> None:
+    source = """\
+def positional_only(value: int, /) -> str: ...
+def mixed(value: int, /, label: str = 'x/y', *, limit: int = 7, pairs: tuple[int, int] = (1, 2)) -> bool: ...
+def variadic(*args: int, flag: bool = False, **kwargs: str) -> None: ...
+def keyword_variadic(**kwargs: str) -> int: ...
+def empty() -> None: ...
+
+class Methods:
+    def method(self, value: int, /) -> str: ...
+"""
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    stub = package / '__init__.pyi'
+    stub.write_text(source, encoding='utf-8')
+    loader = griffe.GriffeLoader(search_paths=[str(tmp_path)], allow_inspection=False)
+    module = loader.load('gometry')
+    check = _check()
+    expected = {
+        'positional_only': check.RenderedCallForm(
+            (('positional-only', 'value', 'int', None),),
+            'str',
+        ),
+        'mixed': check.RenderedCallForm(
+            (
+                ('positional-only', 'value', 'int', None),
+                ('positional or keyword', 'label', 'str', "'x/y'"),
+                ('keyword-only', 'limit', 'int', '7'),
+                ('keyword-only', 'pairs', 'tuple[int, int]', '(1, 2)'),
+            ),
+            'bool',
+        ),
+        'variadic': check.RenderedCallForm(
+            (
+                ('variadic positional', 'args', 'int', None),
+                ('keyword-only', 'flag', 'bool', 'False'),
+                ('variadic keyword', 'kwargs', 'str', None),
+            ),
+            'None',
+        ),
+        'keyword_variadic': check.RenderedCallForm(
+            (('variadic keyword', 'kwargs', 'str', None),),
+            'int',
+        ),
+        'empty': check.RenderedCallForm((), 'None'),
+    }
+
+    for name, expected_form in expected.items():
+        function = module.members[name]
+        assert isinstance(function, griffe.Function)
+        rendered = _render_function_reference(
+            function,
+            line_length=48 if name == 'mixed' else 88,
+        )
+        signatures = check.rendered_call_forms(rendered)
+        path = f'gometry.{name}'
+        assert tuple(item.form for item in signatures[path]) == (expected_form,)
+        assert 'class="doc-signature"' in rendered
+        if expected_form.parameters:
+            assert '<autoref identifier=' in rendered
+
+    method = module.members['Methods'].members['method']
+    assert isinstance(method, griffe.Function)
+    rendered_method = _render_function_reference(method)
+    method_form = check.rendered_call_forms(rendered_method)['gometry.Methods.method'][
+        0
+    ]
+    assert method_form.form == check.RenderedCallForm(
+        (('positional-only', 'value', 'int', None),),
+        'str',
+    )
+
+    rendered_variadic = check.rendered_call_forms(
+        _render_function_reference(module.members['variadic'])
+    )['gometry.variadic'][0]
+    assert (
+        check._signature_form(rendered_variadic.source.replace('*args', 'args', 1))
+        != expected['variadic']
+    )
+    assert (
+        check._signature_form(rendered_variadic.source.replace('**kwargs', 'kwargs', 1))
+        != expected['variadic']
     )
 
 
@@ -440,6 +685,18 @@ class Geometry:
         Returns
         -------
         GeometryArray[float]
+        """
+
+_GroupValuesT_co = TypeVar('_GroupValuesT_co', covariant=True)
+
+class Groups:
+    @property
+    def values(self) -> _GroupValuesT_co:
+        """The flat payload, which may be a GeometryArray.
+
+        Returns
+        -------
+        numpy.ndarray or GeometryArray or CellArray
         """
 
 class GeometryArray:
@@ -702,7 +959,7 @@ def test_function_alias_materializer_ignores_broken_external_and_class_targets()
     None
 ):
     """Only resolvable package functions enter the public model."""
-    expand = load_tool('griffe_expand_aliases')
+    expand = _expand()
     loader = griffe.GriffeLoader(
         search_paths=[str(GOMETRY_ROOT / 'python')],
         allow_inspection=False,
@@ -758,6 +1015,7 @@ def test_griffe_preserves_all_accepted_forms_in_authored_order() -> None:
 
 def test_function_template_renders_every_accepted_form_once_in_order() -> None:
     pkg = _load_griffe_model()
+    check = _check()
     point = pkg.members['Point']
     geometry = pkg.members['Geometry']
     assert isinstance(point, griffe.Class)
@@ -771,22 +1029,66 @@ def test_function_template_renders_every_accepted_form_once_in_order() -> None:
     )
 
     for function in functions:
-        rendered, forms = _render_signature_block(function)
-        markers = [
-            f'<span data-form="form-{index}"></span>' for index, _ in enumerate(forms)
+        rendered = _render_function_reference(function)
+        actual = check.rendered_call_forms(rendered)[function.canonical_path]
+        doc_model = load_tool(
+            'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+        )
+        lib = pkg.members['_lib']
+        assert isinstance(lib, griffe.Module)
+        aliases = doc_model.annotation_aliases(pkg)
+        class_name, method_name = function.canonical_path.rsplit('.', 2)[-2:]
+        stub_tree = ast.parse(doc_model.STUB.read_text(encoding='utf-8'))
+        class_node = next(
+            node
+            for node in stub_tree.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        )
+        definitions = [
+            node
+            for node in class_node.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == method_name
+            and any(
+                isinstance(decorator, ast.Name) and decorator.id == 'overload'
+                for decorator in node.decorator_list
+            )
+            and not doc_model._stub_is_never(node.returns, lib, aliases)
         ]
+        source_forms = tuple(
+            doc_model._stub_call_form(
+                node,
+                lib,
+                aliases,
+                receiver='self',
+            )
+            for node in definitions
+        )
+        assert source_forms and all(form is not None for form in source_forms)
+        expected = tuple(
+            check.RenderedCallForm(*form) for form in source_forms if form is not None
+        )
         assert function.overloads
         assert '<details open class="doc-overloads-details">' in rendered
         assert '<summary>Accepted call forms</summary>' in rendered
         assert 'doc-canonical-signature' not in rendered
-        assert rendered.count('<span data-form=') == len(forms)
-        assert all(rendered.count(marker) == 1 for marker in markers)
-        assert [rendered.index(marker) for marker in markers] == sorted(
-            rendered.index(marker) for marker in markers
+        assert tuple(_form_shape(item.form) for item in actual) == tuple(
+            _form_shape(form) for form in expected
         )
+        assert '<autoref identifier=' in rendered
+        blocks = re.findall(
+            r'<div class="doc-signature(?: highlight)?">.*?</div>',
+            rendered,
+            flags=re.DOTALL,
+        )
+        assert len(blocks) == len(expected)
+        duplicated = rendered.replace(blocks[1], blocks[0], 1)
+        mutated = check.rendered_call_forms(duplicated)[function.canonical_path]
+        assert tuple(item.form for item in mutated) != expected
 
 
 def test_function_template_keeps_ordinary_and_single_form_signatures() -> None:
+    check = _check()
     pkg = _load_griffe_model()
     geometry = pkg.members['Geometry']
     assert isinstance(geometry, griffe.Class)
@@ -795,20 +1097,15 @@ def test_function_template_keeps_ordinary_and_single_form_signatures() -> None:
     assert isinstance(ordinary, griffe.Function)
     assert ordinary.canonical_path == 'gometry.Geometry.minimum_clearance'
     assert not ordinary.overloads
-    ordinary_html, ordinary_forms = _render_signature_block(ordinary)
-    assert ordinary_forms == (ordinary,)
+    ordinary_html = _render_function_reference(ordinary)
+    ordinary_forms = check.rendered_call_forms(ordinary_html)[ordinary.canonical_path]
     assert '<div class="doc-canonical-signature">' in ordinary_html
     assert '<details' not in ordinary_html
-    assert ordinary_html.count('<span data-form=') == 1
-
-    accepted_form = SimpleNamespace(name='sample', returns='Point')
-    single_form = SimpleNamespace(name='sample', returns='Point')
-    single_form.overloads = [accepted_form]
-    single_html, single_forms = _render_signature_block(single_form)
-    assert single_forms == (accepted_form,)
-    assert '<details open class="doc-overloads-details">' in single_html
-    assert 'doc-canonical-signature' not in single_html
-    assert single_html.count('<span data-form="form-0"></span>') == 1
+    assert len(ordinary_forms) == 1
+    assert ordinary_forms[0].form == check.RenderedCallForm(
+        (('keyword-only', 'unit', "Literal['planar', 'meters'] | None", 'None'),),
+        'float',
+    )
 
 
 def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
@@ -816,7 +1113,7 @@ def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
     doc_model = load_tool(
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
-    expand = load_tool('griffe_expand_aliases')
+    expand = _expand()
     names = {
         'Point',
         'LineString',
@@ -912,9 +1209,28 @@ def test_constructor_parameter_tables_show_authored_defaults() -> None:
         )
 
 
-def test_constructor_class_template_uses_the_handler_formatter_once_per_form() -> None:
+def test_constructor_class_template_renders_the_source_ast_form_sequence() -> None:
     pkg = _load_griffe_model()
-    expand = load_tool('griffe_expand_aliases')
+    check = _check()
+    doc_model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    expand = _expand()
+    lib = pkg.members['_lib']
+    assert isinstance(lib, griffe.Module)
+    source_contracts = doc_model._stub_constructor_contracts(
+        lib,
+        doc_model.annotation_aliases(pkg),
+        {
+            'Point',
+            'LineString',
+            'Polygon',
+            'CellArray',
+            'GeometryArray',
+            'CRS',
+            'GeohashCell',
+        },
+    )
     for name in (
         'Point',
         'LineString',
@@ -928,25 +1244,79 @@ def test_constructor_class_template_uses_the_handler_formatter_once_per_form() -
         assert isinstance(class_obj, griffe.Class)
         binding = expand.constructor_binding(class_obj)
         assert binding is not None, name
-        parser = _ClassReference()
         html = _render_class_reference(class_obj)
+        parser = _ClassReference()
         parser.feed(html)
+        actual = check.rendered_call_forms(html)[class_obj.canonical_path]
+        expected = tuple(
+            check.RenderedCallForm(parameters, returns)
+            for parameters, returns in source_contracts[class_obj.canonical_path].forms
+        )
         assert parser.ids.count(class_obj.path) == 1, name
         assert len(parser.disclosures) == 1, name
         assert parser.disclosures[0]['open'], name
-        rendered = [
-            ' '.join(''.join(signature).split()).replace('np.', '')
-            for signature in parser.disclosures[0]['signatures']
-        ]
-        expected = [
-            ' '.join(form.signature(name=name).split()).replace('np.', '')
-            for form in binding.overloads or ()
-        ]
-        assert rendered == expected, (
-            f'{name}: rendered={rendered!r}, expected={expected!r}, html={html!r}'
-        )
+        assert tuple(_form_shape(item.form) for item in actual) == tuple(
+            _form_shape(form) for form in expected
+        ), name
+        assert len(actual) == len(binding.overloads or (binding,)), name
+        assert '<autoref identifier=' in html, name
         assert f'{class_obj.path}.__new__' not in html, name
         assert f'{class_obj.path}.__init__' not in html, name
+        blocks = re.findall(
+            r'<div class="doc-signature(?: highlight)?">.*?</div>',
+            html,
+            flags=re.DOTALL,
+        )
+        assert len(blocks) == len(expected), name
+        if len(expected) > 1:
+            duplicated = html.replace(blocks[1], blocks[0], 1)
+            mutated = check.rendered_call_forms(duplicated)[class_obj.canonical_path]
+            assert tuple(item.form for item in mutated) != expected, name
+
+
+def test_constructor_receiver_is_projected_once_from_source_ast(tmp_path: Path) -> None:
+    source = """\
+from typing import Self, overload
+
+class Widget:
+    @overload
+    def __new__(cls, self: int, /) -> Self: ...
+
+    @overload
+    def __new__(cls, value: str, *, enabled: bool = False) -> Widget: ...
+"""
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    stub = package / '__init__.pyi'
+    stub.write_text(source, encoding='utf-8')
+    expand = _expand()
+    loader = griffe.GriffeLoader(
+        search_paths=[str(tmp_path)],
+        extensions=griffe.Extensions(expand.PromoteStubOverloads()),
+        allow_inspection=False,
+    )
+    module = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    widget = module.members['Widget']
+    assert isinstance(widget, griffe.Class)
+    outcome = expand.constructor_outcome(widget)
+    assert isinstance(outcome, expand.RenderableConstructor)
+    expected = _source_class_call_forms(stub, 'Widget')
+    assert expand.ordered_call_forms(widget) == tuple(outcome.binding.overloads)
+
+    rendered = _render_class_reference(widget)
+    check = _check()
+    signatures = check.rendered_call_forms(rendered)['gometry.Widget']
+    assert tuple(item.form for item in signatures) == expected
+    assert [parameter[1] for parameter in signatures[0].form.parameters] == ['self']
+    assert [parameter[1] for parameter in signatures[1].form.parameters] == [
+        'value',
+        'enabled',
+    ]
+    assert (
+        check._signature_form(signatures[0].source.replace('self', 'value', 1))
+        != (expected[0])
+    )
 
 
 def test_constructor_inheritance_rebinds_without_mutating_base_and_honors_never(
@@ -965,6 +1335,12 @@ class Inherited(Base):
 
 class Blocked(Base):
     def __new__(cls, forbidden: Never, /) -> Self: ...
+
+class Default:
+    pass
+
+class OpaqueError(ValueError):
+    pass
 """,
         encoding='utf-8',
     )
@@ -974,18 +1350,23 @@ class Blocked(Base):
     )
     module = loader.load('constructors')
     loader.resolve_aliases(external=False)
-    expand = load_tool('griffe_expand_aliases')
+    expand = _expand()
     base = module.members['Base']
     inherited = module.members['Inherited']
     blocked = module.members['Blocked']
+    default = module.members['Default']
+    opaque_error = module.members['OpaqueError']
     assert isinstance(base, griffe.Class)
     assert isinstance(inherited, griffe.Class)
     assert isinstance(blocked, griffe.Class)
+    assert isinstance(default, griffe.Class)
+    assert isinstance(opaque_error, griffe.Class)
 
     source = base.members['__new__']
     assert isinstance(source, griffe.Function)
-    binding = expand._constructor_binding(inherited, module.path)
-    assert binding is not None
+    outcome = expand._constructor_outcome(inherited, module.path)
+    assert isinstance(outcome, expand.RenderableConstructor)
+    binding = outcome.binding
     assert binding.overloads and len(binding.overloads) == 1
     form = binding.overloads[0]
     assert form.name == '__call__'
@@ -996,11 +1377,46 @@ class Blocked(Base):
     assert [parameter.name for parameter in source.parameters] == ['cls', 'value']
     assert source.parent is base
     assert expand.constructor_binding(base) is None
-    assert expand._constructor_binding(blocked, module.path) is None
+    blocked_outcome = expand._constructor_outcome(blocked, module.path)
+    assert isinstance(blocked_outcome, expand.UnavailableConstructor)
+    assert 'non-constructible' in blocked_outcome.reason
+    assert isinstance(
+        expand._constructor_outcome(default, module.path),
+        expand.UnavailableConstructor,
+    )
+    opaque_outcome = expand._constructor_outcome(opaque_error, module.path)
+    assert isinstance(opaque_outcome, expand.UnavailableConstructor)
+    assert 'opaque inherited built-in exception constructor' in opaque_outcome.reason
+
+
+def test_unsupported_exported_constructor_fails_with_its_source_location(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    (package / '__init__.pyi').write_text(
+        """\
+class Broken:
+    def __init__(wrong: int) -> None: ...
+""",
+        encoding='utf-8',
+    )
+    expand = _expand()
+    loader = griffe.GriffeLoader(
+        search_paths=[str(tmp_path)],
+        extensions=griffe.Extensions(expand.PromoteStubOverloads()),
+        allow_inspection=False,
+    )
+    with pytest.raises(
+        expand.UnsupportedConstructorError,
+        match=r':2: gometry\.Broken\.__init__',
+    ):
+        loader.load('gometry')
 
 
 def test_inherited_generic_constructor_self_and_specialized_returns_match_stub_ast(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = """from typing import Generic, Self, TypeVar, overload
 
@@ -1018,7 +1434,7 @@ class Inherited(GenericBase[_GeometryT_co]):
     package_dir = tmp_path / 'gometry'
     package_dir.mkdir()
     (package_dir / '__init__.pyi').write_text(source, encoding='utf-8')
-    expand = load_tool('griffe_expand_aliases')
+    expand = _expand()
     loader = griffe.GriffeLoader(
         search_paths=[str(tmp_path)],
         extensions=griffe.Extensions(
@@ -1050,3 +1466,18 @@ class Inherited(GenericBase[_GeometryT_co]):
         'Inherited[GeometryT_co]',
         'GenericBase[int]',
     ]
+    check = _check()
+    rendered = _render_class_reference(inherited)
+    signatures = check.rendered_call_forms(rendered)['gometry.Inherited']
+    expected_visible = tuple(
+        check.RenderedCallForm(parameters, returns)
+        for parameters, returns in contract.forms
+    )
+    assert tuple(item.form for item in signatures) == expected_visible
+
+    first_form = (binding.overloads or ())[0]
+    monkeypatch.setattr(first_form, 'returns', 'object')
+    mutated = check.rendered_call_forms(_render_class_reference(inherited))[
+        'gometry.Inherited'
+    ]
+    assert tuple(item.form for item in mutated) != expected_visible

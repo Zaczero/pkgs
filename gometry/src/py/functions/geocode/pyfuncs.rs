@@ -48,14 +48,23 @@ fn geocode_array_codes(
             return Err(crate::note_array_row(error.into(), row));
         },
     };
-    let mut output = Vec::with_capacity(points.len());
-    for row in 0..points.len() {
-        if array.is_row_missing(row) {
-            output.push(None);
-            continue;
-        }
-        let point = points.get(row);
-        output.push(Some(encoder.encode(point.x, point.y)));
+    let logical_len = points.len();
+    let mut output = Vec::with_capacity(logical_len);
+    let mut next_row = 0_usize;
+    points.for_each_present(
+        |row| array.is_row_missing(row),
+        |row, point| {
+            while next_row < row {
+                output.push(None);
+                next_row = next_row.wrapping_add(1);
+            }
+            output.push(Some(encoder.encode(point.x, point.y)));
+            next_row = row.wrapping_add(1);
+        },
+    );
+    while next_row < logical_len {
+        output.push(None);
+        next_row = next_row.wrapping_add(1);
     }
     Ok(output)
 }

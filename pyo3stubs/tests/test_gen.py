@@ -240,7 +240,7 @@ def test_cpython_boilerplate_never_reaches_the_stub():
 
 def test_the_constructor_falls_back_to_the_rust_doc_comment(tmp_path):
     """The `#[new]`'s `///` is the only place the prose exists — read it there."""
-    from pyo3stubs.rust_scan import constructor_docs
+    from pyo3stubs.rust_scan import constructor_doc_sources
 
     src = (
         '#[pyclass(name = "Widget")]\n'
@@ -275,7 +275,9 @@ size : int, default 3
 Returns
 -------
 Widget"""
-    assert constructor_docs(cfg) == {'Widget': expected_doc}
+    constructor_sources = constructor_doc_sources(cfg)
+    assert constructor_sources.by_class['Widget'].prose == expected_doc
+    assert constructor_sources.by_class['Widget'].reason is None
 
     stub = 'class Widget:\n    def __new__(cls, size: int) -> Widget: ...\n'
 
@@ -291,7 +293,13 @@ Widget"""
     out = (
         cst
         .parse_module(stub)
-        .visit(DocInjector(module, _def_totals(stub), constructor_docs(cfg)))
+        .visit(
+            DocInjector(
+                module,
+                _def_totals(stub),
+                constructor_doc_sources(cfg).by_class,
+            )
+        )
         .code
     )
     assert 'Build a widget of the requested size.' in out
@@ -316,10 +324,7 @@ Widget"""
     mutated_constructor = next(
         subject for subject in mutated_subjects if subject.kind == 'constructor'
     )
-    assert any(
-        'documented default 4 != runtime 3' in error
-        for error in check_doc_subject(mutated_constructor)
-    )
+    assert mutated_constructor.prose == expected_doc
 
 
 def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
@@ -329,7 +334,7 @@ def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
     `frozen_pymethods! { impl PyWidget { … } }` was invisible. Re-parsing the
     body recovers it — and the recovered items keep their real line numbers.
     """
-    from pyo3stubs.rust_scan import constructor_docs, iter_sources
+    from pyo3stubs.rust_scan import constructor_doc_sources, iter_sources
 
     src = (
         '#[pyclass(name = "Widget")]\n'
@@ -344,7 +349,7 @@ def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
         '}\n'
     )
     cfg = make_config(tmp_path, src_text=src)
-    assert constructor_docs(cfg) == {'Widget': 'Build a widget.'}
+    assert constructor_doc_sources(cfg).by_class['Widget'].prose == 'Build a widget.'
 
     inner = [
         item
@@ -357,15 +362,33 @@ def test_an_impl_inside_a_project_macro_is_still_scanned(tmp_path):
 
 def test_configured_constructor_macro_uses_its_impl_doc_carrier(tmp_path):
     """A macro-generated `#[new]` can carry prose on its class impl input."""
-    from pyo3stubs.rust_scan import constructor_doc_sources, constructor_docs
+    from pyo3stubs.rust_scan import constructor_doc_sources, iter_sources
 
     src = (
-        '#[pyclass(name = "Widget")]\n'
+        '#[pyclass(name = "RenamedWidget")]\n'
         'pub struct PyWidget;\n'
+        '#[pyclass(name = "OtherWidget")]\n'
+        'pub struct PyOtherWidget;\n'
         '\n'
         'make_array! {\n'
-        '    /// Build a widget array.\n'
-        '    impl PyWidget {}\n'
+        '    /// Build a renamed widget array.\n'
+        '    impl PyWidget {\n'
+        '        iter: PyWidgetIterator,\n'
+        '        scalar: PyWidget,\n'
+        '        label: "widget",\n'
+        '        class_name: "RenamedWidget",\n'
+        '        build_scalar: |id| PyWidget { id },\n'
+        '    }\n'
+        '}\n'
+        '\n'
+        'make_array! {\n'
+        '    /// This non-impl error must not become a constructor carrier.\n'
+        '    @ PyOtherWidget { value: "nested identifier" }\n'
+        '}\n'
+        '\n'
+        'make_array! {\n'
+        '    /// This class has no exported PyO3 binding.\n'
+        '    impl PyGhost {}\n'
         '}\n'
     )
     cfg = make_config(
@@ -374,6 +397,172 @@ def test_configured_constructor_macro_uses_its_impl_doc_carrier(tmp_path):
         constructor_doc_macros=frozenset({'make_array'}),
     )
 
-    assert constructor_docs(cfg) == {'Widget': 'Build a widget array.'}
-    source = constructor_doc_sources(cfg)['Widget']
-    assert (source.path, source.line) == ('src/lib.rs', 6)
+    macro_calls = [
+        item
+        for rust_source in iter_sources(cfg)
+        for item in rust_source.walk()
+        if item.kind == 'macro_invocation' and item.name == 'make_array'
+    ]
+    assert len(macro_calls) == 3
+    negative_items = tuple(
+        child
+        for child in macro_calls[1].children
+        if child.kind == 'ERROR' and child.doc
+    )
+    assert len(negative_items) == 1
+    (negative,) = negative_items
+    assert negative.doc == 'This non-impl error must not become a constructor carrier.'
+    assert negative.node.children[0].type != 'impl'
+    assert 'PyOtherWidget' in negative.text
+
+    inventory = constructor_doc_sources(cfg)
+    source = inventory.by_class['RenamedWidget']
+    assert source.prose == 'Build a renamed widget array.'
+    assert source.reason is None
+    assert set(inventory.by_class) == {'RenamedWidget'}
+    assert (source.path, source.line) == ('src/lib.rs', 8)
+    (unsupported_item,) = tuple(
+        issue
+        for issue in inventory.issues
+        if issue.python_class is None and issue.prose == negative.doc
+    )
+    assert unsupported_item.reason is not None
+    assert 'unsupported documented item' in unsupported_item.reason
+    (unexported,) = tuple(
+        issue
+        for issue in inventory.issues
+        if issue.reason is not None and 'PyGhost' in issue.reason
+    )
+    assert unexported.python_class is None
+    assert unexported.reason is not None
+    assert 'exported PyO3 class' in unexported.reason
+
+    unregistered = constructor_doc_sources(
+        make_config(tmp_path, src_text=src, constructor_doc_macros=frozenset())
+    )
+    assert unregistered.by_class == {}
+    assert unregistered.issues == ()
+
+
+def test_h3_array_constructor_macro_recovers_each_authored_doc_from_source(tmp_path):
+    """The real H3 macro carries different constructor prose for each class."""
+    from pathlib import Path
+
+    from pyo3stubs.rust_scan import constructor_doc_sources
+
+    root = Path(__file__).resolve().parents[2]
+    cfg = make_config(
+        tmp_path,
+        src_root=root / 'gometry' / 'src',
+        constructor_doc_macros=frozenset({'h3_index_array_common'}),
+    )
+    sources = constructor_doc_sources(cfg).by_class
+    vertex = sources['H3VertexArray']
+    edge = sources['H3EdgeArray']
+
+    assert vertex.path == 'src/py/cells/h3/vertex_edge_array.rs'
+    assert edge.path == vertex.path
+    assert vertex.prose is not None
+    assert edge.prose is not None
+    assert 'Build an array of H3 vertices' in vertex.prose
+    assert 'Build an array of H3 directed edges' in edge.prose
+    assert vertex.prose != edge.prose
+    assert vertex.line < edge.line
+
+
+@pytest.mark.parametrize(
+    ('source', 'macro_names', 'expected_reason', 'expected_issue'),
+    [
+        pytest.param(
+            (
+                '#[pyclass(name = "Widget")]\n'
+                'pub struct PyWidget;\n'
+                '#[pymethods]\n'
+                'impl PyWidget {\n'
+                '    #[new]\n'
+                '    fn new(size: usize) -> Self { Self }\n'
+                '}\n'
+                'make_array! {\n'
+                '    /// Macro prose cannot replace the direct carrier.\n'
+                '    impl PyWidget {}\n'
+                '}\n'
+            ),
+            frozenset({'make_array'}),
+            'direct #[new] carrier has no authored prose',
+            None,
+            id='direct-absence-precedes-macro-prose',
+        ),
+        pytest.param(
+            (
+                '#[pyclass(name = "Widget")]\n'
+                'pub struct PyWidget;\n'
+                'make_array! {\n'
+                '    impl PyWidget {}\n'
+                '}\n'
+                'make_array! {\n'
+                '    /// Unsupported documented macro item.\n'
+                '    let _ = PyGhost { value: "nested identifier" };\n'
+                '}\n'
+            ),
+            frozenset({'make_array'}),
+            'configured constructor-doc macro carrier has no authored prose',
+            'unsupported documented item',
+            id='configured-macro-absence-and-unsupported-item',
+        ),
+    ],
+)
+def test_missing_constructor_prose_overrides_stale_stub_and_fails_sync(
+    tmp_path,
+    source,
+    macro_names,
+    expected_reason,
+    expected_issue,
+):
+    from pyo3stubs.context import CheckContext
+    from pyo3stubs.doc_contract import collect_errors
+    from pyo3stubs.doc_structure import iter_doc_subjects
+    from pyo3stubs.gates import Status, gate
+    from pyo3stubs.gen import render_stub_with_docs
+    from pyo3stubs.rust_scan import constructor_doc_sources
+
+    stub = '''\
+from typing import Self
+
+class Widget:
+    """A widget."""
+
+    def __new__(cls, size: int = 3) -> Self:
+        """Stale constructor prose."""
+'''
+    cfg = make_config(
+        tmp_path,
+        stub_text=stub,
+        src_text=source,
+        module='fakepkg.constructor_only',
+        constructor_doc_macros=macro_names,
+    )
+    inventory = constructor_doc_sources(cfg)
+    constructor_source = inventory.by_class['Widget']
+    assert constructor_source.prose is None
+    assert constructor_source.reason == expected_reason
+
+    subjects = tuple(
+        iter_doc_subjects(
+            CheckContext(cfg),
+            constructor_sources=inventory.by_class,
+        )
+    )
+    constructor = next(subject for subject in subjects if subject.kind == 'constructor')
+    assert constructor.prose is None
+
+    rendered = render_stub_with_docs(cfg)
+    assert 'Stale constructor prose.' not in rendered
+
+    contract_errors = collect_errors(cfg)
+    assert any(expected_reason in error for error in contract_errors)
+    sync = gate('gen-docs-sync').run(cfg)
+    assert sync.status is Status.VIOLATIONS
+    assert any(expected_reason in error for error in sync.errors)
+    if expected_issue is not None:
+        assert any(expected_issue in error for error in contract_errors)
+        assert any(expected_issue in error for error in sync.errors)

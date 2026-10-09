@@ -208,7 +208,7 @@ pub(crate) use coverage::{
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 use distance::line_length_3d;
 pub(crate) use distance::{
-    DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
+    ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
     ensure_geographic_hausdorff_linework, frechet_distance_line_columns,
     frechet_distance_line_columns_batch, hausdorff_distance, hausdorff_distance_line_columns,
@@ -247,9 +247,10 @@ use predicates::{
 pub(in crate::geometry) use predicates::{PolygonContact, remove_antenna_vertices};
 pub(crate) use predicates::{
     RingClass, fan_alternations, line_is_ccw, line_is_closed_in_domain, line_is_simple,
-    line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
-    shape_is_closed_in_domain, shape_reaches_geographic_pole_in_frame, validate_line,
-    validate_point, validate_points, validate_ring,
+    line_is_valid, polygon_is_valid, ring_classify_point_columns, shape_encloses_pole_in_frame,
+    shape_has_polar_ring_in_frame, shape_is_closed_in_domain,
+    shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
+    validate_ring,
 };
 pub(in crate::geometry) use segments::{
     DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp, exact_crossing_parameter,
@@ -328,11 +329,12 @@ pub(crate) use relate::{
 };
 #[cfg(test)]
 pub(crate) use segment_index::{
-    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_EXACT_FALLBACKS, CLEARANCE_POINT_LEAVES,
-    CLEARANCE_POINT_NODES, CLEARANCE_POINT_RECHECKS,
+    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
+    CLEARANCE_POINT_RECHECKS,
 };
 pub(crate) use segment_index::{
     ClearancePointQuery, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex,
+    clearance_aabb_lower_bound,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
@@ -931,16 +933,26 @@ impl Bounds {
         }
     }
 
-    /// Geographic clip rectangle with canonical longitudes in ``[-180, 180]``.
-    /// Finite west/east endpoints use west>east to signal an
-    /// antimeridian-crossing window; latitudes must satisfy ``south <= north``.
-    pub fn new_geographic(west: f64, south: f64, east: f64, north: f64) -> Result<Self> {
+    /// Geographic rectangle with frame-native longitude and latitude bounds.
+    /// Finite west/east endpoints use west>east to signal a seam-crossing
+    /// window; latitudes must satisfy ``south <= north``.
+    pub(crate) fn new_geographic(
+        frame: crate::geographic::GeographicFrame,
+        west: f64,
+        south: f64,
+        east: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        let pole = frame.pole();
         if west.is_finite()
             && south.is_finite()
             && east.is_finite()
             && north.is_finite()
-            && (-180.0..=180.0).contains(&west)
-            && (-180.0..=180.0).contains(&east)
+            && (-half_period..=half_period).contains(&west)
+            && (-half_period..=half_period).contains(&east)
+            && (-pole..=pole).contains(&south)
+            && (-pole..=pole).contains(&north)
             && south <= north
         {
             Ok(Self::new_raw(west, south, east, north))
@@ -949,9 +961,33 @@ impl Bounds {
         }
     }
 
+    /// The full longitude band between two frame-valid latitudes.
+    pub(crate) fn full_geographic_longitude(
+        frame: crate::geographic::GeographicFrame,
+        south: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        Self::new_geographic(frame, -half_period, south, half_period, north)
+    }
+
     /// Whether these bounds cross the antimeridian (west longitude > east).
     pub fn crosses_antimeridian(self) -> bool {
         self.minx() > self.maxx()
+    }
+
+    /// Split a validated geographic rectangle at its frame's periodic seam.
+    pub(crate) fn split_geographic(
+        self,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Option<[Self; 2]> {
+        self.crosses_antimeridian().then(|| {
+            let half_period = frame.longitude().half_period();
+            [
+                Self::new_raw(self.minx(), self.miny(), half_period, self.maxy()),
+                Self::new_raw(-half_period, self.miny(), self.maxx(), self.maxy()),
+            ]
+        })
     }
 
     pub fn intersects(self, other: Self) -> bool {

@@ -11,11 +11,13 @@ prose remains untouched.
 
 from __future__ import annotations
 
+import builtins
 import copy
 import re
+from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 import griffe
 
@@ -84,6 +86,43 @@ _CONSTRUCTOR_NAMESPACE = 'gometry'
 _CONSTRUCTOR_KEY = 'constructor'
 
 
+@dataclass(frozen=True, slots=True)
+class ConstructorSource:
+    qualname: str
+    path: str
+    line: int
+
+
+@dataclass(frozen=True, slots=True)
+class UnavailableConstructor:
+    state: Literal['unavailable']
+    reason: str
+    source: ConstructorSource
+
+
+@dataclass(frozen=True, slots=True)
+class RenderableConstructor:
+    state: Literal['renderable']
+    binding: griffe.Function
+    source: ConstructorSource
+
+
+@dataclass(frozen=True, slots=True)
+class UnsupportedConstructor:
+    state: Literal['unsupported']
+    reason: str
+    source: ConstructorSource
+
+
+ConstructorOutcome = (
+    UnavailableConstructor | RenderableConstructor | UnsupportedConstructor
+)
+
+
+class UnsupportedConstructorError(RuntimeError):
+    """An exported constructor cannot be represented by the reference adapter."""
+
+
 def _is_never(function: griffe.Function) -> bool:
     returns = function.returns
     return isinstance(returns, griffe.ExprName) and returns.name in {
@@ -92,10 +131,52 @@ def _is_never(function: griffe.Function) -> bool:
     }
 
 
+def constructor_outcome(obj: griffe.Class) -> ConstructorOutcome | None:
+    """Return the constructor adapter state attached to a public class."""
+    outcome = obj.extra.get(_CONSTRUCTOR_NAMESPACE, {}).get(_CONSTRUCTOR_KEY)
+    if isinstance(
+        outcome,
+        UnavailableConstructor | RenderableConstructor | UnsupportedConstructor,
+    ):
+        return outcome
+    return None
+
+
 def constructor_binding(obj: griffe.Class) -> griffe.Function | None:
-    """Return the private class-call model attached by this extension."""
-    binding = obj.extra.get(_CONSTRUCTOR_NAMESPACE, {}).get(_CONSTRUCTOR_KEY)
-    return binding if isinstance(binding, griffe.Function) else None
+    """Return the rendered class-call model, if the class has one."""
+    outcome = constructor_outcome(obj)
+    return outcome.binding if isinstance(outcome, RenderableConstructor) else None
+
+
+def ordered_call_forms(
+    obj: griffe.Function | griffe.Class | ConstructorOutcome,
+) -> tuple[griffe.Function, ...]:
+    """Return exact visible forms in declaration order, without a prose merge."""
+    if isinstance(obj, RenderableConstructor):
+        return tuple(obj.binding.overloads or (obj.binding,))
+    if isinstance(obj, UnsupportedConstructor | UnavailableConstructor):
+        return ()
+    if isinstance(obj, griffe.Class):
+        outcome = constructor_outcome(obj)
+        return ordered_call_forms(outcome) if outcome is not None else ()
+    return tuple(obj.overloads or (obj,))
+
+
+def _constructor_source(obj: Any) -> ConstructorSource:
+    path = getattr(obj, 'relative_filepath', None) or getattr(obj, 'filepath', None)
+    return ConstructorSource(
+        qualname=getattr(obj, 'path', getattr(obj, 'name', '<unknown>')),
+        path=str(path or '<unknown>'),
+        line=getattr(obj, 'lineno', None) or 1,
+    )
+
+
+def _unsupported_constructor_error(outcome: UnsupportedConstructor) -> str:
+    source = outcome.source
+    return (
+        f'{source.path}:{source.line}: {source.qualname}: '
+        f'unsupported class-call signature: {outcome.reason}'
+    )
 
 
 def _module_type_variables(module: griffe.Module) -> set[str]:
@@ -260,7 +341,7 @@ def _class_call_form(
     )
     # The class handler suppresses returns for __init__; this private callable
     # keeps the class-call result visible while the template supplies its name.
-    return griffe.Function(
+    form = griffe.Function(
         '__call__',
         parameters=copied_parameters,
         returns=returns,
@@ -274,11 +355,13 @@ def _class_call_form(
         git_info=function.git_info,
         analysis=function.analysis,
     )
+    form.extra[_CONSTRUCTOR_NAMESPACE] = {'class_call_form': True}
+    return form
 
 
 def _documentation_parameters(
     forms: tuple[griffe.Function, ...],
-) -> griffe.Parameters | None:
+) -> griffe.Parameters:
     collected: dict[str, list[griffe.Parameter]] = {}
     for form in forms:
         for parameter in form.parameters:
@@ -286,14 +369,6 @@ def _documentation_parameters(
 
     parameters = []
     for name, variants in collected.items():
-        defaults = {
-            str(parameter.default)
-            for parameter in variants
-            if parameter.default is not None
-        }
-        if len(defaults) > 1:
-            return None
-
         annotations: list[Any] = []
         annotation_text: set[str] = set()
         for parameter in variants:
@@ -351,12 +426,68 @@ def _local_constructor_function(
     return member
 
 
-def _constructor_binding(
+def _builtin_exception_base(
+    class_obj: griffe.Class,
+    seen: set[int] | None = None,
+) -> str | None:
+    if seen is None:
+        seen = set()
+    if id(class_obj) in seen:
+        return None
+    seen.add(id(class_obj))
+    module = class_obj.module
+    for base in class_obj.bases:
+        if not isinstance(base, griffe.ExprName):
+            continue
+        builtin_type = getattr(builtins, base.name, None)
+        if isinstance(builtin_type, type) and issubclass(builtin_type, BaseException):
+            return base.name
+        member = module.members.get(base.name)
+        if isinstance(member, griffe.Alias):
+            try:
+                member = member.target
+            except (griffe.AliasResolutionError, griffe.CyclicAliasError):
+                continue
+        if isinstance(member, griffe.Class) and (
+            exception_base := _builtin_exception_base(member, seen)
+        ):
+            return exception_base
+    return None
+
+
+def _inherited_constructor_owner(member: Any) -> griffe.Class | None:
+    if isinstance(member, griffe.Alias):
+        try:
+            member = member.target
+        except (griffe.AliasResolutionError, griffe.CyclicAliasError):
+            return None
+    if not isinstance(member, griffe.Function):
+        return None
+    parent = member.parent
+    return parent if isinstance(parent, griffe.Class) else None
+
+
+def _constructor_outcome(
     class_obj: griffe.Class,
     package_path: str,
     inherited_members: dict[str, Any] | None = None,
     type_variables: set[str] | None = None,
-) -> griffe.Function | None:
+) -> ConstructorOutcome:
+    class_source = _constructor_source(class_obj)
+
+    def unavailable(reason: str) -> UnavailableConstructor:
+        return UnavailableConstructor('unavailable', reason, class_source)
+
+    def unsupported(
+        reason: str,
+        source_obj: Any = class_obj,
+    ) -> UnsupportedConstructor:
+        return UnsupportedConstructor(
+            'unsupported',
+            reason,
+            _constructor_source(source_obj),
+        )
+
     if type_variables is None:
         type_variables = _module_type_variables(class_obj.module)
     inherited_members = (
@@ -375,18 +506,68 @@ def _constructor_binding(
                 False,
             )
 
-    if any(direct and function is None for function, direct in effective.values()):
-        return None
+    if not effective:
+        if exception_base := _builtin_exception_base(class_obj):
+            return unavailable(
+                f'opaque inherited built-in exception constructor '
+                f'{exception_base}; its standard exception argument semantics '
+                'are not restated as a Gometry signature'
+            )
+        base_names = {
+            base.name for base in class_obj.bases if isinstance(base, griffe.ExprName)
+        }
+        if not base_names or base_names <= {'object', 'Protocol'}:
+            return unavailable(
+                'the class declares no package-owned __new__ or __init__ signature'
+            )
+        return unsupported(
+            'the class inherits from a non-exception base whose constructor '
+            'cannot be resolved'
+        )
+    unresolved_direct = [
+        name
+        for name, (function, direct) in effective.items()
+        if direct and function is None
+    ]
+    if unresolved_direct:
+        return unsupported(
+            f'cannot resolve the direct {unresolved_direct[0]} declaration'
+        )
 
     local = [(name, function) for name, (function, _) in effective.items() if function]
+    if not local:
+        if any(
+            owner is not None and owner.name == 'object'
+            for owner in (
+                _inherited_constructor_owner(inherited_members.get(name))
+                for name in ('__new__', '__init__')
+            )
+        ):
+            return unavailable(
+                'the class uses default object construction and declares no '
+                'package-owned class-call signature'
+            )
+        if exception_base := _builtin_exception_base(class_obj):
+            return unavailable(
+                f'opaque inherited built-in exception constructor '
+                f'{exception_base}; its standard exception argument semantics '
+                'are not restated as a Gometry signature'
+            )
+        return unsupported(
+            'cannot resolve an inherited external constructor into a '
+            'package-owned call form'
+        )
     if len(local) != 1:
-        return None
+        return unsupported('both __new__ and __init__ contribute local call forms')
     if len(effective) != 1:
-        return None
-    constructor_name, source = local[0]
+        return unsupported(
+            'the class combines a local constructor phase with an inherited opposite phase'
+        )
+    constructor_name, source_function = local[0]
 
     forms = []
-    for variant in source.overloads or (source,):
+    rejected_form: griffe.Function | None = None
+    for variant in source_function.overloads or (source_function,):
         if _is_never(variant) or _has_required_never_input(variant):
             continue
         form = _class_call_form(
@@ -396,14 +577,19 @@ def _constructor_binding(
             type_variables,
         )
         if form is None:
-            return None
+            rejected_form = variant
+            break
         forms.append(form)
+    if rejected_form is not None:
+        return unsupported(
+            f'{constructor_name} has a receiver or parameter form the class-call '
+            'adapter does not support',
+            rejected_form,
+        )
     if not forms:
-        return None
+        return unavailable('all declared constructor overloads are non-constructible')
 
     documentation_parameters = _documentation_parameters(tuple(forms))
-    if documentation_parameters is None:
-        return None
 
     binding = griffe.Function(
         '__call__',
@@ -411,20 +597,40 @@ def _constructor_binding(
         returns=_class_call_result(class_obj, type_variables),
         type_parameters=class_obj.type_parameters,
         parent=class_obj,
-        lineno=source.lineno,
-        endlineno=source.endlineno,
-        runtime=source.runtime,
+        lineno=source_function.lineno,
+        endlineno=source_function.endlineno,
+        runtime=source_function.runtime,
         lines_collection=class_obj.lines_collection,
         modules_collection=class_obj.modules_collection,
         git_info=class_obj.git_info,
-        analysis=source.analysis,
+        analysis=source_function.analysis,
     )
     binding.overloads = forms
     binding.extra[_CONSTRUCTOR_NAMESPACE] = {
-        'source_function': source,
+        'source_function': source_function,
         'constructor_name': constructor_name,
     }
-    return binding
+    return RenderableConstructor(
+        'renderable',
+        binding,
+        _constructor_source(source_function),
+    )
+
+
+def _constructor_binding(
+    class_obj: griffe.Class,
+    package_path: str,
+    inherited_members: dict[str, Any] | None = None,
+    type_variables: set[str] | None = None,
+) -> griffe.Function | None:
+    """Compatibility accessor for internal callers that need the binding."""
+    outcome = _constructor_outcome(
+        class_obj,
+        package_path,
+        inherited_members,
+        type_variables,
+    )
+    return outcome.binding if isinstance(outcome, RenderableConstructor) else None
 
 
 def _promote_overloads(obj: Any, seen: set[int]) -> None:
@@ -588,22 +794,43 @@ def _materialize_classes(
         pkg.set_member(name, local)
 
 
+def _cache_ordered_call_forms(obj: Any, seen: set[int]) -> None:
+    if id(obj) in seen or isinstance(obj, griffe.Alias):
+        return
+    seen.add(id(obj))
+    if isinstance(obj, griffe.Function):
+        extra = dict(obj.extra)
+        namespace = dict(extra.get(_CONSTRUCTOR_NAMESPACE, {}))
+        namespace['ordered_call_forms'] = ordered_call_forms(obj)
+        extra[_CONSTRUCTOR_NAMESPACE] = namespace
+        obj.extra = extra
+    for member in getattr(obj, 'members', {}).values():
+        _cache_ordered_call_forms(member, seen)
+
+
 def _bind_public_class_constructors(pkg: griffe.Module) -> None:
     type_variables = _module_type_variables(pkg)
+    exported = (
+        set(pkg.exports)
+        if pkg.exports is not None
+        else {name for name in pkg.members if not name.startswith('_')}
+    )
     for name, member in pkg.members.items():
         if name.startswith('_') or not isinstance(member, griffe.Class):
             continue
         member.extra = {
             namespace: dict(values) for namespace, values in member.extra.items()
         }
-        binding = _constructor_binding(
+        outcome = _constructor_outcome(
             member,
             pkg.path,
             type_variables=type_variables,
         )
-        if binding is not None:
-            namespace = member.extra.setdefault(_CONSTRUCTOR_NAMESPACE, {})
-            namespace[_CONSTRUCTOR_KEY] = binding
+        namespace = member.extra.setdefault(_CONSTRUCTOR_NAMESPACE, {})
+        namespace[_CONSTRUCTOR_KEY] = outcome
+        namespace['ordered_call_forms'] = ordered_call_forms(outcome)
+        if name in exported and isinstance(outcome, UnsupportedConstructor):
+            raise UnsupportedConstructorError(_unsupported_constructor_error(outcome))
 
 
 def _canonicalize_public_classes(pkg: griffe.Module) -> None:
@@ -642,6 +869,7 @@ class PromoteStubOverloads(griffe.Extension):
         _materialize_classes(pkg, '_types', ('Cell',))
         _canonicalize_public_classes(pkg)
         _materialize_function_aliases(pkg)
+        _cache_ordered_call_forms(pkg, set())
         _bind_public_class_constructors(pkg)
 
 

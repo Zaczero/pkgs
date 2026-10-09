@@ -330,8 +330,8 @@ pub(crate) struct CachelessRowContext<'a> {
 }
 
 pub(crate) struct LinearReferenceRow<'a> {
-    pub op: CachelessRowContext<'a>,
-    pub model: &'a MetricModel,
+    pub lane: Lane,
+    pub metric: &'a ResolvedMetric,
     pub cache: &'a crate::geometry::FrameDependentCaches,
 }
 

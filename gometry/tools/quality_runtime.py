@@ -22,6 +22,7 @@ from _artifact_common import (
     _maturin_command,
     _package_version,
     _prepared_input_identity,
+    _prepared_input_record,
     _prepared_output_hashes,
     _runtime_interpreter,
     _rust_target_triple,
@@ -114,7 +115,6 @@ def read_quality_receipt(root: Path) -> dict[str, Any]:
         'prepared_inputs',
         'build',
         'wheel',
-        'authored_stub',
         'python_members',
     }:
         raise AssertionError(f'quality runtime receipt fields are malformed: {path}')
@@ -301,7 +301,7 @@ def read_quality_receipt(root: Path) -> dict[str, Any]:
         or settings['environment']['NIX_DONT_SET_RPATH'] != '1'
         or settings['environment'][f'NIX_DONT_SET_RPATH_{target.replace("-", "_")}']
         != '1'
-        or settings['environment']['PYO3_PYTHON'] != interpreter['executable']
+        or settings['environment']['PYO3_PYTHON'] != interpreter['resolved_executable']
     ):
         raise AssertionError(
             f'quality runtime settings environment is incomplete: {path}'
@@ -370,24 +370,11 @@ def read_quality_receipt(root: Path) -> dict[str, Any]:
         raise AssertionError(
             f'quality runtime prepared-input identity is malformed: {path}'
         )
-    authored_stub = receipt['authored_stub']
-    if (
-        not isinstance(authored_stub, dict)
-        or set(authored_stub) != {'path', 'sha256'}
-        or authored_stub.get('path') != 'python/gometry/_lib.pyi'
-        or not isinstance(authored_stub.get('sha256'), str)
-        or HEX_DIGEST.fullmatch(authored_stub['sha256']) is None
-    ):
+    if prepared['files'].get('python/gometry/_lib.pyi') != receipt[
+        'python_members'
+    ].get('gometry/_lib.pyi'):
         raise AssertionError(
-            f'quality runtime authored stub identity is malformed: {path}'
-        )
-    stub_digest = prepared['files'].get(authored_stub['path'])
-    if (
-        stub_digest != authored_stub['sha256']
-        or receipt['python_members'].get('gometry/_lib.pyi') != authored_stub['sha256']
-    ):
-        raise AssertionError(
-            f'quality runtime authored stub identity disagrees: {path}'
+            f'quality runtime prepared stub identity disagrees: {path}'
         )
     return receipt
 
@@ -425,6 +412,7 @@ def quality_settings(root: Path, environment: Mapping[str, str]) -> dict[str, An
         'RUSTUP_TOOLCHAIN',
         'CARGO_HOME',
         'SOURCE_DATE_EPOCH',
+        'PYO3_PYTHON',
         'PYO3_CONFIG_FILE',
         'PYO3_CROSS',
         'PYO3_CROSS_LIB_DIR',
@@ -498,16 +486,10 @@ def validate_quality_producer_inputs(
         )
     prepared = receipt.get('prepared_inputs')
     prepared_files = prepared.get('files') if isinstance(prepared, dict) else None
-    authored_stub = receipt.get('authored_stub')
-    if (
-        not isinstance(prepared_files, dict)
-        or not isinstance(authored_stub, dict)
-        or authored_stub.get('path') != 'python/gometry/_lib.pyi'
-        or not isinstance(authored_stub.get('sha256'), str)
-        or prepared_files.get('python/gometry/_lib.pyi') != authored_stub['sha256']
-        or python_members.get('gometry/_lib.pyi') != authored_stub['sha256']
-    ):
-        raise AssertionError('quality receipt authored-stub identity is malformed')
+    if not isinstance(prepared_files, dict) or prepared_files.get(
+        'python/gometry/_lib.pyi'
+    ) != python_members.get('gometry/_lib.pyi'):
+        raise AssertionError('quality receipt prepared-stub identity is malformed')
 
     actual_digests = source_input_digests(root)
     if actual_digests['source_inputs_sha256'] != source.get(
@@ -543,7 +525,9 @@ def validate_quality_producer_inputs(
         build_settings.get('environment') if isinstance(build_settings, dict) else None
     )
     producer_python = (
-        interpreter.get('executable') if isinstance(interpreter, dict) else None
+        interpreter.get('resolved_executable')
+        if isinstance(interpreter, dict)
+        else None
     )
     if (
         not isinstance(build_environment, dict)
@@ -743,7 +727,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
     environment.pop('MATURIN_PEP517_ARGS', None)
     environment.pop('GOMETRY_RELEASE_PROFILE', None)
     environment.pop('GOMETRY_RELEASE_SOURCE_COMMIT', None)
-    environment['PYO3_PYTHON'] = sys.executable
+    environment['PYO3_PYTHON'] = str(Path(sys.executable).resolve())
     lock_path = root.parent / 'Cargo.lock'
     lock_before = sha256_file(lock_path)
     prepare_license_outputs(root)
@@ -785,6 +769,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
                 raise AssertionError('quality receipt wheel path is not a file')
             if sha256_file(wheel_path) != previous_wheel['sha256']:
                 raise AssertionError('quality receipt wheel archive digest is corrupt')
+        prepared_inputs = _prepared_input_record(_prepared_output_hashes(root))
         can_reuse = (
             previous_build['settings'].get('identity_sha256')
             == settings['identity_sha256']
@@ -807,7 +792,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
             wheel_inspection = inspect_wheel(
                 wheel_path,
                 release=False,
-                expected_prepared_inputs=_prepared_output_hashes(root),
+                expected_prepared_inputs=prepared_inputs['files'],
             )
             if wheel_inspection['generator'] != f'maturin ({MATURIN_VERSION})':
                 raise AssertionError(
@@ -838,11 +823,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
                 **previous,
                 'package_root': str(package_root),
                 'python_members': current_members,
-                'prepared_inputs': _prepared_output_hashes(root),
-                'authored_stub': {
-                    'path': 'python/gometry/_lib.pyi',
-                    'sha256': sha256_file(root / 'python' / 'gometry' / '_lib.pyi'),
-                },
+                'prepared_inputs': prepared_inputs,
                 'source': {
                     **previous_source,
                     **source_digests,
@@ -854,7 +835,8 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
             validate_quality_producer_inputs(root, refreshed)
             _atomic_json(receipt_path, refreshed)
             return refreshed
-
+    else:
+        prepared_inputs = _prepared_input_record(_prepared_output_hashes(root))
     build_env = environment.copy()
     command = [
         *maturin_command,
@@ -878,7 +860,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
             wheel,
             release=False,
             expected_python_members=python_members,
-            expected_prepared_inputs=_prepared_output_hashes(root),
+            expected_prepared_inputs=prepared_inputs['files'],
         )
         if inspection['generator'] != f'maturin ({MATURIN_VERSION})':
             raise AssertionError('quality DEV wheel has the wrong Maturin Generator')
@@ -919,7 +901,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
             'python_members': current_members,
             'cargo': dependencies,
         },
-        'prepared_inputs': _prepared_output_hashes(root),
+        'prepared_inputs': prepared_inputs,
         'build': {
             'profile': 'dev',
             'target': target,
@@ -938,10 +920,6 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
             'generator': inspection['generator'],
             'extension_member': extension_member,
             'extension_sha256': _sha256_bytes(extension_payload),
-        },
-        'authored_stub': {
-            'path': 'python/gometry/_lib.pyi',
-            'sha256': sha256_file(root / 'python' / 'gometry' / '_lib.pyi'),
         },
         'python_members': current_members,
     }
@@ -962,12 +940,12 @@ def refresh_quality_runtime(root: Path) -> dict[str, Any]:
         check_prepared_inputs=False,
     )
     python_members = python_member_hashes(root / 'python' / 'gometry')
-    prepared_inputs = _prepared_output_hashes(root)
+    prepared_inputs = _prepared_input_record(_prepared_output_hashes(root))
     wheel_path = root.parent / receipt['wheel']['path']
     inspection = inspect_wheel(
         wheel_path,
         release=False,
-        expected_prepared_inputs=receipt.get('prepared_inputs'),
+        expected_prepared_inputs=receipt['prepared_inputs']['files'],
     )
     updated_root = _materialize_quality_package(
         wheel_path,
@@ -986,10 +964,6 @@ def refresh_quality_runtime(root: Path) -> dict[str, Any]:
             'python_members': python_members,
         },
         'prepared_inputs': prepared_inputs,
-        'authored_stub': {
-            'path': 'python/gometry/_lib.pyi',
-            'sha256': prepared_inputs['python/gometry/_lib.pyi'],
-        },
     }
     _admit_quality_candidate(root, updated)
     validate_quality_producer_inputs(root, updated)

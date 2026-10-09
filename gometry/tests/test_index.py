@@ -10,6 +10,7 @@ from typing import Any, cast
 import gometry as gm
 import numpy as np
 import pytest
+from gometry import _lib
 
 from tests._support import floats, ids, pair_rows
 
@@ -1185,6 +1186,64 @@ def test_spatial_index_pickle_preserves_mutated_live_rows(
     assert next_handle == expected_next
     assert restored[next_handle].to_wkt() == 'POINT (6 6)'
     assert ids(restored.query(gm.Point(6.0, 6.0, crs=4326))) == [expected_next]
+
+
+def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
+    import pickle
+
+    values = gm.GeometryArray([
+        gm.Point(1.0, 1.0),
+        gm.Point(1.0, 1.0),
+        gm.Point(9.0, 9.0),
+    ])
+    handles = (7, 63, 65_537)
+    small = _lib._unpickle_spatial_index_v2(values, handles, 70_000, False)
+    large_next = 1 << 40
+    large = _lib._unpickle_spatial_index_v2(values, handles, large_next, False)
+
+    assert list(small) == [7, 63, 65_537]
+    assert list(large) == [7, 63, 65_537]
+    assert ids(small.query(gm.Point(1.0, 1.0))) == [7, 63]
+    assert ids(large.query(gm.Point(1.0, 1.0))) == [7, 63]
+    assert ids(small.nearest(gm.Point(9.0, 9.0))) == [65_537]
+    assert ids(large.nearest(gm.Point(9.0, 9.0))) == [65_537]
+    assert pair_rows(small.self_join(predicate='intersects')) == [(7, 63)]
+    assert pair_rows(large.self_join(predicate='intersects')) == [(7, 63)]
+    assert sys.getsizeof(small) == sys.getsizeof(large)
+
+    copied = copy.copy(large)
+    assert copied.remove(63)
+    assert list(copied) == [7, 65_537]
+    assert list(large) == [7, 63, 65_537]
+
+    restored = pickle.loads(pickle.dumps(large))
+    assert list(restored) == [7, 63, 65_537]
+    assert ids(restored.query(gm.Point(9.0, 9.0))) == [65_537]
+    # Size follows the prepared products a restore has initialized, so compare
+    # restores that did the same work: it must not depend on the next handle.
+    restored_small = pickle.loads(pickle.dumps(small))
+    assert ids(restored_small.query(gm.Point(9.0, 9.0))) == [65_537]
+    assert sys.getsizeof(restored) == sys.getsizeof(restored_small)
+    assert pair_rows(restored.self_join(predicate='intersects')) == [(7, 63)]
+    assert restored.remove(7)
+    assert pair_rows(restored.self_join(predicate='intersects')) == []
+    next_handle = restored.insert(gm.Point(float(large_next), 4.0))
+    assert next_handle == large_next
+    assert list(restored) == [63, 65_537, large_next]
+
+    framed = gm.GeometryArray([gm.Point(1.0, 2.0, crs=4326, epoch=2020.0)])
+    empty = _lib._unpickle_spatial_index_v2(framed[:0], (), large_next, True)
+    empty_roundtrip = pickle.loads(pickle.dumps(empty))
+    assert list(empty_roundtrip) == []
+    assert empty_roundtrip.crs == 'EPSG:4326'
+    assert empty_roundtrip.epoch == 2020.0
+    assert (
+        empty_roundtrip.insert(gm.Point(5.0, 6.0, crs=4326, epoch=2020.0)) == large_next
+    )
+    exhausted = _lib._unpickle_spatial_index_v2(framed[:0], (), sys.maxsize, True)
+    with pytest.raises(OverflowError):
+        exhausted.insert(gm.Point(5.0, 6.0, crs=4326, epoch=2020.0))
+    assert len(exhausted) == 0
 
 
 @pytest.mark.parametrize(

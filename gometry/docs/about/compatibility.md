@@ -4,22 +4,26 @@ description: gometry runtime, platform, optional-integration, and semantic-versi
 
 # Compatibility & deprecation policy
 
-This release declares CPython 3.11–3.14 and free-threaded CPython 3.14t,
-requires NumPy, and needs no system GEOS, GDAL, or PROJ. Incompatible public
-removals wait for a major release.
+The current release workflow tests CPython 3.11–3.14 and free-threaded CPython
+3.14t, requires NumPy, and needs no system GEOS, GDAL, or PROJ. The package
+metadata's `requires-python >=3.11` is a lower bound, not evidence that later
+Python minors have been tested. Incompatible public removals wait for a major
+release.
 
 ## Runtime and platform matrix
 
-The rows below are the package metadata's declared runtime targets. A published
-wheel or a successful source build is the evidence that a particular target is
-installable; this table does not promise a wheel for every target on every
-release.
+The matrix below follows the current CI and release-wheel configuration. Linux
+tests every supported stable CPython minor; macOS and Windows test the newest
+stable minor, and Linux tests the free-threaded build. The release workflow
+builds wheels for the listed native platform architectures.
 
 | Surface | Supported |
 | --- | --- |
-| CPython | 3.11, 3.12, 3.13, and 3.14 |
-| Free-threaded CPython | 3.14t |
-| PyPy | Unsupported |
+| CPython tests | 3.11–3.14 on Linux; 3.14 on macOS, Windows, and Linux aarch64 |
+| Free-threaded CPython tests | 3.14t on Linux |
+| CPython wheels | 3.11–3.14 |
+| Free-threaded CPython wheels | 3.14t |
+| PyPy | Not included in the current test or wheel matrix |
 | Linux | glibc and musl, `x86_64` and `aarch64` |
 | macOS | 11 or newer, `x86_64` and `arm64` |
 | Windows | `amd64` and `arm64` |

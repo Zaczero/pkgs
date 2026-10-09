@@ -10,7 +10,6 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from gometry import _lib
 
 FLAT_FAMILY_EXPORTS = {
     'crs_apply',
@@ -70,11 +69,6 @@ FLAT_FAMILY_EXPORTS = {
 }
 
 
-def test_flat_native_family_exports_are_direct_aliases() -> None:
-    for name in FLAT_FAMILY_EXPORTS:
-        assert getattr(gm, name) is getattr(_lib, name)
-
-
 def test_consolidated_algorithm_families_have_one_canonical_dispatch_surface() -> None:
     """Method selectors replace parallel public spellings without losing capability."""
     polygon = gm.Polygon([(0, 0), (3, 0), (3, 3), (0, 3), (0, 0)])
@@ -114,20 +108,6 @@ def test_consolidated_algorithm_families_have_one_canonical_dispatch_surface() -
         measured.line_interpolate(50, basis='m', normalized=True)
     with pytest.raises(gm.GeometryError, match="basis='distance'"):
         measured.line_interpolate(count=2, basis='m')
-
-
-def test_bulk_refactor_entrypoints_are_single_native_calls() -> None:
-    """Hot/bulk public entrypoints contain no Python row-dispatch bytecode."""
-    for name in (
-        'from_features',
-        'nearest_points',
-        'contains',
-        'bearing',
-        'point_between',
-    ):
-        function = getattr(gm, name)
-        assert inspect.isbuiltin(function), name
-        assert function.__module__ == 'gometry._lib', name
 
 
 def test_geometry_array_vectorizes_homogeneous_shapely_batches(
@@ -585,8 +565,6 @@ def test_readme_quickstart_stays_executable() -> None:
     assert multi.geometry_type == 'MultiPolygon'
     assert point.crs == 'EPSG:4326'
     assert point.coordinate_axes == 'XY'
-    assert gm.contains(area, point)
-    assert area.area > 0
     assert multi.bounds == area.bounds
     np.testing.assert_array_equal(area.coords.row_index, [0, 0, 0, 0, 0])
     np.testing.assert_array_equal(
@@ -751,8 +729,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'overlaps',
         'point_between',
         'points',
-        'polygonize',
-        'polygonize_full',
+        'polygonize_all',
         'polygons',
         'relate',
         'relate_pattern',

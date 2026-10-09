@@ -81,8 +81,8 @@ impl PyGeometryArray {
     }
 
     /// Declare (or clear) the array's coordinate epoch (see
-    /// `Geometry.set_epoch`). ``None`` clears it; changing a present epoch
-    /// needs ``overwrite=True``.
+    /// `Geometry.set_epoch`). The CRS frame must admit an epoch. ``None``
+    /// clears it; changing a present epoch needs ``overwrite=True``.
     ///
     /// Parameters
     /// ----------
@@ -100,7 +100,8 @@ impl PyGeometryArray {
     /// Raises
     /// ------
     /// CRSError
-    ///     If a present epoch would change without ``overwrite=True``.
+    ///     If the CRS frame cannot carry an epoch or a present epoch would
+    ///     change without ``overwrite=True``.
     /// GeometryError
     ///     If ``epoch`` is not a finite decimal year.
     ///
@@ -119,8 +120,7 @@ impl PyGeometryArray {
 
     /// Reproject all geometries to a target CRS.
     /// The source coordinate epoch is the array's own ``epoch`` metadata
-    /// (stamp it with ``set_epoch`` first to transform between dynamic
-    /// frames);
+    /// (stamp it with ``set_epoch`` first when the operation needs one);
     /// ``epoch`` here labels the *output* coordinate epoch.
     ///
     /// Parameters
@@ -132,10 +132,9 @@ impl PyGeometryArray {
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.
     ///
     /// epoch : float, optional
-    ///     Output coordinate epoch (decimal year) to tag on the result, for
-    ///     dynamic frames. Omitted keeps the source epoch while it still
-    ///     means something: the CRS is unchanged, or the target CRS is
-    ///     dynamic (time-dependent). A static target clears it.
+    ///     Output coordinate epoch (decimal year) to tag on the result. Omitted
+    ///     keeps the source epoch when the CRS is unchanged or the target admits
+    ///     geometry epochs; otherwise the output has no epoch.
     ///
     /// authority : str, optional
     ///     Restrict candidate coordinate operations to this authority
@@ -218,14 +217,8 @@ impl PyGeometryArray {
                 coordinate_epoch_option("epoch", epoch)?,
                 options,
             )?;
-            let target_crs = frame.target;
-            let output = frame.output;
-            let transformer = crs::TransformPlan::new_with_options_at(
-                &frame.source,
-                target_crs.as_str(),
-                frame.options,
-                frame.state,
-            )?;
+            let transformer = crs::TransformPlan::from_geometry_frame(frame)?;
+            let output = transformer.output_frame().clone();
             if transformer.is_identity() {
                 let rows = self.rows.clone();
                 py.detach(move || admit_identity_array_rows(&transformer, &rows))
@@ -236,22 +229,19 @@ impl PyGeometryArray {
             let rows = self.row_owner().clone();
             let converted_rows = py
                 .detach(move || {
-                    let present_count = rows
+                    let missing = rows
                         .missing()
-                        .expect("mixed nullable rows carry a validity mask")
-                        .present_count();
-                    let mut present = Vec::with_capacity(present_count);
-                    for row in rows.logical_rows() {
-                        if let crate::geometry::storage::LogicalRow::Present { row, .. } = row {
-                            present.push(row.with_shape(Clone::clone)?);
-                        }
-                    }
-                    let borrowed: Vec<_> = present.iter().collect();
+                        .expect("mixed nullable rows carry a validity mask");
+                    let GeometryArrayStorage::Mixed(shapes) = rows.storage() else {
+                        unreachable!("this transform path handles mixed nullable rows");
+                    };
+                    let present: Vec<_> = shapes
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(row, shape)| (!missing.is_missing(row)).then_some(shape))
+                        .collect();
                     let converted = transformer
-                        .transform_shapes_with_computed_edges_indexed(
-                            &borrowed,
-                            target_crs.as_str(),
-                        )
+                        .transform_shapes_with_computed_edges_indexed(&present)
                         .map_err(|failure| {
                             let coordinate = failure
                                 .coordinate
@@ -270,11 +260,7 @@ impl PyGeometryArray {
                             },
                         })
                         .collect();
-                    let mask = rows
-                        .missing()
-                        .expect("mixed nullable rows carry a validity mask")
-                        .clone();
-                    Ok::<_, crate::crs::TransformFailure>((output, mask))
+                    Ok::<_, crate::crs::TransformFailure>((output, missing.clone()))
                 })
                 .map_err(transform_failure_pyerr)?;
             drain_accuracy_warning(py, &execution)?;
@@ -300,14 +286,8 @@ impl PyGeometryArray {
             coordinate_epoch_option("epoch", epoch)?,
             options,
         )?;
-        let target_crs = frame.target;
-        let output = frame.output;
-        let transformer = crs::TransformPlan::new_with_options_at(
-            &frame.source,
-            target_crs.as_str(),
-            frame.options,
-            frame.state,
-        )?;
+        let transformer = crs::TransformPlan::from_geometry_frame(frame)?;
+        let output = transformer.output_frame().clone();
         if transformer.is_identity() {
             let rows = self.rows.clone();
             py.detach(move || admit_identity_array_rows(&transformer, &rows))
@@ -325,10 +305,7 @@ impl PyGeometryArray {
                         unreachable!("matched Mixed");
                     };
                     let borrowed: Vec<_> = shapes.iter().collect();
-                    transformer.transform_shapes_with_computed_edges_indexed(
-                        &borrowed,
-                        target_crs.as_str(),
-                    )
+                    transformer.transform_shapes_with_computed_edges_indexed(&borrowed)
                 })
                 .map_err(transform_failure_pyerr)?;
             drain_accuracy_warning(py, &execution)?;
@@ -338,7 +315,7 @@ impl PyGeometryArray {
             )?)
         } else {
             let result = self
-                .map_packed_to_crs_detached(py, output, transformer, target_crs.as_str())?
+                .map_packed_to_crs_detached(py, output, transformer)?
                 .ok_or_else(|| {
                     PyErr::from(crate::error::Error::from(
                         crate::geometry::GeometryErrorKind::Projection(

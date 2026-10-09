@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -15,6 +16,12 @@ const ROWS_PER_CHUNK: usize = 64;
 #[cfg(test)]
 std::thread_local! {
     static DIRECTORY_RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+    static GATHER_HEAP_SIZE_VISITS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_gather_heap_size_visit() {
+    GATHER_HEAP_SIZE_VISITS.with(|count| count.set(count.get().saturating_add(1)));
 }
 
 #[derive(Debug, Default)]
@@ -52,50 +59,41 @@ impl RowProductChunk {
             .saturating_add(self.cell(offset).heap_bytes())
     }
 
-    fn heap_bytes_for_selection(
-        &self,
-        selection: storage::RowSelectionRef<'_>,
-        chunk_index: usize,
-    ) -> usize {
-        let mut retained = crate::heap_size::ARC_CONTROL_BYTES
+    fn heap_bytes_for_window(&self, start: usize, len: usize, chunk_index: usize) -> usize {
+        let mut retained = self.heap_bytes_base();
+        let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+        let end = start.saturating_add(len);
+        let first = start.saturating_sub(chunk_start);
+        let last = end.saturating_sub(chunk_start).min(self.cells.len());
+        if first < last {
+            retained = self
+                .cells
+                .get(first..last)
+                .expect("selected chunk range is bounded by its cells")
+                .iter()
+                .map(HeapSize::heap_bytes)
+                .fold(retained, usize::saturating_add);
+        }
+        retained
+    }
+
+    fn heap_bytes_for_mask(&self, selected: u64) -> usize {
+        self.cells
+            .iter()
+            .enumerate()
+            .filter(|(offset, _)| selected & (1_u64 << *offset) != 0)
+            .map(|(_, cell)| cell.heap_bytes())
+            .fold(self.heap_bytes_base(), usize::saturating_add)
+    }
+
+    fn heap_bytes_base(&self) -> usize {
+        crate::heap_size::ARC_CONTROL_BYTES
             .saturating_add(std::mem::size_of::<Self>())
             .saturating_add(
                 self.cells
                     .capacity()
                     .saturating_mul(std::mem::size_of::<RowProductCell>()),
-            );
-        let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
-        match selection {
-            crate::geometry::storage::RowSelectionRef::Window { start, len } => {
-                let end = start.saturating_add(len);
-                let first = start.saturating_sub(chunk_start);
-                let last = end.saturating_sub(chunk_start).min(self.cells.len());
-                if first < last {
-                    retained = self
-                        .cells
-                        .get(first..last)
-                        .expect("selected chunk range is bounded by its cells")
-                        .iter()
-                        .map(HeapSize::heap_bytes)
-                        .fold(retained, usize::saturating_add);
-                }
-            },
-            storage::RowSelectionRef::Gather(rows) => {
-                let mut selected = 0_u64;
-                for &row in rows {
-                    if row / ROWS_PER_CHUNK == chunk_index {
-                        selected |= 1_u64 << (row % ROWS_PER_CHUNK);
-                    }
-                }
-                for (offset, cell) in self.cells.iter().enumerate() {
-                    if selected & (1_u64 << offset) != 0 {
-                        retained = retained.saturating_add(cell.heap_bytes());
-                    }
-                }
-            },
-            storage::RowSelectionRef::Identity => unreachable!(),
-        }
-        retained
+            )
     }
 }
 
@@ -552,6 +550,16 @@ impl RowProducts {
         DIRECTORY_RESOLUTIONS.with(Cell::get)
     }
 
+    #[cfg(test)]
+    pub(crate) fn reset_gather_heap_size_visit_count() {
+        GATHER_HEAP_SIZE_VISITS.with(|count| count.set(0));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gather_heap_size_visit_count() -> usize {
+        GATHER_HEAP_SIZE_VISITS.with(Cell::get)
+    }
+
     fn selected(&self, rows: impl IntoIterator<Item = usize>) -> Self {
         let current = self.selection.as_deref();
         let physical_len = self.owner.physical_len;
@@ -686,40 +694,50 @@ impl HeapSize for RowProducts {
                             .map(HeapSize::heap_bytes)
                             .fold(0, usize::saturating_add),
                     ),
-                selection @ (crate::geometry::storage::RowSelectionRef::Window { .. }
-                | storage::RowSelectionRef::Gather(_)) => chunks
+                storage::RowSelectionRef::Window { start, len } => chunks
                     .iter()
-                    .filter(|&(&chunk_index, chunk)| {
-                        selection_touches_chunk(selection, chunk_index, chunk.cells.len())
-                    })
-                    .map(|(&chunk_index, chunk)| {
-                        std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
-                            .saturating_add(chunk.heap_bytes_for_selection(selection, chunk_index))
+                    .filter_map(|(&chunk_index, chunk)| {
+                        let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+                        let chunk_end = chunk_start.saturating_add(chunk.cells.len());
+                        let window_end = start.saturating_add(len);
+                        (start < chunk_end && chunk_start < window_end).then(|| {
+                            std::mem::size_of::<(usize, Arc<RowProductChunk>)>().saturating_add(
+                                chunk.heap_bytes_for_window(start, len, chunk_index),
+                            )
+                        })
                     })
                     .fold(0, usize::saturating_add),
+                storage::RowSelectionRef::Gather(rows) => {
+                    let mut masks = BTreeMap::<usize, u64>::new();
+                    for &row in rows {
+                        #[cfg(test)]
+                        record_gather_heap_size_visit();
+                        let chunk_index = row / ROWS_PER_CHUNK;
+                        if chunks.contains_key(&chunk_index) {
+                            *masks.entry(chunk_index).or_default() |=
+                                1_u64 << (row % ROWS_PER_CHUNK);
+                        }
+                    }
+                    masks
+                        .into_iter()
+                        .fold(0_usize, |bytes, (chunk_index, selected)| {
+                            let chunk = chunks
+                                .get(&chunk_index)
+                                .expect("gather mask belongs to an initialized chunk");
+                            bytes
+                                .saturating_add(std::mem::size_of::<(
+                                    usize,
+                                    Arc<RowProductChunk>,
+                                )>())
+                                .saturating_add(chunk.heap_bytes_for_mask(selected))
+                        })
+                },
             }
         };
         let retained = crate::heap_size::ARC_CONTROL_BYTES
             .saturating_add(std::mem::size_of::<RowProductOwner>())
             .saturating_add(chunk_bytes);
         retained.saturating_add(self.selection.heap_bytes())
-    }
-}
-
-fn selection_touches_chunk(
-    selection: storage::RowSelectionRef<'_>,
-    chunk_index: usize,
-    chunk_len: usize,
-) -> bool {
-    match selection {
-        storage::RowSelectionRef::Identity => true,
-        crate::geometry::storage::RowSelectionRef::Window { start, len } => {
-            let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
-            start < chunk_start.saturating_add(chunk_len) && chunk_start < start.saturating_add(len)
-        },
-        storage::RowSelectionRef::Gather(rows) => {
-            rows.iter().any(|&row| row / ROWS_PER_CHUNK == chunk_index)
-        },
     }
 }
 
@@ -912,6 +930,89 @@ mod frame_cache_row_tests {
         .unwrap()
     }
 
+    fn prior_row_product_heap_bytes(products: &RowProducts) -> usize {
+        let chunks = products
+            .owner
+            .chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let chunk_bytes = match products.selection.as_deref() {
+            storage::RowSelectionRef::Identity => chunks
+                .capacity()
+                .saturating_mul(std::mem::size_of::<(usize, Arc<RowProductChunk>)>())
+                .saturating_add(
+                    chunks
+                        .values()
+                        .map(HeapSize::heap_bytes)
+                        .fold(0, usize::saturating_add),
+                ),
+            selection @ (storage::RowSelectionRef::Window { .. }
+            | storage::RowSelectionRef::Gather(_)) => {
+                chunks.iter().fold(0_usize, |bytes, (&chunk_index, chunk)| {
+                    let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+                    let selected = match selection {
+                        storage::RowSelectionRef::Window { start, len } => {
+                            start < chunk_start.saturating_add(chunk.cells.len())
+                                && chunk_start < start.saturating_add(len)
+                        },
+                        storage::RowSelectionRef::Gather(rows) => {
+                            rows.iter().any(|&row| row / ROWS_PER_CHUNK == chunk_index)
+                        },
+                        storage::RowSelectionRef::Identity => unreachable!(),
+                    };
+                    if !selected {
+                        return bytes;
+                    }
+                    let mut retained = crate::heap_size::ARC_CONTROL_BYTES
+                        .saturating_add(std::mem::size_of::<RowProductChunk>())
+                        .saturating_add(
+                            chunk
+                                .cells
+                                .capacity()
+                                .saturating_mul(std::mem::size_of::<RowProductCell>()),
+                        );
+                    match selection {
+                        storage::RowSelectionRef::Window { start, len } => {
+                            let end = start.saturating_add(len);
+                            let first = start.saturating_sub(chunk_start);
+                            let last = end.saturating_sub(chunk_start).min(chunk.cells.len());
+                            if first < last {
+                                retained = chunk
+                                    .cells
+                                    .get(first..last)
+                                    .expect("reference window is in the product chunk")
+                                    .iter()
+                                    .map(HeapSize::heap_bytes)
+                                    .fold(retained, usize::saturating_add);
+                            }
+                        },
+                        storage::RowSelectionRef::Gather(rows) => {
+                            let mut selected = 0_u64;
+                            for &row in rows {
+                                if row / ROWS_PER_CHUNK == chunk_index {
+                                    selected |= 1_u64 << (row % ROWS_PER_CHUNK);
+                                }
+                            }
+                            for (offset, cell) in chunk.cells.iter().enumerate() {
+                                if selected & (1_u64 << offset) != 0 {
+                                    retained = retained.saturating_add(cell.heap_bytes());
+                                }
+                            }
+                        },
+                        storage::RowSelectionRef::Identity => unreachable!(),
+                    }
+                    bytes
+                        .saturating_add(std::mem::size_of::<(usize, Arc<RowProductChunk>)>())
+                        .saturating_add(retained)
+                })
+            },
+        };
+        crate::heap_size::ARC_CONTROL_BYTES
+            .saturating_add(std::mem::size_of::<RowProductOwner>())
+            .saturating_add(chunk_bytes)
+            .saturating_add(products.selection.heap_bytes())
+    }
+
     #[test]
     fn row_operation_keeps_dense_compact_and_duplicate_logical_identity() {
         let dense = points();
@@ -1067,6 +1168,43 @@ mod frame_cache_row_tests {
             selected.heap_bytes(),
             selected_without_products.heap_bytes(),
             "a logical row view must not charge cached products for unselected rows"
+        );
+    }
+
+    #[test]
+    fn row_product_size_matches_reference_and_visits_gather_once() {
+        let source = RowProducts::fresh(512);
+        for row in [1, 2, 63, 64, 65, 66, 127, 129, 191] {
+            drop(source.frame_cache(row));
+        }
+        let window = source.selected(2..66);
+        let gather_rows = [129, 65, 1, 129, 64, 1, 500];
+        let gather = source.selected(gather_rows);
+        assert!(matches!(
+            window.selection.as_deref(),
+            storage::RowSelectionRef::Window { start: 2, len: 64 }
+        ));
+        assert!(matches!(
+            gather.selection.as_deref(),
+            storage::RowSelectionRef::Gather(_)
+        ));
+
+        let identity_expected = prior_row_product_heap_bytes(&source);
+        RowProducts::reset_gather_heap_size_visit_count();
+        assert_eq!(source.heap_bytes(), identity_expected);
+        assert_eq!(RowProducts::gather_heap_size_visit_count(), 0);
+
+        let window_expected = prior_row_product_heap_bytes(&window);
+        RowProducts::reset_gather_heap_size_visit_count();
+        assert_eq!(window.heap_bytes(), window_expected);
+        assert_eq!(RowProducts::gather_heap_size_visit_count(), 0);
+
+        let gather_expected = prior_row_product_heap_bytes(&gather);
+        RowProducts::reset_gather_heap_size_visit_count();
+        assert_eq!(gather.heap_bytes(), gather_expected);
+        assert_eq!(
+            RowProducts::gather_heap_size_visit_count(),
+            gather_rows.len()
         );
     }
 

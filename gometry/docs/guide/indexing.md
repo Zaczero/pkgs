@@ -20,6 +20,12 @@ sparse row table, including tombstones for removed rows, and rebuilds the search
 structure on load. A round trip therefore preserves live handles and prior
 mutations rather than replaying the original source rows.
 
+Lookup methods require a non-negative integer/index handle and reject `bool`.
+`idx.get(handle, default)` returns `default` for a valid handle that is unknown
+or removed, but negative and non-integer inputs raise; it does not use
+`dict.get`'s behavior for arbitrary keys. Membership checks remain tolerant and
+return `False` for non-integer probes.
+
 !!! warning "Candidates are not matches"
     [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
     query's bounding box. Bounding boxes overlap far more often than geometries
@@ -298,6 +304,11 @@ the index), and [`remove`][gometry.SpatialIndex.remove] tombstones a row by
 handle. Inserted rows live in a small overflow tree chained after the bulk
 structure; query/nearest lanes see both. Removed rows stay sparse handles so row
 identity is preserved for joins — they are not renumbered.
+
+Batch insertion rejects empty geometries and GeometryArrays containing missing
+rows. It validates the complete input and frame before changing the index, so
+input-validation errors leave its rows and frame unchanged. This is not a
+transaction guarantee for allocation or publication failures.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

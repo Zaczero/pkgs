@@ -203,6 +203,44 @@ def test_coordinates_equality_tracks_selected_layouts() -> None:
     assert padded != xy
 
 
+def test_coordinates_equality_propagates_type_errors_after_iterator_admission() -> None:
+    coords = gm.Point(1.0, 2.0).coords
+    iteration_error = TypeError('coordinates provider failed after one row')
+
+    class OneShotRows:
+        def __init__(self) -> None:
+            self.iter_calls = 0
+
+        def __iter__(self):
+            self.iter_calls += 1
+            if self.iter_calls > 1:
+                raise AssertionError('one-shot provider was reacquired')
+            yield (1.0, 2.0)
+            raise iteration_error
+
+    rows = OneShotRows()
+    with pytest.raises(
+        TypeError, match='coordinates provider failed after one row'
+    ) as caught:
+        coords.__eq__(rows)
+    assert caught.value is iteration_error
+    assert rows.iter_calls == 1
+
+    comparison_error = TypeError('coordinate item comparison failed')
+
+    class RaisingComparison:
+        __hash__ = None
+
+        def __eq__(self, other: object) -> bool:
+            raise comparison_error
+
+    with pytest.raises(TypeError, match='coordinate item comparison failed') as caught:
+        coords.__eq__([RaisingComparison()])
+    assert caught.value is comparison_error
+
+    assert coords.__eq__(42) is NotImplemented
+
+
 def test_coords_and_column_iterators_are_lazy() -> None:
     line = gm.LineString([(0, 0), (2, 3), (5, 6)])
     it = iter(line.coords)
@@ -988,6 +1026,38 @@ def test_set_coordinates_selection_rejects_z_open_ring(select) -> None:
     keep[1, 2] = 8.0  # second vertex is always interior on a 4-vertex ring
     kept = view.set_coordinates(keep)
     assert pickle.loads(pickle.dumps(kept)) == kept
+
+
+def test_set_coordinates_nullable_polygon_error_uses_logical_row() -> None:
+    polygon = gm.from_wkt('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))')
+    array = gm.GeometryArray([None, polygon, None, polygon])
+    opened = np.asarray(array.coords).copy()
+    opened[-1, 0] = -1.0
+
+    with pytest.raises(
+        gm.InvalidGeometryError, match='polygon ring must be closed'
+    ) as error:
+        array.set_coordinates(opened)
+
+    assert error.value.__notes__ == ['while processing array element 3']
+
+
+def test_set_coordinates_nullable_polygon_carries_measure_columns() -> None:
+    first = gm.from_wkt('POLYGON M ((0 0 10, 1 0 20, 1 1 30, 0 1 40, 0 0 10))')
+    second = gm.from_wkt('POLYGON M ((2 2 50, 3 2 60, 3 3 70, 2 3 80, 2 2 50))')
+    array = gm.GeometryArray([None, first, None, second])
+    coordinates = np.asarray(array.coords)
+    xs = coordinates[:, 0].copy()
+    ys = coordinates[:, 1].copy()
+    xs[1] = 1.5
+    xs[6] = 3.5
+
+    out = array.set_coordinates(x=xs, y=ys)
+
+    assert out.is_missing.tolist() == [True, False, True, False]
+    np.testing.assert_array_equal(
+        out.coords.m, [10, 20, 30, 40, 10, 50, 60, 70, 80, 50]
+    )
 
 
 def test_set_coordinates_per_axis_and_num_coordinates() -> None:

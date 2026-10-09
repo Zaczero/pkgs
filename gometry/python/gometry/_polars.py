@@ -112,7 +112,8 @@ def from_polars(
         Restore CRS metadata when the binary values do not embed an EPSG SRID.
         If EWKB does carry an SRID, this value must agree with it.
     epoch : float, optional
-        Restore coordinate epoch metadata. Requires a CRS.
+        Restore coordinate epoch metadata. The CRS must admit geometry epochs
+        under gometry's frame policy.
 
     Returns
     -------
@@ -123,9 +124,9 @@ def from_polars(
     ------
     CRSError
         If crs is not a valid CRS identifier or disagrees with an embedded
-        EWKB SRID.
+        EWKB SRID, or if the CRS is absent or does not admit coordinate epochs.
     GeometryError
-        If epoch is supplied without a CRS.
+        If epoch is not a finite decimal year.
     """
     _polars()
     result = from_wkb(series, crs=crs, epoch=epoch)
