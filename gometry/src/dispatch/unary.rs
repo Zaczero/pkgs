@@ -269,7 +269,6 @@ fn run_unary_rows<T: BulkElement>(
         resolver @ (MetricResolver::Antimeridian
         | MetricResolver::Metric { .. }
         | MetricResolver::Metric3d { .. }
-        | MetricResolver::LineMetric { .. }
         | MetricResolver::GeographicCarry) => {
             let mut metric_scratch = MetricScratch::default();
             let result = match resolver.resolve_topology_ctx(&array.frame, &mut metric_scratch) {

@@ -44,8 +44,10 @@ at : float or sequence of float, optional
 ";
     scalar: (r"
 count : int, optional
-    Number of evenly spaced distance-basis samples (``>= 1``). Mutually
-    exclusive with ``at`` and unavailable with ``basis='m'``.
+    Number of evenly spaced distance-basis samples (``>= 1``) along the metric
+    selected by ``unit``. Mutually exclusive with ``at`` and unavailable with
+    ``basis='m'``; ``normalized=True`` is invalid because count already supplies
+    fractional positions.
 ", r"
 
 Returns
@@ -57,9 +59,11 @@ Point or GeometryArray[Point]
 ");
     array: (r"
 count : int or iterable of int, optional
-    Number of evenly spaced distance-basis samples per row (``>= 1``). A scalar
-    broadcasts; otherwise pass one count per row. Mutually exclusive with
-    ``at`` and unavailable with ``basis='m'``.
+    Number of evenly spaced distance-basis samples per row (``>= 1``) along the
+    metric selected by ``unit``. A scalar broadcasts; otherwise pass one count
+    per row. Mutually exclusive with ``at`` and unavailable with ``basis='m'``;
+    ``normalized=True`` is invalid because count already supplies fractional
+    positions.
 ", r"
 
 Returns
@@ -76,8 +80,9 @@ basis : {'distance', 'm'}, default 'distance'
     chart-edge arclength on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
-    Interpret distance-basis ``at`` values as fractions in [0, 1]. Invalid
-    with ``basis='m'``.
+    Interpret distance-basis ``at`` values as fractions of the route length
+    under the selected metric. Changing ``unit`` can change their positions.
+    Invalid with ``basis='m'``.
 
 ", unit_parameter_doc!(), r"    Available only with ``basis='distance'``; invalid with
     ``basis='m'``.");
@@ -134,8 +139,9 @@ basis : {'distance', 'm'}, default 'distance'
     chart-edge arclength on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
-    Interpret distance-basis positions as fractions in [0, 1]. Invalid with
-    ``basis='m'``.
+    Interpret distance-basis positions as fractions of the route length under
+    the selected metric. Changing ``unit`` can change the cut points. Invalid
+    with ``basis='m'``.
 ", unit_parameter_doc!(), r"    Available only with ``basis='distance'``; invalid with
     ``basis='m'``.");
     scalar: r"
@@ -276,7 +282,9 @@ basis : {'distance', 'm'}, default 'distance'
     ellipsoidal arclength on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
-    Return a distance-basis fraction in [0, 1]. Invalid with ``basis='m'``.
+    Return a distance-basis fraction in [0, 1] under the selected metric.
+    Changing ``unit`` can change the nearest projection and returned fraction.
+    Invalid with ``basis='m'``.
 
 ", unit_parameter_doc!(), r"    Available only with ``basis='distance'``; invalid with
     ``basis='m'``.");
@@ -365,7 +373,7 @@ impl PyGeometry {
                 py,
                 self,
                 op,
-                op.resolver_with_line_unit(None, false),
+                op.resolver_with_unit(None),
                 move |data, ctx| kernels::unary_line_interpolate_point_m(data, ctx, &m),
             )?;
             return value.into_pyobject(py).map(Bound::unbind);
@@ -373,7 +381,7 @@ impl PyGeometry {
         let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
         let distance = F64Param::Scalar(at);
         distance.ensure_finite("at")?;
-        let resolver = op.resolver_with_line_unit(unit, normalized);
+        let resolver = op.resolver_with_unit(unit);
         let value = crate::dispatch::unary_scalar_linref_shape(
             py,
             self,
@@ -411,7 +419,7 @@ impl PyGeometry {
                 py,
                 self,
                 op,
-                op.resolver_with_line_unit(None, false),
+                op.resolver_with_unit(None),
                 move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end),
             );
         }
@@ -420,7 +428,7 @@ impl PyGeometry {
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(scalar))?;
         start_distance.ensure_finite("start")?;
         end_distance.ensure_finite("end")?;
-        let resolver = op.resolver_with_line_unit(unit, normalized);
+        let resolver = op.resolver_with_unit(unit);
         crate::dispatch::unary_scalar_linref_shape(py, self, op, resolver, move |data, ctx| {
             kernels::unary_line_substring(data, ctx, &start_distance, &end_distance, normalized)
         })
@@ -568,7 +576,7 @@ impl PyGeometryArray {
             let m = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
             m.ensure_finite("at")?;
             let model =
-                crate::resolve_line_metric(self.crs_str(), None, false, MetricOp::LineInterpolate)?;
+                crate::broadcast::resolve_metric(self.crs_str(), None, MetricOp::LineInterpolate)?;
             let value = crate::dispatch::unary_array_linref_with_model(
                 py,
                 self,
@@ -580,7 +588,7 @@ impl PyGeometryArray {
         let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
         let distance = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
         distance.ensure_finite("at")?;
-        let resolver = op.resolver_with_line_unit(unit, normalized);
+        let resolver = op.resolver_with_unit(unit);
         let model = resolver
             .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
             .require_model(MetricOp::LineInterpolate)?
@@ -618,7 +626,7 @@ impl PyGeometryArray {
             start.ensure_finite("start")?;
             end.ensure_finite("end")?;
             let model =
-                crate::resolve_line_metric(self.crs_str(), None, false, MetricOp::LineSubstring)?;
+                crate::broadcast::resolve_metric(self.crs_str(), None, MetricOp::LineSubstring)?;
             return crate::dispatch::unary_array_linref_with_model(
                 py,
                 self,
@@ -631,7 +639,7 @@ impl PyGeometryArray {
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(array, self))?;
         start_distance.ensure_finite("start")?;
         end_distance.ensure_finite("end")?;
-        let resolver = op.resolver_with_line_unit(unit, normalized);
+        let resolver = op.resolver_with_unit(unit);
         let model = resolver
             .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
             .require_model(MetricOp::LineSubstring)?

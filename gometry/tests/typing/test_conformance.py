@@ -917,17 +917,34 @@ assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
 assert_type(LINE.line_interpolate(0.5), gm.Point)
 assert_type(LINE.line_interpolate(at=0.5), gm.Point)
+assert_type(
+    LINE.line_interpolate(0.5, normalized=True, unit='planar'),
+    gm.Point,
+)
 assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate([0.25, 0.75]), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate(count=3), gm.GeometryArray[gm.Point])
+assert_type(
+    LINE.line_interpolate(count=3, unit='meters'),
+    gm.GeometryArray[gm.Point],
+)
 assert_type(MEASURED_LINE.line_interpolate(5.0), gm.Point)
 assert_type(LINE.line_locate(POINT), float)
+assert_type(LINE.line_locate(POINT, normalized=True, unit='meters'), float)
 assert_type(MEASURED_LINE.line_locate(POINT), float)
 assert_type(LINE.line_substring(0.25, 0.75), gm.LineString | gm.Point)
+assert_type(
+    LINE.line_substring(0.25, 0.75, normalized=True, unit='planar'),
+    gm.LineString | gm.Point,
+)
 assert_type(MEASURED_LINE.line_substring(5.0, 10.0), gm.LineString | gm.Point)
 assert_type(LINES.line_interpolate(0.5), gm.GeometryArray[gm.Point])
 assert_type(LINES.line_interpolate(count=3), gm.Groups[gm.GeometryArray[gm.Point]])
 assert_type(LINES.line_interpolate(count=[3]), gm.Groups[gm.GeometryArray[gm.Point]])
+assert_type(
+    LINES.line_interpolate(count=[3], unit='planar'),
+    gm.Groups[gm.GeometryArray[gm.Point]],
+)
 assert_type(POINT.sample_points(3, seed=7), gm.GeometryArray[gm.Point])
 assert_type(
     POINTS.sample_points([2, 3], seed=[11, 12]),
@@ -935,7 +952,15 @@ assert_type(
 )
 assert_type(LINES.line_locate(POINT), npt.NDArray[np.float64])
 assert_type(
+    LINES.line_locate(POINT, normalized=True, unit='planar'),
+    npt.NDArray[np.float64],
+)
+assert_type(
     LINES.line_substring(0.25, 0.75),
+    gm.GeometryArray[gm.LineString | gm.Point],
+)
+assert_type(
+    LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(np.asarray(POINTS.coords), npt.NDArray[np.float64])
