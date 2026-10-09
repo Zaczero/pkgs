@@ -1422,6 +1422,40 @@ def test_gen_docs_leaves_cpython_slot_wrappers_alone(
     assert 'Return len(self).' not in rendered
 
 
+def test_signature_scan_and_doc_generation_never_execute_other_descriptors(
+    tmp_path,
+    pristine_stub,
+    monkeypatch,
+):
+    import fakepkg._lib as lib
+
+    class DescriptorAccessError(Exception):
+        pass
+
+    class RaisingDescriptor:
+        def __get__(self, instance, owner=None):
+            raise DescriptorAccessError('descriptor lookup executed')
+
+    monkeypatch.setattr(lib.Sealed, 'danger', RaisingDescriptor(), raising=False)
+    stub = seeded(
+        pristine_stub,
+        _SEALED,
+        f'{_SEALED}\n    def danger(self) -> int: ...',
+    )
+    cfg = make_config(tmp_path, stub_text=stub)
+    failures = []
+    for consumer, operation in (
+        ('structural', lambda: structural(cfg)),
+        ('gen-docs', lambda: render_stub_with_docs(cfg)),
+    ):
+        try:
+            operation()
+        except DescriptorAccessError:
+            failures.append(consumer)
+
+    assert failures == []
+
+
 def test_gen_docs_places_docstring_on_last_overload(tmp_path, pristine_stub):
     # Move the docstring onto the FIRST variant; the renderer must put it back
     # on the last (the canonical carrier) and strip earlier variants.
