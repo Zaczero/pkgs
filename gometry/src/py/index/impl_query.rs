@@ -1337,7 +1337,7 @@ mod tests {
     use crate::geometry::{
         CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel, SharedSlice,
     };
-    use crate::py::index::{build_spatial_index, spatial_index};
+    use crate::py::index::{build_spatial_index, restore_spatial_index_v2, spatial_index};
 
     fn public_point<'py>(py: Python<'py>, x: f64, y: f64) -> Bound<'py, PyAny> {
         crate::Typed(PyGeometry::with_frame(
@@ -1518,7 +1518,6 @@ mod tests {
         Python::attach(|py| {
             let sys = py.import("sys").expect("sys module");
             let copy_module = py.import("copy").expect("copy module");
-            let pickle_module = py.import("pickle").expect("pickle module");
             let mut retained_deltas = Vec::new();
             let mut allocation_counts = Vec::new();
 
@@ -1730,23 +1729,36 @@ mod tests {
                 assert_no_compact_point_rank(logical_len, "query after copy removal");
 
                 crate::geometry::storage::validity::reset_count_valid_bytes();
-                let (serialized, pickle_write_allocations) =
+                let (payload, pickle_write_allocations) =
                     crate::test_support::allocation_count(|| {
-                        pickle_module
-                            .call_method1("dumps", (&index,))
-                            .expect("public pickle write")
+                        let index = index.borrow();
+                        let (values, handles) = index
+                            .rows
+                            .pickle_live_rows(index.metadata.clone().unwrap_or_default())
+                            .expect("index pickle row payload");
+                        (
+                            values,
+                            handles,
+                            index.rows.next_handle,
+                            index.metadata.is_some(),
+                        )
                     });
-                assert_no_compact_point_rank(logical_len, "pickle write");
+                assert_no_compact_point_rank(logical_len, "pickle payload");
                 allocation_counts.last_mut().unwrap()[5] = pickle_write_allocations;
                 crate::geometry::storage::validity::reset_count_valid_bytes();
-                let (restored, pickle_read_allocations) =
+                let (restored, pickle_restore_allocations) =
                     crate::test_support::allocation_count(|| {
-                        pickle_module
-                            .call_method1("loads", (&serialized,))
-                            .expect("public pickle restore")
+                        restore_spatial_index_v2(
+                            &payload.0,
+                            payload.1.clone(),
+                            payload.2,
+                            payload.3,
+                        )
+                        .expect("direct index reconstruction")
                     });
-                assert_no_compact_point_rank(logical_len, "pickle restore");
-                allocation_counts.last_mut().unwrap()[6] = pickle_read_allocations;
+                assert_no_compact_point_rank(logical_len, "pickle reconstruction");
+                allocation_counts.last_mut().unwrap()[6] = pickle_restore_allocations;
+                let restored = Bound::new(py, restored).expect("restored index binds");
                 let restored_low = restored.call_method1("__getitem__", (7_usize,)).unwrap();
                 assert_eq!(
                     public_ids(&restored.call_method1("query", (&restored_low,)).unwrap()),
