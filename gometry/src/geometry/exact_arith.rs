@@ -750,7 +750,9 @@ pub(crate) fn select_transformed_chart_displacement(
     // The quotient is already the exact nearest lift; only an exact half
     // residual has a second minimizer.
     let residual = numerator.try_subtract(denominator.try_product(&center)?)?;
-    if residual.cmp_magnitude_scaled(&denominator, -1) != Ordering::Equal {
+    if residual.cmp_magnitude_scaled_with_work(&denominator, -1, &mut crate::geometry::Unmetered)?
+        != Ordering::Equal
+    {
         return Ok(
             crate::geographic::RetainedChartDisplacement::from_native_endpoints(
                 target_endpoints,
@@ -782,7 +784,11 @@ pub(crate) fn select_transformed_chart_displacement(
         source_connection.step,
         crate::geographic::ChartStep::Circle(_)
     );
-    let lift = match center_displacement.cmp_magnitude_scaled(&competitor_displacement, 0) {
+    let lift = match center_displacement.cmp_magnitude_scaled_with_work(
+        &competitor_displacement,
+        0,
+        &mut crate::geometry::Unmetered,
+    )? {
         Ordering::Greater if source_is_circle => center,
         Ordering::Greater => competitor,
         Ordering::Less if source_is_circle => competitor,
