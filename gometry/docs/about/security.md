@@ -47,52 +47,46 @@ where the workflow accepts repaired shapes.
 ## Ingress threat model
 
 gometry is an ordinary native extension (like pyarrow, numpy, or polars), not a
-sandbox. The design target is **no amplification**: a small or O(1)-sized input
-must not force disproportionate memory or CPU via forged lengths, lying
-iterators, or unbounded type recursion. Structural validation (offset
-monotonicity, BinaryView prefixes, validity bitmaps, exact encoding shapes)
-rejects **hidden/forged** sizes; it does **not** wall off merely-large-and-valid
-payloads.
+sandbox. Its ingress boundaries validate the structures they consume: for
+example, Arrow offsets and validity, buffer spans, and supported encoding
+shapes are checked before decoding. These checks reject malformed structure;
+they do not impose a general payload-size or CPU limit. Arrow providers must
+also obey the exported structures, readable spans, capsule names, and release
+callbacks; see [Arrow C capsule trust model](../ecosystem/arrow.md#arrow-c-capsule-trust-model).
 
-For an ABI-conforming Arrow provider, memory and work stay **bounded relative to
-the input** actually supplied, without attacker leverage from tiny forged
-declarations:
+## Collection and allocation
 
-- Arrow providers must obey the exported structures, readable spans, capsule
-  names, and release callbacks; see [Arrow C capsule trust model](../ecosystem/arrow.md#arrow-c-capsule-trust-model).
-- Coverage factories and H3 traversal methods expose one overridable output
-  size knob, `max_cells` (default `1_000_000`; pass `None` for unlimited). It
-  bounds retained result allocation, not classification or traversal CPU work.
-  Parsers impose no flat byte or feature-count ceiling,
-  but WKT, WKB, and GeoJSON ingestion reject excessive recursive nesting.
-  Separate generated-work limits protect transform-bounds densification and
-  CRS search. [`CellArray.uncompact`][gometry.CellArray.uncompact] is a
-  caller-directed, unlimited transform and is not protected by factory
-  result-count limits; its output can therefore be much larger than its input.
-  Selected geometry output refusals expose
-  [`GeometryError.code`][gometry.GeometryError.code]: `'output_limit'` for a
-  generated-output cap, `'work_limit'` when an embedding search stops before
-  certification, and `'output_unrepresentable'` when an operation cannot meet
-  its admitted output and preservation constraints. A work-limit result does
-  not prove that no valid output exists, and an unrepresentable result applies
-  only to the operation's admitted coordinate domain and preservation contract.
+Python's `__len__` is treated as the provider's exact size contract and is used
+to reserve collection capacity. A provider that reports an inaccurate length
+can request a disproportionate initial reservation; gometry does not recount
+the iterable before reserving. Inputs without `__len__` grow as values are
+consumed. There is no universal element ceiling for finite streams, and an
+unbounded stream can keep consuming memory and CPU.
 
-Proportionally large input can still abort on genuine OOM when its bytes are
-comparable to required memory and the process rlimit is below what it needs.
-Callers parsing untrusted data **must bound input size at the trust boundary**
-(`len(payload)`, feature count, decompressed size), reject oversized payloads
-before parsing, cap decompressed input separately, and bound batch and feature
-counts. Making every `Vec` / string allocation fallible under arbitrary rlimits
-is neither achievable nor required. A bare unsized stream with no `__len__` can
-also consume memory proportionally to its input. Geometry coordinate storage
-and iterable collectors report recoverable allocation failures as `MemoryError`;
-that guarantee does not extend to every allocation in Python or native dependencies.
+Exceptions raised by a Python provider propagate, including a `MemoryError`
+raised by that provider. Native allocator exhaustion is not converted into a
+catchable `MemoryError` guarantee and can abort the process. Applications
+accepting untrusted payloads should enforce their own input-size and batch
+limits before handing data to the extension.
 
-Bare unsized and infinite input iterables are supported without an element
-ceiling. Sized inputs and lying-`__len__` inputs retain the catchable
-`MemoryError` guarantee for capacity growth. The length hint is clamped before
-fallible reservation, so it only tempers the reservation and never caps or
-rejects input or forces an oversized up-front allocation.
+## Generated-output and work limits
+
+Coverage factories and H3 traversal methods default to `max_cells=1_000_000`;
+passing `max_cells=None` removes that output-count limit. This limit does not
+set a CPU deadline for classification or traversal. WKT, WKB, and GeoJSON
+parsers reject excessive recursive nesting, but impose no general byte or
+feature-count ceiling. [`CellArray.uncompact`][gometry.CellArray.uncompact]
+has no result-count limit.
+
+Other limits belong to specific operations. When an operation documents a
+generated-output cap, [`GeometryError.code`][gometry.GeometryError.code] is
+`'output_limit'` for that refusal. A bounded exact search may return
+`code == 'work_limit'` when it stops before certification; that does not prove
+no acceptable result exists.
+`code == 'output_unrepresentable'` means the operation could not satisfy its
+admitted output and preservation contract in its coordinate domain. None of
+these operation-specific errors is a general CPU deadline or a global resource
+guarantee.
 
 Syntactically valid geometry can still exhaust CPU or memory through enormous
 payloads, vertex counts, feature collections, or expensive topology. Run hostile

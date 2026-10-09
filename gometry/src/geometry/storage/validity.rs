@@ -380,6 +380,18 @@ impl ValidityMask {
         self.valid_count
     }
 
+    pub(crate) fn present_in_range(&self, rows: std::ops::Range<usize>) -> usize {
+        assert!(
+            rows.start <= rows.end && rows.end <= self.len,
+            "validity range must be within its logical rows"
+        );
+        count_valid(
+            &self.bytes,
+            self.bit_offset.wrapping_add(rows.start),
+            rows.len(),
+        )
+    }
+
     /// Complete heap retained by this bitmap owner. Windows charge the shared
     /// parent allocation in full, matching the repository's Arc policy.
     pub(crate) fn retained_bytes(&self) -> usize {

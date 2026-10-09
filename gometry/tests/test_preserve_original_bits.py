@@ -70,6 +70,27 @@ def test_point_navigation_and_lrs_boundaries_preserve_endpoint_bits() -> None:
     assert _coords_xy_bits(substring) == _coords_xy_bits(line)
 
 
+def test_geographic_q_union_preserves_a_retained_source_point_latitude() -> None:
+    seam_polygon = gm.Polygon(
+        [
+            (170.0, 2.0),
+            (-170.0, 2.0),
+            (-165.0, 12.0),
+            (160.0, 10.0),
+            (170.0, 2.0),
+        ],
+        crs=4326,
+    )
+    source_point = gm.Point(0.0, -0.0, crs=4326)
+
+    union = gm.union_all([seam_polygon, source_point])
+
+    assert union.geometry_type == 'GeometryCollection'
+    point_parts = [part for part in union.parts if part.geometry_type == 'Point']
+    assert len(point_parts) == 1
+    assert _bits(point_parts[0].y) == _bits(source_point.y)
+
+
 def test_line_interpolation_preserves_equal_subnormal_ordinates() -> None:
     vertical = gm.from_wkt('LINESTRING (5e-324 -1, 5e-324 2)')
     vertical_midpoint = vertical.line_interpolate(0.5, normalized=True)

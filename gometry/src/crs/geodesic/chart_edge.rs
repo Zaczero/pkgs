@@ -19,8 +19,8 @@ use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
     CoordinateAxes, GeographicAreaDensity, GeometryErrorKind, HasM, HasZ, MAX_AUTHALIC_HARMONICS,
-    Point, PointEdgeQuery, PointEdgeQueryResult, Segment, SegmentProjection, Unmetered, Work, XY,
-    segment_projection,
+    MOrdinate, Point, PointEdgeQuery, PointEdgeQueryResult, Segment, SegmentProjection, Unmetered,
+    Work, XY, ZOrdinate, segment_projection,
 };
 
 const GL4_NODES: [f64; 4] = [
@@ -493,14 +493,42 @@ impl ChartEdge {
         total_length: Option<f64>,
         geodesic: &Geodesic,
     ) -> Result<Point> {
+        self.witness_with_work(
+            start,
+            end,
+            parameter,
+            total_length,
+            geodesic,
+            &mut Unmetered,
+        )
+    }
+
+    fn witness_with_work(
+        self,
+        start: Point,
+        end: Point,
+        parameter: f64,
+        total_length: Option<f64>,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<Point> {
         if parameter == 0.0 {
             return Ok(start);
         }
         if parameter == 1.0 {
             return Ok(end);
         }
-        let total = total_length.map_or_else(|| self.length(geodesic), Ok)?;
-        self.witness_interior(start, end, parameter, total, geodesic)
+        let axes = CoordinateAxes::new(
+            HasZ(start.z().is_some() && end.z().is_some()),
+            HasM(start.m().is_some() && end.m().is_some()),
+        );
+        let fraction = if axes.has_z() || axes.has_m() {
+            let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
+            Some(self.arclength_fraction_with_work(parameter, Some(total), geodesic, work)?)
+        } else {
+            None
+        };
+        self.witness_interior(start, end, parameter, axes, fraction)
     }
 
     fn witness_interior(
@@ -508,17 +536,13 @@ impl ChartEdge {
         start: Point,
         end: Point,
         parameter: f64,
-        total: f64,
-        geodesic: &Geodesic,
+        axes: CoordinateAxes,
+        fraction: Option<f64>,
     ) -> Result<Point> {
-        let fraction = self.arclength_fraction(parameter, Some(total), geodesic)?;
         let position = self.chart_position(parameter)?;
-        let axes = CoordinateAxes::new(
-            HasZ(start.z().is_some() && end.z().is_some()),
-            HasM(start.m().is_some() && end.m().is_some()),
-        );
-        let (z, m) =
-            crate::geometry::source_ordinate_values_at_fraction(start, end, axes, fraction);
+        let (z, m) = fraction.map_or((ZOrdinate(None), MOrdinate(None)), |fraction| {
+            crate::geometry::source_ordinate_values_at_fraction(start, end, axes, fraction)
+        });
         let point = Point::new_axes(position.x, position.y, z, m)
             .expect("an admitted chart-edge witness is finite");
         Ok(self
@@ -1432,7 +1456,7 @@ mod tests {
         retained_source_interval_initial_piece_count, retained_source_sheet_site,
     };
     use crate::geometry::types::{ChartMetric as _, GeodesicMetric as _};
-    use crate::geometry::{GeometryErrorKind, MOrdinate, Point, ZOrdinate};
+    use crate::geometry::{GeometryErrorKind, MOrdinate, Point, Work, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
         GeographicFrame::crs84()
@@ -1461,6 +1485,62 @@ mod tests {
 
     fn wgs84() -> Geodesic {
         Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563)
+    }
+
+    #[derive(Default)]
+    struct CountingWork(u64);
+
+    impl Work for CountingWork {
+        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+            self.0 = self.0.wrapping_add(ticks);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn xy_witness_skips_arclength_but_ordinate_witnesses_compute_it() {
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(0.0, 10.0),
+            Point::new_raw_xy(20.0, 30.0),
+            degrees(),
+        )
+        .unwrap();
+        let geodesic = wgs84();
+
+        let mut work = CountingWork::default();
+        edge.witness_with_work(
+            Point::new_raw_xy(0.0, 10.0),
+            Point::new_raw_xy(20.0, 30.0),
+            0.4,
+            None,
+            &geodesic,
+            &mut work,
+        )
+        .unwrap();
+        assert_eq!(work.0, 0);
+
+        for (start, end) in [
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(None)).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(Some(7.0)), MOrdinate(None)).unwrap(),
+            ),
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(None), MOrdinate(Some(7.0))).unwrap(),
+            ),
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(Some(12.0))).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(17.0))).unwrap(),
+            ),
+        ] {
+            let mut work = CountingWork::default();
+            let witness = edge
+                .witness_with_work(start, end, 0.4, None, &geodesic, &mut work)
+                .unwrap();
+            assert!(work.0 > 0);
+            assert_eq!(witness.z().is_some(), start.z().is_some());
+            assert_eq!(witness.m().is_some(), start.m().is_some());
+        }
     }
 
     fn edge_length(

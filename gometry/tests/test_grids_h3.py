@@ -693,6 +693,30 @@ def test_h3_index_scalar_and_bulk_parsing_share_validation() -> None:
     ]
     assert list(gm.H3VertexArray(np.array([vertex.id], dtype=np.uint64))) == [vertex]
     assert list(gm.H3EdgeArray(np.array([edge.id], dtype=np.uint64))) == [edge]
+    assert list(gm.H3VertexArray([vertex, vertex.id, vertex.token])) == [
+        vertex,
+        vertex,
+        vertex,
+    ]
+    assert list(gm.H3EdgeArray([edge, edge.id, edge.token])) == [edge, edge, edge]
+
+    provider_error = TypeError('H3 vertex provider is not iterable after admission')
+
+    class RaisingVertices:
+        def __iter__(self):
+            yield vertex
+            raise provider_error
+
+    with pytest.raises(
+        TypeError, match='provider is not iterable after admission'
+    ) as caught:
+        gm.H3VertexArray(RaisingVertices())
+    assert caught.value is provider_error
+
+    with pytest.raises(TypeError, match=r'bare token text is ambiguous; use \['):
+        gm.H3VertexArray(vertex.token)
+    with pytest.raises(TypeError, match='H3 vertex array ids must be an iterable'):
+        gm.H3VertexArray(17)
 
     with pytest.raises(gm.ParseError, match='invalid H3 cell id 0'):
         gm.CellArray(np.array([0], dtype=np.uint64), type=gm.H3Cell)

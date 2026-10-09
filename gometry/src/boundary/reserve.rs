@@ -29,8 +29,20 @@ pub(crate) fn py_iter_or_error<'py>(
     value: &Bound<'py, PyAny>,
     error: impl FnOnce() -> PyErr,
 ) -> PyResult<Bound<'py, PyIterator>> {
+    match py_iter_or_none(value)? {
+        Some(iter) => Ok(iter),
+        None => Err(error()),
+    }
+}
+
+/// Acquire a Python iterator, returning `None` only when the value has neither
+/// the iterator nor legacy sequence protocol. Errors raised by a supplied
+/// protocol are returned unchanged.
+pub(crate) fn py_iter_or_none<'py>(
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Option<Bound<'py, PyIterator>>> {
     match value.try_iter() {
-        Ok(iter) => Ok(iter),
+        Ok(iter) => Ok(Some(iter)),
         Err(protocol_error)
             if protocol_error.is_instance_of::<PyTypeError>(value.py())
                 && value
@@ -40,7 +52,7 @@ pub(crate) fn py_iter_or_error<'py>(
                     .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
                     .is_none() =>
         {
-            Err(error())
+            Ok(None)
         },
         Err(protocol_error) => Err(protocol_error),
     }

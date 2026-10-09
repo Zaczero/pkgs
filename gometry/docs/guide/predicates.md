@@ -30,7 +30,7 @@ for the edge and explicit-closure conventions.
 
 | Predicate | True when… | Symmetric? |
 |-----------|------------|------------|
-| [`contains`][gometry.contains] | `right` lies in `left`'s interior and they share interior | no |
+| [`contains`][gometry.contains] | no point of `right` lies outside `left`, and their interiors share a point | no |
 | [`contains_properly`][gometry.contains_properly] | `contains` with **no boundary contact** at all | no |
 | [`within`][gometry.within] | `left` is contained by `right` (the inverse of `contains`) | no |
 | [`covers`][gometry.covers] | every point of `right` is in `left` (boundary-inclusive) | no |
@@ -38,7 +38,7 @@ for the edge and explicit-closure conventions.
 | [`intersects`][gometry.intersects] | they share **any** point | yes |
 | [`disjoint`][gometry.disjoint] | they share **no** point (`not intersects`) | yes |
 | [`touches`][gometry.touches] | they meet only on boundaries, interiors stay apart | yes |
-| [`crosses`][gometry.crosses] | interiors cross with lower dimension than either | yes |
+| [`crosses`][gometry.crosses] | a dimension-dependent interior crossing; for example, a line has interior parts inside and outside a polygon, or two curves meet at an interior point | yes |
 | [`overlaps`][gometry.overlaps] | same-dimension overlap, neither contains the other | yes |
 | [`equals`][gometry.equals] | topologically identical point sets | yes |
 
@@ -157,10 +157,12 @@ print('intersects:', gm.intersects(square, on_edge))
 
 ## Boundary points are not contained
 
-The [OGC Simple Features](https://www.ogc.org/standard/sfa/) model defines `contains`
-requires the contained geometry to share the container's
-**interior** — a point sitting exactly on an edge does not qualify. Use
-`covers` when you want the boundary-inclusive answer.
+The [OGC Simple Features](https://www.ogc.org/standard/sfa/) `contains` relation
+requires that no point of the candidate lies outside the container and that
+their interiors share a point. A point exactly on a polygon boundary does not
+share the polygon's interior, so it fails `contains` and can satisfy `covers`.
+A contained polygon can share part of the container boundary as long as their
+interiors also overlap.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -195,8 +197,9 @@ print("properly inside:", gm.contains_properly(region, inner))
 ```
 
 !!! warning "`contains` vs `covers`"
-    **`covers` is `contains` plus the boundary.** Use `covers` when points on
-    tile edges, snapped grids, or shared borders belong to the result.
+    `covers` includes the whole boundary case: a boundary point can be covered
+    without being contained. Use `covers` when points on tile edges, snapped
+    grids, or shared borders belong to the result.
 
 ## Empty geometry semantics
 

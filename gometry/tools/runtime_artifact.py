@@ -589,7 +589,11 @@ def inspect_runtime_inputs(
             expected_wheel,
             release=profile != 'dev',
             expected_python_members=None if quality_receipt else python_members,
-            expected_prepared_inputs=receipt.get('prepared_inputs'),
+            expected_prepared_inputs=(
+                receipt['prepared_inputs']['files']
+                if quality_receipt
+                else receipt.get('prepared_inputs')
+            ),
         )
         if wheel_inspection['generator'] != f'maturin ({MATURIN_VERSION})':
             raise AssertionError('installed wheel has the wrong Maturin Generator')
@@ -942,13 +946,14 @@ def require_runtime(
             raise SystemExit(
                 f'Gometry is already imported; cannot replace it after stale admission: '
                 f'{stale}. Start a fresh process after `{sys.executable} '
-                f'{root / "tools" / "check.py"}`'
+                f'{root / "tools" / "check.py"} --prepare`'
             ) from None
         command = [sys.executable, str(root / 'tools' / 'check.py')]
         if not prepare_if_stale:
             raise SystemExit(
                 f'identified Gometry runtime is stale: {stale}; run '
-                f'`{sys.executable} {root / "tools" / "check.py"}` to prepare or refresh it'
+                f'`{sys.executable} {root / "tools" / "check.py"} --prepare` '
+                'to prepare it for tests'
             ) from None
         print(
             f'identified Gometry runtime is stale ({stale}); preparing it with '

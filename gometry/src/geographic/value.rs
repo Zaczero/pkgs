@@ -401,11 +401,7 @@ impl PeriodicAxis {
     }
 
     pub(crate) fn ordinary_longitude_bound(self) -> f64 {
-        self.conventional_integer_period()
-            .filter(|period| (period / 2.0).fract() == 0.0)
-            .map_or(self.half_period, |period| {
-                self.half_period.min(period / 2.0)
-            })
+        self.half_period
     }
 
     pub(crate) fn canonicalize(self, value: f64) -> Result<CanonicalLongitude, GeographicError> {
@@ -423,21 +419,8 @@ impl PeriodicAxis {
         Ok(self.wrap_admitted(value))
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "the nominal half-period alias is an exact seam spelling"
-    )]
     pub(crate) fn ordinary_longitude(self, value: f64) -> Option<CanonicalLongitude> {
         if value.abs().partial_cmp(&self.half_period) != Some(Ordering::Less) {
-            return None;
-        }
-        // A rounded nominal half-period can lie just inside the derived half,
-        // while wrap_admitted still treats that integer alias as the seam.
-        if value.fract() == 0.0
-            && self
-                .conventional_integer_period()
-                .is_some_and(|period| value.abs() == period / 2.0)
-        {
             return None;
         }
         Some(CanonicalLongitude(if value == 0.0 { 0.0 } else { value }))
@@ -534,9 +517,8 @@ impl PeriodicAxis {
         Some(lifted.round_to_binary64())
     }
 
-    /// Wrap a finite longitude with the canonical remainder, integer-period
-    /// aliases, and signed-zero spelling. Ingress must already have rejected
-    /// non-finite values.
+    /// Wrap a finite longitude with the canonical remainder and signed-zero
+    /// spelling. Ingress must already have rejected non-finite values.
     #[expect(
         clippy::float_cmp,
         reason = "exact zero and integer seam aliases are part of the coordinate contract"
@@ -549,20 +531,6 @@ impl PeriodicAxis {
         // `value + half_period` can overflow. The remainder first keeps every
         // finite binary64 input admissible.
         let mut reduced = value % self.period;
-        // PROJ's grad factor is a rounded representation of pi/200, so its
-        // derived period is one ULP below 400. Preserve the conventional
-        // integer aliases (400 and 200 grads) without widening ordinary
-        // coordinates near zero or the seam.
-        if value.fract() == 0.0
-            && let Some(nominal_period) = self.conventional_integer_period()
-        {
-            let nominal_remainder = value % nominal_period;
-            if nominal_remainder == 0.0 {
-                reduced = 0.0;
-            } else if nominal_remainder.abs() == nominal_period / 2.0 {
-                reduced = -self.half_period;
-            }
-        }
         if reduced < -self.half_period {
             reduced += self.period;
         } else if reduced >= self.half_period {

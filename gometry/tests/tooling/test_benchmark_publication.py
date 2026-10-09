@@ -683,7 +683,7 @@ def test_publication_writes_only_the_deterministic_summary(
     summary_md = first.decode('utf-8')
     assert '## Run environment' in summary_md
     assert 'Measured on test with Linux' in summary_md
-    assert 'CPython 3.14, at commit `deadbeef`.' in summary_md
+    assert 'CPython 3.14. Benchmark harness commit: `deadbeef`.' in summary_md
     assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
     assert 'core' not in summary_md.split('###')[0]
     assert '<table>' not in summary_md

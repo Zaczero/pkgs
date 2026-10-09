@@ -114,6 +114,16 @@ if TYPE_CHECKING:
     gm.Groups()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
 
+    gm.H3VertexArray([1.5])  # type: ignore[arg-type]
+    gm.H3EdgeArray([1.5])  # type: ignore[arg-type]
+
+    def _reject_to_pairs_for_noninteger_groups(
+        geometries: gm.Groups[gm.GeometryArray[gm.Geometry]],
+        cells: gm.Groups[gm.CellArray[gm.H3Cell]],
+    ) -> None:
+        geometries.to_pairs()  # type: ignore[misc]
+        cells.to_pairs()  # type: ignore[misc]
+
     gm.SpatialIndex(POINTS).query(POINTS).__getitem__(index=0)  # type: ignore[call-overload]
 
     # Covariance permits this boundary widening, but its erased CellArray

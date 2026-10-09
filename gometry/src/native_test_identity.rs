@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::{env, fs};
 
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
 use sha2::{Digest, Sha256};
 
 fn embedded_python_identity() -> serde_json::Value {
