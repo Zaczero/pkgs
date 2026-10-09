@@ -1601,10 +1601,10 @@ impl SquaredDistanceKey {
         if self.witness.same_distance_as(other.witness) {
             return Ok(Ordering::Equal);
         }
-        self.filter.disjoint_cmp(other.filter).map_or_else(
-            || exact_distance_witness_cmp(self.witness, other.witness),
-            Ok,
-        )
+        if let Some(order) = self.filter.disjoint_cmp(other.filter) {
+            return Ok(order);
+        }
+        exact_selection_distance_cmp(self.witness, other.witness)
     }
 
     pub(super) fn is_exact_zero(&self) -> Result<bool> {
@@ -1687,10 +1687,13 @@ fn source_dot_difference_exact(normal: [f64; 2], left: XY, right: XY) -> Result<
 }
 
 pub(crate) fn source_dot_cmp(normal: [f64; 2], left: XY, right: XY) -> Result<Ordering> {
-    if let Some(difference) = source_dot_difference_interval(normal, left, right)
-        && let Some(order) = dd_strict_cmp(difference, DdInterval::exact(0.0))
-    {
-        return Ok(order);
+    if let Some(difference) = source_dot_difference_interval(normal, left, right) {
+        if difference.is_exact_zero() {
+            return Ok(Ordering::Equal);
+        }
+        if let Some(order) = dd_strict_cmp(difference, DdInterval::exact(0.0)) {
+            return Ok(order);
+        }
     }
     #[cfg(test)]
     CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
@@ -2024,6 +2027,15 @@ pub(super) fn exact_distance_witness_cmp(
     left.squared()?.cmp(&right.squared()?)
 }
 
+fn exact_selection_distance_cmp(
+    left: ExactDistanceWitness,
+    right: ExactDistanceWitness,
+) -> Result<Ordering> {
+    #[cfg(test)]
+    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
+    exact_distance_witness_cmp(left, right)
+}
+
 fn exact_witness_cmp_with_identity(
     left: ExactDistanceWitness,
     right: ExactDistanceWitness,
@@ -2033,9 +2045,7 @@ fn exact_witness_cmp_with_identity(
             .witness_role()?
             .cmp_tie(right.witness_role()?, || Ordering::Equal));
     }
-    #[cfg(test)]
-    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
-    let distance = exact_distance_witness_cmp(left, right)?;
+    let distance = exact_selection_distance_cmp(left, right)?;
     if distance.is_eq() {
         Ok(left
             .witness_role()?

@@ -326,11 +326,12 @@ pub(crate) use relate::{
 };
 #[cfg(test)]
 pub(crate) use segment_index::{
-    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_EXACT_FALLBACKS, CLEARANCE_POINT_LEAVES,
-    CLEARANCE_POINT_NODES, CLEARANCE_POINT_RECHECKS,
+    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
+    CLEARANCE_POINT_RECHECKS,
 };
 pub(crate) use segment_index::{
     ClearancePointQuery, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex,
+    clearance_aabb_lower_bound,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
