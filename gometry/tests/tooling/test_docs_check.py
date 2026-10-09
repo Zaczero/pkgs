@@ -687,6 +687,18 @@ class Geometry:
         GeometryArray[float]
         """
 
+_GroupValuesT_co = TypeVar('_GroupValuesT_co', covariant=True)
+
+class Groups:
+    @property
+    def values(self) -> _GroupValuesT_co:
+        """The flat payload, which may be a GeometryArray.
+
+        Returns
+        -------
+        numpy.ndarray or GeometryArray or CellArray
+        """
+
 class GeometryArray:
     def buffer(self, distance: float) -> GeometryArray[Point]:
         """Buffer each row.
