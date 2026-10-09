@@ -11884,6 +11884,9 @@ class SpatialIndex(Mapping[int, Geometry]):
         GeometryError
             If a query parameter is invalid, or ``unit='meters'`` is requested
             for a CRS-free geometry.
+        CRSError
+            If geographic ``dwithin`` refinement cannot prove a result within
+            the point-edge evaluation budget.
 
         Examples
         --------
@@ -11950,6 +11953,9 @@ class SpatialIndex(Mapping[int, Geometry]):
             If the query and index CRS/coordinate-epoch frames differ.
         GeometryError
             If a predicate or distance option is invalid.
+        CRSError
+            If geographic ``dwithin`` refinement cannot prove a result within
+            the point-edge evaluation budget.
 
         Examples
         --------
@@ -12014,6 +12020,9 @@ class SpatialIndex(Mapping[int, Geometry]):
             If ``predicate`` is unknown or directional, ``distance`` is missing
             or invalid for ``predicate='dwithin'``, or ``unit='meters'`` is
             requested for a CRS-free geometry.
+        CRSError
+            If geographic ``dwithin`` refinement cannot prove a result within
+            the point-edge evaluation budget.
 
         Examples
         --------
@@ -18827,6 +18836,9 @@ def dwithin(
         ``unit='meters'`` is requested for a CRS-free geometry. Positive
         infinity is accepted and matches every pair of admitted non-empty
         operands.
+    CRSError
+        If a geographic point-edge search cannot certify the threshold result
+        within its evaluation budget.
 
     See Also
     --------
@@ -19031,6 +19043,9 @@ def join(
         If ``predicate`` is unknown, ``distance`` is missing or invalid for
         ``predicate='dwithin'``, or ``unit='meters'`` is requested for a
         CRS-free geometry.
+    CRSError
+        If geographic ``dwithin`` refinement cannot prove a result within the
+        point-edge evaluation budget.
 
     Examples
     --------

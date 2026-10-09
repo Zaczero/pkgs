@@ -6,7 +6,7 @@ use crate::geometry::distance::{
     puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
-    ChartMetric, DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric,
+    ChartMetric, DistanceParts, DwithinOutcome, FacetBvh, FrameDependentCaches, GeodesicMetric,
     GeographicMetricKey, GeographicPrepared, Point, PreparedPlan, Shape, distance,
     finish_planar_squared_min, point_distance, points_dwithin, same_point,
 };
@@ -468,14 +468,15 @@ impl PreparedPlan {
                 ));
             }
             let point = Point::new_raw_xy(x, y);
-            let value = if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
-                false
+            let outcome = if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative()
+            {
+                DwithinOutcome::Outside
             } else if prepared.point_covers(point)? {
-                true
+                DwithinOutcome::Within
             } else {
                 point_chart_dwithin(point, &parts, metric, distance, point_edge, stack)?
             };
-            values.push(value);
+            values.push(outcome.into_bool()?);
         }
         Ok(values)
     }
