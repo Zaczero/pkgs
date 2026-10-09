@@ -39,7 +39,7 @@ def test_coverage_is_valid_verdicts() -> None:
     assert len(gm.coverage_invalid_edges(gm.box(0, 0, 1, 1))) == 1
     assert len(gm.coverage_clean(gm.box(0, 0, 1, 1))) == 1
     assert len(gm.coverage_simplify(gm.box(0, 0, 1, 1), 0.0)) == 1
-    assert gm.coverage_union(gm.box(0, 0, 1, 1)).geometry_type == 'Polygon'
+    assert gm.coverage_union_all(gm.box(0, 0, 1, 1)).geometry_type == 'Polygon'
     edges = gm.coverage_invalid_edges([
         gm.box(0, 0, 1.1, 1, crs=3857),
         gm.box(1, 0, 2, 1, crs=3857),
@@ -68,13 +68,13 @@ def test_coverage_free_functions_accept_geometry_array() -> None:
     assert gm.coverage_invalid_edges(grid)[0].is_empty
     assert gm.coverage_is_valid(gm.coverage_simplify(grid, 0.0))
     assert gm.coverage_is_valid(gm.coverage_clean(grid, grid_size=0.0))
-    assert gm.coverage_union(grid).geometry_type == 'Polygon'
+    assert gm.coverage_union_all(grid).geometry_type == 'Polygon'
 
 
 def test_coverage_union_normalize_is_stable() -> None:
     """Canonical presentation lives on normalize(); raw ring start may vary."""
     tiles = [gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)]
-    union = gm.coverage_union(tiles)
+    union = gm.coverage_union_all(tiles)
     assert union.area == pytest.approx(2.0)
     canonical = {union.normalize().to_wkt() for _ in range(20)}
     assert len(canonical) == 1
@@ -83,7 +83,7 @@ def test_coverage_union_normalize_is_stable() -> None:
 
 def test_coverage_union_dissolves_shared_edges() -> None:
     grid = [gm.box(i, j, i + 1, j + 1) for i in range(3) for j in range(3)]
-    union = gm.coverage_union(grid)
+    union = gm.coverage_union_all(grid)
     assert union.geometry_type == 'Polygon'
     assert union.area == pytest.approx(9.0)
     ring = [
@@ -92,22 +92,22 @@ def test_coverage_union_dissolves_shared_edges() -> None:
         for j in range(3)
         if not (i == 1 and j == 1)
     ]
-    holed = gm.coverage_union(ring)
+    holed = gm.coverage_union_all(ring)
     assert holed.area == pytest.approx(8.0)
-    disjoint = gm.coverage_union([gm.box(0, 0, 1, 1), gm.box(5, 5, 6, 6)])
+    disjoint = gm.coverage_union_all([gm.box(0, 0, 1, 1), gm.box(5, 5, 6, 6)])
     assert disjoint.geometry_type == 'MultiPolygon'
     assert disjoint.area == pytest.approx(2.0)
-    assert gm.coverage_union([gm.box(0, 0, 1, 1, crs=3857)]).crs == 'EPSG:3857'
+    assert gm.coverage_union_all([gm.box(0, 0, 1, 1, crs=3857)]).crs == 'EPSG:3857'
     with pytest.raises(gm.GeometryTypeError, match='Polygon or MultiPolygon'):
-        gm.coverage_union([gm.Point(0, 0)])
+        gm.coverage_union_all([gm.Point(0, 0)])
     with pytest.raises(gm.InvalidGeometryError):
-        gm.coverage_union([])
+        gm.coverage_union_all([])
 
 
 def test_coverage_union_keeps_point_touching_parts_separate() -> None:
     """An all-exterior edge inventory may bypass arrangement without merging a touch."""
     touching = [gm.box(0, 0, 1, 1), gm.box(1, 1, 2, 2)]
-    union = gm.coverage_union(touching)
+    union = gm.coverage_union_all(touching)
     assert union.geometry_type == 'MultiPolygon'
     assert union.area == pytest.approx(2.0)
 
@@ -218,7 +218,7 @@ def test_coverage_union_mixed_axes_stays_homogeneous_in_sparse_path() -> None:
     for name, left, right, axes, expected in cases:
         for order, rows in (('forward', (left, right)), ('reverse', (right, left))):
             label = f'{name}/{order}'
-            result = gm.coverage_union(list(rows))
+            result = gm.coverage_union_all(list(rows))
             assert result.geometry_type == 'MultiPolygon', label
             assert result.coordinate_axes == axes, label
             assert result.area == pytest.approx(2.0), label
@@ -247,7 +247,7 @@ def test_coverage_union_all_empty_members_use_declared_union_axes() -> None:
     ]
     for left, right, axes in cases:
         for rows in ((left, right), (right, left)):
-            result = gm.coverage_union(list(rows))
+            result = gm.coverage_union_all(list(rows))
             assert result.geometry_type == 'Polygon'
             assert result.is_empty
             assert result.coordinate_axes == axes
@@ -259,7 +259,7 @@ def test_coverage_union_uses_exact_closed_support_for_invalid_polygon_rows() -> 
     bowtie = gm.from_wkt('POLYGON ((0 0, 2 2, 0 2, 2 0, 0 0))')
     disjoint = gm.box(5, 0, 6, 1)
     assert gm.coverage_is_valid([bowtie, disjoint])
-    result = gm.coverage_union([bowtie, disjoint])
+    result = gm.coverage_union_all([bowtie, disjoint])
     assert result.geometry_type == 'MultiPolygon'
     assert result.area == pytest.approx(3.0)
 
@@ -278,7 +278,7 @@ def test_coverage_union_matches_shapely_oracle() -> None:
         [gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)],
     ]
     for rows in cases:
-        ours = gm.coverage_union(rows)
+        ours = gm.coverage_union_all(rows)
         theirs = shapely.coverage_union_all(
             shapely.from_wkt([g.to_wkt() for g in rows])
         )
@@ -329,7 +329,7 @@ def test_coincident_rows_are_invalid_coverage(copies: int) -> None:
     assert not gm.coverage_is_valid(rows)
     assert all(not edge.is_empty for edge in gm.coverage_invalid_edges(rows))
     for operation in (
-        lambda: gm.coverage_union(rows),
+        lambda: gm.coverage_union_all(rows),
         lambda: gm.coverage_simplify(rows, 0.0),
     ):
         with pytest.raises(gm.InvalidGeometryError, match='valid polygonal coverage'):
@@ -343,15 +343,15 @@ def test_adjacent_coverage_rows_can_have_identical_bounds() -> None:
     ])
     assert gm.coverage_is_valid(rows)
     assert all(edge.is_empty for edge in gm.coverage_invalid_edges(rows))
-    assert gm.equals(gm.coverage_union(rows), gm.box(0, 0, 1, 1))
+    assert gm.equals(gm.coverage_union_all(rows), gm.box(0, 0, 1, 1))
 
 
 def test_check_and_do_coverage_operations_reject_invalid_input() -> None:
     overlap = gm.GeometryArray([gm.box(0, 0, 1.2, 1), gm.box(1, 0, 2, 1)])
     for operation in (
-        lambda: gm.coverage_union(overlap),
+        lambda: gm.coverage_union_all(overlap),
         lambda: gm.coverage_simplify(overlap, 0.1),
-        lambda: gm.coverage_union(list(overlap)),
+        lambda: gm.coverage_union_all(list(overlap)),
         lambda: gm.coverage_simplify(list(overlap), 0.1),
     ):
         with pytest.raises(
@@ -360,7 +360,7 @@ def test_check_and_do_coverage_operations_reject_invalid_input() -> None:
         ) as exc_info:
             operation()
         assert type(exc_info.value) is gm.InvalidGeometryError
-        assert exc_info.value.operation in {'coverage_union', 'coverage_simplify'}
+        assert exc_info.value.operation in {'coverage_union_all', 'coverage_simplify'}
 
 
 def test_coverage_union_keeps_validity_gate_distinct_from_union_all() -> None:
@@ -368,11 +368,11 @@ def test_coverage_union_keeps_validity_gate_distinct_from_union_all() -> None:
     overlap = [gm.box(0, 0, 1.2, 1), gm.box(1, 0, 2, 1)]
     assert gm.union_all(overlap).area == pytest.approx(2.0)
     with pytest.raises(gm.InvalidGeometryError, match='valid polygonal coverage'):
-        gm.coverage_union(overlap)
+        gm.coverage_union_all(overlap)
 
 
 def test_coverage_union_rejects_tjunction() -> None:
-    """T-junction coverages fail the precondition through coverage_union too."""
+    """T-junction coverages fail the precondition through coverage_union_all too."""
     tjoin = gm.GeometryArray([
         gm.box(0, 0, 1, 2),
         gm.from_wkt('POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))'),
@@ -380,22 +380,22 @@ def test_coverage_union_rejects_tjunction() -> None:
     ])
     assert not gm.coverage_is_valid(tjoin)
     for operation in (
-        lambda: gm.coverage_union(tjoin),
-        lambda: gm.coverage_union(list(tjoin)),
+        lambda: gm.coverage_union_all(tjoin),
+        lambda: gm.coverage_union_all(list(tjoin)),
     ):
         with pytest.raises(
             gm.InvalidGeometryError,
             match=r'valid polygonal coverage.*coverage_invalid_edges.*coverage_clean',
         ) as exc_info:
             operation()
-        assert exc_info.value.operation == 'coverage_union'
+        assert exc_info.value.operation == 'coverage_union_all'
 
 
 def test_coverage_union_rejects_gap_under_width() -> None:
     """gap_width is a coverage_is_valid concern; union always uses exact match.
 
     A narrow gap is still a *valid* exact coverage (no shared edge required
-    across a gap), so coverage_union dissolves the disjoint parts. Document
+    across a gap), so coverage_union_all dissolves the disjoint parts. Document
     that union does not apply gap_width — rejection for gap is only via
     coverage_is_valid(gap_width=...).
     """
@@ -403,7 +403,7 @@ def test_coverage_union_rejects_gap_under_width() -> None:
     assert gm.coverage_is_valid(gap)
     assert not gm.coverage_is_valid(gap, gap_width=0.01)
     # Exact-match union still accepts (two components); not a rejection class.
-    union = gm.coverage_union(gap)
+    union = gm.coverage_union_all(gap)
     assert union.geometry_type == 'MultiPolygon'
     assert union.area == pytest.approx(0.999 + 1.0)
 
