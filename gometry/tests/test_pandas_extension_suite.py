@@ -9,6 +9,8 @@ focused interop tests cover the mutable pandas-container contract.
 
 from __future__ import annotations
 
+import itertools
+
 import gometry as gm
 import numpy as np
 import pandas as pd
@@ -169,7 +171,21 @@ class TestConstructors(base.BaseConstructorsTests):
 
 
 class TestGetitem(base.BaseGetitemTests):
-    pass
+    @pytest.mark.parametrize(
+        'indexer',
+        [[0, 1, 2, pd.NA], pd.array([0, 1, 2, pd.NA], dtype='Int64')],
+        ids=['list', 'integer-array'],
+    )
+    def test_getitem_series_integer_with_missing_raises(self, data, indexer):
+        """A string-indexed Series treats integers as labels, so NA never matches.
+
+        pandas' base test (xfailed upstream for every extension array) expects
+        the integer-NA `ValueError`; pandas resolves this lookup by label and
+        raises `KeyError` before the array is consulted.
+        """
+        series = pd.Series(data, index=[chr(100 + i) for i in range(len(data))])
+        with pytest.raises(KeyError, match='are in the'):
+            series[indexer]
 
 
 class TestIndex(base.BaseIndexTests):
@@ -189,13 +205,57 @@ class TestPrinting(base.BasePrintingTests):
 
 
 class TestReshaping(base.BaseReshapingTests):
-    @pytest.mark.xfail(
-        reason='base test hardcodes NaN as the expected NA; our na_value is '
-        "None (a missing geometry is None, not a float) — pandas' own JSON "
-        'extension xfails this the same way'
+    @pytest.mark.parametrize(
+        'index',
+        [
+            pd.MultiIndex.from_product([['A', 'B'], ['a', 'b']], names=['a', 'b']),
+            pd.MultiIndex.from_tuples([('A', 'a'), ('A', 'b'), ('B', 'b')]),
+            pd.MultiIndex.from_product([('A', 'B'), ('a', 'b', 'c'), (0, 1, 2)]),
+            pd.MultiIndex.from_tuples([
+                ('A', 'a', 1),
+                ('A', 'b', 0),
+                ('A', 'a', 0),
+                ('B', 'a', 0),
+                ('B', 'c', 1),
+            ]),
+        ],
     )
+    @pytest.mark.parametrize('obj', ['series', 'frame'])
     def test_unstack(self, data, index, obj):
-        super().test_unstack(data, index, obj)
+        """Unstack with `None` as the missing geometry.
+
+        The base test passes `fill_value=data.dtype.na_value` to the object
+        reference; for `na_value=None` pandas reads that as "no fill value" and
+        fills with NaN, so its expectation names the wrong missing marker.
+        Everything else is pandas' own assertion sequence.
+        """
+        final_length = min(len(index), len(data))
+        index = index[:final_length]
+        data = data[:final_length]
+        if obj == 'series':
+            ser = pd.Series(data, index=index)
+        else:
+            ser = pd.DataFrame({'A': data, 'B': data}, index=index)
+
+        levels = range(index.nlevels)
+        combinations = itertools.chain.from_iterable(
+            itertools.permutations(levels, size) for size in range(1, index.nlevels)
+        )
+        for level in combinations:
+            result = ser.unstack(level=list(level))
+            assert all(
+                isinstance(result[column].array, type(data))
+                for column in result.columns
+            )
+            if obj == 'series':
+                alternative = ser.to_frame().unstack(level=list(level))
+                pd.testing.assert_frame_equal(result, alternative.droplevel(0, axis=1))
+
+            expected = ser.astype(object).unstack(level=list(level))
+            expected = expected.where(expected.notna(), None)
+            if obj == 'series':
+                assert expected.dtypes.eq(np.dtype(object)).all()
+            pd.testing.assert_frame_equal(result.astype(object), expected)
 
 
 class TestGroupby(base.BaseGroupbyTests):
