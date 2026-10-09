@@ -8,6 +8,7 @@ then checks the examples against the public package.
 from __future__ import annotations
 
 import io
+import os
 import sys
 import traceback
 from contextlib import redirect_stdout
@@ -17,8 +18,18 @@ from pathlib import Path
 from typing import Any
 
 from markdown import Markdown
-from markdown_exec import validator as _markdown_exec_validator
-from pymdownx.superfences import SuperFencesBlockPreprocessor
+
+# Markdown Exec snapshots this setting at import; this gate requires explicit `exec`.
+_automatic_exec_languages = os.environ.pop('MARKDOWN_EXEC_AUTO', None)
+try:
+    from markdown_exec import validator as _markdown_exec_validator
+finally:
+    if _automatic_exec_languages is not None:
+        os.environ['MARKDOWN_EXEC_AUTO'] = _automatic_exec_languages
+from pymdownx.superfences import (
+    SuperFencesBlockPreprocessor,
+    SuperFencesException,
+)
 
 _EXAMPLES = Path(__file__).resolve().parent.parent.parent / 'examples'
 _ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +73,13 @@ class _Fence:
     classes: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _ParsedPage:
+    path: Path
+    fences: tuple[_Fence, ...]
+    markdown: Markdown
+
+
 class _FenceCapture:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -89,7 +107,9 @@ class _FenceCapture:
         **kwargs: Any,
     ) -> str:
         if self.opening_line is None:
-            raise RuntimeError('SuperFences formatted a block without its source line')
+            raise SuperFencesException(
+                'SuperFences formatted a block without its source line'
+            )
         marker = f'{_MARKER_PREFIX}{len(self.fences)}'
         self.fences.append(
             _Fence(
@@ -174,6 +194,12 @@ def extract_markdown_fences(
     return tuple(fences), markdown
 
 
+def _parse_page(path: Path) -> _ParsedPage:
+    text = path.read_text(encoding='utf-8')
+    fences, markdown = extract_markdown_fences(path, text)
+    return _ParsedPage(path=path, fences=fences, markdown=markdown)
+
+
 def _ensure_examples_path() -> None:
     path = str(_EXAMPLES)
     if path not in sys.path:
@@ -214,46 +240,48 @@ def _report_failure(path: Path, line: int | None, message: str) -> None:
     print(f'\n### FAIL {location}  {message}')
 
 
-def _check_file(path: Path) -> tuple[int, int]:
-    try:
-        text = path.read_text(encoding='utf-8')
-        fences, markdown = extract_markdown_fences(path, text)
-    except Exception as error:
-        _report_failure(path, None, f'could not parse Markdown: {error}')
-        return 1, 0
-
-    is_docs = path.is_relative_to(Path('docs'))
+def _check_file(page: _ParsedPage) -> tuple[int, int]:
+    is_docs = page.path.is_relative_to(Path('docs'))
     sessions: dict[str, dict[str, object]] = {}
     readme_namespace: dict[str, object] = {'__name__': '__main__'}
     failures = 0
     executed = 0
 
-    for index, fence in enumerate(fences):
+    for index, fence in enumerate(page.fences):
         if fence.options.get('source') == 'material-block':
             failures += 1
             _report_failure(
-                path,
+                page.path,
                 fence.line,
                 'deprecated markdown-exec source="material-block"; use source="block"',
             )
 
-        if _is_nonrunnable(fence):
-            continue
+        nonrunnable = _is_nonrunnable(fence)
 
         execution_options: dict[str, Any] | None = None
         execution_enabled: bool | None = None
         if 'exec' in fence.options:
             execution_enabled, execution_options, error = _markdown_exec_options(
-                fence, markdown
+                fence, page.markdown
             )
             if error is not None:
                 failures += 1
                 _report_failure(
-                    path,
+                    page.path,
                     fence.line,
                     f'invalid markdown-exec fence options: {error}',
                 )
                 continue
+
+        if nonrunnable:
+            if execution_enabled:
+                failures += 1
+                _report_failure(
+                    page.path,
+                    fence.line,
+                    'non-runnable role conflicts with enabled markdown-exec execution',
+                )
+            continue
 
         if fence.language.casefold() not in _PYTHON_LANGUAGES:
             continue
@@ -262,7 +290,7 @@ def _check_file(path: Path) -> tuple[int, int]:
             if 'exec' not in fence.options:
                 failures += 1
                 _report_failure(
-                    path,
+                    page.path,
                     fence.line,
                     'plain Python fence is neither executable nor labelled '
                     'partial/pseudocode/template/configuration/output',
@@ -271,7 +299,7 @@ def _check_file(path: Path) -> tuple[int, int]:
             if not execution_enabled:
                 failures += 1
                 _report_failure(
-                    path,
+                    page.path,
                     fence.line,
                     'Python fence is not executable; use exec="on" or label it '
                     'partial/pseudocode/template/configuration/output',
@@ -280,7 +308,7 @@ def _check_file(path: Path) -> tuple[int, int]:
 
         if not fence.code.strip():
             failures += 1
-            _report_failure(path, fence.line, 'runnable Python fence is empty')
+            _report_failure(page.path, fence.line, 'runnable Python fence is empty')
             continue
 
         executed += 1
@@ -295,7 +323,7 @@ def _check_file(path: Path) -> tuple[int, int]:
         try:
             with redirect_stdout(output):
                 exec(  # noqa: S102
-                    compile(fence.code, f'{path}:{fence.line}', 'exec'),
+                    compile(fence.code, f'{page.path}:{fence.line}', 'exec'),
                     namespace,
                 )
         except BaseException as error:
@@ -305,11 +333,49 @@ def _check_file(path: Path) -> tuple[int, int]:
                 raise
             failures += 1
             first = fence.code.strip().splitlines()[0]
-            _report_failure(path, fence.line, f'(block {index}) first: {first!r}')
+            _report_failure(page.path, fence.line, f'(block {index}) first: {first!r}')
             if captured := output.getvalue().strip():
                 print(captured[-2000:])
             print(traceback.format_exc().rstrip().split('\n')[-1])
     return failures, executed
+
+
+def _check_cross_page_sessions(pages: list[_ParsedPage]) -> int:
+    sessions: dict[str, list[tuple[Path, int]]] = {}
+    for page in pages:
+        if not page.path.is_relative_to(Path('docs')):
+            continue
+        for fence in page.fences:
+            if (
+                _is_nonrunnable(fence)
+                or 'exec' not in fence.options
+                or 'session' not in fence.options
+            ):
+                continue
+            enabled, options, error = _markdown_exec_options(fence, page.markdown)
+            if error is not None or not enabled or options is None:
+                continue
+            session = options.get('session')
+            if session:
+                sessions.setdefault(session, []).append((page.path, fence.line))
+
+    failures = 0
+    for session, locations in sorted(sessions.items()):
+        page_lines: dict[Path, int] = {}
+        for path, line in locations:
+            page_lines.setdefault(path, line)
+        if len(page_lines) < 2:
+            continue
+        pages_text = ', '.join(str(path) for path in page_lines)
+        for path, line in page_lines.items():
+            failures += 1
+            _report_failure(
+                path,
+                line,
+                f'markdown-exec session {session!r} is reused across documentation '
+                f'pages: {pages_text}',
+            )
+    return failures
 
 
 def main() -> int:
@@ -321,6 +387,7 @@ def main() -> int:
     failures = 0
     executed = 0
     required_counts = dict.fromkeys(_REQUIRED_PAGES, 0)
+    pages: list[_ParsedPage] = []
 
     for owner in _REQUIRED_PAGES:
         if not owner.is_file():
@@ -330,7 +397,17 @@ def main() -> int:
     for path in files:
         if not path.is_file():
             continue
-        file_failures, file_executed = _check_file(path)
+        try:
+            pages.append(_parse_page(path))
+        except Exception as error:
+            failures += 1
+            _report_failure(path, None, f'could not parse Markdown: {error}')
+
+    failures += _check_cross_page_sessions(pages)
+
+    for page in pages:
+        path = page.path
+        file_failures, file_executed = _check_file(page)
         failures += file_failures
         executed += file_executed
         if path in required_counts:

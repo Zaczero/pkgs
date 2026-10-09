@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -212,7 +214,7 @@ def test_main_preserves_readme_and_docs_namespaces_and_runs_session_output(
             ```python title="partial: a fragment"
             deliberately not Python!
             ```
-        ```python exec="on" session="catchment"
+        ```python exec="on" session="other-page"
         assert 'doc_value' not in globals()
         ```
         """,
@@ -220,6 +222,68 @@ def test_main_preserves_readme_and_docs_namespaces_and_runs_session_output(
 
     assert _run_gate(tmp_path, monkeypatch) == 0
     assert 'TOTAL EXAMPLE FAILURES: 0' in capsys.readouterr().out
+
+
+def test_missing_source_line_uses_superfences_exception() -> None:
+    gate = load_tool('_check_examples')
+    capture = gate._FenceCapture(Path('README.md'))
+
+    with pytest.raises(gate.SuperFencesException, match='without its source line'):
+        capture.format('value = 1', 'python', '', {}, None)
+
+
+def test_markdown_exec_auto_is_cleared_before_validator_import() -> None:
+    tools = Path(__file__).resolve().parents[2] / 'tools'
+    script = textwrap.dedent(
+        f"""\
+        import os
+        import sys
+
+        sys.path.insert(0, {str(tools)!r})
+        sys.path.insert(0, {str(tools / 'gates')!r})
+        import _check_examples
+        from markdown_exec._internal.main import MARKDOWN_EXEC_AUTO
+
+        assert os.environ['MARKDOWN_EXEC_AUTO'] == 'python'
+        assert MARKDOWN_EXEC_AUTO == ['']
+        """
+    )
+    environment = os.environ.copy()
+    environment['MARKDOWN_EXEC_AUTO'] = 'python'
+
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_wrong_published_answer_fails_at_its_readme_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_markdown(
+        tmp_path,
+        'README.md',
+        """\
+        ```python
+        area_km2 = '8217.8 km²'
+        assert area_km2 == '8217.7 km²'
+        ```
+        """,
+    )
+    _write_runnable_quickstart(tmp_path)
+
+    assert _run_gate(tmp_path, monkeypatch) == 1
+    output = capsys.readouterr().out
+    assert 'README.md:1' in output
+    assert 'AssertionError' in output
 
 
 def test_session_dependency_failure_names_the_dependent_fence(
@@ -244,6 +308,26 @@ def test_session_dependency_failure_names_the_dependent_fence(
     assert 'NameError' in output
 
 
+def test_session_reuse_across_docs_pages_fails_at_both_owners(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_runnable_readme(tmp_path)
+    _write_runnable_quickstart(tmp_path)
+    _write_markdown(
+        tmp_path,
+        'docs/guide.md',
+        '```python exec="on" session="catchment"\nguide_value = 31\n```\n',
+    )
+
+    assert _run_gate(tmp_path, monkeypatch) == 1
+    output = capsys.readouterr().out
+    assert 'docs/get-started/quickstart.md:1' in output
+    assert 'docs/guide.md:1' in output
+    assert "session 'catchment' is reused across documentation pages" in output
+
+
 @pytest.mark.parametrize(
     ('role', 'extra_option'),
     [
@@ -253,7 +337,7 @@ def test_session_dependency_failure_names_the_dependent_fence(
     + [('partial', ' returncode="not-an-integer"')],
 )
 @pytest.mark.parametrize('owner', ['README.md', 'docs/get-started/quickstart.md'])
-def test_explicit_nonrunnable_roles_skip_invalid_python_in_both_owners(
+def test_explicit_nonrunnable_roles_skip_invalid_python_when_exec_is_off(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -265,7 +349,7 @@ def test_explicit_nonrunnable_roles_skip_invalid_python_in_both_owners(
     _write_runnable_quickstart(tmp_path)
     with (tmp_path / owner).open('a', encoding='utf-8') as page:
         page.write(
-            f'\n```python exec="on" title="{role}: source fragment"{extra_option}\n'
+            f'\n```python exec="off" title="{role}: source fragment"{extra_option}\n'
             'deliberately not Python!\n'
             '```\n'
         )
@@ -273,6 +357,29 @@ def test_explicit_nonrunnable_roles_skip_invalid_python_in_both_owners(
     assert _run_gate(tmp_path, monkeypatch) == 0
     output = capsys.readouterr().out
     assert 'TOTAL EXAMPLE FAILURES: 0' in output
+    assert 'SyntaxError' not in output
+
+
+@pytest.mark.parametrize('owner', ['README.md', 'docs/get-started/quickstart.md'])
+def test_exec_enabled_nonrunnable_role_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    owner: str,
+) -> None:
+    _write_runnable_readme(tmp_path)
+    _write_runnable_quickstart(tmp_path)
+    with (tmp_path / owner).open('a', encoding='utf-8') as page:
+        page.write(
+            '\n```python exec="on" title="partial: source fragment"\n'
+            'deliberately not Python!\n'
+            '```\n'
+        )
+
+    assert _run_gate(tmp_path, monkeypatch) == 1
+    output = capsys.readouterr().out
+    assert owner in output
+    assert 'non-runnable role conflicts with enabled markdown-exec execution' in output
     assert 'SyntaxError' not in output
 
 
@@ -289,7 +396,7 @@ def test_bare_and_class_roles_skip_invalid_python(
         'a', encoding='utf-8'
     ) as quickstart:
         quickstart.write(
-            '\n```{.python .configuration exec="on"}\ndeliberately not Python!\n```\n'
+            '\n```{.python .configuration exec="off"}\ndeliberately not Python!\n```\n'
         )
 
     assert _run_gate(tmp_path, monkeypatch) == 0
