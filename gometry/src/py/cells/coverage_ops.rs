@@ -340,12 +340,7 @@ impl GridSourceAdmission {
             None,
             crs::TransformOptions::default(),
         )?;
-        let transformer = crs::TransformPlan::new_with_options_at(
-            resolved.source.as_str(),
-            resolved.target.as_str(),
-            resolved.options,
-            resolved.state,
-        )?;
+        let transformer = crs::TransformPlan::from_geometry_frame(resolved)?;
         Ok(Self {
             transformer: Some(transformer),
         })
@@ -370,7 +365,7 @@ impl GridSourceAdmission {
         let mut shapes = Vec::with_capacity(source_rows.len());
         shapes.extend(source_rows.iter().map(|(_, shape)| shape));
         transformer
-            .transform_shapes_with_computed_edges_indexed(&shapes, "EPSG:4326")
+            .transform_shapes_with_computed_edges_indexed(&shapes)
             .map_err(|failure| {
                 let row = failure
                     .coordinate
@@ -395,7 +390,7 @@ impl GridSourceAdmission {
         geometry: &PyGeometry,
     ) -> Result<PyGeometry, GridCoverError> {
         let shape = if let Some(transformer) = &self.transformer {
-            transformer.transform_shape_with_computed_edges(geometry.shape.shape(), "EPSG:4326")?
+            transformer.transform_shape_with_computed_edges(geometry.shape.shape())?
         } else {
             geometry.shape.shape().clone()
         };

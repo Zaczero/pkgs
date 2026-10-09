@@ -55,8 +55,7 @@ pub(crate) use ellipsoid_metric::{
 };
 pub(crate) use envelope::{GeodesicBoxEnvelopeBound, GeodesicChartBox, GeodesicEnvelopeBound};
 pub(crate) use lrs::{
-    chart_line_interpolate, chart_line_interpolate_coordseq, chart_line_locate,
-    chart_line_locate_coordseq, chart_line_substring, chart_line_substring_coordseq,
+    chart_line_interpolate_coordseq, chart_line_locate_coordseq, chart_line_substring_coordseq,
     metric_interpolate_m, with_geographic_coordseq_collect_rows_at,
     with_geographic_coordseq_metric_at,
 };

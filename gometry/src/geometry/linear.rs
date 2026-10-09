@@ -126,11 +126,6 @@ impl PreparedPlan {
         self.line_index()?
             .substring(range, normalized, &PlanarMetric)
     }
-
-    pub(crate) fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
-        let index = self.line_index()?;
-        index.locate_point_prepared(point, normalized, || self.distance_parts())
-    }
 }
 
 pub(crate) fn segment_segment_distance_3d(
@@ -371,14 +366,6 @@ impl PreparedPlan {
         ))
     }
 
-    pub(crate) fn line_locate_point_m_with(
-        &self,
-        point: Point,
-        metric: &PlanarMetric,
-    ) -> Result<f64> {
-        self.measured_line_index()?.locate(point, metric)
-    }
-
     pub(crate) fn line_substring_m_with<M: SegmentMetric>(
         &self,
         range: MeasureRange,
@@ -596,7 +583,7 @@ impl MeasuredLineIndex {
         Ok(result.unwrap_or_else(|| self.last_point()))
     }
 
-    fn locate(&self, point: Point, metric: &PlanarMetric) -> Result<f64> {
+    pub(crate) fn locate(&self, point: Point, metric: &PlanarMetric) -> Result<f64> {
         if point.x.is_nan() {
             return Ok(f64::NAN);
         }

@@ -1172,7 +1172,6 @@ fn polygon_row_for_coordinate(
 pub(crate) fn map_selected_to_crs(
     columns: PackedColumns<'_>,
     transformer: &crate::crs::TransformPlan,
-    target_crs: &str,
 ) -> PackedColumnResult<PackedColumnOutput> {
     match columns {
         PackedColumns::Points(points) => {
@@ -1253,7 +1252,7 @@ pub(crate) fn map_selected_to_crs(
             })?;
             let (coords, offsets) = if let Some(frame) = transformer.computed_geographic_frame() {
                 let source_frame = transformer.source_geographic_frame();
-                let mut metric = transformer.target_metric_scratch(target_crs);
+                let mut metric = transformer.target_metric_scratch();
                 let mut output = CoordSeqBuilder::with_capacity(coords.axes(), coordinate_count);
                 let mut output_offsets = CsrOffsetBuilder::with_capacity(lines.rows());
                 for logical in 0..lines.rows() {
@@ -1384,7 +1383,7 @@ pub(crate) fn map_selected_to_crs(
             })?;
             if let Some(frame) = transformer.computed_geographic_frame() {
                 let source_frame = transformer.source_geographic_frame();
-                let mut metric = transformer.target_metric_scratch(target_crs);
+                let mut metric = transformer.target_metric_scratch();
                 let mut output = CoordSeqBuilder::with_capacity(coords.axes(), coordinate_count);
                 let mut output_rings = CsrOffsetBuilder::with_capacity(ring_count);
                 let mut output_polygons = CsrOffsetBuilder::with_capacity(polygons.rows());
@@ -1571,9 +1570,17 @@ mod tests {
         let columns = source
             .packed_columns()
             .expect("packed line source resolves");
-        let transformer = crate::crs::TransformPlan::new("EPSG:3857", "EPSG:4326").unwrap();
+        let source_frame = Frame::Crs(crate::crs::frame::crs_arc_static("EPSG:3857"));
+        let transform_frame = crate::crs::frame::GeometryTransformFrame::new(
+            &source_frame,
+            crate::crs::frame::crs_arc_static("EPSG:4326"),
+            None,
+            crate::crs::TransformOptions::default(),
+        )
+        .unwrap();
+        let transformer = crate::crs::TransformPlan::from_geometry_frame(transform_frame).unwrap();
         let PackedColumnOutput::Lines { coords, offsets } =
-            map_selected_to_crs(columns, &transformer, "EPSG:4326").unwrap()
+            map_selected_to_crs(columns, &transformer).unwrap()
         else {
             panic!("line transforms remain packed lines");
         };

@@ -119,13 +119,12 @@ impl PyGeometryArray {
         py: Python<'_>,
         output_frame: Frame,
         transformer: crate::crs::TransformPlan,
-        target_crs: &str,
     ) -> PyResult<Option<Self>> {
         let Some(columns) = self.rows.packed_columns() else {
             return Ok(None);
         };
         let output = py
-            .detach(move || map_selected_to_crs(columns, &transformer, target_crs))
+            .detach(move || map_selected_to_crs(columns, &transformer))
             .map_err(packed_columns_err)?;
         Ok(Some(
             self.assemble_packed_result(output, output_frame)

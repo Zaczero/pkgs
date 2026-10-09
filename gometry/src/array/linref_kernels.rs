@@ -188,6 +188,7 @@ fn interpolate_mixed_row_groups(
 ) -> std::result::Result<crate::CsrBuilder<Shape>, (usize, crate::error::Error)> {
     let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
     let mut rows = array.row_operation();
+    let mut metric = None;
     for logical_row in rows.rows_with_missing(|| ()) {
         match logical_row {
             crate::array::ArrayRow::Missing { logical, .. } => {
@@ -197,11 +198,18 @@ fn interpolate_mixed_row_groups(
             },
             crate::array::ArrayRow::Present(row) => {
                 let logical = row.logical();
+                if metric.is_none() {
+                    metric = Some(
+                        crs::ResolvedMetric::from_model(model).map_err(|error| (logical, error))?,
+                    );
+                }
                 let values = plan
                     .with_row(logical, |plan| {
                         let line = rows.prepared(row)?;
                         line_interpolate_points_shape(
-                            model,
+                            metric
+                                .as_ref()
+                                .expect("a present row resolves the operation metric"),
                             &line,
                             &rows.frame_cache(logical),
                             plan,

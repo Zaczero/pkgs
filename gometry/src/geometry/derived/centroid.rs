@@ -2084,8 +2084,7 @@ pub(crate) fn point_set_center_summary(
         CentroidAttempt::ExactAtRoot(_) => {
             drop(xs);
             drop(ys);
-            Ok(exact_owner_centroid(shape, CentroidDimension::Puntal)?
-                .map(|_| PointSetCenter::Chart(None)))
+            Ok((!centroid_is_empty(shape)).then_some(PointSetCenter::Chart(None)))
         },
         CentroidAttempt::Ready(()) => Ok(point_set_center_columns(&xs, &ys, frame)),
     }

@@ -274,21 +274,14 @@ impl PyGeometry {
             coordinate_epoch_option("epoch", epoch)?,
             options,
         )?;
-        let target_crs = frame.target;
-        let output = frame.output;
-        let transformer = crs::TransformPlan::new_with_options_at(
-            &frame.source,
-            target_crs.as_str(),
-            frame.options,
-            frame.state,
-        )?;
+        let transformer = crs::TransformPlan::from_geometry_frame(frame)?;
+        let output = transformer.output_frame().clone();
         if transformer.is_identity() {
             py.detach(|| transformer.admit_identity_shape(self.shape.shape()))?;
             return Ok(Typed(self.retag_frame(output)));
         }
-        let shape = py.detach(|| {
-            transformer.transform_shape_with_computed_edges(self.shape.shape(), target_crs.as_str())
-        })?;
+        let shape =
+            py.detach(|| transformer.transform_shape_with_computed_edges(self.shape.shape()))?;
         drain_accuracy_warning(py, &transformer.execution())?;
         Ok(Typed(Self::with_frame(shape, output)))
     }
