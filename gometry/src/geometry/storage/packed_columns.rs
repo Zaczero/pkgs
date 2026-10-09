@@ -819,10 +819,19 @@ fn replace_point_columns(
     let capacity = rows.present_count();
     storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
     let mut builder = CoordSeqBuilder::with_capacity(old.axes(), capacity);
-    for (_row, physical) in rows.cursor() {
-        if let Some(physical) = physical {
-            push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index);
-            *replacement_index = (*replacement_index).wrapping_add(1);
+    let mut replace_present = |physical| {
+        push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index);
+        *replacement_index = (*replacement_index).wrapping_add(1);
+    };
+    if point_columns.missing.is_some() {
+        for (_row, physical) in rows.cursor() {
+            if let Some(physical) = physical {
+                replace_present(physical);
+            }
+        }
+    } else {
+        for logical in 0..point_columns.len() {
+            replace_present(point_columns.row_map.physical(logical));
         }
     }
     let coords = builder.finish().map_err(batch_err)?;
