@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from gometry._lib import (  # noqa: TC001 - required by runtime get_type_hints
     Geometry,
     GeometryArray,
 )
 
-TYPE_CHECKING = False
 if TYPE_CHECKING:
     import pandas as pd
-else:
-    pd = SimpleNamespace(Series=object)
 
 
 def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:

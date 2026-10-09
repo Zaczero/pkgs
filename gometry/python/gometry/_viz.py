@@ -5,22 +5,16 @@ from __future__ import annotations
 import itertools
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from gometry._lib import Geometry, GeometryArray, GeometryError
 from gometry._optional import missing_optional_dependency
-from gometry._types import PyArrowTable, mapping_as_dict
+from gometry._types import mapping_as_dict
 
-TYPE_CHECKING = False
+# Runtime annotation resolution supplies the installed optional namespaces.
 if TYPE_CHECKING:
     import pyarrow as pa
     from lonboard import Map
-else:
-    # Runtime: keep the `Map` annotation name resolvable WITHOUT importing
-    # lonboard, so importing gometry and resolving `gm.explore` stay
-    # import-cheap. Static checkers see the real `lonboard.Map` under
-    # TYPE_CHECKING above.
-    Map = Any
 
 _LONBOARD_INSTALL = "install the 'gometry[viz]' extra"
 _lonboard_available: bool | None = None
@@ -179,7 +173,7 @@ def _lonboard_viz(arr: GeometryArray, attributes: Any | None, **kwargs: Any) -> 
 def explore(
     values: Geometry | GeometryArray,
     *,
-    attributes: PyArrowTable | Mapping[str, Any] | None = None,
+    attributes: pa.Table | Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> Map:
     """Build an interactive lonboard map from gometry geometries.

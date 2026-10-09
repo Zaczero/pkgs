@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from gometry._lib import (
     CRSError,
@@ -14,8 +13,6 @@ from gometry._lib import (
 )
 from gometry._optional import missing_optional_dependency
 from gometry._types import CrsInput  # noqa: TC001 - required by annotations
-
-TYPE_CHECKING = False
 
 _POLARS_INSTALL = "install the 'gometry[polars]' extra"
 
@@ -32,8 +29,6 @@ def _polars() -> Any:
 
 if TYPE_CHECKING:
     import polars as pl
-else:
-    pl = SimpleNamespace(Binary=object, Series=object)
 
 
 def to_polars(

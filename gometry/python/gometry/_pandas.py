@@ -19,15 +19,13 @@ from collections.abc import (  # noqa: TC003 - required by runtime get_type_hint
     Hashable,
     Sequence,
 )
-from typing import Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 import numpy as np
 import numpy.typing as npt
 
 from gometry._lib import Geometry, GeometryArray
 from gometry._optional import missing_optional_dependency
-
-TYPE_CHECKING = False
 
 _PANDAS_INSTALL = "install the 'gometry[pandas]' extra"
 _ARROW_INSTALL = "install the 'gometry[arrow]' extra"
@@ -59,8 +57,6 @@ if TYPE_CHECKING:
     # dynamic while retaining exact public Series/Index annotations.
     _pd: Any = pd
 else:
-    _ArrowArray: TypeAlias = Any
-    ListLike: TypeAlias = Any
     _pd = _pandas()
     pd = _pd
 
