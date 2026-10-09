@@ -3634,17 +3634,25 @@ class Geometry:
     def sample_points(
         self, count: _IntScalar, *, seed: _IntScalar
     ) -> GeometryArray[Point]:
-        """Random points on the geometry. The sample space is the geometry's highest
-        dimension: uniform over area for areal input, along length for lineal input,
-        and across the member points of a point set — falling back a dimension when
-        the higher one is degenerate (a zero-area polygon samples its boundary),
-        like centroid. Deterministic: the same input and ``seed`` always produce
-        the same points (an explicit seed is required — no hidden global RNG). Array
-        rows draw distinct deterministic streams derived from ``seed`` and the row
-        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-        and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-        to sample and yields no points. Sampled points are invented interior points,
-        so they cannot carry the source geometry's Z/M and are returned in XY.
+        """Random points on the geometry. The sample space is its highest
+        dimension: coordinate-area weighted for areal input, coordinate-length
+        weighted for lineal input, and equal weight across point atoms. Geographic
+        lines follow each retained longitude branch, while geographic areas are split
+        into seam- and pole-aware chart parts before sampling. Length and area weights
+        use the native coordinate chart, not ellipsoidal measures; for example, a
+        degree-based 170° to -170° line follows its retained +20° path, contributing
+        20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+        chart area, not the complementary raw-coordinate span. Each logical
+        member contributes separately, so overlapping members retain their sampling
+        multiplicity. A zero-area polygon falls back to its linework, and zero-length
+        linework falls back to vertices, like centroid. Deterministic: the same input
+        and ``seed`` always produce the same points (an explicit seed is required —
+        no hidden global RNG). Array rows draw distinct deterministic streams derived
+        from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+        ``arr.sample_points(n, seed=s)[0]`` and
+        ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+        sample and yields no points. Results retain the input CRS and coordinate
+        epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
@@ -10316,17 +10324,25 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def sample_points(
         self, count: _IntInput, *, seed: _IntInput
     ) -> Groups[GeometryArray[Point]]:
-        """Random points on the geometry. The sample space is the geometry's highest
-        dimension: uniform over area for areal input, along length for lineal input,
-        and across the member points of a point set — falling back a dimension when
-        the higher one is degenerate (a zero-area polygon samples its boundary),
-        like centroid. Deterministic: the same input and ``seed`` always produce
-        the same points (an explicit seed is required — no hidden global RNG). Array
-        rows draw distinct deterministic streams derived from ``seed`` and the row
-        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-        and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-        to sample and yields no points. Sampled points are invented interior points,
-        so they cannot carry the source geometry's Z/M and are returned in XY.
+        """Random points on the geometry. The sample space is its highest
+        dimension: coordinate-area weighted for areal input, coordinate-length
+        weighted for lineal input, and equal weight across point atoms. Geographic
+        lines follow each retained longitude branch, while geographic areas are split
+        into seam- and pole-aware chart parts before sampling. Length and area weights
+        use the native coordinate chart, not ellipsoidal measures; for example, a
+        degree-based 170° to -170° line follows its retained +20° path, contributing
+        20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+        chart area, not the complementary raw-coordinate span. Each logical
+        member contributes separately, so overlapping members retain their sampling
+        multiplicity. A zero-area polygon falls back to its linework, and zero-length
+        linework falls back to vertices, like centroid. Deterministic: the same input
+        and ``seed`` always produce the same points (an explicit seed is required —
+        no hidden global RNG). Array rows draw distinct deterministic streams derived
+        from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+        ``arr.sample_points(n, seed=s)[0]`` and
+        ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+        sample and yields no points. Results retain the input CRS and coordinate
+        epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
