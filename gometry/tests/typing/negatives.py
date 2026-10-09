@@ -142,12 +142,27 @@ if TYPE_CHECKING:
     _dense_pts: gm.GeometryArray[gm.Point] = nullable_points  # type: ignore[assignment]
     _ = gm.GeometryArray([POINT, None])[0].x  # type: ignore[union-attr]
     _ = next(iter(gm.GeometryArray([POINT, None]))).x  # type: ignore[union-attr]
+    _dense_required: gm.GeometryArray[gm.Point] = gm.require(nullable_points)  # type: ignore[assignment]
+    _ = gm.require(nullable_points)[0].x  # type: ignore[union-attr]
     _dense_cells: gm.CellArray[gm.H3Cell] = gm.CellArray([h3_cell, None])  # type: ignore[assignment]
     _ = gm.CellArray([h3_cell, None])[0].token  # type: ignore[union-attr]
     _ = gm.GeometryArray([POINT, None]).centroid()[0].x  # type: ignore[union-attr]
     _dense_overlay: gm.GeometryArray[gm.Geometry] = gm.intersection(
         gm.GeometryArray([POINT, None]), POLY
     )  # type: ignore[assignment]
+
+    def _reject_unchecked_nullable_group(
+        groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
+    ) -> None:
+        _ = gm.require(groups)[0].x  # type: ignore[union-attr]
+
+    def _reject_unchecked_cell_projections(
+        centers: gm.CellArray[gm.H3Cell | None],
+        polygons: gm.CellArray[gm.S2Cell | None],
+    ) -> None:
+        _ = centers.center[0].x  # type: ignore[union-attr]
+        _ = polygons.polygon[0].area  # type: ignore[union-attr]
+        centers.center = centers.center  # type: ignore[assignment]
 
     # Scalar overload result is a bare float — it has no ndarray attributes.
     _ = gm.distance(POINT, POLY).dtype  # type: ignore[attr-defined]

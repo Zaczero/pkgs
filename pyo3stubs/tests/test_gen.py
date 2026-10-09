@@ -8,13 +8,20 @@ escaper and the def counter directly, which is where the defects were.
 
 from __future__ import annotations
 
+import ast
 import types
 from typing import Self
 
 import libcst as cst
 import pytest
 
-from pyo3stubs.gen import DocInjector, _def_totals, _docstring_statement
+from pyo3stubs.ast_util import annotated_data_descriptors
+from pyo3stubs.gen import (
+    DocInjector,
+    _def_totals,
+    _descriptor_docs,
+    _docstring_statement,
+)
 from tests._support import make_config
 
 Q = '"'
@@ -75,7 +82,17 @@ def test_no_generated_line_carries_trailing_whitespace():
 
 def _inject(stub: str, runtime: types.ModuleType) -> str:
     return (
-        cst.parse_module(stub).visit(DocInjector(runtime, _def_totals(stub), {})).code
+        cst
+        .parse_module(stub)
+        .visit(
+            DocInjector(
+                runtime,
+                _def_totals(stub),
+                {},
+                _descriptor_docs(stub, runtime),
+            )
+        )
+        .code
     )
 
 
@@ -113,6 +130,63 @@ def test_a_property_setter_is_not_an_overload_variant():
     # The setter is left alone entirely -- it is not a stale overload variant
     # whose prose should be stripped, and the runtime has nothing to put there.
     assert 'Setter prose, hand-written.' in out
+
+
+def test_annotated_data_descriptor_prose_is_replaced_idempotently() -> None:
+    stub = '''\
+class C:
+    value: int
+    """Stale descriptor prose."""
+    constant: int
+    """Hand-written constant prose."""
+'''
+
+    class NativeDescriptor:
+        """Native descriptor prose."""
+
+        def __get__(self, instance, owner=None):
+            raise AssertionError(
+                'descriptor getter must not run while finding native prose'
+            )
+
+        def __set__(self, instance, value):
+            raise AssertionError('descriptor assignment is not part of generation')
+
+    class C:
+        value = NativeDescriptor()
+        constant = 1
+
+    runtime = types.ModuleType('m')
+    runtime.C = C  # type: ignore[attr-defined]
+    class_node = ast.parse(stub).body[0]
+    descriptors = list(annotated_data_descriptors(C, class_node.body))
+    assert [(name, prose) for name, _, prose, _ in descriptors] == [
+        ('value', 'Stale descriptor prose.'),
+    ]
+
+    once = _inject(stub, runtime)
+    twice = _inject(once, runtime)
+    assert once == twice
+    assert once.count('Native descriptor prose.') == 1
+    assert 'Stale descriptor prose.' not in once
+    assert 'Hand-written constant prose.' in once
+    before = ast.parse(stub).body[0]
+    after = ast.parse(once).body[0]
+
+    def without_docstrings(node):
+        return [
+            statement
+            for statement in node.body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
+        ]
+
+    assert [ast.dump(stmt) for stmt in without_docstrings(before)] == [
+        ast.dump(stmt) for stmt in without_docstrings(after)
+    ]
 
 
 @pytest.mark.parametrize(
