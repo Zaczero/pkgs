@@ -748,6 +748,76 @@ def test_runtime_loader_facts_match_the_active_platform() -> None:
         }
 
 
+def test_runtime_preimport_resolution_rejects_an_installed_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / 'admitted' / 'gometry' / '__init__.py'
+    fallback = tmp_path / 'installed' / 'gometry' / '__init__.py'
+    admission = type('Admission', (), {'facade_path': selected.resolve()})()
+    monkeypatch.setattr(runtime_artifact, '_resident_gometry_modules', dict)
+    monkeypatch.setattr(
+        runtime_artifact.importlib.util,
+        'find_spec',
+        lambda _name: type('Spec', (), {'origin': str(fallback)})(),
+    )
+
+    with pytest.raises(AssertionError, match='does not select the admitted'):
+        runtime_artifact.check_runtime_resolution(admission)
+
+
+def test_runtime_completion_rechecks_admitted_package_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = runtime_artifact.inspect_runtime_inputs(GOMETRY_ROOT)
+    runtime = runtime_artifact.verify_admitted_runtime(admission)
+    runtime_artifact.verify_runtime_completion(admission, runtime)
+
+    monkeypatch.setattr(runtime_artifact, 'python_member_hashes', lambda _path: {})
+    with pytest.raises(AssertionError, match='Python files changed'):
+        runtime_artifact.verify_runtime_completion(admission, runtime)
+
+
+def test_installed_wheel_runtime_projection_preserves_the_existing_shape() -> None:
+    source = {
+        'commit': None,
+        'version': '1.2.3',
+        'python_members': {'gometry/__init__.py': 'a' * 64},
+    }
+    build = {'profile': 'release', 'target': 'x86_64-unknown-linux-gnu'}
+    wheel = {
+        'filename': 'gometry-1.2.3-cp314-cp314-manylinux_2_34_x86_64.whl',
+        'sha256': 'b' * 64,
+        'extension_member': 'gometry/_lib.cpython-314-x86_64-linux-gnu.so',
+        'extension_sha256': 'c' * 64,
+        'unrelated': 'ignored',
+    }
+
+    projected = release_artifact.installed_wheel_runtime_receipt(
+        identifier='cp314-manylinux_x86_64',
+        profile='release',
+        source=source,
+        build=build,
+        wheel=wheel,
+        prepared_inputs={'README.md': 'd' * 64},
+    )
+
+    assert projected == {
+        'identifier': 'cp314-manylinux_x86_64',
+        'profile': 'release',
+        'source': source,
+        'build': build,
+        'wheel': {
+            'filename': wheel['filename'],
+            'sha256': wheel['sha256'],
+            'extension_member': wheel['extension_member'],
+            'extension_sha256': wheel['extension_sha256'],
+        },
+        'python_members': source['python_members'],
+        'prepared_inputs': {'README.md': 'd' * 64},
+    }
+
+
 def test_record_accepts_only_matching_unrecorded_signature_members(
     tmp_path: Path,
 ) -> None:

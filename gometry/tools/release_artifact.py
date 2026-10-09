@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import textwrap
 import venv
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +60,11 @@ from artifact_content import (
     wheel_python_members,
     wheel_target_compatible,
 )
+from quality_runtime import (
+    quality_receipt_path,
+    read_quality_receipt,
+    validate_quality_producer_inputs,
+)
 from runtime_artifact import (
     SMOKE_EXPECTED_ARCHITECTURE_ENV,
     SMOKE_EXPECTED_HOST_ARCH_ENV,
@@ -86,7 +92,7 @@ from source_artifact import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 CIBUILDWHEEL_VERSION = '4.1.0'
 RUNNER_RECEIPT_SCHEMA = 4
 RELEASE_MANIFEST_SCHEMA = 4
@@ -1070,6 +1076,39 @@ def _portable_interpreter(interpreter: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def installed_wheel_runtime_receipt(
+    *,
+    identifier: str | None,
+    profile: str,
+    source: Mapping[str, Any],
+    build: Mapping[str, Any],
+    wheel: Mapping[str, Any],
+    prepared_inputs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project an admitted installed-wheel record for runtime verification."""
+    required_wheel_fields = (
+        'filename',
+        'sha256',
+        'extension_member',
+        'extension_sha256',
+    )
+    if not all(isinstance(wheel.get(name), str) for name in required_wheel_fields):
+        raise AssertionError('installed wheel has an incomplete runtime identity')
+    if not isinstance(build, Mapping) or not isinstance(source, Mapping):
+        raise TypeError('installed wheel source or build identity is malformed')
+    projected = {
+        'identifier': identifier,
+        'profile': profile,
+        'source': dict(source),
+        'build': dict(build),
+        'wheel': {name: wheel[name] for name in required_wheel_fields},
+        'python_members': source.get('python_members'),
+    }
+    if prepared_inputs is not None:
+        projected['prepared_inputs'] = dict(prepared_inputs)
+    return projected
+
+
 def smoke_installed(
     *,
     expected_source_manifest: Path | None = None,
@@ -1120,20 +1159,14 @@ def smoke_installed(
             raise AssertionError(
                 'installed smoke wheel differs from repaired-wheel hook'
             )
-        runtime_receipt = {
-            'identifier': identifier,
-            'profile': RELEASE_PROFILE,
-            'source': source_identity(source_manifest),
-            'build': item['build'],
-            'wheel': {
-                'filename': item['filename'],
-                'sha256': item['sha256'],
-                'extension_member': item['extension_member'],
-                'extension_sha256': item['extension_sha256'],
-            },
-            'python_members': source_manifest['python_members'],
-            'prepared_inputs': source_manifest['prepared_inputs']['files'],
-        }
+        runtime_receipt = installed_wheel_runtime_receipt(
+            identifier=identifier,
+            profile=RELEASE_PROFILE,
+            source=source_identity(source_manifest),
+            build=item['build'],
+            wheel=item,
+            prepared_inputs=source_manifest['prepared_inputs']['files'],
+        )
         facade, extension, runtime_record = verify_runtime(
             ROOT,
             expected_wheel=wheel.resolve(),
@@ -2345,18 +2378,72 @@ def validate_release_manifest(
     return manifest
 
 
+def _quality_benchmark_root(receipt_path: Path) -> Path | None:
+    if len(receipt_path.parts) < 4 or receipt_path.parts[-3:] != (
+        'target',
+        'quality-runtime',
+        'receipt.json',
+    ):
+        return None
+    return receipt_path.parents[2]
+
+
 def validate_benchmark_receipt(receipt_path: Path) -> dict[str, Any]:
-    """Validate an existing release or runner receipt before benchmark dispatch."""
+    """Validate an existing quality, release, or runner subject for benchmarking."""
     receipt_path = receipt_path.resolve()
     if receipt_path.is_dir():
         if (receipt_path / RELEASE_MANIFEST_NAME).is_file():
             receipt_path = receipt_path / RELEASE_MANIFEST_NAME
         elif (receipt_path / RUNNER_RECEIPT_NAME).is_file():
             receipt_path = receipt_path / RUNNER_RECEIPT_NAME
+        elif (
+            receipt_path.name == 'quality-runtime'
+            and receipt_path.parent.name == 'target'
+            and (receipt_path / 'receipt.json').is_file()
+        ):
+            receipt_path = receipt_path / 'receipt.json'
         else:
             raise AssertionError(
                 f'benchmark receipt directory has no canonical receipt: {receipt_path}'
             )
+    quality_root = _quality_benchmark_root(receipt_path)
+    if quality_root is not None:
+        root = quality_root
+        canonical_path = quality_receipt_path(root).resolve()
+        if receipt_path != canonical_path:
+            raise AssertionError(
+                'quality benchmark receipt must be at its canonical path'
+            )
+        quality_receipt = read_quality_receipt(root)
+        validate_quality_producer_inputs(root, quality_receipt)
+        wheel = quality_receipt['wheel']
+        source = quality_receipt['source']
+        wheel_item = {
+            'filename': wheel['filename'],
+            'sha256': wheel['sha256'],
+            'extension_member': wheel['extension_member'],
+            'extension_sha256': wheel['extension_sha256'],
+        }
+        return {
+            'kind': 'quality',
+            'path': str(canonical_path),
+            'receipt_sha256': sha256_file(canonical_path),
+            'source': {
+                'commit': None,
+                'version': source['version'],
+                'source_inputs_sha256': source['source_inputs_sha256'],
+                'native_source_inputs_sha256': source['native_source_inputs_sha256'],
+                'python_members': dict(source['python_members']),
+            },
+            'profile': quality_receipt['profile'],
+            'build': quality_receipt['build'],
+            'wheel': wheel_item,
+            'wheels': [wheel_item],
+            'package_root': quality_receipt['package_root'],
+            'python_members': dict(quality_receipt['python_members']),
+            'prepared_inputs': quality_receipt['prepared_inputs']['files'],
+            'runtime_receipt': quality_receipt,
+        }
     if receipt_path.name == RELEASE_MANIFEST_NAME:
         receipt = validate_release_manifest(receipt_path, receipt_path.parent)
         return {
@@ -2396,6 +2483,8 @@ def read_benchmark_receipt(
         or sha256_file(receipt_path) != expected_receipt_sha256
     ):
         raise AssertionError('validated benchmark receipt changed before dispatch')
+    if _quality_benchmark_root(receipt_path) is not None:
+        return validate_benchmark_receipt(receipt_path)
     receipt = _load_json(receipt_path)
     if receipt_path.name == RELEASE_MANIFEST_NAME:
         if (
