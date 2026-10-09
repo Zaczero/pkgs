@@ -575,6 +575,14 @@ def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    pytest.importorskip(
+        'tree_sitter',
+        reason='tree-sitter==0.26.0 has no CPython 3.14t wheel',
+    )
+    pytest.importorskip(
+        'tree_sitter_rust',
+        reason='tree-sitter-rust==0.24.2 has no CPython 3.14t wheel',
+    )
     import importlib
 
     integrity = load_tool(
