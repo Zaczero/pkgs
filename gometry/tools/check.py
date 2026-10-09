@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Apply gometry's formatters and mechanical fixes, then run its quality checks.
+"""Prepare gometry's identified runtime, then run its quality checks.
 
-The fix phase rewrites the checkout: Rust and Python formatting, machine-applicable
-Clippy and Ruff fixes, and stub docstrings regenerated from the runtime. The checks
-then report only what needs judgment. `--no-fix` runs the checks alone, for a
-checkout that should not be rewritten, such as CI.
+The default command applies Rust and Python formatting, machine-applicable Clippy
+and Ruff fixes, prepares the DEV runtime, generates and formats stub docstrings,
+then runs the checks. `--prepare` skips the lint and format fixers and the checks;
+it prepares the runtime and prints its package root. `--no-fix` runs checks
+without rewriting the checkout.
 """
 
 from __future__ import annotations
@@ -149,6 +150,41 @@ def _quality_runtime_module():
     return quality_runtime
 
 
+def _prepare_runtime() -> tuple[dict[str, object], dict[str, str]] | None:
+    quality_runtime = _quality_runtime_module()
+    try:
+        quality_runtime.prepare_quality_runtime(
+            ROOT,
+            scratch=ROOT / 'target' / 'quality-runtime',
+        )
+        receipt = quality_runtime.read_quality_receipt(ROOT)
+        environment = _child_environment(receipt)
+    except Exception as error:
+        print(f'quality runtime preparation failed: {error}', file=sys.stderr)
+        return None
+    if not run(
+        GENERATE_STUBS,
+        environment=environment,
+        require_runtime=True,
+    ):
+        _report_failure(' '.join(GENERATE_STUBS))
+        return None
+    if not run(
+        ('ruff', 'format', '--quiet', 'python/gometry/_lib.pyi'),
+        environment=environment,
+    ):
+        _report_failure('format generated _lib.pyi')
+        return None
+    try:
+        quality_runtime.refresh_quality_runtime(ROOT)
+        receipt = quality_runtime.read_quality_receipt(ROOT)
+        environment = _child_environment(receipt)
+    except Exception as error:
+        print(f'final quality runtime staging failed: {error}', file=sys.stderr)
+        return None
+    return receipt, environment
+
+
 def _child_environment(receipt: dict[str, object]) -> dict[str, str]:
     package_root = receipt.get('package_root')
     if not isinstance(package_root, str):
@@ -174,10 +210,18 @@ def main() -> int:
         allow_abbrev=False,
         **({'color': False} if sys.version_info >= (3, 14) else {}),
     )
-    parser.add_argument(
-        '--no-fix', action='store_true', help='run the checks without rewriting files'
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        '--no-fix', action='store_true', help='run checks without rewriting files'
     )
-    no_fix = parser.parse_args().no_fix
+    mode.add_argument(
+        '--prepare',
+        action='store_true',
+        help='prepare and print the runtime package root without running checks',
+    )
+    options = parser.parse_args()
+    no_fix = options.no_fix
+    prepare_only = options.prepare
     environment = os.environ.copy()
     runtime_failure: str | None = None
     if no_fix:
@@ -194,43 +238,23 @@ def main() -> int:
                 environment = _child_environment(admission.receipt)
             except runtime_artifact.QualityPreparationRequired as error:
                 runtime_failure = (
-                    f'{error}; run `{sys.executable} tools/check.py` to prepare it'
+                    f'{error}; run `{sys.executable} tools/check.py --prepare` '
+                    'to prepare it'
                 )
             except Exception as error:
                 runtime_failure = str(error)
     else:
-        quality_runtime = _quality_runtime_module()
-        for step in FIXES:
-            if not run(step):
-                return _report_failure(' '.join(step))
-        try:
-            quality_runtime.prepare_quality_runtime(
-                ROOT,
-                scratch=ROOT / 'target' / 'quality-runtime',
-            )
-            receipt = quality_runtime.read_quality_receipt(ROOT)
-            environment = _child_environment(receipt)
-        except Exception as error:
-            print(f'quality runtime preparation failed: {error}', file=sys.stderr)
+        if not prepare_only:
+            for step in FIXES:
+                if not run(step):
+                    return _report_failure(' '.join(step))
+        prepared = _prepare_runtime()
+        if prepared is None:
             return 1
-        if not run(
-            GENERATE_STUBS,
-            environment=environment,
-            require_runtime=True,
-        ):
-            return _report_failure(' '.join(GENERATE_STUBS))
-        if not run(
-            ('ruff', 'format', '--quiet', 'python/gometry/_lib.pyi'),
-            environment=environment,
-        ):
-            return _report_failure('format generated _lib.pyi')
-        try:
-            quality_runtime.refresh_quality_runtime(ROOT)
-            receipt = quality_runtime.read_quality_receipt(ROOT)
-            environment = _child_environment(receipt)
-        except Exception as error:
-            print(f'final quality runtime staging failed: {error}', file=sys.stderr)
-            return 1
+        receipt, environment = prepared
+        if prepare_only:
+            print(receipt['package_root'])
+            return 0
 
     failed: list[str] = []
     skipped: list[str] = []

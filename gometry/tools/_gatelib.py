@@ -38,15 +38,14 @@ ROOT = TOOLS_DIR.parent
 
 def prepend_tools_import_paths() -> None:
     """Prepend checkout tool paths and an available workspace tool dependency."""
-    for entry in TOOL_IMPORT_DIRS:
-        path = str(entry)
-        if path not in sys.path:
-            sys.path.insert(0, path)
+    tool_paths = [str(entry) for entry in TOOL_IMPORT_DIRS]
+    tool_path_set = set(tool_paths)
+    sys.path[:] = [entry for entry in sys.path if entry not in tool_path_set]
+    sys.path[:0] = tool_paths
     sibling_package = ROOT.parent / 'pyo3stubs'
     if (sibling_package / 'pyo3stubs' / '__init__.py').is_file():
         path = str(sibling_package)
-        if path in sys.path:
-            sys.path.remove(path)
+        sys.path[:] = [entry for entry in sys.path if entry != path]
         last_tools_path = max(sys.path.index(str(entry)) for entry in TOOL_IMPORT_DIRS)
         # Editable installs can resolve another worktree; select this sibling before site-packages.
         sys.path.insert(last_tools_path + 1, path)
