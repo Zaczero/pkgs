@@ -435,16 +435,22 @@ impl ChartEdge {
         if speed == 0.0 {
             return ChartEdgeDerivatives {
                 speed,
+                #[cfg(test)]
                 acceleration: 0.0,
                 azimuth: 0.0,
             };
         }
+        #[cfg(test)]
         let east_derivative = -meridian * sin_latitude * dphi * dlambda;
+        #[cfg(test)]
         let north_derivative = dphi * dphi * 3.0 * e2 * sin_latitude * cos_latitude * meridian / w2;
+        #[cfg(test)]
+        let acceleration = east_derivative.hypot(north_derivative);
         let azimuth = east.atan2(north);
         ChartEdgeDerivatives {
             speed,
-            acceleration: east_derivative.hypot(north_derivative),
+            #[cfg(test)]
+            acceleration,
             azimuth,
         }
     }
@@ -1475,6 +1481,7 @@ impl ChartMetric for super::GeodesicMetric {
 #[derive(Clone, Copy)]
 pub(super) struct ChartEdgeDerivatives {
     pub(super) speed: f64,
+    #[cfg(test)]
     pub(super) acceleration: f64,
     pub(super) azimuth: f64,
 }
