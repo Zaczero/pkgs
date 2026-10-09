@@ -81,13 +81,14 @@ pub(crate) use types::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartEdgeDifferential,
     ChartEdgeDifferentialBounds, ChartMetric, ChartPointDistanceSample, CoordSeq, CoordSeqBuilder,
     CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
-    FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq, MAX_NESTING, MColumn, MOrdinate,
-    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointEdgeMinimum,
-    PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel, PolygonizeFull,
-    PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery, ShapeData,
-    ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey,
-    VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
+    DwithinOutcome, FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
+    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
+    PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
+    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
+    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
+    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
+    coerce_to_common_axes,
 };
 mod antimeridian;
 mod boundary;

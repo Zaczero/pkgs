@@ -1455,6 +1455,66 @@ pub(crate) struct PointEdgeMinimum {
     pub(crate) budget_exhausted: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DwithinOutcome {
+    Within,
+    Outside,
+    Unresolved,
+}
+
+impl DwithinOutcome {
+    pub(crate) const fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Within, _) | (_, Self::Within) => Self::Within,
+            (Self::Unresolved, _) | (_, Self::Unresolved) => Self::Unresolved,
+            (Self::Outside, Self::Outside) => Self::Outside,
+        }
+    }
+
+    pub(crate) fn into_bool(self) -> Result<bool> {
+        match self {
+            Self::Within => Ok(true),
+            Self::Outside => Ok(false),
+            Self::Unresolved => Err(crate::crs::CrsError::message(
+                "geodesic dwithin did not converge within 128 point-edge evaluations",
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod dwithin_outcome_tests {
+    use super::DwithinOutcome;
+
+    #[test]
+    fn witnessed_within_dominates_an_earlier_unresolved_edge() {
+        assert_eq!(
+            DwithinOutcome::Unresolved.combine(DwithinOutcome::Within),
+            DwithinOutcome::Within
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Unresolved),
+            DwithinOutcome::Unresolved
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Outside),
+            DwithinOutcome::Outside
+        );
+    }
+
+    #[test]
+    fn unresolved_is_an_error_only_at_the_boolean_boundary() {
+        let error = DwithinOutcome::Unresolved
+            .into_bool()
+            .expect_err("a bool cannot encode an unresolved threshold");
+        assert!(
+            error
+                .to_string()
+                .contains("geodesic dwithin did not converge within 128 point-edge evaluations")
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferential {
     pub(crate) speed: f64,
@@ -1483,7 +1543,10 @@ pub(crate) enum PointEdgeQueryResult {
     Outside {
         lower_bound: f64,
         evaluations: usize,
-        budget_exhausted: bool,
+    },
+    Unresolved {
+        lower_bound: f64,
+        evaluations: usize,
     },
 }
 

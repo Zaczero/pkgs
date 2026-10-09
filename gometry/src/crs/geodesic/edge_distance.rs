@@ -114,7 +114,6 @@ pub(crate) fn point_edge_query(
                 return Ok(PointEdgeQueryResult::Outside {
                     lower_bound: 0.0,
                     evaluations: 0,
-                    budget_exhausted: false,
                 });
             }
             if limit.is_infinite() {
@@ -137,7 +136,6 @@ pub(crate) fn point_edge_query(
         return Ok(PointEdgeQueryResult::Outside {
             lower_bound: envelope_lower,
             evaluations: 0,
-            budget_exhausted: false,
         });
     }
 
@@ -284,7 +282,6 @@ pub(crate) fn point_edge_query(
             return Ok(PointEdgeQueryResult::Outside {
                 lower_bound: best.lower_bound,
                 evaluations: best.evaluations,
-                budget_exhausted: false,
             });
         }
         if threshold.is_none() && interval.lower_bound >= best.distance - policy.minimum_gap() {
@@ -294,6 +291,12 @@ pub(crate) fn point_edge_query(
         if best.evaluations >= MAX_EVALUATIONS {
             best.lower_bound = interval.lower_bound.min(best.distance);
             best.budget_exhausted = true;
+            if threshold.is_some() {
+                return Ok(PointEdgeQueryResult::Unresolved {
+                    lower_bound: best.lower_bound,
+                    evaluations: best.evaluations,
+                });
+            }
             break;
         }
 
@@ -303,6 +306,17 @@ pub(crate) fn point_edge_query(
         } else {
             f64::midpoint(interval.t0, interval.t1)
         };
+        if !(parameter > interval.t0 && parameter < interval.t1) {
+            best.lower_bound = interval.lower_bound.min(best.distance);
+            if threshold.is_some() {
+                return Ok(PointEdgeQueryResult::Unresolved {
+                    lower_bound: best.lower_bound,
+                    evaluations: best.evaluations,
+                });
+            }
+            best.budget_exhausted = true;
+            break;
+        }
         let (distance, azimuth) = sample(geodesic, point, edge, parameter)?;
         best.evaluations = best.evaluations.wrapping_add(1);
         if let Some(limit) = threshold
@@ -426,27 +440,31 @@ fn finalize_query(
     cutoff: f64,
     threshold: Option<f64>,
 ) -> PointEdgeQueryResult {
-    match direct_result(
-        best.distance,
-        best.parameter,
-        best.evaluations,
-        cutoff,
-        threshold,
-    ) {
-        PointEdgeQueryResult::Minimum(mut minimum) => {
-            minimum.lower_bound = best.lower_bound;
-            minimum.budget_exhausted = best.budget_exhausted;
-            PointEdgeQueryResult::Minimum(minimum)
-        },
-        PointEdgeQueryResult::Outside { .. } => PointEdgeQueryResult::Outside {
-            lower_bound: best.lower_bound,
+    let lower_bound = best.lower_bound.min(best.distance);
+    if let Some(limit) = threshold {
+        if best.distance <= limit {
+            return PointEdgeQueryResult::Within {
+                evaluations: best.evaluations,
+            };
+        }
+        if lower_bound > limit {
+            return PointEdgeQueryResult::Outside {
+                lower_bound,
+                evaluations: best.evaluations,
+            };
+        }
+        return PointEdgeQueryResult::Unresolved {
+            lower_bound,
             evaluations: best.evaluations,
-            budget_exhausted: best.budget_exhausted,
-        },
-        PointEdgeQueryResult::Excluded => PointEdgeQueryResult::Excluded,
-        PointEdgeQueryResult::Within { evaluations } => {
-            PointEdgeQueryResult::Within { evaluations }
-        },
+        };
+    }
+    if lower_bound >= cutoff {
+        PointEdgeQueryResult::Excluded
+    } else {
+        PointEdgeQueryResult::Minimum(PointEdgeMinimum {
+            lower_bound,
+            ..best
+        })
     }
 }
 
@@ -468,7 +486,6 @@ fn direct_result(
             PointEdgeQueryResult::Outside {
                 lower_bound: distance,
                 evaluations,
-                budget_exhausted: false,
             }
         };
     }
@@ -750,7 +767,8 @@ mod tests {
             PointEdgeQueryResult::Minimum(minimum) => minimum,
             result @ (PointEdgeQueryResult::Excluded
             | PointEdgeQueryResult::Within { .. }
-            | PointEdgeQueryResult::Outside { .. }) => {
+            | PointEdgeQueryResult::Outside { .. }
+            | PointEdgeQueryResult::Unresolved { .. }) => {
                 panic!("unbounded point-edge query did not return a minimum: {result:?}")
             },
         }
@@ -1001,7 +1019,8 @@ mod tests {
                 },
                 PointEdgeQueryResult::Excluded => assert!(!expected_attainment, "{name}"),
                 other @ (PointEdgeQueryResult::Within { .. }
-                | PointEdgeQueryResult::Outside { .. }) => {
+                | PointEdgeQueryResult::Outside { .. }
+                | PointEdgeQueryResult::Unresolved { .. }) => {
                     panic!("{name}: unexpected cutoff result {other:?}")
                 },
             }
@@ -1047,6 +1066,62 @@ mod tests {
                 .to_string()
                 .contains("geodesic dwithin limit is not finite")
         );
+    }
+
+    #[test]
+    fn exhausted_threshold_and_cutoff_straddles_preserve_unresolved_bounds() {
+        let exhausted = PointEdgeMinimum {
+            distance: 2.0,
+            parameter: 0.5,
+            lower_bound: 0.0,
+            evaluations: MAX_EVALUATIONS,
+            budget_exhausted: true,
+        };
+        let threshold = finalize_query(exhausted, f64::INFINITY, Some(1.0));
+        assert!(
+            matches!(threshold, PointEdgeQueryResult::Unresolved {
+                lower_bound: 0.0,
+                evaluations: MAX_EVALUATIONS,
+            }),
+            "lower=0, limit=1, best=2 must remain unresolved: {threshold:?}"
+        );
+
+        let minimum = finalize_query(exhausted, 1.0, None);
+        assert!(
+            matches!(
+                minimum,
+                PointEdgeQueryResult::Minimum(PointEdgeMinimum {
+                    distance: 2.0,
+                    lower_bound: 0.0,
+                    budget_exhausted: true,
+                    ..
+                })
+            ),
+            "a sampled value above cutoff cannot exclude lower=0: {minimum:?}"
+        );
+
+        let outside = finalize_query(
+            PointEdgeMinimum {
+                lower_bound: 1.25,
+                ..exhausted
+            },
+            f64::INFINITY,
+            Some(1.0),
+        );
+        assert!(
+            matches!(outside, PointEdgeQueryResult::Outside { lower_bound, .. } if lower_bound > 1.0)
+        );
+
+        let within = finalize_query(
+            PointEdgeMinimum {
+                distance: 0.5,
+                lower_bound: 0.0,
+                ..exhausted
+            },
+            f64::INFINITY,
+            Some(1.0),
+        );
+        assert!(matches!(within, PointEdgeQueryResult::Within { .. }));
     }
 
     #[test]
