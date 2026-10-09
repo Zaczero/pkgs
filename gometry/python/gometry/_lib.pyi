@@ -686,6 +686,11 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     def coordinate_axes(self) -> CoordinateAxes:
         """Coordinate layout: ``'XY'``, ``'XYZ'``, ``'XYM'``, or ``'XYZM'`` — the
         `select`-forced layout when set, else the union of the present axes.
+
+        Returns
+        -------
+        CoordinateAxes
+            The exact ordinate layout visible through this coordinate view.
         """
     def select(self, axes: CoordinateAxes) -> Coordinates:
         """Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
@@ -717,22 +722,58 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     def row_index(self) -> npt.NDArray[np.int64]:
         """Per-coordinate source geometry row (all ``0`` for a scalar geometry);
         the source row for each vertex of a ``GeometryArray``.
+
+        Returns
+        -------
+        numpy.ndarray
+            A materialized, read-only int64 array in flat coordinate order, one
+            source-row label per vertex.
         """
     @property
     def x(self) -> npt.NDArray[np.float64]:
-        """The X ordinates as a read-only ``float64`` ``numpy.ndarray``."""
+        """The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
+
+        Returns
+        -------
+        numpy.ndarray
+            One read-only value per vertex in view order, in the geometry's
+            native coordinate units (raw coordinate units when CRS-free). The
+            array shares the immutable coordinate column when one is available.
+        """
     @property
     def y(self) -> npt.NDArray[np.float64]:
-        """The Y ordinates as a read-only ``float64`` ``numpy.ndarray``."""
+        """The Y ordinates as a read-only ``float64`` ``numpy.ndarray``.
+
+        Returns
+        -------
+        numpy.ndarray
+            One read-only value per vertex in view order, in the geometry's
+            native coordinate units (raw coordinate units when CRS-free). The
+            array shares the immutable coordinate column when one is available.
+        """
     @property
     def z(self) -> npt.NDArray[np.float64]:
         """The Z ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
         length (``NaN`` when no coordinate carries Z).
+
+        Returns
+        -------
+        numpy.ndarray
+            One read-only value per vertex in view order; missing Z ordinates
+            are ``NaN``. Values remain in the geometry's native coordinate
+            units; absent columns are materialized.
         """
     @property
     def m(self) -> npt.NDArray[np.float64]:
         """The M ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
         length (``NaN`` when no coordinate carries M).
+
+        Returns
+        -------
+        numpy.ndarray
+            One read-only value per vertex in view order; missing M ordinates
+            are ``NaN``. M is a measure ordinate, not a CRS unit; absent columns
+            are materialized.
         """
     def to_nested(self) -> NestedCoordinates:
         """Return the coordinates as a nested structure mirroring the geometry's topology
@@ -803,8 +844,7 @@ class Geometry:
     operation returns a new geometry. Instances are one of the typed subclasses
     (``Point``, ``LineString``, ``Polygon``, ...), so ``isinstance`` narrows.
     """
-    def __new__(cls, _nonconstructible: Never, /) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+    def __new__(cls, _nonconstructible: Never, /) -> Self: ...
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
         """Pickle support: round-trip through plain WKB (Z/M preserved) plus the
         frame (stored CRS definition and epoch stored separately). Enables ``pickle``, ``copy``, and
@@ -1886,8 +1926,8 @@ class Geometry:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must use the 2D longitude/latitude family
         (``EPSG:4326`` or ``OGC:CRS84``) or the 3D longitude/latitude/height family
-        (``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first.
-        CRS-free input is explicitly assumed to already be WGS84 longitude/latitude:
+        (``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first. CRS-free
+        input is explicitly assumed to already be WGS84 longitude/latitude:
         coordinates outside longitude ``[-180, 180]`` or latitude ``[-90, 90]`` are
         rejected, and antimeridian-crossing geometry is split according to RFC 7946.
         If CRS-free coordinates have projected or other planar semantics, transform
@@ -1910,8 +1950,7 @@ class Geometry:
         Raises
         ------
         CRSError
-            If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude
-            family.
+            If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude family.
         InvalidGeometryError
             If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
         GeometryError
@@ -2173,7 +2212,8 @@ class Geometry:
         longitude seam. The endpoints ``-half_period`` and ``half_period`` select a full
         longitude band, and equal endpoints select a zero-width meridian. ``miny`` and
         ``maxy`` are the south/north latitudes and must lie within the frame's poles,
-        with ``south <= north``.
+        with ``south <= north``. To construct a box for that interval, use :func:`box`
+        with ``wrap='split'`` and the same CRS.
 
         Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
         and pole vertices follow the CRS topology. Geographic rectangle horizontal
@@ -2477,13 +2517,12 @@ class Geometry:
             based (Douglas-Peucker).
 
         preserve_topology : bool, default True
-            Preserve topology within each geometry checked: valid polygonal
-            components stay valid and non-collapsed, and simple lineal components
-            stay simple. A ``GeometryCollection`` is checked child by child;
-            relationships between separate children are not preserved. The raw
-            algorithm runs first (the fast path); a guarded pass only runs when a
-            component fails those checks. ``False`` skips the guarded check;
-            collapsed areal rings are still removed.
+            Preserve topology within each geometry checked: valid polygonal components
+            stay valid and non-collapsed, and simple lineal components stay simple. A
+            ``GeometryCollection`` is checked child by child; relationships between
+            separate children are not preserved. The raw algorithm runs first (the
+            fast path); a guarded pass only runs when a component fails those checks.
+            ``False`` skips the guarded check; collapsed areal rings are still removed.
 
         Returns
         -------
@@ -4619,6 +4658,11 @@ class Point(Geometry):
     def x(self) -> float:
         """X coordinate of the point.
 
+        Returns
+        -------
+        float
+            The X ordinate in the geometry's coordinate units.
+
         Raises
         ------
         AttributeError
@@ -4628,6 +4672,11 @@ class Point(Geometry):
     def y(self) -> float:
         """Y coordinate of the point.
 
+        Returns
+        -------
+        float
+            The Y ordinate in the geometry's coordinate units.
+
         Raises
         ------
         AttributeError
@@ -4636,6 +4685,11 @@ class Point(Geometry):
     @property
     def z(self) -> float:
         """Z (elevation) ordinate.
+
+        Returns
+        -------
+        float
+            The Z ordinate in the geometry's coordinate units.
 
         Raises
         ------
@@ -4647,6 +4701,11 @@ class Point(Geometry):
     @property
     def m(self) -> float:
         """M (measure) ordinate.
+
+        Returns
+        -------
+        float
+            The M measure value; it is not converted using CRS units.
 
         Raises
         ------
@@ -4968,7 +5027,17 @@ class MultiPoint(Geometry):
 
     @property
     def parts(self) -> GeometryParts[Point]:
-        """The component geometries."""
+        """The component geometries.
+
+        Returns
+        -------
+        GeometryParts
+            A lazy view of immediate components in component order. It
+            retains the source geometry; each component has the type
+            declared by its owning geometry class. Scalar indexing and
+            iteration create one typed geometry at a time, while slices
+            return a list.
+        """
     def __len__(self) -> int:
         """Number of component parts.
 
@@ -5436,7 +5505,17 @@ class MultiLineString(Geometry):
 
     @property
     def parts(self) -> GeometryParts[LineString]:
-        """The component geometries."""
+        """The component geometries.
+
+        Returns
+        -------
+        GeometryParts
+            A lazy view of immediate components in component order. It
+            retains the source geometry; each component has the type
+            declared by its owning geometry class. Scalar indexing and
+            iteration create one typed geometry at a time, while slices
+            return a list.
+        """
     def __len__(self) -> int:
         """Number of component parts.
 
@@ -5675,10 +5754,27 @@ class Polygon(Geometry):
         """
     @property
     def exterior(self) -> LineString:
-        """Exterior ring as a closed ``LineString``."""
+        """Exterior ring as a closed ``LineString``. ``POLYGON EMPTY`` returns an
+        empty line preserving the polygon's declared axes.
+
+        Returns
+        -------
+        LineString
+            The closed exterior ring, or an axis-preserving empty line for
+            ``POLYGON EMPTY``. The result retains the polygon's CRS and epoch.
+        """
     @property
     def interiors(self) -> list[LineString]:
-        """Interior rings (holes), each a closed ``LineString``."""
+        """Interior rings (holes), each a closed ``LineString``. The list follows
+        the polygon's ring order; ``POLYGON EMPTY`` has no interior rings.
+
+        Returns
+        -------
+        list of LineString
+            A new list with one closed ring per hole, in polygon ring order.
+            Empty polygons return an empty list. Each ring retains the polygon's
+            declared axes, CRS, and epoch.
+        """
     def boundary(
         self,
     ) -> MultiPoint | LineString | MultiLineString | GeometryCollection: ...
@@ -5775,7 +5871,17 @@ class MultiPolygon(Geometry):
 
     @property
     def parts(self) -> GeometryParts[Polygon]:
-        """The component geometries."""
+        """The component geometries.
+
+        Returns
+        -------
+        GeometryParts
+            A lazy view of immediate components in component order. It
+            retains the source geometry; each component has the type
+            declared by its owning geometry class. Scalar indexing and
+            iteration create one typed geometry at a time, while slices
+            return a list.
+        """
     def __len__(self) -> int:
         """Number of component parts.
 
@@ -5958,7 +6064,17 @@ class GeometryCollection(Geometry):
 
     @property
     def parts(self) -> GeometryParts[Geometry]:
-        """The component geometries."""
+        """The component geometries.
+
+        Returns
+        -------
+        GeometryParts
+            A lazy view of immediate components in component order. It
+            retains the source geometry; each component has the type
+            declared by its owning geometry class. Scalar indexing and
+            iteration create one typed geometry at a time, while slices
+            return a list.
+        """
     def __len__(self) -> int:
         """Number of component parts.
 
@@ -6241,7 +6357,17 @@ class GeometryArrayIterator(Generic[_GeometryT_co]):
 
 @final
 class GeometryArray(Sequence[_GeometryT_co]):
-    """An immutable, vectorized geometry column with one shared CRS/epoch frame.
+    """An immutable array of geometries sharing one CRS/epoch frame.
+
+    The vectorized counterpart of ``Geometry``: methods mirror the scalar
+    names element-wise (``arr.area``, ``(arr).buffer(10.0)``,
+    ``contains(arr, geom)``) and run as batched Rust kernels with no
+    per-element Python. Homogeneous point, line, and polygon arrays pack into
+    shared coordinate columns (with CSR offsets where needed) for zero-copy
+    Arrow and columnar kernels. Build with ``GeometryArray(...)`` /
+    ``points(...)`` or the WKT/WKB/GeoJSON/Arrow importers; index and
+    slice it like a sequence.
+    An immutable, vectorized geometry column with one shared CRS/epoch frame.
 
     Homogeneous arrays use packed coordinate storage and batched Rust kernels;
     indexing and slicing preserve zero-copy views where possible.
@@ -6880,7 +7006,45 @@ class GeometryArray(Sequence[_GeometryT_co]):
         crs: CrsInput | None = None,
         epoch: float | None = None,
     ) -> GeometryArray[Geometry | _GeometryT_co]:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Construct an immutable array from geometry-like rows.
+
+        Iterable values are consumed once in input order. ``None`` creates a
+        missing row. A single ``Geometry`` is not a row iterable; wrap it in a
+        one-item sequence. Rows may be native geometries, WKB byte buffers,
+        GeoJSON mappings, or objects exposing ``__geo_interface__``. ``crs=``
+        attaches shared metadata and never transforms coordinates.
+
+        Parameters
+        ----------
+        values : iterable of Geometry, Buffer, Mapping, or None
+            One native geometry, WKB buffer, GeoJSON mapping, or object exposing
+            ``__geo_interface__`` per input position; ``None`` marks a missing
+            row.
+        crs : CrsInput or None, optional, default None
+            Shared CRS label. CRS-free rows adopt it; existing CRS values must
+            be equivalent to it.
+        epoch : float or None, optional, default None
+            Shared coordinate epoch for a CRS that admits geometry epochs.
+            Existing epochs must agree with it.
+
+        Returns
+        -------
+        GeometryArray
+            An immutable, row-aligned array with missing positions preserved.
+
+        Raises
+        ------
+        TypeError
+            If ``values`` is a single geometry or contains an unsupported value.
+        CRSError
+            If ``crs`` cannot be resolved or an epoch is invalid for its CRS.
+        CRSMismatchError
+            If input CRS or epoch metadata conflicts with the shared frame.
+        GeometryError
+            If ``epoch`` is non-finite.
+        ParseError
+            If a WKB or GeoJSON row is malformed.
+        """
     @property
     def crs(self) -> CRS | None:
         """CRS shared by every geometry in the array, or ``None``.
@@ -7607,7 +7771,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Self:
         """Reproject all geometries to a target CRS.
         The source coordinate epoch is the array's own ``epoch`` metadata
-        (set it with ``set_epoch`` when the coordinate operation needs one);
+        (stamp it with ``set_epoch`` first when the operation needs one);
         ``epoch`` here labels the *output* coordinate epoch.
 
         Parameters
@@ -8129,8 +8293,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must use the 2D longitude/latitude family
         (``EPSG:4326`` or ``OGC:CRS84``) or the 3D longitude/latitude/height family
-        (``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first.
-        CRS-free input is explicitly assumed to already be WGS84 longitude/latitude:
+        (``EPSG:4979`` or ``OGC:CRS84h``); reproject other CRS values first. CRS-free
+        input is explicitly assumed to already be WGS84 longitude/latitude:
         coordinates outside longitude ``[-180, 180]`` or latitude ``[-90, 90]`` are
         rejected, and antimeridian-crossing geometry is split according to RFC 7946.
         If CRS-free coordinates have projected or other planar semantics, transform
@@ -8153,8 +8317,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Raises
         ------
         CRSError
-            If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude
-            family.
+            If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude family.
         InvalidGeometryError
             If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
         GeometryError
@@ -8506,8 +8669,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         longitude seam. The endpoints ``-half_period`` and ``half_period`` select a full
         longitude band, and equal endpoints select a zero-width meridian. ``miny`` and
         ``maxy`` are the south/north latitudes and must lie within the frame's poles,
-        with ``south <= north``. Use :func:`box` with ``wrap='split'`` to construct the
-        corresponding wrapped box.
+        with ``south <= north``. To construct a box for that interval, use :func:`box`
+        with ``wrap='split'`` and the same CRS.
 
         Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
         and pole vertices follow the CRS topology. Geographic rectangle horizontal
@@ -8917,13 +9080,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
             based (Douglas-Peucker).
 
         preserve_topology : bool, default True
-            Preserve topology within each geometry checked: valid polygonal
-            components stay valid and non-collapsed, and simple lineal components
-            stay simple. A ``GeometryCollection`` is checked child by child;
-            relationships between separate children are not preserved. The raw
-            algorithm runs first (the fast path); a guarded pass only runs when a
-            component fails those checks. ``False`` skips the guarded check;
-            collapsed areal rings are still removed.
+            Preserve topology within each geometry checked: valid polygonal components
+            stay valid and non-collapsed, and simple lineal components stay simple. A
+            ``GeometryCollection`` is checked child by child; relationships between
+            separate children are not preserved. The raw algorithm runs first (the
+            fast path); a guarded pass only runs when a component fails those checks.
+            ``False`` skips the guarded check; collapsed areal rings are still removed.
 
         Returns
         -------
@@ -11235,20 +11397,35 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     @property
     def values(self) -> _GroupValuesT_co:
         """The logical flat payload window (int64 ndarray, `GeometryArray`, or
-        `CellArray`), with values in group order. A contiguous source window can
-        share backing; gathered values may be materialized.
+        `CellArray`), with values in group order. A contiguous source window
+        can share backing; gathered values may be materialized.
+
+        Returns
+        -------
+        numpy.ndarray or GeometryArray or CellArray
+            The selected flat values window. Numeric values are read-only int64;
+            geometry and cell values retain their immutable array types.
         """
     @property
     def offsets(self) -> npt.NDArray[np.int64]:
         """The `len(self) + 1` row boundaries into ``values`` (CSR offsets
         column): row ``i`` is ``values[offsets[i]:offsets[i + 1]]``.
 
-        A slice starting at source row zero can share its offsets; a slice
-        starting later owns a rebased copy.
+        Returns
+        -------
+        numpy.ndarray
+            A read-only int64 array of row boundaries. Slices are rebased to
+            start at zero; a slice starting after row zero owns a rebased copy.
         """
     @property
     def counts(self) -> npt.NDArray[np.int64]:
-        """Materialized per-group counts (`offsets[i + 1] - offsets[i]`)."""
+        """Per-group element counts (`offsets[i + 1] - offsets[i]`).
+
+        Returns
+        -------
+        numpy.ndarray
+            A materialized, read-only int64 count for each group in row order.
+        """
     @property
     def nbytes(self) -> int:
         """Logical CSR payload in bytes: the selected flat values payload plus the
@@ -11439,14 +11616,21 @@ class SpatialIndex(Mapping[int, Geometry]):
 
         Parameters
         ----------
-        values : GeometryArray, iterable of Geometry or None, default None
-            Geometries to index. ``None`` builds an empty mutable index for
+        values : Geometry, GeometryArray, iterable, or None, default None
+            Geometries to index. Iterable rows may be native geometries, WKB
+            buffers, GeoJSON mappings, or objects exposing
+            ``__geo_interface__``. ``None`` builds an empty mutable index for
             later ``insert`` calls. Every indexed geometry must share one CRS
             and coordinate epoch. Missing rows are skipped but retain their
             original positions as stable, non-live handles, so query and join
             results always refer to the input row ids. Packed arrays retain
             their immutable column storage; empty rows likewise have no live
             tree entry.
+
+        Returns
+        -------
+        SpatialIndex
+            A mutable STR-tree whose handles refer to the original input rows.
 
         Raises
         ------
@@ -12937,15 +13121,16 @@ class CellArray(Sequence[_CellT_co]):
     Index with an integer for the typed cell object or `None` for a missing row;
     slice or mask for a new `CellArray`. Build from an iterable containing
     typed cell objects and `None`; the grid is inferred from the first concrete
-    cell. Raw ids and tokens are accepted when a concrete cell supplies the
-    family. For raw-only ids/tokens, arrays, buffers, or all-missing inputs,
-    pass ``type=`` explicitly; every id is validated for that grid.
+    cell. Raw ids for H3, S2, and Tile and tokens for any grid may accompany a
+    typed cell of the same grid. Geohash cells use tokens, not integer ids. For
+    raw-only values, numeric arrays or buffers, empty input, or all-missing
+    input, pass ``type=`` explicitly; every id and token is validated.
 
     Parameters
     ----------
-    values : numpy.ndarray or iterable
-        Typed cell objects and ``None``; raw ids/tokens are also accepted when
-        a concrete cell supplies the family.
+    values : numpy.ndarray, buffer, or iterable
+        Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
+        any grid are accepted when a concrete cell supplies the family.
     type : type, optional
         Native cell class. Inferred from a concrete typed cell when present.
     """
@@ -13611,7 +13796,40 @@ class CellArray(Sequence[_CellT_co]):
         *,
         type: type[Tile],
     ) -> CellArray[Tile | None]:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Construct a cell array from typed cells, ids, or tokens.
+
+        The grid is inferred from a typed cell when ``type=None``. H3, S2, and
+        Tile ids and any grid's tokens may accompany a typed cell from the same
+        grid; Geohash cells accept tokens, not integer ids. Supply ``type=`` for
+        raw-only values, numeric arrays or buffers, empty input, or input
+        containing only ``None``. Wrap a single cell or supported id in an
+        iterable; a bare token string is ambiguous, so wrap one token in a
+        one-item iterable.
+
+        Parameters
+        ----------
+        values : iterable, numpy.ndarray, or buffer
+            Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
+            are accepted when the grid can be inferred. Iterables are consumed
+            in input order.
+        type : type, optional, default None
+            One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
+            ``GeohashCell`` classes, required when the grid cannot be inferred.
+
+        Returns
+        -------
+        CellArray
+            An immutable array in input order; ``None`` entries remain missing
+            rows.
+
+        Raises
+        ------
+        TypeError
+            If the grid cannot be inferred, ``type`` is unsupported, or a value
+            does not match the selected grid.
+        ParseError
+            If an id or token is invalid for the selected grid.
+        """
     @property
     def grid(self) -> Literal['h3', 's2', 'tile', 'geohash']:
         """Grid-system token for the stored cell type.
@@ -13737,7 +13955,34 @@ class H3VertexArray(Sequence[H3Vertex]):
         cls,
         values: _IdArray | Iterable[H3Vertex | _IntScalarInput | str],
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Build an array of H3 vertices from vertex objects, ids, or tokens.
+
+        Iterables may mix index objects, integer ids, and tokens. Integer NumPy
+        arrays with zero or one dimension and unsigned 64-bit buffers are also
+        accepted. Wrap one token in a one-item iterable.
+        ``None`` is not a missing row.
+
+        Parameters
+        ----------
+        values : iterable, numpy.ndarray, or uint64 buffer
+            An iterable of H3Vertex objects, non-negative H3 ids, and/or vertex
+            tokens. Integer NumPy arrays and uint64 buffers must contain valid
+            H3 vertex ids. Byte strings and byte-formatted buffers are not collections.
+
+        Returns
+        -------
+        H3VertexArray
+            An immutable array in input order with an owned, read-only
+            ``uint64`` id column.
+
+        Raises
+        ------
+        TypeError
+            If a value is not an H3 vertex, integer id, or token, or if an array
+            has unsupported dimensions.
+        ParseError
+            If an id or token does not identify a valid H3 vertex.
+        """
     @property
     def token(self) -> list[str]:
         """Hexadecimal token of every row.
@@ -13992,7 +14237,34 @@ class H3EdgeArray(Sequence[H3Edge]):
         cls,
         values: _IdArray | Iterable[H3Edge | _IntScalarInput | str],
     ) -> Self:
-        """Create and return a new object.  See help(type) for accurate signature."""
+        """Build an array of H3 directed edges from edge objects, ids, or tokens.
+
+        Iterables may mix index objects, integer ids, and tokens. Integer NumPy
+        arrays with zero or one dimension and unsigned 64-bit buffers are also
+        accepted. Wrap one token in a one-item iterable.
+        ``None`` is not a missing row.
+
+        Parameters
+        ----------
+        values : iterable, numpy.ndarray, or uint64 buffer
+            An iterable of H3Edge objects, non-negative H3 ids, and/or edge
+            tokens. Integer NumPy arrays and uint64 buffers must contain valid
+            directed-edge ids. Byte strings and byte-formatted buffers are not collections.
+
+        Returns
+        -------
+        H3EdgeArray
+            An immutable array in input order with an owned, read-only
+            ``uint64`` id column.
+
+        Raises
+        ------
+        TypeError
+            If a value is not an H3 edge, integer id, or token, or if an array
+            has unsupported dimensions.
+        ParseError
+            If an id or token does not identify a valid H3 directed edge.
+        """
     @property
     def token(self) -> list[str]:
         """Hexadecimal token of every row.
