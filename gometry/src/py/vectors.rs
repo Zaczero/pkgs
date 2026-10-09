@@ -495,7 +495,7 @@ impl Groups {
     fn no_direct_ctor() -> PyResult<Self> {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "Groups is returned by grouping operations (e.g. index queries, \
-             self_intersections, line_interpolate_points), not constructed \
+             self_intersections, line_interpolate(..., count=...)), not constructed \
              directly",
         ))
     }

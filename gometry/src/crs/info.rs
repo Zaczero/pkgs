@@ -69,15 +69,13 @@ pub(crate) fn info_with_state(
     })
 }
 
-/// Geometry `Frame` epoch policy: the cached `admits_geometry_epoch` fact
-/// built with the CRS info snapshot. Dynamic PJ types and the EPSG:6326
-/// identity admit an epoch; ensemble members do not confer it.
-pub(crate) fn is_dynamic(value: &str) -> Result<bool> {
+/// Whether a CRS admits a coordinate epoch on a geometry frame.
+pub(crate) fn admits_geometry_epoch(value: &str) -> Result<bool> {
     let state = runtime_state_snapshot()?;
-    is_dynamic_with_state(value, &state)
+    admits_geometry_epoch_with_state(value, &state)
 }
 
-pub(crate) fn is_dynamic_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
+pub(crate) fn admits_geometry_epoch_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
     Ok(info_with_state(value, state)?.admits_geometry_epoch)
 }
 
@@ -623,10 +621,10 @@ mod tests {
         };
     }
 
-    /// Geometry epoch policy: WGS84's 6326 identity and dynamic frames admit
-    /// an epoch; a static frame and a merely dynamic-member ensemble do not.
+    /// Geometry epoch policy: the WGS 84 ensemble and dynamic datums admit
+    /// epochs; a static datum and a merely dynamic-member ensemble do not.
     #[test]
-    fn dynamic_classification_matches_frame_physics() {
+    fn geometry_epoch_admission_matches_frame_policy() {
         for (crs, expected) in [
             ("EPSG:4326", true),  // WGS 84 ensemble of dynamic realizations
             ("EPSG:9000", true),  // ITRF2014 (dynamic reference frame)
@@ -635,9 +633,9 @@ mod tests {
             ("EPSG:3857", true),  // Web Mercator on the WGS84 ensemble
         ] {
             assert_eq!(
-                is_dynamic(crs).unwrap(),
+                admits_geometry_epoch(crs).unwrap(),
                 expected,
-                "dynamic classification for {crs}",
+                "epoch admission for {crs}",
             );
         }
     }

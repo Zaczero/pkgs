@@ -847,6 +847,14 @@ assert_type(
 )
 h3_vertices = h3_cell.vertices
 h3_edges = h3_cell.edges
+assert_type(
+    gm.H3VertexArray([h3_vertices[0], h3_vertices[0].id, h3_vertices[0].token]),
+    gm.H3VertexArray,
+)
+assert_type(
+    gm.H3EdgeArray([h3_edges[0], h3_edges[0].id, h3_edges[0].token]),
+    gm.H3EdgeArray,
+)
 assert_type(h3_vertices, gm.H3VertexArray)
 assert_type(h3_vertices[0], gm.H3Vertex)
 assert_type(h3_vertices[:2], gm.H3VertexArray)
@@ -854,6 +862,10 @@ assert_type(h3_vertices[[True, False, True, False, True, False]], gm.H3VertexArr
 assert_type(h3_vertices[np.asarray([0, 1], dtype=np.int64)], gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.token), gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.to_numpy()), gm.H3VertexArray)
+signed_vertex_ids: npt.NDArray[np.int64] = np.asarray(
+    [h3_vertices[0].id], dtype=np.int64
+)
+assert_type(gm.H3VertexArray(signed_vertex_ids), gm.H3VertexArray)
 assert_type(h3_vertices.point, gm.GeometryArray[gm.Point])
 assert_type(h3_vertices[0].point, gm.Point)
 assert_type(h3_edges, gm.H3EdgeArray)
@@ -863,11 +875,17 @@ assert_type(h3_edges[[True, False, True, False, True, False]], gm.H3EdgeArray)
 assert_type(h3_edges[np.asarray([0, 1], dtype=np.int64)], gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.token), gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.to_numpy()), gm.H3EdgeArray)
+signed_edge_ids: npt.NDArray[np.int64] = np.asarray([h3_edges[0].id], dtype=np.int64)
+assert_type(gm.H3EdgeArray(signed_edge_ids), gm.H3EdgeArray)
 assert_type(h3_edges.origin, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.destination, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.reverse(), gm.H3EdgeArray)
 assert_type(h3_edges.line, gm.GeometryArray[gm.LineString])
 assert_type(h3_edges.length, npt.NDArray[np.float64])
+assert_type(
+    gm.SpatialIndex([POINT]).query(POINTS).to_pairs(),
+    tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]],
+)
 h3_cells = gm.h3_cells([1.0, 2.0], [2.0, 3.0], resolution=9)
 assert_type(h3_cells.contains(h3_cell), npt.NDArray[np.bool_])
 assert_type(h3_cells.neighbors, gm.Groups[gm.CellArray[gm.H3Cell]])

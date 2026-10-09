@@ -81,8 +81,8 @@ impl PyGeometryArray {
     }
 
     /// Declare (or clear) the array's coordinate epoch (see
-    /// `Geometry.set_epoch`). ``None`` clears it; changing a present epoch
-    /// needs ``overwrite=True``.
+    /// `Geometry.set_epoch`). The CRS frame must admit an epoch. ``None``
+    /// clears it; changing a present epoch needs ``overwrite=True``.
     ///
     /// Parameters
     /// ----------
@@ -100,7 +100,8 @@ impl PyGeometryArray {
     /// Raises
     /// ------
     /// CRSError
-    ///     If a present epoch would change without ``overwrite=True``.
+    ///     If the CRS frame cannot carry an epoch or a present epoch would
+    ///     change without ``overwrite=True``.
     /// GeometryError
     ///     If ``epoch`` is not a finite decimal year.
     ///
@@ -119,8 +120,7 @@ impl PyGeometryArray {
 
     /// Reproject all geometries to a target CRS.
     /// The source coordinate epoch is the array's own ``epoch`` metadata
-    /// (stamp it with ``set_epoch`` first to transform between dynamic
-    /// frames);
+    /// (stamp it with ``set_epoch`` first when the operation needs one);
     /// ``epoch`` here labels the *output* coordinate epoch.
     ///
     /// Parameters
@@ -132,10 +132,9 @@ impl PyGeometryArray {
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.
     ///
     /// epoch : float, optional
-    ///     Output coordinate epoch (decimal year) to tag on the result, for
-    ///     dynamic frames. Omitted keeps the source epoch while it still
-    ///     means something: the CRS is unchanged, or the target CRS is
-    ///     dynamic (time-dependent). A static target clears it.
+    ///     Output coordinate epoch (decimal year) to tag on the result. Omitted
+    ///     keeps the source epoch when the CRS is unchanged or the target admits
+    ///     geometry epochs; otherwise the output has no epoch.
     ///
     /// authority : str, optional
     ///     Restrict candidate coordinate operations to this authority
