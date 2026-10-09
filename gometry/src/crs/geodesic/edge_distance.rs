@@ -10,7 +10,8 @@ use super::ellipsoid_metric::inverse_distance_azimuths;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    GeodesicNumericalPolicy, Point, PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult,
+    ChartEdgeDifferentialBounds, GeodesicNumericalPolicy, Point, PointEdgeMinimum, PointEdgeQuery,
+    PointEdgeQueryResult,
 };
 
 const MAX_EVALUATIONS: usize = 128;
@@ -203,11 +204,7 @@ pub(crate) fn point_edge_query(
 
     let start_derivative = edge.derivatives(0.0, geodesic);
     let end_derivative = edge.derivatives(1.0, geodesic);
-    let derivative_bounds = edge.sampled_derivative_bounds(geodesic, &[
-        start_derivative,
-        midpoint_derivative,
-        end_derivative,
-    ]);
+    let derivative_bounds = edge.differential_bounds(geodesic);
     let g0 = distance_derivative(start_derivative, d0, azimuth0);
     let g1 = distance_derivative(end_derivative, d1, azimuth1);
     let mut best_correction = 0.0;
@@ -523,7 +520,7 @@ struct IntervalEndpoints {
 fn push_interval(
     scratch: &mut PointEdgeScratch,
     endpoints: IntervalEndpoints,
-    derivative_bounds: super::chart_edge::ChartEdgeDerivativeBounds,
+    derivative_bounds: ChartEdgeDifferentialBounds,
     geodesic: &Geodesic,
     policy: GeodesicNumericalPolicy,
 ) {
@@ -543,7 +540,7 @@ fn push_interval(
 
 fn interval_lower_bound(
     interval: IntervalEndpoints,
-    derivative_bounds: super::chart_edge::ChartEdgeDerivativeBounds,
+    derivative_bounds: ChartEdgeDifferentialBounds,
     geodesic: &Geodesic,
     policy: GeodesicNumericalPolicy,
 ) -> f64 {
@@ -551,10 +548,8 @@ fn interval_lower_bound(
     let lipschitz = ((interval.d0 + interval.d1 - derivative_bounds.speed * width) / 2.0).max(0.0);
     let d_lower = lipschitz;
     let curvature = curvature_hessian_bound(geodesic, d_lower);
-    let second_derivative = derivative_bounds.speed
-        * derivative_bounds.speed
-        * (curvature + derivative_bounds.curvature)
-        + derivative_bounds.acceleration;
+    let second_derivative = derivative_bounds.speed * derivative_bounds.speed * curvature
+        + derivative_bounds.covariant_acceleration;
     let mut lower = lipschitz;
     if second_derivative.is_finite() {
         let l0 = |t: f64| {

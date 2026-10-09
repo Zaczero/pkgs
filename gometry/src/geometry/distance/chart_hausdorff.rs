@@ -311,15 +311,13 @@ fn source_interval_upper<M: GeodesicMetric + ChartMetric>(
         left.distance,
         right.distance,
         width,
-        derivative_bounds.lipschitz_speed,
+        derivative_bounds.speed,
     );
     let lower_distance =
         ((left.lower_bound + right.lower_bound - derivative_bounds.speed * width) / 2.0).max(0.0);
     let distance_hessian = metric.geodesic_distance_hessian_upper_bound(lower_distance);
-    let second_derivative = derivative_bounds.speed
-        * derivative_bounds.speed
-        * (distance_hessian + derivative_bounds.curvature)
-        + derivative_bounds.acceleration;
+    let second_derivative = derivative_bounds.speed * derivative_bounds.speed * distance_hessian
+        + derivative_bounds.covariant_acceleration;
     if !second_derivative.is_finite() {
         return outward_upper(
             metric,

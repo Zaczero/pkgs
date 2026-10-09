@@ -15,6 +15,7 @@ use crate::geometry::exact_arith::{
     retained_delta_scaled, retained_source_interval_initial_piece_count,
     retained_source_interval_reads_as, retained_source_sheet_site,
 };
+use crate::geometry::interval::Interval as CertifiedInterval;
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
@@ -64,6 +65,10 @@ const MAX_GK15_EVALUATIONS: usize = 5_000;
 const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
 const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
+const PI_LOWER: f64 = 3.141_592_653_589_793;
+const PI_UPPER: f64 = 3.141_592_653_589_793_6;
+const HALF_PI_LOWER: f64 = 1.570_796_326_794_896_6;
+const HALF_PI_UPPER: f64 = 1.570_796_326_794_896_8;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -434,51 +439,87 @@ impl ChartEdge {
                 speed,
                 acceleration: 0.0,
                 azimuth: 0.0,
-                geodesic_curvature: 0.0,
             };
         }
         let east_derivative = -meridian * sin_latitude * dphi * dlambda;
         let north_derivative = dphi * dphi * 3.0 * e2 * sin_latitude * cos_latitude * meridian / w2;
         let azimuth = east.atan2(north);
-        let azimuth_derivative =
-            (east_derivative * north - east * north_derivative) / (speed * speed);
-        let geodesic_curvature = (azimuth_derivative - sin_latitude * dlambda) / speed;
         ChartEdgeDerivatives {
             speed,
             acceleration: east_derivative.hypot(north_derivative),
             azimuth,
-            geodesic_curvature,
         }
     }
 
-    pub(super) fn sampled_derivative_bounds(
-        self,
-        geodesic: &Geodesic,
-        endpoint_and_midpoint: &[ChartEdgeDerivatives; 3],
-    ) -> ChartEdgeDerivativeBounds {
-        const SAMPLE_PARAMETERS: [f64; 6] = [0.125, 0.25, 0.375, 0.625, 0.75, 0.875];
-        let sample_parameters: &[f64] = if self.latitude_delta == 0.0 {
-            &[]
+    pub(super) fn differential_bounds(self, geodesic: &Geodesic) -> ChartEdgeDifferentialBounds {
+        let one = CertifiedInterval::exact(1.0);
+        let flattening = CertifiedInterval::exact(geodesic.f);
+        let q = flattening.mul(CertifiedInterval::exact(2.0).sub(flattening));
+        let c = one.sub(q);
+        let d_min = 1.0_f64.min(c.lower());
+        let d_min_root = CertifiedInterval::exact(d_min).sqrt();
+        let semi_major = CertifiedInterval::exact(geodesic.a);
+        let n_max = semi_major.div(d_min_root).upper();
+        let m_max = semi_major
+            .mul(CertifiedInterval::exact(c.upper()))
+            .div(CertifiedInterval::exact(d_min).mul(d_min_root))
+            .upper();
+        let q_abs = q.max_abs_upper();
+        let latitude_delta = CertifiedInterval::exact(self.end_latitude)
+            .sub(CertifiedInterval::exact(self.start_latitude))
+            .abs_upper();
+        let latitude_rate = CertifiedInterval::exact(latitude_delta)
+            .mul(CertifiedInterval::exact(self.latitude_unit.abs()))
+            .upper();
+        let longitude_rate = self.longitude_delta.abs().next_up();
+        let speed = if self.is_parallel() {
+            self.parallel_speed_upper(n_max, longitude_rate)
         } else {
-            &SAMPLE_PARAMETERS
+            upper_hypot(
+                upper_product(n_max, longitude_rate),
+                upper_product(m_max, latitude_rate),
+            )
         };
-        let mut speed = 0.0_f64;
-        let mut acceleration = 0.0_f64;
-        let mut curvature = 0.0_f64;
-        for derivative in endpoint_and_midpoint.iter().copied().chain(
-            sample_parameters
-                .iter()
-                .map(|&parameter| self.derivatives(parameter, geodesic)),
-        ) {
-            speed = speed.max(derivative.speed);
-            acceleration = acceleration.max(derivative.acceleration);
-            curvature = curvature.max(derivative.geodesic_curvature.abs());
+        let east_north_acceleration = upper_hypot(
+            upper_product(latitude_rate, longitude_rate),
+            upper_ratio(
+                upper_product(
+                    upper_product(3.0, q_abs),
+                    upper_product(latitude_rate, latitude_rate),
+                ),
+                lower_product(2.0, d_min),
+            ),
+        );
+        let acceleration = upper_product(m_max, east_north_acceleration);
+        let covariant_acceleration = upper_sum(acceleration, upper_product(speed, longitude_rate));
+        ChartEdgeDifferentialBounds {
+            speed,
+            covariant_acceleration,
         }
-        ChartEdgeDerivativeBounds {
-            speed: speed * 1.05,
-            acceleration: acceleration * 1.05,
-            curvature: curvature * 1.05,
-        }
+    }
+
+    fn parallel_speed_upper(self, n_max: f64, longitude_rate: f64) -> f64 {
+        let geodetic_latitude = self
+            .frame
+            .to_geodesic_latitude(self.start_latitude)
+            .expect("chart-edge latitude was admitted");
+        let radians_per_degree =
+            CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER).div(CertifiedInterval::exact(180.0));
+        let latitude_magnitude_lower = geodetic_latitude.abs().next_down().max(0.0);
+        let latitude_radians_lower = CertifiedInterval::exact(latitude_magnitude_lower)
+            .mul(radians_per_degree)
+            .lower()
+            .max(0.0);
+        // For a parallel, |cos φ| = sin(π/2 - |φ|) <= π/2 - |φ|.
+        // The adjacent constants enclose π and π/2; each arithmetic result
+        // expands outward, so this remains useful at native-unit pole values
+        // without relying on libm's trigonometric error.
+        let colatitude_upper = CertifiedInterval::from_bounds(HALF_PI_LOWER, HALF_PI_UPPER)
+            .sub(CertifiedInterval::exact(latitude_radians_lower))
+            .upper()
+            .max(0.0);
+        let cosine_upper = 1.0_f64.min(colatitude_upper).next_up();
+        upper_product(upper_product(n_max, cosine_upper), longitude_rate)
     }
 
     #[expect(
@@ -1192,6 +1233,55 @@ impl ChartEdge {
     }
 }
 
+fn upper_product(left: f64, right: f64) -> f64 {
+    if left == 0.0 || right == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(left)
+            .mul(CertifiedInterval::exact(right))
+            .upper()
+    }
+}
+
+fn lower_product(left: f64, right: f64) -> f64 {
+    if left == 0.0 || right == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(left)
+            .mul(CertifiedInterval::exact(right))
+            .lower()
+    }
+}
+
+fn upper_ratio(numerator: f64, denominator: f64) -> f64 {
+    if numerator == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(numerator)
+            .div(CertifiedInterval::exact(denominator))
+            .upper()
+    }
+}
+
+fn upper_sum(left: f64, right: f64) -> f64 {
+    if left == 0.0 && right == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(left)
+            .add(CertifiedInterval::exact(right))
+            .upper()
+    }
+}
+
+fn upper_hypot(left: f64, right: f64) -> f64 {
+    if left == 0.0 && right == 0.0 {
+        return 0.0;
+    }
+    let left = CertifiedInterval::exact(left).mul(CertifiedInterval::exact(left));
+    let right = CertifiedInterval::exact(right).mul(CertifiedInterval::exact(right));
+    left.add(right).sqrt().upper()
+}
+
 pub(super) fn chart_edge_differential(
     edge: &ChartEdge,
     geodesic: &Geodesic,
@@ -1208,35 +1298,7 @@ pub(super) fn chart_edge_differential_bounds(
     edge: &ChartEdge,
     geodesic: &Geodesic,
 ) -> ChartEdgeDifferentialBounds {
-    let start = edge.derivatives(0.0, geodesic);
-    let samples = if edge.is_parallel() {
-        [start; 3]
-    } else {
-        [
-            start,
-            edge.derivatives(0.5, geodesic),
-            edge.derivatives(1.0, geodesic),
-        ]
-    };
-    let bounds = edge.sampled_derivative_bounds(geodesic, &samples);
-    let lipschitz_speed = if edge.is_parallel() {
-        // A parallel has constant speed; retain the radius-relative arithmetic
-        // allowance without the sampled-variation margin used by the Taylor bound.
-        let allowance = crate::geometry::GeodesicNumericalPolicy::new(geodesic.a)
-            .evaluation_allowance(4.0)
-            * edge.longitude_delta.abs();
-        bounds
-            .speed
-            .min((edge.parallel_length(geodesic) + allowance).next_up())
-    } else {
-        bounds.speed
-    };
-    ChartEdgeDifferentialBounds {
-        speed: bounds.speed,
-        lipschitz_speed,
-        acceleration: bounds.acceleration,
-        curvature: bounds.curvature,
-    }
+    edge.differential_bounds(geodesic)
 }
 
 fn retained_longitude_radians(
@@ -1398,14 +1460,6 @@ pub(super) struct ChartEdgeDerivatives {
     pub(super) speed: f64,
     pub(super) acceleration: f64,
     pub(super) azimuth: f64,
-    pub(super) geodesic_curvature: f64,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ChartEdgeDerivativeBounds {
-    pub(super) speed: f64,
-    pub(super) acceleration: f64,
-    pub(super) curvature: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -2352,6 +2406,86 @@ mod tests {
                 (actual - degree_length).abs() <= 2.0e-9,
                 "frame mismatch: degree={degree_length:.17}, actual={actual:.17}"
             );
+        }
+    }
+
+    #[test]
+    fn analytic_chart_differentials_contain_meridians_obliques_and_parallels() {
+        let meridian_geodesic = wgs84();
+        let meridian = ChartEdge::new(
+            Point::new_raw_xy(0.0, -72.384_836_123_684_47),
+            Point::new_raw_xy(0.0, 72.384_836_123_684_47),
+            degrees(),
+        )
+        .unwrap();
+        let meridian_bounds = meridian.differential_bounds(&meridian_geodesic);
+        for parameter in [0.125, 0.1875, 0.5, 0.8125, 0.875] {
+            let derivative = meridian.derivatives(parameter, &meridian_geodesic);
+            assert!(meridian_bounds.speed >= derivative.speed);
+            assert!(meridian_bounds.covariant_acceleration >= derivative.acceleration);
+        }
+        let peak = meridian
+            .derivatives(0.1875, &meridian_geodesic)
+            .acceleration
+            / meridian_geodesic.a;
+        assert!((peak - 0.064_216_997_824_935_52).abs() <= 2.0e-16);
+
+        for (geodesic, frame, start, end) in [
+            (
+                wgs84(),
+                degrees(),
+                Point::new_raw_xy(-70.0, 10.0),
+                Point::new_raw_xy(80.0, 55.0),
+            ),
+            (
+                Geodesic::new(6_371_000.0, 0.0),
+                degrees(),
+                Point::new_raw_xy(-70.0, 10.0),
+                Point::new_raw_xy(80.0, 55.0),
+            ),
+            (
+                Geodesic::new(6_371_000.0, -0.01),
+                degrees(),
+                Point::new_raw_xy(170.0, 88.0),
+                Point::new_raw_xy(-100.0, 87.0),
+            ),
+            (
+                wgs84(),
+                degrees(),
+                Point::new_raw_xy(-45.0, 89.999_999_999),
+                Point::new_raw_xy(45.0, 89.999_999_999),
+            ),
+            (
+                wgs84(),
+                radians(),
+                Point::new_raw_xy(-0.7, 1.2),
+                Point::new_raw_xy(0.7, 1.2),
+            ),
+            (
+                wgs84(),
+                south_axis_degrees(),
+                Point::new_raw_xy(0.0, 72.384_836_123_684_47),
+                Point::new_raw_xy(0.0, -72.384_836_123_684_47),
+            ),
+        ] {
+            let edge = ChartEdge::new(start, end, frame).unwrap();
+            let bounds = edge.differential_bounds(&geodesic);
+            for parameter in [0.0, 0.125, 0.1875, 0.5, 0.8125, 0.875, 1.0] {
+                let derivative = edge.derivatives(parameter, &geodesic);
+                assert!(
+                    bounds.speed >= derivative.speed,
+                    "speed at t={parameter}: {} < {}",
+                    bounds.speed,
+                    derivative.speed
+                );
+                assert!(
+                    bounds.covariant_acceleration
+                        >= derivative.acceleration + derivative.speed * edge.longitude_delta.abs(),
+                    "covariant acceleration at t={parameter}: {} < {}",
+                    bounds.covariant_acceleration,
+                    derivative.acceleration + derivative.speed * edge.longitude_delta.abs()
+                );
+            }
         }
     }
 

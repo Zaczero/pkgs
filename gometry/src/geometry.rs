@@ -55,6 +55,7 @@ mod area;
 pub(crate) mod exact_arith;
 pub(crate) mod expansion;
 mod geographic_area;
+pub(crate) mod interval;
 pub(crate) use access::{
     Component, CoordRun, Lineal, MetricSupportRun, PointSet, Polygonal, REDUCE_LANES,
     REDUCE_SIMD_MIN, ReduceSimd, RunIdentity, SharedShapeOwners, SupportRunKind, canonicalize_zero,

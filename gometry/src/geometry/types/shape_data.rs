@@ -1453,9 +1453,7 @@ pub(crate) struct ChartEdgeDifferential {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferentialBounds {
     pub(crate) speed: f64,
-    pub(crate) lipschitz_speed: f64,
-    pub(crate) acceleration: f64,
-    pub(crate) curvature: f64,
+    pub(crate) covariant_acceleration: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
