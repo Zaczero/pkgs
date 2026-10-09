@@ -34,6 +34,7 @@ from typing import (
     NotRequired,
     Protocol,
     Self,
+    SupportsIndex,
     TypeAlias,
     TypedDict,
     TypeVar,
@@ -478,7 +479,7 @@ CrsKind: TypeAlias = Literal[
     'unknown',
 ]
 
-#: ``kind=`` filter accepted by ``gm.crs_search`` / ``gm.crs_catalog``
+#: ``kind=`` filter accepted by ``gm.crs_catalog``
 #: (``CrsObjectKind::parse_crs`` — CRS types only).
 CrsCatalogKind: TypeAlias = Literal[
     'crs',
@@ -956,6 +957,30 @@ class SupportsToWkt(Protocol):
     def to_wkt(self) -> str: ...
 
 
+class _SupportsToAuthority(Protocol):
+    def to_authority(
+        self,
+    ) -> tuple[str, str | SupportsIndex] | list[str | SupportsIndex] | None: ...
+
+
+class _SupportsToEpsg(Protocol):
+    def to_epsg(self) -> SupportsIndex | None: ...
+
+
+class _SupportsToJson(Protocol):
+    def to_json(self) -> str: ...
+
+
+class _SupportsCrsHolder(Protocol):
+    @property
+    def crs(self) -> CrsInput | None: ...
+
+
+class _SupportsSrsHolder(Protocol):
+    @property
+    def srs(self) -> CrsInput | None: ...
+
+
 #: A float lane: any iterable of floats, or a PEP-3118 buffer exporter
 #: (numpy arrays — float32 included — ``array.array``, memoryviews). Buffer
 #: values are copied into native storage; float32 values are converted to f64.
@@ -983,16 +1008,22 @@ ParseFormat: TypeAlias = Literal[
 ]
 
 #: Anything accepted where a CRS is expected: an authority string
-#: (``'EPSG:4326'``, WKT, PROJ), an EPSG code, an ``(authority, code)`` pair,
-#: a PROJJSON/CF mapping, or any object exposing ``to_wkt()`` (``gometry.CRS``,
-#: ``pyproj.CRS``).
+#: (``'EPSG:4326'``, WKT, PROJ), an integer-like EPSG code, an
+#: ``(authority, code)`` pair, a PROJJSON/CF mapping, or a CRS-like object
+#: exposing a supported conversion or holder protocol (including ``gometry.CRS``
+#: and ``pyproj.CRS``).
 CrsInput: TypeAlias = (
     str
-    | int
-    | tuple[str, str | int]
-    | list[str | int]
+    | SupportsIndex
+    | tuple[str, str | SupportsIndex]
+    | list[str | SupportsIndex]
     | Mapping[str, Any]
     | SupportsToWkt
+    | _SupportsToAuthority
+    | _SupportsToEpsg
+    | _SupportsToJson
+    | _SupportsCrsHolder
+    | _SupportsSrsHolder
 )
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ import numpy.typing as npt
 
 POINT = gm.Point(1, 1)
 LINE = gm.LineString([(0, 0), (1, 1), (2, 0)])
+GEOGRAPHIC_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=4326)
 MEASURED_LINE = gm.LineString([(0, 0, 0, 0), (1, 1, 0, 10), (2, 0, 0, 20)])
 M_STATION_COLUMN = cast(
     'sht.FloatColumn',
@@ -707,6 +708,28 @@ if TYPE_CHECKING:
     import pandas as pd
     import polars as pl
 
+    class _CrsAuthority:
+        def to_authority(self) -> tuple[str, int]: ...
+
+    class _CrsEpsg:
+        def to_epsg(self) -> int: ...
+
+    class _CrsJson:
+        def to_json(self) -> str: ...
+
+    class _CrsHolder:
+        @property
+        def crs(self) -> int: ...
+
+    class _SrsHolder:
+        @property
+        def srs(self) -> int: ...
+
+    reveal_type(gm.CRS(_CrsAuthority()))
+    reveal_type(gm.CRS(_CrsEpsg()))
+    reveal_type(gm.CRS(_CrsJson()))
+    reveal_type(gm.CRS(_CrsHolder()))
+    reveal_type(gm.CRS(_SrsHolder()))
     hashable_geometry_array: Hashable = POINTS
     pandas_series = POINTS.to_pandas()
     assert_type(pandas_series, pd.Series)
@@ -738,14 +761,39 @@ if TYPE_CHECKING:
         gm.crs_transform(4326, 3857, np.float32(1.0), np.float64(2.0)),
         tuple[float, float],
     )
+    coordinate_column_1d: np.ndarray[tuple[int], np.dtype[np.float64]] = np.array(
+        [1.0, 2.0], dtype=np.float64
+    )
+    reveal_type(gm.crs_transform(4326, 3857, 1.0, 2.0, None, t=2020.0))
+    reveal_type(gm.crs_transform(4326, 3857, coordinate_column_1d, 2.0))
+    reveal_type(gm.crs_transform(4326, 3857, 1.0, 2.0, coordinate_column_1d))
+    reveal_type(gm.crs_transform(4326, 3857, 1.0, 2.0, t=coordinate_column_1d))
+    reveal_type(gm.crs_apply('+proj=noop', 1.0, 2.0))
+    reveal_type(gm.crs_apply('+proj=noop', 1.0, 2.0, 3.0))
+    reveal_type(gm.crs_apply('+proj=noop', 1.0, 2.0, t=2020.0))
+    reveal_type(gm.crs_apply('+proj=noop', coordinate_column_1d, 2.0))
+    reveal_type(gm.crs_apply('+proj=noop', 1.0, coordinate_column_1d))
+    reveal_type(gm.crs_apply('+proj=noop', 1.0, 2.0, z=coordinate_column_1d))
+    reveal_type(gm.crs_apply('+proj=noop', 1.0, 2.0, t=coordinate_column_1d))
+    reveal_type(
+        gm.crs_apply(
+            '+proj=noop', coordinate_column_1d, 2.0, z=3.0, t=coordinate_column_1d
+        )
+    )
+    reveal_type(gm.crs_roundtrip(4326, 3857, 1.0, 2.0))
+    reveal_type(gm.crs_roundtrip(4326, 3857, 1.0, 2.0, z=coordinate_column_1d))
+    reveal_type(gm.crs_roundtrip(4326, 3857, 1.0, 2.0, t=coordinate_column_1d))
     bounds_array: np.ndarray[tuple[int], np.dtype[np.float64]] = np.array(
         [-1.0, 50.0, 1.0, 51.0], dtype=np.float64
     )
     assert_type(
         gm.crs_transform_bounds(4326, 3857, bounds_array),
         tuple[float, float, float, float]
-        | tuple[float, float, float, float, float, float],
+        | tuple[float, float, float, float, float, float]
+        | npt.NDArray[np.float64],
     )
+    reveal_type(gm.crs_transform_bounds(4326, 3857, bounds_array))
+    reveal_type(gm.CRS(np.int64(4326)))
     assert_type(
         gm.pluscode_encode(np.float32(8.0), np.float64(47.0), length=np.int64(10)),
         str,
@@ -884,8 +932,9 @@ if TYPE_CHECKING:
     scalar_int: np.ndarray[tuple[()], np.dtype[np.int64]] = np.array(90, dtype=np.int64)
     assert_type(POINT.destination(scalar_float32, 1_000.0), gm.Point)
     assert_type(POINT.destination(scalar_int, 1_000.0), gm.Point)
-    assert_type(gm.rhumb_distance(POINT, POINT), float)
-    assert_type(gm.rhumb_distance(POINTS, POINT), npt.NDArray[np.float64])
+    assert_type(gm.distance(POINT, POINT, path='rhumb'), float)
+    reveal_type(gm.distance(POINT, POINT, path='geodesic'))
+    assert_type(gm.distance(POINTS, POINT, path='rhumb'), npt.NDArray[np.float64])
     assert_type(
         gm.point_between(
             POINT,
@@ -1191,6 +1240,24 @@ assert_type(NULLABLE_POINTS, gm.GeometryArray[gm.Point | None])
 assert_type(NULLABLE_POINTS[0], gm.Point | None)
 assert_type(NULLABLE_POINTS[:1], gm.GeometryArray[gm.Point | None])
 assert_type(NULLABLE_POINTS[[True, False]], gm.GeometryArray[gm.Point | None])
+if TYPE_CHECKING:
+    reveal_type(gm.bearing(POINT, POINT))
+    reveal_type(gm.bearing(POINTS, POINT))
+    reveal_type(gm.bearing(NULLABLE_POINTS, POINT))
+    reveal_type(gm.cross_track_distance(POINT, POINT, POINT))
+    reveal_type(gm.cross_track_distance(NULLABLE_POINTS, POINT, POINT))
+    reveal_type(gm.cross_track_distance(POINT, NULLABLE_POINTS, POINT))
+    reveal_type(gm.point_between(POINT, POINT, 1.0))
+    reveal_type(gm.point_between(NULLABLE_POINTS, POINT, 1.0))
+    reveal_type(gm.point_between(POINT, NULLABLE_POINTS, 1.0, path='rhumb'))
+    reveal_type(gm.distance(POINT, POINT, path='rhumb'))
+    reveal_type(gm.distance(NULLABLE_POINTS, POINT, path='rhumb'))
+    reveal_type(gm.crs_catalog('WGS 84'))
+    reveal_type(gm.CRS(4326).to_projjson())
+    reveal_type(gm.CRS(4326).to_projjson(as_dict=False))
+    reveal_type(gm.CRS(4326).to_projjson(as_dict=True))
+    reveal_type(gm.CRS(4326).to_projjson(as_dict=cast('bool', True)))
+    reveal_type(gm.CRS(np.int64(4326)))
 nullable_iter = next(iter(NULLABLE_POINTS))
 assert_type(nullable_iter, gm.Point | None)
 assert_type(NULLABLE_POINTS.centroid(), gm.GeometryArray[gm.Point | None])
@@ -1467,7 +1534,7 @@ assert_type(gm.CRS(4326).kind, sht.CrsKind)
 if TYPE_CHECKING:
     _kind_ok: sht.CrsCatalogKind = 'projected'
     _db_kind_ok: sht.CrsDatabaseKind = 'ellipsoid'
-assert_type(gm.crs_search('WGS', kind='geographic_2d'), list[sht.CrsCatalogInfo])
+assert_type(gm.crs_catalog('WGS', kind='geographic_2d'), list[sht.CrsCatalogInfo])
 assert_type(gm.crs_codes('EPSG', kind='projected'), list[str])
 
 # Bare CellArray defaults to Cell (protocol), not Any.

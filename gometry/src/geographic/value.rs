@@ -400,7 +400,7 @@ impl PeriodicAxis {
         (self.period.fract() == 0.0).then_some(self.period)
     }
 
-    pub(crate) fn ordinary_longitude_bound(self) -> f64 {
+    pub(crate) const fn ordinary_longitude_bound(self) -> f64 {
         self.half_period
     }
 
@@ -519,10 +519,6 @@ impl PeriodicAxis {
 
     /// Wrap a finite longitude with the canonical remainder and signed-zero
     /// spelling. Ingress must already have rejected non-finite values.
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact zero and integer seam aliases are part of the coordinate contract"
-    )]
     pub(super) fn wrap_admitted(self, value: f64) -> CanonicalLongitude {
         debug_assert!(
             value.is_finite(),

@@ -175,13 +175,12 @@ PAGES: tuple[Page, ...] = (
     Page(
         'toplevel/geodesy-navigation',
         'Geodesy & navigation',
-        'Bearings, destinations, route interpolation, cross-track distance, and rhumb distance.',
+        'Bearings, destinations, route interpolation, and cross-track distance.',
         (
             section(
                 'bearing',
                 'cross_track_distance',
                 'point_between',
-                'rhumb_distance',
             ),
         ),
         (('CRS, units & measurement', '../../guide/crs.md'),),

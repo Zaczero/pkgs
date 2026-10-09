@@ -7,7 +7,6 @@
 //! Python dict contract, so renames here are API changes.
 
 use std::borrow::Cow;
-use std::num::NonZeroUsize;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -685,11 +684,10 @@ pub(crate) struct UtmCatalogOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CrsSearchOptions {
+pub(crate) struct CrsNameMatchOptions {
     pub authority: Option<String>,
     pub kind: Option<CrsObjectKind>,
     pub approximate: bool,
-    pub limit: NonZeroUsize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

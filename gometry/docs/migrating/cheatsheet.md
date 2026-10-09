@@ -186,12 +186,12 @@ for coordinate exports without changing the geometry.
 | `crs.is_geographic` / `is_projected` | [`gm.CRS(c).is_geographic`][gometry.CRS.is_geographic] / `.is_projected` | `is_*` property family. |
 | `crs.axis_info` | [`gm.CRS(c).axis_order`][gometry.CRS.axis_order] | Diagnostic only; boundary stays X/Y. |
 | `crs.to_authority()` / `to_epsg()` | [`gm.CRS(c).to_authority()`][gometry.CRS.to_authority] / `.to_epsg()` | |
-| `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()` / `.to_projjson_dict()` | |
+| `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()`; pass `as_dict=True` for a mapping | |
 | `crs == other` | `gm.CRS(c) == other` | `CRS` compares by code/string. |
 | `CRS.from_user_input(...)` normalize | [`gm.CRS(c).definition`][gometry.CRS.definition] / [`gm.CRS(c).identify()`][gometry.CRS.identify] | `definition` retains normalized authored text; `identify()` supplies authority metadata. |
 | `crs.to_2d()` / `to_3d()` | [`gm.CRS(c).to_2d()`][gometry.CRS.to_2d] / `.to_3d()` | Return a `CRS`. |
 | unit / factors | [`gm.crs_unit(c)`][gometry.crs_unit] / [`gm.crs_units(c)`][gometry.crs_units] / [`gm.CRS(c).factors(lon, lat)`][gometry.CRS.factors] | |
-| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_search(...)`][gometry.crs_search] / [`gm.crs_catalog(...)`][gometry.crs_catalog] | Global `crs_*` functions (not `CRS` classmethods). There is no `gm.crs_list`. |
+| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_catalog(name=...)`][gometry.crs_catalog] | Global `crs_*` functions (not `CRS` classmethods). There is no `gm.crs_list`. |
 | catalogs | [`gm.crs_ellipsoids()`][gometry.crs_ellipsoids] / [`gm.crs_prime_meridians()`][gometry.crs_prime_meridians] / [`gm.crs_proj_operations()`][gometry.crs_proj_operations] / [`gm.crs_utm_zones(...)`][gometry.crs_utm_zones] / [`gm.crs_celestial_bodies()`][gometry.crs_celestial_bodies] | |
 | operations | [`gm.CRS(a).operation(b)`][gometry.CRS.operation] / `.operations(b)` / `.operation(b, at=(x, y))` / [`gm.crs_apply(...)`][gometry.crs_apply] | |
 | grid lookup | [`gm.crs_grid(...)`][gometry.crs_grid] | Local grid metadata and availability. |
