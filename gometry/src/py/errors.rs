@@ -418,17 +418,25 @@ impl From<Error> for PyErr {
                 | G::ExactGlobalFace { .. }
                 | G::PicklePayload(_) => GeometryError::new_err(message),
                 G::UnrepresentableOutput { operation, .. }
-                | G::ExactEmbeddingUnrepresentable { operation, .. }
-                | G::ExactEmbeddingSearchLimit { operation, .. } => with_attrs(
-                    GeometryError::new_err(message),
-                    &[("operation", Attr::Str(operation))],
-                ),
+                | G::ExactEmbeddingUnrepresentable { operation, .. } => {
+                    with_attrs(GeometryError::new_err(message), &[
+                        ("code", Attr::Str("output_unrepresentable")),
+                        ("operation", Attr::Str(operation)),
+                    ])
+                },
+                G::ExactEmbeddingSearchLimit { operation, .. } => {
+                    with_attrs(GeometryError::new_err(message), &[
+                        ("code", Attr::Str("work_limit")),
+                        ("operation", Attr::Str(operation)),
+                    ])
+                },
                 G::GeneratedOutputTooLarge {
                     operation,
                     parameter,
                     produced,
                     limit,
                 } => with_attrs(GeometryError::new_err(message), &[
+                    ("code", Attr::Str("output_limit")),
                     ("operation", Attr::Str(operation)),
                     ("parameter", Attr::Str(parameter)),
                     ("produced", Attr::Count(*produced)),
@@ -575,6 +583,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     geometry.setattr("category", py.None())?;
     geometry.setattr("param", py.None())?;
     geometry.setattr("value", py.None())?;
+    geometry.setattr("code", py.None())?;
     geometry.setattr("operation", py.None())?;
     geometry.setattr("parameter", py.None())?;
     geometry.setattr("produced", py.None())?;
@@ -582,7 +591,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     py.get_type::<CRSError>().setattr("crs", py.None())?;
     py.get_type::<InvalidGeometryError>()
         .setattr("operation", py.None())?;
-    for name in ["row", "path", "code", "detail", "location"] {
+    for name in ["row", "path", "detail", "location"] {
         py.get_type::<InvalidGeometryError>()
             .setattr(name, py.None())?;
     }
@@ -668,17 +677,27 @@ mod tests {
     }
 
     #[test]
-    fn embedding_errors_are_geometry_errors_with_operation() {
+    fn output_refusals_have_distinct_codes_and_preserve_attributes() {
         Python::initialize();
         Python::attach(|py| {
             let cases = [
+                (
+                    GeometryErrorKind::UnrepresentableOutput {
+                        operation: "clip_by_rect",
+                        detail: " outside the output domain".into(),
+                    },
+                    "output_unrepresentable",
+                    "clip_by_rect",
+                    "output could not be represented as a contained geometry",
+                ),
                 (
                     GeometryErrorKind::ExactEmbeddingUnrepresentable {
                         operation: "intersection",
                         constructed: 3,
                     },
+                    "output_unrepresentable",
                     "intersection",
-                    "intersection cannot be represented in binary64: no assignment of adjacent floating-point coordinates to the 3 constructed vertices in conflict preserves the exact incidence, cyclic order and faces",
+                    "cannot be represented in binary64",
                 ),
                 (
                     GeometryErrorKind::ExactEmbeddingSearchLimit {
@@ -686,31 +705,71 @@ mod tests {
                         constructed: 5,
                         evaluations: 123,
                     },
+                    "work_limit",
                     "subdivide",
-                    "subdivide could not certify a binary64 embedding within its search budget (123 predicate evaluations over 5 constructed vertices)",
+                    "could not certify a binary64 embedding within its search budget",
+                ),
+                (
+                    GeometryErrorKind::GeneratedOutputTooLarge {
+                        operation: "segmentize",
+                        parameter: "max_length",
+                        produced: 17,
+                        limit: 16,
+                    },
+                    "output_limit",
+                    "segmentize",
+                    "would generate",
                 ),
             ];
-            for (kind, operation, message) in cases {
+            for (kind, code, operation, message_part) in cases {
                 let error: PyErr = Error::from(kind).into();
                 assert!(error.is_instance_of::<GeometryError>(py));
+                let value = error.value(py);
                 assert_eq!(
-                    error
-                        .value(py)
-                        .str()
-                        .expect("error string")
-                        .to_str()
-                        .expect("error message"),
-                    message
+                    value
+                        .getattr("code")
+                        .expect("refusal code")
+                        .extract::<String>()
+                        .expect("code string"),
+                    code
                 );
+                let rendered = value.str().expect("error string");
+                let message = rendered.to_str().expect("error message");
+                assert!(message.contains(message_part), "{message}");
                 assert_eq!(
-                    error
-                        .value(py)
+                    value
                         .getattr("operation")
                         .expect("operation attribute")
                         .extract::<String>()
                         .expect("operation name"),
                     operation
                 );
+                if code == "output_limit" {
+                    assert_eq!(
+                        value
+                            .getattr("parameter")
+                            .expect("output parameter")
+                            .extract::<String>()
+                            .expect("parameter string"),
+                        "max_length"
+                    );
+                    assert_eq!(
+                        value
+                            .getattr("produced")
+                            .expect("produced count")
+                            .extract::<usize>()
+                            .expect("produced integer"),
+                        17
+                    );
+                    assert_eq!(
+                        value
+                            .getattr("limit")
+                            .expect("output limit")
+                            .extract::<usize>()
+                            .expect("limit integer"),
+                        16
+                    );
+                }
             }
         });
     }

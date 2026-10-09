@@ -64,6 +64,9 @@ def test_parse_position_tracks_wkb_cursor(payload: bytes, position: int) -> None
 
 
 def test_structured_error_defaults_and_parse_position() -> None:
+    assert errors.GeometryError('x').code is None
+    assert errors.InvalidGeometryError('x').code is None
+    assert errors.GeometryTypeError('x').code is None
     assert errors.ParseError('x').position is None
     assert errors.GeometryTypeError('x').expected is None
     assert errors.TransformError('x').source is None
