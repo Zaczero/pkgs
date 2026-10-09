@@ -1,8 +1,8 @@
 use crate::Finite;
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
-    DistanceMode, EllipsoidMetric, Result, ensure_geographic_coordseq_in_frame,
-    ensure_geographic_lonlat_in_frame, with_geographic_metric_erased_at,
+    DistanceMode, EllipsoidMetric, Result, ensure_geographic_lonlat_in_frame,
+    with_geographic_metric_erased_at,
 };
 use crate::geometry::{ChartLineIndex, CoordSeq, MeasureRange, Point, Shape};
 
@@ -16,26 +16,13 @@ pub(crate) fn with_geographic_coordseq_metric_at<T>(
     with_geographic_metric_erased_at(crs, &[], state, |error| error, |_, metric| f(metric))
 }
 
-pub(crate) fn with_geographic_coordseq_collect_rows_at<T>(
-    crs: &str,
-    state: &RuntimeState,
-    f: impl FnOnce(&EllipsoidMetric<'_>) -> Result<Vec<T>, (usize, crate::error::Error)>,
-) -> Result<Vec<T>, (usize, crate::error::Error)> {
-    #[cfg(test)]
-    crate::test_support::linear_reference_counters::geographic_metric_scope();
-    with_geographic_metric_erased_at(crs, &[], state, |error| (0, error), |_, metric| f(metric))
-}
-
-/// Packed-line column kernel for chart-edge `line_interpolate_point`: one
-/// [`ChartLineIndex::build_chart_coordseq`] per row — no `ShapeData` wrapper.
-pub(crate) fn chart_line_interpolate_coordseq(
+pub(crate) fn chart_line_interpolate_coordseq_admitted(
     line: &CoordSeq,
     distance: f64,
     distance_mode: impl Into<DistanceMode>,
     metric: &EllipsoidMetric<'_>,
 ) -> Result<Point> {
     let distance_mode = distance_mode.into();
-    ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
     let distance = Finite::try_new("distance", distance)?.get();
     #[cfg(test)]
     crate::test_support::linear_reference_counters::coordseq_chart_index_build();
@@ -43,30 +30,26 @@ pub(crate) fn chart_line_interpolate_coordseq(
     index.interpolate_route_position(distance, distance_mode.is_normalized(), metric)
 }
 
-/// Packed-line column kernel for chart-edge `line_substring`.
-pub(crate) fn chart_line_substring_coordseq(
+pub(crate) fn chart_line_substring_coordseq_admitted(
     line: &CoordSeq,
     range: MeasureRange,
     distance_mode: impl Into<DistanceMode>,
     metric: &EllipsoidMetric<'_>,
 ) -> Result<Shape> {
     let distance_mode = distance_mode.into();
-    ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
     #[cfg(test)]
     crate::test_support::linear_reference_counters::coordseq_chart_index_build();
     let index = ChartLineIndex::build_chart_coordseq(line, metric)?;
     index.substring(range, distance_mode.is_normalized(), metric)
 }
 
-/// Packed-line column kernel for chart-edge `line_locate_point`.
-pub(crate) fn chart_line_locate_coordseq(
+pub(crate) fn chart_line_locate_coordseq_admitted(
     line: &CoordSeq,
     query: Point,
     distance_mode: impl Into<DistanceMode>,
     metric: &EllipsoidMetric<'_>,
 ) -> Result<f64> {
     let distance_mode = distance_mode.into();
-    ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
     if !query.x.is_nan() {
         ensure_geographic_lonlat_in_frame(metric.frame(), query.x, query.y)?;
     }

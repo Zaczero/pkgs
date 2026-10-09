@@ -302,14 +302,9 @@ fn unpickle_packed_array_detached(
                     .map_err(|error| pickle_error(format!("polygon-array pickle {error}")))?;
             }
             let polygons = pickled_csr_offsets(polygons, rings.len().wrapping_sub(1))?;
-            if polygons
-                .array_windows::<2>()
-                .any(|[start, end]| end <= start)
-            {
-                return Err(pickle_error(
-                    "polygon-array pickle polygon has no shell ring",
-                ));
-            }
+            // Equal outer offsets encode a present typed polygon with zero rings.
+            // CSR admission rejects descending offsets; the ring loop above still
+            // rejects malformed nonempty rings.
             PyGeometryArray::packed_polygons(seq, rings, polygons, frame)?
         },
     };
@@ -696,4 +691,54 @@ fn materialize_array_pickle_payload(
     };
     let callable = crate::gometry_lib_module(py)?.getattr(name)?.unbind();
     Ok((callable, args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::{CoordinateAxes, GeometryKind, Shape};
+
+    #[test]
+    fn packed_polygon_pickle_preserves_present_typed_empty() {
+        let array = crate::test_support::nullable_polygon_typed_empty_fixture();
+        let PickleRows::Packed { columns, levels } =
+            pickle_rows(array.row_owner()).expect("admitted polygon fixture packs")
+        else {
+            panic!("finite homogeneous polygon fixture stays packed");
+        };
+        let (xs, ys, zs, ms) = &columns;
+        let columns = (xs.as_slice(), ys.as_slice(), zs.as_deref(), ms.as_deref());
+        let levels = match &levels {
+            OffsetLevels::Points => OffsetLevels::Points,
+            OffsetLevels::Lines(offsets) => OffsetLevels::Lines(offsets.as_slice()),
+            OffsetLevels::Polygons { rings, polygons } => OffsetLevels::Polygons {
+                rings: rings.as_slice(),
+                polygons: polygons.as_slice(),
+            },
+        };
+        let missing = array.missing().map(missing_bytes);
+        let restored =
+            unpickle_packed_array_detached(columns, levels, None, None, missing.as_deref())
+                .expect("packed nullable polygon pickle round-trips");
+
+        assert_eq!(restored.len(), array.len());
+        let mask = restored.missing().expect("restored rows retain validity");
+        assert!(mask.is_missing(0));
+        assert!(!mask.is_missing(1));
+        assert!(mask.is_missing(2));
+        assert!(!mask.is_missing(3));
+
+        let shape_at = |array: &PyGeometryArray, logical| {
+            let Some(LogicalRow::Present { row, .. }) = array.logical_row(logical) else {
+                panic!("logical row {logical} is present");
+            };
+            row.with_shape(Clone::clone)
+                .expect("present polygon row has a shape")
+        };
+        assert_eq!(
+            shape_at(&restored, 1),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XY)
+        );
+        assert_eq!(shape_at(&restored, 3), shape_at(&array, 3));
+    }
 }
