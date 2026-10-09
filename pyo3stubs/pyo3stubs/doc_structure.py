@@ -33,6 +33,7 @@ from pyo3stubs.ast_util import (
     class_prohibits_construction,
     decorator_names,
     function_groups,
+    passive_class_member,
 )
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, unused_allowlist_errors
@@ -96,11 +97,37 @@ class DocLocation:
 
 
 @dataclass(frozen=True, slots=True)
+class DocMemberSource:
+    """One effective Python source declaration for a public class member."""
+
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign
+    kind: Literal['callable', 'property', 'attribute', 'schema']
+    prose: str | None
+    source: DocLocation
+
+
+@dataclass(frozen=True, slots=True)
+class DocClassSource:
+    """A facade class declaration and its inherited, de-duplicated members."""
+
+    node: ast.ClassDef
+    source: DocLocation
+    members: Mapping[str, DocMemberSource]
+
+
+@dataclass(frozen=True, slots=True)
 class DocSubject:
     """One public doc carrier and the binding signature it describes."""
 
     qualname: str
-    kind: Literal['callable', 'property', 'constructor', 'class']
+    kind: Literal[
+        'callable',
+        'property',
+        'constructor',
+        'class',
+        'attribute',
+        'schema',
+    ]
     prose: str | None
     parameters: tuple[inspect.Parameter, ...] | None
     source: DocLocation
@@ -621,16 +648,42 @@ def _public_names(ctx: CheckContext, runtime: ModuleType) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name for name in names if _is_public(name)))
 
 
-def _property_getter(defs: list[ast.FunctionDef]) -> ast.FunctionDef:
+def _property_getter(
+    defs: list[ast.FunctionDef | ast.AsyncFunctionDef],
+) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in defs:
         if decorator_names(node) & {'property', 'getter'}:
             return node
     return defs[-1]
 
 
+def _has_initialization_contract(prose: str | None) -> bool:
+    if not prose:
+        return False
+    sections = {section.name for section in parse_doc(prose).sections}
+    return bool(
+        sections
+        & {
+            'Parameters',
+            'Other Parameters',
+            'Keyword Arguments',
+            'Raises',
+            'Returns',
+            'Yields',
+        }
+    )
+
+
 def _subject(
     qualname: str,
-    kind: Literal['callable', 'property', 'constructor', 'class'],
+    kind: Literal[
+        'callable',
+        'property',
+        'constructor',
+        'class',
+        'attribute',
+        'schema',
+    ],
     prose: str | None,
     parameters: list[inspect.Parameter] | None,
     source: DocLocation,
@@ -650,14 +703,25 @@ def _class_subjects(
     cls: type,
     class_node: ast.ClassDef | None,
     constructor_sources: Mapping[str, ConstructorDocSource],
+    source_class: DocClassSource | None,
 ) -> Iterator[DocSubject]:
-    class_path = str(ctx.cfg.stub_path)
-    class_source = (
-        _doc_location(class_path, class_node)
-        if class_node is not None
-        else _runtime_location(cls, DocLocation(class_path, 1))
+    class_path = (
+        source_class.source.path if source_class is not None else str(ctx.cfg.stub_path)
     )
-    class_doc = _runtime_doc_for_stub(name, cls)
+    class_source = (
+        source_class.source
+        if source_class is not None
+        else (
+            _doc_location(class_path, class_node)
+            if class_node is not None
+            else _runtime_location(cls, DocLocation(class_path, 1))
+        )
+    )
+    class_doc = (
+        ast.get_docstring(source_class.node)
+        if source_class is not None
+        else _runtime_doc_for_stub(name, cls)
+    )
     groups = function_groups(class_node.body) if class_node is not None else {}
     new_defs = groups.get('__new__', [])
     prohibited_stub_constructor = (
@@ -665,6 +729,9 @@ def _class_subjects(
     )
     constructible_stub = bool(new_defs) and not prohibited_stub_constructor
     source_constructor = constructor_sources.get(name)
+    source_members = source_class.members if source_class is not None else {}
+    source_initializer = source_members.get('__init__') or source_members.get('__new__')
+    class_init_doc = class_doc if _has_initialization_contract(class_doc) else None
     descriptor_carriers: dict[str, tuple[object, DocLocation]] = {}
     if class_node is not None:
         for (
@@ -683,12 +750,30 @@ def _class_subjects(
             )
 
     if not prohibited_stub_constructor and (
-        source_constructor is not None or constructible_stub
+        source_constructor is not None
+        or constructible_stub
+        or source_initializer is not None
+        or class_init_doc is not None
     ):
         carrier = new_defs[-1] if new_defs else None
         if source_constructor is not None:
             prose = source_constructor.prose
             source = DocLocation(source_constructor.path, source_constructor.line)
+        elif source_class is not None and (
+            source_initializer is not None or class_init_doc is not None
+        ):
+            initializer_doc = (
+                source_initializer.prose if source_initializer is not None else None
+            )
+            if _has_initialization_contract(initializer_doc):
+                prose = initializer_doc
+                source = source_initializer.source
+            elif class_init_doc is not None:
+                prose = class_init_doc
+                source = class_source
+            else:
+                prose = initializer_doc
+                source = source_initializer.source
         else:
             runtime_new = inspect.getattr_static(cls, '__new__', None)
             prose = _runtime_doc_for_stub('__new__', runtime_new)
@@ -714,19 +799,43 @@ def _class_subjects(
     runtime_names = tuple(
         member_name for member_name in vars(cls) if _is_public(member_name)
     )
-    member_names = tuple(dict.fromkeys((*stub_groups, *runtime_names)))
+    member_names = tuple(dict.fromkeys((*stub_groups, *runtime_names, *source_members)))
     seen: set[str] = set()
     for member_name in member_names:
         if not _is_public(member_name) or member_name in {'__new__', '__init__'}:
             continue
+        source_member = source_members.get(member_name)
+        if source_member is not None and source_member.kind in {'attribute', 'schema'}:
+            seen.add(member_name)
+            yield _subject(
+                f'{name}.{member_name}',
+                source_member.kind,
+                source_member.prose,
+                None,
+                source_member.source,
+            )
+            continue
         defs = stub_groups.get(member_name, [])
-        carrier = _property_getter(defs) if defs else None
+        carrier = (
+            _property_getter(defs)
+            if defs
+            else (
+                source_member.node
+                if source_member is not None
+                and isinstance(
+                    source_member.node,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                )
+                else None
+            )
+        )
         stub_property = carrier is not None and bool(
             decorator_names(carrier) & {'property', 'getter'}
         )
         static = inspect.getattr_static(cls, member_name, None)
         property_like = (
-            stub_property
+            (source_member is not None and source_member.kind == 'property')
+            or stub_property
             or isinstance(static, property)
             or (
                 static is not None
@@ -734,7 +843,9 @@ def _class_subjects(
                 and not callable(static)
             )
         )
-        if member_name in descriptor_carriers:
+        if source_member is not None:
+            source = source_member.source
+        elif member_name in descriptor_carriers:
             source = descriptor_carriers[member_name][1]
         else:
             source = (
@@ -745,9 +856,13 @@ def _class_subjects(
         if property_like:
             seen.add(member_name)
             prose = (
-                _runtime_doc_for_stub(member_name, static)
-                if static is not None
-                else None
+                source_member.prose
+                if source_member is not None
+                else (
+                    _runtime_doc_for_stub(member_name, static)
+                    if static is not None
+                    else None
+                )
             )
             yield _subject(
                 f'{name}.{member_name}',
@@ -758,8 +873,18 @@ def _class_subjects(
             )
             continue
 
-        runtime_member = getattr(cls, member_name, None)
-        if runtime_member is None and not defs:
+        runtime_member = passive_class_member(cls, member_name)
+        if runtime_member is None and not defs and source_member is None:
+            continue
+        if source_member is not None:
+            yield _subject(
+                f'{name}.{member_name}',
+                'callable',
+                source_member.prose,
+                _parameters(runtime_member) if runtime_member is not None else None,
+                source_member.source,
+            )
+            seen.add(member_name)
             continue
         if member_name not in vars(cls) and defs:
             stub_doc = ast.get_docstring(carrier) if carrier is not None else None
@@ -798,13 +923,13 @@ def iter_doc_subjects(
     *,
     runtime_module: ModuleType | None = None,
     constructor_sources: Mapping[str, ConstructorDocSource] | None = None,
+    source_classes: Mapping[str, DocClassSource] | None = None,
 ) -> Iterator[DocSubject]:
     """Enumerate documented public subjects from the stub and runtime surface.
 
     Runtime ``__all__`` adds facade names; stub declarations supply carrier
-    locations and overload ownership. Configured surfaces expose Python class
-    re-exports; only stub-declared classes add member subjects. Static class
-    lookup classifies their properties without invoking getters.
+    locations and overload ownership. Source class declarations fill the same
+    subjects for facade re-exports absent from the native stub.
     """
     if constructor_sources is None:
         constructor_sources = (
@@ -834,12 +959,19 @@ def iter_doc_subjects(
             if obj is None:
                 continue
             if isinstance(obj, type):
+                source_class = (
+                    source_classes.get(name)
+                    if source_classes is not None and name not in ctx.stub_classes
+                    else None
+                )
                 subjects = _class_subjects(
                     ctx,
                     name,
                     obj,
-                    ctx.stub_classes.get(name),
+                    ctx.stub_classes.get(name)
+                    or (source_class.node if source_class is not None else None),
                     constructor_sources,
+                    source_class,
                 )
                 for subject in subjects:
                     key = (subject.qualname, subject.kind)
@@ -868,12 +1000,19 @@ def iter_doc_subjects(
                 yield subject
 
     for name, cls in classes:
+        source_class = (
+            source_classes.get(name)
+            if source_classes is not None and name not in ctx.stub_classes
+            else None
+        )
         for subject in _class_subjects(
             ctx,
             name,
             cls,
-            ctx.stub_classes.get(name),
+            ctx.stub_classes.get(name)
+            or (source_class.node if source_class is not None else None),
             constructor_sources,
+            source_class,
         ):
             key = (subject.qualname, subject.kind)
             if key not in seen_subjects:
@@ -914,7 +1053,9 @@ def check_doc_subject(subject: DocSubject) -> list[str]:
             f'{subject.qualname}: documented parameter {name!r} is not in the signature'
             for name in sorted(documented_names - parameter_names)
         )
-    if subject.kind != 'class' and not return_entries(parsed):
+    if subject.kind in {'callable', 'property', 'constructor'} and not return_entries(
+        parsed
+    ):
         errors.append(
             f'{subject.qualname}: no Returns section — document what it gives back'
         )

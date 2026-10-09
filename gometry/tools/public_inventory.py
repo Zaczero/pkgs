@@ -11,11 +11,57 @@ created by arbitrary execution.
 from __future__ import annotations
 
 import ast
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from pyo3stubs.ast_util import decorator_names
+from pyo3stubs.doc_structure import DocClassSource, DocLocation, DocMemberSource
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator, Mapping
     from pathlib import Path
+
+
+@dataclass(frozen=True, slots=True)
+class FacadeImport:
+    """One public facade import and its source declaration provenance."""
+
+    public_name: str
+    declared_name: str
+    source_path: Path
+    import_node: ast.ImportFrom
+    alias_node: ast.alias
+
+
+@dataclass(frozen=True, slots=True)
+class FacadeClass:
+    """A re-exported class declaration and the import that publishes it."""
+
+    imported: FacadeImport
+    declaration: DocClassSource
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class PublicInventory(AbstractSet[str]):
+    """Set-compatible public names plus source declarations for facade classes."""
+
+    symbols: frozenset[str]
+    classes: Mapping[str, FacadeClass]
+
+    def __contains__(self, value: object) -> bool:
+        return value in self.symbols
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.symbols)
+
+    def __len__(self) -> int:
+        return len(self.symbols)
+
+    @property
+    def source_classes(self) -> dict[str, DocClassSource]:
+        """Declarations keyed by the public name used by the shared subjects."""
+        return {name: source.declaration for name, source in self.classes.items()}
 
 
 def _tree(path: Path) -> ast.Module:
@@ -58,6 +104,8 @@ def _is_public_name(name: str) -> bool:
 def _base_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
+    if isinstance(node, ast.Call):
+        return _base_name(node.func)
     if isinstance(node, ast.Subscript):
         return _base_name(node.value)
     if isinstance(node, ast.Attribute):
@@ -69,36 +117,116 @@ def _class_declarations(tree: ast.Module) -> dict[str, ast.ClassDef]:
     return {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
 
 
+def _source_location(path: Path, node: ast.AST) -> DocLocation:
+    line = node.lineno
+    if (
+        isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    ):
+        line = node.body[0].lineno
+    return DocLocation(str(path), line)
+
+
 def _class_members(
     name: str,
     declarations: dict[str, ast.ClassDef],
+    source_path: Path,
     visiting: set[str] | None = None,
-) -> set[str]:
-    """Collect declared public members through a cycle-safe class hierarchy."""
+) -> dict[str, DocMemberSource]:
+    """Resolve each member to its nearest declaration through the class bases."""
     if visiting is None:
         visiting = set()
     if name in visiting:
-        return set()
+        return {}
     cls = declarations.get(name)
     if cls is None:
-        return set()
+        return {}
 
     visiting.add(name)
-    members: set[str] = set()
-    for node in cls.body:
+    members: dict[str, DocMemberSource] = {}
+    for base in cls.bases:
+        base_name = _base_name(base)
+        if base_name is not None:
+            for member_name, member in _class_members(
+                base_name,
+                declarations,
+                source_path,
+                visiting,
+            ).items():
+                members.setdefault(member_name, member)
+    typed_dict = any(_base_name(base) == 'TypedDict' for base in cls.bases) or any(
+        member.kind == 'schema' for member in members.values()
+    )
+
+    functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    fields: dict[str, tuple[int, DocMemberSource]] = {}
+    for index, node in enumerate(cls.body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if _is_public_name(node.name):
-                members.add(node.name)
+                functions.setdefault(node.name, []).append(node)
         elif (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
             and _is_public_name(node.target.id)
         ):
-            members.add(node.target.id)
-    for base in cls.bases:
-        base_name = _base_name(base)
-        if base_name is not None:
-            members.update(_class_members(base_name, declarations, visiting))
+            prose = None
+            line = node.lineno
+            if index + 1 < len(cls.body):
+                following = cls.body[index + 1]
+                if (
+                    isinstance(following, ast.Expr)
+                    and isinstance(following.value, ast.Constant)
+                    and isinstance(following.value.value, str)
+                ):
+                    prose = following.value.value
+                    line = following.lineno
+            member_name = node.target.id
+            fields[member_name] = (
+                node.lineno,
+                DocMemberSource(
+                    node=node,
+                    kind='schema' if typed_dict else 'attribute',
+                    prose=prose,
+                    source=DocLocation(str(source_path), line),
+                ),
+            )
+
+    own: dict[str, tuple[int, DocMemberSource]] = {}
+    for member_name, defs in functions.items():
+        selected = next(
+            (node for node in defs if decorator_names(node) & {'property', 'getter'}),
+            None,
+        )
+        if selected is None:
+            inherited = members.get(member_name)
+            if (
+                inherited is not None
+                and inherited.kind == 'property'
+                and all('setter' in decorator_names(node) for node in defs)
+            ):
+                continue
+            selected = defs[-1]
+        own[member_name] = (
+            selected.lineno,
+            DocMemberSource(
+                node=selected,
+                kind=(
+                    'property'
+                    if decorator_names(selected) & {'property', 'getter'}
+                    else 'callable'
+                ),
+                prose=ast.get_docstring(selected),
+                source=_source_location(source_path, selected),
+            ),
+        )
+    for member_name, field in fields.items():
+        current = own.get(member_name)
+        if current is None or field[0] > current[0]:
+            own[member_name] = field
+    members.update({member: declaration for member, (_, declaration) in own.items()})
     visiting.remove(name)
     return members
 
@@ -131,9 +259,9 @@ def _facade_imports(
     init_path: Path,
     stub_path: Path,
     public_all: frozenset[str],
-) -> list[tuple[str, Path, str]]:
-    """Return ``(public name, source path, declared name)`` facade imports."""
-    imports: list[tuple[str, Path, str]] = []
+) -> list[FacadeImport]:
+    """Retain the import node, alias, and resolved declaration source."""
+    imports: list[FacadeImport] = []
     for node in _tree(init_path).body:
         if not isinstance(node, ast.ImportFrom):
             continue
@@ -145,12 +273,20 @@ def _facade_imports(
         for alias in node.names:
             public_name = alias.asname or alias.name
             if public_name in public_all and alias.name != '*':
-                imports.append((public_name, source_path, alias.name))
+                imports.append(
+                    FacadeImport(
+                        public_name=public_name,
+                        declared_name=alias.name,
+                        source_path=source_path,
+                        import_node=node,
+                        alias_node=alias,
+                    )
+                )
     return imports
 
 
-def load_public_symbols(stub_path: Path, init_path: Path) -> frozenset[str]:
-    """Return facade names plus declared members of every exported class."""
+def load_public_symbols(stub_path: Path, init_path: Path) -> PublicInventory:
+    """Return set-compatible public names with source-backed class declarations."""
     public_all = load_public_all(init_path)
     symbols: set[str] = set(public_all)
 
@@ -158,31 +294,43 @@ def load_public_symbols(stub_path: Path, init_path: Path) -> frozenset[str]:
     stub_declarations = _class_declarations(stub_tree)
     for name in public_all:
         if name in stub_declarations:
-            symbols.update(
-                f'{name}.{member}' for member in _class_members(name, stub_declarations)
-            )
+            members = _class_members(name, stub_declarations, stub_path)
+            symbols.update(f'{name}.{member}' for member in members)
 
     source_declarations: dict[Path, dict[str, ast.ClassDef]] = {
         stub_path: stub_declarations
     }
-    for public_name, source_path, declared_name in _facade_imports(
-        init_path, stub_path, public_all
-    ):
-        declarations = source_declarations.get(source_path)
+    classes: dict[str, FacadeClass] = {}
+    for imported in _facade_imports(init_path, stub_path, public_all):
+        declarations = source_declarations.get(imported.source_path)
         if declarations is None:
-            declarations = _class_declarations(_tree(source_path))
-            source_declarations[source_path] = declarations
-        if declared_name not in declarations:
+            declarations = _class_declarations(_tree(imported.source_path))
+            source_declarations[imported.source_path] = declarations
+        declaration = declarations.get(imported.declared_name)
+        if declaration is None:
             continue
-        symbols.update(
-            f'{public_name}.{member}'
-            for member in _class_members(declared_name, declarations)
+        members = _class_members(
+            imported.declared_name,
+            declarations,
+            imported.source_path,
         )
-    return frozenset(symbols)
+        symbols.update(f'{imported.public_name}.{member}' for member in members)
+        classes.setdefault(
+            imported.public_name,
+            FacadeClass(
+                imported=imported,
+                declaration=DocClassSource(
+                    node=declaration,
+                    source=_source_location(imported.source_path, declaration),
+                    members=members,
+                ),
+            ),
+        )
+    return PublicInventory(frozenset(symbols), classes)
 
 
 def unknown_public_symbols(
-    symbols: Iterable[str], public_symbols: frozenset[str]
+    symbols: Iterable[str], public_symbols: Iterable[str]
 ) -> tuple[str, ...]:
     """Return sorted symbols absent from the canonical inventory."""
-    return tuple(sorted(set(symbols) - public_symbols))
+    return tuple(sorted(set(symbols) - set(public_symbols)))

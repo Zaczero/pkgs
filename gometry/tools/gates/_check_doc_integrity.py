@@ -17,6 +17,7 @@ from _gatelib import prepend_rust_source_import_paths, rust_source_config
 
 prepend_rust_source_import_paths()
 
+from public_inventory import load_public_symbols
 from pyo3stubs.ast_util import annotated_data_descriptors
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import duplicate_section_errors, iter_doc_subjects
@@ -107,7 +108,15 @@ def _python_doc_errors(
     stub_path = ctx.cfg.stub_path.resolve()
     python_root = ROOT / 'python'
     errors: list[str] = []
-    for subject in iter_doc_subjects(ctx, runtime_module=runtime):
+    inventory = load_public_symbols(
+        ctx.cfg.stub_path,
+        ROOT / 'python' / 'gometry' / '__init__.py',
+    )
+    for subject in iter_doc_subjects(
+        ctx,
+        runtime_module=runtime,
+        source_classes=inventory.source_classes,
+    ):
         if not subject.prose:
             continue
         source_path = Path(subject.source.path).resolve()

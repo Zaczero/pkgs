@@ -19,6 +19,7 @@ from _gatelib import prepend_rust_source_import_paths
 from runtime_artifact import require_runtime
 
 prepend_rust_source_import_paths()
+from public_inventory import load_public_symbols
 from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import (
@@ -418,7 +419,17 @@ def main() -> int:
     gm, _, _ = require_runtime(_ROOT)
     cfg = load_config(_TOOLS_ROOT / 'stubs' / 'stubconfig.py')
     ctx = CheckContext(cfg)
-    subjects = tuple(iter_doc_subjects(ctx, runtime_module=gm))
+    inventory = load_public_symbols(
+        cfg.stub_path,
+        _ROOT / 'python' / 'gometry' / '__init__.py',
+    )
+    subjects = tuple(
+        iter_doc_subjects(
+            ctx,
+            runtime_module=gm,
+            source_classes=inventory.source_classes,
+        )
+    )
     errors: list[str] = []
     checked: Counter[str] = Counter()
     errors.extend(check_mirrored_raises(subjects))

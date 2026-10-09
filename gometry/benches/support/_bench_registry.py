@@ -28,9 +28,11 @@ def public_api_symbols() -> frozenset[str]:
     """Public API inventory, parsed on first use: every paired-block worker
     imports this registry, and only manifest validation needs the inventory.
     """
-    return load_public_symbols(
-        _ROOT / 'python' / 'gometry' / '_lib.pyi',
-        _ROOT / 'python' / 'gometry' / '__init__.py',
+    return frozenset(
+        load_public_symbols(
+            _ROOT / 'python' / 'gometry' / '_lib.pyi',
+            _ROOT / 'python' / 'gometry' / '__init__.py',
+        )
     )
 
 

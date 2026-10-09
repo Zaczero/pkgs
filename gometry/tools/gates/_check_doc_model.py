@@ -30,12 +30,14 @@ from griffe_expand_aliases import (
     constructor_binding,
     expand_annotation,
 )
+from public_inventory import load_public_symbols
 from pyo3stubs.ast_util import annotated_data_descriptors
 from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import (
     DocSubject,
     attribute_entries,
+    check_doc_subject,
     function_groups,
     iter_doc_subjects,
     parameter_entries,
@@ -855,9 +857,33 @@ def collect_errors() -> list[str]:
     errors: list[str] = []
     errors.extend(_scalar_array_return_errors(STUB, gm))
     cfg = load_config(ROOT / 'tools' / 'stubs' / 'stubconfig.py')
-    errors.extend(
-        _doc_content_errors(iter_doc_subjects(CheckContext(cfg), runtime_module=gm))
+    inventory = load_public_symbols(
+        STUB,
+        ROOT / 'python' / 'gometry' / '__init__.py',
     )
+    subjects = tuple(
+        iter_doc_subjects(
+            CheckContext(cfg),
+            runtime_module=gm,
+            source_classes=inventory.source_classes,
+        )
+    )
+    errors.extend(_doc_content_errors(subjects))
+    python_root = ROOT / 'python'
+    for subject in subjects:
+        source_path = Path(subject.source.path).resolve()
+        if not source_path.is_relative_to(python_root):
+            continue
+        if not (subject.prose or '').strip():
+            errors.append(
+                f'{source_path}:{subject.source.line}: {subject.qualname}: '
+                'source docstring missing or empty'
+            )
+            continue
+        errors.extend(
+            f'{source_path}:{subject.source.line}: {error}'
+            for error in check_doc_subject(subject)
+        )
     if not isinstance(lib, griffe.Module):
         return ['transformed model has no gometry._lib module']
     aliases = annotation_aliases(pkg)

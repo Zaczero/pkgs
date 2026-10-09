@@ -509,34 +509,29 @@ FeatureId: TypeAlias = str | int | float | None
 
 
 class Features:
-    """Parsed GeoJSON features: geometries plus parallel properties and ids.
+    """Aligned feature columns returned by ``from_features``.
 
-    Returned by `from_features`. Destructures as
-    ``geometries, properties, ids = features`` and supports ``match``
-    patterns via ``__match_args__``. Deliberately not a tuple and has no
-    ``len()`` because a field count of three reads like a feature count; use
-    ``len(features.geometries)`` for the row count. The
-    outer metadata tuples cannot drift out of alignment; property dictionaries
-    remain editable.
-
-    Hand-written frozen slots (not ``@dataclass``) so cold ``import gometry``
-    never pays the ``dataclasses``/``inspect`` import chain.
+    Unpack as ``geometries, properties, ids = features``. Each metadata entry
+    corresponds to the geometry at the same row; use ``len(features.geometries)``
+    for the feature count. The outer columns are fixed, while property
+    dictionaries remain editable.
     """
 
     __slots__ = ('geometries', 'ids', 'properties')
     __match_args__ = ('geometries', 'properties', 'ids')
 
     geometries: GeometryArray[Geometry | None]
-    """The parsed geometries, one row per feature."""
+    """One parsed geometry or ``None`` per input feature."""
 
     properties: tuple[dict[str, Any] | None, ...]
-    """Per-feature property mappings, row-aligned with ``geometries``.
+    """Row-aligned property mappings; ``None`` means no properties were supplied.
 
-    An entry is ``None`` where the feature carried no properties.
+    A single input mapping is shallow-copied for each row, so editing one
+    returned dictionary does not change another row.
     """
 
     ids: tuple[FeatureId, ...]
-    """Per-feature ids, row-aligned with ``geometries``.
+    """Row-aligned string, non-boolean integer, finite float, or ``None`` ids.
 
     An entry is ``None`` where the feature carried no id.
     """
@@ -549,11 +544,35 @@ class Features:
         | None = None,
         ids: Iterable[FeatureId] | None = None,
     ) -> None:
-        """Validate and freeze the three aligned outer columns.
+        """Build row-aligned feature columns.
 
-        ``None`` supplies one missing value per geometry. A single properties
-        mapping broadcasts through independent shallow ``dict`` copies; row
-        iterables are consumed exactly once.
+        Parameters
+        ----------
+        geometries : GeometryArray[Geometry | None]
+            One geometry or ``None`` for each input feature.
+        properties : Mapping[str, Any] or Iterable[Mapping[str, Any] | None] or None
+            A mapping or object with a callable ``keys()`` is broadcast as an
+            independent shallow copy per row. An iterable supplies one mapping
+            or ``None`` per geometry and is consumed once. ``None`` supplies
+            one missing-properties value per geometry.
+        ids : Iterable[FeatureId] or None
+            One string, non-boolean integer, finite float, or ``None`` per
+            geometry. ``None`` supplies one missing id per geometry.
+
+        Returns
+        -------
+        Features
+            The geometry, property, and id columns aligned by input row.
+
+        Raises
+        ------
+        TypeError
+            If geometries is not a GeometryArray, a property input is not a
+            mapping or row iterable, a property key is not a string, or an id
+            is not a string, non-boolean integer, finite float, or ``None``.
+        GeometryError
+            If property or id rows do not match the geometry count, property
+            keys repeat, or a numeric id is not finite.
         """
         if not isinstance(geometries, GeometryArray):
             raise TypeError('geometries must be a GeometryArray')

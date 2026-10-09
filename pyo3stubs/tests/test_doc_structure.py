@@ -61,7 +61,14 @@ def _subject(
     prose: str,
     parameters: tuple[inspect.Parameter, ...],
     *,
-    kind: Literal['callable', 'property', 'constructor', 'class'] = 'callable',
+    kind: Literal[
+        'callable',
+        'property',
+        'constructor',
+        'class',
+        'attribute',
+        'schema',
+    ] = 'callable',
 ) -> DocSubject:
     return DocSubject(
         qualname,
@@ -557,6 +564,186 @@ def test_class_overview_does_not_require_callable_returns():
         kind='class',
     )
     assert check_doc_subject(subject) == []
+
+
+@pytest.mark.parametrize('kind', ['attribute', 'schema'])
+def test_typed_field_subjects_do_not_require_callable_returns(kind):
+    subject = _subject('Features.ids', 'One id per feature.', (), kind=kind)
+
+    assert check_doc_subject(subject) == []
+
+
+def test_source_facade_class_subjects_keep_member_provenance_and_one_init_carrier(
+    tmp_path,
+):
+    import types
+
+    from pyo3stubs.context import CheckContext
+    from pyo3stubs.doc_structure import (
+        DocClassSource,
+        DocLocation,
+        DocMemberSource,
+        iter_doc_subjects,
+    )
+    from tests._support import make_config
+
+    source = ast.parse(
+        '''\
+class Base:
+    @property
+    def origin(self) -> str:
+        """The inherited source name.
+
+        Returns
+        -------
+        str
+        """
+
+class Public(Base):
+    """A public source-defined class.
+
+    Parameters
+    ----------
+    value : int
+        The value to retain.
+
+    Returns
+    -------
+    Public
+    """
+
+    def __init__(self, value: int) -> None:
+        """A competing initializer carrier that is not selected."""
+
+    @property
+    def label(self) -> str:
+        """The overridden label.
+
+        Returns
+        -------
+        str
+        """
+
+    value: int
+    """The retained value."""
+'''
+    )
+    base_node, public_node = source.body
+    assert isinstance(base_node, ast.ClassDef)
+    assert isinstance(public_node, ast.ClassDef)
+    origin_node = base_node.body[0]
+    init_node = next(
+        node
+        for node in public_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == '__init__'
+    )
+    label_node = next(
+        node
+        for node in public_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == 'label'
+    )
+    value_node = next(
+        node for node in public_node.body if isinstance(node, ast.AnnAssign)
+    )
+    assert isinstance(origin_node, ast.FunctionDef)
+    assert isinstance(value_node.target, ast.Name)
+    source_class = DocClassSource(
+        node=public_node,
+        source=DocLocation('src/models.py', public_node.body[0].lineno),
+        members={
+            '__init__': DocMemberSource(
+                node=init_node,
+                kind='callable',
+                prose=ast.get_docstring(init_node),
+                source=DocLocation('src/models.py', init_node.body[0].lineno),
+            ),
+            'origin': DocMemberSource(
+                node=origin_node,
+                kind='property',
+                prose=ast.get_docstring(origin_node),
+                source=DocLocation('src/base.py', origin_node.body[0].lineno),
+            ),
+            'label': DocMemberSource(
+                node=label_node,
+                kind='property',
+                prose=ast.get_docstring(label_node),
+                source=DocLocation('src/models.py', label_node.body[0].lineno),
+            ),
+            'value': DocMemberSource(
+                node=value_node,
+                kind='attribute',
+                prose='The retained value.',
+                source=DocLocation('src/models.py', value_node.lineno + 1),
+            ),
+        },
+    )
+
+    class Base:
+        @property
+        def origin(self) -> str:
+            """The inherited source name.
+
+            Returns
+            -------
+            str
+            """
+            return 'base'
+
+    class Public(Base):
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        @property
+        def label(self) -> str:
+            """The overridden label.
+
+            Returns
+            -------
+            str
+            """
+            return str(self.value)
+
+    runtime = types.ModuleType('fakepkg.facade')
+    runtime.__all__ = ['Public']
+    runtime.Public = Public  # type: ignore[attr-defined]
+    cfg = make_config(tmp_path)
+    ctx = CheckContext(cfg, _runtime_module=runtime)
+    subjects = tuple(
+        iter_doc_subjects(
+            ctx,
+            runtime_module=runtime,
+            source_classes={'Public': source_class},
+        )
+    )
+
+    (constructor,) = tuple(
+        subject for subject in subjects if subject.kind == 'constructor'
+    )
+    (field,) = tuple(
+        subject for subject in subjects if subject.qualname == 'Public.value'
+    )
+    (label,) = tuple(
+        subject for subject in subjects if subject.qualname == 'Public.label'
+    )
+    (inherited,) = tuple(
+        subject for subject in subjects if subject.qualname == 'Public.origin'
+    )
+    assert constructor.source == DocLocation(
+        'src/models.py',
+        public_node.body[0].lineno,
+    )
+    assert constructor.prose == ast.get_docstring(public_node)
+    assert check_doc_subject(constructor) == []
+    assert (field.kind, field.prose, field.source.path) == (
+        'attribute',
+        'The retained value.',
+        'src/models.py',
+    )
+    assert check_doc_subject(field) == []
+    assert label.source.path == 'src/models.py'
+    assert inherited.source.path == 'src/base.py'
+    assert len([s for s in subjects if s.qualname == 'Public.label']) == 1
+    assert len([s for s in subjects if s.qualname == 'Public.origin']) == 1
 
 
 STUB_OVERRIDE = cast(

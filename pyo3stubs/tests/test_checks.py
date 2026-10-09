@@ -1446,6 +1446,7 @@ def test_signature_scan_and_doc_generation_never_execute_other_descriptors(
     failures = []
     for consumer, operation in (
         ('structural', lambda: structural(cfg)),
+        ('doc-structure', lambda: doc_structure(cfg)),
         ('gen-docs', lambda: render_stub_with_docs(cfg)),
     ):
         try:
