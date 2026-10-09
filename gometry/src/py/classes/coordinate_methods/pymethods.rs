@@ -482,23 +482,17 @@ impl PyCoordinates {
     }
 
     /// Value equality against another `Coordinates` or a sequence of coordinate
-    /// tuples. Other types defer with ``NotImplemented``. Provider exceptions
-    /// propagate; only non-iterable types yield ``NotImplemented``. Arc-identity
-    /// / short-circuit paths in ``coordinates_equal`` are preserved.
+    /// tuples. Other types defer with ``NotImplemented``. Errors from an
+    /// admitted iterator or item comparison propagate. Arc-identity /
+    /// short-circuit paths in ``coordinates_equal`` are preserved.
     pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
             return Ok(py_bool(py, self.coordinates_equal(py, &other_coords)?));
         }
-        // Do not call `try_iter` merely to probe — that drains one-shot
-        // generators. Attempt equality once; a TypeError (not iterable)
-        // becomes NotImplemented, other errors propagate.
-        match self.coordinates_equal_sequence(other) {
-            Ok(equal) => Ok(py_bool(py, equal)),
-            Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
-                Ok(py.NotImplemented())
-            },
-            Err(err) => Err(err),
-        }
+        let Some(items) = crate::boundary::reserve::py_iter_or_none(other)? else {
+            return Ok(py.NotImplemented());
+        };
+        Ok(py_bool(py, self.coordinates_equal_iter(items)?))
     }
 
     /// Whether a coordinate tuple appears among the vertices, using the same

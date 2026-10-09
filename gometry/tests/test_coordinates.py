@@ -203,6 +203,44 @@ def test_coordinates_equality_tracks_selected_layouts() -> None:
     assert padded != xy
 
 
+def test_coordinates_equality_propagates_type_errors_after_iterator_admission() -> None:
+    coords = gm.Point(1.0, 2.0).coords
+    iteration_error = TypeError('coordinates provider failed after one row')
+
+    class OneShotRows:
+        def __init__(self) -> None:
+            self.iter_calls = 0
+
+        def __iter__(self):
+            self.iter_calls += 1
+            if self.iter_calls > 1:
+                raise AssertionError('one-shot provider was reacquired')
+            yield (1.0, 2.0)
+            raise iteration_error
+
+    rows = OneShotRows()
+    with pytest.raises(
+        TypeError, match='coordinates provider failed after one row'
+    ) as caught:
+        coords.__eq__(rows)
+    assert caught.value is iteration_error
+    assert rows.iter_calls == 1
+
+    comparison_error = TypeError('coordinate item comparison failed')
+
+    class RaisingComparison:
+        __hash__ = None
+
+        def __eq__(self, other: object) -> bool:
+            raise comparison_error
+
+    with pytest.raises(TypeError, match='coordinate item comparison failed') as caught:
+        coords.__eq__([RaisingComparison()])
+    assert caught.value is comparison_error
+
+    assert coords.__eq__(42) is NotImplemented
+
+
 def test_coords_and_column_iterators_are_lazy() -> None:
     line = gm.LineString([(0, 0), (2, 3), (5, 6)])
     it = iter(line.coords)
