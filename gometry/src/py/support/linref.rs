@@ -201,7 +201,7 @@ pub(crate) enum InterpolatePlan {
 }
 
 impl InterpolatePlan {
-    const fn sample_count(&self) -> usize {
+    pub(crate) const fn sample_count(&self) -> usize {
         match self {
             Self::Count(count) => *count,
             Self::Distances(distances, _) => distances.len(),
@@ -457,9 +457,17 @@ pub(crate) fn line_interpolate_coordseq(
                 &PlanarMetric,
             )?)
         },
-        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
+        crate::crs::MetricModel::Geodesic {
+            crs, frame, state, ..
+        } => {
+            crate::crs::ensure_geographic_coordseq_in_frame(*frame, line)?;
             crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
-                crate::crs::chart_line_interpolate_coordseq(line, distance, distance_mode, metric)
+                crate::crs::chart_line_interpolate_coordseq_admitted(
+                    line,
+                    distance,
+                    distance_mode,
+                    metric,
+                )
             })
         },
     }
@@ -486,9 +494,17 @@ pub(crate) fn line_substring_coordseq(
                 &PlanarMetric,
             )
         },
-        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
+        crate::crs::MetricModel::Geodesic {
+            crs, frame, state, ..
+        } => {
+            crate::crs::ensure_geographic_coordseq_in_frame(*frame, line)?;
             crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
-                crate::crs::chart_line_substring_coordseq(line, range, distance_mode, metric)
+                crate::crs::chart_line_substring_coordseq_admitted(
+                    line,
+                    range,
+                    distance_mode,
+                    metric,
+                )
             })
         },
     }
@@ -515,9 +531,15 @@ pub(crate) fn line_locate_coordseq(
                 located * to_metre.get()
             })
         },
-        crate::crs::MetricModel::Geodesic { crs, state, .. } => {
+        crate::crs::MetricModel::Geodesic {
+            crs, frame, state, ..
+        } => {
+            crate::crs::ensure_geographic_coordseq_in_frame(*frame, line)?;
+            if !query.x.is_nan() {
+                crate::crs::ensure_geographic_lonlat_in_frame(*frame, query.x, query.y)?;
+            }
             crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
-                crate::crs::chart_line_locate_coordseq(line, query, distance_mode, metric)
+                crate::crs::chart_line_locate_coordseq_admitted(line, query, distance_mode, metric)
             })
         },
     }
@@ -616,7 +638,10 @@ mod tests {
     #[test]
     fn coordinate_sequence_locate_builds_one_chart_index_per_line() {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
-        let crate::crs::MetricModel::Geodesic { crs, state, .. } = model else {
+        let crate::crs::MetricModel::Geodesic {
+            crs, frame, state, ..
+        } = model
+        else {
             panic!("CRS84 selects a geodesic metric");
         };
         let lines = [
@@ -624,32 +649,33 @@ mod tests {
             CoordSeq::try_from_vecs(vec![10.0, 12.0], vec![1.0, 1.0], None, None).unwrap(),
         ];
         let queries = [Point::new_raw_xy(1.0, 0.0), Point::new_raw_xy(11.0, 1.0)];
+        for (line, query) in lines.iter().zip(queries) {
+            crate::crs::ensure_geographic_coordseq_in_frame(frame, line).unwrap();
+            crate::crs::ensure_geographic_lonlat_in_frame(frame, query.x, query.y).unwrap();
+        }
         crate::test_support::linear_reference_counters::reset();
-        crate::crs::with_geographic_coordseq_collect_rows_at(&crs, &state, |metric| {
+        let located = crate::crs::with_geographic_coordseq_metric_at(&crs, &state, |metric| {
             lines
                 .iter()
                 .enumerate()
                 .map(|(row, line)| {
-                    crate::crs::chart_line_locate_coordseq(
+                    crate::crs::chart_line_locate_coordseq_admitted(
                         line,
                         *queries.get(row).expect("line and query rows are paired"),
                         true,
                         metric,
                     )
-                    .map_err(|error| (row, error))
                 })
-                .collect::<std::result::Result<Vec<_>, _>>()
-        })
-        .map(|located| {
-            assert_eq!(
-                located
-                    .iter()
-                    .map(|value| value.to_bits())
-                    .collect::<Vec<_>>(),
-                [0.5_f64.to_bits(), 0.5_f64.to_bits()],
-            );
+                .collect::<crate::error::Result<Vec<_>>>()
         })
         .unwrap();
+        assert_eq!(
+            located
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            [0.5_f64.to_bits(), 0.5_f64.to_bits()],
+        );
         let counts = crate::test_support::linear_reference_counters::snapshot();
         assert_eq!(counts.geographic_metric_scopes, 1);
         assert_eq!(counts.coordseq_chart_index_builds, lines.len());
