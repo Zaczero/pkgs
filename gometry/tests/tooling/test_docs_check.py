@@ -494,11 +494,115 @@ class GeometryArray:
         subject('Geometry', 'bounds', 'property'),
         subject('GeometryArray', 'buffer'),
     )
-    errors = model._scalar_array_return_errors(subjects)
+    errors = model._scalar_array_return_errors(subjects, tree)
 
     assert len(errors) == 2, errors
     assert any('Geometry.centroid' in error for error in errors)
     assert any('Geometry.bounds' in error for error in errors)
+
+
+def test_shared_subject_return_check_resolves_class_generic_instantiations(
+    tmp_path: Path,
+) -> None:
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    stub = tmp_path / '_lib.pyi'
+    stub.write_text(
+        '''\
+from typing import Generic, TypeVar
+
+T = TypeVar('T')
+U = TypeVar('U')
+V = TypeVar('V')
+
+class GeometryArray: ...
+class CellArray: ...
+
+class Groups(Generic[T]):
+    @property
+    def values(self) -> T:
+        """The flat backing column.
+
+        Returns
+        -------
+        numpy.ndarray or GeometryArray or CellArray
+            The selected backing column.
+        """
+
+class CellGroups(Generic[U]):
+    @property
+    def values(self) -> U:
+        """The cell backing column.
+
+        Returns
+        -------
+        GeometryArray
+            The documented but unsupported backing type.
+        """
+
+class Deferred(Generic[V]):
+    @property
+    def values(self) -> V:
+        """The externally specialized backing column.
+
+        Returns
+        -------
+        GeometryArray
+            A type that has no in-stub specialization.
+        """
+
+class Geometry:
+    @property
+    def bounds(self) -> tuple[float, float, float, float]:
+        """The scalar bounds.
+
+        Returns
+        -------
+        GeometryArray
+            An incompatible concrete binding type.
+        """
+
+def geometry_groups() -> Groups[GeometryArray]: ...
+def cell_groups() -> Groups[CellArray]: ...
+def numpy_groups() -> Groups[npt.NDArray[np.int64]]: ...
+def cell_only_groups() -> CellGroups[CellArray]: ...
+'''
+    )
+    tree = ast.parse(stub.read_text(encoding='utf-8'))
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    from pyo3stubs.doc_structure import DocLocation
+
+    def subject(class_name: str, member_name: str):
+        class_node = classes[class_name]
+        declaration = next(
+            node
+            for node in class_node.body
+            if isinstance(node, ast.FunctionDef) and node.name == member_name
+        )
+        return model.DocSubject(
+            f'{class_name}.{member_name}',
+            'property',
+            ast.get_docstring(declaration),
+            (),
+            DocLocation(str(stub), declaration.lineno),
+            (declaration,),
+        )
+
+    errors = model._scalar_array_return_errors(
+        (
+            subject('Groups', 'values'),
+            subject('CellGroups', 'values'),
+            subject('Deferred', 'values'),
+            subject('Geometry', 'bounds'),
+        ),
+        tree,
+    )
+
+    assert len(errors) == 2, errors
+    assert any('CellGroups.values' in error for error in errors)
+    assert any('Geometry.bounds' in error for error in errors)
+    assert not any('Deferred.values' in error for error in errors)
 
 
 def test_doc_model_requires_quoted_literal_values_in_type_entries() -> None:

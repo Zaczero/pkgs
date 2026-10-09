@@ -104,9 +104,14 @@ def _declaration_annotation(declaration: ast.AST) -> ast.expr | None:
     return None
 
 
-def _scalar_array_return_errors(subjects: Iterable[DocSubject]) -> list[str]:
+def _scalar_array_return_errors(
+    subjects: Iterable[DocSubject],
+    stub_tree: ast.Module,
+) -> list[str]:
     """Keep return prose aligned with the selected binding declarations."""
     errors: list[str] = []
+    class_nodes = _stub_class_nodes(stub_tree)
+    generic_arguments = _stub_generic_class_arguments(stub_tree)
     for subject in subjects:
         if (
             subject.kind not in {'callable', 'property'}
@@ -131,6 +136,22 @@ def _scalar_array_return_errors(subjects: Iterable[DocSubject]) -> list[str]:
             )
             for annotation in declarations
         ):
+            continue
+        class_name = subject.qualname.rpartition('.')[0]
+        generic_support = tuple(
+            _generic_class_return_support(
+                annotation,
+                class_nodes.get(class_name),
+                generic_arguments,
+                'GeometryArray',
+            )
+            for annotation in declarations
+        )
+        if True in generic_support:
+            continue
+        if None in generic_support:
+            # An open class TypeVar can be specialized outside this stub. Without
+            # a concrete in-tree instantiation, its possible values are unknown.
             continue
         rendered = ', '.join(ast.unparse(annotation) for annotation in declarations)
         errors.append(
@@ -440,6 +461,84 @@ def _stub_class_type_parameters(
             if name in type_variables
         )
     return tuple(dict.fromkeys(inherited_generic))
+
+
+def _stub_generic_class_arguments(
+    tree: ast.Module,
+) -> dict[str, dict[str, tuple[ast.expr, ...]]]:
+    """Index concrete in-stub specializations by class TypeVar."""
+    type_variables = _stub_type_variables(tree)
+    classes = _stub_class_nodes(tree)
+    parameters = {
+        name: _stub_class_type_parameters(class_node, type_variables)
+        for name, class_node in classes.items()
+    }
+    generic_symbols = set(type_variables)
+    for class_parameters in parameters.values():
+        generic_symbols.update(class_parameters)
+
+    arguments: dict[str, dict[str, list[ast.expr]]] = {
+        name: {parameter: [] for parameter in class_parameters}
+        for name, class_parameters in parameters.items()
+        if class_parameters
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript):
+            continue
+        class_name = _stub_base_name(node.value)
+        class_parameters = parameters.get(class_name, ())
+        if not class_parameters:
+            continue
+        values = node.slice.elts if isinstance(node.slice, ast.Tuple) else (node.slice,)
+        for index, parameter in enumerate(class_parameters):
+            if index >= len(values):
+                continue
+            value = values[index]
+            if isinstance(value, ast.Name) and value.id in generic_symbols:
+                continue
+            if _stub_base_name(value) in {'Any', 'object'}:
+                continue
+            arguments[class_name][parameter].append(value)
+    return {
+        class_name: {
+            parameter: tuple(values) for parameter, values in class_arguments.items()
+        }
+        for class_name, class_arguments in arguments.items()
+    }
+
+
+def _generic_class_return_support(
+    annotation: ast.expr,
+    class_node: ast.ClassDef | None,
+    generic_arguments: dict[str, dict[str, tuple[ast.expr, ...]]],
+    target_type: str,
+) -> bool | None:
+    """Check whether stub specializations include a documented result type."""
+    if class_node is None:
+        return False
+
+    class_arguments = generic_arguments.get(class_node.name, {})
+    class_parameters = tuple(class_arguments)
+    referenced = set(_stub_expression_names(annotation)) & set(class_parameters)
+    if not referenced:
+        return False
+
+    concrete_arguments: list[ast.expr] = []
+    for parameter in referenced:
+        concrete_arguments.extend(class_arguments[parameter])
+
+    if any(
+        any(
+            isinstance(node, (ast.Name, ast.Attribute))
+            and _stub_base_name(node) == target_type
+            for node in ast.walk(argument)
+        )
+        for argument in concrete_arguments
+    ):
+        return True
+    if concrete_arguments:
+        return False
+    return None
 
 
 def _stub_class_call_result(
@@ -767,6 +866,7 @@ def collect_errors() -> list[str]:
     lib = pkg.members.get('_lib')
     errors: list[str] = []
     cfg = load_config(ROOT / 'tools' / 'stubs' / 'stubconfig.py')
+    stub_tree = ast.parse(STUB.read_text(encoding='utf-8'))
     inventory = load_public_symbols(
         STUB,
         ROOT / 'python' / 'gometry' / '__init__.py',
@@ -778,7 +878,7 @@ def collect_errors() -> list[str]:
             source_classes=inventory.source_classes,
         )
     )
-    errors.extend(_scalar_array_return_errors(subjects))
+    errors.extend(_scalar_array_return_errors(subjects, stub_tree))
     errors.extend(_doc_type_expression_errors(subjects))
     python_root = ROOT / 'python'
     for subject in subjects:
@@ -798,7 +898,6 @@ def collect_errors() -> list[str]:
     if not isinstance(lib, griffe.Module):
         return ['transformed model has no gometry._lib module']
     aliases = annotation_aliases(pkg)
-    stub_tree = ast.parse(STUB.read_text(encoding='utf-8'))
     stub_overloads = _stub_overloads(lib, aliases, stub_tree)
     public_overloads = _public_overload_paths(stub_overloads, set(gm.__all__))
     public_classes = {
