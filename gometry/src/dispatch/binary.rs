@@ -24,7 +24,60 @@ use crate::geometry::{PreparedPlan, Shape, ShapeData, TopologyDomain};
 use crate::test_support::binary_dispatch_counters;
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
-type FramedMaskedRows<R> = (Vec<R>, Option<ValidityMask>, Frame);
+struct FramedRows<R> {
+    values: Vec<R>,
+    missing: Option<ValidityMask>,
+    frame: Frame,
+}
+
+impl<R> FramedRows<R> {
+    fn fixed_array(values: Vec<R>, array: &PyGeometryArray, frame: &Frame) -> Self {
+        Self {
+            values,
+            missing: array.missing().cloned(),
+            frame: frame.clone(),
+        }
+    }
+
+    fn paired_arrays(
+        values: Vec<R>,
+        left: &PyGeometryArray,
+        right: &PyGeometryArray,
+        frame: &Frame,
+    ) -> Self {
+        Self {
+            values,
+            missing: missing::union_many([left.missing(), right.missing()]),
+            frame: frame.clone(),
+        }
+    }
+
+    /// Reuse the mask that `dispatch_binary_array_admitted` derives from its
+    /// admitted pair for the fast-path API.
+    fn paired_arrays_with_precomputed_mask(
+        values: Vec<R>,
+        frame: &Frame,
+        missing: Option<ValidityMask>,
+    ) -> Self {
+        Self {
+            values,
+            missing,
+            frame: frame.clone(),
+        }
+    }
+}
+
+impl<R: BulkElement> FramedRows<R> {
+    fn into_py(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        R::bulk_into_py_masked(self.values, py, &self.frame, self.missing.as_ref())
+    }
+}
+
+impl FramedRows<Shape> {
+    fn into_geometry_array(self) -> Result<PyGeometryArray> {
+        PyGeometryArray::from_shapes(self.values, self.frame)?.with_missing_mask(self.missing)
+    }
+}
 
 /// Keep raw row errors until the metric scratch owner has been released.
 enum RawMetricBinary<R> {
@@ -262,12 +315,30 @@ fn run_binary_fixed_array_rows<R, K>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> Result<(Vec<R>, Frame), (usize, crate::error::Error)>
+) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
-    let output_frame = frame.clone();
+    let values =
+        run_binary_fixed_array_values(py, array, fixed, side, frame, domain, metric, kernel)?;
+    Ok(FramedRows::fixed_array(values, array, frame))
+}
+
+fn run_binary_fixed_array_values<R, K>(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    fixed: &PyGeometry,
+    side: ArrayOperandSide,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<Vec<R>, (usize, crate::error::Error)>
+where
+    R: BulkElement,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+{
     let fixed_plan = fixed.prepared_plan();
     // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
     // frame caches are derived from MetricCtx. Never demote these kernels to
@@ -286,26 +357,45 @@ where
             }
         },
     )
-    .map(|values| (values, output_frame))
 }
 
 fn run_binary_array_array_rows<R, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: &PyGeometryArray,
-    missing: Option<ValidityMask>,
+    pair_missing: Option<ValidityMask>,
     frame: &Frame,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> Result<FramedMaskedRows<R>, (usize, crate::error::Error)>
+) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
-    let output_frame = frame.clone();
+    let values = run_binary_array_array_values(py, left, right, frame, domain, metric, kernel)?;
+    Ok(FramedRows::paired_arrays_with_precomputed_mask(
+        values,
+        frame,
+        pair_missing,
+    ))
+}
+
+fn run_binary_array_array_values<R, K>(
+    py: Python<'_>,
+    left: &PyGeometryArray,
+    right: &PyGeometryArray,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<Vec<R>, (usize, crate::error::Error)>
+where
+    R: BulkElement,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+{
     // Prepared handles; frame caches derived from MetricCtx.
-    let values = run_paired_rows(
+    run_paired_rows(
         py,
         left,
         right,
@@ -317,8 +407,7 @@ where
             let right_data = right_products.prepared_at(row, right_row)?;
             kernel(&left_data, &right_data, ctx)
         },
-    )?;
-    Ok((values, missing, output_frame))
+    )
 }
 
 /// Binary scalar/array dispatch (four scalar×array shapes).
@@ -429,8 +518,8 @@ where
 {
     let eligible = fast_path.is_eligible(array, other, op_name, &admission.frame);
     let pair_missing = match other {
-        GeometryInput::Many(right) => missing::union_many([array.missing(), right.missing()]),
         GeometryInput::One(_) => None,
+        GeometryInput::Many(right) => missing::union_many([array.missing(), right.missing()]),
     };
     let mut scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&admission.frame, &mut scratch)?;
@@ -471,8 +560,7 @@ where
             admission.domain,
             metric,
             kernel,
-        )
-        .map(|(values, _)| (values, None, admission.frame.clone())),
+        ),
         GeometryInput::Many(right) => run_binary_array_array_rows(
             py,
             array,
@@ -485,8 +573,7 @@ where
         ),
     };
     drop(scratch);
-    let (values, missing, frame) = result.map_err(rows_err)?;
-    R::bulk_into_py_masked(values, py, &frame, missing.as_ref())
+    result.map_err(rows_err)?.into_py(py)
 }
 
 pub(crate) fn dispatch_typed_metric_binary<R>(
@@ -740,17 +827,13 @@ where
         classify_required(right)?,
         op_name,
     )?;
-    let missing = match admission.right {
-        One(_) => None,
-        Many(right) => missing::union_many([left.missing(), right.missing()]),
-    };
     let mut scratch = MetricScratch::default();
     let result = {
         let metric = resolver.resolve_ctx(&admission.frame, &mut scratch)?;
         #[cfg(test)]
         binary_dispatch_counters::general_lane();
         match admission.right {
-            One(right) => run_binary_fixed_array_rows(
+            One(right) => run_binary_fixed_array_values(
                 py,
                 left,
                 right,
@@ -759,19 +842,16 @@ where
                 admission.domain,
                 metric,
                 kernel,
-            )
-            .map(|(values, _)| values),
-            Many(right) => run_binary_array_array_rows(
+            ),
+            Many(right) => run_binary_array_array_values(
                 py,
                 left,
                 right,
-                missing,
                 &admission.frame,
                 admission.domain,
                 metric,
                 kernel,
-            )
-            .map(|(values, ..)| values),
+            ),
         }
     };
     drop(scratch);
@@ -997,7 +1077,7 @@ where
             };
             drop(metric_scratch);
             let shapes = result.map_err(rows_err)?;
-            Shape::bulk_into_py_masked(shapes, py, &output_frame, right.missing())
+            FramedRows::fixed_array(shapes, right, &output_frame).into_py(py)
         },
         (Many(left), right_in) => {
             let frame = admission.frame.clone();
@@ -1107,11 +1187,10 @@ where
         },
     };
     let shapes = result.map_err(rows_err)?;
-    let output_missing = match right {
-        One(_) => left.missing().cloned(),
-        Many(right) => missing::union_many([left.missing(), right.missing()]),
-    };
-    Ok(PyGeometryArray::from_shapes(shapes, frame.clone())?.with_missing_mask(output_missing)?)
+    match right {
+        One(_) => FramedRows::fixed_array(shapes, left, frame).into_geometry_array(),
+        Many(right) => FramedRows::paired_arrays(shapes, left, right, frame).into_geometry_array(),
+    }
 }
 
 pub(crate) fn geometry_kernel_over_array<K>(

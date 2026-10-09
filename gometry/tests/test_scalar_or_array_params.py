@@ -507,6 +507,58 @@ def test_free_snap_scalar_geometry_array_reference_per_element() -> None:
     assert out[1].to_wkt() == 'LINESTRING (0.05 0.05, 2 2)'
 
 
+def test_free_snap_scalar_tolerance_preserves_missing_and_typed_empty_rows() -> None:
+    """Scalar tolerance keeps nulls distinct from typed EMPTY in either direction."""
+    typed_empty = gm.from_wkt('POINT EMPTY')
+    source_rows = gm.GeometryArray([None, typed_empty, gm.Point(0.05, 0.05)])
+
+    source_array_results = (
+        gm.snap(source_rows, gm.Point(0, 0), 0.1),
+        gm.snap(source_rows, gm.Point(0, 0), [0.1, 0.1, 0.1]),
+    )
+    for result in source_array_results:
+        assert result.is_missing.tolist() == [True, False, False]
+        assert result[0] is None
+        assert result[1].to_wkt() == 'POINT EMPTY'
+        assert result[2].to_wkt() == 'POINT (0 0)'
+
+    reference_rows = gm.GeometryArray([
+        None,
+        gm.Point(0, 0),
+        gm.from_wkt('POINT EMPTY'),
+    ])
+    reference_array_results = (
+        gm.snap(gm.Point(0.05, 0.05), reference_rows, 0.1),
+        gm.snap(gm.Point(0.05, 0.05), reference_rows, [0.1, 0.1, 0.1]),
+    )
+    for result in reference_array_results:
+        assert result.is_missing.tolist() == [True, False, False]
+        assert result[0] is None
+        assert result[1].to_wkt() == 'POINT (0 0)'
+        assert result[2].to_wkt() == 'POINT (0.05 0.05)'
+
+    paired_result = gm.snap(
+        gm.GeometryArray([
+            None,
+            gm.Point(0.05, 0.05),
+            typed_empty,
+            gm.Point(0.05, 0.05),
+        ]),
+        gm.GeometryArray([
+            gm.Point(0, 0),
+            None,
+            gm.Point(0, 0),
+            gm.Point(0, 0),
+        ]),
+        0.1,
+    )
+    assert paired_result.is_missing.tolist() == [True, True, False, False]
+    assert paired_result[0] is None
+    assert paired_result[1] is None
+    assert paired_result[2].to_wkt() == 'POINT EMPTY'
+    assert paired_result[3].to_wkt() == 'POINT (0 0)'
+
+
 def test_free_equals_exact_accepts_per_element_tolerance() -> None:
     """The free ``gm.equals_exact`` compares each row to its own tolerance;
     symmetric, so either operand may be the array.
