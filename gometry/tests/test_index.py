@@ -1219,7 +1219,11 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
     restored = pickle.loads(pickle.dumps(large))
     assert list(restored) == [7, 63, 65_537]
     assert ids(restored.query(gm.Point(7.0, 1.0))) == [7]
-    assert sys.getsizeof(restored) == sys.getsizeof(large)
+    # Size follows the prepared products a restore has initialized, so compare
+    # restores that did the same work: it must not depend on the next handle.
+    restored_small = pickle.loads(pickle.dumps(small))
+    assert ids(restored_small.query(gm.Point(7.0, 1.0))) == [7]
+    assert sys.getsizeof(restored) == sys.getsizeof(restored_small)
     next_handle = restored.insert(gm.Point(float(large_next), 4.0))
     assert next_handle == large_next
     assert list(restored) == [7, 63, 65_537, large_next]
