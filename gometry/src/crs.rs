@@ -84,10 +84,10 @@ pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
     ChartEdge, DistanceMode, EllipsoidMetric, GeodesicBoxEnvelopeBound, GeodesicCalculation,
     GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel, PointEdgeScratch,
-    ResolvedMetric, chart_line_interpolate, chart_line_interpolate_coordseq,
-    chart_line_length_columns, chart_line_locate, chart_line_locate_coordseq, chart_line_substring,
-    chart_line_substring_coordseq, chart_shape_area, chart_shape_length, checked_geodesic_route,
-    ellipsoid_shape_at, ensure_3d_metric, ensure_geographic_columns_in_frame,
+    ResolvedMetric, chart_line_interpolate_coordseq_admitted, chart_line_length_columns,
+    chart_line_locate_coordseq_admitted, chart_line_substring_coordseq_admitted, chart_shape_area,
+    chart_shape_length, checked_geodesic_route, ellipsoid_shape_at, ensure_3d_metric,
+    ensure_geographic_columns_in_frame, ensure_geographic_coordseq_in_frame,
     ensure_geographic_domain_in_frame, ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame,
     ensure_geographic_row_in_frame, finite, geodesic_bearing, geodesic_cross_track_crs_at,
     geodesic_cross_track_radius_crs_at, geodesic_cross_track_with_radius, geodesic_destination,
@@ -97,8 +97,7 @@ pub(crate) use geodesic::{
     geodesic_point_pair_dwithin, geodesic_point_pair_dwithin_one, geodesic_witness_distance_at,
     geographic_lonlat_result, metric_interpolate_m, metric_model, metric_model_at,
     metric_model_meters, metric_model_meters_at, sincos_degrees, with_ellipsoid_metric_at,
-    with_geodesic_cache_at, with_geographic_coordseq_collect_rows_at,
-    with_geographic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
+    with_geodesic_cache_at, with_geographic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
 };
 #[cfg(test)]
 pub(crate) use geodesic::{
@@ -110,8 +109,8 @@ use in_core::{
     try_in_core_transform_with_state, utm_crs,
 };
 pub(crate) use info::{
-    AngularUnit, engine_info_with_state, factor_columns, factors, factors_at, info,
-    info_with_state, is_dynamic, is_dynamic_with_state, operation_info_at,
+    AngularUnit, admits_geometry_epoch, admits_geometry_epoch_with_state, engine_info_with_state,
+    factor_columns, factors, factors_at, info, info_with_state, operation_info_at,
     operation_info_with_state,
 };
 pub(crate) use introspect::Confidence;

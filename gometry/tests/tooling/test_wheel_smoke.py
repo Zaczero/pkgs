@@ -9,6 +9,7 @@ import io
 import json
 import os
 import platform
+import shutil
 import struct
 import subprocess
 import sys
@@ -22,11 +23,14 @@ import pytest
 
 GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 TOOLS = GOMETRY_ROOT / 'tools'
-if str(TOOLS) not in sys.path:
-    sys.path.insert(0, str(TOOLS))
+BENCHMARK_SUPPORT = GOMETRY_ROOT / 'benches' / 'support'
+for _path in (TOOLS, BENCHMARK_SUPPORT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 import _artifact_common as artifact_common  # noqa: E402
 import artifact_content  # noqa: E402
+import benchmark_runtime  # noqa: E402
 import quality_runtime  # noqa: E402
 import release_artifact  # noqa: E402
 import runtime_artifact  # noqa: E402
@@ -91,6 +95,40 @@ def _wheel(
     with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for member, payload in members.items():
             archive.writestr(member, payload)
+    return path
+
+
+def _quality_wheel(
+    directory: Path,
+    *,
+    version: str,
+    python_members: dict[str, bytes],
+    licenses: dict[str, bytes],
+    extension_payload: bytes,
+) -> Path:
+    dist_info = f'gometry-{version}.dist-info'
+    extension = f'gometry/_lib{sysconfig.get_config_var("EXT_SUFFIX")}'
+    members = {
+        **python_members,
+        extension: extension_payload,
+        f'{dist_info}/METADATA': (f'Name: gometry\nVersion: {version}\n'.encode()),
+        f'{dist_info}/WHEEL': (
+            b'Wheel-Version: 1.0\n'
+            b'Generator: maturin (1.14.1)\n'
+            b'Tag: cp314-cp314-manylinux_2_17_x86_64\n'
+        ),
+        **{
+            f'{dist_info}/licenses/{name}': payload
+            for name, payload in licenses.items()
+        },
+    }
+    record_name = f'{dist_info}/RECORD'
+    members[record_name] = b''
+    members[record_name] = _record_bytes(members)
+    path = directory / f'gometry-{version}-cp314-cp314-manylinux_2_17_x86_64.whl'
+    with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, payload in members.items():
+            archive.writestr(name, payload)
     return path
 
 
@@ -642,6 +680,61 @@ def test_record_inspection_hashes_members_and_retains_only_needed_payloads(
     assert 'fixture-1.dist-info/RECORD' not in result['payloads']
 
 
+def test_absolute_build_paths_are_allowed_only_in_dev_wheels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python_members = {
+        'gometry/_lib.pyi': b'def value() -> int: ...\n',
+        'gometry/py.typed': b'',
+    }
+    licenses = {
+        'LICENSE-APACHE.md': b'apache\n',
+        'LICENSE-MIT.md': b'mit\n',
+        'LICENSE-THIRD-PARTY.md': b'third-party\n',
+    }
+    wheel = _quality_wheel(
+        tmp_path,
+        version='1.0.0',
+        python_members=python_members,
+        licenses=licenses,
+        extension_payload=(
+            b'\x7fELF\x00debug\x00/home/user/checkout/gometry/src/lib.rs\x00'
+        ),
+    )
+    monkeypatch.setattr(
+        artifact_content,
+        '_verify_native_debug_sections',
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        artifact_content,
+        'native_image_facts',
+        lambda *_args: {},
+    )
+    expected_licenses = {
+        name: hashlib.sha256(payload).hexdigest() for name, payload in licenses.items()
+    }
+
+    dev_inspection = artifact_content.inspect_wheel(
+        wheel,
+        release=False,
+        expected_prepared_inputs=expected_licenses,
+    )
+
+    assert dev_inspection['extension_members'][
+        f'gometry/_lib{sysconfig.get_config_var("EXT_SUFFIX")}'
+    ].endswith(b'/home/user/checkout/gometry/src/lib.rs\x00')
+    with pytest.raises(
+        AssertionError, match='wheel contents leak absolute build paths'
+    ):
+        artifact_content.inspect_wheel(
+            wheel,
+            release=True,
+            expected_prepared_inputs=expected_licenses,
+        )
+
+
 def test_runtime_loader_facts_match_the_active_platform() -> None:
     facts = runtime_artifact._runtime_loader_identity()
 
@@ -657,6 +750,135 @@ def test_runtime_loader_facts_match_the_active_platform() -> None:
             'loader_paths': [],
             'libc_paths': [],
         }
+
+
+def test_runtime_preimport_resolution_rejects_an_installed_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / 'admitted' / 'gometry' / '__init__.py'
+    fallback = tmp_path / 'installed' / 'gometry' / '__init__.py'
+    admission = type('Admission', (), {'facade_path': selected.resolve()})()
+    monkeypatch.setattr(runtime_artifact, '_resident_gometry_modules', dict)
+    monkeypatch.setattr(
+        runtime_artifact.importlib.util,
+        'find_spec',
+        lambda _name: type('Spec', (), {'origin': str(fallback)})(),
+    )
+
+    with pytest.raises(AssertionError, match='does not select the admitted'):
+        runtime_artifact.check_runtime_resolution(admission)
+
+
+def test_runtime_completion_rechecks_admitted_package_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission = runtime_artifact.inspect_runtime_inputs(GOMETRY_ROOT)
+    runtime = runtime_artifact.verify_admitted_runtime(admission)
+    runtime_artifact.verify_runtime_completion(admission, runtime)
+
+    monkeypatch.setattr(runtime_artifact, 'python_member_hashes', lambda _path: {})
+    with pytest.raises(AssertionError, match='Python files changed'):
+        runtime_artifact.verify_runtime_completion(admission, runtime)
+
+
+@pytest.mark.parametrize(
+    ('member', 'message'),
+    [
+        ('gometry/__init__.py', 'Python package differs'),
+        ('extension', 'native extension differs'),
+        ('metadata-owner', 'one gometry distribution'),
+    ],
+    ids=('facade-only-change', 'wrong-worktree-extension', 'metadata-owner-mismatch'),
+)
+def test_runtime_admission_rejects_package_or_extension_from_another_tree(
+    tmp_path: Path,
+    member: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_artifact, '_resident_gometry_modules', dict)
+    quality_receipt = quality_runtime.read_quality_receipt(GOMETRY_ROOT)
+    original_root = Path(quality_receipt['package_root'])
+    alternate_root = tmp_path / 'alternate-site-packages'
+
+    def link_or_copy(source: str, destination: str) -> str:
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+        return destination
+
+    shutil.copytree(original_root, alternate_root, copy_function=link_or_copy)
+    if member == 'metadata-owner':
+        shutil.copytree(
+            next(original_root.glob('gometry*.dist-info')),
+            alternate_root / 'second-gometry.dist-info',
+            copy_function=link_or_copy,
+        )
+    elif member == 'extension':
+        member = quality_receipt['wheel']['extension_member']
+    if member != 'metadata-owner':
+        changed_file = alternate_root / member
+        payload = (
+            bytearray(changed_file.read_bytes()) if not member.endswith('.py') else None
+        )
+        changed_file.unlink()
+        if member.endswith('.py'):
+            changed_file.write_bytes(b'from __future__ import annotations\n')
+        else:
+            assert payload is not None
+            payload[-1] ^= 1
+            changed_file.write_bytes(payload)
+
+    quality_receipt['package_root'] = str(alternate_root)
+    wheel_path = (GOMETRY_ROOT.parent / quality_receipt['wheel']['path']).resolve()
+    with pytest.raises(runtime_artifact.QualityPreparationRequired, match=message):
+        runtime_artifact.inspect_runtime_inputs(
+            GOMETRY_ROOT,
+            expected_wheel=wheel_path,
+            build_receipt=quality_receipt,
+        )
+
+
+def test_installed_wheel_runtime_projection_preserves_the_existing_shape() -> None:
+    source = {
+        'commit': None,
+        'version': '1.2.3',
+        'python_members': {'gometry/__init__.py': 'a' * 64},
+    }
+    build = {'profile': 'release', 'target': 'x86_64-unknown-linux-gnu'}
+    wheel = {
+        'filename': 'gometry-1.2.3-cp314-cp314-manylinux_2_34_x86_64.whl',
+        'sha256': 'b' * 64,
+        'extension_member': 'gometry/_lib.cpython-314-x86_64-linux-gnu.so',
+        'extension_sha256': 'c' * 64,
+        'unrelated': 'ignored',
+    }
+
+    projected = release_artifact.installed_wheel_runtime_receipt(
+        identifier='cp314-manylinux_x86_64',
+        profile='release',
+        source=source,
+        build=build,
+        wheel=wheel,
+        prepared_inputs={'README.md': 'd' * 64},
+    )
+
+    assert projected == {
+        'identifier': 'cp314-manylinux_x86_64',
+        'profile': 'release',
+        'source': source,
+        'build': build,
+        'wheel': {
+            'filename': wheel['filename'],
+            'sha256': wheel['sha256'],
+            'extension_member': wheel['extension_member'],
+            'extension_sha256': wheel['extension_sha256'],
+        },
+        'python_members': source['python_members'],
+        'prepared_inputs': {'README.md': 'd' * 64},
+    }
 
 
 def test_record_accepts_only_matching_unrecorded_signature_members(
@@ -762,14 +984,14 @@ def test_record_rejects_duplicate_archive_paths_and_noncanonical_names(
     with zipfile.ZipFile(unsafe, 'w') as archive:
         archive.writestr('../outside.py', b'x')
 
-    with pytest.raises(AssertionError, match='unsafe archive path'):
+    with pytest.raises(AssertionError, match='non-canonical archive path'):
         _inspection(unsafe)
 
     windows_absolute = tmp_path / 'windows-absolute.whl'
     with zipfile.ZipFile(windows_absolute, 'w') as archive:
         archive.writestr('C:/outside.py', b'x')
 
-    with pytest.raises(AssertionError, match='unsafe archive path'):
+    with pytest.raises(AssertionError, match='non-canonical archive path'):
         _inspection(windows_absolute)
 
 
@@ -1202,7 +1424,7 @@ def test_runner_build_identity_rejects_false_profile_and_partial_guards() -> Non
 
     missing_guard = json.loads(json.dumps(build))
     del missing_guard['settings']['environment']['GOMETRY_RELEASE_CXXFLAGS']
-    with pytest.raises(AssertionError, match='GOMETRY_RELEASE_CXXFLAGS'):
+    with pytest.raises(TypeError, match='GOMETRY_RELEASE_CXXFLAGS'):
         release_artifact._validate_build_identity(missing_guard)
 
 
@@ -1298,7 +1520,9 @@ def test_native_receipt_binds_running_binary_and_python_to_nextest_junit(
     assert receipt['run_id'] == invocation_run_id
     assert receipt['nextest_run_id'] == nextest_run_id
     assert receipt['python']['embedded'] == embedded_python
-    assert receipt['junit']['test_cases'][0]['name'] == observation['test_name']
+    assert receipt['junit']['test_cases'][0]['name'] == (
+        f'native_test_identity::{observation["test_name"]}'
+    )
 
 
 def test_native_receipt_rejects_a_junit_without_the_executed_elf_witness(
@@ -1424,119 +1648,121 @@ def test_native_receipt_rejects_embedded_python_abi_mismatch(
         )
 
 
-def test_benchmark_source_binding_accepts_null_commit_and_requires_matching_bytes() -> (
-    None
-):
-    extension = {
-        'path': '/venv/lib/python3.14/site-packages/gometry/_lib.cpython-314.so',
-        'sha256': 'a' * 64,
-        'size_bytes': 91,
-        'build_info': {
-            'source_inputs_sha256': 'b' * 64,
-            'native_source_inputs_sha256': 'c' * 64,
-        },
-    }
-    receipt = {
-        'path': '/bench/release/gometry-release-manifest.json',
-        'receipt_sha256': 'd' * 64,
-        'source': {
-            'commit': 'e' * 40,
-            'version': '1.0.0',
-            'source_inputs_sha256': 'b' * 64,
-            'native_source_inputs_sha256': 'c' * 64,
-        },
-        'wheels': [
-            {
-                'filename': 'gometry-1.0.0-cp314-cp314-manylinux_2_17_x86_64.whl',
-                'sha256': 'f' * 64,
-                'extension_member': 'gometry/_lib.cpython-314.so',
-                'extension_sha256': 'a' * 64,
-            },
-        ],
-    }
-    distribution = {'name': 'gometry', 'version': '1.0.0'}
+def test_null_commit_still_binds_actual_python_and_wheel_bytes(
+    tmp_path: Path,
+) -> None:
+    receipt_path = quality_runtime.quality_receipt_path(GOMETRY_ROOT)
+    subject = benchmark_runtime.load_subject(receipt_path)
+    receipt = subject['runtime_receipt']
+    root = receipt_path.parents[2]
+    wheel_path = (root.parent / receipt['wheel']['path']).resolve()
+    admission = runtime_artifact.inspect_runtime_inputs(
+        root,
+        expected_wheel=wheel_path,
+        build_receipt=receipt,
+    )
+    runtime = runtime_artifact.verify_admitted_runtime(admission)
+    session = benchmark_runtime.BenchmarkRuntime(
+        subject=subject,
+        admission=admission,
+        runtime=runtime,
+        receipt_path=receipt_path.resolve(),
+        receipt_sha256=subject['receipt_sha256'],
+        wheel_path=wheel_path,
+        wheel_item=subject['wheel'],
+        package_root=Path(subject['package_root']).resolve(),
+    )
+    identity = session.collect_identity()
+    binding = identity['runtime_binding']
+    package = identity['packages']['gometry']
 
-    binding = release_artifact.match_benchmark_receipt(
-        receipt,
-        extension,
-        distribution,
+    matched = release_artifact.match_benchmark_receipt(
+        subject,
+        identity['extension'],
+        package['distribution'],
+        runtime_binding=binding,
     )
 
-    assert binding['source_commit'] == 'e' * 40
-    assert binding['wheel_sha256'] == 'f' * 64
+    assert matched['source_commit'] is None
+    assert identity['source_commit'] is None
+    assert identity['source_receipt'] is None
+    assert identity['source_wheel'] is None
 
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
+    wrong_facade = json.loads(json.dumps(binding))
+    wrong_facade['facade']['sha256'] = '0' * 64
+    with pytest.raises(AssertionError, match='facade differs'):
         release_artifact.match_benchmark_receipt(
-            receipt,
-            {**extension, 'sha256': '0' * 64},
-            distribution,
+            subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=wrong_facade,
         )
 
-    unbound_receipt = json.loads(json.dumps(receipt))
-    unbound_receipt['source']['commit'] = None
-    binding = release_artifact.match_benchmark_receipt(
-        unbound_receipt,
-        extension,
-        distribution,
-    )
-    assert binding['source_commit'] is None
-    assert binding['wheel_sha256'] == 'f' * 64
-
-    wrong_source = json.loads(json.dumps(unbound_receipt))
-    wrong_source['source']['source_inputs_sha256'] = '0' * 64
-    with pytest.raises(AssertionError, match='source/native identity differs'):
+    wrong_extension = json.loads(json.dumps(binding))
+    wrong_extension['extension']['sha256'] = '0' * 64
+    with pytest.raises(AssertionError, match='runtime files differ'):
         release_artifact.match_benchmark_receipt(
-            wrong_source,
-            extension,
-            distribution,
-        )
-    wrong_native_source = json.loads(json.dumps(unbound_receipt))
-    wrong_native_source['source']['native_source_inputs_sha256'] = '0' * 64
-    with pytest.raises(AssertionError, match='source/native identity differs'):
-        release_artifact.match_benchmark_receipt(
-            wrong_native_source,
-            extension,
-            distribution,
+            subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=wrong_extension,
         )
 
-    with pytest.raises(AssertionError, match='loaded distribution'):
-        release_artifact.match_benchmark_receipt(
-            unbound_receipt,
-            extension,
-            {'name': 'gometry', 'version': '2.0.0'},
-        )
-
-    wrong_member = json.loads(json.dumps(unbound_receipt))
+    wrong_member = json.loads(json.dumps(subject))
     wrong_member['wheels'][0]['extension_member'] = 'gometry/_other.so'
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
+    with pytest.raises(AssertionError, match='uniquely bind'):
         release_artifact.match_benchmark_receipt(
             wrong_member,
-            extension,
-            distribution,
-        )
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
-        release_artifact.match_benchmark_receipt(
-            unbound_receipt,
-            {**extension, 'sha256': '0' * 64},
-            distribution,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=binding,
         )
 
-    malformed_archive = json.loads(json.dumps(unbound_receipt))
-    malformed_archive['wheels'][0]['sha256'] = 'not-a-digest'
-    with pytest.raises(AssertionError, match='does not uniquely bind'):
+    wrong_archive = json.loads(json.dumps(binding))
+    wrong_archive['wheel']['archive']['sha256'] = '0' * 64
+    with pytest.raises(AssertionError, match='uniquely bind'):
         release_artifact.match_benchmark_receipt(
-            malformed_archive,
-            extension,
-            distribution,
+            subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=wrong_archive,
         )
 
-    missing_commit = json.loads(json.dumps(unbound_receipt))
-    del missing_commit['source']['commit']
-    with pytest.raises(AssertionError, match='no commit field'):
+    altered_root = tmp_path / 'gometry'
+    altered_receipt_path = altered_root / 'target' / 'quality-runtime' / 'receipt.json'
+    altered_receipt_path.parent.mkdir(parents=True)
+    altered_wheel_path = tmp_path / binding['wheel']['filename']
+    with zipfile.ZipFile(wheel_path) as original:
+        members = [
+            (member.filename, original.read(member.filename))
+            for member in reversed(original.infolist())
+        ]
+    with zipfile.ZipFile(
+        altered_wheel_path, 'w', compression=zipfile.ZIP_STORED
+    ) as changed:
+        for name, payload in members:
+            changed.writestr(name, payload)
+    altered_receipt = json.loads(json.dumps(receipt))
+    altered_receipt['wheel']['path'] = altered_wheel_path.name
+    altered_receipt_path.write_text(
+        json.dumps(altered_receipt),
+        encoding='utf-8',
+    )
+    altered_subject = release_artifact._quality_benchmark_subject(
+        altered_root,
+        altered_receipt,
+        hashlib.sha256(altered_receipt_path.read_bytes()).hexdigest(),
+    )
+    altered_binding = json.loads(json.dumps(binding))
+    altered_binding['path'] = str(altered_receipt_path)
+    altered_binding['sha256'] = altered_subject['receipt_sha256']
+    altered_binding['wheel']['path'] = str(altered_wheel_path)
+    with pytest.raises(AssertionError, match='archive bytes differ'):
         release_artifact.match_benchmark_receipt(
-            missing_commit,
-            extension,
-            distribution,
+            altered_subject,
+            identity['extension'],
+            package['distribution'],
+            runtime_binding=altered_binding,
         )
 
 
@@ -1818,6 +2044,182 @@ def test_corrupt_quality_wheel_is_not_rebuilt(
         )
 
 
+def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / 'workspace'
+    root = workspace / 'gometry'
+    package = root / 'python' / 'gometry'
+    package.mkdir(parents=True)
+    fixed_inputs = {
+        workspace / 'Cargo.toml': '[workspace]\n',
+        workspace / 'Cargo.lock': 'version = 4\n',
+        workspace / '.cargo' / 'config.toml': '[build]\n',
+        root / 'Cargo.toml': ('[package]\nname = "gometry"\nversion = "1.0.0"\n'),
+        root / 'pyproject.toml': '[project]\nname = "gometry"\n',
+        root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
+        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.6.2.tar.gz': (
+            'fixture archive'
+        ),
+    }
+    for path, contents in fixed_inputs.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding='utf-8')
+    python_payloads = {
+        'gometry/__init__.py': b'VALUE = 17\n',
+        'gometry/_lib.pyi': b'def value() -> int: ...\n',
+        'gometry/py.typed': b'',
+    }
+    for name, payload in python_payloads.items():
+        (package / Path(name).name).write_bytes(payload)
+
+    license_payloads = {
+        'LICENSE-APACHE.md': b'apache license\n',
+        'LICENSE-MIT.md': b'mit license\n',
+        'LICENSE-THIRD-PARTY.md': b'third-party notices\n',
+    }
+
+    def prepare_outputs(source_root: Path) -> None:
+        (source_root / 'README.md').write_bytes(b'package readme\n')
+        for name, payload in license_payloads.items():
+            (source_root / name).write_bytes(payload)
+
+    monkeypatch.setenv('CARGO_HOME', str(tmp_path / 'cargo-home'))
+    for name in (*artifact_common.RELEASE_ENV_VARS, 'MATURIN_PEP517_ARGS'):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        quality_runtime,
+        'prepare_license_outputs',
+        prepare_outputs,
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        'source_input_digests',
+        lambda _root: {
+            'source_inputs_sha256': '1' * 64,
+            'native_source_inputs_sha256': '2' * 64,
+        },
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        '_rust_target_triple',
+        lambda *_args, **_kwargs: 'x86_64-unknown-linux-gnu',
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        'cargo_metadata',
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        'required_source_records',
+        lambda *_args, **_kwargs: [
+            {
+                'name': 'fixture',
+                'source': 'registry+https://example.invalid/index',
+                'checksum': '3' * 64,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        '_maturin_command',
+        lambda _root: ['maturin'],
+    )
+    monkeypatch.setattr(
+        quality_runtime,
+        '_tool_output',
+        lambda command, **_kwargs: (
+            'rustc fixture' if command[0] == 'rustc' else 'cargo fixture'
+        ),
+    )
+    monkeypatch.setattr(
+        quality_runtime, '_admit_quality_candidate', lambda *_args: None
+    )
+    monkeypatch.setattr(artifact_content, 'native_image_facts', lambda *_args: {})
+    builds = 0
+
+    def build_wheel(
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+    ) -> None:
+        nonlocal builds
+        assert cwd == root
+        assert env['PYO3_PYTHON'] == str(Path(sys.executable).resolve())
+        output = Path(command[command.index('--out') + 1])
+        package_members = {
+            f'gometry/{path.relative_to(package).as_posix()}': path.read_bytes()
+            for path in package.rglob('*')
+            if path.is_file()
+        }
+        _quality_wheel(
+            output,
+            version='1.0.0',
+            python_members=package_members,
+            licenses={name: (root / name).read_bytes() for name in license_payloads},
+            extension_payload=b'\x7fELF\x00development extension',
+        )
+        builds += 1
+
+    monkeypatch.setattr(quality_runtime, 'run', build_wheel)
+
+    quality_runtime.prepare_quality_runtime(
+        root,
+        scratch=root / 'target' / 'quality-runtime',
+    )
+    parsed = quality_runtime.read_quality_receipt(root)
+    quality_runtime.validate_quality_producer_inputs(root, parsed)
+
+    prepared = parsed['prepared_inputs']
+    assert set(prepared) == {'identity_sha256', 'files'}
+    assert prepared['identity_sha256'] == artifact_common._prepared_input_identity(
+        prepared['files']
+    )
+    assert prepared['files'] == artifact_common._prepared_output_hashes(root)
+    assert 'authored_stub' not in parsed
+    interpreter = parsed['build']['interpreter']
+    assert (
+        parsed['build']['settings']['environment']['PYO3_PYTHON']
+        == interpreter['resolved_executable']
+    )
+    alternate_environment = os.environ.copy()
+    target = parsed['build']['target']
+    alternate_environment.update({
+        'CARGO_BUILD_TARGET': target,
+        'NIX_DONT_SET_RPATH': '1',
+        f'NIX_DONT_SET_RPATH_{target.replace("-", "_")}': '1',
+        'PYO3_PYTHON': str(tmp_path / 'other-python'),
+    })
+    assert (
+        quality_runtime.quality_settings(root, alternate_environment)['identity_sha256']
+        != parsed['build']['settings']['identity_sha256']
+    )
+
+    reused = quality_runtime.prepare_quality_runtime(
+        root,
+        scratch=root / 'target' / 'quality-runtime',
+    )
+    assert builds == 1
+    assert reused['prepared_inputs'] == parsed['prepared_inputs']
+    parsed = quality_runtime.read_quality_receipt(root)
+    quality_runtime.validate_quality_producer_inputs(root, parsed)
+
+    (package / '_lib.pyi').write_bytes(b'def value() -> str: ...\n')
+    refreshed = quality_runtime.refresh_quality_runtime(root)
+    parsed = quality_runtime.read_quality_receipt(root)
+    quality_runtime.validate_quality_producer_inputs(root, parsed)
+    refreshed_prepared = parsed['prepared_inputs']
+    assert refreshed['prepared_inputs'] == refreshed_prepared
+    assert refreshed_prepared['files'] == artifact_common._prepared_output_hashes(root)
+    assert refreshed_prepared['identity_sha256'] == (
+        artifact_common._prepared_input_identity(refreshed_prepared['files'])
+    )
+    assert builds == 1
+
+
 def _quality_package_members(
     root: Path,
 ) -> tuple[Path, dict[str, Any], dict[str, str], dict[str, bytes]]:
@@ -1947,7 +2349,7 @@ def test_wheel_receipt_cli_accepts_its_required_evidence_options(
         observed['kwargs'] = kwargs
         return output
 
-    monkeypatch.setattr(release_artifact, 'write_runner_receipt', write_receipt)
+    monkeypatch.setattr(wheel_cli, 'write_runner_receipt', write_receipt)
 
     status = wheel_cli.main([
         '--write-wheel-receipt',

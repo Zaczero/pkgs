@@ -968,15 +968,8 @@ pub(crate) fn segment_projection(
     projection_from_classification(point, segment, classify_segment_projection(point, segment))
 }
 
-// This compact decide/decline filter is the projection hot path. Keeping its
-// consumer-specific return handling in the caller removes the otherwise
-// dominant per-segment enum call ABI; the exact fallback remains cold and
-// out-of-line below.
-#[expect(
-    clippy::inline_always,
-    reason = "measured specialization reduced the ordinary distance ABBA ratio from 1.3043x to 1.224192x"
-)]
-#[inline(always)]
+// The compact decide/decline filter handles ordinary projections; unresolved
+// cases continue through the exact fallback.
 fn classify_segment_projection(point: XY, segment: Segment) -> ClassifiedSegmentProjection {
     let Some(dx) = source_difference(segment.end.x, segment.start.x) else {
         return ClassifiedSegmentProjection::Declined;
@@ -1025,10 +1018,7 @@ fn classify_segment_projection(point: XY, segment: Segment) -> ClassifiedSegment
 }
 
 /// Ratio and witness certification is reached only after both endpoint signs
-/// have been decided as strictly interior. Keeping it out of the endpoint
-/// classifier avoids carrying this larger proof through the distance loop's
-/// overwhelmingly common start/end decisions.
-#[inline(never)]
+/// have been decided as strictly interior.
 fn classify_filtered_interior(
     segment: Segment,
     numerator: SourcePair,
@@ -1047,11 +1037,7 @@ fn classify_filtered_interior(
     ClassifiedSegmentProjection::Declined
 }
 
-/// The interval-filter decline is intentionally out of line: keeping limb
-/// construction and exact ratio rounding out of the ordinary projection's
-/// codegen is material in the distance inner loop.
-#[cold]
-#[inline(never)]
+/// The interval-filter decline uses exact stored-dyadic arithmetic.
 fn classify_segment_projection_exact(
     point: XY,
     segment: Segment,
@@ -1413,11 +1399,6 @@ impl PointSegmentSelection {
 /// The single projection owner classifies every clamped parameter before a
 /// metric consumes it. The measurement and selection key both use the source
 /// determinant; projection emission is a later witness operation.
-#[expect(
-    clippy::inline_always,
-    reason = "measured specialization reduced the ordinary distance ABBA ratio from 1.3043x to 1.224192x"
-)]
-#[inline(always)]
 fn point_segment_metric(point: XY, segment: Segment) -> Result<PointSegmentMetric> {
     let classification = classify_segment_projection(point, segment);
     if matches!(&classification, ClassifiedSegmentProjection::Start) {
@@ -1491,11 +1472,7 @@ pub(in crate::geometry) fn point_segment_distance_and_projection(
     }
 }
 
-/// Exact classification and squared-ratio rounding are a decline path. They
-/// stay out of the ordinary metric's frame so a certified endpoint/interior
-/// does not carry heap-backed dyadic state through the distance inner loop.
-#[cold]
-#[inline(never)]
+/// Exact classification and squared-ratio rounding handle filter declines.
 fn point_segment_metric_exact(point: XY, segment: Segment) -> Result<PointSegmentMetric> {
     Ok(match classify_segment_projection_exact(point, segment)? {
         ExactClassifiedSegmentProjection::Start => try_point_distance_squared(point, segment.start)
@@ -1624,10 +1601,10 @@ impl SquaredDistanceKey {
         if self.witness.same_distance_as(other.witness) {
             return Ok(Ordering::Equal);
         }
-        self.filter.disjoint_cmp(other.filter).map_or_else(
-            || exact_distance_witness_cmp(self.witness, other.witness),
-            Ok,
-        )
+        if let Some(order) = self.filter.disjoint_cmp(other.filter) {
+            return Ok(order);
+        }
+        exact_selection_distance_cmp(self.witness, other.witness)
     }
 
     pub(super) fn is_exact_zero(&self) -> Result<bool> {
@@ -1710,10 +1687,13 @@ fn source_dot_difference_exact(normal: [f64; 2], left: XY, right: XY) -> Result<
 }
 
 pub(crate) fn source_dot_cmp(normal: [f64; 2], left: XY, right: XY) -> Result<Ordering> {
-    if let Some(difference) = source_dot_difference_interval(normal, left, right)
-        && let Some(order) = dd_strict_cmp(difference, DdInterval::exact(0.0))
-    {
-        return Ok(order);
+    if let Some(difference) = source_dot_difference_interval(normal, left, right) {
+        if difference.is_exact_zero() {
+            return Ok(Ordering::Equal);
+        }
+        if let Some(order) = dd_strict_cmp(difference, DdInterval::exact(0.0)) {
+            return Ok(order);
+        }
     }
     #[cfg(test)]
     CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
@@ -2047,6 +2027,15 @@ pub(super) fn exact_distance_witness_cmp(
     left.squared()?.cmp(&right.squared()?)
 }
 
+fn exact_selection_distance_cmp(
+    left: ExactDistanceWitness,
+    right: ExactDistanceWitness,
+) -> Result<Ordering> {
+    #[cfg(test)]
+    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
+    exact_distance_witness_cmp(left, right)
+}
+
 fn exact_witness_cmp_with_identity(
     left: ExactDistanceWitness,
     right: ExactDistanceWitness,
@@ -2056,9 +2045,7 @@ fn exact_witness_cmp_with_identity(
             .witness_role()?
             .cmp_tie(right.witness_role()?, || Ordering::Equal));
     }
-    #[cfg(test)]
-    EXACT_SELECTION_FALLBACKS.with(|count| count.set(count.get().saturating_add(1)));
-    let distance = exact_distance_witness_cmp(left, right)?;
+    let distance = exact_selection_distance_cmp(left, right)?;
     if distance.is_eq() {
         Ok(left
             .witness_role()?

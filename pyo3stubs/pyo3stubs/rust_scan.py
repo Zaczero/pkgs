@@ -160,11 +160,21 @@ class PyClassExport:
 
 @dataclass(frozen=True, slots=True)
 class ConstructorDocSource:
-    """Authored constructor prose and its Rust source location."""
+    """A constructor source, including explicit absence or rejection."""
 
+    python_class: str | None
     prose: str | None
     path: str
     line: int
+    reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConstructorDocInventory:
+    """Effective class carriers and every unsupported macro-source record."""
+
+    by_class: dict[str, ConstructorDocSource]
+    issues: tuple[ConstructorDocSource, ...]
 
 
 def token_params(source: str) -> tuple[tuple[str, str], ...]:
@@ -252,8 +262,24 @@ def rust_class_map(cfg: StubConfig) -> dict[str, str]:
     return mapping
 
 
-def constructor_doc_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
-    """Exported Python class -> its authored constructor prose and source.
+def _constructor_macro_rust_name(item: Item) -> str | None:
+    """Class identifier in the configured macro's direct constructor header."""
+    if item.kind == 'impl_item':
+        return item.name or None
+    if item.kind != 'ERROR':
+        return None
+    children = item.node.children
+    if len(children) < 3 or tuple(child.type for child in children[:3]) != (
+        'impl',
+        'type_identifier',
+        '{',
+    ):
+        return None
+    return _text(children[1])
+
+
+def constructor_doc_sources(cfg: StubConfig) -> ConstructorDocInventory:
+    """Resolve direct and configured-macro constructor carriers without loss.
 
     PyO3 does not attach a ``#[new]``'s doc comment to anything Python can read:
     the class docstring comes from the ``#[pyclass]``, and ``__new__`` carries
@@ -261,11 +287,13 @@ def constructor_doc_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
     maintained, and unreachable — 16 of gometry's 20 constructors, several with
     full numpydoc parameter tables. A configured macro may carry that same
     prose on the class ``impl`` in its invocation when the expanded ``#[new]``
-    is not present in the retained syntax tree.
+    is not present in the retained syntax tree. Missing and unsupported
+    carriers remain records so consumers cannot mistake them for no source.
     """
     classes = rust_class_map(cfg)
     direct: dict[str, ConstructorDocSource] = {}
-    macro_carriers: dict[str, ConstructorDocSource] = {}
+    macro_candidates: dict[str, list[ConstructorDocSource]] = {}
+    issues: list[ConstructorDocSource] = []
     for source in iter_sources(cfg):
         for item in source.walk():
             if item.kind == 'impl_item':
@@ -273,41 +301,96 @@ def constructor_doc_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
                 if py_class is not None:
                     for child in item.children:
                         if child.attr('new') is not None:
+                            prose = child.doc.strip() or None
                             direct.setdefault(
                                 py_class,
                                 ConstructorDocSource(
-                                    child.doc or None,
-                                    source.label,
-                                    child.line,
+                                    python_class=py_class,
+                                    prose=prose,
+                                    path=source.label,
+                                    line=child.line,
+                                    reason=(
+                                        None
+                                        if prose is not None
+                                        else 'direct #[new] carrier has no authored prose'
+                                    ),
                                 ),
                             )
             elif (
                 item.kind == 'macro_invocation'
                 and item.name in cfg.constructor_doc_macros
             ):
-                for impl in item.children:
-                    py_class = (
-                        classes.get(impl.name) if impl.kind == 'impl_item' else None
-                    )
-                    if py_class is not None and impl.doc:
-                        macro_carriers.setdefault(
-                            py_class,
+                for carrier in item.children:
+                    rust_name = _constructor_macro_rust_name(carrier)
+                    if rust_name is None:
+                        prose = carrier.doc.strip() or None
+                        if prose is not None:
+                            issues.append(
+                                ConstructorDocSource(
+                                    python_class=None,
+                                    prose=prose,
+                                    path=source.label,
+                                    line=carrier.line,
+                                    reason=(
+                                        f'configured constructor-doc macro {item.name!r} '
+                                        'has an unsupported documented item; expected '
+                                        'the `impl Type {` carrier header'
+                                    ),
+                                )
+                            )
+                        continue
+                    py_class = classes.get(rust_name)
+                    if py_class is None:
+                        issues.append(
                             ConstructorDocSource(
-                                impl.doc,
-                                source.label,
-                                impl.line,
-                            ),
+                                python_class=None,
+                                prose=carrier.doc.strip() or None,
+                                path=source.label,
+                                line=carrier.line,
+                                reason=(
+                                    f'constructor-doc macro type {rust_name!r} does not '
+                                    'map to an exported PyO3 class'
+                                ),
+                            )
                         )
-    return macro_carriers | direct
+                        continue
+                    prose = carrier.doc.strip() or None
+                    candidate = ConstructorDocSource(
+                        python_class=py_class,
+                        prose=prose,
+                        path=source.label,
+                        line=carrier.line,
+                        reason=(
+                            None
+                            if prose is not None
+                            else 'configured constructor-doc macro carrier has no authored prose'
+                        ),
+                    )
+                    macro_candidates.setdefault(py_class, []).append(candidate)
 
+    macro_carriers: dict[str, ConstructorDocSource] = {}
+    for py_class, candidates in macro_candidates.items():
+        issues.extend(candidate for candidate in candidates if candidate.reason)
+        if len(candidates) == 1:
+            macro_carriers[py_class] = candidates[0]
+            continue
+        locations = ', '.join(
+            f'{carrier.path}:{carrier.line}' for carrier in candidates
+        )
+        duplicate = ConstructorDocSource(
+            python_class=py_class,
+            prose=None,
+            path=candidates[0].path,
+            line=candidates[0].line,
+            reason=(
+                f'ambiguous duplicate constructor-doc carriers for {py_class}: '
+                f'{locations}'
+            ),
+        )
+        macro_carriers[py_class] = duplicate
+        issues.append(duplicate)
 
-def constructor_docs(cfg: StubConfig) -> dict[str, str]:
-    """Exported Python class -> authored ``#[new]`` prose."""
-    return {
-        name: source.prose
-        for name, source in constructor_doc_sources(cfg).items()
-        if source.prose is not None
-    }
+    return ConstructorDocInventory(macro_carriers | direct, tuple(issues))
 
 
 def unquote(source: str) -> str:

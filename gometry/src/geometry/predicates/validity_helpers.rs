@@ -388,28 +388,33 @@ fn minimum_clearance_witness_indexed(
     segments: &[IndexedSegment],
     keep: &impl Fn(Point, usize, Segment) -> bool,
 ) -> crate::error::Result<Option<MinimumClearanceCandidate>> {
-    let vertex_index = PointSetIndex::build_clearance_with_ordinals(points);
-    let mut vertex_query: ClearancePointQuery<'_> = vertex_index.clearance_query();
     let mut best: Option<MinimumClearanceCandidate> = None;
-    for (point_index, point) in points.iter().enumerate() {
-        let incumbent = best.as_ref().map(|candidate| &candidate.distance_key);
-        if let Some((other, distance_key)) =
-            vertex_query.nearest_clearance_neighbor(*point, incumbent)?
-        {
-            let (first, second) = if point_index < other {
-                (point_index, other)
-            } else {
-                (other, point_index)
-            };
-            consider_clearance_candidate(&mut best, &MinimumClearanceCandidate {
-                source: ClearanceSource::PointPair { first, second },
-                distance_key,
-            })?;
+    {
+        let vertex_index = PointSetIndex::build_clearance_with_ordinals(points);
+        let mut vertex_query: ClearancePointQuery<'_> = vertex_index.clearance_query();
+        for (point_index, point) in points.iter().enumerate() {
+            let incumbent = best.as_ref().map(|candidate| &candidate.distance_key);
+            if let Some((other, distance_key)) =
+                vertex_query.nearest_clearance_neighbor(*point, incumbent)?
+            {
+                let (first, second) = if point_index < other {
+                    (point_index, other)
+                } else {
+                    (other, point_index)
+                };
+                consider_clearance_candidate(&mut best, &MinimumClearanceCandidate {
+                    source: ClearanceSource::PointPair { first, second },
+                    distance_key,
+                })?;
+            }
         }
+    }
+    if segments.is_empty() {
+        return Ok(best);
     }
     let linework = PreparedLinework::build_all(shape)?;
     let bvh: Option<ClearanceFacetBvh> = FacetBvh::build_for_clearance(&linework)?;
-    if bvh.is_none() && !segments.is_empty() {
+    if bvh.is_none() {
         return Err(crate::error::ResourceError::SizeOverflow.into());
     }
     let mut stack = Vec::new();
@@ -864,7 +869,6 @@ mod clearance_index_tests {
                 crate::geometry::CLEARANCE_POINT_NODES.with(|work| work.set(0));
                 crate::geometry::CLEARANCE_POINT_LEAVES.with(|work| work.set(0));
                 crate::geometry::CLEARANCE_POINT_RECHECKS.with(|work| work.set(0));
-                crate::geometry::CLEARANCE_POINT_EXACT_FALLBACKS.with(|work| work.set(0));
                 let candidate = assert_indexed_matches_exact_exhaustive(&shape);
                 assert!(matches!(candidate.source, ClearanceSource::PointPair {
                     first: 0,
@@ -875,10 +879,8 @@ mod clearance_index_tests {
                 let nodes = crate::geometry::CLEARANCE_POINT_NODES.with(std::cell::Cell::get);
                 let leaves = crate::geometry::CLEARANCE_POINT_LEAVES.with(std::cell::Cell::get);
                 let rechecks = crate::geometry::CLEARANCE_POINT_RECHECKS.with(std::cell::Cell::get);
-                let exact_fallbacks =
-                    crate::geometry::CLEARANCE_POINT_EXACT_FALLBACKS.with(std::cell::Cell::get);
                 eprintln!(
-                    "point clearance: spacing={spacing:e}, {count} sites ({build_sites} build visits), {nodes} node bounds, {leaves} leaf bounds, {rechecks} rechecks, {exact_fallbacks} exact fallbacks",
+                    "point clearance: spacing={spacing:e}, {count} sites ({build_sites} build visits), {nodes} node bounds, {leaves} leaf bounds, {rechecks} rechecks",
                 );
                 assert!(
                     nodes > 0 && leaves > 0,

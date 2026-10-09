@@ -808,12 +808,12 @@ fn rewrap_point(point: Point, frame: GeographicFrame) -> Result<Point> {
 /// or seam-connected geographic geometry. Two strategies, because
 /// unwrap-rewrap cannot serve both:
 ///
-/// * `interior` callers (`point_on_surface`, which must return a point strictly
-///   inside) AND any pole-enclosing geometry route through the seam+pole SPLIT —
-///   the unwrapped form of a polar cap is a degenerate longitude sliver (a
-///   longitude shift can't reconstruct the cap), and the split's planar kernel
-///   yields a point genuinely inside the true region. The split is in the
-///   frame's canonical longitude interval, so no rewrap is needed.
+/// * `interior` callers (`point_on_surface`, which must return a point in or on
+///   the geometry) AND any pole-enclosing geometry route through the seam+pole
+///   SPLIT — the unwrapped form of a polar cap is a degenerate longitude sliver
+///   (a longitude shift can't reconstruct the cap), and the split's planar
+///   kernel yields a point in the true region. The split is in the frame's
+///   canonical longitude interval, so no rewrap is needed.
 ///   `force_2d` keeps the split infallible
 ///   (a Z/M pole closure would otherwise trip the ordinate gate).
 /// * every other crossing `centroid` uses unwrap-rewrap for the planar centroid

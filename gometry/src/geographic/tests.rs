@@ -233,6 +233,105 @@ fn ordinary_chart_certificate_matches_selected_period_and_edge_contracts() {
 }
 
 #[test]
+fn removed_period_workarounds_preserve_finite_longitude_bits() {
+    fn previous_wrap(axis: PeriodicAxis, value: f64) -> f64 {
+        let mut reduced = value % axis.period();
+        if value.fract() == 0.0 && axis.period().fract() == 0.0 {
+            let nominal_remainder = value % axis.period();
+            if nominal_remainder == 0.0 {
+                reduced = 0.0;
+            } else if nominal_remainder.abs() == axis.period() / 2.0 {
+                reduced = -axis.half_period();
+            }
+        }
+        if reduced < -axis.half_period() {
+            reduced += axis.period();
+        } else if reduced >= axis.half_period() {
+            reduced -= axis.period();
+        }
+        if reduced == 0.0 {
+            reduced = 0.0;
+        }
+        reduced
+    }
+
+    fn previous_ordinary_longitude(axis: PeriodicAxis, value: f64) -> Option<u64> {
+        if value.abs().partial_cmp(&axis.half_period()) != Some(std::cmp::Ordering::Less) {
+            return None;
+        }
+        if value.fract() == 0.0
+            && axis.period().fract() == 0.0
+            && value.abs() == axis.period() / 2.0
+        {
+            return None;
+        }
+        Some(if value == 0.0 { 0.0 } else { value }.to_bits())
+    }
+
+    fn previous_ordinary_longitude_bound(axis: PeriodicAxis) -> f64 {
+        if axis.period().fract() == 0.0 && (axis.period() / 2.0).fract() == 0.0 {
+            axis.half_period().min(axis.period() / 2.0)
+        } else {
+            axis.half_period()
+        }
+    }
+
+    let mut axes = vec![degrees().longitude(), frame(1.0).longitude()];
+    for turn in [400.0_f64.next_down(), 400.0, 400.0_f64.next_up()] {
+        let unit = factor(std::f64::consts::TAU / turn);
+        assert_eq!(unit.recognized_period(), Some(400.0));
+        axes.push(
+            GeographicFrame::try_new(unit, unit, 0.0)
+                .unwrap()
+                .longitude(),
+        );
+    }
+
+    for axis in axes {
+        let half = axis.half_period();
+        let period = axis.period();
+        let large_alias = period * (2.0_f64.powi(40));
+        let values = [
+            -half,
+            half,
+            -half.next_down(),
+            -half.next_up(),
+            half.next_down(),
+            half.next_up(),
+            -0.0,
+            0.0,
+            -period,
+            period,
+            -large_alias,
+            large_alias,
+            -large_alias - half,
+            large_alias + half,
+            f64::MIN,
+            f64::MAX,
+        ];
+
+        assert_eq!(
+            axis.ordinary_longitude_bound().to_bits(),
+            previous_ordinary_longitude_bound(axis).to_bits()
+        );
+        for value in values {
+            assert!(value.is_finite());
+            assert_eq!(
+                axis.wrap_admitted(value).get().to_bits(),
+                previous_wrap(axis, value).to_bits(),
+                "wrapped bits for {value:?} with period {period:?}"
+            );
+            assert_eq!(
+                axis.ordinary_longitude(value)
+                    .map(|value| value.get().to_bits()),
+                previous_ordinary_longitude(axis, value),
+                "ordinary bits for {value:?} with period {period:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn latitude_admission_is_one_exterior_ulp_and_contextual() {
     let pole = degrees().pole();
     let admitted =

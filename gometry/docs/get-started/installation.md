@@ -20,11 +20,13 @@ gometry installs from PyPI:
 
 ## Requirements
 
+These prerequisites apply to installing a prebuilt wheel.
+
 | Requirement | Detail |
 |---|---|
 | Python | **CPython 3.11–3.14; free-threaded CPython 3.14t.** |
-| Runtime dependencies | **NumPy.** Bulk numeric, boolean, index, and coordinate results are read-only `numpy.ndarray` objects. |
-| System libraries | **None.** No GEOS, GDAL, or system PROJ. |
+| Runtime dependencies | **NumPy.** `typing-extensions>=4.15` is also installed when Python is below 3.15. |
+| System libraries | No GEOS, GDAL, or system PROJ. |
 | CPU | **x86_64: x86-64-v2** (roughly 2009 or newer); **arm64: native arm64.** |
 
 On x86_64, importing a wheel checks detectable baseline features before loading
@@ -106,14 +108,16 @@ print(f"ellipsoidal area: {poly.area:,.0f} m²")
 
 ## Build from a checkout
 
-Wheels cover the platforms in [Compatibility](../about/compatibility.md), and
-pip falls back to a source build elsewhere. A clone builds the same way, and
-needs a recent nightly Rust toolchain, a C/C++ toolchain, and Python headers.
+Building from source requires the repository checkout with its `libtiff`
+submodule, the nightly Rust toolchain selected by the root
+`rust-toolchain.toml`, C and C++ compilers, and CMake. The default build
+compiles bundled PROJ source and the submodule's libtiff source; it does not
+use system GEOS, GDAL, or PROJ.
 
 ```bash
-uv sync --all-groups
-uv run --no-project --python .venv/bin/python \
-  --with maturin==1.14.1 maturin develop --release
+git clone --recurse-submodules https://github.com/Zaczero/pkgs.git
+cd pkgs/gometry
+python -m pip install .
 ```
 
 ## Next steps

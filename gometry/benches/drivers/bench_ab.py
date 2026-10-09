@@ -35,20 +35,19 @@ for _path in (_SUPPORT, _TOOLS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from bench_doctor import (
-    benchmark_source_inputs_identity,
-    collect,
-    collect_contention,
-    select_benchmark_cpu,
-)
+from bench_doctor import collect, collect_contention, select_benchmark_cpu
 from benchmark_statistics import (
     bootstrap_interval,
     bootstrap_median_interval,
     percentile,
 )
-from benchmark_identity import IDENTITY_SCHEMA_VERSION, identity_for_arm
+import benchmark_runtime
+from benchmark_identity import (
+    IDENTITY_SCHEMA_VERSION,
+    common_identity,
+    validate_producer_identity,
+)
 from benchmark_observation import metric_spec, measurement_summary, validate_observation
-import release_artifact as artifact_release
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -84,174 +83,6 @@ def expand_perf_events(events: Sequence[str] | None = None) -> tuple[str, ...]:
     return expanded
 
 
-def identify_build(
-    python: str,
-    *,
-    receipt_binding: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Identify the loaded runtime and verify its embedded source digest.
-
-    An executable wrapper may set ``GOMETRY_BENCH_SOURCE_INPUTS_SHA256`` when
-    comparing a parent artifact with the live checkout. The override is only
-    accepted when it equals the extension's embedded source digest.
-    """
-    code = """
-import json, os, platform, sys, sysconfig
-from pathlib import Path
-sys.path.insert(0, 'benches/drivers')
-sys.path.insert(0, 'benches/support')
-import gometry._lib as lib
-from bench_doctor import (_extension_identity, _loaded_native_libraries,
-                          _package_identity, _run,
-                          _source_inputs_digest, _uv_lock_identity)
-from benchmark_identity import IDENTITY_SCHEMA_VERSION
-packages = {}
-for name in ('gometry', 'numpy', 'shapely', 'pyproj', 'h3', 'geopandas', 'pyarrow', 'mercantile', 'pygeohash'):
-    identity = _package_identity(name)
-    if identity is not None:
-        packages[name] = identity
-extension = _extension_identity()
-print(json.dumps({
-    'identity_schema_version': IDENTITY_SCHEMA_VERSION,
-    'harness_commit': _run(['git', 'rev-parse', 'HEAD']),
-    'source_inputs_sha256': _source_inputs_digest(),
-    'requested_source_inputs_sha256': os.environ.get('GOMETRY_BENCH_SOURCE_INPUTS_SHA256'),
-    'extension': extension,
-    'uv_lock': _uv_lock_identity(),
-    'packages': packages,
-    'loaded_native_libraries': _loaded_native_libraries(),
-    'python': {
-        'executable': str(Path(sys.executable).resolve()),
-        'version': sys.version,
-        'implementation': platform.python_implementation(),
-        'cache_tag': sys.implementation.cache_tag,
-        'build': {
-            'implementation': platform.python_implementation(),
-            'version': platform.python_version(),
-            'build': platform.python_build(),
-            'debug': bool(sysconfig.get_config_var('Py_DEBUG')),
-        },
-    },
-}))
-"""
-    result = subprocess.run(
-        [python, '-c', code],
-        cwd=GOMETRY_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=IDENTIFY_TIMEOUT_SECONDS,
-        env=(
-            os.environ.copy()
-            if receipt_binding is None
-            else {
-                **os.environ,
-                'GOMETRY_BENCH_SOURCE_INPUTS_SHA256': (
-                    receipt_binding['source']['source_inputs_sha256']
-                ),
-            }
-        ),
-    )
-    identity = json.loads(result.stdout)
-    extension = identity.get('extension')
-    build_info = extension.get('build_info') if isinstance(extension, dict) else None
-    identity['source_inputs_sha256'] = benchmark_source_inputs_identity(
-        build_info,
-        identity.get('source_inputs_sha256'),
-        identity.pop('requested_source_inputs_sha256', None),
-    )
-    if receipt_binding is None:
-        identity['source_commit'] = None
-        identity['source_receipt'] = None
-        identity['source_wheel'] = None
-    else:
-        gometry_package = identity.get('packages', {}).get('gometry', {})
-        distribution = (
-            gometry_package.get('distribution')
-            if isinstance(gometry_package, dict)
-            else None
-        )
-        source = receipt_binding['source']
-        build_info = extension.get('build_info')
-        if (
-            not isinstance(build_info, dict)
-            or build_info.get('native_source_inputs_sha256')
-            != source['native_source_inputs_sha256']
-        ):
-            raise SystemExit(
-                'loaded extension native source identity differs from receipt'
-            )
-        receipt_facts = artifact_release.match_benchmark_receipt(
-            receipt_binding,
-            extension,
-            distribution,
-        )
-        identity['source_commit'] = receipt_facts['source_commit']
-        if receipt_facts['source_commit'] is None:
-            identity['source_receipt'] = None
-            identity['source_wheel'] = None
-        else:
-            identity['source_receipt'] = {
-                'path': receipt_facts['receipt_path'],
-                'sha256': receipt_facts['receipt_sha256'],
-            }
-            identity['source_wheel'] = {
-                'filename': receipt_facts['wheel_filename'],
-                'sha256': receipt_facts['wheel_sha256'],
-                'extension_member': receipt_facts['extension_member'],
-                'extension_sha256': receipt_facts['extension_sha256'],
-            }
-    return identity
-
-
-def _attribute_build(
-    identity: dict[str, Any], *, side: str, row: str
-) -> dict[str, Any]:
-    packages = identity.get('packages')
-    gometry = packages.get('gometry') if isinstance(packages, dict) else None
-    if not isinstance(gometry, dict):
-        return identity
-    implementation = {
-        'runtime': 'gometry',
-        'row': row,
-        'module_name': 'gometry._lib',
-        'module': gometry.get('module'),
-        'distribution': gometry.get('distribution'),
-        'native_libraries': [
-            {
-                key: identity['extension'][key]
-                for key in ('path', 'sha256', 'size_bytes')
-            }
-        ],
-        'native_library_status': 'identified',
-    }
-    return identity_for_arm(
-        identity,
-        side=side,
-        row=row,
-        runtime=implementation['runtime'],
-        module=implementation['module'],
-        distribution=implementation['distribution'],
-        native_libraries=implementation['native_libraries'],
-        native_library_status=implementation['native_library_status'],
-        source_commit=(
-            identity.get('source_commit')
-            if implementation['runtime'] == 'gometry'
-            else None
-        ),
-        source_receipt=(
-            identity.get('source_receipt')
-            if implementation['runtime'] == 'gometry'
-            else None
-        ),
-        source_wheel=(
-            identity.get('source_wheel')
-            if implementation['runtime'] == 'gometry'
-            else None
-        ),
-    )
-
-
 def perf_version(perf_binary: str = PERF_BINARY) -> dict[str, Any]:
     """Return the exact perf version output, failing closed when unavailable."""
     command = [perf_binary, '--version']
@@ -282,15 +113,50 @@ def perf_version(perf_binary: str = PERF_BINARY) -> dict[str, Any]:
 
 def _parse_observation_stdout(case: Path, stdout: str, stderr: str) -> dict[str, Any]:
     try:
-        payload = json.loads(stdout.strip().splitlines()[-1])
+        payload = json.loads(stdout)
         observation = payload['observation']
         validate_observation(observation)
-    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise SystemExit(
-            f'{case}: expected one typed observation JSON object on stdout, got {stdout!r} '
-            f'(stderr: {stderr[-400:]!r})'
+            f'{case}: expected one typed observation JSON object on stdout, '
+            f'got {stdout!r} (stderr: {stderr[-400:]!r})'
         ) from error
     return observation
+
+
+def _run_case_process(
+    command: list[str],
+    *,
+    case: Path,
+    side: str,
+    subject: dict[str, Any],
+    package_root: Path,
+    timeout: int = CASE_TIMEOUT_SECONDS,
+    environment: dict[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+) -> dict[str, Any]:
+    result = benchmark_runtime.run_controlled_process(
+        command,
+        case=case,
+        side=side,
+        subject=subject,
+        package_root=package_root,
+        timeout=timeout,
+        environment=environment,
+        pass_fds=pass_fds,
+    )
+    return {
+        'observation': result['observation'],
+        'started_monotonic_ns': result['started_monotonic_ns'],
+        'measurement_done_monotonic_ns': result['measurement_done_monotonic_ns'],
+        'ended_monotonic_ns': result['ended_monotonic_ns'],
+        'provenance_before': result['producer_identity'],
+        'provenance_after': result['producer_identity'],
+        'command': command,
+        'case_stdout': result['case_stdout'],
+        'case_stderr': result['case_stderr'],
+        'case_process': result['case_process'],
+    }
 
 
 def run_case(
@@ -298,42 +164,19 @@ def run_case(
     case: Path,
     extra: list[str],
     *,
-    receipt_binding: dict[str, Any] | None = None,
+    receipt_binding: dict[str, Any],
+    package_root: Path,
+    side: str,
+    environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    producer_before = identify_build(python, receipt_binding=receipt_binding)
-    started_monotonic_ns = time.monotonic_ns()
-    try:
-        result = subprocess.run(
-            [python, str(case), *extra],
-            cwd=GOMETRY_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=CASE_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise SystemExit(
-            f'{case}: exceeded the {CASE_TIMEOUT_SECONDS}s per-block timeout'
-        ) from error
-    ended_monotonic_ns = time.monotonic_ns()
-    producer_after = identify_build(python, receipt_binding=receipt_binding)
-    if producer_before != producer_after:
-        raise SystemExit(f'{case}: producer identity changed during the measured arm')
-    observation = _parse_observation_stdout(case, result.stdout, result.stderr)
-    producer_before = _attribute_build(producer_before, side='A', row=str(case))
-    producer_after = _attribute_build(producer_after, side='A', row=str(case))
-    if producer_before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION:
-        observation['producer_identity'] = producer_before
-    return {
-        'observation': observation,
-        'started_monotonic_ns': started_monotonic_ns,
-        'ended_monotonic_ns': ended_monotonic_ns,
-        'provenance_before': producer_before,
-        'provenance_after': producer_after,
-        'command': [python, str(case), *extra],
-        'case_stdout': result.stdout,
-        'case_stderr': result.stderr,
-    }
+    return _run_case_process(
+        [python, str(case), *extra],
+        case=case,
+        side=side,
+        subject=receipt_binding,
+        package_root=package_root,
+        environment=environment,
+    )
 
 
 def _event_base(event: str) -> str:
@@ -800,14 +643,14 @@ def _run_case_with_perf_group(
     extra: list[str],
     events: Sequence[str],
     *,
-    receipt_binding: dict[str, Any] | None = None,
+    receipt_binding: dict[str, Any],
+    package_root: Path,
+    side: str,
     perf_binary: str = PERF_BINARY,
     minimum_coverage: float = MIN_COUNTER_COVERAGE,
 ) -> dict[str, Any]:
     """Run one validated case under one non-multiplexed perf event group."""
     requested = expand_perf_events(events)
-    producer_before = identify_build(python, receipt_binding=receipt_binding)
-    started_monotonic_ns = time.monotonic_ns()
     with tempfile.TemporaryFile() as perf_log:
         log_fd = perf_log.fileno()
         command = [
@@ -825,15 +668,14 @@ def _run_case_with_perf_group(
         ))
         command.extend(('--', python, str(case), *extra))
         try:
-            result = subprocess.run(
+            result = _run_case_process(
                 command,
-                cwd=GOMETRY_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=CASE_TIMEOUT_SECONDS,
+                case=case,
+                side=side,
+                subject=receipt_binding,
+                package_root=package_root,
+                environment={**os.environ, 'LC_ALL': 'C', 'LANG': 'C'},
                 pass_fds=(log_fd,),
-                env={**os.environ, 'LC_ALL': 'C', 'LANG': 'C'},
             )
         except subprocess.TimeoutExpired as error:
             raise SystemExit(
@@ -846,33 +688,17 @@ def _run_case_with_perf_group(
             ) from error
         perf_log.seek(0)
         perf_output = perf_log.read().decode(errors='replace')
-    ended_monotonic_ns = time.monotonic_ns()
-    producer_after = identify_build(python, receipt_binding=receipt_binding)
-    if producer_before != producer_after:
-        raise SystemExit(f'{case}: producer identity changed during the perf arm')
     counters = parse_perf_output(
         perf_output, requested, minimum_coverage=minimum_coverage
     )
-    if result.returncode != 0:
-        raise SystemExit(
-            f'perf command failed with returncode={result.returncode}; '
-            f'case stdout={result.stdout!r}; process stderr={result.stderr[-400:]!r}; '
-            f'perf output={perf_output!r}'
-        )
-    observation = _parse_observation_stdout(case, result.stdout, result.stderr)
     _validate_counters(counters, requested)
-    return {
-        'observation': observation,
-        'started_monotonic_ns': started_monotonic_ns,
-        'ended_monotonic_ns': ended_monotonic_ns,
-        'provenance_before': producer_before,
-        'provenance_after': producer_after,
+    result.update({
         'counters': counters,
         'command': command,
         'perf_output': perf_output,
-        'case_stdout': result.stdout,
-        'perf_stderr': result.stderr,
-    }
+        'perf_stderr': result['case_stderr'],
+    })
+    return result
 
 
 def _observation_identity(observation: dict[str, Any]) -> dict[str, Any]:
@@ -896,7 +722,9 @@ def run_case_with_perf(
     extra: list[str],
     events: Sequence[str],
     *,
-    receipt_binding: dict[str, Any] | None = None,
+    receipt_binding: dict[str, Any],
+    package_root: Path,
+    side: str,
     perf_binary: str = PERF_BINARY,
     minimum_coverage: float = MIN_COUNTER_COVERAGE,
     event_groups: Sequence[Sequence[str]] | None = None,
@@ -919,6 +747,8 @@ def run_case_with_perf(
             extra,
             group,
             receipt_binding=receipt_binding,
+            package_root=package_root,
+            side=side,
             perf_binary=perf_binary,
             minimum_coverage=minimum_coverage,
         )
@@ -930,6 +760,7 @@ def run_case_with_perf(
     first_after = first['provenance_after']
     counters: dict[str, dict[str, Any]] = {}
     commands: list[list[str]] = []
+    case_processes: list[dict[str, Any]] = []
     for _group, result in zip(groups, results, strict=True):
         if _observation_identity(result['observation']) != _observation_identity(
             first_observation
@@ -947,10 +778,12 @@ def run_case_with_perf(
                 raise SystemExit(f'perf split groups duplicated counter {event!r}')
             counters[event] = counter
         commands.append(result['command'])
+        case_processes.append(result['case_process'])
     merged = dict(first)
     merged['counters'] = counters
     merged['commands'] = commands
     merged['event_groups'] = [list(group) for group in groups]
+    merged['case_processes'] = case_processes
     return merged
 
 
@@ -972,22 +805,28 @@ def run_blocks(
     rounds: int,
     seed: int,
     receipt_bindings: dict[str, dict[str, Any] | None] | None = None,
+    package_roots: dict[str, Path] | None = None,
     runner: Callable[[str, Path, list[str]], dict[str, Any]] = run_case,
     clock_ns: Callable[[], int] = time.monotonic_ns,
 ) -> dict[str, Any]:
     samples: dict[str, list[float]] = {'A': [], 'B': []}
+    producer_by_side: dict[str, dict[str, Any]] = {}
     blocks: list[dict[str, Any]] = []
     for block_index, order in enumerate(blocked_orders(warmup + rounds, seed)):
         measured = block_index >= warmup
         block_started = clock_ns()
-        arms = {}
+        arms: dict[str, Any] = {}
         for side in order:
-            if receipt_bindings is not None and runner is run_case:
+            if runner is run_case:
+                if receipt_bindings is None or package_roots is None:
+                    raise SystemExit('A/B timing requires an admitted subject per side')
                 arms[side] = run_case(
                     sides[side],
                     case,
                     extra,
-                    receipt_binding=receipt_bindings.get(side),
+                    receipt_binding=receipt_bindings[side],
+                    package_root=package_roots[side],
+                    side=side,
                 )
             else:
                 arms[side] = runner(sides[side], case, extra)
@@ -998,15 +837,19 @@ def run_blocks(
                 isinstance(before, dict)
                 and before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION
             ):
-                attributed_before = _attribute_build(before, side=side, row=str(case))
-                attributed_after = _attribute_build(
-                    after if isinstance(after, dict) else before,
-                    side=side,
-                    row=str(case),
-                )
-                arm['provenance_before'] = attributed_before
-                arm['provenance_after'] = attributed_after
-                arm['observation']['producer_identity'] = attributed_before
+                validate_producer_identity(before)
+                if (
+                    before.get('arm') != {'side': side, 'row': str(case.resolve())}
+                    or after != before
+                    or arm['observation'].get('producer_identity') != before
+                ):
+                    raise SystemExit(
+                        f'{case}: measured case identity has the wrong arm attribution'
+                    )
+                common = common_identity(before)
+                if side in producer_by_side and producer_by_side[side] != common:
+                    raise SystemExit(f'{case}: producer identity changed across blocks')
+                producer_by_side[side] = common
         block_ended = clock_ns()
         metric, unit = _validate_pair_arms(arms, case)
         _validate_arm_order(
@@ -1051,6 +894,7 @@ def run_blocks_with_perf(
     rounds: int,
     seed: int,
     receipt_bindings: dict[str, dict[str, Any] | None] | None = None,
+    package_roots: dict[str, Path] | None = None,
     runner: Callable[
         [str, Path, list[str], Sequence[str]], dict[str, Any]
     ] = run_case_with_perf,
@@ -1060,6 +904,7 @@ def run_blocks_with_perf(
     """Run the typed blocked schedule and retain counter evidence per block."""
     requested = expand_perf_events(events)
     samples: dict[str, list[float]] = {'A': [], 'B': []}
+    producer_by_side: dict[str, dict[str, Any]] = {}
     blocks: list[dict[str, Any]] = []
     for block_index, order in enumerate(blocked_orders(warmup + rounds, seed)):
         measured = block_index >= warmup
@@ -1072,23 +917,35 @@ def run_blocks_with_perf(
         arms: dict[str, Any] = {}
         for side in order:
             if event_groups is None:
-                if receipt_bindings is not None and runner is run_case_with_perf:
+                if runner is run_case_with_perf:
+                    if receipt_bindings is None or package_roots is None:
+                        raise SystemExit(
+                            'perf A/B timing requires an admitted subject per side'
+                        )
                     result = run_case_with_perf(
                         sides[side],
                         case,
                         extra,
                         requested,
-                        receipt_binding=receipt_bindings.get(side),
+                        receipt_binding=receipt_bindings[side],
+                        package_root=package_roots[side],
+                        side=side,
                     )
                 else:
                     result = runner(sides[side], case, extra, requested)
-            elif receipt_bindings is not None and runner is run_case_with_perf:
+            elif runner is run_case_with_perf:
+                if receipt_bindings is None or package_roots is None:
+                    raise SystemExit(
+                        'perf A/B timing requires an admitted subject per side'
+                    )
                 result = run_case_with_perf(
                     sides[side],
                     case,
                     extra,
                     requested,
-                    receipt_binding=receipt_bindings.get(side),
+                    receipt_binding=receipt_bindings[side],
+                    package_root=package_roots[side],
+                    side=side,
                     event_groups=event_groups,
                 )
             else:
@@ -1105,15 +962,21 @@ def run_blocks_with_perf(
                 isinstance(before, dict)
                 and before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION
             ):
-                result['provenance_before'] = _attribute_build(
-                    before, side=side, row=str(case)
-                )
-                result['provenance_after'] = _attribute_build(
-                    after if isinstance(after, dict) else before,
-                    side=side,
-                    row=str(case),
-                )
-                result['observation']['producer_identity'] = result['provenance_before']
+                validate_producer_identity(before)
+                if (
+                    before.get('arm') != {'side': side, 'row': str(case.resolve())}
+                    or after != before
+                    or result['observation'].get('producer_identity') != before
+                ):
+                    raise SystemExit(
+                        f'{case}: measured perf case identity has wrong arm attribution'
+                    )
+                common = common_identity(before)
+                if side in producer_by_side and producer_by_side[side] != common:
+                    raise SystemExit(
+                        f'{case}: perf producer identity changed across blocks'
+                    )
+                producer_by_side[side] = common
             _validate_counters(result['counters'], requested)
             arms[side] = result
         metric, unit = _validate_pair_arms(arms, case)
@@ -1505,12 +1368,22 @@ def main() -> int:
     parser.add_argument(
         '--a-receipt',
         type=Path,
-        help='release manifest or runner-wheel bundle with its source manifest for side A',
+        help='quality receipt, release manifest, or runner-wheel receipt for side A',
+    )
+    parser.add_argument(
+        '--a-package-root',
+        type=Path,
+        help='installed package root for a release subject on side A',
     )
     parser.add_argument(
         '--b-receipt',
         type=Path,
-        help='release manifest or runner-wheel bundle with its source manifest for side B',
+        help='quality receipt, release manifest, or runner-wheel receipt for side B',
+    )
+    parser.add_argument(
+        '--b-package-root',
+        type=Path,
+        help='installed package root for a release subject on side B',
     )
     parser.add_argument(
         '--case',
@@ -1550,12 +1423,18 @@ def main() -> int:
         parser.error(f'case does not exist: {args.case}')
 
     receipt_bindings = {
-        side: (
-            None
-            if path is None
-            else artifact_release.validate_benchmark_receipt(path.resolve())
-        )
+        side: benchmark_runtime.load_subject(path)
         for side, path in (('A', args.a_receipt), ('B', args.b_receipt))
+    }
+    package_roots = {
+        side: benchmark_runtime.package_root_for_subject(
+            receipt_bindings[side],
+            explicit,
+        )
+        for side, explicit in (
+            ('A', args.a_package_root),
+            ('B', args.b_package_root),
+        )
     }
     perf_events = (
         expand_perf_events(args.perf_events) if args.perf or args.perf_events else None
@@ -1579,6 +1458,7 @@ def main() -> int:
             rounds=args.rounds,
             seed=args.seed,
             receipt_bindings=receipt_bindings,
+            package_roots=package_roots,
         )
     else:
         perf_capability = check_perf_capability(perf_events)
@@ -1618,6 +1498,7 @@ def main() -> int:
             rounds=args.rounds,
             seed=args.seed,
             receipt_bindings=receipt_bindings,
+            package_roots=package_roots,
             event_groups=perf_capability['event_groups'],
         )
         block_run = perf_run
@@ -1659,8 +1540,8 @@ def main() -> int:
         'extra': args.extra,
         'python': {'A': args.a, 'B': args.b},
         'build': {
-            'A': identify_build(args.a, receipt_binding=receipt_bindings['A']),
-            'B': identify_build(args.b, receipt_binding=receipt_bindings['B']),
+            side: common_identity(measured_blocks[0]['arms'][side]['provenance_before'])
+            for side in ('A', 'B')
         },
         'environment': {
             'cpu': cpu,

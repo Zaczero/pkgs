@@ -132,8 +132,8 @@ print("valid:", polygon.is_valid)
 
 ## Fixing: `repair`
 
-`repair` returns a valid copy. It
-offers two strategies via `method`:
+When repair succeeds, it returns a valid geometry; it can refuse input it
+cannot reconstruct. It offers two strategies via `method`:
 
 | `method` | Strategy |
 |----------|----------|

@@ -44,27 +44,55 @@ pub(crate) fn line_locate_point_on_lines(
 ) -> PyResult<Py<PyAny>> {
     let result = py
         .detach(move || match &model {
-            crs::MetricModel::Geodesic { crs, state, .. } => {
-                crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
-                    let map = row_map.as_deref();
-                    (0..logical_len)
-                        .map(|row| {
-                            if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-                                return Ok(f64::NAN);
-                            }
-                            let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
-                            degrade_linref_float(
-                                crs::chart_line_locate_coordseq(
+            crs::MetricModel::Geodesic {
+                crs: geodesic_crs,
+                frame,
+                state,
+            } => {
+                let map = row_map.as_deref();
+                let first_present = (0..logical_len)
+                    .find(|&row| missing.as_ref().is_none_or(|mask| !mask.is_missing(row)));
+                if let Some(row) = first_present {
+                    let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
+                    crate::crs::ensure_geographic_coordseq_in_frame(*frame, &line)
+                        .map_err(|error| (row, error))?;
+                    let query = queries.get(row);
+                    if !query.x.is_nan() {
+                        crate::crs::ensure_geographic_lonlat_in_frame(*frame, query.x, query.y)
+                            .map_err(|error| (row, error))?;
+                    }
+                }
+                let rows = if let Some(first_present) = first_present {
+                    crate::crs::with_geographic_coordseq_metric_at(geodesic_crs, state, |metric| {
+                        let rows = (0..logical_len)
+                            .map(|row| {
+                                if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                                    return Ok(f64::NAN);
+                                }
+                                let line =
+                                    GeometryArrayStorage::line_view(&coords, &offsets, map, row);
+                                if row != first_present {
+                                    crate::crs::ensure_geographic_coordseq_in_frame(*frame, &line)?;
+                                }
+                                let located = crate::crs::chart_line_locate_coordseq_admitted(
                                     &line,
                                     queries.get(row),
                                     normalized,
                                     metric,
-                                ),
-                                crate::dispatch::Lane::Array(row),
-                            )
-                        })
-                        .collect_rows()
-                })
+                                );
+                                degrade_linref_float(located, crate::dispatch::Lane::Array(row))
+                            })
+                            .collect_rows();
+                        Ok(rows)
+                    })
+                    .map_err(|error| (first_present, error))?
+                } else {
+                    crate::crs::with_geographic_coordseq_metric_at(geodesic_crs, state, |_| {
+                        Ok(Ok(vec![f64::NAN; logical_len]))
+                    })
+                    .map_err(|error| (0, error))?
+                };
+                rows
             },
             crs::MetricModel::Planar { .. } => {
                 let map = row_map.as_deref();
@@ -188,6 +216,7 @@ fn interpolate_mixed_row_groups(
 ) -> std::result::Result<crate::CsrBuilder<Shape>, (usize, crate::error::Error)> {
     let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
     let mut rows = array.row_operation();
+    let mut metric = None;
     for logical_row in rows.rows_with_missing(|| ()) {
         match logical_row {
             crate::array::ArrayRow::Missing { logical, .. } => {
@@ -199,11 +228,23 @@ fn interpolate_mixed_row_groups(
                 let logical = row.logical();
                 let values = plan
                     .with_row(logical, |plan| {
+                        if plan.sample_count() == 0 {
+                            return Ok(Vec::new());
+                        }
                         let line = rows.prepared(row)?;
+                        let cache = rows.frame_cache(logical);
+                        if let crs::MetricModel::Geodesic { frame, .. } = model {
+                            crate::geometry::GeographicPrepared::try_new(&line, &cache, *frame)?;
+                        }
+                        if metric.is_none() {
+                            metric = Some(crs::ResolvedMetric::from_model(model)?);
+                        }
                         line_interpolate_points_shape(
-                            model,
+                            metric
+                                .as_ref()
+                                .expect("a present row resolves the operation metric"),
                             &line,
-                            &rows.frame_cache(logical),
+                            &cache,
                             plan,
                             crate::dispatch::Lane::Array(logical),
                         )
@@ -244,6 +285,19 @@ mod tests {
             "unequal axes must take the mixed interpolate walk"
         );
         array
+    }
+
+    fn geographic_lines(lines: Vec<Shape>, crs: &str) -> PyGeometryArray {
+        PyGeometryArray::from_shapes(lines, Frame::Crs(crate::crs::frame::crs_arc(crs))).unwrap()
+    }
+
+    fn geographic_line(end_latitude: f64) -> Shape {
+        Shape::LineString(line_seq(
+            vec![0.0, 0.0],
+            vec![0.0, end_latitude],
+            None,
+            None,
+        ))
     }
 
     fn point_xyzm(shape: &Shape) -> (f64, f64, Option<f64>, Option<f64>) {
@@ -304,5 +358,145 @@ mod tests {
         assert_eq!(shapes.len(), 2);
         assert_eq!(point_xyzm(&shapes[0]), (0.0, 0.0, Some(0.0), Some(10.0)));
         assert_eq!(point_xyzm(&shapes[1]), (10.0, 0.0, Some(10.0), Some(20.0)));
+    }
+
+    #[test]
+    fn array_count_sampling_admits_source_rows_before_ellipsoid_resolution() {
+        let bad_crs = "+proj=longlat +a=6378137 +f=0.1 +type=crs";
+        let plan = RowInterpolatePlan::Counts(crate::I64Param::Scalar(1));
+
+        let two_faults = geographic_lines(vec![geographic_line(95.0)], bad_crs);
+        let model = crate::broadcast::resolve_metric(
+            two_faults.crs_str(),
+            None,
+            crate::dispatch::MetricOp::LineInterpolate,
+        )
+        .unwrap();
+        crate::test_support::linear_reference_counters::reset();
+        let (row, error) = interpolate_mixed_row_groups(&two_faults, &plan, &model)
+            .err()
+            .expect("source admission rejects the invalid line");
+        assert_eq!(row, 0);
+        assert!(
+            error
+                .to_string()
+                .contains("invalid longitude/latitude (0, 95)"),
+            "{error}",
+        );
+        assert_eq!(
+            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
+            0,
+        );
+
+        let valid_source = geographic_lines(vec![geographic_line(1.0)], bad_crs);
+        let model = crate::broadcast::resolve_metric(
+            valid_source.crs_str(),
+            None,
+            crate::dispatch::MetricOp::LineInterpolate,
+        )
+        .unwrap();
+        crate::test_support::linear_reference_counters::reset();
+        let (_, error) = interpolate_mixed_row_groups(&valid_source, &plan, &model)
+            .err()
+            .expect("ellipsoid resolution rejects the unsupported flattening");
+        assert!(
+            error
+                .to_string()
+                .contains("order-six binary64 series domain")
+        );
+        assert_eq!(
+            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
+            1,
+        );
+
+        let invalid_source = geographic_lines(vec![geographic_line(95.0)], "EPSG:4326");
+        let model = crate::broadcast::resolve_metric(
+            invalid_source.crs_str(),
+            None,
+            crate::dispatch::MetricOp::LineInterpolate,
+        )
+        .unwrap();
+        crate::test_support::linear_reference_counters::reset();
+        let (_, error) = interpolate_mixed_row_groups(&invalid_source, &plan, &model)
+            .err()
+            .expect("source admission rejects the invalid latitude");
+        assert!(
+            error
+                .to_string()
+                .contains("invalid longitude/latitude (0, 95)")
+        );
+        assert_eq!(
+            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
+            0,
+        );
+
+        let nullable = geographic_lines(vec![geographic_line(1.0), geographic_line(95.0)], bad_crs)
+            .with_missing_mask(ValidityMask::from_sparse(2, &[0]))
+            .unwrap();
+        let model = crate::broadcast::resolve_metric(
+            nullable.crs_str(),
+            None,
+            crate::dispatch::MetricOp::LineInterpolate,
+        )
+        .unwrap();
+        crate::test_support::linear_reference_counters::reset();
+        let (row, error) = interpolate_mixed_row_groups(&nullable, &plan, &model)
+            .err()
+            .expect("source admission rejects the first present invalid line");
+        assert_eq!(row, 1);
+        assert!(
+            error
+                .to_string()
+                .contains("invalid longitude/latitude (0, 95)")
+        );
+        assert_eq!(
+            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
+            0,
+        );
+    }
+
+    #[test]
+    fn mixed_geographic_count_sampling_resolves_one_metric_for_all_rows() {
+        let array = geographic_lines(
+            vec![
+                Shape::LineString(line_seq(vec![0.0, 2.0], vec![0.0, 0.0], None, None)),
+                Shape::LineString(line_seq(
+                    vec![10.0, 12.0],
+                    vec![1.0, 1.0],
+                    Some(vec![3.0, 7.0]),
+                    None,
+                )),
+            ],
+            "OGC:CRS84",
+        );
+        assert!(
+            matches!(array.storage(), GeometryArrayStorage::Mixed(_)),
+            "different coordinate axes use mixed rows"
+        );
+        let model = crate::broadcast::resolve_metric(
+            array.crs_str(),
+            None,
+            crate::dispatch::MetricOp::LineInterpolate,
+        )
+        .unwrap();
+        crate::test_support::linear_reference_counters::reset();
+
+        let builder = interpolate_mixed_row_groups(
+            &array,
+            &RowInterpolatePlan::Counts(crate::I64Param::Scalar(2)),
+            &model,
+        )
+        .expect("geographic count samples");
+        let (shapes, offsets) = builder.finish();
+
+        assert_eq!(offsets, [0, 2, 4]);
+        assert_eq!(point_xyzm(&shapes[0]), (0.0, 0.0, None, None));
+        assert_eq!(point_xyzm(&shapes[1]), (2.0, 0.0, None, None));
+        assert_eq!(point_xyzm(&shapes[2]), (10.0, 1.0, Some(3.0), None));
+        assert_eq!(point_xyzm(&shapes[3]), (12.0, 1.0, Some(7.0), None));
+        assert_eq!(
+            crate::test_support::linear_reference_counters::snapshot().resolved_metrics,
+            1,
+        );
     }
 }

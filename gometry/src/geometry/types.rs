@@ -38,9 +38,10 @@ pub(crate) use shape::{
 };
 pub(crate) use shape_data::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartMetric,
-    ChartPointDistanceSample, FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy,
-    IndexedSegment, IntoSharedShape, PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult,
-    PointKey, PolygonizeFull, PreparedPlan, ShapeData, ValidationIssue, canonical_f64_bits,
+    ChartPointDistanceSample, DwithinOutcome, FrameDependentCaches, GeodesicMetric,
+    GeodesicNumericalPolicy, IndexedSegment, IntoSharedShape, PointEdgeMinimum, PointEdgeQuery,
+    PointEdgeQueryResult, PointKey, PolygonizeFull, PreparedPlan, ShapeData, ValidationIssue,
+    canonical_f64_bits,
 };
 pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 

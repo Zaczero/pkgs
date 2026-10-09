@@ -1,0 +1,18 @@
+{% if show_call_forms %}
+  <details open class="doc-overloads-details">
+    <summary>Accepted call forms</summary>
+    <div class="doc-overloads" role="group" aria-label="Accepted call forms">
+      {% for form in call_forms %}
+        {% filter format_signature(form, config.line_length, annotations=True, crossrefs=config.signature_crossrefs) %}
+          {{ call_name }}
+        {% endfilter %}
+      {% endfor %}
+    </div>
+  </details>
+{% elif call_forms %}
+  <div class="doc-canonical-signature">
+    {% filter format_signature(call_forms[0], config.line_length, crossrefs=config.signature_crossrefs) %}
+      {{ call_name }}
+    {% endfilter %}
+  </div>
+{% endif %}

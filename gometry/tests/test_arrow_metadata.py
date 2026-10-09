@@ -181,7 +181,7 @@ def test_python_arrow_metadata_frame_matches_rust_boundary_rules() -> None:
     assert exc.value.format == 'geoarrow'
     with pytest.raises(
         gm.ParseError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a dynamic CRS; EPSG:2180 is static\. Remove epoch= or transform to a dynamic CRS first$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch is not admitted for CRS EPSG:2180; remove epoch= or transform to a CRS that admits coordinate epochs first$',
     ):
         gometry_arrow._metadata_frame(b'{"crs":"EPSG:2180","epoch":2020.0}')
     with pytest.raises(ValueError, match='JSON object'):

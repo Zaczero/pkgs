@@ -589,7 +589,11 @@ def inspect_runtime_inputs(
             expected_wheel,
             release=profile != 'dev',
             expected_python_members=None if quality_receipt else python_members,
-            expected_prepared_inputs=receipt.get('prepared_inputs'),
+            expected_prepared_inputs=(
+                receipt['prepared_inputs']['files']
+                if quality_receipt
+                else receipt.get('prepared_inputs')
+            ),
         )
         if wheel_inspection['generator'] != f'maturin ({MATURIN_VERSION})':
             raise AssertionError('installed wheel has the wrong Maturin Generator')
@@ -865,6 +869,121 @@ def verify_runtime(
     return verify_admitted_runtime(admission)
 
 
+def check_runtime_resolution(admission: RuntimeAdmission) -> None:
+    """Require the interpreter's current import path to select the admitted facade."""
+    if _resident_gometry_modules():
+        raise AssertionError('Gometry was imported before benchmark runtime admission')
+    try:
+        spec = importlib.util.find_spec('gometry')
+    except (ImportError, ModuleNotFoundError, ValueError) as error:
+        raise AssertionError(
+            f'cannot resolve admitted Gometry facade: {error}'
+        ) from error
+    origin = spec.origin if spec is not None else None
+    if not isinstance(origin, str) or Path(origin).resolve() != admission.facade_path:
+        raise AssertionError(
+            'Python import path does not select the admitted Gometry facade: '
+            f'{origin!r} != {str(admission.facade_path)!r}'
+        )
+
+
+def verify_runtime_completion(
+    admission: RuntimeAdmission,
+    runtime: tuple[ModuleType, ModuleType, dict[str, Any]],
+) -> None:
+    """Recheck the admitted process and package after its benchmark observation."""
+    facade, extension, _ = runtime
+    modules = _resident_gometry_modules()
+    if (
+        modules.get('gometry') is not facade
+        or modules.get('gometry._lib') is not extension
+    ):
+        raise AssertionError('Gometry modules changed after benchmark admission')
+    if _runtime_interpreter() != admission.interpreter:
+        raise AssertionError('Python interpreter changed after benchmark admission')
+    _validate_resident_module_files(
+        modules,
+        facade_path=admission.facade_path,
+        extension_path=admission.extension_path,
+        extension_sha256=admission.extension_sha256,
+        package_dir=admission.package_dir,
+        python_members=admission.python_members,
+    )
+    if sha256_file(admission.extension_path) != admission.extension_sha256:
+        raise AssertionError(
+            'loaded Gometry extension changed after benchmark admission'
+        )
+    if python_member_hashes(admission.package_dir) != admission.python_members:
+        raise AssertionError(
+            'loaded Gometry Python files changed after benchmark admission'
+        )
+
+    distribution = admission.distribution
+    metadata = distribution.read_text('METADATA')
+    if (
+        not isinstance(metadata, str)
+        or _sha256_bytes(metadata.encode('utf-8'))
+        != admission.distribution_metadata_sha256
+        or Path(distribution.locate_file('gometry/__init__.py')).resolve()
+        != admission.facade_path
+        or Path(distribution.locate_file(admission.extension_member)).resolve()
+        != admission.extension_path
+    ):
+        raise AssertionError(
+            'Gometry distribution ownership changed after benchmark admission'
+        )
+    current_files = distribution.files
+    if admission.distribution_files is not None and (
+        current_files is None
+        or frozenset(PurePosixPath(str(member)).as_posix() for member in current_files)
+        != admission.distribution_files
+    ):
+        raise AssertionError(
+            'Gometry distribution inventory changed after benchmark admission'
+        )
+
+    wheel = admission.wheel
+    if wheel is not None:
+        if sha256_file(wheel.path) != wheel.sha256:
+            raise AssertionError('runtime wheel changed after benchmark admission')
+        immutable_quality_tree = (
+            admission.receipt.get('kind') == 'gometry-quality-runtime'
+            and admission.package_root is not None
+        )
+        for member, expected_digest in wheel.member_sha256.items():
+            if (
+                (
+                    not immutable_quality_tree
+                    and (member == wheel.record or member in wheel.signatures)
+                )
+                or member in admission.python_members
+                or (
+                    admission.receipt.get('kind') == 'gometry-quality-runtime'
+                    and member in wheel.python_members
+                )
+                or member == admission.extension_member
+            ):
+                continue
+            installed_path = Path(distribution.locate_file(member))
+            if (
+                not installed_path.is_file()
+                or sha256_file(installed_path) != expected_digest
+            ):
+                raise AssertionError(
+                    f'installed wheel member changed after benchmark admission: {member}'
+                )
+
+    if admission.receipt.get('kind') == 'gometry-quality-runtime':
+        if read_quality_receipt(admission.root) != admission.receipt:
+            raise AssertionError('quality runtime receipt changed after admission')
+        try:
+            validate_quality_producer_inputs(admission.root, admission.receipt)
+        except QualityPreparationRequired as error:
+            raise AssertionError(
+                f'quality runtime inputs changed after benchmark admission: {error}'
+            ) from error
+
+
 def _report_runtime_selection(
     runtime: tuple[ModuleType, ModuleType, dict[str, Any]],
 ) -> tuple[ModuleType, ModuleType, dict[str, Any]]:
@@ -890,36 +1009,8 @@ def _verify_active_admission(
         raise AssertionError(
             'active runtime admission does not belong to this checkout'
         )
-    modules = _resident_gometry_modules()
-    if (
-        modules.get('gometry') is not runtime[0]
-        or modules.get('gometry._lib') is not runtime[1]
-    ):
-        raise AssertionError('Gometry modules changed after runtime admission')
-    _validate_resident_module_files(
-        modules,
-        facade_path=admission.facade_path,
-        extension_path=admission.extension_path,
-        extension_sha256=admission.extension_sha256,
-        package_dir=admission.package_dir,
-        python_members=admission.python_members,
-    )
+    verify_runtime_completion(admission, runtime)
     _runtime_selection_matches(_runtime_interpreter(), admission.runtime_selection)
-    if admission.receipt.get('kind') == 'gometry-quality-runtime':
-        if read_quality_receipt(root) != admission.receipt:
-            raise AssertionError(
-                'quality runtime receipt changed after module admission'
-            )
-        try:
-            validate_quality_producer_inputs(root, admission.receipt)
-        except QualityPreparationRequired as error:
-            raise AssertionError(
-                f'quality runtime inputs changed after module admission: {error}'
-            ) from error
-    if python_member_hashes(admission.package_dir) != admission.python_members:
-        raise AssertionError(
-            'loaded Gometry Python files changed after runtime admission'
-        )
     return runtime
 
 
@@ -942,13 +1033,14 @@ def require_runtime(
             raise SystemExit(
                 f'Gometry is already imported; cannot replace it after stale admission: '
                 f'{stale}. Start a fresh process after `{sys.executable} '
-                f'{root / "tools" / "check.py"}`'
+                f'{root / "tools" / "check.py"} --prepare`'
             ) from None
         command = [sys.executable, str(root / 'tools' / 'check.py')]
         if not prepare_if_stale:
             raise SystemExit(
                 f'identified Gometry runtime is stale: {stale}; run '
-                f'`{sys.executable} {root / "tools" / "check.py"}` to prepare or refresh it'
+                f'`{sys.executable} {root / "tools" / "check.py"} --prepare` '
+                'to prepare it for tests'
             ) from None
         print(
             f'identified Gometry runtime is stale ({stale}); preparing it with '

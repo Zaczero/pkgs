@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast
+from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast, reveal_type
 
 import gometry as gm
 import gometry._types as sht
@@ -542,9 +542,22 @@ assert_type(gm.snap(LINE, POINT, 0.5), gm.LineString)
 assert_type(
     gm.GeometryArray([LINE]).polygonize(), gm.Groups[gm.GeometryArray[gm.Polygon]]
 )
-assert_type(gm.polygonize_full([LINE]), gm.PolygonizeResult)
+assert_type(gm.polygonize_all([LINE]), gm.GeometryArray[gm.Polygon])
 assert_type(
-    gm.polygonize_full([LINE]).dangles,
+    gm.polygonize_all([LINE], diagnostics=True),
+    gm.PolygonizeResult,
+)
+
+
+def _check_polygonize_diagnostics_bool_overload(diagnostics: bool) -> None:
+    result = gm.polygonize_all([LINE], diagnostics=diagnostics)
+    assert_type(result, gm.GeometryArray[gm.Polygon] | gm.PolygonizeResult)
+    if TYPE_CHECKING:
+        reveal_type(result)
+
+
+assert_type(
+    gm.polygonize_all([LINE], diagnostics=True).dangles,
     gm.Groups[gm.GeometryArray[gm.LineString]],
 )
 assert_type(POINTS.simplify(0.1, method='vw'), gm.GeometryArray[gm.Point])
@@ -724,7 +737,9 @@ if TYPE_CHECKING:
     assert_type(POLY.parts, gm.GeometryParts[gm.Polygon])
     assert_type(POLY.exterior, gm.LineString)
     assert_type(POLY.interiors, list[gm.LineString])
-    assert_type(gm.polygonize(present_geometry_like_rows), gm.GeometryArray[gm.Polygon])
+    assert_type(
+        gm.polygonize_all(present_geometry_like_rows), gm.GeometryArray[gm.Polygon]
+    )
     assert_type(gm.coverage_is_valid([POLY.to_wkb()]), bool)
     assert_type(POINT.scale(2.0, origin=[0.0, 0.0]), gm.Point)
     assert_type(POINT.rotate(45.0, origin=iter([0.0, 0.0])), gm.Point)
@@ -847,6 +862,14 @@ assert_type(
 )
 h3_vertices = h3_cell.vertices
 h3_edges = h3_cell.edges
+assert_type(
+    gm.H3VertexArray([h3_vertices[0], h3_vertices[0].id, h3_vertices[0].token]),
+    gm.H3VertexArray,
+)
+assert_type(
+    gm.H3EdgeArray([h3_edges[0], h3_edges[0].id, h3_edges[0].token]),
+    gm.H3EdgeArray,
+)
 assert_type(h3_vertices, gm.H3VertexArray)
 assert_type(h3_vertices[0], gm.H3Vertex)
 assert_type(h3_vertices[:2], gm.H3VertexArray)
@@ -854,6 +877,10 @@ assert_type(h3_vertices[[True, False, True, False, True, False]], gm.H3VertexArr
 assert_type(h3_vertices[np.asarray([0, 1], dtype=np.int64)], gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.token), gm.H3VertexArray)
 assert_type(gm.H3VertexArray(h3_vertices.to_numpy()), gm.H3VertexArray)
+signed_vertex_ids: npt.NDArray[np.int64] = np.asarray(
+    [h3_vertices[0].id], dtype=np.int64
+)
+assert_type(gm.H3VertexArray(signed_vertex_ids), gm.H3VertexArray)
 assert_type(h3_vertices.point, gm.GeometryArray[gm.Point])
 assert_type(h3_vertices[0].point, gm.Point)
 assert_type(h3_edges, gm.H3EdgeArray)
@@ -863,11 +890,17 @@ assert_type(h3_edges[[True, False, True, False, True, False]], gm.H3EdgeArray)
 assert_type(h3_edges[np.asarray([0, 1], dtype=np.int64)], gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.token), gm.H3EdgeArray)
 assert_type(gm.H3EdgeArray(h3_edges.to_numpy()), gm.H3EdgeArray)
+signed_edge_ids: npt.NDArray[np.int64] = np.asarray([h3_edges[0].id], dtype=np.int64)
+assert_type(gm.H3EdgeArray(signed_edge_ids), gm.H3EdgeArray)
 assert_type(h3_edges.origin, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.destination, gm.CellArray[gm.H3Cell])
 assert_type(h3_edges.reverse(), gm.H3EdgeArray)
 assert_type(h3_edges.line, gm.GeometryArray[gm.LineString])
 assert_type(h3_edges.length, npt.NDArray[np.float64])
+assert_type(
+    gm.SpatialIndex([POINT]).query(POINTS).to_pairs(),
+    tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]],
+)
 h3_cells = gm.h3_cells([1.0, 2.0], [2.0, 3.0], resolution=9)
 assert_type(h3_cells.contains(h3_cell), npt.NDArray[np.bool_])
 assert_type(h3_cells.neighbors, gm.Groups[gm.CellArray[gm.H3Cell]])
@@ -1169,9 +1202,9 @@ assert_type(gm.coverage_is_valid([POLY]), bool)
 assert_type(gm.coverage_is_valid(POLY), bool)
 assert_type(gm.coverage_union(iter([POLY])), gm.Polygon | gm.MultiPolygon)
 assert_type(gm.coverage_union(POLY), gm.Polygon | gm.MultiPolygon)
-assert_type(gm.polygonize(POLY), gm.GeometryArray[gm.Polygon])
+assert_type(gm.polygonize_all(POLY), gm.GeometryArray[gm.Polygon])
 assert_type(gm.coverage_union(GRID), gm.Polygon | gm.MultiPolygon)
-assert_type(gm.polygonize(GRID), gm.GeometryArray[gm.Polygon])
+assert_type(gm.polygonize_all(GRID), gm.GeometryArray[gm.Polygon])
 assert_type(gm.union_all(GRID), gm.Geometry)
 assert_type(gm.union_all(GRID), gm.Geometry)
 assert_type(gm.to_feature_collection(POLY), sht.GeoJsonFeatureCollection)

@@ -35,13 +35,14 @@ from pyo3stubs.ast_util import (
     decorator_names,
 )
 from pyo3stubs.context import CheckContext
-from pyo3stubs.rust_scan import constructor_docs
+from pyo3stubs.rust_scan import constructor_doc_sources
 
 if TYPE_CHECKING:
     import types
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
     from pyo3stubs.config import StubConfig
+    from pyo3stubs.rust_scan import ConstructorDocSource
 
 #: The two node kinds that can carry a docstring in a stub.
 _Def = TypeVar('_Def', cst.ClassDef, cst.FunctionDef)
@@ -236,7 +237,7 @@ class DocInjector(cst.CSTTransformer):
         self,
         runtime: types.ModuleType,
         totals: Counter[tuple[str, str]],
-        constructors: dict[str, str],
+        constructors: Mapping[str, ConstructorDocSource],
         attribute_docs: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self._runtime = runtime
@@ -294,23 +295,27 @@ class DocInjector(cst.CSTTransformer):
             cls = getattr(self._runtime, scope, None)
             if cls is None:
                 return updated  # stub-only typing helper (protocols)
-            if name not in vars(cls):
+            constructor = self._constructors.get(scope) if name == '__new__' else None
+            if name not in vars(cls) and constructor is None:
                 # Stub-only override of an inherited runtime member: it narrows
                 # types, so it documents itself — leave the group untouched.
                 return updated
             obj = getattr(cls, name, None)
         else:
             indent = '    '
+            constructor = None
             obj = getattr(self._runtime, name, None)
         if obj is None:
             return updated  # stub-only typing helper
         if not carrier:
             return _without_docstring(updated)
+        if constructor is not None:
+            return (
+                _apply(updated, constructor.prose, indent)
+                if constructor.prose is not None
+                else _without_docstring(updated)
+            )
         doc = _runtime_doc_for_stub(name, obj)
-        if doc is None and name == '__new__':
-            # PyO3 leaves a `#[new]`'s doc comment unreachable at runtime, so
-            # the only place the constructor's prose exists is the Rust source.
-            doc = self._constructors.get(scope)
         if doc:
             return _apply(updated, doc, indent)
         return updated
@@ -327,7 +332,7 @@ def render_stub_with_docs(cfg: StubConfig) -> str:
     injector = DocInjector(
         ctx.runtime_module,
         _def_totals(source),
-        constructor_docs(cfg),
+        constructor_doc_sources(cfg).by_class,
         _descriptor_docs(source, ctx.runtime_module),
     )
     return cst.parse_module(source).visit(injector).code

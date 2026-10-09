@@ -128,6 +128,17 @@ def _mentions_type(type_text: str, name: str) -> bool:
     )
 
 
+def _binding_return_can_be_geometry_array(
+    annotations: Iterable[ast.expr | None],
+) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id in {'GeometryArray', '_GroupValuesT_co'}
+        for annotation in annotations
+        if annotation is not None
+        for node in ast.walk(annotation)
+    )
+
+
 def _scalar_array_return_errors(stub: Path, runtime: object) -> list[str]:
     tree = ast.parse(stub.read_text(encoding='utf-8'), filename=str(stub))
     errors: list[str] = []
@@ -156,13 +167,8 @@ def _scalar_array_return_errors(stub: Path, runtime: object) -> list[str]:
                     if any(
                         _mentions_type(entry.type_text, 'GeometryArray')
                         for entry in returns
-                    ) and not any(
-                        definition.returns is not None
-                        and any(
-                            isinstance(node, ast.Name) and node.id == 'GeometryArray'
-                            for node in ast.walk(definition.returns)
-                        )
-                        for definition in definitions
+                    ) and not _binding_return_can_be_geometry_array(
+                        definition.returns for definition in definitions
                     ):
                         errors.append(
                             f'{stub.name}:{definitions[-1].lineno}: '
@@ -183,10 +189,7 @@ def _scalar_array_return_errors(stub: Path, runtime: object) -> list[str]:
             if any(
                 _mentions_type(entry.type_text, 'GeometryArray')
                 for entry in return_entries(parse_doc(doc))
-            ) and not any(
-                isinstance(node, ast.Name) and node.id == 'GeometryArray'
-                for node in ast.walk(member.annotation)
-            ):
+            ) and not _binding_return_can_be_geometry_array([member.annotation]):
                 errors.append(
                     f'{stub.name}:{member.lineno}: {cls.name}.{member.target.id}: '
                     'Returns type names GeometryArray but the binding '
@@ -783,22 +786,13 @@ def _stub_constructor_contracts(
 def _call_form_defaults(
     forms: tuple[CallForm, ...],
 ) -> tuple[dict[str, str | None], list[str]]:
-    values: dict[str, set[str]] = {}
+    values: dict[str, str | None] = {}
     for parameters, _ in forms:
         for _, name, _, default in parameters:
-            if default is not None:
-                values.setdefault(name, set()).add(default)
-            else:
-                values.setdefault(name, set())
-    conflicts = [
-        f'{name}: defaults differ across accepted forms {sorted(defaults)}'
-        for name, defaults in values.items()
-        if len(defaults) > 1
-    ]
-    return {
-        name: next(iter(defaults)) if defaults else None
-        for name, defaults in values.items()
-    }, conflicts
+            values.setdefault(name, None)
+            if values[name] is None and default is not None:
+                values[name] = default
+    return values, []
 
 
 def _public_overload_paths(

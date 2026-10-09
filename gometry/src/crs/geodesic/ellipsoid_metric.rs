@@ -196,6 +196,42 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     }
 }
 
+impl GeodesicMetric for crate::crs::GeodesicMetric {
+    fn runtime_generation(&self) -> u64 {
+        self.state.generation
+    }
+
+    fn ensure_shape(&self, shape: &crate::geometry::Shape) -> crate::error::Result<()> {
+        crate::crs::ensure_geographic_domain_in_frame(self.frame, shape)
+    }
+
+    fn segment_length(&self, a: Point, b: Point) -> f64 {
+        geo_distance(
+            &self.geodesic,
+            self.frame
+                .to_geodesic_point(a)
+                .expect("geographic metric received an admitted point"),
+            self.frame
+                .to_geodesic_point(b)
+                .expect("geographic metric received an admitted point"),
+        )
+    }
+
+    fn point_distance_lower_bound(&self, a: Point, b: Point) -> crate::error::Result<f64> {
+        let to_geodesic = |point| {
+            self.frame
+                .to_geodesic_point(point)
+                .expect("geographic metric received an admitted point")
+        };
+        let bound = auxiliary_sphere_bound(&self.geodesic, to_geodesic(a), to_geodesic(b));
+        Ok((bound - GeodesicNumericalPolicy::new(self.geodesic.a).backend_floor()).max(0.0))
+    }
+
+    fn geodesic_numerical_policy(&self) -> GeodesicNumericalPolicy {
+        GeodesicNumericalPolicy::new(self.geodesic.a)
+    }
+}
+
 impl ChartMetric for EllipsoidMetric<'_> {
     type PointEdgeScratch = super::edge_distance::PointEdgeScratch;
 
@@ -320,8 +356,12 @@ impl ChartMetric for EllipsoidMetric<'_> {
         )
     }
 
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64 {
-        super::edge_distance::curvature_hessian_bound(self.geodesic, lower_distance)
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64 {
+        super::edge_distance::curvature_hessian_bound(self.geodesic, lower_distance, upper_distance)
     }
 
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64 {

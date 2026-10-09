@@ -425,7 +425,6 @@ pub(crate) fn unary_scalar_linref_shape(
     kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
 ) -> PyResult<Typed> {
     let frame = geometry.frame.clone();
-    let domain = crate::geometry::topology_domain(&frame)?;
     let mut scratch = MetricScratch::default();
     let result = {
         let metric = match resolver.resolve_ctx(&frame, &mut scratch) {
@@ -435,25 +434,19 @@ pub(crate) fn unary_scalar_linref_shape(
                 return Err(error);
             },
         };
-        let model = metric.require_model(
+        let resolved_metric = match metric.require_resolved(
             op.metric_op()
                 .expect("linear-reference operation must carry metric identity"),
-        );
-        let model = match model {
-            Ok(model) => model,
+        ) {
+            Ok(metric) => metric,
             Err(error) => {
                 drop(scratch);
                 return Err(PyErr::from(error));
             },
         };
         let row = LinearReferenceRow {
-            op: CachelessRowContext {
-                frame: &frame,
-                domain,
-                metric,
-                lane: Lane::Scalar,
-            },
-            model,
+            lane: Lane::Scalar,
+            metric: resolved_metric,
             cache: &geometry.frame_cache(),
         };
         let plan = geometry.prepared_plan();
@@ -488,11 +481,11 @@ pub(crate) fn unary_array_linref_with_model(
 ) -> PyResult<PyGeometryArray> {
     let frame = array.frame.clone();
     let output_frame = frame.clone();
-    let domain = crate::geometry::topology_domain(&frame)?;
     let array = array.clone();
     let result = py.detach(move || {
         let mut rows = array.row_operation();
         let mut output = StreamingShapes::with_capacity(0, array.len());
+        let mut resolved = None;
         for row in rows.rows_with_missing(Shape::empty_point) {
             let (logical, result) = match row {
                 ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
@@ -502,14 +495,19 @@ pub(crate) fn unary_array_linref_with_model(
                     let result = crate::array::PreparedRow::transient(shape)
                         .and_then(|data| {
                             let cache = rows.frame_cache(row_index);
+                            if let crate::crs::MetricModel::Geodesic { frame, .. } = model {
+                                crate::geometry::GeographicPrepared::try_new(
+                                    &data, &cache, *frame,
+                                )?;
+                            }
+                            if resolved.is_none() {
+                                resolved = Some(crate::crs::ResolvedMetric::from_model(model)?);
+                            }
                             let row = LinearReferenceRow {
-                                op: CachelessRowContext {
-                                    frame: &frame,
-                                    domain,
-                                    metric: MetricCtx::None,
-                                    lane: Lane::Array(row_index),
-                                },
-                                model,
+                                lane: Lane::Array(row_index),
+                                metric: resolved
+                                    .as_ref()
+                                    .expect("a present linear-reference row resolves its metric"),
                                 cache: &cache,
                             };
                             kernel(&data, &row)

@@ -197,11 +197,12 @@ impl PyCoordinates {
     }
 
     /// Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
-    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``): every tuple/column has that
-    /// shape. Nested/tuple output uses ``None`` where a coordinate lacks the
-    /// requested Z/M; ndarray columns and ``numpy.asarray`` use ``NaN`` there.
-    /// `select` changes which ordinates nested output, iteration, ndarray/dict
-    /// exports, and coordinate equality see; it does not change the geometry.
+    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``). This layout defines the schema
+    /// of coordinate tuples, nested output, matrices, dictionaries, and equality.
+    /// Tuple/nested output uses ``None`` where a coordinate lacks the requested
+    /// Z/M; matrices and dictionary columns use ``NaN`` there. Independent axis
+    /// accessors such as ``.z`` continue to read the source view, regardless of
+    /// the selected layout. Selection does not change the geometry.
     ///
     /// Parameters
     /// ----------
@@ -487,23 +488,17 @@ impl PyCoordinates {
     }
 
     /// Value equality against another `Coordinates` or a sequence of coordinate
-    /// tuples. Other types defer with ``NotImplemented``. Provider exceptions
-    /// propagate; only non-iterable types yield ``NotImplemented``. Arc-identity
-    /// / short-circuit paths in ``coordinates_equal`` are preserved.
+    /// tuples. Other types defer with ``NotImplemented``. Errors from an
+    /// admitted iterator or item comparison propagate. Arc-identity /
+    /// short-circuit paths in ``coordinates_equal`` are preserved.
     pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
             return Ok(py_bool(py, self.coordinates_equal(py, &other_coords)?));
         }
-        // Do not call `try_iter` merely to probe — that drains one-shot
-        // generators. Attempt equality once; a TypeError (not iterable)
-        // becomes NotImplemented, other errors propagate.
-        match self.coordinates_equal_sequence(other) {
-            Ok(equal) => Ok(py_bool(py, equal)),
-            Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
-                Ok(py.NotImplemented())
-            },
-            Err(err) => Err(err),
-        }
+        let Some(items) = crate::boundary::reserve::py_iter_or_none(other)? else {
+            return Ok(py.NotImplemented());
+        };
+        Ok(py_bool(py, self.coordinates_equal_iter(items)?))
     }
 
     /// Whether a coordinate tuple appears among the vertices, using the same
