@@ -556,9 +556,7 @@ impl ChartEdge {
             return None;
         }
 
-        let Some(bounds) = ellipsoid_metric_bounds(geodesic) else {
-            return None;
-        };
+        let bounds = ellipsoid_metric_bounds(geodesic)?;
         let longitude_axis = self.frame.longitude();
         let longitude_sheet = longitude_sheet_shift(self, target);
 

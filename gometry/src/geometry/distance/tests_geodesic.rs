@@ -1189,7 +1189,7 @@ fn public_near_pole_hausdorff_has_bounded_symmetric_work() {
     let work = public_hausdorff_work("EPSG:4326", source, target, 64, 10_000);
     // Independent pyproj Geod oracle: target minima bracketed by scans of 257
     // and 1,025 points; source maxima by 129 and 513 samples plus local solves.
-    let expected = 1.116_939_781_867_640;
+    let expected = 1.116_939_781_867_64;
 
     assert!(work.source_evaluations <= 64, "{work:?}");
     assert!(work.moving_evaluations <= 128, "{work:?}");
