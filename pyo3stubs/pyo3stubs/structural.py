@@ -81,6 +81,8 @@ def _check_overload_group(
     defs: list[ast.FunctionDef],
     path: str,
     errors: list[str],
+    *,
+    bound_receiver: bool = False,
 ) -> None:
     decorators = [decorator_names(node) for node in defs]
     if any('property' in names or 'setter' in names for names in decorators):
@@ -105,14 +107,23 @@ def _check_overload_group(
             'but the last (dead overloads); decorate all variants'
         )
         return
+    parameters = [_parameters(node) for node in defs]
+    if bound_receiver:
+        for index, names in enumerate(decorators):
+            if 'staticmethod' not in names:
+                # A bound receiver is implicit at instance-call sites. A slash
+                # before an operand also makes `self` or `cls` positional-only,
+                # which must not create a false overload mismatch.
+                parameters[index] = parameters[index][1:]
+
     # The last real variant is the docstring carrier. It is canonical only for
     # parameter names, kinds, ordering, and defaults; its annotations stay
     # narrow, because a synthetic union overload weakens type narrowing.
-    canonical = {name: (kind, default) for name, kind, default in _parameters(defs[-1])}
-    order = [name for name, _, _ in _parameters(defs[-1])]
-    for variant in defs[:-1]:
+    canonical = {name: (kind, default) for name, kind, default in parameters[-1]}
+    order = [name for name, _, _ in parameters[-1]]
+    for variant, variant_parameters in zip(defs[:-1], parameters[:-1], strict=True):
         last_index = -1
-        for name, kind, default in _parameters(variant):
+        for name, kind, default in variant_parameters:
             if name not in canonical:
                 # Selector-dependent overloads intentionally omit mutually
                 # exclusive parameters (for example, a literal mode that
@@ -150,7 +161,13 @@ def _collect_overload_hygiene(ctx: CheckContext, errors: list[str]) -> None:
         _check_overload_group(name, defs, path, errors)
     for class_name, node in ctx.stub_classes.items():
         for name, defs in function_groups(node.body).items():
-            _check_overload_group(f'{class_name}.{name}', defs, path, errors)
+            _check_overload_group(
+                f'{class_name}.{name}',
+                defs,
+                path,
+                errors,
+                bound_receiver=True,
+            )
     _check_duplicate_decorators(ctx, path, errors)
 
 

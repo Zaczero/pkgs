@@ -252,8 +252,8 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 /// ----------
 /// geom : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Geometry to cover (WGS84 lon/lat or projected). An array or iterable
-///     returns one group per input row; ``None`` and empty geometries produce
-///     empty groups.
+///     returns one group per input row; ``None`` produces a missing group and
+///     a present empty geometry produces an empty group.
 ///
 /// resolution : int
 ///     H3 resolution (``0``-``15``; finer at higher values).

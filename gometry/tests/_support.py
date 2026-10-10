@@ -192,7 +192,7 @@ def ndarray_values(array: Any, dtype: npt.DTypeLike) -> Any:
     return array.tolist()
 
 
-def ids(array: Any) -> list[int] | list[list[int]]:
+def ids(array: Any) -> list[int] | list[list[int] | None]:
     import gometry as gm
 
     if isinstance(array, gm.Groups):
@@ -201,10 +201,13 @@ def ids(array: Any) -> list[int] | list[list[int]]:
         assert offsets[0] == 0
         assert offsets[-1] == len(raw)
         assert np.all(offsets[:-1] <= offsets[1:])
-        rows = [ndarray_lane(row, np.int64).tolist() for row in array]
+        rows = [
+            None if row is None else ndarray_lane(row, np.int64).tolist()
+            for row in array
+        ]
         assert rows == [
-            raw[start:end].tolist()
-            for start, end in itertools.pairwise(offsets.tolist())
+            None if array.is_missing[row] else raw[start:end].tolist()
+            for row, (start, end) in enumerate(itertools.pairwise(offsets.tolist()))
         ]
         return rows
     return ndarray_values(array, np.int64)

@@ -157,13 +157,15 @@ _DefaultT = TypeVar('_DefaultT')
 _GeometryT_co = TypeVar(
     '_GeometryT_co', bound=Geometry | None, covariant=True, default=Geometry
 )
-# Row element type of a `Groups` container (int64 ndarray, `GeometryArray`, …).
-# Bounded (not value-constrained) so aliases like `Groups[GeometryArray[Point]]`
-# keep their precise element type, and covariant so a Groups of a narrower
-# payload flows where a wider one is expected (Groups is read-only).
-_GroupValuesT_co = TypeVar(
-    '_GroupValuesT_co',
+# One row of a `Groups` sequence may be a flat payload or a missing source row.
+_GroupRowT_co = TypeVar(
+    '_GroupRowT_co',
+    bound=np.ndarray[Any, Any] | GeometryArray[Any] | CellArray[Any] | None,
     covariant=True,
+)
+_GroupPayloadT = TypeVar(
+    '_GroupPayloadT',
+    bound=np.ndarray[Any, Any] | GeometryArray[Any] | CellArray[Any],
 )
 
 __version__: Final[str]
@@ -6336,6 +6338,115 @@ class GeometryArrayIterator(Generic[_GeometryT_co]):
     def __next__(self) -> _GeometryT_co:
         """Implement next(self)."""
 
+class _GeometryArrayPartsProjection(Protocol):
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[Point],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Point]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[MultiPoint],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Point]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[LineString],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[LineString]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[MultiLineString],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[LineString]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[Polygon],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Polygon]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[MultiPolygon],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Polygon]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[GeometryCollection],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Geometry]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[Point | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Point] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[MultiPoint | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Point] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[LineString | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[LineString] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[MultiLineString | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[LineString] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[Polygon | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Polygon] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[MultiPolygon | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Polygon] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[GeometryCollection | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Geometry] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[Geometry],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Geometry]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: GeometryArray[Geometry | None],
+        owner: type[GeometryArray[Geometry | None]] | None = None,
+    ) -> Groups[GeometryArray[Geometry] | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: None,
+        owner: type[GeometryArray[Geometry | None]],
+    ) -> Self: ...
+    def __set__(
+        self,
+        instance: GeometryArray[Geometry | None],
+        value: Never,
+    ) -> None: ...
+
 @final
 class GeometryArray(Sequence[_GeometryT_co]):
     """An immutable array of geometries sharing one CRS/epoch frame.
@@ -7155,19 +7266,18 @@ class GeometryArray(Sequence[_GeometryT_co]):
         -------
         list of str
         """
-    @property
-    def parts(self) -> Groups[GeometryArray[Geometry]]:
-        """Top-level parts grouped by source row.
+    parts: _GeometryArrayPartsProjection
+    """Top-level parts grouped by source row.
 
-        Simple geometries form one-element groups, multipart and collection
-        geometries expose their immediate members, and empty or missing rows
-        form empty groups.
+    Simple geometries form one-element groups, multipart and collection
+    geometries expose their immediate members, empty geometries form empty
+    groups, and missing source rows remain missing groups.
 
-        Returns
-        -------
-        Groups
-            One `GeometryArray` group per input row.
-        """
+    Returns
+    -------
+    Groups
+        One group per input row; missing rows yield `None`.
+    """
     @property
     def num_geometries(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry top-level part count (see `Geometry.num_geometries`):
@@ -7929,13 +8039,16 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def concat(
         self: GeometryArray[_GeometryT_co],
     ) -> GeometryArray[_GeometryT_co]:
-        """Concatenate one or more arrays sharing this array's CRS and epoch.
+        """Concatenate zero or more arrays sharing this array's CRS and epoch.
+        With no arrays, return this array.
 
         Parameters
         ----------
+        other : GeometryArray
+            First array to append; it must share this array's CRS and epoch.
         others : GeometryArray
-            Arrays to append in order; each must share this array's CRS and
-            epoch. The zero-argument form returns this array.
+            Additional arrays to append in order; each must share this array's
+            CRS and epoch.
 
         Returns
         -------
@@ -8417,7 +8530,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def triangulate(
-        self,
+        self: GeometryArray[Geometry],
         *,
         method: Literal['earcut'],
         min_angle: None = None,
@@ -8425,7 +8538,15 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Groups[GeometryArray[Polygon]]: ...
     @overload
     def triangulate(
-        self,
+        self: GeometryArray[Geometry | None],
+        *,
+        method: Literal['earcut'],
+        min_angle: None = None,
+        max_area: None = None,
+    ) -> Groups[GeometryArray[Polygon] | None]: ...
+    @overload
+    def triangulate(
+        self: GeometryArray[Geometry],
         *,
         method: Literal['delaunay'],
         min_angle: None = None,
@@ -8433,12 +8554,28 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Groups[GeometryArray[Polygon]]: ...
     @overload
     def triangulate(
-        self,
+        self: GeometryArray[Geometry | None],
+        *,
+        method: Literal['delaunay'],
+        min_angle: None = None,
+        max_area: None = None,
+    ) -> Groups[GeometryArray[Polygon] | None]: ...
+    @overload
+    def triangulate(
+        self: GeometryArray[Geometry],
         *,
         method: Literal['constrained'],
         min_angle: FloatInput | None = None,
         max_area: FloatInput | None = None,
-    ) -> Groups[GeometryArray[Polygon]]:
+    ) -> Groups[GeometryArray[Polygon]]: ...
+    @overload
+    def triangulate(
+        self: GeometryArray[Geometry | None],
+        *,
+        method: Literal['constrained'],
+        min_angle: FloatInput | None = None,
+        max_area: FloatInput | None = None,
+    ) -> Groups[GeometryArray[Polygon] | None]:
         """Triangulate each geometry with an explicit algorithm.
 
         Parameters
@@ -9378,7 +9515,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POINT (1 2)'
         """
 
-    def self_intersections(self) -> Groups[GeometryArray[Point]]:
+    @overload
+    def self_intersections(
+        self: GeometryArray[Geometry],
+    ) -> Groups[GeometryArray[Point]]: ...
+    @overload
+    def self_intersections(
+        self: GeometryArray[Geometry | None],
+    ) -> Groups[GeometryArray[Point] | None]:
         """Return points where the geometry coincides with itself. Reports proper linework
         self-crossings, non-adjacent touches, the endpoints of collinear overlaps
         (spikes and backtracks), contact between distinct parts, and duplicate point
@@ -9393,7 +9537,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         -------
         Groups
             One ``GeometryArray`` of distinct self-intersection points per
-            element; missing rows yield an empty group.
+            element; missing rows yield ``None`` groups.
 
         Examples
         --------
@@ -9482,7 +9626,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> GeometryArray[Point | None]: ...
     @overload
     def line_interpolate(
-        self,
+        self: GeometryArray[Geometry],
         at: None = None,
         *,
         count: _IntInput,
@@ -9490,6 +9634,16 @@ class GeometryArray(Sequence[_GeometryT_co]):
         normalized: Literal[False] = False,
         unit: DistanceUnit | None = None,
     ) -> Groups[GeometryArray[Point]]: ...
+    @overload
+    def line_interpolate(
+        self: GeometryArray[Geometry | None],
+        at: None = None,
+        *,
+        count: _IntInput,
+        basis: Literal['distance'] = 'distance',
+        normalized: Literal[False] = False,
+        unit: DistanceUnit | None = None,
+    ) -> Groups[GeometryArray[Point] | None]: ...
     @overload
     def line_interpolate(
         self: GeometryArray[Geometry],
@@ -9960,7 +10114,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         True
         """
 
-    def subdivide(self, *, max_vertices: int = 256) -> Groups[GeometryArray[Geometry]]:
+    @overload
+    def subdivide(
+        self: GeometryArray[Geometry], *, max_vertices: int = 256
+    ) -> Groups[GeometryArray[Geometry]]: ...
+    @overload
+    def subdivide(
+        self: GeometryArray[Geometry | None], *, max_vertices: int = 256
+    ) -> Groups[GeometryArray[Geometry] | None]:
         """Split geometry into parts of bounded complexity. Recursively clips
         across the longer axis until every part has at most ``max_vertices``
         coordinates (the PostGIS ``ST_Subdivide`` shape). Linework with no
@@ -10159,7 +10320,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def voronoi(
-        self,
+        self: GeometryArray[Geometry],
         *,
         output: Literal['polygons'] = 'polygons',
         tolerance: float = 0.0,
@@ -10167,12 +10328,28 @@ class GeometryArray(Sequence[_GeometryT_co]):
     ) -> Groups[GeometryArray[Polygon]]: ...
     @overload
     def voronoi(
-        self,
+        self: GeometryArray[Geometry | None],
+        *,
+        output: Literal['polygons'] = 'polygons',
+        tolerance: float = 0.0,
+        clip: VoronoiClip | Polygon = 'padded',
+    ) -> Groups[GeometryArray[Polygon] | None]: ...
+    @overload
+    def voronoi(
+        self: GeometryArray[Geometry],
         *,
         output: Literal['edges'],
         tolerance: float = 0.0,
         clip: VoronoiClip | Polygon = 'padded',
-    ) -> Groups[GeometryArray[LineString]]:
+    ) -> Groups[GeometryArray[LineString]]: ...
+    @overload
+    def voronoi(
+        self: GeometryArray[Geometry | None],
+        *,
+        output: Literal['edges'],
+        tolerance: float = 0.0,
+        clip: VoronoiClip | Polygon = 'padded',
+    ) -> Groups[GeometryArray[LineString] | None]:
         """Construct a Voronoi diagram from the geometry's vertices. Operates in
         planar longitude/latitude space and does NOT auto-split antimeridian-crossing
         geographic input; call ``split_antimeridian`` first. Collinear vertices divide
@@ -10522,9 +10699,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POLYGON ((0 0, 3 0, 3 1, 0 1, 0 0))'
         """
 
+    @overload
     def sample_points(
-        self, count: _IntInput, *, seed: _IntInput
-    ) -> Groups[GeometryArray[Point]]:
+        self: GeometryArray[Geometry],
+        count: _IntInput,
+        *,
+        seed: _IntInput,
+    ) -> Groups[GeometryArray[Point]]: ...
+    @overload
+    def sample_points(
+        self: GeometryArray[Geometry | None],
+        count: _IntInput,
+        *,
+        seed: _IntInput,
+    ) -> Groups[GeometryArray[Point] | None]:
         """Random points on the geometry. The sample space is its highest
         dimension: coordinate-area weighted for areal input, coordinate-length
         weighted for lineal input, and equal weight across point atoms. Geographic
@@ -11014,7 +11202,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         True
         """
 
-    def polygonize(self) -> Groups[GeometryArray[Polygon]]:
+    @overload
+    def polygonize(self: GeometryArray[Geometry]) -> Groups[GeometryArray[Polygon]]: ...
+    @overload
+    def polygonize(
+        self: GeometryArray[Geometry | None],
+    ) -> Groups[GeometryArray[Polygon] | None]:
         """Build polygons from a geometry's own linework, automatically noding
         crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
         polygons from a pile of edges pooled across many geometries, use free function
@@ -11343,7 +11536,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
 
 @final
-class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
+class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
     """Shared CSR ragged container: one flat `values` payload plus row `offsets`.
     The values payload keeps its actual type (int64, geometry array, or cell
     array). A contiguous values window may share backing; offsets for a window
@@ -11351,18 +11544,17 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     """
     def __new__(cls, _nonconstructible: Never, /) -> Self:
         """Not constructed directly — the error points at the producers."""
-    @property
-    def values(self) -> _GroupValuesT_co:
-        """The logical flat payload window (int64 ndarray, `GeometryArray`, or
-        `CellArray`), with values in group order. A contiguous source window
-        can share backing; gathered values may be materialized.
+    values: _GroupsValuesProjection
+    """The logical flat payload window (int64 ndarray, `GeometryArray`, or
+    `CellArray`), with values in group order. A contiguous source window
+    can share backing; gathered values may be materialized.
 
-        Returns
-        -------
-        Group values
-            The selected flat payload window. Numeric values are read-only int64;
-            geometry and cell payloads retain their immutable array types.
-        """
+    Returns
+    -------
+    Group values
+        The selected flat payload window. Numeric values are read-only int64;
+        geometry and cell payloads retain their immutable array types.
+    """
     @property
     def offsets(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """The `len(self) + 1` row boundaries into ``values`` (CSR offsets
@@ -11384,11 +11576,21 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
             A materialized, read-only int64 count for each group in row order.
         """
     @property
+    def is_missing(self) -> np.ndarray[tuple[int], np.dtype[np.bool_]]:
+        """Missing source groups, distinct from present groups with no outputs.
+
+        Returns
+        -------
+        numpy.ndarray
+            A read-only boolean mask in group order.
+        """
+    @property
     def nbytes(self) -> int:
-        """Logical CSR payload in bytes: the selected flat values payload plus the
-        ``len(self) + 1`` int64 offsets column. For geometry-valued groups this
-        uses the values ``GeometryArray.nbytes`` and excludes geometry
-        structural offsets, matching NumPy's payload-only convention.
+        """Logical CSR payload in bytes: the selected flat values payload, the
+        ``len(self) + 1`` int64 offsets column, and a row-validity bitmap when
+        any group is missing. For geometry-valued groups this uses the values
+        ``GeometryArray.nbytes`` and excludes geometry structural offsets,
+        matching NumPy's payload-only convention.
 
         Returns
         -------
@@ -11416,8 +11618,8 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]: ...
     def __len__(self) -> int: ...
     def __bool__(self) -> bool: ...
-    def __iter__(self) -> GroupsIterator[_GroupValuesT_co]: ...
-    def __reversed__(self) -> GroupsIterator[_GroupValuesT_co]:
+    def __iter__(self) -> GroupsIterator[_GroupRowT_co]: ...
+    def __reversed__(self) -> GroupsIterator[_GroupRowT_co]:
         """Iterate row groups in reverse order.
 
         Returns
@@ -11425,11 +11627,11 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         iterator
         """
     @overload
-    def __getitem__(self, index: SupportsIndex, /) -> _GroupValuesT_co: ...
+    def __getitem__(self, index: SupportsIndex, /) -> _GroupRowT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> Self: ...
     def to_pairs(
-        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
     ) -> tuple[
         np.ndarray[tuple[int], np.dtype[np.int64]],
         np.ndarray[tuple[int], np.dtype[np.int64]],
@@ -11467,16 +11669,28 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     ) -> list[list[int]]: ...
     @overload
     def to_list(
+        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
+    ) -> list[list[int] | None]: ...
+    @overload
+    def to_list(
         self: Groups[GeometryArray[_GeometryT_co]],
     ) -> list[list[_GeometryT_co]]: ...
     @overload
-    def to_list(self: Groups[CellArray[_CellT_co]]) -> list[list[_CellT_co]]:
+    def to_list(
+        self: Groups[GeometryArray[_GeometryT_co] | None],
+    ) -> list[list[_GeometryT_co] | None]: ...
+    @overload
+    def to_list(self: Groups[CellArray[_CellT_co]]) -> list[list[_CellT_co]]: ...
+    @overload
+    def to_list(
+        self: Groups[CellArray[_CellT_co] | None],
+    ) -> list[list[_CellT_co] | None]:
         """Copy into a plain nested Python list.
 
         Returns
         -------
-        list of list
-            Materialized rows of the grouped values.
+        list
+            Materialized rows of the grouped values; missing rows are ``None``.
 
         Examples
         --------
@@ -11521,10 +11735,10 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         """
 
 @final
-class GroupsIterator(Iterator[_GroupValuesT_co]):
+class GroupsIterator(Iterator[_GroupRowT_co]):
     """Lazy row iterator for [`Groups`]."""
     def __iter__(self) -> Self: ...
-    def __next__(self) -> _GroupValuesT_co: ...
+    def __next__(self) -> _GroupRowT_co: ...
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
@@ -11536,6 +11750,23 @@ class GroupsIterator(Iterator[_GroupValuesT_co]):
         OverflowError
             If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
+
+class _GroupsValuesProjection(Protocol):
+    @overload
+    def __get__(
+        self,
+        instance: Groups[_GroupPayloadT],
+        owner: type[Groups[Any]] | None = None,
+    ) -> _GroupPayloadT: ...
+    @overload
+    def __get__(
+        self,
+        instance: Groups[_GroupPayloadT | None],
+        owner: type[Groups[Any]] | None = None,
+    ) -> _GroupPayloadT: ...
+    @overload
+    def __get__(self, instance: None, owner: type[Groups[Any]]) -> Self: ...
+    def __set__(self, instance: Groups[Any], value: Never) -> None: ...
 
 @final
 class SpatialIndexIterator(Iterator[int]):
@@ -11781,12 +12012,21 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
-        geom: _GeometryBatch[Geometry | None],
+        geom: _GeometryBatch[Geometry],
         *,
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
     ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
+    @overload
+    def query(
+        self,
+        geom: _GeometryBatch[Geometry | None],
+        *,
+        predicate: Literal['dwithin'],
+        distance: float,
+        unit: DistanceUnit | None = None,
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]: ...
     @overload
     def query(
         self,
@@ -11799,12 +12039,21 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
+        geom: _GeometryBatch[Geometry],
+        *,
+        predicate: TopologicalPredicate = 'intersects',
+        distance: None = None,
+        unit: DistanceUnit | None = None,
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
+    @overload
+    def query(
+        self,
         geom: _GeometryBatch[Geometry | None],
         *,
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]:
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]:
         """Return exact predicate-refined matches for a query geometry, array, or
         iterable of geometry rows.
 
@@ -11818,7 +12067,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         ----------
         geom : Geometry, GeometryArray, or iterable of Geometry or None
             One query geometry or one query per sequence row. Missing rows
-            produce empty result groups and retain their logical positions.
+            produce missing result groups (`None`); present rows with no matches
+            produce empty groups.
         predicate : str, default varies by call form
             Spatial relation each match must satisfy, evaluated as
             ``predicate(query_geometry, indexed_geometry)``. Topological forms
@@ -11827,8 +12077,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         distance : float, optional
             ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
             threshold is accepted; other values must be finite and
-            non-negative. Missing or empty query rows produce empty result
-            groups rather than being dropped.
+            non-negative. Missing query rows remain missing result groups;
+            present empty query rows produce empty result groups.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -11845,8 +12095,9 @@ class SpatialIndex(Mapping[int, Geometry]):
         int64 numpy.ndarray or Groups
             Matching index handles (row ids). A scalar query returns a read-only
             ``int64`` ndarray of handles; an array query returns ``Groups`` of
-            handles, one group per query row. Each result is in ascending
-            source-row order.
+            handles, one row per query row. Missing queries yield ``None`` rows,
+            while present queries with no matches yield empty groups. Each result
+            is in ascending source-row order.
 
         Raises
         ------
@@ -12032,11 +12283,19 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def candidates(
         self,
-        geom: _GeometryBatch[Geometry | None],
+        geom: _GeometryBatch[Geometry],
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
     ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
+    @overload
+    def candidates(
+        self,
+        geom: _GeometryBatch[Geometry | None],
+        *,
+        distance: float | None = None,
+        unit: DistanceUnit | None = None,
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]: ...
     @overload
     def candidates(
         self,
@@ -12046,7 +12305,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
     ) -> (
         np.ndarray[tuple[int], np.dtype[np.int64]]
-        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]
     ):
         """Bounding-box candidate matches for a query geometry, array, or iterable (not
         exact). If you refine these candidates with a directional predicate,
@@ -12059,7 +12318,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         ----------
         geom : Geometry, GeometryArray, or iterable of Geometry or None
             One query geometry or one query per sequence row. Missing rows
-            produce empty groups and retain their logical positions.
+            produce ``None`` groups; present rows with no candidates produce
+            empty groups.
         distance : float, optional
             Expand the query envelope by this much, in ``unit``. Finite
             non-negative expansions and positive infinity are accepted;
@@ -12122,7 +12382,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: _GeometryBatch[Geometry | None],
+        geom: _GeometryBatch[Geometry],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -12138,12 +12398,39 @@ class SpatialIndex(Mapping[int, Geometry]):
         *,
         k: int = 1,
         max_distance: float | None = None,
+        return_distance: Literal[False] = False,
+        unit: DistanceUnit | None = None,
+        exclusive: bool = False,
+        ties: bool = False,
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]: ...
+    @overload
+    def nearest(
+        self,
+        geom: _GeometryBatch[Geometry],
+        *,
+        k: int = 1,
+        max_distance: float | None = None,
         return_distance: Literal[True],
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
     ) -> tuple[
         Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        npt.NDArray[np.float64],
+    ]: ...
+    @overload
+    def nearest(
+        self,
+        geom: _GeometryBatch[Geometry | None],
+        *,
+        k: int = 1,
+        max_distance: float | None = None,
+        return_distance: Literal[True],
+        unit: DistanceUnit | None = None,
+        exclusive: bool = False,
+        ties: bool = False,
+    ) -> tuple[
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
         npt.NDArray[np.float64],
     ]: ...
     @overload
@@ -12163,6 +12450,24 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
+        geom: _GeometryBatch[Geometry],
+        *,
+        k: int = 1,
+        max_distance: float | None = None,
+        return_distance: bool = False,
+        unit: DistanceUnit | None = None,
+        exclusive: bool = False,
+        ties: bool = False,
+    ) -> (
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+        | tuple[
+            Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+            npt.NDArray[np.float64],
+        ]
+    ): ...
+    @overload
+    def nearest(
+        self,
         geom: _GeometryBatch[Geometry | None],
         *,
         k: int = 1,
@@ -12172,8 +12477,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         exclusive: bool = False,
         ties: bool = False,
     ) -> (
-        Groups[npt.NDArray[np.int64]]
-        | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+        Groups[npt.NDArray[np.int64] | None]
+        | tuple[Groups[npt.NDArray[np.int64] | None], npt.NDArray[np.float64]]
     ): ...
     @overload
     def nearest(
@@ -12188,10 +12493,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         ties: bool = False,
     ) -> (
         np.ndarray[tuple[int], np.dtype[np.int64]]
-        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]
         | tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]
         | tuple[
-            Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+            Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
             npt.NDArray[np.float64],
         ]
     ):
@@ -12201,7 +12506,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         ----------
         geom : Geometry, GeometryArray, or iterable of Geometry or None
             One query geometry or one query per sequence row. Missing rows
-            produce empty groups and retain their logical positions.
+            produce ``None`` groups and retain their logical positions.
         k : int, default 1
             How many nearest neighbors to return; ``0`` returns no neighbors.
         max_distance : float, optional
@@ -13128,7 +13433,7 @@ class CRS:
 # covariant variable cannot appear in an input position. Neither is
 # `bound=Cell`: the recursive `Cell` protocol (`neighbors`/`children` ->
 # `CellArray[Self]`) cannot prove `Self <: Cell` while `CellArray` demands it.
-_CellT = TypeVar('_CellT')
+_CellT = TypeVar('_CellT', bound=Cell)
 _CellT_co = TypeVar('_CellT_co', covariant=True, default=Cell)
 
 class _CellGeometryProjection(Protocol[_GeometryT_co]):
@@ -13144,6 +13449,31 @@ class _CellGeometryProjection(Protocol[_GeometryT_co]):
         instance: CellArray[Cell | None],
         owner: type[CellArray[Cell | None]] | None = None,
     ) -> GeometryArray[_GeometryT_co | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: None,
+        owner: type[CellArray[Cell | None]],
+    ) -> Self: ...
+    def __set__(
+        self,
+        instance: CellArray[Cell | None],
+        value: Never,
+    ) -> None: ...
+
+class _CellGroupsProjection(Protocol):
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[_CellT],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> Groups[CellArray[_CellT]]: ...
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[_CellT | None],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> Groups[CellArray[_CellT] | None]: ...
     @overload
     def __get__(
         self,
@@ -13567,20 +13897,24 @@ class CellArray(Sequence[_CellT_co]):
         >>> parent.token
         '86283082fffffff'
         """
-    @property
-    def neighbors(self: CellArray[_CellT | None]) -> Groups[CellArray[_CellT]]:
-        """The edge-adjacent cells of every cell, as ragged rows.
+    neighbors: _CellGroupsProjection
+    """The edge-adjacent cells of every cell, as ragged rows.
 
-        Returns
-        -------
-        Groups of CellArray
-            One row of neighbors per input cell, in input order. Neighbor
-            counts vary, so the result is a Groups, not a rectangular
-            CellArray.
-        """
+    Returns
+    -------
+    Groups of CellArray
+        One row of neighbors per input cell, in input order. Neighbor
+        counts vary, so the result is a Groups, not a rectangular
+        CellArray. Missing input rows yield ``None`` groups.
+    """
+    @overload
+    def children(
+        self: CellArray[_CellT], depth: int | None = None, /
+    ) -> Groups[CellArray[_CellT]]: ...
+    @overload
     def children(
         self: CellArray[_CellT | None], depth: int | None = None, /
-    ) -> Groups[CellArray[_CellT]]:
+    ) -> Groups[CellArray[_CellT] | None]:
         """Return the child cells of every cell at a finer depth, as ragged rows.
 
         Parameters
@@ -13592,7 +13926,8 @@ class CellArray(Sequence[_CellT_co]):
         Returns
         -------
         Groups of CellArray
-            One row of children per input cell, in input order.
+            One row of children per input cell, in input order. Missing input
+            rows yield ``None`` groups.
 
         Examples
         --------
@@ -18934,10 +19269,24 @@ def split(
 @overload
 def split(
     geom: GeometryArray[LineString | MultiLineString | None],
-    splitter: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+    splitter: Point | MultiPoint | GeometryArray[Point | MultiPoint],
     *,
     tolerance: float = 0.0,
-) -> Groups[GeometryArray[LineString]]: ...
+) -> Groups[GeometryArray[LineString] | None]: ...
+@overload
+def split(
+    geom: GeometryArray[LineString | MultiLineString],
+    splitter: GeometryArray[Point | MultiPoint | None],
+    *,
+    tolerance: float = 0.0,
+) -> Groups[GeometryArray[LineString] | None]: ...
+@overload
+def split(
+    geom: GeometryArray[LineString | MultiLineString | None],
+    splitter: GeometryArray[Point | MultiPoint | None],
+    *,
+    tolerance: float = 0.0,
+) -> Groups[GeometryArray[LineString] | None]: ...
 @overload
 def split(
     geom: Geometry,
@@ -18947,11 +19296,18 @@ def split(
 ) -> GeometryArray[LineString]: ...
 @overload
 def split(
+    geom: GeometryArray[Geometry],
+    splitter: Geometry | GeometryArray[Geometry],
+    *,
+    tolerance: float = 0.0,
+) -> Groups[GeometryArray[LineString]]: ...
+@overload
+def split(
     geom: GeometryArray[Geometry | None],
     splitter: Geometry | GeometryArray[Geometry | None],
     *,
     tolerance: float = 0.0,
-) -> Groups[GeometryArray[LineString]]:
+) -> Groups[GeometryArray[LineString] | None]:
     """Split lineal geometry by point splitter(s).
 
     Each piece retains source vertices, including consecutive equal-X/Y
@@ -18977,7 +19333,8 @@ def split(
         A scalar line returns all split parts in one `GeometryArray`, even when
         its cutter is an array of points. A line array returns one `Groups` row
         per source line; an array cutter is paired row by row. Missing line or
-        cutter rows produce empty groups.
+        cutter rows produce ``None`` groups; present rows with no split parts
+        produce empty groups.
 
     Raises
     ------
@@ -19125,7 +19482,7 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    geom: _GeometryBatch[Geometry | None],
+    geom: _GeometryBatch[Geometry],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19141,12 +19498,39 @@ def nearest(
     *,
     k: int = 1,
     max_distance: float | None = None,
+    return_distance: Literal[False] = False,
+    unit: DistanceUnit | None = None,
+    exclusive: bool = False,
+    ties: bool = False,
+) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]: ...
+@overload
+def nearest(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: _GeometryBatch[Geometry],
+    *,
+    k: int = 1,
+    max_distance: float | None = None,
     return_distance: Literal[True],
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
 ) -> tuple[
     Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+    npt.NDArray[np.float64],
+]: ...
+@overload
+def nearest(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: _GeometryBatch[Geometry | None],
+    *,
+    k: int = 1,
+    max_distance: float | None = None,
+    return_distance: Literal[True],
+    unit: DistanceUnit | None = None,
+    exclusive: bool = False,
+    ties: bool = False,
+) -> tuple[
+    Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
     npt.NDArray[np.float64],
 ]: ...
 @overload
@@ -19164,6 +19548,24 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: _GeometryBatch[Geometry],
+    *,
+    k: int = 1,
+    max_distance: float | None = None,
+    return_distance: bool = False,
+    unit: DistanceUnit | None = None,
+    exclusive: bool = False,
+    ties: bool = False,
+) -> (
+    Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+    | tuple[
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        npt.NDArray[np.float64],
+    ]
+): ...
+@overload
+def nearest(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     geom: _GeometryBatch[Geometry | None],
     *,
     k: int = 1,
@@ -19173,8 +19575,8 @@ def nearest(
     exclusive: bool = False,
     ties: bool = False,
 ) -> (
-    Groups[npt.NDArray[np.int64]]
-    | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+    Groups[npt.NDArray[np.int64] | None]
+    | tuple[Groups[npt.NDArray[np.int64] | None], npt.NDArray[np.float64]]
 ): ...
 @overload
 def nearest(
@@ -19189,10 +19591,10 @@ def nearest(
     ties: bool = False,
 ) -> (
     np.ndarray[tuple[int], np.dtype[np.int64]]
-    | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+    | Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None]
     | tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]
     | tuple[
-        Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
         npt.NDArray[np.float64],
     ]
 ):
@@ -20053,24 +20455,37 @@ def polygonize_all(
 ) -> GeometryArray[Polygon]: ...
 @overload
 def polygonize_all(
+    values: Geometry | GeometryArray[Geometry] | Iterable[_GeometryLike],
+    *,
+    diagnostics: Literal[True],
+) -> PolygonizeResult[Never]: ...
+@overload
+def polygonize_all(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     diagnostics: Literal[True],
-) -> PolygonizeResult: ...
+) -> PolygonizeResult[None]: ...
+@overload
+def polygonize_all(
+    values: Geometry | GeometryArray[Geometry] | Iterable[_GeometryLike],
+    *,
+    diagnostics: bool,
+) -> GeometryArray[Polygon] | PolygonizeResult[Never]: ...
 @overload
 def polygonize_all(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     diagnostics: bool,
-) -> GeometryArray[Polygon] | PolygonizeResult:
+) -> GeometryArray[Polygon] | PolygonizeResult[None]:
     """Build polygons from pooled linework, optionally returning full diagnostics.
 
     All input geometries' edges are noded into one planar graph, so a ring can
     close across inputs. `diagnostics=False` returns the enclosed polygons;
     `diagnostics=True` returns those same polygons together with cut edges,
-    dangles, and invalid rings grouped by source row. `Geometry.polygonize()`
-    and `GeometryArray.polygonize()` instead polygonize each geometry's own
-    linework independently.
+    dangles, and invalid rings grouped by source row. Missing source rows are
+    `None` groups; present rows with no diagnostic linework are empty groups.
+    `Geometry.polygonize()` and `GeometryArray.polygonize()` instead polygonize
+    each geometry's own linework independently.
 
     Parameters
     ----------
@@ -22472,12 +22887,20 @@ def crs_transform_bounds(
 
 @overload
 def geohash_cover(
-    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    geom: GeometryArray[Geometry] | Iterable[Geometry],
     precision: int,
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> Groups[CellArray[GeohashCell]]: ...
+@overload
+def geohash_cover(
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    precision: int,
+    *,
+    cell_rule: CellRule = 'overlap',
+    max_cells: int | None = 1000000,
+) -> Groups[CellArray[GeohashCell] | None]: ...
 @overload
 def geohash_cover(
     geom: Geometry,
@@ -22498,7 +22921,8 @@ def geohash_cover(
     geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
         flat cell array; an array or iterable returns one group per input row.
-        ``None`` and empty geometries produce empty groups.
+        ``None`` produces a missing group; a present empty geometry produces
+        an empty group.
 
     precision : int
         Geohash precision (``1``-``12``; finer at higher values).
@@ -22738,12 +23162,20 @@ def geohash_difference(
 
 @overload
 def tile_cover(
-    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    geom: GeometryArray[Geometry] | Iterable[Geometry],
     zoom: int,
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> Groups[CellArray[Tile]]: ...
+@overload
+def tile_cover(
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    zoom: int,
+    *,
+    cell_rule: CellRule = 'overlap',
+    max_cells: int | None = 1000000,
+) -> Groups[CellArray[Tile] | None]: ...
 @overload
 def tile_cover(
     geom: Geometry,
@@ -22764,7 +23196,8 @@ def tile_cover(
     geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
         flat cell array; an array or iterable returns one group per input row.
-        ``None`` and empty geometries produce empty groups.
+        ``None`` produces a missing group; a present empty geometry produces
+        an empty group.
 
     zoom : int
         Tile zoom (``0``-``29``; finer at higher values).
@@ -23448,12 +23881,20 @@ def osm_shortlink_location(
 
 @overload
 def h3_cover(
-    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    geom: GeometryArray[Geometry] | Iterable[Geometry],
     resolution: int,
     *,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> Groups[CellArray[H3Cell]]: ...
+@overload
+def h3_cover(
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    resolution: int,
+    *,
+    cell_rule: CellRule = 'overlap',
+    max_cells: int | None = 1000000,
+) -> Groups[CellArray[H3Cell] | None]: ...
 @overload
 def h3_cover(
     geom: Geometry,
@@ -23472,8 +23913,8 @@ def h3_cover(
     ----------
     geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). An array or iterable
-        returns one group per input row; ``None`` and empty geometries produce
-        empty groups.
+        returns one group per input row; ``None`` produces a missing group and
+        a present empty geometry produces an empty group.
 
     resolution : int
         H3 resolution (``0``-``15``; finer at higher values).
@@ -23780,7 +24221,7 @@ def h3_base_cells() -> CellArray[H3Cell]:
 
 @overload
 def s2_cover(
-    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    geom: GeometryArray[Geometry] | Iterable[Geometry],
     level: int | None = None,
     *,
     target_cells: int = 8,
@@ -23790,6 +24231,18 @@ def s2_cover(
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> Groups[CellArray[S2Cell]]: ...
+@overload
+def s2_cover(
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    level: int | None = None,
+    *,
+    target_cells: int = 8,
+    min_level: int | None = None,
+    max_level: int | None = None,
+    level_mod: Literal[1, 2, 3] = 1,
+    cell_rule: CellRule = 'overlap',
+    max_cells: int | None = 1000000,
+) -> Groups[CellArray[S2Cell] | None]: ...
 @overload
 def s2_cover(
     geom: Geometry,
@@ -23814,8 +24267,8 @@ def s2_cover(
     ----------
     geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). An array or iterable
-        returns one group per input row; ``None`` and empty geometries produce
-        empty groups.
+        returns one group per input row; ``None`` produces a missing group and
+        a present empty geometry produces an empty group.
 
     level : int, optional
         Fixed S2 cell level (``0``-``30``; finer at higher values). The level is

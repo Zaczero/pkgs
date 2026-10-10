@@ -16,6 +16,108 @@ quality_check = load_tool('quality_check', GOMETRY_ROOT / 'tools/check.py')
 runtime_artifact = sys.modules['runtime_artifact']
 
 
+def test_run_missing_executable_returns_a_failed_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv('PATH', str(tmp_path))
+
+    assert not quality_check.run(('cargo', '--version'))
+
+    assert 'could not execute cargo' in capsys.readouterr().err
+
+
+def test_strict_docs_build_does_not_inherit_markdown_exec_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv('MARKDOWN_EXEC_AUTO', 'python')
+    monkeypatch.setattr(
+        quality_check,
+        '_runtime_command',
+        lambda _arguments: [
+            sys.executable,
+            '-c',
+            (
+                'import os; '
+                "assert 'MARKDOWN_EXEC_AUTO' not in os.environ, "
+                "'MARKDOWN_EXEC_AUTO leaked'"
+            ),
+        ],
+    )
+
+    assert quality_check.run(quality_check.DOCS_BUILD, require_runtime=True)
+
+
+def test_doctest_pyright_uses_the_selected_interpreter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = load_tool(
+        '_check_doctest_types',
+        GOMETRY_ROOT / 'tools/gates/_check_doctest_types.py',
+        GOMETRY_ROOT / 'tools/gates',
+    )
+    selected_python = tmp_path / 'selected-python'
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+    monkeypatch.setattr(gate, 'sys', SimpleNamespace(executable=str(selected_python)))
+    monkeypatch.setattr(gate.subprocess, 'run', run)
+    errors: list[str] = []
+    target = tmp_path / 'corpus.py'
+    target.write_text('pass\n', encoding='utf-8')
+
+    gate._check_file('corpus.py', target, errors)
+
+    assert not errors
+    assert calls[0][0] == [
+        str(selected_python),
+        '-m',
+        'pyright',
+        str(target),
+        '--pythonpath',
+        str(selected_python),
+    ]
+
+
+def test_typing_runtime_pyright_uses_the_selected_interpreter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_artifact, 'require_runtime', lambda _root: None)
+    gate = load_tool(
+        '_check_typing_runtime',
+        GOMETRY_ROOT / 'tools/gates/_check_typing_runtime.py',
+        GOMETRY_ROOT / 'tools/gates',
+    )
+    selected_python = tmp_path / 'selected-python'
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout='', stderr='')
+
+    monkeypatch.setattr(gate, 'sys', SimpleNamespace(executable=str(selected_python)))
+    monkeypatch.setattr(gate.subprocess, 'run', run)
+    errors: list[str] = []
+
+    gate._check_pyright(errors, 'fixture', 'corpus.py')
+
+    assert not errors
+    assert calls[0][0] == [
+        str(selected_python),
+        '-m',
+        'pyright',
+        'corpus.py',
+        '--pythonpath',
+        str(selected_python),
+    ]
+
+
 def test_no_fix_keeps_source_checks_running_when_runtime_admission_fails(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

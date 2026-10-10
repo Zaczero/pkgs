@@ -331,10 +331,10 @@ def test_empty_linework_rows_match_the_scalar_answers() -> None:
         None,
     ]
     samples = rows.line_interpolate(count=2)
-    assert [group.to_wkt() for group in samples] == [
+    assert [None if group is None else group.to_wkt() for group in samples] == [
         ['POINT (0 0)', 'POINT (4 0)'],
         ['POINT EMPTY', 'POINT EMPTY'],
-        [],
+        None,
     ]
     assert rows.interpolate_m(0.0, 1.0).to_wkt() == [
         'LINESTRING M (0 0 0, 4 0 1)',
@@ -692,9 +692,12 @@ def test_normalized_lrs_selects_planar_metric_across_packed_and_gathered_rows() 
     assert np.isnan(gathered_locations[1])
     assert gathered_locations[[0, 2, 3]] == pytest.approx([1.0, 0.5, 1.0])
     gathered_samples = gathered.line_interpolate(count=3, unit='planar')
-    assert [[(point.x, point.y) for point in route] for route in gathered_samples] == [
+    assert [
+        None if route is None else [(point.x, point.y) for point in route]
+        for route in gathered_samples
+    ] == [
         [(0.0, 0.0), (4.0, 6.0), (8.0, 12.0)],
-        [],
+        None,
         [(0.0, 0.0), (20.0, 30.0), (40.0, 60.0)],
         [(0.0, 0.0), (4.0, 6.0), (8.0, 12.0)],
     ]

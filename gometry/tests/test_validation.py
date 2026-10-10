@@ -823,7 +823,7 @@ def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() ->
         (0.0, 0.0, 1.0),
         (1.0, 0.0, 2.0),
     ]
-    assert len(result.dangles[1]) == 0
+    assert result.dangles[1] is None
     assert len(result.dangles[2]) == 1
     assert result.dangles[2][0].coordinate_axes == 'XYZ'
     assert sorted(result.dangles[2][0].coords.to_nested()) == [
@@ -846,7 +846,7 @@ def test_polygonize_full_diagnostic_rows_scope_mixed_axes() -> None:
         (0.0, 0.0, 1.0),
         (1.0, 0.0, 2.0),
     ]
-    assert len(result.dangles[1]) == 0
+    assert result.dangles[1] is None
     assert result.dangles[2][0].coordinate_axes == 'XYM'
     assert sorted(result.dangles[2][0].coords.to_nested()) == [
         (-1.0, 0.0, 20.0),

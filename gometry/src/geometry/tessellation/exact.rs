@@ -693,9 +693,33 @@ pub(in crate::geometry) fn incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactS
 }
 
 fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
-    let (adx, ady) = (try_difference(a.x, d.x)?, try_difference(a.y, d.y)?);
-    let (bdx, bdy) = (try_difference(b.x, d.x)?, try_difference(b.y, d.y)?);
-    let (cdx, cdy) = (try_difference(c.x, d.x)?, try_difference(c.y, d.y)?);
+    incircle_dyadic_points(
+        [ExactDyadic::from_f64(a.x), ExactDyadic::from_f64(a.y)],
+        [ExactDyadic::from_f64(b.x), ExactDyadic::from_f64(b.y)],
+        [ExactDyadic::from_f64(c.x), ExactDyadic::from_f64(c.y)],
+        [ExactDyadic::from_f64(d.x), ExactDyadic::from_f64(d.y)],
+    )
+}
+
+/// Exact geometric in-circle determinant over the original dyadic site
+/// coordinates. Raw XY keeps its filtered entry point; retained chart sites
+/// use this same final arithmetic after supplying native-plus-lift X.
+pub(in crate::geometry) fn incircle_dyadic_points(
+    a: [ExactDyadic; 2],
+    b: [ExactDyadic; 2],
+    c: [ExactDyadic; 2],
+    d: [ExactDyadic; 2],
+) -> Result<ExactSign> {
+    let [ax, ay] = a;
+    let [bx, by] = b;
+    let [cx, cy] = c;
+    let [dx, dy] = d;
+    let adx = ax.try_subtract(dx.clone())?;
+    let ady = ay.try_subtract(dy.clone())?;
+    let bdx = bx.try_subtract(dx.clone())?;
+    let bdy = by.try_subtract(dy.clone())?;
+    let cdx = cx.try_subtract(dx)?;
+    let cdy = cy.try_subtract(dy)?;
     let alift = adx.try_product(&adx)?.try_add(ady.try_product(&ady)?)?;
     let blift = bdx.try_product(&bdx)?.try_add(bdy.try_product(&bdy)?)?;
     let clift = cdx.try_product(&cdx)?.try_add(cdy.try_product(&cdy)?)?;

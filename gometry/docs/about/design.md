@@ -81,8 +81,9 @@ print(gm.union_all(points).to_wkt())
 ### 4. Return `Groups` when each input row can produce a different number of results
 
 Ragged array operations return one [`Groups`][gometry.Groups] entry per source
-row, preserving row association; a missing input row has an empty group. Callers
-can use each result without guessing which input produced it. See
+row, preserving row association. A missing input row is `None`; a present row
+with no outputs is an empty group. `Groups.is_missing` distinguishes the two
+while offsets continue to map source rows to the flat payload. See
 [`split`][gometry.split] and the [`Groups` reference][gometry.Groups].
 
 ```python exec="on" source="block" result="text"
@@ -90,7 +91,7 @@ import gometry as gm
 
 line = gm.LineString([(0, 0), (2, 0)])
 groups = gm.split(gm.GeometryArray([line, None, line]), gm.Point(1, 0))
-print(type(groups).__name__, groups.offsets.tolist(), groups[1].to_wkt())
+print(type(groups).__name__, groups.offsets.tolist(), groups.is_missing.tolist())
 
 ```
 

@@ -304,8 +304,8 @@ impl GridDissolver for S2Dissolver {
 /// ----------
 /// geom : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Geometry to cover (WGS84 lon/lat or projected). An array or iterable
-///     returns one group per input row; ``None`` and empty geometries produce
-///     empty groups.
+///     returns one group per input row; ``None`` produces a missing group and
+///     a present empty geometry produces an empty group.
 ///
 /// level : int, optional
 ///     Fixed S2 cell level (``0``-``30``; finer at higher values). The level is

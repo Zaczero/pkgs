@@ -77,6 +77,10 @@ order. In this example, geometry **1** is a false
 positive because its diagonal triangle's bounding box overlaps the query while the
 shape does not.
 
+Array queries return one `Groups` row per query row. A missing query appears as
+`None` and is marked in `Groups.is_missing`; a present query with no matches
+appears as an empty row. Scalar queries keep their flat `int64` result.
+
 ```python exec="on" html="true" session="index-candidates"
 from _figures import figure
 
@@ -222,6 +226,8 @@ the data and query.
   `(matches, distances)` for an array query; scalar `indices` is a read-only
   `int64` NumPy array, array `matches` is CSR [`Groups`][gometry.Groups], and `distances` is a
   read-only `float64` NumPy array aligned with the ids.
+- For array queries, missing input rows are `None` groups; present queries with
+  no indexed match are empty groups.
 - `exclusive=True` skips candidates structurally equal to the query and returns the
   nearest other features:
 

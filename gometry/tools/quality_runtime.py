@@ -404,11 +404,34 @@ def quality_settings(root: Path, environment: Mapping[str, str]) -> dict[str, An
     for path in config_files:
         logical = f'cargo-config/{path.resolve().as_posix().lstrip("/")}'
         files[logical] = sha256_file(path)
+    for name in (
+        'PYO3_CONFIG_FILE',
+        'CMAKE_TOOLCHAIN_FILE',
+        *sorted(
+            name for name in environment if name.startswith('CMAKE_TOOLCHAIN_FILE_')
+        ),
+    ):
+        selected = environment.get(name)
+        if not selected:
+            continue
+        path = Path(selected)
+        if not path.is_absolute():
+            path = root / path
+        if not path.is_file():
+            raise AssertionError(f'quality build configuration file is missing: {path}')
+        logical = f'build-config/{name}/{path.resolve().as_posix().lstrip("/")}'
+        files[logical] = sha256_file(path)
     variables = {
         'MATURIN_PEP517_ARGS',
         'CARGO_BUILD_TARGET',
+        'CARGO_BUILD_RUSTC',
+        'CARGO_BUILD_RUSTC_WRAPPER',
+        'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER',
         'RUSTFLAGS',
         'CARGO_ENCODED_RUSTFLAGS',
+        'RUSTC',
+        'RUSTC_WRAPPER',
+        'RUSTC_WORKSPACE_WRAPPER',
         'RUSTUP_TOOLCHAIN',
         'CARGO_HOME',
         'SOURCE_DATE_EPOCH',
@@ -423,11 +446,18 @@ def quality_settings(root: Path, environment: Mapping[str, str]) -> dict[str, An
         'CPPFLAGS',
         'TARGET_CFLAGS',
         'TARGET_CXXFLAGS',
+        'TARGET_CC',
+        'TARGET_CXX',
+        'TARGET_AR',
         'HOST_CFLAGS',
         'HOST_CXXFLAGS',
+        'HOST_CC',
+        'HOST_CXX',
+        'HOST_AR',
         'CC',
         'CXX',
         'AR',
+        'CROSS_COMPILE',
         'CMAKE_ARGS',
         'CMAKE_TOOLCHAIN_FILE',
         'CMAKE_C_FLAGS',
@@ -447,9 +477,16 @@ def quality_settings(root: Path, environment: Mapping[str, str]) -> dict[str, An
             'CC_',
             'CXX_',
             'AR_',
+            'CMAKE_TOOLCHAIN_FILE_',
             'NIX_DONT_SET_RPATH_',
             'CARGO_PROFILE_',
         ))
+    )
+    variables.update(
+        name
+        for name in environment
+        if name.startswith('CARGO_TARGET_')
+        and name.rsplit('_', 1)[-1] in {'LINKER', 'RUSTFLAGS'}
     )
     ordered_variables = sorted(variables)
     environment_values = {name: environment.get(name) for name in ordered_variables}

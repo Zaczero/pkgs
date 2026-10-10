@@ -1286,15 +1286,22 @@ fn public_hausdorff_keeps_the_fixed_witness_fallback_without_target_edges() {
     assert!((work.distance - expected).abs() <= 0.01);
 }
 
+const PUBLIC_HAUSDORFF_WORK_VERTEX_COUNTS: &[usize] = &[8, 64, 128];
+// At 128 vertices these cases peak at 1,628 source evaluations and 56,945
+// point-edge samples; the limits retain over 3x and 4x headroom, respectively.
+const PUBLIC_HAUSDORFF_SOURCE_WORK_LIMIT: u64 = 5_000;
+const PUBLIC_HAUSDORFF_POINT_EDGE_WORK_LIMIT: u64 = 250_000;
+
+// The sizes span 16x. An n log n work envelope has adjacent finite-size
+// exponents log_8(16) = 1.333 and log_2(7/3) = 1.222, below the 1.4 ceiling.
 fn assert_public_hausdorff_work_scaling(
     name: &str,
     growing_span: bool,
     latitude_origin: f64,
     latitude_slope: f64,
-    vertex_counts: &[usize],
 ) {
-    let mut rows = Vec::with_capacity(vertex_counts.len());
-    for &vertex_count in vertex_counts {
+    let mut rows = Vec::with_capacity(PUBLIC_HAUSDORFF_WORK_VERTEX_COUNTS.len());
+    for &vertex_count in PUBLIC_HAUSDORFF_WORK_VERTEX_COUNTS {
         let mut source_points = Vec::with_capacity(vertex_count);
         let edge_count = u32::try_from(vertex_count)
             .expect("test vertex count fits u32")
@@ -1321,13 +1328,19 @@ fn assert_public_hausdorff_work_scaling(
             p(first.x + 1.0e-6, first.y + 0.01),
             p(last.x + 1.0e-6, last.y + 0.01),
         ]);
-        let work = public_hausdorff_work("EPSG:4326", source, target, 50_000, 2_000_000);
+        let work = public_hausdorff_work(
+            "EPSG:4326",
+            source,
+            target,
+            PUBLIC_HAUSDORFF_SOURCE_WORK_LIMIT,
+            PUBLIC_HAUSDORFF_POINT_EDGE_WORK_LIMIT,
+        );
         assert!(
-            work.source_evaluations <= 50_000,
+            work.source_evaluations <= PUBLIC_HAUSDORFF_SOURCE_WORK_LIMIT,
             "{name} {vertex_count}: {work:?}"
         );
         assert!(
-            work.point_edge_samples <= 2_000_000,
+            work.point_edge_samples <= PUBLIC_HAUSDORFF_POINT_EDGE_WORK_LIMIT,
             "{name} {vertex_count}: {work:?}"
         );
         eprintln!(
@@ -1375,25 +1388,24 @@ fn assert_public_hausdorff_work_scaling(
 
 #[test]
 fn public_fixed_span_flat_hausdorff_work_scales_by_vertex_count() {
-    assert_public_hausdorff_work_scaling("fixed-span flat", false, 60.0, 0.0, &[8, 64, 512]);
+    assert_public_hausdorff_work_scaling("fixed-span flat", false, 60.0, 0.0);
 }
 
 #[test]
 fn public_fixed_span_oblique_hausdorff_work_scales_by_vertex_count() {
-    // Densify one oblique support against a fixed two-vertex support. For ordered
-    // inputs, n log n gives exponents 1.333 and 1.195; 1.4 leaves modest headroom.
-    assert_public_hausdorff_work_scaling("fixed-span oblique", false, 10.0, 0.02, &[8, 64, 512]);
+    // Densify one oblique support against a fixed two-vertex support.
+    assert_public_hausdorff_work_scaling("fixed-span oblique", false, 10.0, 0.02);
 }
 
 #[test]
 fn public_growing_span_flat_hausdorff_work_scales_by_vertex_count() {
-    assert_public_hausdorff_work_scaling("growing-span flat", true, 60.0, 0.0, &[8, 64, 512]);
+    assert_public_hausdorff_work_scaling("growing-span flat", true, 60.0, 0.0);
 }
 
 #[test]
 fn public_growing_span_oblique_hausdorff_work_scales_by_vertex_count() {
     // This series uses locally ordered edges whose total support grows with n.
-    assert_public_hausdorff_work_scaling("growing-span oblique", true, 10.0, 0.02, &[8, 64, 512]);
+    assert_public_hausdorff_work_scaling("growing-span oblique", true, 10.0, 0.02);
 }
 
 #[test]
