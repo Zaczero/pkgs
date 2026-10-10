@@ -377,7 +377,7 @@ def test_stage_sdist_keeps_initial_readme_commit_eligibility(
                 )
             archive.add(
                 root / 'python' / 'gometry',
-                arcname=f'{package_root}/gometry/python/gometry',
+                arcname=f'{package_root}/python/gometry',
             )
 
     monkeypatch.setattr(source_artifact, '_run_maturin_sdist', run_maturin_sdist)
@@ -420,6 +420,28 @@ def test_stage_sdist_keeps_initial_readme_commit_eligibility(
         )
     ) == {'commit': observed_commit}
     assert readme.read_bytes() == original_readme
+
+
+def test_sdist_python_member_identity_uses_maturin_package_root(
+    tmp_path: Path,
+) -> None:
+    sdist = tmp_path / 'gometry-1.0.0.tar.gz'
+    package_files = {
+        'gometry-1.0.0/python/gometry/__init__.py': b'value = 17\n',
+        'gometry-1.0.0/python/gometry/_lib.pyi': b'def value() -> int: ...\n',
+        'gometry-1.0.0/python/gometry/py.typed': b'',
+    }
+    with tarfile.open(sdist, 'w:gz') as archive:
+        for name, payload in package_files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+
+    assert source_artifact.sdist_python_member_hashes(sdist) == {
+        'gometry/__init__.py': hashlib.sha256(b'value = 17\n').hexdigest(),
+        'gometry/_lib.pyi': hashlib.sha256(b'def value() -> int: ...\n').hexdigest(),
+        'gometry/py.typed': hashlib.sha256(b'').hexdigest(),
+    }
 
 
 def test_stage_sdist_propagates_missing_source_input_error(
