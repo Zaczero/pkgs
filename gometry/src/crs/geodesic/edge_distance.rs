@@ -9,18 +9,51 @@ use super::chart_edge::ChartEdge;
 use super::ellipsoid_metric::inverse_distance_azimuths;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
-use crate::geometry::interval::Interval as CertifiedInterval;
+use crate::geometry::interval::{Interval as CertifiedInterval, PI_LOWER, PI_UPPER};
 use crate::geometry::{
     ChartEdgeDifferentialBounds, GeodesicNumericalPolicy, Point, PointEdgeMinimum, PointEdgeQuery,
     PointEdgeQueryResult,
 };
 
-const MAX_EVALUATIONS: usize = 128;
+const MAX_POINT_EDGE_MINIMUM_EVALUATIONS: usize = 128;
+pub(crate) const EVALUATION_SAFETY_CEILING: usize = 0x4000;
+// A [0, 1] binary64 interval has at most this many successive midpoint splits.
+const MAX_PARAMETER_REFINEMENTS_PER_BRANCH: usize =
+    f64::MIN_EXP.unsigned_abs() as usize + f64::MANTISSA_DIGITS as usize + 1;
 
 #[derive(Default)]
 pub(crate) struct PointEdgeScratch {
     frontier: BinaryHeap<EdgeInterval>,
     sequence: u64,
+}
+
+#[cfg(test)]
+pub(crate) mod test_counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        static SAMPLES: Cell<u64> = const { Cell::new(0) };
+        static SAMPLE_LIMIT: Cell<Option<u64>> = const { Cell::new(None) };
+    }
+
+    pub(crate) fn reset() {
+        SAMPLES.set(0);
+        SAMPLE_LIMIT.set(None);
+    }
+
+    pub(crate) fn set_sample_limit(limit: u64) {
+        SAMPLE_LIMIT.set(Some(limit));
+    }
+
+    pub(crate) fn sampled() -> bool {
+        let samples = SAMPLES.get().saturating_add(1);
+        SAMPLES.set(samples);
+        SAMPLE_LIMIT.get().is_none_or(|limit| samples <= limit)
+    }
+
+    pub(crate) fn samples() -> u64 {
+        SAMPLES.get()
+    }
 }
 
 impl PointEdgeScratch {
@@ -205,7 +238,28 @@ pub(crate) fn point_edge_query(
     let derivative_bounds = edge.differential_bounds(geodesic);
     let g0 = distance_derivative(start_derivative, d0, azimuth0);
     let g1 = distance_derivative(end_derivative, d1, azimuth1);
+    let initial = IntervalEndpoints {
+        t0: 0.0,
+        d0,
+        g0,
+        t1: 1.0,
+        d1,
+        g1,
+    };
+    if threshold.is_some()
+        && let Some((distance, parameter)) =
+            monotone_endpoint_minimum(initial, derivative_bounds, geodesic, policy)
+    {
+        return Ok(direct_result(
+            distance,
+            parameter,
+            best.evaluations,
+            cutoff,
+            threshold,
+        ));
+    }
     let mut best_correction = 0.0;
+    let mut resolved_lower_bound = f64::INFINITY;
     // Minimum certifies an objective gap. Locate also certifies a station, so
     // its evaluated chart projection splits the frontier before refinement.
     let proposal = if locate {
@@ -254,42 +308,63 @@ pub(crate) fn point_edge_query(
         push_interval(scratch, left, derivative_bounds, geodesic, policy);
         push_interval(scratch, right, derivative_bounds, geodesic, policy);
     } else {
-        push_interval(
-            scratch,
-            IntervalEndpoints {
-                t0: 0.0,
-                d0,
-                g0,
-                t1: 1.0,
-                d1,
-                g1,
-            },
-            derivative_bounds,
-            geodesic,
-            policy,
-        );
+        push_interval(scratch, initial, derivative_bounds, geodesic, policy);
     }
 
     loop {
         let Some(interval) = scratch.frontier.pop() else {
-            best.lower_bound = best.distance;
+            best.lower_bound = resolved_lower_bound.min(best.distance);
             break;
         };
         if let Some(limit) = threshold
             && interval.lower_bound > limit
         {
-            best.lower_bound = interval.lower_bound.min(best.distance);
+            best.lower_bound = interval
+                .lower_bound
+                .min(best.distance)
+                .min(resolved_lower_bound);
             return Ok(PointEdgeQueryResult::Outside {
                 lower_bound: best.lower_bound,
                 evaluations: best.evaluations,
             });
         }
+        if let Some(limit) = threshold
+            && let Some((distance, _parameter)) = monotone_endpoint_minimum(
+                IntervalEndpoints {
+                    t0: interval.t0,
+                    d0: interval.d0,
+                    g0: interval.g0,
+                    t1: interval.t1,
+                    d1: interval.d1,
+                    g1: interval.g1,
+                },
+                derivative_bounds,
+                geodesic,
+                policy,
+            )
+        {
+            if distance <= limit {
+                return Ok(PointEdgeQueryResult::Within {
+                    evaluations: best.evaluations,
+                });
+            }
+            resolved_lower_bound = resolved_lower_bound.min(distance);
+            continue;
+        }
         if threshold.is_none() && interval.lower_bound >= best.distance - policy.minimum_gap() {
             best.lower_bound = interval.lower_bound.min(best.distance);
             break;
         }
-        if best.evaluations >= MAX_EVALUATIONS {
-            best.lower_bound = interval.lower_bound.min(best.distance);
+        let evaluation_limit = if threshold.is_some() {
+            evaluation_limit(scratch.frontier.len().saturating_add(1))
+        } else {
+            MAX_POINT_EDGE_MINIMUM_EVALUATIONS
+        };
+        if best.evaluations >= evaluation_limit {
+            best.lower_bound = interval
+                .lower_bound
+                .min(best.distance)
+                .min(resolved_lower_bound);
             best.budget_exhausted = true;
             if threshold.is_some() {
                 return Ok(PointEdgeQueryResult::Unresolved {
@@ -307,7 +382,10 @@ pub(crate) fn point_edge_query(
             f64::midpoint(interval.t0, interval.t1)
         };
         if !(parameter > interval.t0 && parameter < interval.t1) {
-            best.lower_bound = interval.lower_bound.min(best.distance);
+            best.lower_bound = interval
+                .lower_bound
+                .min(best.distance)
+                .min(resolved_lower_bound);
             if threshold.is_some() {
                 return Ok(PointEdgeQueryResult::Unresolved {
                     lower_bound: best.lower_bound,
@@ -375,7 +453,7 @@ pub(crate) fn point_edge_query(
     }
 
     if threshold.is_none()
-        && best.evaluations < MAX_EVALUATIONS
+        && best.evaluations < MAX_POINT_EDGE_MINIMUM_EVALUATIONS
         && best.parameter > 0.0
         && best.parameter < 1.0
         && best.distance > 0.0
@@ -507,6 +585,12 @@ fn sample(
     edge: &ChartEdge,
     parameter: f64,
 ) -> crate::error::Result<(f64, f64)> {
+    #[cfg(test)]
+    if !test_counters::sampled() {
+        return Err(crate::crs::CrsError::message(
+            "point-edge test work limit exceeded",
+        ));
+    }
     let target = edge.geodetic_position(parameter)?;
     let (distance, _azimuth1, azimuth2) =
         inverse_distance_azimuths(geodesic, point.x, point.y, target.x, target.y);
@@ -649,6 +733,62 @@ fn interval_lower_bound(
         .max(0.0)
 }
 
+fn evaluation_limit(live_branches: usize) -> usize {
+    MAX_PARAMETER_REFINEMENTS_PER_BRANCH
+        .saturating_mul(live_branches.max(1))
+        .min(EVALUATION_SAFETY_CEILING)
+}
+
+fn monotone_endpoint_minimum(
+    interval: IntervalEndpoints,
+    derivative_bounds: ChartEdgeDifferentialBounds,
+    geodesic: &Geodesic,
+    policy: GeodesicNumericalPolicy,
+) -> Option<(f64, f64)> {
+    if !(interval.g0.is_finite()
+        && interval.g1.is_finite()
+        && interval.d0.is_finite()
+        && interval.d1.is_finite()
+        && derivative_bounds.speed.is_finite()
+        && derivative_bounds.covariant_acceleration.is_finite())
+    {
+        return None;
+    }
+    let width = CertifiedInterval::exact(interval.t1).sub(CertifiedInterval::exact(interval.t0));
+    let distance_upper = CertifiedInterval::exact(interval.d0.max(interval.d1))
+        .add(CertifiedInterval::exact(derivative_bounds.speed).mul(width))
+        .add(CertifiedInterval::exact(policy.evaluation_allowance(4.0)))
+        .upper();
+    if distance_upper >= normal_radius_lower_bound(geodesic)? {
+        return None;
+    }
+
+    // In this normal ball, Hessian(distance) is nonnegative. The chart curve's
+    // covariant acceleration can therefore change its distance derivative by
+    // at most acceleration × parameter width, without a 1/distance bound.
+    let acceleration_span =
+        CertifiedInterval::exact(derivative_bounds.covariant_acceleration).mul(width);
+    let slope_allowance = CertifiedInterval::exact(derivative_bounds.speed)
+        .mul(CertifiedInterval::exact(
+            4.0 * GeodesicNumericalPolicy::BACKEND_RELATIVE,
+        ))
+        .upper();
+    let allowance = CertifiedInterval::exact(slope_allowance);
+    let start_slope = CertifiedInterval::exact(interval.g0)
+        .sub(acceleration_span)
+        .sub(allowance);
+    if start_slope.lower() > 0.0 {
+        return Some((interval.d0, interval.t0));
+    }
+    let end_slope = CertifiedInterval::exact(interval.g1)
+        .add(acceleration_span)
+        .add(allowance);
+    if end_slope.upper() < 0.0 {
+        return Some((interval.d1, interval.t1));
+    }
+    None
+}
+
 fn lower_parabola(
     distance: f64,
     slope: CertifiedInterval,
@@ -682,14 +822,22 @@ pub(super) fn curvature_hessian_bound(
     distance_lower: f64,
     distance_upper: f64,
 ) -> f64 {
-    if !(distance_lower.is_finite() && distance_lower > 0.0 && distance_upper.is_finite()) {
+    if !(distance_lower.is_finite() && distance_lower > 0.0 && distance_upper.is_finite())
+        || normal_radius_lower_bound(geodesic).is_none_or(|radius| distance_upper >= radius)
+    {
         return f64::INFINITY;
     }
+    CertifiedInterval::exact(1.0)
+        .div(CertifiedInterval::exact(distance_lower))
+        .upper()
+}
+
+fn normal_radius_lower_bound(geodesic: &Geodesic) -> Option<f64> {
     let one = CertifiedInterval::exact(1.0);
     let flattening = CertifiedInterval::exact(geodesic.f);
     let c = one.sub(flattening.mul(CertifiedInterval::exact(2.0).sub(flattening)));
     if c.lower() <= 0.0 {
-        return f64::INFINITY;
+        return None;
     }
     let semi_major = CertifiedInterval::exact(geodesic.a);
     let d_max = 1.0_f64.max(c.upper());
@@ -708,18 +856,11 @@ pub(super) fn curvature_hessian_bound(
     // Mmin supplies the same meridional principal-curvature extremum as one of
     // the semiaxis terms, with its own outward scale enclosure.
     let maximum_principal_curvature = equatorial.max(polar).max(meridian_curvature);
-    let injectivity_radius_lower = CertifiedInterval::from_bounds(
-        crate::geometry::interval::PI_LOWER,
-        crate::geometry::interval::PI_UPPER,
-    )
-    .div(CertifiedInterval::exact(2.0).mul(maximum_principal_curvature))
-    .lower();
-    if !(distance_upper < injectivity_radius_lower) {
-        return f64::INFINITY;
-    }
-    CertifiedInterval::exact(1.0)
-        .div(CertifiedInterval::exact(distance_lower))
-        .upper()
+    let injectivity_radius_lower = CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER)
+        .div(CertifiedInterval::exact(2.0).mul(maximum_principal_curvature))
+        .lower();
+    (injectivity_radius_lower.is_finite() && injectivity_radius_lower > 0.0)
+        .then_some(injectivity_radius_lower)
 }
 
 #[cfg(test)]
@@ -731,7 +872,7 @@ mod tests {
     use super::*;
     use crate::crs::GeodesicMetric as EllipsoidChartMetric;
     use crate::crs::geodesic::AuthalicSeries;
-    use crate::geometry::ChartMetric as _;
+    use crate::geometry::{ChartMetric as _, GeodesicMetric as _};
 
     fn metric(geodesic: &Geodesic, frame: GeographicFrame) -> EllipsoidChartMetric {
         let authalic_series = AuthalicSeries::new(geodesic);
@@ -905,7 +1046,7 @@ mod tests {
             );
             assert!(
                 !actual.budget_exhausted,
-                "{name}: exhausted the 128-evaluation budget"
+                "{name}: exhausted the 128-evaluation minimum budget"
             );
         }
     }
@@ -926,7 +1067,7 @@ mod tests {
         let oracle = dense_oracle(&metric, point, &edge);
         assert!((minimum.distance - oracle).abs() <= 4.0e-11 * metric.geodesic.a);
         assert!(!minimum.budget_exhausted);
-        assert!(minimum.evaluations <= 128);
+        assert!(minimum.evaluations <= MAX_POINT_EDGE_MINIMUM_EVALUATIONS);
     }
 
     #[test]
@@ -968,18 +1109,12 @@ mod tests {
             &geodesic,
             GeodesicNumericalPolicy::new(geodesic.a),
         );
-        let radians_per_degree = CertifiedInterval::from_bounds(
-            crate::geometry::interval::PI_LOWER,
-            crate::geometry::interval::PI_UPPER,
-        )
-        .div(CertifiedInterval::exact(180.0));
-        let attained_lower = CertifiedInterval::from_bounds(
-            crate::geometry::interval::PI_LOWER,
-            crate::geometry::interval::PI_UPPER,
-        )
-        .sub(CertifiedInterval::exact(latitude).mul(radians_per_degree))
-        .mul(CertifiedInterval::exact(geodesic.a))
-        .lower();
+        let radians_per_degree =
+            CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER).div(CertifiedInterval::exact(180.0));
+        let attained_lower = CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER)
+            .sub(CertifiedInterval::exact(latitude).mul(radians_per_degree))
+            .mul(CertifiedInterval::exact(geodesic.a))
+            .lower();
         assert!(
             lower <= attained_lower,
             "certified lower {lower} exceeds the independent spherical endpoint distance lower {attained_lower}"
@@ -1069,19 +1204,71 @@ mod tests {
     }
 
     #[test]
+    fn threshold_search_certifies_near_endpoint_minima_from_derivative_sign() {
+        let frame = GeographicFrame::crs84();
+        let metric = metric(&Geodesic::wgs84(), frame);
+        let start = Point::new_raw_xy(0.0, 0.0);
+        let end = Point::new_raw_xy(5.0, 0.0);
+        let edge = metric.chart_edge(start, end).unwrap();
+        for delta in [1.0e-12, 1.0e-11, 1.0e-9] {
+            let point = Point::new_raw_xy(5.0 + delta, 0.0);
+            let endpoint_distance = metric.segment_length(point, end);
+            assert!(endpoint_distance > 0.0, "{delta}");
+
+            let outside = metric
+                .point_edge_query(
+                    point,
+                    &edge,
+                    0.0,
+                    PointEdgeQuery::Dwithin {
+                        limit: endpoint_distance.next_down(),
+                    },
+                    &mut PointEdgeScratch::default(),
+                )
+                .unwrap();
+            assert!(
+                matches!(
+                    outside,
+                    PointEdgeQueryResult::Outside {
+                        lower_bound,
+                        evaluations: 2,
+                    } if lower_bound > endpoint_distance.next_down()
+                ),
+                "{delta}: {outside:?}"
+            );
+
+            let within = metric
+                .point_edge_query(
+                    point,
+                    &edge,
+                    0.0,
+                    PointEdgeQuery::Dwithin {
+                        limit: endpoint_distance,
+                    },
+                    &mut PointEdgeScratch::default(),
+                )
+                .unwrap();
+            assert!(
+                matches!(within, PointEdgeQueryResult::Within { .. }),
+                "{delta}: {within:?}"
+            );
+        }
+    }
+
+    #[test]
     fn exhausted_threshold_and_cutoff_straddles_preserve_unresolved_bounds() {
         let exhausted = PointEdgeMinimum {
             distance: 2.0,
             parameter: 0.5,
             lower_bound: 0.0,
-            evaluations: MAX_EVALUATIONS,
+            evaluations: MAX_POINT_EDGE_MINIMUM_EVALUATIONS,
             budget_exhausted: true,
         };
         let threshold = finalize_query(exhausted, f64::INFINITY, Some(1.0));
         assert!(
             matches!(threshold, PointEdgeQueryResult::Unresolved {
                 lower_bound: 0.0,
-                evaluations: MAX_EVALUATIONS,
+                evaluations: MAX_POINT_EDGE_MINIMUM_EVALUATIONS,
             }),
             "lower=0, limit=1, best=2 must remain unresolved: {threshold:?}"
         );

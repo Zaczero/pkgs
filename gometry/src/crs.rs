@@ -81,11 +81,14 @@ pub(crate) use catalog::{
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::{CrsError, preserve_resource_error};
 #[cfg(test)]
+pub(crate) use geodesic::point_edge_test_counters;
+#[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
     ChartEdge, DistanceMode, EllipsoidMetric, GeodesicBoxEnvelopeBound, GeodesicCalculation,
-    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel, PointEdgeScratch,
-    ResolvedMetric, chart_line_interpolate_coordseq_admitted, chart_line_length_columns,
+    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel,
+    POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch, ResolvedMetric,
+    chart_line_interpolate_coordseq_admitted, chart_line_length_columns,
     chart_line_locate_coordseq_admitted, chart_line_substring_coordseq_admitted, chart_shape_area,
     chart_shape_length, checked_geodesic_route, ellipsoid_shape_at, ensure_3d_metric,
     ensure_geographic_columns_in_frame, ensure_geographic_coordseq_in_frame,
