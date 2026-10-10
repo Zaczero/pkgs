@@ -134,7 +134,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `geom.is_valid` | [`geom.is_valid`][gometry.Geometry.is_valid] | Unchanged; [`geom.validate()`][gometry.Geometry.validate] adds the reason/location. |
 | `explain_validity(geom)` | `report.reason` / `report.location` | |
 | `make_valid(geom)` | [`geom.repair()`][gometry.Geometry.repair] | Canonical spelling. |
-| `set_precision(g, grid_size)` | [`geom.snap_to_grid(grid_size=..., repair=...)`][gometry.Geometry.snap_to_grid] | Closest fixed-grid snap. `grid_size` must be positive and finite; unlike `coverage_clean(grid_size=0)`, zero is invalid. Optional `repair=`. No JTS snap-rounding precision model in v1. |
+| `set_precision(g, grid_size)` | [`geom.snap_to_grid(grid_size=..., repair=...)`][gometry.Geometry.snap_to_grid] | Closest fixed-grid snap. `grid_size` must be positive and finite; unlike `coverage_clean(grid_size=0)`, zero is invalid. Optional `repair=`. JTS-style snap-rounding precision models are not supported. |
 | — | [`geom.quantize(precision)`][gometry.Geometry.quantize] | Decimal-place rounding of coordinates (different model from `set_precision`). |
 | `require(...)` at boundary | [`gm.require(obj, crs=..., axes=...)`][gometry.require] | Storage contract. |
 | `geom.is_empty` / `is_ring` / `is_simple` / `is_closed` | [`geom.is_empty`][gometry.Geometry.is_empty] / [`geom.is_ring`][gometry.Geometry.is_ring] / [`geom.is_simple`][gometry.Geometry.is_simple] / [`geom.is_closed`][gometry.Geometry.is_closed] | |
