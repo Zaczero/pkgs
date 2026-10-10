@@ -893,8 +893,10 @@ spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 coordinates in the CRS-native longitude quotient. Validity uses a faithful
 planar partition when the stored chart preserves source coordinates; otherwise
 it reads exact Q incidence without shifting stored longitudes. Operations that
-construct split output insert affine crossing vertices into straight edges in
-the unwrapped longitude/latitude chart. Geographic shape measures
+construct split output insert affine X/Y crossings into straight edges in the
+unwrapped longitude/latitude chart. Eligible Z/M at inserted crossings follow
+ellipsoidal arclength along the retained source edge; authored full-period
+edges keep their path through quarter witnesses. Geographic shape measures
 ([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
 edges, so splitting preserves ellipsoidal length and area to rounding.
 Point-to-point [`distance`][gometry.distance] continues to use the shortest
@@ -1187,7 +1189,9 @@ execution from whether a PROJ cache entry remains.
 
 [`gm.crs_configure`][gometry.crs_configure] applies only the options supplied
 and returns the effective configuration, so calling it without arguments reads
-the configuration. If the supplied options already match the effective
+the configuration. Omit a keyword to preserve that setting, or pass ``None`` to
+restore just that setting to its default. A saved configuration can be restored
+by passing both of its fields explicitly. If the supplied options already match the effective
 configuration, the update is a no-op: the generation and warm products remain
 available. An effective
 configuration change advances the generation and invalidates each thread's

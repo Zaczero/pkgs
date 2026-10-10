@@ -2,10 +2,11 @@
     clippy::used_underscore_items,
     reason = "`_repr_html_` is IPython's display protocol name"
 )]
+use pyo3::PyRef;
 use pyo3::types::PyAnyMethods as _;
 
 use crate::html_text_escape;
-use crate::py::crs::{Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python, parse_crs};
+use crate::py::crs::{Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python};
 frozen_pymethods! {
 impl PyCrs {
     /// Build a CRS from any accepted input.
@@ -29,24 +30,31 @@ impl PyCrs {
         Self::resolve(value)
     }
 
-    /// Equality against anything CRS-like (a `CRS`, authority string, EPSG
-    /// code, or ``to_wkt()``-bearing object) by exact stored definition;
-    /// non-CRS operands defer with ``NotImplemented``.
+    /// Equality against another ``CRS`` by exact stored definition. Other
+    /// operand types defer with ``NotImplemented``; construct a ``CRS`` first
+    /// when stored identity is intended.
     ///
-    /// A ``CRS`` is unhashable because equal raw strings and integers have
-    /// unrelated hashes. Key mappings by ``crs.definition`` instead.
+    /// Operational equivalence across different definitions belongs to
+    /// ``same_as``. Equal ``CRS`` instances have equal hashes.
     fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> Py<PyAny> {
-        match parse_crs(Some(other)) {
-            Ok(Some(other)) => PyBool::new(py, *other == *self.definition)
-                .to_owned()
-                .unbind()
-                .into(),
-            _ => py.NotImplemented(),
+        if let Ok(other) = other.extract::<PyRef<'_, Self>>() {
+            return PyBool::new(
+                py,
+                self.definition.as_str() == other.definition.as_str(),
+            )
+            .to_owned()
+            .unbind()
+            .into();
         }
+        py.NotImplemented()
     }
 
-    #[expect(non_upper_case_globals, reason = "Python dunder name")]
-    const __hash__: Option<Py<PyAny>> = None;
+    fn __hash__(&self, py: Python<'_>) -> PyResult<isize> {
+        py.import("builtins")?
+            .getattr("hash")?
+            .call1((self.definition.as_str(),))?
+            .extract()
+    }
 
     fn __str__(&self) -> String {
         self.definition.to_string()

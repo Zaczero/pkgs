@@ -179,7 +179,7 @@ def test_epoch_survives_geometry_rebuilding_operations() -> None:
         gm.symmetric_difference(a, b),
     ]
     for result in rebuilt:
-        assert result.crs == 'EPSG:4326', result
+        assert result.crs == gm.CRS('EPSG:4326'), result
         assert result.epoch == 2020.0, result
 
 

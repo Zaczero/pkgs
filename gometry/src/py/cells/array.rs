@@ -27,7 +27,8 @@ use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::grid_kind::{
-    collect_ids, collect_inferred_ids, grid_kind_from_type, membership_id,
+    collect_ids, collect_inferred_ids, grid_kind_from_type, grid_kind_from_value, is_raw_identity,
+    membership_id,
 };
 use crate::py::cells::{
     FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
@@ -55,10 +56,10 @@ use crate::py::vectors::Groups;
 ///
 /// Parameters
 /// ----------
-/// values : numpy.ndarray, buffer, or iterable
+/// values : iterable, numpy.ndarray, or buffer
 ///     Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
 ///     any grid are accepted when a concrete cell supplies the family.
-/// type : type, optional
+/// type : type
 ///     Native cell class. Inferred from a concrete typed cell when present.
 #[pyclass(
     name = "CellArray",
@@ -609,13 +610,18 @@ impl PyCellArray {
                 values
             })
         } else {
-            let other_kind = grid_kind_from_type(&other.get_type())?;
-            if kind != other_kind {
-                return Err(GeometryError::new_err(format!(
-                    "cell types must match, got {} and {}",
-                    kind.class_name(),
-                    other_kind.class_name()
-                )));
+            if let Some(other_kind) = grid_kind_from_value(other) {
+                if kind != other_kind {
+                    return Err(GeometryError::new_err(format!(
+                        "cell types must match, got {} and {}",
+                        kind.class_name(),
+                        other_kind.class_name()
+                    )));
+                }
+            } else if !is_raw_identity(other, kind) {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "other must be a same-grid cell, integer id, or string token",
+                ));
             }
             let other_id = kind.id_from_value(other)?;
             dispatch_cell_grid!(self, G, {
@@ -710,7 +716,7 @@ impl PyCellArray {
     ///     Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
     ///     are accepted when the grid can be inferred. Iterables are consumed
     ///     in input order.
-    /// type : type, optional, default None
+    /// type : type
     ///     One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
     ///     ``GeohashCell`` classes, required when the grid cannot be inferred.
     ///
@@ -746,17 +752,17 @@ impl PyCellArray {
         })
     }
 
-    /// ``sys.getsizeof`` support: the wrapper plus this array's logical
+    /// ``sys.getsizeof`` support: Python's allocation base plus this array's logical
     /// ``uint64`` id payload, missing flags, and any row-selection map. Shared
-    /// backing buffers are reported like NumPy views, not as the full parent
-    /// allocation.
+    /// backing buffers are estimated from the selected view, not the full
+    /// parent allocation.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(size_of::<Self>(), self.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     /// Grid-system token for the stored cell type.
@@ -897,8 +903,8 @@ impl PyCellArray {
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------
@@ -925,8 +931,8 @@ fn contains(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAn
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------
@@ -1891,6 +1897,7 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::{GridKind, PyCellArray};
+    use crate::grid::cell::GridCell as _;
 
     fn h3_id(lat: f64, lon: f64, resolution: u8) -> u64 {
         u64::from(
@@ -2000,15 +2007,11 @@ mod tests {
             let parent = cells
                 .parent(Some(&depth))
                 .expect("parent resolves one shared explicit depth");
-            let expected_parent = crate::grid::cell::GridCell::parent_at(
-                h3o::CellIndex::try_from(cells.id_at(0)).expect("valid H3 id"),
-                6,
-            )
-            .expect("parent at depth 6");
-            assert_eq!(
-                parent.id_at(0),
-                crate::grid::cell::GridCell::hash_key(expected_parent)
-            );
+            let expected_parent = h3o::CellIndex::try_from(cells.id_at(0))
+                .expect("valid H3 id")
+                .parent_at(6)
+                .expect("parent at depth 6");
+            assert_eq!(parent.id_at(0), expected_parent.hash_key());
             assert_eq!(
                 depth
                     .getattr("calls")

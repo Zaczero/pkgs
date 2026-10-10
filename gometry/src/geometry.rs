@@ -334,7 +334,6 @@ pub(crate) use segment_index::{
 };
 pub(crate) use segment_index::{
     ClearancePointQuery, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex,
-    clearance_aabb_lower_bound,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
@@ -345,15 +344,20 @@ pub(in crate::geometry) use segment_index::{
 #[cfg(test)]
 use segments::point_segment_distance_key;
 use segments::{
-    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SquaredDistanceKey, orientation_xy,
-    point_pair_distance_key, point_segment_distance_and_projection, point_segment_distance_squared,
-    point_segment_exact_distance_key, ray_crossing_is_right, segment_contact_exact,
-    segment_contact_point, segment_cross_point, segment_envelopes_disjoint, segments_intersect,
-    shared_segment_part, undirected_segment_edge_key,
+    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SquaredDistanceKey, clearance_aabb_filter,
+    orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
+    point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
+    segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
+    segments_intersect, shared_segment_part, undirected_segment_edge_key,
 };
 #[cfg(test)]
 pub(crate) use segments::{
-    CLEARANCE_STRIP_EXACT_FALLBACKS, CLEARANCE_STRIP_SUPPORT_FALLBACKS, EXACT_SELECTION_FALLBACKS,
+    CLEARANCE_AABB_COMPARE_DECISIONS, CLEARANCE_AABB_COMPARE_DECLINES,
+    CLEARANCE_AABB_FILTER_DECLINES, CLEARANCE_AABB_FILTERS, CLEARANCE_DOT_BINARY64_DECISIONS,
+    CLEARANCE_DOT_BINARY64_DECLINES, CLEARANCE_STRIP_BINARY64_DECISIONS,
+    CLEARANCE_STRIP_BINARY64_DECLINES, CLEARANCE_STRIP_EXACT_FALLBACKS,
+    CLEARANCE_STRIP_SUPPORT_FALLBACKS, EXACT_SELECTION_FALLBACKS, POINT_SEGMENT_BINARY64_DECISIONS,
+    POINT_SEGMENT_BINARY64_DECLINES,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
@@ -1049,7 +1053,7 @@ impl Bounds {
         ]
     }
 
-    pub(crate) fn contains_xy(self, point: XY) -> bool {
+    pub(crate) fn contains_point(self, point: XY) -> bool {
         point.x >= self.minx()
             && point.x <= self.maxx()
             && point.y >= self.miny()

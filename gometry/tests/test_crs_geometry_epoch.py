@@ -297,7 +297,7 @@ def test_epoch_admission_includes_wgs84_derived_crs_and_explicit_targets() -> No
     source = gm.Point(10.0, 50.0, crs=4326, epoch=2020.0)
     for target in (4326, 3857, 9000):
         transformed = source.to_crs(target, epoch=2025.5)
-        assert transformed.crs == f'EPSG:{target}'
+        assert transformed.crs == gm.CRS(f'EPSG:{target}')
         assert transformed.epoch == 2025.5
 
     _reject_epoch(2180)

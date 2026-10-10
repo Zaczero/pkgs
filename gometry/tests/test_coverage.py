@@ -44,7 +44,7 @@ def test_coverage_is_valid_verdicts() -> None:
         gm.box(0, 0, 1.1, 1, crs=3857),
         gm.box(1, 0, 2, 1, crs=3857),
     ])
-    assert edges.crs == 'EPSG:3857'
+    assert edges.crs == gm.CRS('EPSG:3857')
     with pytest.raises(gm.GeometryTypeError, match='Polygon or MultiPolygon'):
         gm.coverage_is_valid([gm.Point(0, 0)])
     with pytest.raises(gm.GeometryError, match='gap_width'):
@@ -97,7 +97,9 @@ def test_coverage_union_dissolves_shared_edges() -> None:
     disjoint = gm.coverage_union_all([gm.box(0, 0, 1, 1), gm.box(5, 5, 6, 6)])
     assert disjoint.geometry_type == 'MultiPolygon'
     assert disjoint.area == pytest.approx(2.0)
-    assert gm.coverage_union_all([gm.box(0, 0, 1, 1, crs=3857)]).crs == 'EPSG:3857'
+    assert gm.coverage_union_all([gm.box(0, 0, 1, 1, crs=3857)]).crs == gm.CRS(
+        'EPSG:3857'
+    )
     with pytest.raises(gm.GeometryTypeError, match='Polygon or MultiPolygon'):
         gm.coverage_union_all([gm.Point(0, 0)])
     with pytest.raises(gm.InvalidGeometryError):
@@ -440,7 +442,7 @@ def test_coverage_simplify_walks_open_exterior_chains(
     )
 
     assert len(simplified) == 2
-    assert simplified.crs == 'EPSG:3857'
+    assert simplified.crs == gm.CRS('EPSG:3857')
     assert gm.coverage_is_valid(simplified)
     expected = (
         [gm.box(0, 0, 1, 1, crs=3857), gm.box(1, 0, 2, 1, crs=3857)]
@@ -506,7 +508,7 @@ def test_coverage_simplify_preserves_topology() -> None:
         'POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))',
         'POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))',
     ]
-    assert out.crs == 'EPSG:3857'
+    assert out.crs == gm.CRS('EPSG:3857')
     assert sum(g.area for g in out) == pytest.approx(sum(g.area for g in arr), rel=0.1)
     pinned = gm.coverage_simplify(arr, 0.5, simplify_boundary=False)
     assert gm.coverage_is_valid(pinned)

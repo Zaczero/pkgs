@@ -13,7 +13,8 @@ Use these formats for untrusted data contents:
 
 - WKB/EWKB via [`gm.from_wkb`][gometry.from_wkb];
 - WKT/EWKT via [`gm.from_wkt`][gometry.from_wkt];
-- GeoJSON via [`gm.from_geojson`][gometry.from_geojson] or [`gm.from_features`][gometry.from_features];
+- GeoJSON via [`gm.from_geojson`][gometry.from_geojson], including feature metadata with
+  `features=True`;
 - Arrow/GeoArrow/GeoParquet after accepting the provider as a trusted ABI
   participant; the buffers and geometry values are still treated as untrusted
   contents.

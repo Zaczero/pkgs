@@ -2812,7 +2812,7 @@ assert loaded_optional == [], loaded_optional
 point = gm.Point(21.0, 52.0, crs=4326)
 other = gm.Point(22.0, 52.0, crs=4326)
 projected = point.to_crs(3857)
-assert projected.crs == 'EPSG:3857'
+assert projected.crs == gm.CRS('EPSG:3857')
 assert point.buffer(1000.0).area > 0
 assert gm.distance(point, other) > 0
 info = gm.CRS(4326).info
@@ -2822,8 +2822,8 @@ transformed = gm.crs_transform(4326, 3857, 21.0, 52.0)
 assert np.all(np.isfinite(transformed))
 
 wkb = point.to_wkb(include_srid=True)
-assert gm.from_wkb(wkb).crs == 'EPSG:4326'
-assert gm.from_wkt(point.to_wkt(), crs=4326).crs == 'EPSG:4326'
+assert gm.from_wkb(wkb).crs == gm.CRS('EPSG:4326')
+assert gm.from_wkt(point.to_wkt(), crs=4326).crs == gm.CRS('EPSG:4326')
 geojson = json.loads(point.to_geojson())
 assert gm.from_geojson(geojson).to_wkt() == point.to_wkt()
 
@@ -2843,7 +2843,7 @@ missing = gm.GeometryArray([point, None])
 assert missing.is_missing.tolist() == [False, True]
 assert missing[1] is None
 
-mask = gm.contains_xy(gm.box(20, 51, 22, 53), [21.0, 30.0], [52.0, 52.0])
+mask = gm.contains(gm.box(20, 51, 22, 53), x=[21.0, 30.0], y=[52.0, 52.0])
 assert isinstance(mask, np.ndarray)
 assert mask.flags.writeable is False
 np.testing.assert_array_equal(mask, [True, False])

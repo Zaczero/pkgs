@@ -701,7 +701,7 @@ impl PreparedPlan {
     ) -> Result<bool> {
         if self
             .bounds()
-            .is_none_or(|bounds| !bounds.contains_xy(point.xy()))
+            .is_none_or(|bounds| !bounds.contains_point(point.xy()))
         {
             return Ok(false);
         }

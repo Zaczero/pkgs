@@ -10,13 +10,17 @@ Drives the real shipped helpers in ``tools/docs/``:
 from __future__ import annotations
 
 import ast
+import copy
 import html
+import inspect
+import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
+import gometry as gm
 import griffe
 import pytest
 from jinja2 import (
@@ -501,6 +505,299 @@ def test_rendered_property_signature_is_not_parsed_as_a_call() -> None:
     assert signature.form is None
 
 
+def test_built_form_audit_detects_missing_reordered_and_changed_forms() -> None:
+    check = _check()
+    contracts = load_tool('site_contracts')
+    first = (
+        (
+            ('positional-only', 'value', 'int', None),
+            ('keyword-only', 'mode', 'str', "'fast'"),
+        ),
+        'str',
+    )
+    second = (
+        (
+            ('keyword-only', 'value', 'int', '2'),
+            ('keyword-only', 'mode', 'str', "'safe'"),
+        ),
+        'bytes',
+    )
+
+    def page(*signatures: str) -> str:
+        return (
+            '<div class="doc doc-object doc-function">'
+            '<h3 id="gometry.Widget.build">build</h3>'
+            + ''.join(
+                f'<div class="doc-signature highlight"><pre>{signature}</pre></div>'
+                for signature in signatures
+            )
+            + '</div>'
+        )
+
+    expected = SimpleNamespace(call_forms={'gometry.Widget.build': (first, second)})
+    valid = page(
+        "build(value: int, /, *, mode: str = 'fast') -> str",
+        "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+    )
+    assert (
+        contracts._call_form_errors(
+            expected,
+            check.rendered_call_forms(valid),
+        )
+        == []
+    )
+
+    mutations = (
+        page("build(value: int, *, mode: str = 'fast') -> str"),
+        page(
+            "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+            "build(value: int, /, *, mode: str = 'fast') -> str",
+        ),
+        page(
+            "build(value: int, /, *, mode: str = 'slow') -> str",
+            "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+        ),
+        page(
+            "build(value: int, /, *, mode: str = 'fast') -> bytes",
+            "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+        ),
+        page(
+            "build(value: int, /, *, mode: str = 'fast') -> str",
+            "build(value: int, /, *, mode: str = 'fast') -> str",
+        ),
+    )
+    for mutated in mutations:
+        assert contracts._call_form_errors(
+            expected,
+            check.rendered_call_forms(mutated),
+        )
+
+
+def test_source_form_oracle_matches_real_constructor_and_function_output() -> None:
+    check = _check()
+    site_contracts = load_tool('site_contracts')
+    model = load_tool(
+        'check_doc_model',
+        GOMETRY_ROOT / 'tools/gates/_check_doc_model.py',
+    )
+    contracts = model.source_documentation_contracts()
+    assert {
+        'gometry.explore',
+        'gometry.from_geopandas',
+        'gometry.from_geoparquet',
+        'gometry.from_pandas',
+        'gometry.from_polars',
+    } <= contracts.call_forms.keys()
+    assert 'gometry.GeometryCollection.__getitem__' in contracts.call_forms
+    assert 'gometry.GeometryCollection.boundary' not in contracts.call_forms
+
+    pkg = _load_griffe_model()
+    point = pkg.members['Point']
+    from_wkb = pkg.members['from_wkb']
+    getitem = pkg.members['GeometryArray'].members['__getitem__']
+    to_numpy = pkg.members['GeometryArray'].members['to_numpy']
+    assert isinstance(point, griffe.Class)
+    assert isinstance(from_wkb, griffe.Function)
+    assert isinstance(getitem, griffe.Function)
+    assert isinstance(to_numpy, griffe.Function)
+
+    rendered_class = _render_class_reference(point)
+    rendered_function = _render_function_reference(from_wkb)
+    rendered_method = _render_function_reference(getitem)
+    rendered_array = _render_function_reference(to_numpy)
+    rendered = check.rendered_call_forms(
+        rendered_class + rendered_function + rendered_method + rendered_array
+    )
+    paths = {
+        'gometry.Point',
+        'gometry.from_wkb',
+        'gometry.GeometryArray.__getitem__',
+        'gometry.GeometryArray.to_numpy',
+    }
+    expected = SimpleNamespace(
+        call_forms={path: contracts.call_forms[path] for path in paths}
+    )
+    actual = {path: rendered[path] for path in paths}
+    assert site_contracts._call_form_errors(expected, actual) == []
+
+    row_contract = SimpleNamespace(
+        constructor_rows={'gometry.Point': contracts.constructor_rows['gometry.Point']}
+    )
+    tables = site_contracts._table_rows({
+        Path('api/geometry/geometry-types/index.html'): rendered_class,
+    })
+    assert site_contracts._parameter_row_errors(row_contract, tables) == []
+
+
+def test_built_parameter_table_audit_checks_type_default_and_presence() -> None:
+    contracts = load_tool('site_contracts')
+    expected = SimpleNamespace(
+        constructor_rows={
+            'gometry.Widget': {
+                'value': ('varies', 'varies by call form', 'int'),
+                'count': ('defaulted', '3', 'int'),
+            }
+        }
+    )
+
+    def page(
+        value_default: str = 'varies by call form', value_type: str = 'int'
+    ) -> str:
+        return f"""\
+<div class="doc doc-object doc-class">
+  <h2 id="gometry.Widget">Widget</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr></thead>
+    <tbody>
+      <tr class="doc-section-item"><td>value</td><td>{value_type}</td><td>Value.</td><td>{value_default}</td></tr>
+      <tr class="doc-section-item"><td>count</td><td>int</td><td>Count.</td><td>3</td></tr>
+    </tbody>
+  </table>
+</div>
+"""
+
+    valid = {Path('api/widget/index.html'): page()}
+    assert (
+        contracts._parameter_row_errors(
+            expected,
+            contracts._table_rows(valid),
+        )
+        == []
+    )
+
+    wrong_default = {Path('api/widget/index.html'): page(value_default='None')}
+    wrong_type = {Path('api/widget/index.html'): page(value_type='float')}
+    missing = {
+        Path('api/widget/index.html'): page().replace(
+            '<tr class="doc-section-item"><td>value</td><td>int</td><td>Value.</td>'
+            '<td>varies by call form</td></tr>',
+            '',
+        )
+    }
+    assert contracts._parameter_row_errors(
+        expected,
+        contracts._table_rows(wrong_default),
+    )
+    assert contracts._parameter_row_errors(expected, contracts._table_rows(wrong_type))
+    assert contracts._parameter_row_errors(expected, contracts._table_rows(missing))
+
+
+def test_built_schema_audit_detects_nullability_and_requiredness_changes() -> None:
+    contracts = load_tool('site_contracts')
+    reference_types = load_tool('reference_types')
+    graph = reference_types.build_public_type_graph(GOMETRY_ROOT / 'python/gometry', gm)
+    declarations = {item.path: item for item in graph.definitions}
+    feature = declarations['gometry._types.GeoJsonFeature']
+    source_fields = [
+        ('type', "Literal['Feature']", 'yes', ''),
+        ('geometry', 'GeoJsonGeometry | None', 'yes', ''),
+        ('properties', 'Mapping[str, Any] | None', 'no', ''),
+        ('id', 'str | int | float', 'no', ''),
+    ]
+
+    assert (
+        contracts._typed_dict_field_errors(
+            feature,
+            declarations,
+            graph,
+            source_fields,
+        )
+        == []
+    )
+
+    invalid_fields = [
+        ('type', "Literal['Feature']", 'yes', ''),
+        ('geometry', 'GeoJsonGeometry', 'yes', ''),
+        ('properties', 'Mapping[str, Any] | None', 'yes', ''),
+        ('id', 'str | int | float', 'no', ''),
+    ]
+    errors = contracts._typed_dict_field_errors(
+        feature,
+        declarations,
+        graph,
+        invalid_fields,
+    )
+    assert len(errors) == 1
+    assert 'gometry._types.GeoJsonFeature' in errors[0]
+
+
+def test_type_link_and_search_audits_reject_wrong_canonical_targets(
+    tmp_path: Path,
+) -> None:
+    contracts = load_tool('site_contracts')
+    graph = SimpleNamespace(
+        definitions=tuple(
+            SimpleNamespace(path=path)
+            for path in (
+                'gometry._types.FloatScalar',
+                'gometry._types.ScalarFloatArray',
+                'gometry._types.GeoJsonFeature',
+            )
+        )
+    )
+    page = Path('api/geometry/index.html')
+    good_links = [
+        SimpleNamespace(
+            label=label,
+            target=f'../types/#{target}',
+            contract_region=True,
+            page=page,
+        )
+        for label, target in (
+            ('Point', 'gometry.Point'),
+            ('GeohashCell', 'gometry.GeohashCell'),
+            ('FloatScalar', 'gometry._types.FloatScalar'),
+            ('ScalarFloatArray', 'gometry._types.ScalarFloatArray'),
+            ('GeoJsonFeature', 'gometry._types.GeoJsonFeature'),
+        )
+    ]
+    assert contracts._type_link_errors(graph, good_links) == []
+    wrong_link = SimpleNamespace(
+        label='FloatScalar',
+        target='../types/#gometry._types.ScalarFloatArray',
+        contract_region=True,
+        page=page,
+    )
+    assert contracts._type_link_errors(
+        graph,
+        [link for link in good_links if link.label != 'FloatScalar'] + [wrong_link],
+    )
+
+    site = tmp_path / 'site'
+    search = site / 'search' / 'search_index.json'
+    search.parent.mkdir(parents=True)
+    anchors = {
+        'gometry.Point': Path('api/geometry/geometry-types/index.html'),
+        'gometry.GeohashCell': Path('api/grid/index.html'),
+        'gometry._types.FloatScalar': Path('api/types/index.html'),
+        'gometry._types.ScalarFloatArray': Path('api/types/index.html'),
+        'gometry._types.GeoJsonFeature': Path('api/types/index.html'),
+        'gometry.ParseError.format': Path('api/errors/index.html'),
+    }
+    terms = (
+        ('gometry.Point', 'point'),
+        ('gometry.GeohashCell', 'geohashcell'),
+        ('gometry._types.FloatScalar', 'floatscalar'),
+        ('gometry._types.ScalarFloatArray', 'scalarfloatarray'),
+        ('gometry._types.GeoJsonFeature', 'geojsonfeature'),
+        ('gometry.ParseError.format', 'geojson'),
+    )
+    documents = []
+    for target, term in terms:
+        page = anchors[target].as_posix().removesuffix('index.html')
+        documents.append({
+            'location': f'/{page}#{target}',
+            'text': f'Reference for {term}',
+        })
+    search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
+    assert contracts._search_errors(site, anchors) == []
+
+    documents[2]['location'] = '/api/types/#gometry._types.ScalarFloatArray'
+    documents[5]['text'] = 'other codec options'
+    search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
+    assert contracts._search_errors(site, anchors)
+
+
 def test_real_handler_renders_parameter_kinds_and_default_states(
     tmp_path: Path,
 ) -> None:
@@ -513,6 +810,9 @@ def empty() -> None: ...
 
 class Methods:
     def method(self, value: int, /) -> str: ...
+
+    @staticmethod
+    def static_self(self: str) -> str: ...
 """
     package = tmp_path / 'gometry'
     package.mkdir()
@@ -572,6 +872,17 @@ class Methods:
     ]
     assert method_form.form == check.RenderedCallForm(
         (('positional-only', 'value', 'int', None),),
+        'str',
+    )
+
+    static_method = module.members['Methods'].members['static_self']
+    assert isinstance(static_method, griffe.Function)
+    rendered_static_method = _render_function_reference(static_method)
+    static_form = check.rendered_call_forms(rendered_static_method)[
+        'gometry.Methods.static_self'
+    ][0]
+    assert static_form.form == check.RenderedCallForm(
+        (('positional or keyword', 'self', 'str', None),),
         'str',
     )
 
@@ -1046,6 +1357,323 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
     ), found
 
 
+def test_griffe_expands_private_aliases_from_their_source_identity() -> None:
+    pkg = _load_griffe_model()
+    expand = _expand()
+    lib = pkg.members['_lib']
+    assert isinstance(lib, griffe.Module)
+    aliases = expand.annotation_aliases(pkg)
+    expression = griffe.ExprName(
+        '_FloatScalarInput',
+        parent=lib,
+        member=lib.members['_FloatScalarInput'],
+    )
+
+    expanded = expand.expand_annotation(expression, aliases)
+
+    assert isinstance(expanded, griffe.ExprBinOp)
+    assert str(expanded) == 'FloatScalar | ScalarFloatArray'
+    assert expanded.left.canonical_path == 'gometry._types.FloatScalar'
+    assert expanded.right.canonical_path == 'gometry._types.ScalarFloatArray'
+
+
+def test_class_materialization_preserves_source_relationships_and_copy_isolation(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    (package / '__init__.pyi').write_text(
+        'from ._types import Record\n',
+        encoding='utf-8',
+    )
+    (package / '_types.pyi').write_text(
+        """\
+from typing import overload
+
+class Base: ...
+
+class Record(Base):
+    @overload
+    def choose(self, value: int) -> int: ...
+    @overload
+    def choose(self, value: str) -> str: ...
+""",
+        encoding='utf-8',
+    )
+    loader = griffe.GriffeLoader(search_paths=[str(tmp_path)], allow_inspection=False)
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    expand = _expand()
+    alias = pkg.members['Record']
+    assert isinstance(alias, griffe.Alias)
+    source = alias.target
+    assert isinstance(source, griffe.Class)
+    expand._promote_overloads(pkg, set())
+    source_method = source.members['choose']
+    assert isinstance(source_method, griffe.Function)
+    assert source_method.overloads
+
+    expand._materialize_class_aliases(pkg)
+
+    materialized = pkg.members['Record']
+    assert isinstance(materialized, griffe.Class)
+    assert materialized is not source
+    assert materialized.bases == source.bases
+    assert materialized.members['choose'] is not source_method
+    assert alias.path in materialized.aliases
+    copied_method = materialized.members['choose']
+    assert isinstance(copied_method, griffe.Function)
+    assert copied_method.overloads is not source_method.overloads
+    copied_method.overloads[0].parameters['value'].annotation = griffe.ExprName('bytes')
+    assert str(source_method.overloads[0].parameters['value'].annotation) == 'int'
+
+
+def test_class_provenance_accepts_native_and_facade_owners_and_rejects_wrong_owner() -> (
+    None
+):
+    pkg = _load_griffe_model()
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    inventory = model.load_public_symbols(
+        model.STUB,
+        GOMETRY_ROOT / 'python/gometry/__init__.py',
+    )
+    point = pkg.members['Point']
+    features = pkg.members['Features']
+    assert isinstance(point, griffe.Class)
+    assert isinstance(features, griffe.Class)
+    assert model._class_provenance_error('Point', point, inventory) is None
+    assert model._class_provenance_error('Features', features, inventory) is None
+
+    wrong_owner = copy.copy(features)
+    point_source = point.extra['gometry']['class_source']
+    wrong_owner.extra = {
+        **features.extra,
+        'gometry': {
+            **features.extra['gometry'],
+            'class_source': type(point_source)(
+                'gometry._types.Features',
+                point_source.path,
+                point_source.line,
+            ),
+        },
+    }
+    error = model._class_provenance_error('Features', wrong_owner, inventory)
+    assert error is not None
+    assert 'does not match' in error
+    assert 'gometry._types.Features' in error
+
+
+def test_exported_namedtuple_forms_match_runtime_and_construct() -> None:
+    pkg = _load_griffe_model()
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    expand = _expand()
+    inventory = model.load_public_symbols(
+        model.STUB,
+        GOMETRY_ROOT / 'python/gometry/__init__.py',
+    )
+    native_classes = model._stub_class_nodes(
+        ast.parse(model.STUB.read_text(encoding='utf-8'))
+    )
+    source_classes = dict(native_classes)
+    source_classes.update({
+        name: facade.declaration.node for name, facade in inventory.classes.items()
+    })
+    namedtuple_classes = {
+        name: node
+        for name, node in source_classes.items()
+        if name in gm.__all__
+        and any(model._stub_base_name(base) == 'NamedTuple' for base in node.bases)
+    }
+    assert set(namedtuple_classes) == {'Extremes', 'PolygonizeResult'}
+
+    classifications = {}
+    for name in gm.__all__:
+        runtime_class = getattr(gm, name, None)
+        node = source_classes.get(name)
+        if not isinstance(runtime_class, type):
+            continue
+        assert node is not None, f'{name}: public class has no source declaration'
+        if model._stub_constructor_declarations(
+            node, '__new__'
+        ) or model._stub_constructor_declarations(node, '__init__'):
+            continue
+        class_obj = pkg.members.get(name)
+        assert isinstance(class_obj, griffe.Class), name
+        outcome = expand.constructor_outcome(class_obj)
+        if name in namedtuple_classes:
+            assert isinstance(outcome, expand.RenderableConstructor), name
+            classification = 'NamedTuple fields'
+        elif isinstance(outcome, expand.UnavailableConstructor):
+            classification = f'unavailable: {outcome.reason}'
+        elif isinstance(outcome, expand.RenderableConstructor):
+            classification = f'inherited: {outcome.source.qualname}'
+        else:
+            pytest.fail(f'{name}: missing constructor classification')
+        classifications[name] = classification
+
+    expected_unavailable = {
+        'AccuracyWarning',
+        'CRSError',
+        'CRSMismatchError',
+        'Cell',
+        'GeometryError',
+        'GeometryTypeError',
+        'InvalidGeometryError',
+        'ParseError',
+        'TransformError',
+    }
+    assert set(classifications) == expected_unavailable | set(namedtuple_classes), (
+        classifications
+    )
+    assert classifications['Cell'].startswith('unavailable:')
+    assert all(
+        classifications[name].startswith('unavailable:')
+        for name in expected_unavailable - {'Cell'}
+    ), classifications
+    assert {
+        name
+        for name, classification in classifications.items()
+        if classification == 'NamedTuple fields'
+    } == set(namedtuple_classes), classifications
+    for name, node in namedtuple_classes.items():
+        runtime_class = getattr(gm, name)
+        runtime_parameters = tuple(inspect.signature(runtime_class).parameters.values())
+        class_obj = pkg.members[name]
+        outcome = expand.constructor_outcome(class_obj)
+        assert isinstance(outcome, expand.RenderableConstructor)
+        forms = expand.ordered_call_forms(outcome)
+        assert len(forms) == 1, name
+        form = forms[0]
+        source_fields = [
+            member
+            for member in node.body
+            if isinstance(member, ast.AnnAssign)
+            and isinstance(member.target, ast.Name)
+            and not member.target.id.startswith('_')
+            and not (
+                isinstance(member.annotation, ast.Subscript)
+                and model._stub_base_name(member.annotation.value) == 'ClassVar'
+            )
+        ]
+        assert len(runtime_parameters) == len(source_fields), name
+        assert [parameter.name for parameter in runtime_parameters] == [
+            member.target.id for member in source_fields
+        ], name
+        assert [parameter.name for parameter in form.parameters] == [
+            parameter.name for parameter in runtime_parameters
+        ], name
+        for parameter, source_field, form_parameter in zip(
+            runtime_parameters,
+            source_fields,
+            form.parameters,
+            strict=True,
+        ):
+            expected_default = model._expression_text(source_field.value)
+            runtime_default = (
+                None
+                if parameter.default is inspect.Parameter.empty
+                else str(parameter.default)
+            )
+            assert runtime_default == expected_default, (name, parameter.name)
+            assert form_parameter.kind is griffe.ParameterKind.positional_or_keyword
+            assert (
+                None if form_parameter.default is None else str(form_parameter.default)
+            ) == expected_default, (name, parameter.name)
+
+    extremes = gm.Extremes(1, 2, 3, 4)
+    assert isinstance(extremes, gm.Extremes)
+    assert tuple(extremes) == (1, 2, 3, 4)
+    result_fields = tuple(object() for _ in gm.PolygonizeResult._fields)
+    result = gm.PolygonizeResult(*result_fields)
+    assert isinstance(result, gm.PolygonizeResult)
+    assert tuple(result) == result_fields
+
+
+def test_generic_namedtuple_constructor_keeps_field_default_and_type_context(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    source_path = package / '__init__.pyi'
+    source_path.write_text(
+        """\
+from typing import Generic, NamedTuple, TypeVar
+
+ItemT = TypeVar('ItemT', default=int)
+
+class Record(NamedTuple, Generic[ItemT]):
+    required: str
+    value: ItemT = 7
+""",
+        encoding='utf-8',
+    )
+    expand = _expand()
+    loader = griffe.GriffeLoader(
+        search_paths=[str(tmp_path)],
+        extensions=griffe.Extensions(
+            expand.PromoteStubOverloads(),
+            expand.ExpandTokenAliases(),
+        ),
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    record = pkg.members['Record']
+    assert isinstance(record, griffe.Class)
+    outcome = expand.constructor_outcome(record)
+    assert isinstance(outcome, expand.RenderableConstructor)
+    forms = expand.ordered_call_forms(outcome)
+    assert len(forms) == 1
+    assert tuple(
+        (parameter.name, parameter.kind.value, str(parameter.default))
+        for parameter in forms[0].parameters
+    ) == (
+        ('required', 'positional or keyword', 'None'),
+        ('value', 'positional or keyword', '7'),
+    )
+    assert str(forms[0].returns) == 'Record[ItemT]'
+    assert outcome.source.path == str(source_path)
+
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    source_node = next(
+        node
+        for node in ast.parse(source_path.read_text(encoding='utf-8')).body
+        if isinstance(node, ast.ClassDef) and node.name == 'Record'
+    )
+    expected = model._source_namedtuple_form(source_node, pkg, {})
+    actual = model._griffe_call_form(forms[0])
+    assert actual == expected
+
+    reordered = copy.deepcopy(source_node)
+    field_positions = [
+        index
+        for index, node in enumerate(reordered.body)
+        if isinstance(node, ast.AnnAssign)
+    ]
+    first, second = field_positions
+    reordered.body[first], reordered.body[second] = (
+        reordered.body[second],
+        reordered.body[first],
+    )
+    assert actual != model._source_namedtuple_form(reordered, pkg, {})
+
+    without_default = copy.deepcopy(source_node)
+    next(
+        node
+        for node in without_default.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == 'value'
+    ).value = None
+    assert actual != model._source_namedtuple_form(without_default, pkg, {})
+
+
 def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties() -> None:
     pkg = _load_griffe_model()
     cell_array = pkg.members['CellArray']
@@ -1060,6 +1688,21 @@ def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties() -> N
         assert attribute.docstring is not None
         assert attribute.docstring.value.strip()
         assert '_CellGeometryProjection' not in str(attribute.annotation)
+
+
+def test_griffe_presents_cell_token_descriptor_as_nullable_string_lists() -> None:
+    pkg = _load_griffe_model()
+    cell_array = pkg.members['CellArray']
+    assert isinstance(cell_array, griffe.Class)
+
+    attribute = cell_array.members['token']
+    assert isinstance(attribute, griffe.Attribute)
+    assert attribute.canonical_path == 'gometry.CellArray.token'
+    assert str(attribute.annotation) == 'list[str] | list[str | None]'
+    assert {'property', 'readonly'} <= attribute.labels
+    assert attribute.docstring is not None
+    assert attribute.docstring.value.strip()
+    assert '_CellTokenProjection' not in str(attribute.annotation)
 
 
 def _public_python_function_aliases(
@@ -1304,7 +1947,7 @@ def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
     assert set(contracts) == {f'gometry.{name}' for name in names}
     expected_counts = {
         'GeohashCell': 3,
-        'Point': 2,
+        'Point': 3,
         'LineString': 3,
         'Polygon': 3,
         'CellArray': 16,
@@ -1327,52 +1970,65 @@ def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
         assert binding not in class_obj.members.values(), path
 
 
-def test_constructor_parameter_tables_show_authored_defaults() -> None:
+def test_constructor_parameter_tables_report_each_row_applicability() -> None:
     pkg = _load_griffe_model()
-    expected = {
-        'Point': {
-            'x': 'None',
-            'y': 'None',
-            'z': 'None',
-            'm': 'None',
-            'crs': 'None',
-            'epoch': 'None',
-        },
-        'LineString': {
-            'coordinates': 'None',
-            'x': 'None',
-            'y': 'None',
-            'z': 'None',
-            'm': 'None',
-            'crs': 'None',
-            'epoch': 'None',
-        },
-        'Polygon': {
-            'shell': 'None',
-            'holes': 'None',
-            'x': 'None',
-            'y': 'None',
-            'z': 'None',
-            'm': 'None',
-            'crs': 'None',
-            'epoch': 'None',
-        },
-        'CellArray': {'values': 'required', 'type': 'None'},
-        'CRS': {'value': 'required'},
-    }
-
-    for name, expected_defaults in expected.items():
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    lib = pkg.members['_lib']
+    assert isinstance(lib, griffe.Module)
+    names = {'Point', 'LineString', 'Polygon', 'CellArray', 'CRS'}
+    contracts = model._stub_constructor_contracts(
+        lib,
+        model.annotation_aliases(pkg),
+        names,
+    )
+    for name in names:
         class_obj = pkg.members[name]
         assert isinstance(class_obj, griffe.Class)
+        rendered = _render_class_reference(class_obj)
         parser = _ClassReference()
-        parser.feed(_render_class_reference(class_obj))
-        rows = [row for row in parser.rows if row and row[0] in expected_defaults]
-        assert len(rows) == len(expected_defaults), name
-        assert {row[0]: row[-1] for row in rows} == expected_defaults, name
+        parser.feed(rendered)
+        expected_rows = model._call_form_parameter_rows(
+            contracts[f'gometry.{name}'].forms
+        )
+        expected_values = {
+            parameter: (
+                value
+                if status in {'defaulted', 'varies'}
+                else 'not applicable'
+                if status == 'variadic'
+                else 'required'
+            )
+            for parameter, (status, value) in expected_rows.items()
+        }
+        rows = [row for row in parser.rows if row and row[0] in expected_values]
+        assert len(rows) == len(expected_values), name
+        assert {row[0]: row[-1] for row in rows} == expected_values, name
         assert len(parser.disclosures) == 1, name
         assert (
             ''.join(parser.disclosures[0]['summary']).strip() == 'Accepted call forms'
         )
+
+    point_rows = model._call_form_parameter_rows(contracts['gometry.Point'].forms)
+    assert point_rows['x'] == ('varies', 'varies by call form')
+    assert point_rows['y'] == ('varies', 'varies by call form')
+    cell_rows = model._call_form_parameter_rows(contracts['gometry.CellArray'].forms)
+    assert cell_rows['type'] == ('varies', 'varies by call form')
+
+    point = pkg.members['Point']
+    assert isinstance(point, griffe.Class)
+    point_html = _render_class_reference(point)
+    universal_default = point_html.replace('varies by call form', 'None', 1)
+    mutated_parser = _ClassReference()
+    mutated_parser.feed(universal_default)
+    mutated_values = {
+        row[0]: row[-1] for row in mutated_parser.rows if row and row[0] in point_rows
+    }
+    assert mutated_values != {
+        name: value if status in {'defaulted', 'varies'} else 'required'
+        for name, (status, value) in point_rows.items()
+    }
 
 
 def test_constructor_default_projection_keeps_differing_accepted_forms() -> None:
@@ -1380,15 +2036,35 @@ def test_constructor_default_projection_keeps_differing_accepted_forms() -> None
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
     forms = (
-        ((('keyword-only', 'value', 'int', None),), None),
-        ((('keyword-only', 'value', 'int', '1'),), None),
-        ((('keyword-only', 'value', 'int', '2'),), None),
+        (
+            (
+                ('keyword-only', 'value', 'int', None),
+                ('keyword-only', 'stable', 'bool', 'False'),
+            ),
+            None,
+        ),
+        (
+            (
+                ('keyword-only', 'value', 'int', '1'),
+                ('keyword-only', 'stable', 'bool', 'False'),
+                ('keyword-only', 'only_here', 'str', None),
+            ),
+            None,
+        ),
+        (
+            (
+                ('keyword-only', 'value', 'int', '2'),
+                ('keyword-only', 'stable', 'bool', 'False'),
+            ),
+            None,
+        ),
     )
 
-    defaults, conflicts = model._call_form_defaults(forms)
-
-    assert defaults == {'value': '1'}
-    assert conflicts == []
+    assert model._call_form_parameter_rows(forms) == {
+        'value': ('varies', 'varies by call form'),
+        'stable': ('defaulted', 'False'),
+        'only_here': ('varies', 'varies by call form'),
+    }
 
 
 def test_constructor_class_template_renders_the_source_ast_form_sequence() -> None:

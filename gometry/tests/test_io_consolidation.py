@@ -381,7 +381,7 @@ def test_g5_include_srid_docs_and_runtime_raise() -> None:
 def test_g6_require_feature_returns_geometry_only() -> None:
     """gm.require(Feature) returns Geometry; properties are not a projection leak.
 
-    from_features keeps properties; require/from_geojson return geometry only.
+    from_geojson keeps properties; require/from_geojson return geometry only.
     Confirmed null for "parses properties that projection discards" as a bug:
     properties are intentionally out of the Geometry return contract.
     """
@@ -394,6 +394,6 @@ def test_g6_require_feature_returns_geometry_only() -> None:
     g = gm.require(feature, crs=4326)
     assert isinstance(g, gm.Point)
     assert g.to_wkt() == 'POINT (1 2)'
-    feats = gm.from_features(feature)
+    feats = gm.from_geojson(feature, features=True)
     assert feats.properties == ({'name': 'A', 'count': 99},)
     assert feats.ids == (7,)

@@ -146,7 +146,7 @@ def test_nullable_homogeneous_ingress_stays_geoarrow_native() -> None:
         gm.from_wkb([line.to_wkb(), None]),
         gm.from_geojson([geojson_line, None]),
         gm.from_geojson(feature_collection),
-        gm.from_features(feature_collection).geometries,
+        gm.from_geojson(feature_collection, features=True).geometries,
     )
     for values in arrays:
         assert values.is_missing.tolist() == [False, True]

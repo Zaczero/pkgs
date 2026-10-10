@@ -141,7 +141,7 @@ def test_geographic_smooth_publisher_carries_inserted_zm_by_ellipsoidal_arclengt
 def test_crs_epoch_carried() -> None:
     line = gm.LineString([(0, 0), (1, 1), (2, 0)], crs='EPSG:4326', epoch=2020.0)
     smoothed = line.smooth(iterations=1)
-    assert smoothed.crs == 'EPSG:4326'
+    assert smoothed.crs == gm.CRS('EPSG:4326')
     assert smoothed.epoch == 2020.0
 
 

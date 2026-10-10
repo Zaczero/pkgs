@@ -33,6 +33,7 @@ from collections.abc import (
 from os import PathLike
 from typing import (
     Any,
+    BinaryIO,
     ClassVar,
     Final,
     Generic,
@@ -117,6 +118,7 @@ from gometry._types import (
     PyArrowArray,
     PyArrowCapsule,
     PyArrowChunkedArray,
+    PyArrowNativeFile,
     PyArrowRecordBatch,
     PyArrowRecordBatchReader,
     PyArrowSchemaCapsule,
@@ -142,6 +144,7 @@ from gometry._types import (
 _GeometryT = TypeVar('_GeometryT', bound=Geometry)
 _GeometryOtherT = TypeVar('_GeometryOtherT', bound=Geometry)
 _GeometryRowT = TypeVar('_GeometryRowT', bound=Geometry | None)
+_GeometryBatch: TypeAlias = GeometryArray[_GeometryRowT] | Iterable[_GeometryRowT]
 # Dissolve group key element type (the `by` iterable's element type).
 _GroupKeyT = TypeVar('_GroupKeyT', bound=Hashable)
 _DefaultT = TypeVar('_DefaultT')
@@ -212,7 +215,6 @@ __all__ = [
     'boxes',
     'contains',
     'contains_properly',
-    'contains_xy',
     'coverage_clean',
     'coverage_invalid_edges',
     'coverage_is_valid',
@@ -252,7 +254,6 @@ __all__ = [
     'equals_identical',
     'frechet_distance',
     'from_arrow',
-    'from_features',
     'from_geojson',
     'from_polyline',
     'from_wkb',
@@ -275,7 +276,6 @@ __all__ = [
     'intersection',
     'intersection_all',
     'intersects',
-    'intersects_xy',
     'join',
     'length',
     'length_3d',
@@ -302,7 +302,6 @@ __all__ = [
     's2_bounding_cell',
     's2_cells',
     's2_cover',
-    's2_cover_adaptive',
     's2_difference',
     's2_intersection',
     's2_union',
@@ -362,6 +361,16 @@ _CoordinateMatrix: TypeAlias = (
             | np.bool_
         ],
     ]
+)
+_H3SetInput: TypeAlias = (
+    H3Cell | _IntScalarInput | str | Iterable[H3Cell | _IntScalarInput | str | None]
+)
+_S2SetInput: TypeAlias = (
+    S2Cell | _IntScalarInput | str | Iterable[S2Cell | _IntScalarInput | str | None]
+)
+_GeohashSetInput: TypeAlias = GeohashCell | str | Iterable[GeohashCell | str | None]
+_TileSetInput: TypeAlias = (
+    Tile | _IntScalarInput | str | Iterable[Tile | _IntScalarInput | str | None]
 )
 _AffineMatrix: TypeAlias = (
     tuple[float, float, float, float, float, float] | Iterable[float]
@@ -516,7 +525,6 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     or call `drop_missing()` first for an explicit dense-only path.
     """
 
-    __array_ufunc__: ClassVar[None]
     def __new__(cls, _nonconstructible: Never, /) -> Self:
         """Coordinates are returned by ``geom.coords`` and cannot be constructed."""
     @overload
@@ -578,12 +586,12 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus the logical Rust-side
-        coordinate heap retained by this view (ordinate payload and structural
-        row metadata for array-backed views). Shared backing buffers are
-        reported like NumPy views, not as the full parent allocation. Parent
-        geometry/array sidecars (prepared caches, coverage membership, …) are
-        not owned by the view and are not counted here.
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
+        Rust-side coordinate heap retained by this view (ordinate payload and
+        structural row metadata for array-backed views). Shared backing buffers
+        are estimated from the visible view, not the full parent allocation.
+        Parent geometry/array sidecars (prepared caches, coverage membership,
+        …) are not owned by the view and are not counted here.
 
         Raises
         ------
@@ -592,7 +600,10 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this coordinate view."""
-    def __reduce__(self) -> Never: ...
+    def __reduce__(self) -> tuple[Callable[..., Coordinates], tuple[Any, ...]]:
+        """Restore a Coordinates view from its owning geometry or array and
+        selected layout.
+        """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
     @property
@@ -814,8 +825,9 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
 
         Parameters
         ----------
-        index : bool, default False
-            Add an ``'index'`` column with each coordinate's source row.
+        index : bool
+            Add an ``'index'`` column with each coordinate's source row when
+            ``True``; the ``False`` form omits that column.
 
         Returns
         -------
@@ -1029,9 +1041,10 @@ class Geometry:
     def __str__(self) -> str:
         """Return the geometry's WKT representation."""
     def __sizeof__(self) -> int:
-        """Retained native cost of this geometry for ``sys.getsizeof``.
+        """Python's allocation base plus the retained native cost of this geometry
+        for ``sys.getsizeof``.
 
-        Counts the Python-facing struct, the Arc-owned ``ShapeData`` block
+        Counts the Python object allocation base and the Arc-owned ``ShapeData`` block
         (including the ``Shape`` payload — coordinate columns **and**
         container allocations such as multipart ``Vec``s, polygon hole
         ``Arc``s, and nested collection members), any attached
@@ -2310,10 +2323,11 @@ class Geometry:
             Ordered locations on the selected basis. Distance values follow the CRS;
             M values are stored route measures. A scalar applies to every array row.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis positions as fractions of the route length under
@@ -2664,10 +2678,11 @@ class Geometry:
             A point to project, or one point per line row. Missing query rows produce
             ``nan`` in the result column.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Return a CRS-aware distance, or the line's monotonic M ordinate. For
-            ``basis='m'``, nearest-point projection follows the same chart-edge metric:
-            ellipsoidal arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Return a CRS-aware distance, or the line's monotonic M ordinate. Distance
+            forms omit ``basis``; M stationing requires ``basis='m'``. M-based
+            projection follows the same chart-edge metric: ellipsoidal arclength on a
+            geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Return a distance-basis fraction in [0, 1] under the selected metric.
@@ -2901,10 +2916,11 @@ class Geometry:
             ``basis='m'``; ``normalized=True`` is invalid because count already supplies
             fractional positions.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis ``at`` values as fractions of the route length
@@ -3357,7 +3373,7 @@ class Geometry:
         (0.0, 0.0, 2.0, 2.0)
         """
 
-    def extremes(self) -> Extremes | None:
+    def extremes(self) -> Extremes[Point] | None:
         """Return the west, south, east, and north extreme vertices of the
         geometry (numeric X/Y; ties keep the first vertex in storage order).
 
@@ -3368,11 +3384,6 @@ class Geometry:
             geometry — the same contract as ``bounds`` and the other extent
             accessors.
 
-
-        Raises
-        ------
-        InvalidGeometryError
-            If the geometry is empty.
 
         Examples
         --------
@@ -3512,9 +3523,10 @@ class Geometry:
 
         Parameters
         ----------
-        output : {'polygons', 'edges'}, default 'polygons'
-            Return clipped Voronoi cells or the internal Voronoi edges. Edge output
-            excludes the clip polygon's exterior boundary.
+        output : {'polygons', 'edges'}
+            Return clipped Voronoi cells or the internal Voronoi edges. The polygon
+            form omits ``output``; edge output requires ``output='edges'`` and excludes
+            the clip polygon's exterior boundary.
         tolerance : float, default 0.0
             Finite non-negative coordinate-space tolerance: native angular units for
             geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -3549,16 +3561,21 @@ class Geometry:
         3
         """
     def split_antimeridian(self) -> Geometry:
-        """Split at the antimeridian. Parts that cross come back as multiple parts
+        """Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+        geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+        come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
-        Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-        running off the seam closes over its pole automatically. Geometries that do
-        not cross are returned unchanged. A split ``LineString`` becomes a
-        ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-        Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        the split subdivides existing chart edges, so ellipsoidal area and perimeter
-        are conserved to rounding.
+        Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+        follow ellipsoidal arclength along the retained source edge. An authored
+        full-period edge is retained with quarter witnesses before its longitudes are
+        canonicalized. The two seam aliases and a displacement of multiple periods do
+        not imply a full-period edge. A ring running off the seam closes over its pole
+        automatically. Geometries that do not cross are returned unchanged. A split
+        ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+        ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+        existing chart edges, so ellipsoidal area and perimeter are conserved to
+        rounding.
 
         Returns
         -------
@@ -3699,17 +3716,25 @@ class Geometry:
     def sample_points(
         self, count: _IntScalar, *, seed: _IntScalar
     ) -> GeometryArray[Point]:
-        """Random points on the geometry. The sample space is the geometry's highest
-        dimension: uniform over area for areal input, along length for lineal input,
-        and across the member points of a point set — falling back a dimension when
-        the higher one is degenerate (a zero-area polygon samples its boundary),
-        like centroid. Deterministic: the same input and ``seed`` always produce
-        the same points (an explicit seed is required — no hidden global RNG). Array
-        rows draw distinct deterministic streams derived from ``seed`` and the row
-        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-        and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-        to sample and yields no points. Sampled points are invented interior points,
-        so they cannot carry the source geometry's Z/M and are returned in XY.
+        """Random points on the geometry. The sample space is its highest
+        dimension: coordinate-area weighted for areal input, coordinate-length
+        weighted for lineal input, and equal weight across point atoms. Geographic
+        lines follow each retained longitude branch, while geographic areas are split
+        into seam- and pole-aware chart parts before sampling. Length and area weights
+        use the native coordinate chart, not ellipsoidal measures; for example, a
+        degree-based 170° to -170° line follows its retained +20° path, contributing
+        20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+        chart area, not the complementary raw-coordinate span. Each logical
+        member contributes separately, so overlapping members retain their sampling
+        multiplicity. A zero-area polygon falls back to its linework, and zero-length
+        linework falls back to vertices, like centroid. Deterministic: the same input
+        and ``seed`` always produce the same points (an explicit seed is required —
+        no hidden global RNG). Array rows draw distinct deterministic streams derived
+        from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+                ``arr.sample_points(n, seed=s)[0]`` and
+                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+                sample and yields no points. Results retain the input CRS and coordinate
+                epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
@@ -3955,7 +3980,7 @@ class Geometry:
         origin : tuple of float, default (0.0, 0.0)
             A grid node anchoring the lattice.
 
-        repair : bool, default False
+        repair : bool
             If ``True``, guarantee a valid result: snap, linework-repair, and re-
             snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
             snapped shell pinches splits into a ``MultiPolygon``). Geographic
@@ -4363,13 +4388,17 @@ class Point(Geometry):
 
     Parameters
     ----------
-    x, y : float, optional
-        Point coordinates; both omitted builds ``POINT EMPTY``.
+    x : Point, coordinate sequence, or float, optional
+        A Point to copy, one finite coordinate value, or the X coordinate.
+        Omit both coordinates for an empty point.
+    y : float, optional
+        Finite Y coordinate when ``x`` is a scalar. Omit it when ``x`` is a
+        coordinate value or existing Point.
     z : float, optional
         Z ordinate (adds a 3D dimension).
     m : float, optional
         M (measure) ordinate.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -4525,8 +4554,9 @@ class Point(Geometry):
         distance : float or sequence of float
             Finite, non-negative distance to travel in CRS-natural units, unless
             `unit` is set.
-        path : {'geodesic', 'rhumb'}, default 'geodesic'
-            Route model. Rhumb paths require a geographic CRS and use meters.
+        path : {'geodesic', 'rhumb'}
+            Route model. Geodesic forms omit ``path``; rhumb forms require
+            ``path='rhumb'`` and a geographic CRS.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -4575,6 +4605,17 @@ class Point(Geometry):
     @overload
     def __new__(
         cls,
+        x: Point | _Coordinate,
+        y: None = None,
+        *,
+        z: _FloatScalarInput | None = None,
+        m: _FloatScalarInput | None = None,
+        crs: CrsInput | None = None,
+        epoch: _FloatScalarInput | None = None,
+    ) -> Self: ...
+    @overload
+    def __new__(
+        cls,
         x: _FloatScalarInput,
         y: _FloatScalarInput,
         *,
@@ -4585,14 +4626,18 @@ class Point(Geometry):
     ) -> Self:
         """Create a ``Point`` geometry — ``XY``, ``XYZ``, ``XYM``, or ``XYZM``.
 
-        Pass ``z`` and/or ``m`` for higher-dimensional points; to build many
-        points at once use ``points``.
+        Pass one coordinate value or separate ``x``/``y`` scalars. A coordinate
+        of length two, three, or four means ``XY``, ``XYZ``, or ``XYZM``.
+        Pass ``m=`` to build ``XYM``; to build many points use ``points``.
 
         Parameters
         ----------
-        x, y : float, optional
-            Finite coordinates (longitude, latitude in the CRS-native angular
-            units for a geographic ``crs``). Omit both for an empty point.
+        x : Point, coordinate sequence, or float, optional
+            A Point to copy, one finite coordinate value, or the X coordinate.
+            Omit both coordinates for an empty point.
+        y : float, optional
+            Finite Y coordinate when ``x`` is a scalar. Omit it when ``x`` is a
+            coordinate value or existing Point.
 
         z : float, optional
             Z (elevation) ordinate, producing an ``XYZ`` or ``XYZM`` point.
@@ -4603,7 +4648,7 @@ class Point(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -4629,6 +4674,8 @@ class Point(Geometry):
         'POINT Z (1 2 3)'
         >>> gm.Point(1, 2, m=9).to_wkt()
         'POINT M (1 2 9)'
+        >>> gm.Point((1, 2, 3, 9)).to_wkt()
+        'POINT ZM (1 2 3 9)'
         >>> gm.Point(13.4, 52.5, crs=4326).crs
         CRS("EPSG:4326")
         >>> gm.Point().to_wkt()
@@ -4908,11 +4955,11 @@ class MultiPoint(Geometry):
 
     Parameters
     ----------
-    coordinates : sequence of points or coordinate tuples, optional
+    coordinates : iterable of points or coordinate tuples, optional
         The member points; omitted builds an empty multipoint.
     x, y, z, m : sequence of float, optional
         Column form: parallel ordinate arrays, one entry per point.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -4965,7 +5012,7 @@ class MultiPoint(Geometry):
 
         Parameters
         ----------
-        coordinates : sequence, optional
+        coordinates : iterable of points or coordinate tuples, optional
             Member coordinate tuples ``(x, y[, z[, m]])``. Mutually exclusive with
             the ``x``/``y`` column form. Omit all inputs for an empty multipoint.
 
@@ -4979,7 +5026,7 @@ class MultiPoint(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5278,11 +5325,11 @@ class LineString(Geometry):
 
     Parameters
     ----------
-    coordinates : sequence of coordinate tuples, optional
+    coordinates : iterable of coordinate tuples, optional
         The vertices as ``(x, y[, z, m])`` tuples; omitted builds an empty line.
     x, y, z, m : sequence of float, optional
         Column form: parallel ordinate arrays, one entry per vertex.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5325,7 +5372,7 @@ class LineString(Geometry):
 
         Parameters
         ----------
-        coordinates : sequence, optional
+        coordinates : iterable of coordinate tuples, optional
             Ordered ``(x, y[, z[, m]])`` tuples, or an ``(N, 2..4)`` array.
             Mutually exclusive with the ``x``/``y`` column form. Omit all inputs
             for an empty linestring.
@@ -5340,7 +5387,7 @@ class LineString(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5432,9 +5479,9 @@ class MultiLineString(Geometry):
 
     Parameters
     ----------
-    lines : sequence of LineString or coordinate sequences, optional
+    lines : iterable of LineString or coordinate sequences, optional
         The member lines; omitted builds an empty multilinestring.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5450,14 +5497,14 @@ class MultiLineString(Geometry):
 
         Parameters
         ----------
-        lines : sequence, optional
+        lines : iterable of LineString or coordinate sequences, optional
             Each member is an ordered coordinate sequence (a line) or an
             already-built ``LineString``. Omit for an empty multilinestring.
 
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5625,13 +5672,13 @@ class Polygon(Geometry):
 
     Parameters
     ----------
-    shell : sequence of coordinate tuples, optional
+    shell : iterable of coordinate tuples, optional
         Exterior ring vertices; omitted builds ``POLYGON EMPTY``.
-    holes : sequence of rings, optional
+    holes : iterable of rings, optional
         Interior rings, each a coordinate sequence.
     x, y, z, m : sequence of float, optional
         Column form for the exterior ring: parallel ordinate arrays.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5677,11 +5724,11 @@ class Polygon(Geometry):
 
         Parameters
         ----------
-        shell : sequence, optional
+        shell : iterable of coordinate tuples, optional
             Exterior ring coordinates; closed automatically (needs ≥3 corners).
             Mutually exclusive with the ``x``/``y`` column form.
 
-        holes : sequence of sequence, optional
+        holes : iterable of rings, optional
             Interior ring (hole) coordinate sequences, each closed automatically.
 
         x, y : sequence of float, optional
@@ -5694,7 +5741,7 @@ class Polygon(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5796,9 +5843,9 @@ class MultiPolygon(Geometry):
 
     Parameters
     ----------
-    polygons : sequence of Polygon or (shell, holes) pairs, optional
+    polygons : iterable of Polygon or (shell, holes) pairs, optional
         The member polygons; omitted builds an empty multipolygon.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5814,14 +5861,14 @@ class MultiPolygon(Geometry):
 
         Parameters
         ----------
-        polygons : sequence, optional
+        polygons : iterable of Polygon or (shell, holes) pairs, optional
             Each member is ``[shell]`` or ``[shell, *holes]`` of coordinate rings,
             or an already-built ``Polygon``. Omit for an empty multipolygon.
 
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5991,7 +6038,7 @@ class GeometryCollection(Geometry):
     ----------
     geometries : sequence of Geometry, optional
         The member geometries, of any types; omitted builds an empty collection.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -6013,7 +6060,7 @@ class GeometryCollection(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -6178,7 +6225,7 @@ class GeometryPartsIterator(Generic[_GeometryT_co]):
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -6322,7 +6369,7 @@ class GeometryArrayIterator(Generic[_GeometryT_co]):
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -6399,8 +6446,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         distance : float or sequence of float
             Finite, non-negative distance to travel in CRS-natural units, unless
             `unit` is set.
-        path : {'geodesic', 'rhumb'}, default 'geodesic'
-            Route model. Rhumb paths require a geographic CRS and use meters.
+        path : {'geodesic', 'rhumb'}
+            Route model. Geodesic forms omit ``path``; rhumb forms require
+            ``path='rhumb'`` and a geographic CRS.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -6439,10 +6487,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POINT (0.00898 0)'
         """
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        """Pickle support: packed point/line/polygon arrays round-trip their raw
-        little-endian f64 columns (plus CSR offsets for lineal storage);
-        mixed arrays round-trip per-row WKB. The frame (stored CRS definition,
-        epoch) travels alongside.
+        """Pickle durable array state; packed storage uses portable little-endian
+        columns and offsets, while mixed storage uses WKB rows.
+        """
+    def __reduce_ex__(
+        self, protocol: SupportsIndex, /
+    ) -> tuple[Callable[..., GeometryArray[Geometry | None]], tuple[Any, ...]]:
+        """Use protocol-5 out-of-band buffers for the encoded array payload when
+        the pickler provides a buffer callback. The buffers are read-only.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this geometry array."""
@@ -6876,14 +6928,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         iterator of Geometry or None
         """
     def __sizeof__(self) -> int:
-        """`sys.getsizeof` support: the wrapper plus this array's logical
+        """`sys.getsizeof` support: Python's allocation base plus this array's logical
         Rust-side heap — coordinate payload, CSR offsets, row maps, missing
         mask, cache owners and their already-materialized contents, spilled CRS
         frame text, and any already-materialized prepared-geometry / frame
         sidecars.
         Lazy cache slots that have not been populated do not inflate the total.
-        Shared backing buffers are accounted like NumPy views: the logical view
-        is reported, not the whole shared parent allocation.
+        Shared backing buffers use the logical view estimate, not the whole
+        shared parent allocation.
 
         Raises
         ------
@@ -7169,9 +7221,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ``1`` for a single point/line/polygon, including a typed empty; the
         member count for a multi/collection, and ``0`` for an empty multipart
         or collection. Explicit empty members still count in their multipart's
-        member count. Missing rows use Shapely's ``None``-geometry sentinel
-        ``0``; use `.is_missing` to distinguish them from present empty
-        geometries.
+        member count. Missing rows have count ``0``; use `.is_missing` to
+        distinguish them from present empty geometries.
 
         Returns
         -------
@@ -7179,7 +7230,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One count per input geometry.
         """
     @property
-    def num_coordinates(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
+    def num_coordinates(
+        self,
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]] | npt.NDArray[np.object_]:
         """Per-geometry coordinate count. Missing rows are ``0``.
 
         Returns
@@ -7263,9 +7316,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @property
     def topological_dimension(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
-        areal (see `Geometry.topological_dimension`). Missing rows use
-        Shapely's ``None``-geometry sentinel ``-1``; use `.is_missing` to
-        distinguish them from present point-like geometries.
+        areal (see `Geometry.topological_dimension`). Missing rows use ``-1``;
+        use `.is_missing` to distinguish them from present point-like
+        geometries.
 
         Returns
         -------
@@ -7601,7 +7654,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
     def to_geoparquet(
         self,
-        path: str | PathLike[str],
+        path: str | PathLike[str] | BinaryIO | PyArrowNativeFile,
         *,
         attributes: PyArrowTable | Mapping[str, Any] | None = None,
         encoding: Literal['wkb', 'native'] = 'wkb',
@@ -7611,8 +7664,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        path : path-like
-            Output Parquet path.
+        path : str, path-like, or binary stream
+            Output Parquet path or caller-owned binary writable stream. Text
+            streams are not supported; the writer leaves streams open.
         attributes : pyarrow.Table or mapping, optional
             Per-row attribute columns written beside the geometry column
             (lengths must match).
@@ -7641,6 +7695,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> os.path.getsize(path) > 0
         True
         """
+    @overload
+    def to_polyline(
+        self: GeometryArray[Geometry], *, precision: int = 5, drop_epoch: bool = False
+    ) -> list[str]: ...
+    @overload
     def to_polyline(
         self, *, precision: int = 5, drop_epoch: bool = False
     ) -> list[str | None]:
@@ -7917,9 +7976,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        *others : GeometryArray
-            Arrays to append, in order; each must share this array's CRS and
-            epoch. With no arguments the array itself is returned.
+        other, *others : GeometryArray
+            Arrays to append in order; each must share this array's CRS and
+            epoch. The zero-argument form omits both names and returns this array.
 
         Returns
         -------
@@ -8279,6 +8338,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'LINESTRING (0 0, 0 2)'
         """
 
+    @overload
+    def to_geojson(
+        self: GeometryArray[Geometry], *, drop_epoch: bool = False
+    ) -> list[str]: ...
+    @overload
     def to_geojson(self, *, drop_epoch: bool = False) -> list[str | None]:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must use the 2D longitude/latitude family
@@ -8773,10 +8837,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Ordered locations on the selected basis. Distance values follow the CRS;
             M values are stored route measures. A scalar applies to every array row.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis positions as fractions of the route length under
@@ -9278,10 +9343,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             A point to project, or one point per line row. Missing query rows produce
             ``nan`` in the result column.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Return a CRS-aware distance, or the line's monotonic M ordinate. For
-            ``basis='m'``, nearest-point projection follows the same chart-edge metric:
-            ellipsoidal arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Return a CRS-aware distance, or the line's monotonic M ordinate. Distance
+            forms omit ``basis``; M stationing requires ``basis='m'``. M-based
+            projection follows the same chart-edge metric: ellipsoidal arclength on a
+            geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Return a distance-basis fraction in [0, 1] under the selected metric.
@@ -9517,10 +9583,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             ``normalized=True`` is invalid because count already supplies fractional
             positions.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis ``at`` values as fractions of the route length
@@ -10020,11 +10087,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
             empty point per column.
 
 
-        Raises
-        ------
-        InvalidGeometryError
-            If the geometry is empty.
-
         Examples
         --------
         >>> import gometry as gm
@@ -10163,9 +10225,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        output : {'polygons', 'edges'}, default 'polygons'
-            Return clipped Voronoi cells or the internal Voronoi edges. Edge output
-            excludes the clip polygon's exterior boundary.
+        output : {'polygons', 'edges'}
+            Return clipped Voronoi cells or the internal Voronoi edges. The polygon
+            form omits ``output``; edge output requires ``output='edges'`` and excludes
+            the clip polygon's exterior boundary.
         tolerance : float, default 0.0
             Finite non-negative coordinate-space tolerance: native angular units for
             geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -10263,16 +10326,21 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def split_antimeridian(
         self: GeometryArray[Geometry | None],
     ) -> GeometryArray[Geometry | None]:
-        """Split at the antimeridian. Parts that cross come back as multiple parts
+        """Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+        geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+        come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
-        Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-        running off the seam closes over its pole automatically. Geometries that do
-        not cross are returned unchanged. A split ``LineString`` becomes a
-        ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-        Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        the split subdivides existing chart edges, so ellipsoidal area and perimeter
-        are conserved to rounding.
+        Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+        follow ellipsoidal arclength along the retained source edge. An authored
+        full-period edge is retained with quarter witnesses before its longitudes are
+        canonicalized. The two seam aliases and a displacement of multiple periods do
+        not imply a full-period edge. A ring running off the seam closes over its pole
+        automatically. Geometries that do not cross are returned unchanged. A split
+        ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+        ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+        existing chart edges, so ellipsoidal area and perimeter are conserved to
+        rounding.
 
         Returns
         -------
@@ -10500,17 +10568,25 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def sample_points(
         self, count: _IntInput, *, seed: _IntInput
     ) -> Groups[GeometryArray[Point]]:
-        """Random points on the geometry. The sample space is the geometry's highest
-        dimension: uniform over area for areal input, along length for lineal input,
-        and across the member points of a point set — falling back a dimension when
-        the higher one is degenerate (a zero-area polygon samples its boundary),
-        like centroid. Deterministic: the same input and ``seed`` always produce
-        the same points (an explicit seed is required — no hidden global RNG). Array
-        rows draw distinct deterministic streams derived from ``seed`` and the row
-        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-        and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-        to sample and yields no points. Sampled points are invented interior points,
-        so they cannot carry the source geometry's Z/M and are returned in XY.
+        """Random points on the geometry. The sample space is its highest
+        dimension: coordinate-area weighted for areal input, coordinate-length
+        weighted for lineal input, and equal weight across point atoms. Geographic
+        lines follow each retained longitude branch, while geographic areas are split
+        into seam- and pole-aware chart parts before sampling. Length and area weights
+        use the native coordinate chart, not ellipsoidal measures; for example, a
+        degree-based 170° to -170° line follows its retained +20° path, contributing
+        20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+        chart area, not the complementary raw-coordinate span. Each logical
+        member contributes separately, so overlapping members retain their sampling
+        multiplicity. A zero-area polygon falls back to its linework, and zero-length
+        linework falls back to vertices, like centroid. Deterministic: the same input
+        and ``seed`` always produce the same points (an explicit seed is required —
+        no hidden global RNG). Array rows draw distinct deterministic streams derived
+        from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+                ``arr.sample_points(n, seed=s)[0]`` and
+                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+                sample and yields no points. Results retain the input CRS and coordinate
+                epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
@@ -10914,7 +10990,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         origin : tuple of float, default (0.0, 0.0)
             A grid node anchoring the lattice.
 
-        repair : bool, default False
+        repair : bool
             If ``True``, guarantee a valid result: snap, linework-repair, and re-
             snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
             snapped shell pinches splits into a ``MultiPolygon``). Geographic
@@ -11187,11 +11263,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POINT M (1 2 5)'
         """
 
+    @overload
+    def to_wkt(
+        self: GeometryArray[Geometry],
+        *,
+        include_srid: bool = False,
+        precision: _IntScalar | None = None,
+        drop_epoch: bool = False,
+    ) -> list[str]: ...
+    @overload
     def to_wkt(
         self,
         *,
         include_srid: bool = False,
-        precision: int | None = None,
+        precision: _IntScalar | None = None,
         drop_epoch: bool = False,
     ) -> list[str | None]:
         """Serialize to Well-Known Text.
@@ -11238,11 +11323,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ['POINT (1.5 2.5)']
         """
 
+    @overload
+    def to_wkb(
+        self: GeometryArray[Geometry],
+        *,
+        include_srid: bool = False,
+        precision: _IntScalar | None = None,
+        drop_epoch: bool = False,
+    ) -> list[bytes]: ...
+    @overload
     def to_wkb(
         self,
         *,
         include_srid: bool = False,
-        precision: int | None = None,
+        precision: _IntScalar | None = None,
         drop_epoch: bool = False,
     ) -> list[bytes | None]:
         """Serialize to Well-Known Binary.
@@ -11411,9 +11505,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus this group's logical CSR
-        payload. Sliced groups report the visible values window and rebased
-        logical offsets, not the whole shared backing allocation.
+        """``sys.getsizeof`` support: Python's allocation base plus this group's
+        logical CSR payload. Sliced groups report the visible values window and
+        rebased logical offsets, not the whole shared backing allocation.
 
         Raises
         ------
@@ -11544,7 +11638,7 @@ class GroupsIterator(Iterator[_GroupValuesT_co]):
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -11573,6 +11667,18 @@ class SpatialIndexIterator(Iterator[int]):
 
 @final
 class SpatialIndex(Mapping[int, Geometry]):
+    """A packed STR-tree over geometries sharing one CRS/epoch frame.
+
+    Built by ``SpatialIndex(geoms)``: ask set questions against the indexed
+    geometries — exact predicate matches (``idx.query(geom)``), bounding-box
+    candidates (``idx.candidates(geom)``), proximity (``idx.nearest(geom)``),
+    self-joins (``idx.self_join()``) — and mutate it incrementally with
+    ``insert``/``remove``. Distances follow the indexed CRS: meters on a
+    geographic frame, native linear units on a projected frame, raw coordinate
+    units when CRS-free.
+    """
+
+    __hash__: ClassVar[None]  # type: ignore[assignment]
     """A packed STR-tree over geometries sharing one CRS/epoch frame.
 
     Built by ``SpatialIndex(geoms)``: ask set questions against the indexed
@@ -11627,7 +11733,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         [0]
         """
     def __sizeof__(self) -> int:
-        """`sys.getsizeof` support: the wrapper plus the retained Rust-side
+        """`sys.getsizeof` support: Python's allocation base plus the retained Rust-side
         index payload — packed or boxed row geometry coordinates, the immutable
         STR tree, overflow STR runs, and frame metadata. Shared buffers are
         reported as this index's logical retained footprint.
@@ -11671,7 +11777,8 @@ class SpatialIndex(Mapping[int, Geometry]):
         """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
-    def __getitem__(self, handle: int, /) -> Geometry:
+    def __eq__(self, other: object, /) -> bool: ...
+    def __getitem__(self, handle: SupportsIndex, /) -> Geometry:
         """Return the geometry at a live handle.
 
         The handle must be a non-negative integer accepted by ``__index__``;
@@ -11742,16 +11849,16 @@ class SpatialIndex(Mapping[int, Geometry]):
         0
         """
     @overload
-    def get(self, handle: int, /) -> Geometry | None: ...
+    def get(self, handle: SupportsIndex, /) -> Geometry | None: ...
     @overload
     def get(
-        self, handle: int, /, default: Geometry | _DefaultT
+        self, handle: SupportsIndex, /, default: Geometry | _DefaultT
     ) -> Geometry | _DefaultT:
         """Return the geometry at handle, or default when it is not live.
 
         Parameters
         ----------
-        handle : int
+        handle : SupportsIndex
             A non-negative integer/index handle (positional-only; ``bool`` is
             rejected). Invalid or negative handles raise instead of returning
             ``default``.
@@ -11784,7 +11891,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         predicate: Literal['dwithin'],
         distance: float,
@@ -11802,28 +11909,31 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def query(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
     ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]:
-        """Return exact predicate-refined matches for a query geometry or array.
+        """Return exact predicate-refined matches for a query geometry, array, or
+        iterable of geometry rows.
 
-        Candidates are refined with predicate (`'intersects'` by
-        default); distance is accepted only with `'dwithin'`. Use
+        Topological predicates use `'intersects'` when `predicate` is omitted;
+        `'dwithin'` requires an explicit predicate and distance. Use
         candidates for a bounding-box-only prefilter. A single geometry
-        returns an int64 ndarray; a GeometryArray returns
-        Groups — one id row per row, CSR-grouped.
+        returns an int64 ndarray; arrays and iterables return Groups, with one
+        id row per input row.
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            The query geometry, or one query per array element.
-        predicate : str, default 'intersects'
+        geom : Geometry, GeometryArray, or iterable of Geometry or None
+            One query geometry or one query per sequence row. Missing rows
+            produce empty result groups and retain their logical positions.
+        predicate : str, default varies by call form
             Spatial relation each match must satisfy, evaluated as
-            ``predicate(query_geometry, indexed_geometry)`` (``'dwithin'``
-            requires ``distance``).
+            ``predicate(query_geometry, indexed_geometry)``. Topological forms
+            omit ``predicate`` to use ``'intersects'``; ``'dwithin'`` forms
+            require an explicit predicate and distance.
         distance : float, optional
             ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
             threshold is accepted; other values must be finite and
@@ -11869,7 +11979,9 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def join(
         self,
-        queries: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+        queries: Geometry
+        | _GeometryBatch[Geometry | None]
+        | Iterable[_GeometryLike | None],
         *,
         predicate: Literal['dwithin'],
         distance: float,
@@ -11881,7 +11993,9 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def join(
         self,
-        queries: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+        queries: Geometry
+        | _GeometryBatch[Geometry | None]
+        | Iterable[_GeometryLike | None],
         *,
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
@@ -11900,10 +12014,12 @@ class SpatialIndex(Mapping[int, Geometry]):
 
         Parameters
         ----------
-        queries : Geometry, GeometryArray, or iterable of Geometry
+        queries : Geometry, GeometryArray, or iterable of Geometry or None
             Left-side geometries to join against the indexed rows.
-        predicate : str, default 'intersects'
-            Spatial predicate each returned pair must satisfy.
+        predicate : str, default varies by call form
+            Spatial predicate each returned pair must satisfy. Topological forms
+            omit ``predicate`` to use ``'intersects'``; ``'dwithin'`` forms
+            require an explicit predicate and distance.
         distance : float, optional
             Required when ``predicate='dwithin'``: the maximum separation in
             CRS-natural units. Finite non-negative values and positive infinity
@@ -11969,7 +12085,7 @@ class SpatialIndex(Mapping[int, Geometry]):
 
         Parameters
         ----------
-        predicate : str, default 'intersects'
+        predicate : str
             A symmetric relation: ``'intersects'``, ``'equals'``,
             ``'dwithin'``, ``'touches'``, ``'crosses'``, or ``'overlaps'``.
             Directional predicates (``'contains'``, ``'within'``, ...) are
@@ -12026,7 +12142,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def candidates(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
@@ -12034,7 +12150,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def candidates(
         self,
-        geom: Geometry | GeometryArray[Geometry | None],
+        geom: Geometry | _GeometryBatch[Geometry | None],
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
@@ -12042,17 +12158,18 @@ class SpatialIndex(Mapping[int, Geometry]):
         np.ndarray[tuple[int], np.dtype[np.int64]]
         | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
     ):
-        """Bounding-box candidate matches for a query geometry or array (not
+        """Bounding-box candidate matches for a query geometry, array, or iterable (not
         exact). If you refine these candidates with a directional predicate,
         evaluate it as ``predicate(query_geometry, indexed_geometry)``.
 
-        A single geometry returns an `int64` ndarray; a `GeometryArray`
-        returns `Groups` — one candidate row per row.
+        A single geometry returns an `int64` ndarray; arrays and iterables
+        return `Groups` — one candidate row per input row.
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            The query geometry, or one query per array element.
+        geom : Geometry, GeometryArray, or iterable of Geometry or None
+            One query geometry or one query per sequence row. Missing rows
+            produce empty groups and retain their logical positions.
         distance : float, optional
             Expand the query envelope by this much, in ``unit``. Finite
             non-negative expansions and positive infinity are accepted;
@@ -12115,7 +12232,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -12127,7 +12244,7 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: GeometryArray[Geometry | None],
+        geom: _GeometryBatch[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -12142,7 +12259,36 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def nearest(
         self,
-        geom: Geometry | GeometryArray[Geometry | None],
+        geom: Geometry,
+        *,
+        k: int = 1,
+        max_distance: float | None = None,
+        return_distance: bool = False,
+        unit: DistanceUnit | None = None,
+        exclusive: bool = False,
+        ties: bool = False,
+    ) -> (
+        npt.NDArray[np.int64] | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]
+    ): ...
+    @overload
+    def nearest(
+        self,
+        geom: _GeometryBatch[Geometry | None],
+        *,
+        k: int = 1,
+        max_distance: float | None = None,
+        return_distance: bool = False,
+        unit: DistanceUnit | None = None,
+        exclusive: bool = False,
+        ties: bool = False,
+    ) -> (
+        Groups[npt.NDArray[np.int64]]
+        | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+    ): ...
+    @overload
+    def nearest(
+        self,
+        geom: Geometry | _GeometryBatch[Geometry | None],
         *,
         k: int = 1,
         max_distance: float | None = None,
@@ -12163,16 +12309,18 @@ class SpatialIndex(Mapping[int, Geometry]):
 
         Parameters
         ----------
-        geom : Geometry or GeometryArray
-            The query geometry, or one query per array element.
+        geom : Geometry, GeometryArray, or iterable of Geometry or None
+            One query geometry or one query per sequence row. Missing rows
+            produce empty groups and retain their logical positions.
         k : int, default 1
             How many nearest neighbors to return; ``0`` returns no neighbors.
         max_distance : float, optional
             Ignore matches farther than this, in ``unit``. Must be finite and
             non-negative.
-        return_distance : bool, default False
+        return_distance : bool
             Return distances alongside handles — ``(indices, distances)`` for
-            a scalar query, ``(matches, distances)`` for an array query.
+            a scalar query, ``(matches, distances)`` for an array query. The
+            distance-returning form requires ``return_distance=True``.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -12265,14 +12413,14 @@ class SpatialIndex(Mapping[int, Geometry]):
         >>> idx.insert(gm.Point(1, 1))
         0
         """
-    def remove(self, handle: int) -> bool:
+    def remove(self, handle: SupportsIndex) -> bool:
         """Remove a geometry by its handle. Returns ``True`` if a live geometry
         was removed, ``False`` if the handle is unknown or was already removed.
         Removed handles are not reused, so surviving handles stay stable.
 
         Parameters
         ----------
-        handle : int
+        handle : SupportsIndex
             The handle returned by ``insert`` (or a position from building).
 
         Returns
@@ -12299,14 +12447,15 @@ class CRS:
     ``to_crs``. Accepts an authority string, EPSG code,
     authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 
-    Equality is structural — a ``CRS`` compares equal only to the same
-    stored definition (``crs == 4326`` and ``crs == 'EPSG:4326'``).
-    Operational equivalence, including axis-order-only differences, is the
-    explicit ``same_as(..., mode='ignore_axis_order')`` query. It is therefore
-    unhashable; key mappings by ``crs.definition`` instead.
+    Equality is structural between ``CRS`` instances: the stored normalized
+    definitions must match. Other operand types do not compare equal; use
+    ``CRS(value)`` when comparing stored identity with raw input. Operational
+    equivalence, including axis-order-only differences, is the explicit
+    ``same_as(..., mode='ignore_axis_order')`` query. Equal ``CRS`` values are
+    hashable and can be used as mapping keys.
     """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus owned Rust-side CRS text
+        """``sys.getsizeof`` support: Python's allocation base plus owned Rust-side CRS text
         retained by this object. This includes the stored CRS definition when it
         spills out of `SmolStr` inline storage and any heap strings/vectors in
         the lazily cached `CrsInfo`. Opaque PROJ process-global caches are not
@@ -12348,7 +12497,8 @@ class CRS:
         """
     def __eq__(self, other: object, /) -> bool:
         """Return self==value."""
-    __hash__: ClassVar[None]  # type: ignore[assignment]
+    def __hash__(self) -> int:
+        """Hash the stored normalized CRS definition."""
     @property
     def is_geographic(self) -> bool:
         """Whether this CRS is geographic (lon/lat on an ellipsoid).
@@ -12712,15 +12862,16 @@ class CRS:
 
         Parameters
         ----------
-        as_dict : bool, default False
-            Return a Python mapping instead of JSON text.
+        as_dict : bool
+            Return a Python mapping; the JSON-text form omits ``as_dict`` and
+            the mapping form requires ``as_dict=True``.
 
         pretty : bool, optional
             Indent JSON text (default ``False``). Only applies when
             ``as_dict=False``.
 
-        indentation_width : int, default 2
-            Spaces per indent level when ``pretty``. Only applies when
+        indentation_width : int
+            Spaces per indent level for pretty JSON text; available only when
             ``as_dict=False``.
 
         Returns
@@ -13115,13 +13266,38 @@ class _CellGeometryProjection(Protocol[_GeometryT_co]):
         value: Never,
     ) -> None: ...
 
+class _CellTokenProjection(Protocol):
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[Cell],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> list[str]: ...
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[Cell | None],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> list[str | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: None,
+        owner: type[CellArray[Cell | None]],
+    ) -> Self: ...
+    def __set__(
+        self,
+        instance: CellArray[Cell | None],
+        value: Never,
+    ) -> None: ...
+
 @final
 class CellArrayIterator(Generic[_CellT_co]):
     """Lazy iterator over a `CellArray`'s typed cells (both directions)."""
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -13150,19 +13326,19 @@ class CellArray(Sequence[_CellT_co]):
 
     Parameters
     ----------
-    values : numpy.ndarray, buffer, or iterable
+    values : iterable, numpy.ndarray, or buffer
         Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
         any grid are accepted when a concrete cell supplies the family.
-    type : type, optional
+    type : type
         Native cell class. Inferred from a concrete typed cell when present.
     """
 
     __array_ufunc__: ClassVar[None]
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus this array's logical
+        """``sys.getsizeof`` support: Python's allocation base plus this array's logical
         ``uint64`` id payload, missing flags, and any row-selection map. Shared
-        backing buffers are reported like NumPy views, not as the full parent
-        allocation.
+        backing buffers are estimated from the selected view, not the full
+        parent allocation.
 
         Raises
         ------
@@ -13243,43 +13419,30 @@ class CellArray(Sequence[_CellT_co]):
         """
     @overload
     def contains(
-        self: CellArray[H3Cell], other: H3Cell | CellArray[H3Cell]
+        self: CellArray[H3Cell | None],
+        other: H3Cell | _IntScalarInput | str | CellArray[H3Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def contains(
-        self: CellArray[S2Cell], other: S2Cell | CellArray[S2Cell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[GeohashCell], other: GeohashCell | CellArray[GeohashCell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[Tile], other: Tile | CellArray[Tile]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[H3Cell | None], other: H3Cell | CellArray[H3Cell | None]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[S2Cell | None], other: S2Cell | CellArray[S2Cell | None]
+        self: CellArray[S2Cell | None],
+        other: S2Cell | _IntScalarInput | str | CellArray[S2Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def contains(
         self: CellArray[GeohashCell | None],
-        other: GeohashCell | CellArray[GeohashCell | None],
+        other: GeohashCell | str | CellArray[GeohashCell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def contains(
-        self: CellArray[Tile | None], other: Tile | CellArray[Tile | None]
+        self: CellArray[Tile | None],
+        other: Tile | _IntScalarInput | str | CellArray[Tile | None],
     ) -> npt.NDArray[np.bool_]:
         """Test whether every row hierarchically contains the paired cell.
 
         Parameters
         ----------
-        other : cell or CellArray
-            One same-grid cell broadcast to every row, or a same-length array.
+        other : same-grid cell, integer id, string token, or CellArray
+            One identity broadcast to every row, or a same-length array.
 
         Returns
         -------
@@ -13299,36 +13462,23 @@ class CellArray(Sequence[_CellT_co]):
         """
     @overload
     def intersects(
-        self: CellArray[H3Cell], other: H3Cell | CellArray[H3Cell]
+        self: CellArray[H3Cell | None],
+        other: H3Cell | _IntScalarInput | str | CellArray[H3Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def intersects(
-        self: CellArray[S2Cell], other: S2Cell | CellArray[S2Cell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[GeohashCell], other: GeohashCell | CellArray[GeohashCell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[Tile], other: Tile | CellArray[Tile]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[H3Cell | None], other: H3Cell | CellArray[H3Cell | None]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[S2Cell | None], other: S2Cell | CellArray[S2Cell | None]
+        self: CellArray[S2Cell | None],
+        other: S2Cell | _IntScalarInput | str | CellArray[S2Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def intersects(
         self: CellArray[GeohashCell | None],
-        other: GeohashCell | CellArray[GeohashCell | None],
+        other: GeohashCell | str | CellArray[GeohashCell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def intersects(
-        self: CellArray[Tile | None], other: Tile | CellArray[Tile | None]
+        self: CellArray[Tile | None],
+        other: Tile | _IntScalarInput | str | CellArray[Tile | None],
     ) -> npt.NDArray[np.bool_]:
         """Test whether every row hierarchically intersects the paired cell.
 
@@ -13336,8 +13486,8 @@ class CellArray(Sequence[_CellT_co]):
 
         Parameters
         ----------
-        other : cell or CellArray
-            One same-grid cell broadcast to every row, or a same-length array.
+        other : same-grid cell, integer id, string token, or CellArray
+            One identity broadcast to every row, or a same-length array.
 
         Returns
         -------
@@ -13635,26 +13785,25 @@ class CellArray(Sequence[_CellT_co]):
         >>> gm.CellArray([cell]).to_polygon().geometry_type
         'Polygon'
         """
-    @property
-    def token(self) -> list[str | None]:
-        """Canonical string token of every cell, in order.
+    token: _CellTokenProjection
+    """Canonical string token of every cell, in order.
 
-        For H3, S2, and tiles this is the text form of the numeric id exposed
-        by `to_numpy()`. For Geohash it is the public string identity itself;
-        Geohash `to_numpy()` instead returns typed `GeohashCell` objects.
+    For H3, S2, and tiles this is the text form of the numeric id exposed
+    by `to_numpy()`. For Geohash it is the public string identity itself;
+    Geohash `to_numpy()` instead returns typed `GeohashCell` objects.
 
-        Returns
-        -------
-        list of str or None
-            One canonical token per logical row (H3 hex, S2 token, geohash, or
-            tile quadkey); ``None`` marks a missing row.
+    Returns
+    -------
+    list of str or None
+        One canonical token per logical row (H3 hex, S2 token, geohash, or
+        tile quadkey); ``None`` marks a missing row.
 
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.CellArray([gm.GeohashCell('u33d')]).token
-        ['u33d']
-        """
+    Examples
+    --------
+    >>> import gometry as gm
+    >>> gm.CellArray([gm.GeohashCell('u33d')]).token
+    ['u33d']
+    """
     def __class_getitem__(cls, key: Any) -> types.GenericAlias:
         """See PEP 585"""
     def __len__(self) -> int:
@@ -13839,7 +13988,7 @@ class CellArray(Sequence[_CellT_co]):
             Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
             are accepted when the grid can be inferred. Iterables are consumed
             in input order.
-        type : type, optional, default None
+        type : type
             One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
             ``GeohashCell`` classes, required when the grid cannot be inferred.
 
@@ -13878,10 +14027,10 @@ class CellArray(Sequence[_CellT_co]):
     @overload
     def to_numpy(
         self: CellArray[H3Cell | S2Cell | Tile],
-    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
+    ) -> npt.NDArray[np.uint64]: ...
     @overload
     def to_numpy(
-        self: CellArray[_CellT | None],
+        self: CellArray[Cell | None],
     ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]:
         """Return a read-only NumPy identity column.
 
@@ -13913,10 +14062,10 @@ class CellArray(Sequence[_CellT_co]):
         self: CellArray[H3Cell | S2Cell | Tile],
         dtype: None = None,
         copy: bool | None = None,
-    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
+    ) -> npt.NDArray[np.uint64]: ...
     @overload
     def __array__(
-        self: CellArray[_CellT | None], dtype: None = None, copy: bool | None = None
+        self: CellArray[Cell | None], dtype: None = None, copy: bool | None = None
     ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
     @overload
     def __array__(
@@ -13959,7 +14108,7 @@ class H3VertexArrayIterator:
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -14253,7 +14402,7 @@ class H3EdgeArrayIterator:
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -14709,7 +14858,7 @@ class H3Vertex:
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: H3 vertices are heap-free value ids."""
+        """``sys.getsizeof`` support for this heap-free vertex value."""
     def __new__(cls, value: H3Vertex | _IntScalarInput | str) -> Self:
         """One H3 vertex from an existing `H3Vertex`, a 64-bit id, or a token.
 
@@ -14809,7 +14958,7 @@ class H3Edge:
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: H3 edges are heap-free value ids."""
+        """``sys.getsizeof`` support for this heap-free edge value."""
     def __new__(cls, value: H3Edge | _IntScalarInput | str) -> Self:
         """One H3 directed edge from an existing `H3Edge`, a 64-bit id, or a token.
 
@@ -16017,7 +16166,7 @@ class ValidationReport:
     def __hash__(self) -> int:
         """Return hash(self)."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the report plus the retained geometry
+        """``sys.getsizeof`` support: Python's allocation base plus the retained geometry
         coordinate payload and any validation issue strings.
 
         Raises
@@ -16180,6 +16329,17 @@ def box(
     'POLYGON ((0 0, 0 1, 2 1, 2 0, 0 0))'
     """
 
+@overload
+def points(
+    x: _CoordinatesInput | Iterable[Point],
+    y: None = None,
+    *,
+    z: FloatInput | None = None,
+    m: FloatInput | None = None,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Point]: ...
+@overload
 def points(
     x: FloatInput,
     y: FloatInput,
@@ -16191,15 +16351,16 @@ def points(
 ) -> GeometryArray[Point]:
     """Create a ``GeometryArray`` of points from parallel coordinate columns.
 
-    Taking separate ``x`` and ``y`` (not interleaved tuples) keeps axis order
-    explicit and avoids the lon/lat-vs-lat/lon footgun. Each column accepts a
-    scalar (broadcast to every row) or a sequence of floats (one per point).
+    Pass either coordinate rows or separate ``x``/``y`` columns. Separate
+    columns keep axis order explicit and accept scalars that broadcast across
+    rows; when both are scalars, the result contains one point.
 
     Parameters
     ----------
-    x, y : float or sequence of float
-        X and Y ordinates. At least one must be sequence of float to set the row count;
-        scalars broadcast numpy-style.
+    x : coordinate rows or float or sequence of float
+        Coordinate rows as ``(x, y[, z[, m]])`` values, or the X column.
+    y : float or sequence of float, optional
+        Y column when ``x`` is an X column. Omit it when ``x`` contains rows.
 
     z, m : float or sequence of float, optional
         Z and M ordinates, broadcast like ``x``/``y``.
@@ -16223,7 +16384,7 @@ def points(
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
     GeometryError
-        If every argument is scalar (use `Point`) or ``epoch`` is invalid.
+        If ``epoch`` is invalid.
 
     See Also
     --------
@@ -16234,6 +16395,10 @@ def points(
     >>> import gometry as gm
     >>> gm.points([0, 1], [0, 1]).to_wkt()
     ['POINT (0 0)', 'POINT (1 1)']
+    >>> gm.points(1, 2).to_wkt()
+    ['POINT (1 2)']
+    >>> gm.points([(1, 2), (3, 4)]).to_wkt()
+    ['POINT (1 2)', 'POINT (3 4)']
     """
 
 @overload
@@ -16277,8 +16442,8 @@ def boxes(
     Parameters
     ----------
     minx, miny, maxx, maxy : float or sequence of float
-        Rectangle bounds per row. At least one must be sequence of float; scalars
-        broadcast numpy-style.
+        Rectangle bounds per row. Scalars broadcast numpy-style; four scalar
+        bounds produce a one-row array.
 
     crs : CRS-like, optional
         CRS applied to every box. Geographic rows follow the same native-range
@@ -16307,8 +16472,8 @@ def boxes(
         If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
         without a geographic CRS.
     GeometryError
-        If every argument is scalar (use `box`), ``epoch`` is invalid, or wrapped
-        geographic bounds lie outside their CRS frame.
+        If ``epoch`` is invalid, or wrapped geographic bounds lie outside their
+        CRS frame.
 
     Examples
     --------
@@ -16318,17 +16483,18 @@ def boxes(
     """
 
 def line_strings(
-    values: Iterable[Iterable[Iterable[float]]],
+    values: Iterable[LineString | _CoordinatesInput],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[LineString]:
-    """Create a ``GeometryArray`` of linestrings from per-line coordinate inputs.
+    """Create a ``GeometryArray`` of linestrings from coordinate rows or Linestrings.
 
     Parameters
     ----------
     values : sequence
-        Each member is a raw coordinate sequence accepted by `LineString`.
+        Each member is a ``LineString`` or a raw coordinate sequence accepted
+        by `LineString`.
 
     crs : CRS-like, optional
         CRS applied to every linestring.
@@ -16346,9 +16512,11 @@ def line_strings(
     InvalidGeometryError
         If a member line has fewer than two vertices or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``LineString``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows do not share a CRS or coordinate epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16361,17 +16529,18 @@ def line_strings(
     """
 
 def polygons(
-    values: Iterable[Iterable[Iterable[float]] | Iterable[Iterable[Iterable[float]]]],
+    values: Iterable[Polygon | _CoordinatesInput | _RingsInput],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[Polygon]:
-    """Create a ``GeometryArray`` of polygons from per-polygon ring inputs.
+    """Create a ``GeometryArray`` of polygons from raw coordinates or Polygons.
 
     Parameters
     ----------
     values : sequence
-        Each member is a raw shell coordinate sequence or ``[shell, *holes]``.
+        Each member is a ``Polygon``, a raw shell coordinate sequence, or
+        ``[shell, *holes]``.
 
     crs : CRS-like, optional
         CRS applied to every polygon.
@@ -16389,9 +16558,11 @@ def polygons(
     InvalidGeometryError
         If a ring has fewer than three corners or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``Polygon``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows do not share a CRS or coordinate epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16404,17 +16575,18 @@ def polygons(
     """
 
 def multi_points(
-    values: Iterable[Iterable[Iterable[float]]],
+    values: Iterable[MultiPoint | Iterable[Point | _Coordinate] | _CoordinatesInput],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[MultiPoint]:
-    """Create a ``GeometryArray`` of multipoints from per-multipoint inputs.
+    """Create a ``GeometryArray`` of multipoints from per-row inputs.
 
     Parameters
     ----------
     values : sequence
-        Each member is a raw coordinate sequence accepted by `MultiPoint`.
+        Each member is a ``MultiPoint`` or input accepted by `MultiPoint`,
+        including ``Point`` members and raw coordinate values.
 
     crs : CRS-like, optional
         CRS applied to every multipoint.
@@ -16432,9 +16604,12 @@ def multi_points(
     InvalidGeometryError
         If any coordinate is non-finite or has mixed dimensionality.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``MultiPoint``, or a member is not a
+        ``Point``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows or multipart members do not share a CRS or epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16446,17 +16621,18 @@ def multi_points(
     """
 
 def multi_line_strings(
-    values: Iterable[Iterable[Iterable[Iterable[float]]]],
+    values: Iterable[MultiLineString | Iterable[LineString | _CoordinatesInput]],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[MultiLineString]:
-    """Create a ``GeometryArray`` of multilinestrings from per-multiline inputs.
+    """Create a ``GeometryArray`` of multilinestrings from per-row inputs.
 
     Parameters
     ----------
     values : sequence
-        Each member is raw line coordinate sequences accepted by `MultiLineString`.
+        Each member is a ``MultiLineString`` or input accepted by
+        `MultiLineString`, including ``LineString`` members.
 
     crs : CRS-like, optional
         CRS applied to every multilinestring.
@@ -16474,9 +16650,12 @@ def multi_line_strings(
     InvalidGeometryError
         If a member line has fewer than two vertices or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``MultiLineString``, or a member is not a
+        ``LineString``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows or multipart members do not share a CRS or epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16488,17 +16667,20 @@ def multi_line_strings(
     """
 
 def multi_polygons(
-    values: Iterable[Iterable[Iterable[Iterable[Iterable[float]]]]],
+    values: Iterable[
+        MultiPolygon | Iterable[Polygon | _CoordinatesInput | _RingsInput]
+    ],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[MultiPolygon]:
-    """Create a ``GeometryArray`` of multipolygons from per-multipolygon inputs.
+    """Create a ``GeometryArray`` of multipolygons from per-row inputs.
 
     Parameters
     ----------
     values : sequence
-        Each member is raw polygon coordinate sequences accepted by `MultiPolygon`.
+        Each member is a ``MultiPolygon`` or input accepted by `MultiPolygon`,
+        including ``Polygon`` members and shell/ring coordinate shorthand.
 
     crs : CRS-like, optional
         CRS applied to every multipolygon.
@@ -16516,9 +16698,12 @@ def multi_polygons(
     InvalidGeometryError
         If any ring has fewer than three corners or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``MultiPolygon``, or a member is not a
+        ``Polygon``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows or multipart members do not share a CRS or epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16533,15 +16718,15 @@ def multi_polygons(
 def area(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def area(
-    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
+    geom: _GeometryBatch[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def area(
-    geom: Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Iterable[_GeometryLike | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def area(
-    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    geom: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -16555,8 +16740,9 @@ def area(
 
     Parameters
     ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values
-        Input geometry, array, or iterable materialized as an array.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+        Input geometry, array, or iterable materialized as a row-preserving
+        array. Missing rows return ``nan``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -16596,15 +16782,15 @@ def area(
 def length(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def length(
-    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
+    geom: _GeometryBatch[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length(
-    geom: Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Iterable[_GeometryLike | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length(
-    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    geom: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -16632,8 +16818,9 @@ def length(
 
     Parameters
     ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values
-        Input geometry, array, or iterable materialized as an array.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+        Input geometry, array, or iterable materialized as a row-preserving
+        array. Missing rows return ``nan``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -16673,15 +16860,15 @@ def length(
 def length_3d(geom: Geometry, *, unit: DistanceUnit | None = None) -> float: ...
 @overload
 def length_3d(
-    geom: GeometryArray[Geometry | None], *, unit: DistanceUnit | None = None
+    geom: _GeometryBatch[Geometry | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length_3d(
-    geom: Iterable[_GeometryLike], *, unit: DistanceUnit | None = None
+    geom: Iterable[_GeometryLike | None], *, unit: DistanceUnit | None = None
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def length_3d(
-    geom: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
+    geom: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -16689,8 +16876,9 @@ def length_3d(
 
     Parameters
     ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values
-        Input geometry, array, or iterable materialized as an array.
+    geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+        Input geometry, array, or iterable materialized as a row-preserving
+        array. Missing rows return ``nan``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -17139,44 +17327,45 @@ def shared_paths(left: Geometry, right: Geometry) -> GeometryCollection: ...
 @overload
 def shared_paths(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
 ) -> GeometryArray[GeometryCollection]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
 ) -> GeometryArray[GeometryCollection]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[GeometryCollection]: ...
 @overload
 def shared_paths(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
 ) -> GeometryArray[GeometryCollection | None]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
 ) -> GeometryArray[GeometryCollection | None]: ...
 @overload
 def shared_paths(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[GeometryCollection | None]: ...
 @overload
 def shared_paths(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> GeometryCollection | GeometryArray[GeometryCollection | None]:
     """Shared paths between two lineal geometries.
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Two lineal geometries.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Two lineal operands. Scalar and sequence inputs broadcast pairwise;
+        sequences must have equal length and compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17207,6 +17396,14 @@ def from_polyline(
 ) -> Point | LineString: ...
 @overload
 def from_polyline(
+    data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
+    *,
+    precision: int = 5,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: float | None = None,
+) -> GeometryArray[Point | LineString | None]: ...
+@overload
+def from_polyline(
     data: Iterable[str],
     *,
     precision: int = 5,
@@ -17226,15 +17423,16 @@ def from_polyline(
     The Google Encoded Polyline Algorithm Format — the compact lat/lon
     route encoding used by Google Maps, OSRM, and Valhalla. Accepts one
     string (returns a ``Point`` for one coordinate, otherwise a ``LineString``)
-    or an iterable of strings/``None`` rows (returns a `GeometryArray` with
-    missing rows). Polylines are WGS84 by definition, so results carry OGC:CRS84
+    or an iterable/dataframe/Arrow column of strings/``None`` rows (returns a
+    `GeometryArray` with missing rows). Polylines are WGS84 by definition, so results carry OGC:CRS84
     unless ``crs=None`` explicitly requests a CRS-free result;
     ``epoch`` restores coordinate-epoch metadata on round-trip.
 
     Parameters
     ----------
-    data : str or iterable of str
-        Encoded polyline text.
+    data : str, iterable of str, or dataframe/Arrow column
+        Encoded polyline text or a pandas/Polars Series or PyArrow
+        Array/ChunkedArray. Missing column values become missing rows.
     precision : int, default 5
         Decimal digits encoded per ordinate (``0`` to ``11``); 5 is the
         classic default, 6 the high-resolution variant.
@@ -17271,22 +17469,78 @@ def from_polyline(
     """
 
 @overload
-def contains(left: Geometry, right: Geometry) -> bool: ...
+def contains(
+    left: Geometry,
+    right: Geometry,
+    *,
+    x: None = None,
+    y: None = None,
+) -> bool: ...
 @overload
 def contains(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry,
+    right: _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry,
+    right: None = None,
+    *,
+    x: _FloatScalarInput,
+    y: _FloatScalarInput,
+) -> bool: ...
+@overload
+def contains(
+    left: Geometry,
+    right: None = None,
+    *,
+    x: _FloatColumn1D,
+    y: FloatInput,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: Geometry,
+    right: None = None,
+    *,
+    x: FloatInput,
+    y: _FloatColumn1D,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
+    x: FloatInput,
+    y: FloatInput,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
+    x: FloatInput,
+    y: FloatInput,
+) -> bool | npt.NDArray[np.bool_]: ...
+@overload
+def contains(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> bool | npt.NDArray[np.bool_]:
-    """Test whether ``left`` contains ``right``.
+    """Test whether ``left`` contains ``right`` or contains the point ``(x, y)``.
 
     Returns ``True`` if no point of ``right`` lies outside ``left`` and the
     interiors of the two geometries share a point.
@@ -17295,10 +17549,15 @@ def contains(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Container (``left``) and candidate (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left : Geometry, GeometryArray, or iterable of Geometry or None
+        Container geometry. Array and iterable rows retain their logical
+        positions.
+    right : Geometry, GeometryArray, iterable of Geometry or None, optional
+        Candidate geometry; scalar and sequence operands broadcast pairwise,
+        and two sequences must have equal lengths and compatible frames.
+    x, y : float or sequence of float, keyword-only
+        Raw coordinates in ``left``'s CRS. Supply both instead of ``right``;
+        provide exactly one input mode.
 
     Returns
     -------
@@ -17309,11 +17568,18 @@ def contains(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    InvalidGeometryError
+        If ``x`` or ``y`` contains a non-finite coordinate, or the coordinate
+        columns have incompatible lengths.
+    TypeError
+        If ``right`` is combined with ``x`` or ``y``, or if only one coordinate
+        keyword is supplied.
 
     See Also
     --------
     within : Inverse relation.
     covers : Boundary-inclusive containment.
+    intersects : Boundary-inclusive point test.
 
     Examples
     --------
@@ -17323,23 +17589,25 @@ def contains(
     True
     >>> gm.contains(square, gm.Point(2, 1))  # boundary: not contained
     False
+    >>> gm.contains(square, x=1, y=1)
+    True
     """
 
 @overload
 def contains_properly(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def contains_properly(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right`` with no boundary contact.
 
@@ -17350,10 +17618,9 @@ def contains_properly(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Container (``left``) and candidate (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Container and candidate rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17380,17 +17647,17 @@ def contains_properly(
 def within(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def within(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` lies within ``right``; inverse of ``contains``.
 
@@ -17399,10 +17666,9 @@ def within(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Candidate (``left``) and container (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Candidate and container rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17429,17 +17695,17 @@ def within(
 def covers(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def covers(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` covers ``right``: every point of ``right`` lies in
     ``left``.
@@ -17449,10 +17715,9 @@ def covers(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Container (``left``) and candidate (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Container and candidate rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17480,17 +17745,17 @@ def covers(
 def covered_by(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def covered_by(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` is covered by ``right``; inverse of ``covers``.
 
@@ -17499,10 +17764,9 @@ def covered_by(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Candidate (``left``) and container (``right``). Scalar and
-        ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-        epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Candidate and container rows. Scalar and sequence operands broadcast
+        pairwise; sequences must have equal length and compatible CRS/epoch.
 
     Returns
     -------
@@ -17526,144 +17790,94 @@ def covered_by(
     """
 
 @overload
-def contains_xy(geom: Geometry, x: _FloatScalarInput, y: _FloatScalarInput) -> bool: ...
-@overload
-def contains_xy(
-    geom: Geometry,
-    x: _FloatColumn1D,
-    y: FloatInput,
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def contains_xy(
-    geom: Geometry,
-    x: FloatInput,
-    y: _FloatColumn1D,
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def contains_xy(
-    geom: GeometryArray[Geometry | None],
-    x: FloatInput,
-    y: FloatInput,
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def contains_xy(
-    geom: Geometry | GeometryArray[Geometry | None],
-    x: FloatInput,
-    y: FloatInput,
-) -> bool | npt.NDArray[np.bool_]:
-    """Test whether a geometry contains each ``(x, y)`` point (vectorized).
-
-    Parameters
-    ----------
-    geom : Geometry or GeometryArray
-        The geometry row(s) to test against.
-    x, y : float or sequence of float
-        Finite coordinates in ``geom``'s CRS. Geographic antimeridian seams
-        and poles use the same topology as point-geometry predicates.
-
-    Returns
-    -------
-    bool or numpy.ndarray
-        A single bool for scalar geometry and coordinates, otherwise one result
-        per broadcast row.
-
-    Raises
-    ------
-    InvalidGeometryError
-        If ``x``/``y`` are non-finite or differ in length.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.contains_xy(gm.box(0, 0, 2, 2), 1, 1)
-    True
-    """
-
-@overload
-def intersects_xy(
-    geom: Geometry, x: _FloatScalarInput, y: _FloatScalarInput
+def intersects(
+    left: Geometry,
+    right: Geometry,
+    *,
+    x: None = None,
+    y: None = None,
 ) -> bool: ...
 @overload
-def intersects_xy(
-    geom: Geometry,
+def intersects(
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def intersects(
+    left: Geometry,
+    right: _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
+) -> npt.NDArray[np.bool_]: ...
+@overload
+def intersects(
+    left: Geometry,
+    right: None = None,
+    *,
+    x: _FloatScalarInput,
+    y: _FloatScalarInput,
+) -> bool: ...
+@overload
+def intersects(
+    left: Geometry,
+    right: None = None,
+    *,
     x: _FloatColumn1D,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects_xy(
-    geom: Geometry,
+def intersects(
+    left: Geometry,
+    right: None = None,
+    *,
     x: FloatInput,
     y: _FloatColumn1D,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects_xy(
-    geom: GeometryArray[Geometry | None],
+def intersects(
+    left: _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
     x: FloatInput,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
-def intersects_xy(
-    geom: Geometry | GeometryArray[Geometry | None],
+def intersects(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: None = None,
+    *,
     x: FloatInput,
     y: FloatInput,
+) -> bool | npt.NDArray[np.bool_]: ...
+@overload
+def intersects(
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
+    *,
+    x: None = None,
+    y: None = None,
 ) -> bool | npt.NDArray[np.bool_]:
-    """Test whether a geometry intersects each ``(x, y)`` point (vectorized).
-
-    Boundary-inclusive (unlike ``contains_xy``), and skips building point
-    geometries.
-
-    Parameters
-    ----------
-    geom : Geometry or GeometryArray
-        The geometry row(s) to test against.
-    x, y : float or sequence of float
-        Finite coordinates in ``geom``'s CRS. Geographic antimeridian seams
-        and poles use the same topology as point-geometry predicates.
-
-    Returns
-    -------
-    bool or numpy.ndarray
-        A single bool for scalar geometry and coordinates, otherwise one result
-        per broadcast row.
-
-    Raises
-    ------
-    InvalidGeometryError
-        If ``x``/``y`` are non-finite or differ in length.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.intersects_xy(gm.box(0, 0, 2, 2), 3, 3)
-    False
-    """
-
-@overload
-def intersects(left: Geometry, right: Geometry) -> bool: ...
-@overload
-def intersects(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def intersects(
-    left: Geometry, right: GeometryArray[Geometry | None]
-) -> npt.NDArray[np.bool_]: ...
-@overload
-def intersects(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
-) -> bool | npt.NDArray[np.bool_]:
-    """Test whether ``left`` and ``right`` share any point.
+    """Test whether ``left`` and ``right`` share any point, or whether ``left``
+    intersects the point ``(x, y)``.
 
     Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
     longitude and pole quotient.
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left : Geometry, GeometryArray, or iterable of Geometry or None
+        Geometry being tested. Array and iterable rows retain their logical
+        positions.
+    right : Geometry, GeometryArray, iterable of Geometry or None, optional
+        Geometry compared with ``left``. Scalar and sequence operands broadcast
+        pairwise, and two sequences must have equal lengths and compatible frames.
+    x, y : float or sequence of float, keyword-only
+        Raw coordinates in ``left``'s CRS. Supply both instead of ``right``;
+        provide exactly one input mode.
 
     Returns
     -------
@@ -17674,6 +17888,12 @@ def intersects(
     ------
     CRSMismatchError
         If the operands' CRS or coordinate-epoch metadata differ.
+    InvalidGeometryError
+        If ``x`` or ``y`` contains a non-finite coordinate, or the coordinate
+        columns have incompatible lengths.
+    TypeError
+        If ``right`` is combined with ``x`` or ``y``, or if only one coordinate
+        keyword is supplied.
 
     See Also
     --------
@@ -17684,23 +17904,25 @@ def intersects(
     >>> import gometry as gm
     >>> gm.intersects(gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3))
     True
+    >>> gm.intersects(gm.box(0, 0, 2, 2), x=2, y=1)
+    True
     """
 
 @overload
 def disjoint(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def disjoint(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share no point; negation of
     ``intersects``.
@@ -17710,9 +17932,9 @@ def disjoint(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17739,17 +17961,17 @@ def disjoint(
 def touches(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def touches(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` touch only at boundaries.
 
@@ -17758,9 +17980,9 @@ def touches(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17783,17 +18005,17 @@ def touches(
 def crosses(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def crosses(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` cross.
 
@@ -17806,9 +18028,9 @@ def crosses(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17833,17 +18055,17 @@ def crosses(
 def overlaps(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def overlaps(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` overlap (same dimension, partial
     interior overlap).
@@ -17853,9 +18075,9 @@ def overlaps(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Operands broadcast pairwise; sequences must have equal lengths and
+        compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17878,17 +18100,17 @@ def overlaps(
 def relate(left: Geometry, right: Geometry) -> str: ...
 @overload
 def relate(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> list[str | None]: ...
 @overload
 def relate(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> list[str | None]: ...
 @overload
 def relate(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> str | list[str | None]:
     """Compute the DE-9IM intersection matrix string for ``left`` and
     ``right``.
@@ -17898,9 +18120,9 @@ def relate(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
 
     Returns
     -------
@@ -17924,20 +18146,20 @@ def relate(
 def relate_pattern(left: Geometry, right: Geometry, pattern: str) -> bool: ...
 @overload
 def relate_pattern(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     pattern: str,
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether two geometries' DE-9IM matrix matches a pattern.
@@ -17947,9 +18169,9 @@ def relate_pattern(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     pattern : str
         A DE-9IM pattern string (``T``/``F``/``*``/``0``/``1``/``2`` per cell).
 
@@ -17976,17 +18198,17 @@ def relate_pattern(
 def equals(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def equals(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` are spatially equal.
 
@@ -17995,9 +18217,9 @@ def equals(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
 
     Returns
     -------
@@ -18023,17 +18245,17 @@ def equals(
 def equals_identical(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def equals_identical(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_identical(
-    left: Geometry, right: GeometryArray[Geometry | None]
+    left: Geometry, right: _GeometryBatch[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_identical(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test full value identity elementwise: the vectorized ``==``.
 
@@ -18046,8 +18268,9 @@ def equals_identical(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        The two operands (scalar/array broadcasting).
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        The two operands. Scalar and sequence inputs broadcast pairwise;
+        sequences must have equal length.
 
     Returns
     -------
@@ -18074,8 +18297,8 @@ def equals_exact(
 ) -> bool: ...
 @overload
 def equals_exact(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -18084,7 +18307,7 @@ def equals_exact(
 @overload
 def equals_exact(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -18092,8 +18315,8 @@ def equals_exact(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_exact(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -18110,8 +18333,9 @@ def equals_exact(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        The two operands (scalar/array broadcasting).
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        The two operands. Scalar and sequence inputs broadcast pairwise;
+        sequences must have equal length and compatible CRS/epoch frames.
     tolerance : float or sequence of float, default 0.0
         Maximum permitted per-ordinate difference — a scalar applies to every
         pair, or pass one value per geometry.
@@ -18147,8 +18371,8 @@ def distance(
 ) -> float: ...
 @overload
 def distance(
-    left: GeometryArray[Point | None],
-    right: Point | GeometryArray[Point | None],
+    left: _GeometryBatch[Point | None],
+    right: Point | _GeometryBatch[Point | None],
     *,
     path: Literal['rhumb'],
     unit: None = None,
@@ -18156,15 +18380,15 @@ def distance(
 @overload
 def distance(
     left: Point,
-    right: GeometryArray[Point | None],
+    right: _GeometryBatch[Point | None],
     *,
     path: Literal['rhumb'],
     unit: None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance(
-    left: Point | GeometryArray[Point | None],
-    right: Point | GeometryArray[Point | None],
+    left: Point | _GeometryBatch[Point | None],
+    right: Point | _GeometryBatch[Point | None],
     *,
     path: Literal['rhumb'],
     unit: None = None,
@@ -18179,8 +18403,8 @@ def distance(
 ) -> float: ...
 @overload
 def distance(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     path: Literal['geodesic'] = 'geodesic',
     unit: DistanceUnit | None = None,
@@ -18188,15 +18412,15 @@ def distance(
 @overload
 def distance(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     path: Literal['geodesic'] = 'geodesic',
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     path: Literal['geodesic'] = 'geodesic',
     unit: DistanceUnit | None = None,
@@ -18213,12 +18437,12 @@ def distance(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
-    path : {'geodesic', 'rhumb'}, default 'geodesic'
-        Route for point operands. Rhumb distance requires a geographic CRS and
-        uses meters.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
+    path : {'geodesic', 'rhumb'}, default varies by call form
+        Route for point operands. Omit for geodesic distance; rhumb distance
+        requires ``path='rhumb'`` and a geographic CRS and uses meters.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18273,22 +18497,22 @@ def distance_3d(
 ) -> float: ...
 @overload
 def distance_3d(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance_3d(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def distance_3d(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> float | npt.NDArray[np.float64]:
@@ -18307,9 +18531,9 @@ def distance_3d(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18359,8 +18583,8 @@ def hausdorff_distance(
 ) -> float: ...
 @overload
 def hausdorff_distance(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     max_error: float | None = None,
     unit: DistanceUnit | None = None,
@@ -18368,15 +18592,15 @@ def hausdorff_distance(
 @overload
 def hausdorff_distance(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     max_error: float | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def hausdorff_distance(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     max_error: float | None = None,
     unit: DistanceUnit | None = None,
@@ -18399,9 +18623,9 @@ def hausdorff_distance(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     max_error : float, optional
         Positive finite scalar absolute error bound in final result units.
         Planar results default to a certified relative error of at most
@@ -18469,8 +18693,8 @@ def frechet_distance(
 ) -> float: ...
 @overload
 def frechet_distance(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -18478,15 +18702,15 @@ def frechet_distance(
 @overload
 def frechet_distance(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.float64]: ...
 @overload
 def frechet_distance(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     densify: FloatInput | None = None,
     unit: DistanceUnit | None = None,
@@ -18498,8 +18722,8 @@ def frechet_distance(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        The two linestrings.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        The line operands; scalar and sequence inputs broadcast pairwise.
     densify : float, optional
         Subdivide every segment into pieces no longer than this
         fraction of its length (in ``(0, 1]``) before measuring,
@@ -18556,49 +18780,49 @@ def nearest_points(
 @overload
 def nearest_points(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point], GeometryArray[Point]]: ...
 @overload
 def nearest_points(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
 @overload
 def nearest_points(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> tuple[GeometryArray[Point | None], GeometryArray[Point | None]]: ...
 @overload
 def nearest_points(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> (
@@ -18623,9 +18847,10 @@ def nearest_points(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch. Unpack order is point on ``left``, then on ``right``.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames. Unpack order is point on
+        ``left``, then on ``right``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18673,49 +18898,49 @@ def shortest_line(
 @overload
 def shortest_line(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString]: ...
 @overload
 def shortest_line(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString | None]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString | None]: ...
 @overload
 def shortest_line(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> GeometryArray[LineString | None]: ...
 @overload
 def shortest_line(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     *,
     unit: DistanceUnit | None = None,
 ) -> LineString | GeometryArray[LineString | None]:
@@ -18745,9 +18970,9 @@ def shortest_line(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -18881,8 +19106,8 @@ def dwithin(
 ) -> bool: ...
 @overload
 def dwithin(
-    left: GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
@@ -18890,15 +19115,15 @@ def dwithin(
 @overload
 def dwithin(
     left: Geometry,
-    right: GeometryArray[Geometry | None],
+    right: _GeometryBatch[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def dwithin(
-    left: Geometry | GeometryArray[Geometry | None],
-    right: Geometry | GeometryArray[Geometry | None],
+    left: Geometry | _GeometryBatch[Geometry | None],
+    right: Geometry | _GeometryBatch[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
@@ -18912,9 +19137,9 @@ def dwithin(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and sequence operands broadcast pairwise; sequences must have
+        equal length and compatible CRS/epoch frames.
     distance : float or sequence of float
         CRS-aware distance threshold: geodesic meters on a geographic CRS,
         native linear units on a projected CRS, raw coordinate units when
@@ -18998,7 +19223,7 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    geom: GeometryArray[Geometry | None],
+    geom: _GeometryBatch[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19010,7 +19235,7 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    geom: GeometryArray[Geometry | None],
+    geom: _GeometryBatch[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19025,7 +19250,34 @@ def nearest(
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-    geom: Geometry | GeometryArray[Geometry | None],
+    geom: Geometry,
+    *,
+    k: int = 1,
+    max_distance: float | None = None,
+    return_distance: bool = False,
+    unit: DistanceUnit | None = None,
+    exclusive: bool = False,
+    ties: bool = False,
+) -> npt.NDArray[np.int64] | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
+@overload
+def nearest(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: _GeometryBatch[Geometry | None],
+    *,
+    k: int = 1,
+    max_distance: float | None = None,
+    return_distance: bool = False,
+    unit: DistanceUnit | None = None,
+    exclusive: bool = False,
+    ties: bool = False,
+) -> (
+    Groups[npt.NDArray[np.int64]]
+    | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+): ...
+@overload
+def nearest(
+    values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    geom: Geometry | _GeometryBatch[Geometry | None],
     *,
     k: int = 1,
     max_distance: float | None = None,
@@ -19046,20 +19298,22 @@ def nearest(
 
     Parameters
     ----------
-    values : sequence of Geometry or GeometryArray
+    values : Geometry, GeometryArray, or iterable of geometry-like values or None
         Candidate geometries to index and search.
-    geom : Geometry or GeometryArray
-        Query geometry (or array of queries).
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
+        Query geometry or one query per sequence row. Missing rows produce
+        empty result groups and retain their logical positions.
     k : int, default 1
         Number of nearest neighbors to return per query; ``0`` returns no
         neighbors.
     max_distance : float, optional
         Ignore candidates farther than this from the query. Must be finite and
         non-negative.
-    return_distance : bool, default False
+    return_distance : bool
         If ``True``, return distances alongside handles — ``(indices,
         distances)`` for a scalar query, ``(matches, distances)`` for an
-        array query.
+        array query. The distance-returning form requires
+        ``return_distance=True``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -19081,10 +19335,10 @@ def nearest(
     -------
     int64 numpy.ndarray, Groups, or tuple
         Indices into `values` of the nearest geometries — an ``int64`` ndarray
-        for a scalar query, CSR ``Groups`` for an array query. With
+        for a scalar query, CSR ``Groups`` for an array or iterable query. With
         ``return_distance=True``, plain tuple field order is ``(indices,
         distances)`` for a scalar query or ``(matches, distances)`` for an
-        array query (distances parallel to ``matches.values``).
+        array or iterable query (distances parallel to ``matches.values``).
 
     Raises
     ------
@@ -19105,8 +19359,8 @@ def nearest(
 
 @overload
 def join(
-    left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
-    right: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    left: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
+    right: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     predicate: Literal['dwithin'],
     distance: float,
@@ -19117,8 +19371,8 @@ def join(
 ]: ...
 @overload
 def join(
-    left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
-    right: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
+    left: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
+    right: Geometry | _GeometryBatch[Geometry | None] | Iterable[_GeometryLike | None],
     *,
     predicate: TopologicalPredicate = 'intersects',
     distance: None = None,
@@ -19131,14 +19385,16 @@ def join(
 
     Parameters
     ----------
-    left, right : Geometry, GeometryArray, or sequence of Geometry
+    left, right : Geometry, GeometryArray, or iterable of geometry-like values or None
         The two geometry collections to join. Missing rows produce no pairs;
         their original row positions are preserved in every returned id.
-    predicate : str, default 'intersects'
+    predicate : str
         Spatial predicate each returned pair must satisfy — one of
         ``'intersects'``, ``'contains'``, ``'contains_properly'``,
         ``'covers'``, ``'within'``, ``'covered_by'``, ``'equals'``,
         ``'dwithin'``, ``'touches'``, ``'crosses'``, or ``'overlaps'``.
+        Topological forms omit ``predicate`` to use ``'intersects'``;
+        ``'dwithin'`` requires it explicitly.
     distance : float, optional
         Required when ``predicate='dwithin'``: the maximum separation, in
         CRS-natural units — geodesic meters on a geographic CRS, native
@@ -19920,9 +20176,11 @@ def polygonize_all(
         One geometry or linework values to node and polygonize together. Array
         and iterable inputs may contain ``None`` rows; they are omitted from the
         pooled linework.
-    diagnostics : bool, default False
+    diagnostics : bool
         Return a `PolygonizeResult` containing the pooled polygons and
-        source-row `Groups` for cut edges, dangles, and invalid rings.
+        source-row `Groups` for cut edges, dangles, and invalid rings. The
+        diagnostic result form requires ``diagnostics=True``; the polygon-only
+        form omits the option.
 
     Returns
     -------
@@ -20257,6 +20515,13 @@ def from_wkt(
 ) -> Geometry: ...
 @overload
 def from_wkt(
+    data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def from_wkt(
     data: Iterable[str],
     *,
     crs: CrsInput | None = None,
@@ -20278,9 +20543,10 @@ def from_wkt(
 
     Parameters
     ----------
-    data : str or iterable of str
-        A single WKT/EWKT string, or any iterable of them for a
-        ``GeometryArray``.
+    data : str, iterable of str, or dataframe/Arrow column
+        A single WKT/EWKT string, an iterable of rows, or a pandas/Polars
+        Series or PyArrow Array/ChunkedArray. Missing column values become
+        missing rows.
 
     crs : CRS-like, optional
         CRS for SRID-less input. An embedded SRID that *contradicts* an
@@ -20321,6 +20587,34 @@ def from_wkt(
 
 @overload
 def from_wkb(
+    data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def from_wkb(
+    data: npt.NDArray[np.uint8] | npt.NDArray[np.int8],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> Geometry: ...
+@overload
+def from_wkb(
+    data: npt.NDArray[np.object_],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def from_wkb(
+    data: npt.NDArray[np.bytes_],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry]: ...
+@overload
+def from_wkb(
     data: Buffer, *, crs: CrsInput | None = None, epoch: float | None = None
 ) -> Geometry: ...
 @overload
@@ -20352,8 +20646,11 @@ def from_wkb(
 
     Parameters
     ----------
-    data : bytes or sequence of bytes
-        A WKB/EWKB buffer, or an iterable of them for a ``GeometryArray``.
+    data : bytes, byte buffer, iterable of buffers, or dataframe/Arrow column
+        A WKB/EWKB byte buffer, an iterable of byte buffers, or a pandas/Polars
+        Series or PyArrow Array/ChunkedArray of WKB values. A one-byte integer
+        ndarray is one scalar byte buffer; other ndarrays are row columns.
+        Missing column values become missing rows.
 
     crs : CRS-like, optional
         CRS for SRID-less input. An embedded SRID that *contradicts* an
@@ -20668,82 +20965,6 @@ def from_arrow(
     ['POINT (1 2)']
     """
 
-def from_features(
-    features: str
-    | bytes
-    | bytearray
-    | memoryview[Any]
-    | Mapping[str, Any]
-    | Iterable[Mapping[str, Any]],
-    *,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
-) -> Features:
-    """Parse GeoJSON features into geometries plus parallel properties and ids.
-
-    Accepts a ``FeatureCollection``/``Feature`` mapping, JSON text of one
-    (``str`` or UTF-8 bytes/buffer), or an iterable of ``Feature`` mappings.
-    Unlike `from_geojson`, per-feature ``properties`` and ``id`` values are
-    preserved. Missing ``properties`` normalize to ``{}``; an explicit JSON
-    null remains ``None``.
-
-    Parameters
-    ----------
-    features : str, bytes, mapping, or iterable of mapping
-        A ``FeatureCollection``/``Feature`` mapping, JSON text of one, or an
-        iterable of ``Feature`` mappings.
-    crs : CRS-like, default 'OGC:CRS84'
-        CRS to attach. GeoJSON coordinates are WGS84 by specification, so the
-        default declares OGC:CRS84 (lon/lat); pass ``None`` for CRS-free
-        geometries or ``crs=4326`` for EPSG:4326.
-    epoch : float, optional
-        Coordinate epoch (decimal year) to attach as frame metadata.
-
-    Returns
-    -------
-    Features
-        A ``Features`` record with one row per
-        feature. Null geometries are represented by missing array rows.
-
-    Raises
-    ------
-    ParseError
-        If the input is not a Feature/FeatureCollection/iterable, a feature is
-        malformed, a geometry cannot be parsed, or a legacy ``crs`` member is
-        unsupported or conflicts with ``crs``, a position is outside the WGS84
-        domain, or a ring fails structural admission
-        (``format`` is ``"geojson"``).
-    CRSError
-        If ``crs`` is not recognized or is outside the WGS84 family, or
-        ``epoch`` is set with ``crs=None``.
-    GeometryError
-        If ``epoch`` is not a finite decimal year.
-
-    Notes
-    -----
-    Text input is decoded in Rust. Coordinate numbers follow the same admission
-    as ``from_geojson``: correctly-rounded binary64 floats, and integers only
-    when exactly representable as ``float`` (non-exact integers raise). Feature
-    properties and IDs must contain JSON-compatible values; Python mapping
-    inputs retain property key order and exact integer values.
-
-    See Also
-    --------
-    from_geojson : Decode geometry while dropping feature side data.
-    to_feature_collection : Encode geometry and aligned side data.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> feats = gm.from_features([{
-    ...     'type': 'Feature',
-    ...     'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
-    ...     'properties': {'a': 1},
-    ... }])
-    >>> feats.geometries.to_wkt()
-    ['POINT (1 2)']
-    """
-
 def to_feature(
     geom: Geometry | None,
     *,
@@ -20875,6 +21096,7 @@ def to_feature_collection(
 def from_geojson(
     data: GeoJsonFeatureCollection,
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> GeometryArray[Geometry | None]: ...
@@ -20882,6 +21104,7 @@ def from_geojson(
 def from_geojson(
     data: GeoJsonGeometry | GeoJsonFeatureNonNull,
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Geometry: ...
@@ -20889,29 +21112,67 @@ def from_geojson(
 def from_geojson(
     data: _GeoJsonScalar,
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Geometry | GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
-    data: Iterable[_GeoJsonScalar | None],
+    data: PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
-    data: _GeoJsonScalar | Iterable[_GeoJsonScalar | None],
+    data: _GeoJsonScalar
+    | PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
-) -> Geometry | GeometryArray[Geometry | None]:
-    """Parse `geojson` from a string or mapping.
+) -> Geometry | GeometryArray[Geometry | None]: ...
+@overload
+def from_geojson(
+    data: _GeoJsonScalar
+    | PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
+    *,
+    features: Literal[True],
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: float | None = None,
+) -> Features: ...
+@overload
+def from_geojson(
+    data: _GeoJsonScalar
+    | PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
+    *,
+    features: bool,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: float | None = None,
+) -> Geometry | GeometryArray[Geometry | None] | Features:
+    """Parse GeoJSON geometry, rows, or feature metadata.
 
-    A geometry or ``Feature`` decodes to a ``Geometry`` (Feature properties
-    are dropped — see `from_features` to keep them); a ``FeatureCollection``
-    is a feature set, so it decodes to a ``GeometryArray`` with one geometry
-    per feature.
+    A geometry or ``Feature`` decodes to a ``Geometry`` by default; a
+    ``FeatureCollection`` decodes to a ``GeometryArray`` with one geometry per
+    feature. Set ``features=True`` to retain feature properties and IDs in a
+    ``Features`` result.
 
     Coordinate sequences are **axis-uniform**: every position in one sequence
     (LineString, MultiPoint member list, ring, …) must share the same axes
@@ -20923,8 +21184,14 @@ def from_geojson(
 
     Parameters
     ----------
-    data : str or mapping
-        A `geojson` string or mapping (Feature/FeatureCollection ok).
+    data : str, mapping, row iterable, or dataframe/Arrow column
+        A GeoJSON string, mapping, row iterable, or pandas/Polars Series or
+        PyArrow Array/ChunkedArray. Feature and FeatureCollection inputs are
+        accepted. Missing column values become missing rows.
+
+    features : bool, default varies by call form
+        Preserve Feature properties and IDs in a ``Features`` result. Geometry-
+        only inputs are not valid when this is ``True``.
 
     crs : CRS-like, default 'OGC:CRS84'
         CRS to attach. `geojson` coordinates are WGS84 by specification, so
@@ -20943,6 +21210,9 @@ def from_geojson(
     Geometry or GeometryArray
         The decoded geometry, or one geometry per feature for a
         ``FeatureCollection``.
+    Features
+        When ``features=True``, one geometry and its aligned properties and ID
+        per input feature.
 
     Raises
     ------
@@ -20966,11 +21236,14 @@ def from_geojson(
     with ``to_geojson``). Integer tokens and Python ``int`` values are admitted
     only when exactly representable as ``float``; non-exact integers raise
     rather than silently rounding. Text and mapping inputs share this rule.
+    Dataframe and Arrow columns are converted to their native Python row values
+    before the same decoder runs.
 
     See Also
     --------
     Geometry.to_geojson : Serialize a geometry to GeoJSON.
-    from_features : Keep per-feature properties and ids.
+    Features : The aligned feature properties and IDs returned by
+        ``features=True``.
 
     Examples
     --------
@@ -21102,23 +21375,25 @@ def crs_engine() -> CrsEngineInfo:
 
 def crs_configure(
     *,
-    search_paths: str | PathLike[str] | Iterable[str | PathLike[str]] | None = None,
-    user_writable_directory: str | PathLike[str] | None = None,
+    search_paths: str | PathLike[str] | Iterable[str | PathLike[str]] | None = ...,
+    user_writable_directory: str | PathLike[str] | None = ...,
 ) -> CrsRuntimeConfig:
     """Configure local CRS engine paths.
 
-    Omitted arguments keep their current value, so a call without arguments
-    returns the current configuration unchanged. Use `crs_reset` to restore
-    the defaults.
+    Omitted arguments keep their current value, while explicit ``None`` restores
+    that field's default. A call without arguments returns the current
+    configuration unchanged; use `crs_reset` to restore both defaults.
 
     Parameters
     ----------
     search_paths : str, path, or sequence of these, optional
-        Directories PROJ searches for its database and grids. When a named grid
-        is absent from these directories, PROJ may also try the bare grid
-        filename in the current working directory.
+        Directories PROJ searches for its database and grids. ``None`` restores
+        the default search paths. When a named grid is absent from these
+        directories, PROJ may also try the bare grid filename in the current
+        working directory.
     user_writable_directory : str or path, optional
-        Directory PROJ includes in local grid lookup.
+        Directory PROJ includes in local grid lookup. ``None`` restores the
+        default writable directory.
 
     Notes
     -----
@@ -22295,7 +22570,7 @@ def crs_transform_bounds(
 
 @overload
 def geohash_cover(
-    geom: GeometryArray[Geometry | None],
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
     precision: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -22318,10 +22593,10 @@ def geohash_cover(
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
-        flat cell array; an array returns one grouped cell row per input
-        geometry, preserving source-row association.
+        flat cell array; an array or iterable returns one group per input row.
+        ``None`` and empty geometries produce empty groups.
 
     precision : int
         Geohash precision (``1``-``12``; finer at higher values).
@@ -22363,29 +22638,31 @@ def geohash_cover(
 
 @overload
 def geohash_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     precision: _IntInput,
 ) -> CellArray[GeohashCell]: ...
 @overload
 def geohash_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     precision: _IntInput,
 ) -> CellArray[GeohashCell | None]:
-    """Build geohash cells from parallel lon/lat columns.
+    """Build geohash cells from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
 
     precision : int or sequence of int
         Geohash precision (1-12 characters; finer at higher values). A scalar
@@ -22453,8 +22730,8 @@ def geohash_bounding_cell(
     """
 
 def geohash_union(
-    left: GeohashCell | str | Iterable[GeohashCell | str],
-    right: GeohashCell | str | Iterable[GeohashCell | str],
+    left: _GeohashSetInput,
+    right: _GeohashSetInput,
 ) -> CellArray[GeohashCell]:
     """Hierarchy-aware union of two geohash cell sets.
 
@@ -22465,7 +22742,7 @@ def geohash_union(
 
     Parameters
     ----------
-    left, right : GeohashCell, str, or iterable of those
+    left, right : GeohashCell, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -22489,8 +22766,8 @@ def geohash_union(
     """
 
 def geohash_intersection(
-    left: GeohashCell | str | Iterable[GeohashCell | str],
-    right: GeohashCell | str | Iterable[GeohashCell | str],
+    left: _GeohashSetInput,
+    right: _GeohashSetInput,
 ) -> CellArray[GeohashCell]:
     """Hierarchy-aware intersection of two geohash cell sets.
 
@@ -22500,7 +22777,7 @@ def geohash_intersection(
 
     Parameters
     ----------
-    left, right : GeohashCell, str, or iterable of those
+    left, right : GeohashCell, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects or tokens).
 
     Returns
@@ -22523,8 +22800,8 @@ def geohash_intersection(
     """
 
 def geohash_difference(
-    left: GeohashCell | str | Iterable[GeohashCell | str],
-    right: GeohashCell | str | Iterable[GeohashCell | str],
+    left: _GeohashSetInput,
+    right: _GeohashSetInput,
 ) -> CellArray[GeohashCell]:
     """Hierarchy-aware difference of two geohash cell sets.
 
@@ -22535,7 +22812,7 @@ def geohash_difference(
 
     Parameters
     ----------
-    left, right : GeohashCell, str, or iterable of those
+    left, right : GeohashCell, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects or tokens).
 
     Returns
@@ -22559,7 +22836,7 @@ def geohash_difference(
 
 @overload
 def tile_cover(
-    geom: GeometryArray[Geometry | None],
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
     zoom: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -22582,10 +22859,10 @@ def tile_cover(
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
-        flat cell array; an array returns one grouped cell row per input
-        geometry, preserving source-row association.
+        flat cell array; an array or iterable returns one group per input row.
+        ``None`` and empty geometries produce empty groups.
 
     zoom : int
         Tile zoom (``0``-``29``; finer at higher values).
@@ -22631,29 +22908,31 @@ def tile_cover(
 
 @overload
 def tile_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     zoom: _IntInput,
 ) -> CellArray[Tile]: ...
 @overload
 def tile_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     zoom: _IntInput,
 ) -> CellArray[Tile | None]:
-    """Build tiles from parallel lon/lat columns.
+    """Build tiles from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
         Latitudes outside the square Web Mercator tile grid (±85.051129°) raise
         ``InvalidGeometryError`` (no silent clamp).
 
@@ -22728,8 +23007,8 @@ def tile_bounding_cell(
     """
 
 def tile_union(
-    left: Tile | int | str | Iterable[Tile | int | str],
-    right: Tile | int | str | Iterable[Tile | int | str],
+    left: _TileSetInput,
+    right: _TileSetInput,
 ) -> CellArray[Tile]:
     """Hierarchy-aware union of two tile cell sets.
 
@@ -22740,7 +23019,7 @@ def tile_union(
 
     Parameters
     ----------
-    left, right : Tile, int, str, or iterable of those
+    left, right : Tile, int, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -22764,8 +23043,8 @@ def tile_union(
     """
 
 def tile_intersection(
-    left: Tile | int | str | Iterable[Tile | int | str],
-    right: Tile | int | str | Iterable[Tile | int | str],
+    left: _TileSetInput,
+    right: _TileSetInput,
 ) -> CellArray[Tile]:
     """Hierarchy-aware intersection of two tile cell sets.
 
@@ -22775,7 +23054,7 @@ def tile_intersection(
 
     Parameters
     ----------
-    left, right : Tile, int, str, or iterable of those
+    left, right : Tile, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -22798,8 +23077,8 @@ def tile_intersection(
     """
 
 def tile_difference(
-    left: Tile | int | str | Iterable[Tile | int | str],
-    right: Tile | int | str | Iterable[Tile | int | str],
+    left: _TileSetInput,
+    right: _TileSetInput,
 ) -> CellArray[Tile]:
     """Hierarchy-aware difference of two tile cell sets.
 
@@ -22810,7 +23089,7 @@ def tile_difference(
 
     Parameters
     ----------
-    left, right : Tile, int, str, or iterable of those
+    left, right : Tile, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -22833,21 +23112,30 @@ def tile_difference(
     """
 
 @overload
-def pluscode_encode(value: Point, *, length: int = 10) -> str: ...
+def pluscode_encode(
+    value: Point, lat: None = None, *, length: _IntScalar = 10
+) -> str: ...
 @overload
 def pluscode_encode(
-    value: _FloatScalarInput,
-    lat: _FloatScalarInput,
+    value: FloatScalar,
+    lat: FloatScalar,
     *,
     length: _IntScalar = 10,
 ) -> str: ...
 @overload
 def pluscode_encode(
     value: GeometryArray[Point], lat: None = None, *, length: _IntScalar = 10
+) -> list[str]: ...
+@overload
+def pluscode_encode(
+    value: GeometryArray[Point | None],
+    lat: None = None,
+    *,
+    length: _IntScalar = 10,
 ) -> list[str | None]: ...
 @overload
 def pluscode_encode(
-    value: _FloatColumn1D,
+    value: Sequence[float],
     lat: FloatInput,
     *,
     length: _IntScalar = 10,
@@ -22855,10 +23143,26 @@ def pluscode_encode(
 @overload
 def pluscode_encode(
     value: FloatInput,
-    lat: _FloatColumn1D,
+    lat: Sequence[float],
     *,
     length: _IntScalar = 10,
-) -> list[str]:
+) -> list[str]: ...
+@overload
+def pluscode_encode(
+    value: Buffer, lat: FloatInput, *, length: _IntScalar = 10
+) -> str | list[str]: ...
+@overload
+def pluscode_encode(
+    value: FloatInput, lat: Buffer, *, length: _IntScalar = 10
+) -> str | list[str]: ...
+@overload
+def pluscode_encode(
+    value: Iterable[float], lat: FloatInput, *, length: _IntScalar = 10
+) -> str | list[str]: ...
+@overload
+def pluscode_encode(
+    value: FloatInput, lat: Iterable[float], *, length: _IntScalar = 10
+) -> str | list[str]:
     """Plus code (Open Location Code) of a point.
 
     Encodes WGS84 coordinates as Google's Open Location Code — the
@@ -22934,14 +23238,40 @@ def pluscode_polygon(
     """
 
 @overload
-def pluscode_shorten(
-    code: str, reference: _FloatScalarInput, lat: _FloatScalarInput
-) -> str: ...
+def pluscode_shorten(code: str, reference: Point, lat: None = None) -> str: ...
 @overload
 def pluscode_shorten(
-    code: Iterable[str],
-    reference: FloatInput,
-    lat: FloatInput,
+    code: Iterable[str], reference: Point, lat: None = None
+) -> list[str]: ...
+@overload
+def pluscode_shorten(code: str, reference: FloatScalar, lat: FloatScalar) -> str: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: Sequence[float], lat: FloatInput
+) -> list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: FloatInput, lat: Sequence[float]
+) -> list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: Buffer, lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: FloatInput, lat: Buffer
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: Iterable[float], lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: FloatInput, lat: Iterable[float]
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: Iterable[str], reference: FloatInput, lat: FloatInput
 ) -> list[str]:
     """Shorten a full plus code relative to a nearby reference point.
 
@@ -22952,8 +23282,11 @@ def pluscode_shorten(
     ----------
     code : str or iterable of str
         A full, unpadded plus code with at least 6 digits.
-    reference, lat : float or sequence of float
-        The reference location(s).
+    reference : Point or float
+        A CRS-aware reference point or longitude column.
+    lat : float or sequence of float, optional
+        Latitude column when ``reference`` is a longitude. Coordinate columns
+        broadcast with one another and with a scalar code.
 
     Returns
     -------
@@ -22974,17 +23307,45 @@ def pluscode_shorten(
     >>> import gometry as gm
     >>> gm.pluscode_shorten('8FVC9G8F+6X', 8.5, 47.4)
     '9G8F+6X'
+    >>> gm.pluscode_shorten('8FVC9G8F+6X', gm.Point(8.5, 47.4, crs=4326))
+    '9G8F+6X'
     """
 
 @overload
-def pluscode_recover(
-    code: str, reference: _FloatScalarInput, lat: _FloatScalarInput
-) -> str: ...
+def pluscode_recover(code: str, reference: Point, lat: None = None) -> str: ...
 @overload
 def pluscode_recover(
-    code: Iterable[str],
-    reference: FloatInput,
-    lat: FloatInput,
+    code: Iterable[str], reference: Point, lat: None = None
+) -> list[str]: ...
+@overload
+def pluscode_recover(code: str, reference: FloatScalar, lat: FloatScalar) -> str: ...
+@overload
+def pluscode_recover(
+    code: str, reference: Sequence[float], lat: FloatInput
+) -> list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: FloatInput, lat: Sequence[float]
+) -> list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: Buffer, lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: FloatInput, lat: Buffer
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: Iterable[float], lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: FloatInput, lat: Iterable[float]
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: Iterable[str], reference: FloatInput, lat: FloatInput
 ) -> list[str]:
     """Recover the nearest full plus code from a shortened one.
 
@@ -22993,8 +23354,11 @@ def pluscode_recover(
     code : str or iterable of str
         A short plus code (e.g. ``'9G8F+6X'``); a full code passes through
         normalized.
-    reference, lat : float or sequence of float
-        The reference location(s) the code is near.
+    reference : Point or float
+        A CRS-aware reference point or longitude column.
+    lat : float or sequence of float, optional
+        Latitude column when ``reference`` is a longitude. Coordinate columns
+        broadcast with one another and with a scalar code.
 
     Returns
     -------
@@ -23013,22 +23377,41 @@ def pluscode_recover(
     >>> import gometry as gm
     >>> gm.pluscode_recover('9G8F+6X', 8.5, 47.4)
     '8FVC9G8F+6X'
+    >>> gm.pluscode_recover('9G8F+6X', gm.Point(8.5, 47.4, crs=4326))
+    '8FVC9G8F+6X'
     """
 
 @overload
 def osm_shortlink_encode(
-    value: Point | _FloatScalarInput,
-    lat: _FloatScalarInput | None = None,
+    value: Point,
+    lat: None = None,
     *,
     zoom: _IntScalar = 16,
 ) -> str: ...
 @overload
 def osm_shortlink_encode(
-    value: GeometryArray[Point], lat: None = None, *, zoom: _IntScalar = 16
+    value: FloatScalar,
+    lat: FloatScalar,
+    *,
+    zoom: _IntScalar = 16,
+) -> str: ...
+@overload
+def osm_shortlink_encode(
+    value: GeometryArray[Point],
+    lat: None = None,
+    *,
+    zoom: _IntScalar = 16,
+) -> list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: GeometryArray[Point | None],
+    lat: None = None,
+    *,
+    zoom: _IntScalar = 16,
 ) -> list[str | None]: ...
 @overload
 def osm_shortlink_encode(
-    value: _FloatColumn1D,
+    value: Sequence[float],
     lat: FloatInput,
     *,
     zoom: _IntScalar = 16,
@@ -23036,17 +23419,26 @@ def osm_shortlink_encode(
 @overload
 def osm_shortlink_encode(
     value: FloatInput,
-    lat: _FloatColumn1D,
+    lat: Sequence[float],
     *,
     zoom: _IntScalar = 16,
 ) -> list[str]: ...
 @overload
 def osm_shortlink_encode(
-    value: Point | GeometryArray[Point] | FloatInput,
-    lat: FloatInput | None = None,
-    *,
-    zoom: _IntScalar = 16,
-) -> str | list[str | None]:
+    value: Buffer, lat: FloatInput, *, zoom: _IntScalar = 16
+) -> str | list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: FloatInput, lat: Buffer, *, zoom: _IntScalar = 16
+) -> str | list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: Iterable[float], lat: FloatInput, *, zoom: _IntScalar = 16
+) -> str | list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: FloatInput, lat: Iterable[float], *, zoom: _IntScalar = 16
+) -> str | list[str]:
     """`OpenStreetMap` shortlink code of a point.
 
     The compact location code in ``https://osm.org/go/...`` URLs (a Morton
@@ -23122,7 +23514,7 @@ def osm_shortlink_location(
 
 @overload
 def h3_cover(
-    geom: GeometryArray[Geometry | None],
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
     resolution: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -23144,9 +23536,10 @@ def h3_cover(
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
+        Geometry to cover (WGS84 lon/lat or projected). An array or iterable
+        returns one group per input row; ``None`` and empty geometries produce
+        empty groups.
 
     resolution : int
         H3 resolution (``0``-``15``; finer at higher values).
@@ -23196,29 +23589,31 @@ def h3_cover(
 
 @overload
 def h3_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     resolution: _IntInput,
 ) -> CellArray[H3Cell]: ...
 @overload
 def h3_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     resolution: _IntInput,
 ) -> CellArray[H3Cell | None]:
-    """Build H3 cells from parallel lon/lat columns.
+    """Build H3 cells from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
 
     resolution : int or sequence of int
         H3 resolution (0-15; finer at higher values). A scalar broadcasts to
@@ -23234,7 +23629,7 @@ def h3_cells(
     GeometryError
         If ``resolution`` is out of range or every argument is scalar.
     InvalidGeometryError
-        If a coordinate is non-finite or columns differ in length.
+        If a coordinate is non-finite or coordinate columns differ in length.
 
     See Also
     --------
@@ -23289,8 +23684,8 @@ def h3_bounding_cell(
     """
 
 def h3_union(
-    left: H3Cell | int | str | Iterable[H3Cell | int | str],
-    right: H3Cell | int | str | Iterable[H3Cell | int | str],
+    left: _H3SetInput,
+    right: _H3SetInput,
 ) -> CellArray[H3Cell]:
     """Hierarchy-aware union of two H3 cell sets.
 
@@ -23301,7 +23696,7 @@ def h3_union(
 
     Parameters
     ----------
-    left, right : H3Cell, int, str, or iterable of those
+    left, right : H3Cell, int, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -23331,8 +23726,8 @@ def h3_union(
     """
 
 def h3_intersection(
-    left: H3Cell | int | str | Iterable[H3Cell | int | str],
-    right: H3Cell | int | str | Iterable[H3Cell | int | str],
+    left: _H3SetInput,
+    right: _H3SetInput,
 ) -> CellArray[H3Cell]:
     """Hierarchy-aware intersection of two H3 cell sets.
 
@@ -23342,7 +23737,7 @@ def h3_intersection(
 
     Parameters
     ----------
-    left, right : H3Cell, int, str, or iterable of those
+    left, right : H3Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -23371,8 +23766,8 @@ def h3_intersection(
     """
 
 def h3_difference(
-    left: H3Cell | int | str | Iterable[H3Cell | int | str],
-    right: H3Cell | int | str | Iterable[H3Cell | int | str],
+    left: _H3SetInput,
+    right: _H3SetInput,
 ) -> CellArray[H3Cell]:
     """Hierarchy-aware difference of two H3 cell sets.
 
@@ -23383,7 +23778,7 @@ def h3_difference(
 
     Parameters
     ----------
-    left, right : H3Cell, int, str, or iterable of those
+    left, right : H3Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -23451,35 +23846,59 @@ def h3_base_cells() -> CellArray[H3Cell]:
 
 @overload
 def s2_cover(
-    geom: GeometryArray[Geometry | None],
-    level: int,
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    level: int | None = None,
     *,
+    target_cells: int = 8,
+    min_level: int | None = None,
+    max_level: int | None = None,
+    level_mod: Literal[1, 2, 3] = 1,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> Groups[CellArray[S2Cell]]: ...
 @overload
 def s2_cover(
     geom: Geometry,
-    level: int,
+    level: int | None = None,
     *,
+    target_cells: int = 8,
+    min_level: int | None = None,
+    max_level: int | None = None,
+    level_mod: Literal[1, 2, 3] = 1,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> CellArray[S2Cell]:
-    """Cover a geometry with S2 cells at one fixed level.
+    """Cover a geometry with fixed-level or adaptively refined S2 cells.
 
-    The result is a ``CellArray`` of S2 cells selected according to
-    ``cell_rule`` at the requested level. Keep the source geometry separately and use the free
-    ``gm.*`` predicates for exact geometry questions.
+    Omit ``level`` to adapt refinement to ``target_cells`` and the optional
+    level range. Supplying ``level`` fixes the output depth; non-default
+    adaptive controls cannot be combined with it. Keep the source geometry
+    separately and use the free ``gm.*`` predicates for exact geometry
+    questions.
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
+        Geometry to cover (WGS84 lon/lat or projected). An array or iterable
+        returns one group per input row; ``None`` and empty geometries produce
+        empty groups.
 
-    level : int
-        S2 cell level (``0``-``30``; finer at higher values). The level is
-        never coarsened to fit the output cap.
+    level : int, optional
+        Fixed S2 cell level (``0``-``30``; finer at higher values). The level is
+        never coarsened to fit the output cap. Omit it for adaptive refinement.
+
+    target_cells : int, default 8
+        Approximate adaptive refinement target; the minimum admissible cover
+        can exceed this value.
+
+    min_level : int or None, default None
+        Coarsest adaptive S2 level allowed; omission uses level ``0``.
+
+    max_level : int or None, default None
+        Finest adaptive S2 level allowed; omission uses level ``30``.
+
+    level_mod : {1, 2, 3}, default 1
+        Restrict adaptive output levels to increments from ``min_level``.
 
     cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
         Which cells to materialize, strictest to loosest. ``'within'``: only
@@ -23492,9 +23911,10 @@ def s2_cover(
         The rule never affects the exact predicates.
 
     max_cells : int or None, default 1000000
-        Hard cap on returned cells; array calls apply it cumulatively across
-        groups. An insufficient cap raises because the requested level is
-        fixed. Pass ``None`` for an unlimited cover.
+        Hard cap on returned cells, applied cumulatively across array groups.
+        In fixed-level mode an insufficient cap raises; adaptive mode may
+        coarsen only within its requested level range. Pass ``None`` for an
+        unlimited cover.
 
     Returns
     -------
@@ -23504,21 +23924,22 @@ def s2_cover(
     Raises
     ------
     GeometryError
-        If the geometry, level, or a coverage parameter is invalid, or if the
-        cover exceeds ``max_cells``.
+        If the geometry, level, or a coverage parameter is invalid, if fixed
+        and non-default adaptive controls are combined, or if the cover exceeds
+        ``max_cells``.
     InvalidGeometryError
         If a scalar geometry is empty or coordinates leave the lon/lat domain.
 
     See Also
     --------
     s2_cells : Build S2 cells from lon/lat columns.
-    s2_cover_adaptive : Cover with adaptive levels.
+    s2_cover : Cover with fixed or adaptive levels.
 
     Examples
     --------
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cov = gm.s2_cover(p, 12)
+    >>> cov = gm.s2_cover(p, level=12)
     >>> cell = cov[0]
     >>> assert cell is not None
     >>> (len(cov), cell.token)
@@ -23526,108 +23947,32 @@ def s2_cover(
     """
 
 @overload
-def s2_cover_adaptive(
-    geom: GeometryArray[Geometry | None],
-    *,
-    target_cells: int = 8,
-    min_level: int = 0,
-    max_level: int = 30,
-    level_mod: Literal[1, 2, 3] = 1,
-    cell_rule: CellRule = 'overlap',
-    max_cells: int | None = 1000000,
-) -> Groups[CellArray[S2Cell]]: ...
-@overload
-def s2_cover_adaptive(
-    geom: Geometry,
-    *,
-    target_cells: int = 8,
-    min_level: int = 0,
-    max_level: int = 30,
-    level_mod: Literal[1, 2, 3] = 1,
-    cell_rule: CellRule = 'overlap',
-    max_cells: int | None = 1000000,
-) -> CellArray[S2Cell]:
-    """Cover a geometry with adaptively refined S2 cells.
-
-    ``target_cells`` guides refinement but is not a hard cap. Use ``max_cells``
-    for a hard output limit. Cells are coarsened only within the requested level
-    range, and emitted levels follow ``level_mod``. Array calls retain one group
-    per input row and share the total cap.
-
-    The four ``cell_rule`` values have the same meanings as in [`s2_cover`].
-
-    Parameters
-    ----------
-    geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
-    target_cells : int, default 8
-        Approximate refinement target; the minimum admissible cover can exceed
-        this value.
-    min_level : int, default 0
-        Coarsest S2 level allowed.
-    max_level : int, default 30
-        Finest S2 level allowed.
-    level_mod : {1, 2, 3}, default 1
-        Restrict emitted levels to increments from ``min_level``.
-    cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
-        Which cells to materialize. The rule never affects exact predicates.
-    max_cells : int or None, default 1000000
-        Hard cap on returned cells, applied cumulatively across array groups.
-        Pass ``None`` for an unlimited cover.
-
-    Returns
-    -------
-    CellArray or Groups of CellArray
-        A scalar returns its coverage; an array returns one cell group per row.
-
-    Raises
-    ------
-    GeometryError
-        If a parameter is invalid or the admissible starting cover exceeds
-        ``max_cells``.
-    InvalidGeometryError
-        If a scalar geometry is empty or coordinates leave the lon/lat domain.
-
-    See Also
-    --------
-    s2_cover : Cover at a fixed level.
-    s2_cells : Build S2 cells from lon/lat columns.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cov = gm.s2_cover_adaptive(p, target_cells=8)
-    >>> all(0 <= cell.level <= 30 for cell in cov if cell is not None)
-    True
-    """
-
-@overload
 def s2_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     level: _IntInput,
 ) -> CellArray[S2Cell]: ...
 @overload
 def s2_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     level: _IntInput,
 ) -> CellArray[S2Cell | None]:
-    """Build S2 cells from parallel lon/lat columns.
+    """Build S2 cells from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
 
     level : int or sequence of int
         S2 cell level (0-30; finer at higher values). A scalar broadcasts to
@@ -23701,8 +24046,8 @@ def s2_bounding_cell(
     """
 
 def s2_union(
-    left: S2Cell | int | str | Iterable[S2Cell | int | str],
-    right: S2Cell | int | str | Iterable[S2Cell | int | str],
+    left: _S2SetInput,
+    right: _S2SetInput,
 ) -> CellArray[S2Cell]:
     """Hierarchy-aware union of two S2 cell sets.
 
@@ -23713,7 +24058,7 @@ def s2_union(
 
     Parameters
     ----------
-    left, right : S2Cell, int, str, or iterable of those
+    left, right : S2Cell, int, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -23737,8 +24082,8 @@ def s2_union(
     """
 
 def s2_intersection(
-    left: S2Cell | int | str | Iterable[S2Cell | int | str],
-    right: S2Cell | int | str | Iterable[S2Cell | int | str],
+    left: _S2SetInput,
+    right: _S2SetInput,
 ) -> CellArray[S2Cell]:
     """Hierarchy-aware intersection of two S2 cell sets.
 
@@ -23748,7 +24093,7 @@ def s2_intersection(
 
     Parameters
     ----------
-    left, right : S2Cell, int, str, or iterable of those
+    left, right : S2Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -23771,8 +24116,8 @@ def s2_intersection(
     """
 
 def s2_difference(
-    left: S2Cell | int | str | Iterable[S2Cell | int | str],
-    right: S2Cell | int | str | Iterable[S2Cell | int | str],
+    left: _S2SetInput,
+    right: _S2SetInput,
 ) -> CellArray[S2Cell]:
     """Hierarchy-aware difference of two S2 cell sets.
 
@@ -23783,7 +24128,7 @@ def s2_difference(
 
     Parameters
     ----------
-    left, right : S2Cell, int, str, or iterable of those
+    left, right : S2Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns

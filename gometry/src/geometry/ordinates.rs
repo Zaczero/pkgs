@@ -343,6 +343,26 @@ pub(crate) struct RootMetricState {
     total_length: Option<f64>,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SourceArcObservation {
+    pub(crate) source: [Point; 2],
+    pub(crate) parameter: f64,
+    pub(crate) z: Option<f64>,
+    pub(crate) m: Option<f64>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_ARC_OBSERVATIONS: std::cell::RefCell<Vec<SourceArcObservation>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_source_arc_observations() -> Vec<SourceArcObservation> {
+    SOURCE_ARC_OBSERVATIONS.with(|observations| std::mem::take(&mut *observations.borrow_mut()))
+}
+
 impl<'a> SourceArcRequest<'a> {
     /// The frame is the original root's frame, not the resolved metric's frame.
     pub(in crate::geometry) fn new(
@@ -446,6 +466,17 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
                 value
             };
             let (z, m) = source_ordinate_values_at_fraction(start, end, *axes, value);
+            #[cfg(test)]
+            SOURCE_ARC_OBSERVATIONS.with(|observations| {
+                observations.borrow_mut().push(SourceArcObservation {
+                    source: [start, end],
+                    parameter: chart_parameter
+                        .round()
+                        .expect("source request parameters stay in the unit interval"),
+                    z: z.0,
+                    m: m.0,
+                });
+            });
             let mut ordinates = NodeOrdinates::default();
             ordinates.z.observe(z.0);
             ordinates.m.observe(m.0);

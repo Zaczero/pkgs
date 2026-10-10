@@ -17,7 +17,10 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 _TOOLS = _GOMETRY_ROOT / 'tools'
@@ -394,6 +397,9 @@ def admit_runtime(
         expected_receipt_sha256=expected_receipt_sha256,
     )
     selected_package_root = package_root_for_subject(subject, package_root)
+    runtime_artifact.check_import_resolution(
+        selected_package_root / 'gometry' / '__init__.py'
+    )
     if subject['kind'] == 'quality':
         runtime_receipt = subject['runtime_receipt']
         root = Path(subject['path']).parents[2]
@@ -560,6 +566,9 @@ def run_controlled_process(
     environment: dict[str, str] | None = None,
     pass_fds: tuple[int, ...] = (),
     result_path: Path | None = None,
+    on_ready: Callable[[dict[str, Any]], None] | None = None,
+    on_permission: Callable[[dict[str, Any]], None] | None = None,
+    on_measurement_done: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one case through ready/permission/done before accepting its artifact."""
     invocation_id = (environment or {}).get(
@@ -608,6 +617,7 @@ def run_controlled_process(
     result_line: bytes | None = None
     started_ns: int | None = None
     measurement_done_ns: int | None = None
+    measurement_acknowledged = False
     ended_ns: int | None = None
     deadline = time.monotonic() + timeout
 
@@ -648,6 +658,8 @@ def run_controlled_process(
                 if attributed != identity:
                     raise SystemExit(f'{case}: ready identity changed during admission')
                 ready = control
+                if on_ready is not None:
+                    on_ready(control)
                 return
             if control.get('type') == 'measurement-done':
                 if (
@@ -674,6 +686,7 @@ def run_controlled_process(
                 if (
                     ready is None
                     or measurement_done is None
+                    or not measurement_acknowledged
                     or done is not None
                     or result_line is not None
                 ):
@@ -722,6 +735,8 @@ def run_controlled_process(
                     stdout_lines.append(line + b'\n')
                     consume_stdout(line)
                     if ready is not None and started_ns is None:
+                        if on_permission is not None:
+                            on_permission(ready)
                         started_ns = time.monotonic_ns()
                         process.stdin.write(
                             json.dumps(
@@ -734,11 +749,25 @@ def run_controlled_process(
                             + b'\n'
                         )
                         process.stdin.flush()
-                        process.stdin.close()
                     if measurement_done is not None and measurement_done_ns is None:
                         measurement_done_ns = time.monotonic_ns()
+                        if on_measurement_done is not None:
+                            on_measurement_done(measurement_done)
+                        process.stdin.write(
+                            json.dumps(
+                                {
+                                    'command': 'measurement-done-ack',
+                                    'invocation_id': invocation_id,
+                                },
+                                sort_keys=True,
+                            ).encode()
+                            + b'\n'
+                        )
+                        process.stdin.flush()
+                        measurement_acknowledged = True
                     if done is not None and ended_ns is None:
                         ended_ns = time.monotonic_ns()
+                        process.stdin.close()
             if process.poll() is not None and not selector.get_map():
                 break
         returncode = process.wait()

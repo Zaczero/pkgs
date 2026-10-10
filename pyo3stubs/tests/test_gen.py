@@ -309,7 +309,7 @@ Widget"""
     assert constructor_sources.by_class['Widget'].prose == expected_doc
     assert constructor_sources.by_class['Widget'].reason is None
 
-    stub = 'class Widget:\n    def __new__(cls, size: int) -> Widget: ...\n'
+    stub = 'class Widget:\n    def __new__(cls, size: int = 3) -> Widget: ...\n'
 
     class Widget:
         """Class prose."""

@@ -325,11 +325,6 @@ Extremes
 
 ";
     tail: r"
-Raises
-------
-InvalidGeometryError
-    If the geometry is empty.
-
 Examples
 --------
 >>> import gometry as gm
@@ -938,17 +933,25 @@ Groups
 ", doc_sample_points!(@tail))
     };
     (@pre) => {
-        r"Random points on the geometry. The sample space is the geometry's highest
-dimension: uniform over area for areal input, along length for lineal input,
-and across the member points of a point set — falling back a dimension when
-the higher one is degenerate (a zero-area polygon samples its boundary),
-like centroid. Deterministic: the same input and ``seed`` always produce
-the same points (an explicit seed is required — no hidden global RNG). Array
-rows draw distinct deterministic streams derived from ``seed`` and the row
-index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-to sample and yields no points. Sampled points are invented interior points,
-so they cannot carry the source geometry's Z/M and are returned in XY.
+        r"Random points on the geometry. The sample space is its highest
+dimension: coordinate-area weighted for areal input, coordinate-length
+weighted for lineal input, and equal weight across point atoms. Geographic
+lines follow each retained longitude branch, while geographic areas are split
+into seam- and pole-aware chart parts before sampling. Length and area weights
+use the native coordinate chart, not ellipsoidal measures; for example, a
+degree-based 170° to -170° line follows its retained +20° path, contributing
+20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+chart area, not the complementary raw-coordinate span. Each logical
+member contributes separately, so overlapping members retain their sampling
+multiplicity. A zero-area polygon falls back to its linework, and zero-length
+linework falls back to vertices, like centroid. Deterministic: the same input
+and ``seed`` always produce the same points (an explicit seed is required —
+no hidden global RNG). Array rows draw distinct deterministic streams derived
+from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+        ``arr.sample_points(n, seed=s)[0]`` and
+        ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+        sample and yields no points. Results retain the input CRS and coordinate
+        epoch. Sampled points are new XY locations, so they have no source Z/M.
 
 Parameters
 ----------"
@@ -1008,16 +1011,21 @@ Groups
 
 method_doc! {
     doc_split_antimeridian;
-    body: r"Split at the antimeridian. Parts that cross come back as multiple parts
+    body: r"Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+come back as multiple parts
 whose edges follow the seam — each side keeping its own seam sign — so the
 result remains a coordinate-planar longitude/latitude chart for topology.
-Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-running off the seam closes over its pole automatically. Geometries that do
-not cross are returned unchanged. A split ``LineString`` becomes a
-``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-the split subdivides existing chart edges, so ellipsoidal area and perimeter
-are conserved to rounding.";
+Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+follow ellipsoidal arclength along the retained source edge. An authored
+full-period edge is retained with quarter witnesses before its longitudes are
+canonicalized. The two seam aliases and a displacement of multiple periods do
+not imply a full-period edge. A ring running off the seam closes over its pole
+automatically. Geometries that do not cross are returned unchanged. A split
+``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+existing chart edges, so ellipsoidal area and perimeter are conserved to
+rounding.";
     scalar: r"
 
 Returns
@@ -1109,9 +1117,10 @@ vertex, or the envelope of a horizontal or vertical row, bound no cells.
 
 Parameters
 ----------
-output : {'polygons', 'edges'}, default 'polygons'
-    Return clipped Voronoi cells or the internal Voronoi edges. Edge output
-    excludes the clip polygon's exterior boundary.
+output : {'polygons', 'edges'}
+    Return clipped Voronoi cells or the internal Voronoi edges. The polygon
+    form omits ``output``; edge output requires ``output='edges'`` and excludes
+    the clip polygon's exterior boundary.
 tolerance : float, default 0.0
     Finite non-negative coordinate-space tolerance: native angular units for
     geographic CRSs, native linear units for projected CRSs, and raw coordinate

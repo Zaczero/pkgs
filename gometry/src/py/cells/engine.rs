@@ -8,6 +8,7 @@ use crate::grid::coverer::RectCell;
 use crate::py::cells::coverage_ops::{
     GridCoverError, GridSourceAdmission, SortedCells, admit_grid_geometry,
 };
+use crate::py::cells::input::geometry_iterable_array;
 use crate::py::cells::{
     Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
     Shape,
@@ -197,10 +198,13 @@ pub(crate) fn grid_cover_dispatch<'py>(
         let coverage = result?;
         return PyCellArray::from_ids(kind, coverage).into_py_any(py);
     }
-    let Some(array) = exact_geometry_array(geom) else {
+    let array = match exact_geometry_array(geom) {
+        Some(array) => Some(array.clone()),
+        None => geometry_iterable_array(geom, false, "GeometryArray")?,
+    };
+    let Some(array) = array else {
         return Err(expected_geometry_or_array());
     };
-    let array = array.clone();
     let result = py.detach(move || {
         let admission = match GridSourceAdmission::new_for_array(&array) {
             Ok(admission) => admission,

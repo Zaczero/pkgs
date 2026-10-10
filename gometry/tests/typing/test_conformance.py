@@ -20,6 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
+from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -34,12 +35,19 @@ import gometry as gm
 import gometry._types as sht
 import numpy as np
 import numpy.typing as npt
+import pyarrow as pa
+
+if TYPE_CHECKING:
+    import io
 
 POINT = gm.Point(1, 1)
 LINE = gm.LineString([(0, 0), (1, 1), (2, 0)])
-GEOGRAPHIC_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=4326)
-GEOGRAPHIC_LINES = gm.GeometryArray([GEOGRAPHIC_LINE])
 GEOGRAPHIC_POINT = gm.Point(0, 0, crs=4326)
+GEOGRAPHIC_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=4326)
+METER_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=3857)
+METER_POINT = gm.Point(1, 1, crs=3857)
+METER_LINES = gm.GeometryArray([METER_LINE])
+GEOGRAPHIC_LINES = gm.GeometryArray([GEOGRAPHIC_LINE])
 MEASURED_LINE = gm.LineString([(0, 0, 0, 0), (1, 1, 0, 10), (2, 0, 0, 20)])
 M_STATION_COLUMN = cast(
     'sht.FloatColumn',
@@ -53,6 +61,7 @@ MULTILINE = gm.MultiLineString([LINE])
 POLY = gm.box(0, 0, 2, 2)
 POINTS = gm.GeometryArray([POINT, gm.Point(2, 2)])
 NULLABLE_POINTS = gm.GeometryArray([POINT, None])
+BATCH_POINTS: list[gm.Point | None] = [POINT, None, gm.Point(3, 4)]
 LINES = gm.GeometryArray([LINE])
 LINES2 = gm.GeometryArray([LINE, LINE])
 NULLABLE_LINES = gm.GeometryArray([LINE, None])
@@ -64,6 +73,103 @@ NULLABLE_POLYGONS = gm.GeometryArray([POLY, None])
 NORMALIZED: bool = True
 
 _GeometryT = TypeVar('_GeometryT', bound=gm.Geometry)
+
+if TYPE_CHECKING:
+    _dense_points: gm.GeometryArray[gm.Point] = gm.GeometryArray([POINT])
+    _nullable_points: gm.GeometryArray[gm.Point | None] = gm.GeometryArray([
+        POINT,
+        None,
+    ])
+    _point_rows: list[gm.Point] = [POINT, gm.Point(2, 2)]
+    _nullable_point_rows: list[gm.Point | None] = [POINT, None]
+    _coordinate_rows = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    _geometry_rows: list[gm.Geometry | None] = [POLY, None]
+
+    reveal_type(gm.pluscode_encode(POINT))
+    reveal_type(gm.pluscode_encode(8.0, 47.0))
+    reveal_type(gm.pluscode_encode(_dense_points))
+    reveal_type(gm.pluscode_encode(_nullable_points))
+    reveal_type(gm.pluscode_encode([8.0, 9.0], [47.0, 48.0]))
+    reveal_type(gm.pluscode_encode(_coordinate_rows[:, 0], 47.0))
+    reveal_type(gm.osm_shortlink_encode(POINT))
+    reveal_type(gm.osm_shortlink_encode(8.0, 47.0))
+    reveal_type(gm.osm_shortlink_encode(_dense_points))
+    reveal_type(gm.osm_shortlink_encode(_nullable_points))
+    reveal_type(gm.osm_shortlink_encode([8.0, 9.0], [47.0, 48.0]))
+    reveal_type(gm.osm_shortlink_encode(_coordinate_rows[:, 0], 47.0))
+
+    reveal_type(gm.pluscode_shorten('9C3W9QCJ+2VX', POINT))
+    reveal_type(gm.pluscode_shorten(['9C3W9QCJ+2VX'], POINT))
+    reveal_type(gm.pluscode_shorten('9C3W9QCJ+2VX', [-1.2, -1.3], 51.0))
+    reveal_type(gm.pluscode_shorten('9C3W9QCJ+2VX', _coordinate_rows[:, 0], 51.0))
+    reveal_type(gm.pluscode_recover('CJ+2VX', POINT))
+    reveal_type(gm.pluscode_recover(['CJ+2VX'], POINT))
+    reveal_type(gm.pluscode_recover('CJ+2VX', [-1.2, -1.3], 51.0))
+    reveal_type(gm.pluscode_recover('CJ+2VX', _coordinate_rows[:, 0], 51.0))
+
+    reveal_type(gm.h3_cells(_dense_points, resolution=7))
+    reveal_type(gm.h3_cells(_nullable_points, resolution=7))
+    reveal_type(gm.h3_cells(_point_rows, resolution=7))
+    reveal_type(gm.h3_cells(_nullable_point_rows, resolution=7))
+    reveal_type(gm.h3_cells(_coordinate_rows, resolution=7))
+    reveal_type(gm.h3_cells([1.0, 2.0], [3.0, 4.0], resolution=7))
+    reveal_type(gm.s2_cells(_dense_points, level=12))
+    reveal_type(gm.s2_cells(_nullable_points, level=12))
+    reveal_type(gm.s2_cells(_point_rows, level=12))
+    reveal_type(gm.s2_cells(_nullable_point_rows, level=12))
+    reveal_type(gm.s2_cells(_coordinate_rows, level=12))
+    reveal_type(gm.s2_cells([1.0, 2.0], [3.0, 4.0], level=12))
+    reveal_type(gm.geohash_cells(_dense_points, precision=6))
+    reveal_type(gm.geohash_cells(_nullable_points, precision=6))
+    reveal_type(gm.geohash_cells(_point_rows, precision=6))
+    reveal_type(gm.geohash_cells(_nullable_point_rows, precision=6))
+    reveal_type(gm.geohash_cells(_coordinate_rows, precision=6))
+    reveal_type(gm.geohash_cells([1.0, 2.0], [3.0, 4.0], precision=6))
+    reveal_type(gm.tile_cells(_dense_points, zoom=12))
+    reveal_type(gm.tile_cells(_nullable_points, zoom=12))
+    reveal_type(gm.tile_cells(_point_rows, zoom=12))
+    reveal_type(gm.tile_cells(_nullable_point_rows, zoom=12))
+    reveal_type(gm.tile_cells(_coordinate_rows, zoom=12))
+    reveal_type(gm.tile_cells([1.0, 2.0], [3.0, 4.0], zoom=12))
+
+    reveal_type(gm.h3_cover(POLY, resolution=7))
+    reveal_type(gm.h3_cover(_geometry_rows, resolution=7))
+    reveal_type(gm.s2_cover(POLY, level=10))
+    reveal_type(gm.s2_cover(POLY, level_mod=2))
+    reveal_type(gm.s2_cover(_geometry_rows))
+    reveal_type(gm.geohash_cover(POLY, precision=6))
+    reveal_type(gm.geohash_cover(_geometry_rows, precision=6))
+    reveal_type(gm.tile_cover(POLY, zoom=12))
+    reveal_type(gm.tile_cover(_geometry_rows, zoom=12))
+
+    _dense_h3 = gm.CellArray([gm.H3Cell(1.0, 2.0, resolution=7)])
+    _nullable_h3 = gm.CellArray([gm.H3Cell(1.0, 2.0, resolution=7), None])
+    _dense_s2 = gm.CellArray([gm.S2Cell(1.0, 2.0, level=12)])
+    _nullable_s2 = gm.CellArray([gm.S2Cell(1.0, 2.0, level=12), None])
+    _dense_geohash = gm.CellArray([gm.GeohashCell('u33d')])
+    _nullable_geohash = gm.CellArray([gm.GeohashCell('u33d'), None])
+    _dense_tile = gm.CellArray([gm.Tile(x=4, y=5, zoom=5)])
+    _nullable_tile = gm.CellArray([gm.Tile(x=4, y=5, zoom=5), None])
+    reveal_type(_dense_h3.contains(_dense_h3[0]))
+    reveal_type(_dense_h3.contains(_dense_h3[0].id))
+    reveal_type(_nullable_h3.contains(_dense_h3[0].token))
+    reveal_type(_nullable_h3.intersects(_dense_h3[0].id))
+    reveal_type(_dense_s2.contains(_dense_s2[0].id))
+    reveal_type(_nullable_s2.intersects(_dense_s2[0].token))
+    reveal_type(_dense_geohash.contains(_dense_geohash[0].token))
+    reveal_type(_nullable_geohash.intersects(_dense_geohash[0].token))
+    reveal_type(_dense_tile.contains(_dense_tile[0].id))
+    reveal_type(_nullable_tile.intersects(_dense_tile[0].token))
+
+    reveal_type(_dense_h3.token)
+    reveal_type(_nullable_h3.token)
+    reveal_type(_dense_h3.to_numpy())
+    reveal_type(_nullable_h3.to_numpy())
+    reveal_type(_nullable_geohash.to_numpy())
+    reveal_type(_dense_h3.__array__())
+    reveal_type(_nullable_h3.__array__())
+
+    reveal_type(gm.h3_union([_dense_h3[0], None], [None]))
 
 
 class _RowIndex:
@@ -102,6 +208,22 @@ def _check_require_row_types(
         gm.require(foreign_rows),
         gm.GeometryArray[gm.Geometry | None],
     )
+
+
+def _check_geoparquet_binary_stream_types(
+    binary_stream: io.BytesIO,
+    arrow_file: pa.NativeFile,
+) -> None:
+    assert_type(
+        gm.from_geoparquet(binary_stream),
+        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+    )
+    assert_type(
+        gm.from_geoparquet(arrow_file),
+        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+    )
+    POINTS.to_geoparquet(binary_stream)
+    POINTS.to_geoparquet(arrow_file)
 
 
 def _check_cell_projection_row_types(
@@ -728,6 +850,8 @@ assert_type(POINTS, gm.GeometryArray[gm.Point])
 assert_type(gm.MultiPoint([POINT, gm.Point(2, 2)]), gm.MultiPoint)
 if TYPE_CHECKING:
     from collections.abc import Hashable, Iterable, Mapping
+    from pathlib import Path
+    from tempfile import TemporaryDirectory
 
     import geopandas as gpd
     import pandas as pd
@@ -760,6 +884,88 @@ if TYPE_CHECKING:
     assert_type(pandas_series, pd.Series)
     assert_type(gm.from_pandas(pandas_series), gm.GeometryArray[gm.Geometry | None])
 
+    reveal_type(gm.from_wkt('POINT (1 2)'))
+    reveal_type(gm.from_wkt(['POINT (1 2)']))
+    reveal_type(gm.from_wkt(['POINT (1 2)', None]))
+    reveal_type(gm.from_wkt(pandas_series))
+
+    wkb_scalar_bytes: bytes = POINT.to_wkb()
+    wkb_scalar_array: npt.NDArray[np.uint8] = np.frombuffer(
+        wkb_scalar_bytes, dtype=np.uint8
+    )
+    wkb_signed_scalar_array: npt.NDArray[np.int8] = np.frombuffer(
+        wkb_scalar_bytes, dtype=np.int8
+    )
+    wkb_object_rows: npt.NDArray[np.object_] = np.array(
+        [wkb_scalar_bytes, None], dtype=object
+    )
+    wkb_fixed_byte_rows: npt.NDArray[np.bytes_] = np.array(
+        [wkb_scalar_bytes], dtype='S'
+    )
+    reveal_type(gm.from_wkb(wkb_scalar_bytes))
+    reveal_type(gm.from_wkb(wkb_scalar_array))
+    reveal_type(gm.from_wkb(wkb_signed_scalar_array))
+    reveal_type(gm.from_wkb(wkb_object_rows))
+    reveal_type(gm.from_wkb(wkb_fixed_byte_rows))
+    reveal_type(gm.from_wkb([wkb_scalar_bytes]))
+    reveal_type(gm.from_wkb([wkb_scalar_bytes, None]))
+    reveal_type(gm.from_wkb(pandas_series))
+
+    reveal_type(gm.from_polyline('_seK_ibE'))
+    reveal_type(gm.from_polyline(['_seK_ibE']))
+    reveal_type(gm.from_polyline(['_seK_ibE', None]))
+    reveal_type(gm.from_polyline(pandas_series))
+    polars_text_column: pl.Series = pl.Series('wkt', ['POINT (1 2)', None])
+    arrow_binary_column: pa.Array = pa.array([wkb_scalar_bytes, None])
+    arrow_text_column: pa.ChunkedArray = pa.chunked_array([
+        pa.array(['POINT (1 2)']),
+        pa.array([None], type=pa.string()),
+    ])
+    reveal_type(gm.from_wkt(polars_text_column))
+    reveal_type(gm.from_wkt(arrow_text_column))
+    reveal_type(gm.from_wkb(arrow_binary_column))
+    reveal_type(gm.from_polyline(arrow_text_column))
+
+    feature_row: sht.GeoJsonFeature = {
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+        'properties': {'name': 'site'},
+    }
+    feature_non_null: sht.GeoJsonFeatureNonNull = {
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+        'properties': {'name': 'site'},
+    }
+    feature_collection: sht.GeoJsonFeatureCollection = {
+        'type': 'FeatureCollection',
+        'features': [feature_row],
+    }
+    feature_rows: list[sht.GeoJsonFeature | None] = [feature_row, None]
+    feature_text: str = '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}'
+    reveal_type(gm.from_geojson(feature_row))
+    reveal_type(gm.from_geojson(feature_collection))
+    reveal_type(gm.from_geojson(feature_rows))
+    reveal_type(gm.from_geojson(pandas_series))
+    reveal_type(gm.from_geojson(feature_non_null, features=False))
+    reveal_type(gm.from_geojson(feature_non_null, features=True))
+    reveal_type(gm.from_geojson(arrow_text_column))
+
+    def _feature_result_for_runtime_flag(features: bool) -> None:
+        reveal_type(gm.from_geojson(feature_text, features=features))
+
+    reveal_type(gm.points([(1.0, 2.0)]))
+    reveal_type(gm.points(1.0, 2.0))
+    reveal_type(gm.Point((1.0, 2.0)))
+    reveal_type(gm.Point(1.0, 2.0))
+    reveal_type(POINTS.to_wkt())
+    reveal_type(gm.GeometryArray([POINT, None]).to_wkt())
+    reveal_type(POINTS.to_wkb())
+    reveal_type(gm.GeometryArray([POINT, None]).to_wkb())
+    reveal_type(POINTS.to_geojson())
+    reveal_type(gm.GeometryArray([POINT, None]).to_geojson())
+    reveal_type(POINTS.to_polyline())
+    reveal_type(gm.GeometryArray([POINT, None]).to_polyline())
+
     polars_series = POINTS.to_polars()
     assert_type(polars_series, pl.Series)
     assert_type(gm.from_polars(polars_series), gm.GeometryArray[gm.Geometry | None])
@@ -777,7 +983,7 @@ if TYPE_CHECKING:
         gm.Point,
     )
     assert_type(POINTS[np.int64(0)], gm.Point)
-    assert_type(gm.contains_xy(POLY, np.float32(1.0), np.int64(1)), bool)
+    assert_type(gm.contains(POLY, x=np.float32(1.0), y=np.int64(1)), bool)
     assert_type(
         gm.crs_transform(4326, 3857, np.float32(1.0), np.float64(2.0)),
         tuple[float, float],
@@ -825,7 +1031,10 @@ if TYPE_CHECKING:
     )
     navigation_path: sht.NavigationPath = 'rhumb'
     features = gm.Features(POINTS)
-    assert_type(POINTS.to_geoparquet('points.parquet', encoding='native'), None)
+    with TemporaryDirectory() as _temporary:
+        parquet_path = Path(_temporary) / 'points.parquet'
+        assert_type(POINTS.to_geoparquet(parquet_path, encoding='native'), None)
+        assert parquet_path.is_file()
     assert_type(
         gm.to_feature_collection(features, properties=None, ids=None),
         sht.GeoJsonFeatureCollection,
@@ -1081,10 +1290,10 @@ assert_type(
 )
 assert_type(gm.s2_cover(POLY, level=12), gm.CellArray[gm.S2Cell])
 assert_type(
-    gm.s2_cover_adaptive(gm.GeometryArray([POLY])),
+    gm.s2_cover(gm.GeometryArray([POLY])),
     gm.Groups[gm.CellArray[gm.S2Cell]],
 )
-assert_type(gm.s2_cover_adaptive(POLY), gm.CellArray[gm.S2Cell])
+assert_type(gm.s2_cover(POLY), gm.CellArray[gm.S2Cell])
 assert_type(
     gm.geohash_cover(gm.GeometryArray([POLY]), precision=5),
     gm.Groups[gm.CellArray[gm.GeohashCell]],
@@ -1104,17 +1313,80 @@ assert_type(H3_GROUPS[:1], gm.Groups[gm.CellArray[gm.H3Cell]])
 assert_type(H3_GROUPS.to_list(), list[list[gm.H3Cell]])
 assert_type(
     gm.h3_cover(POLY, resolution=2).to_numpy(),
-    npt.NDArray[np.uint64] | npt.NDArray[np.object_],
+    npt.NDArray[np.uint64],
 )
 INDEX = gm.SpatialIndex(POINTS)
 assert_type(INDEX.crs, gm.CRS | None)
 assert_type(INDEX.epoch, float | None)
-assert_type(INDEX.query(POINT), np.ndarray[tuple[int], np.dtype[np.int64]])
+assert_type(INDEX.query(POINT), _Int64Array1D)
+assert_type(INDEX[np.int64(0)], gm.Geometry)
+assert_type(INDEX.get(np.int64(0)), gm.Geometry | None)
 assert_type(POINTS[INDEX.query(POINT)], gm.GeometryArray[gm.Point])
 if TYPE_CHECKING:
+    # Python interpreters see only these declarations' runtime-neutral type
+    # probes; pyright reports their inferred types for every migrated overload.
+    reveal_type(gm.contains(POLY, POINT))
+    reveal_type(gm.contains(BATCH_POINTS, POINT))
+    reveal_type(gm.contains(NULLABLE_POINTS, POINT))
+    reveal_type(gm.contains(POLY, x=np.float64(1), y=np.float64(1)))
+    reveal_type(gm.contains(POLY, x=[0.0, 1.0], y=0.0))
+    reveal_type(gm.contains(POLYS, x=0.0, y=0.0))
+    reveal_type(gm.intersects(POLY, POINT))
+    reveal_type(gm.intersects(BATCH_POINTS, POINT))
+    reveal_type(gm.intersects(NULLABLE_POINTS, POINT))
+    reveal_type(gm.intersects(POLY, x=1.0, y=1.0))
+    reveal_type(gm.intersects(POLY, x=0.0, y=[0.0, 1.0]))
+    reveal_type(gm.intersects(POLYS, x=0.0, y=0.0))
+    reveal_type(gm.contains_properly(BATCH_POINTS, POINT))
+    reveal_type(gm.covered_by(BATCH_POINTS, POINT))
+    reveal_type(gm.covers(BATCH_POINTS, POINT))
+    reveal_type(gm.crosses(BATCH_POINTS, POINT))
+    reveal_type(gm.disjoint(BATCH_POINTS, POINT))
+    reveal_type(gm.dwithin(BATCH_POINTS, POINT, [1.0, 2.0, 3.0]))
+    reveal_type(gm.equals(BATCH_POINTS, POINT))
+    reveal_type(gm.equals_exact(BATCH_POINTS, POINT))
+    reveal_type(gm.equals_identical(BATCH_POINTS, POINT))
+    reveal_type(gm.overlaps(BATCH_POINTS, POINT))
+    reveal_type(gm.touches(BATCH_POINTS, POINT))
+    reveal_type(gm.within(BATCH_POINTS, POINT))
+    reveal_type(gm.relate(BATCH_POINTS, POINT))
+    reveal_type(gm.relate_pattern(BATCH_POINTS, POINT, 'T********'))
+    reveal_type(gm.distance(BATCH_POINTS, POINT))
+    reveal_type(gm.distance_3d(BATCH_POINTS, POINT))
+    reveal_type(gm.hausdorff_distance(BATCH_POINTS, POINT))
+    reveal_type(gm.frechet_distance([LINE, None], LINE))
+    reveal_type(gm.nearest_points(BATCH_POINTS, POINT))
+    reveal_type(gm.shortest_line(BATCH_POINTS, POINT))
+    reveal_type(gm.shared_paths([LINE, None], LINE))
+    reveal_type(gm.area(BATCH_POINTS))
+    reveal_type(gm.length(BATCH_POINTS))
+    reveal_type(gm.length_3d(BATCH_POINTS))
+    reveal_type(INDEX.query(BATCH_POINTS))
+    reveal_type(INDEX.candidates(BATCH_POINTS))
+    reveal_type(INDEX.nearest(POINT, return_distance=False))
+    reveal_type(INDEX.nearest(POINT, return_distance=True))
+    reveal_type(INDEX.nearest(POINTS, return_distance=False))
+    reveal_type(INDEX.nearest(POINTS, return_distance=True))
+    reveal_type(INDEX.remove(np.int64(0)))
+    reveal_type(INDEX == {0: POINT})
+    reveal_type(INDEX.__hash__)
+    reveal_type(gm.nearest(POINTS, POINT, return_distance=True))
+    reveal_type(gm.nearest(POINTS, POINT, return_distance=False))
+    reveal_type(gm.nearest(POINTS, NULLABLE_POINTS, return_distance=False))
+    reveal_type(gm.nearest(POINTS, NULLABLE_POINTS, return_distance=True))
+    reveal_type(gm.join(BATCH_POINTS, BATCH_POINTS))
+    reveal_type(NULLABLE_POINTS.num_coordinates)
+    reveal_type(POLY.extremes())
+    reveal_type(NULLABLE_POINTS.extremes())
+
+    def _reveal_dynamic_nearest_flag(flag: bool) -> None:
+        reveal_type(INDEX.nearest(POINT, return_distance=flag))
+        reveal_type(INDEX.nearest(POINTS, return_distance=flag))
+        reveal_type(gm.nearest(POINTS, POINT, return_distance=flag))
+
     assert_type(
         INDEX.query(POINTS),
-        gm.Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        gm.Groups[_Int64Array1D],
     )
 else:
     assert isinstance(INDEX.query(POINTS), gm.Groups)
@@ -1147,16 +1419,14 @@ assert_type(POINTS.sort_by_spatial_key(), gm.GeometryArray[gm.Point])
 assert_type(POINTS.sort_by_spatial_key(curve='morton'), gm.GeometryArray[gm.Point])
 assert_type(LINE.segmentize(0.5), gm.LineString)
 assert_type(LINE.segmentize(fraction=0.5), gm.LineString)
-assert_type(LINE.segmentize(0.5, path='geodesic'), gm.LineString)
-assert_type(
-    gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=4326).segmentize(
-        fraction=0.5, path='rhumb'
-    ),
-    gm.LineString,
-)
+assert_type(GEOGRAPHIC_LINE.segmentize(0.5, path='geodesic'), gm.LineString)
+assert_type(GEOGRAPHIC_LINE.segmentize(fraction=0.5, path='rhumb'), gm.LineString)
 assert_type(LINES.segmentize(0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
-assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
+assert_type(
+    gm.GeometryArray([GEOGRAPHIC_LINE]).segmentize(0.5, path='geodesic'),
+    gm.GeometryArray[gm.LineString],
+)
 assert_type(LINE.line_interpolate(0.5), gm.Point)
 assert_type(LINE.line_interpolate(at=0.5), gm.Point)
 assert_type(
@@ -1166,6 +1436,14 @@ assert_type(
 assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate([0.25, 0.75]), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate(count=3), gm.GeometryArray[gm.Point])
+assert_type(
+    METER_LINE.line_interpolate(count=3, unit='meters'),
+    gm.GeometryArray[gm.Point],
+)
+assert_type(
+    GEOGRAPHIC_LINE.line_interpolate(count=3, unit='meters'),
+    gm.GeometryArray[gm.Point],
+)
 assert_type(
     PROJECTED_LINE.line_interpolate(count=3, unit='meters'),
     gm.GeometryArray[gm.Point],
@@ -1201,6 +1479,11 @@ assert_type(
     gm.GeometryArray[gm.Point | None],
 )
 assert_type(LINE.line_locate(POINT), float)
+assert_type(METER_LINE.line_locate(METER_POINT, normalized=True, unit='meters'), float)
+assert_type(
+    GEOGRAPHIC_LINE.line_locate(GEOGRAPHIC_POINT, normalized=True, unit='meters'),
+    float,
+)
 assert_type(
     PROJECTED_LINE.line_locate(PROJECTED_POINT, normalized=True, unit='meters'),
     float,
@@ -1260,6 +1543,10 @@ assert_type(
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(
+    METER_LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
+    gm.GeometryArray[gm.LineString | gm.Point],
+)
+assert_type(
     GEOGRAPHIC_LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
     gm.GeometryArray[gm.LineString | gm.Point],
 )
@@ -1302,8 +1589,17 @@ if TYPE_CHECKING:
     reveal_type(gm.point_between(POINT, POINT, 1.0))
     reveal_type(gm.point_between(NULLABLE_POINTS, POINT, 1.0))
     reveal_type(gm.point_between(POINT, NULLABLE_POINTS, 1.0, path='rhumb'))
+    reveal_type(gm.distance(POINT, POINT))
+    reveal_type(gm.distance(BATCH_POINTS, POINT))
+    reveal_type(gm.distance(POINT, BATCH_POINTS))
+    reveal_type(gm.distance(BATCH_POINTS, BATCH_POINTS))
     reveal_type(gm.distance(POINT, POINT, path='rhumb'))
+    reveal_type(gm.distance(BATCH_POINTS, POINT, path='rhumb'))
+    reveal_type(gm.distance(POINT, BATCH_POINTS, path='rhumb'))
+    reveal_type(gm.distance(BATCH_POINTS, BATCH_POINTS, path='rhumb'))
     reveal_type(gm.distance(NULLABLE_POINTS, POINT, path='rhumb'))
+    reveal_type(gm.distance(POINT, NULLABLE_POINTS, path='rhumb'))
+    reveal_type(gm.distance(NULLABLE_POINTS, NULLABLE_POINTS, path='rhumb'))
     reveal_type(gm.crs_catalog('WGS 84'))
     reveal_type(gm.CRS(4326).to_projjson())
     reveal_type(gm.CRS(4326).to_projjson(as_dict=False))
@@ -1445,7 +1741,7 @@ assert_type(NULLABLE_H3.to_numpy(), npt.NDArray[np.uint64] | npt.NDArray[np.obje
 assert_type(NULLABLE_H3.__array__(), npt.NDArray[np.uint64] | npt.NDArray[np.object_])
 assert_type(NULLABLE_H3.__array__(dtype=np.dtype(np.object_)), npt.NDArray[np.object_])
 assert_type(NULLABLE_H3.__array__(dtype=object), npt.NDArray[np.object_])
-nullable_h3_var: gm.CellArray[gm.H3Cell | None] = h3_cells
+nullable_h3_var: gm.CellArray[gm.H3Cell | None] = NULLABLE_H3
 assert_type(
     nullable_h3_var.to_numpy(), npt.NDArray[np.uint64] | npt.NDArray[np.object_]
 )
@@ -1558,8 +1854,8 @@ assert_type(gm.overlaps(POLY, POINTS), npt.NDArray[np.bool_])
 assert_type(gm.overlaps(POINTS, POLY), npt.NDArray[np.bool_])
 assert_type(gm.equals(POLY, POINTS), npt.NDArray[np.bool_])
 assert_type(gm.equals(POINTS, POLY), npt.NDArray[np.bool_])
-assert_type(gm.intersects_xy(POLY, 0.0, 0.0), bool)
-assert_type(gm.intersects_xy(POLY, [0.0], [0.0]), npt.NDArray[np.bool_])
+assert_type(gm.intersects(POLY, x=0.0, y=0.0), bool)
+assert_type(gm.intersects(POLY, x=[0.0], y=[0.0]), npt.NDArray[np.bool_])
 assert_type(gm.equals(POLY, POLY), bool)
 assert_type(gm.dwithin(POLY, POLY, 0.0), bool)
 assert_type(gm.equals_exact(POLY, POLY), bool)
@@ -1591,7 +1887,7 @@ assert_type(POINT.coords.__array__(dtype=np.dtype(np.float32)), npt.NDArray[np.f
 assert_type(POINTS.__array__(), npt.NDArray[np.object_])
 assert_type(POINTS.__array__(dtype=object), npt.NDArray[np.object_])
 assert_type(POINTS.to_numpy(), npt.NDArray[np.object_])
-assert_type(h3_cells.__array__(), npt.NDArray[np.uint64] | npt.NDArray[np.object_])
+assert_type(h3_cells.__array__(), npt.NDArray[np.uint64])
 assert_type(h3_cells.__array__(dtype=np.dtype(np.object_)), npt.NDArray[np.object_])
 assert_type(h3_cells.__array__(dtype=object), npt.NDArray[np.object_])
 assert_type(h3_vertices.__array__(), npt.NDArray[np.uint64])
@@ -1618,6 +1914,14 @@ assert_type(gm.MultiPoint(POINTS.coords), gm.MultiPoint)
 
 # CRS kind vocabulary.
 assert_type(gm.CRS(4326).kind, sht.CrsKind)
+assert_type(hash(gm.CRS(4326)), int)
+assert_type(
+    POINT.coords.__reduce__(), tuple[Callable[..., gm.Coordinates], tuple[Any, ...]]
+)
+assert_type(
+    POINTS.__reduce_ex__(5),
+    tuple[Callable[..., gm.GeometryArray[gm.Geometry | None]], tuple[Any, ...]],
+)
 if TYPE_CHECKING:
     _kind_ok: sht.CrsCatalogKind = 'projected'
     _db_kind_ok: sht.CrsDatabaseKind = 'ellipsoid'
@@ -1634,17 +1938,6 @@ if TYPE_CHECKING:
     _geohash_cell_ok: gm.Cell = gm.GeohashCell(POINT, precision=7)
     _tile_cell_ok: gm.Cell = gm.Tile(POINT, zoom=10)
     assert_type(_h3_cell_ok.children_count(), int)
-
-
-def test_custom_index_selects_rows_across_container_families() -> None:
-    index = _RowIndex()
-    cells = gm.CellArray([h3_cell])
-
-    assert POINTS[index] == POINT
-    assert NULLABLE_POINTS[index] == POINT
-    assert cells[index] == h3_cell
-    assert h3_vertices[index] == h3_vertices[0]
-    assert h3_edges[index] == h3_edges[0]
 
 
 def _check_rank_erased_integer_selectors(

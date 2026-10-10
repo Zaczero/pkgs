@@ -2885,10 +2885,12 @@ pub(crate) fn distance_rhumb(
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     reject_rhumb_unit(unit, MetricOp::RhumbDistance)?;
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
     point_binary_f64(
         py,
-        left,
-        right,
+        &left,
+        &right,
         MetricOp::RhumbDistance,
         |crs| require_geographic_model(crs, MetricOp::RhumbDistance),
         RhumbDistanceKernel,

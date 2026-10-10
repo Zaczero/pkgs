@@ -34,6 +34,58 @@ def test_sparse_index_releases_historical_search_structure() -> None:
     assert pair_rows(index.self_join()) == []
 
 
+def test_spatial_index_mapping_equality_is_live_value_based_and_unhashable() -> None:
+    left = gm.Point(1, 2)
+    right = gm.Point(3, 4)
+    index = gm.SpatialIndex([left, right])
+
+    assert index[np.int64(0)] == left
+    assert index.get(np.int64(1)) == right
+    assert index.get(np.int64(9), 'missing') == 'missing'
+    assert index == {0: left, 1: right}
+    assert {0: left, 1: right} == index
+    assert copy.copy(index) == index
+    assert index != {0: left}
+    with pytest.raises(TypeError, match='unhashable'):
+        hash(index)
+
+    assert index.remove(np.int64(0))
+    assert index == {1: right}
+
+
+def test_index_queries_and_joins_normalize_nullable_iterable_rows() -> None:
+    first = gm.box(0, 0, 1, 1)
+    second = gm.box(4, 4, 5, 5)
+    values = [first, None, second]
+    queries = iter([gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)])
+    index = gm.SpatialIndex(values)
+
+    assert index.query(queries).to_list() == [[0], [], [2]]
+    assert index.candidates([
+        gm.Point(0.5, 0.5),
+        None,
+        gm.Point(4.5, 4.5),
+    ]).to_list() == [
+        [0],
+        [],
+        [2],
+    ]
+    assert index.nearest([gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)]).to_list() == [
+        [0],
+        [],
+        [2],
+    ]
+    assert gm.nearest(
+        values, [gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)]
+    ).to_list() == [
+        [0],
+        [],
+        [2],
+    ]
+    assert pair_rows(gm.join([gm.Point(0.5, 0.5), None], values)) == [(0, 0)]
+    assert pair_rows(index.join([gm.Point(0.5, 0.5), None])) == [(0, 0)]
+
+
 @pytest.mark.parametrize('predicate', ['crosses', 'overlaps'])
 def test_geographic_index_windows_reject_invalid_query_coordinates(predicate):
     index = gm.SpatialIndex([gm.LineString([(0, 0), (1, 0)], crs=4326)])
@@ -837,7 +889,7 @@ def test_geometry_array_prepared_contains_and_index() -> None:
     np.testing.assert_array_equal(
         gm.contains(polygon, values), [True, False, True, False]
     )
-    assert gm.contains_xy(polygon, 0, 0)
+    assert gm.contains(polygon, x=0, y=0)
     family = (
         'contains',
         'intersects',
@@ -1235,7 +1287,7 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
     empty = _lib._unpickle_spatial_index_v2(framed[:0], (), large_next, True)
     empty_roundtrip = pickle.loads(pickle.dumps(empty))
     assert list(empty_roundtrip) == []
-    assert empty_roundtrip.crs == 'EPSG:4326'
+    assert empty_roundtrip.crs == gm.CRS('EPSG:4326')
     assert empty_roundtrip.epoch == 2020.0
     assert (
         empty_roundtrip.insert(gm.Point(5.0, 6.0, crs=4326, epoch=2020.0)) == large_next
@@ -1279,7 +1331,7 @@ def test_spatial_index_all_missing_compact_owner_stays_unframed_until_append() -
     assert list(index) == []
 
     assert index.insert(gm.Point(9.0, 10.0, crs=3857)) == 3
-    assert index.crs == 'EPSG:3857'
+    assert index.crs == gm.CRS('EPSG:3857')
     assert ids(index.query(gm.Point(9.0, 10.0, crs=3857))) == [3]
 
 

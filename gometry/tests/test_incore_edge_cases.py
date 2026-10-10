@@ -545,7 +545,7 @@ def test_empty_geometry_to_crs_typed_empty_with_target_crs() -> None:
     empty = gm.from_wkt('POLYGON EMPTY', crs=WGS84)
     out = empty.to_crs(WEB_MERCATOR)
     assert out.is_empty
-    assert out.crs == WEB_MERCATOR
+    assert out.crs == gm.CRS(WEB_MERCATOR)
     assert out.to_wkt() == 'POLYGON EMPTY'
 
 

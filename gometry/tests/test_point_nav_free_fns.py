@@ -543,6 +543,15 @@ def test_distance_rhumb_and_bearing_path() -> None:
         gm.distance(gm.Point(0, 0), gm.Point(1, 1), path='rhumb')
 
 
+def test_distance_rhumb_accepts_nullable_iterable_rows() -> None:
+    jfk, lhr = gm.Point(-73.8, 40.6, crs=4326), gm.Point(-0.5, 51.6, crs=4326)
+    distances = gm.distance(iter([jfk, None, lhr]), jfk, path='rhumb')
+
+    assert distances[0] == pytest.approx(0.0)
+    assert np.isnan(distances[1])
+    assert distances[2] / 1000 == pytest.approx(5771.1, abs=1.0)
+
+
 def test_rhumb_destination_path_scalar() -> None:
     end = gm.Point(-10, 45, crs=4326).destination(90, 1_000_000, path='rhumb')
     assert (round(end.x, 3), round(end.y, 3)) == (2.683, 45.0)

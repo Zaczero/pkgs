@@ -15,12 +15,14 @@ import pytest
 from pyo3stubs.doc_structure import (
     DocLocation,
     DocSubject,
+    SignatureParameter,
     _stub_parameters,
     check_doc_subject,
     duplicate_section_errors,
     parameter_entries,
     parse_doc,
     raises_entries,
+    resolve_parameter_rows,
     return_entries,
 )
 
@@ -110,9 +112,81 @@ def test_a_documented_parameter_that_left_the_signature_is_flagged():
         tuple(inspect.signature(sample).parameters.values()),
     )
     assert any(
-        'gone' in error and 'not in the signature' in error
+        'gone' in error and 'not in any call form' in error
         for error in check_doc_subject(subject)
     )
+
+
+def test_bound_method_receivers_are_removed_but_static_self_is_a_parameter() -> None:
+    tree = ast.parse(
+        """\
+class Widget:
+    def move(self, value: int) -> int: ...
+
+    @staticmethod
+    def build(self: str) -> str: ...
+
+    @classmethod
+    def from_value(cls, value: int) -> int: ...
+"""
+    )
+    class_node = tree.body[0]
+    assert isinstance(class_node, ast.ClassDef)
+    methods = {
+        node.name: node for node in class_node.body if isinstance(node, ast.FunctionDef)
+    }
+    docs = {
+        'move': """\
+Move the receiver.
+
+Parameters
+----------
+value : int
+    Translation amount.
+
+Returns
+-------
+int
+    The translated value.
+""",
+        'build': """\
+Build from a string.
+
+Parameters
+----------
+self : str
+    The explicit string argument.
+
+Returns
+-------
+str
+    The built value.
+""",
+        'from_value': """\
+Build from a value.
+
+Parameters
+----------
+value : int
+    The value.
+
+Returns
+-------
+int
+    The built value.
+""",
+    }
+
+    for name, method in methods.items():
+        subject = DocSubject(
+            f'Widget.{name}',
+            'callable',
+            docs[name],
+            None,
+            DocLocation('widget.pyi', method.lineno),
+            (method,),
+        )
+        assert check_doc_subject(subject) == [], name
 
 
 def test_a_missing_returns_section_is_flagged():
@@ -148,6 +222,205 @@ def test_google_description_default_must_match_the_runtime():
     assert check_doc_subject(subject) == [
         'sample.scale: documented default 3.0 != runtime 2.0'
     ]
+
+
+def test_default_comparison_preserves_boolean_and_integer_types() -> None:
+    def boolean(flag: bool = True) -> bool:
+        return flag
+
+    doc = """\
+Return the flag.
+
+Parameters
+----------
+flag : bool, default 1
+    The flag.
+
+Returns
+-------
+bool
+    The flag value.
+"""
+    subject = _subject(
+        'boolean',
+        doc,
+        tuple(inspect.signature(boolean).parameters.values()),
+    )
+    assert check_doc_subject(subject) == [
+        'boolean.flag: documented default 1 != runtime True'
+    ]
+
+
+def test_unquoted_enum_default_matches_its_quoted_string_value() -> None:
+    def choose(mode: Literal['auto', 'wkb'] = 'auto') -> str:
+        return mode
+
+    doc = """\
+Choose an encoding.
+
+Parameters
+----------
+mode : {'auto', 'wkb'}, default auto
+    Encoding mode.
+
+Returns
+-------
+str
+    The chosen encoding.
+"""
+    subject = _subject(
+        'choose',
+        doc,
+        tuple(inspect.signature(choose).parameters.values()),
+    )
+    assert check_doc_subject(subject) == []
+
+
+def test_parameter_rows_reconcile_absence_required_defaults_and_variadics() -> None:
+    prose = """\
+Construct a value.
+
+Parameters
+----------
+value : int
+    Value in either form.
+flag : bool, default False
+    Whether to enable the option.
+args : int
+    Additional positional values.
+optional : str
+    Optional text value.
+
+Returns
+-------
+object
+    The result.
+"""
+    forms = (
+        (
+            SignatureParameter('value', 'positional-only', 'int', None),
+            SignatureParameter('flag', 'keyword-only', 'bool', 'False'),
+            SignatureParameter('args', 'variadic positional', 'int', None),
+        ),
+        (
+            SignatureParameter('value', 'keyword-only', 'int', '1'),
+            SignatureParameter('flag', 'keyword-only', 'bool', 'False'),
+            SignatureParameter('optional', 'keyword-only', 'str', 'None'),
+            SignatureParameter('args', 'variadic positional', 'int', None),
+        ),
+    )
+    carriers = ((prose, DocLocation('widget.pyi', 10)),)
+
+    resolution = resolve_parameter_rows('Widget.construct', carriers, forms)
+    rows = {row.name: row for row in resolution.rows}
+
+    assert resolution.errors == ()
+    assert (rows['value'].status, rows['value'].default) == (
+        'varies',
+        'varies by call form',
+    )
+    assert [occurrence.status for occurrence in rows['value'].occurrences] == [
+        'required',
+        'defaulted',
+    ]
+    assert [occurrence.kind for occurrence in rows['value'].occurrences] == [
+        'positional-only',
+        'keyword-only',
+    ]
+    assert [occurrence.annotation for occurrence in rows['value'].occurrences] == [
+        'int',
+        'int',
+    ]
+    assert [occurrence.default for occurrence in rows['value'].occurrences] == [
+        None,
+        '1',
+    ]
+    assert (rows['flag'].status, rows['flag'].default) == ('defaulted', 'False')
+    assert (rows['args'].status, rows['args'].default) == (
+        'variadic',
+        'not applicable',
+    )
+    assert (rows['optional'].status, rows['optional'].default) == (
+        'varies',
+        'varies by call form',
+    )
+    assert rows['optional'].occurrences[0] is None
+    assert rows['optional'].occurrences[1].default == 'None'
+
+    fixed_default_claim = prose.replace(
+        'value : int\n',
+        'value : int, default 1\n',
+        1,
+    )
+    conflicting = resolve_parameter_rows(
+        'Widget.construct',
+        ((fixed_default_claim, DocLocation('widget.pyi', 10)),),
+        forms,
+    )
+    assert any(
+        'documented default 1' in error and 'applicability varies' in error
+        for error in conflicting.errors
+    )
+
+
+def test_duplicate_prose_claims_coalesce_and_conflicts_keep_both_sources() -> None:
+    forms = ((SignatureParameter('value', 'positional or keyword', 'int', '1'),),)
+    equivalent = resolve_parameter_rows(
+        'Widget.build',
+        (
+            (
+                'Parameters\n----------\nvalue : int\n    The first claim.',
+                DocLocation('first.py', 10),
+            ),
+            (
+                'Other Parameters\n----------------\nvalue : int\n    The second claim.',
+                DocLocation('second.rs', 20),
+            ),
+        ),
+        forms,
+    )
+    assert equivalent.errors == ()
+    assert len(equivalent.rows) == 1
+    assert equivalent.rows[0].description == 'The first claim.\n\nThe second claim.'
+
+    complementary = resolve_parameter_rows(
+        'Widget.build',
+        (
+            (
+                'Parameters\n----------\nvalue : int\n    The value.',
+                DocLocation('first.py', 10),
+            ),
+            (
+                'Other Parameters\n----------------\nvalue : int\n    The value. Extra constraints apply.',
+                DocLocation('second.rs', 20),
+            ),
+        ),
+        forms,
+    )
+    assert complementary.errors == ()
+    assert complementary.rows[0].description == (
+        'The value.\n\nThe value. Extra constraints apply.'
+    )
+
+    conflicting = resolve_parameter_rows(
+        'Widget.build',
+        (
+            (
+                'Parameters\n----------\nvalue : int, default 1\n    The value.',
+                DocLocation('first.py', 10),
+            ),
+            (
+                'Other Parameters\n----------------\nvalue : float, default 2\n    The value.',
+                DocLocation('second.rs', 20),
+            ),
+        ),
+        forms,
+    )
+    assert len(conflicting.errors) == 2
+    assert 'first.py:' in conflicting.errors[0]
+    assert 'second.rs:' in conflicting.errors[0]
+    assert 'first.py:' in conflicting.errors[1]
+    assert 'second.rs:' in conflicting.errors[1]
 
 
 @pytest.mark.parametrize(

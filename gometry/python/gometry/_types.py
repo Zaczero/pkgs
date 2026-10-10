@@ -76,6 +76,7 @@ if TYPE_CHECKING:
 
     PyArrowArray: TypeAlias = pa.Array | pa.ExtensionArray
     PyArrowChunkedArray: TypeAlias = pa.ChunkedArray
+    PyArrowNativeFile: TypeAlias = pa.NativeFile
     PyArrowTable: TypeAlias = pa.Table
     PyArrowRecordBatch: TypeAlias = pa.RecordBatch
     PyArrowRecordBatchReader: TypeAlias = pa.RecordBatchReader
@@ -89,6 +90,7 @@ if TYPE_CHECKING:
 else:
     PyArrowArray: TypeAlias = ForwardRef('pa.Array | pa.ExtensionArray')
     PyArrowChunkedArray: TypeAlias = ForwardRef('pa.ChunkedArray')
+    PyArrowNativeFile: TypeAlias = ForwardRef('pa.NativeFile')
     PyArrowTable: TypeAlias = ForwardRef('pa.Table')
     PyArrowRecordBatch: TypeAlias = ForwardRef('pa.RecordBatch')
     PyArrowRecordBatchReader: TypeAlias = ForwardRef('pa.RecordBatchReader')
@@ -229,6 +231,7 @@ __all__ = [
     'PyArrowArray',
     'PyArrowCapsule',
     'PyArrowChunkedArray',
+    'PyArrowNativeFile',
     'PyArrowRecordBatch',
     'PyArrowRecordBatchReader',
     'PyArrowTable',
@@ -595,7 +598,7 @@ FeatureId: TypeAlias = str | int | float | None
 
 
 class Features:
-    """Aligned feature columns returned by ``from_features``.
+    """Aligned feature columns returned by ``from_geojson(..., features=True)``.
 
     Unpack as ``geometries, properties, ids = features``. Each metadata entry
     corresponds to the geometry at the same row; use ``len(features.geometries)``
@@ -864,10 +867,12 @@ def _restore_features_v1(
 class Extremes(NamedTuple, Generic[_ExtremeT]):
     """The westmost/southmost/eastmost/northmost vertices of a geometry.
 
-    Returned by `Geometry.extremes` (four `Point` fields) and
-    `GeometryArray.extremes` (four row-aligned ``GeometryArray[Point]``
-    columns); unpacks as ``(west, south, east, north)``, or use the named
-    fields. Ties keep the first vertex in storage order; Z/M ride along.
+    Returned by `Geometry.extremes()` (four scalar `Point` fields, or ``None``
+    for an empty geometry) and `GeometryArray.extremes()` (four row-aligned
+    ``GeometryArray[Point | None]`` columns; missing rows remain missing and
+    present empty rows contain empty points). Unpacks as ``(west, south, east,
+    north)``; ties keep the first vertex in storage order, and Z/M ordinates are
+    carried through.
     """
 
     west: _ExtremeT
@@ -1101,9 +1106,10 @@ keys are rejected at parse time.
 class GeoJsonFeature(TypedDict):
     """A gometry-parseable GeoJSON Feature object (RFC 7946 §3.2).
 
-    ``geometry`` may be ``None`` for missing rows in bulk FeatureCollection /
-    ``from_features`` ingestion. Scalar ``from_geojson`` of a Feature rejects
-    null geometry — use :class:`GeoJsonFeatureNonNull` for that overload.
+    ``geometry`` may be ``None`` in a FeatureCollection, in a GeoJSON row
+    column, or with ``from_geojson(..., features=True)``. Geometry-only
+    decoding rejects a scalar null-geometry Feature; use
+    :class:`GeoJsonFeatureNonNull` for that overload.
     """
 
     type: Literal['Feature']

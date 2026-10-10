@@ -110,13 +110,20 @@ pub(crate) fn gometry_arrow_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModu
         .map(|module| module.bind(py))
 }
 
-pub(crate) fn reject_requested_schema(requested_schema: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
-    if requested_schema.is_some_and(|schema| !schema.is_none()) {
-        return Err(PyTypeError::new_err(
-            "requested_schema is not supported; export the default GeoArrow schema",
-        ));
+pub(crate) fn reject_requested_schema(
+    requested_schema: Option<&Bound<'_, PyAny>>,
+    default_schema: &arrow_c::SchemaNode,
+) -> PyResult<bool> {
+    if let Some(requested_schema) = requested_schema
+        && !requested_schema.is_none()
+    {
+        return default_schema
+            .matches_requested_schema(requested_schema)?
+            .ok_or_else(|| {
+                PyTypeError::new_err("requested_schema does not match the default GeoArrow schema")
+            });
     }
-    Ok(())
+    Ok(false)
 }
 
 pub(crate) fn reconcile_arrow_crs(

@@ -20,11 +20,18 @@ sparse row table, including tombstones for removed rows, and rebuilds the search
 structure on load. A round trip therefore preserves live handles and prior
 mutations rather than replaying the original source rows.
 
-Lookup methods require a non-negative integer/index handle and reject `bool`.
-`idx.get(handle, default)` returns `default` for a valid handle that is unknown
-or removed, but negative and non-integer inputs raise; it does not use
-`dict.get`'s behavior for arbitrary keys. Membership checks remain tolerant and
-return `False` for non-integer probes.
+Lookup and removal accept non-negative integer-index handles and reject
+`bool`. `idx.get(handle, default)` returns `default` for a valid handle that is
+unknown or removed, but negative and non-index inputs raise. Membership checks
+remain tolerant and return `False` for non-index probes.
+
+`SpatialIndex` compares like a mapping: equality uses its live handle-to-
+geometry contents, including after removals. Since it is mutable, it is
+unhashable and cannot be used as a dictionary key.
+
+`query`, `candidates`, `nearest`, and `join` accept a `GeometryArray` or an
+iterable of `Geometry | None` rows. Missing query rows produce empty result
+groups and keep their original row positions.
 
 !!! warning "Candidates are not matches"
     [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the

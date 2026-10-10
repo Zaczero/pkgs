@@ -15,8 +15,7 @@ use crate::py::functions::geocode::{
 use crate::py::numpy::{float64_array, int64_array};
 use crate::{
     F64Param, Frame, GeometryError, LonLatPointsError, PyGeometry, PyGeometryArray, Shape, Typed,
-    broadcast_coordinate_group, exact_geometry, exact_geometry_array, finite_coordinate_required,
-    lonlat_points,
+    broadcast_coordinate_group, exact_geometry, exact_geometry_array, lonlat_points,
 };
 
 #[derive(Clone, Copy)]
@@ -138,21 +137,69 @@ fn geocode_encode_broadcast(
 fn code_lonlat_broadcast(
     py: Python<'_>,
     code: &Bound<'_, PyAny>,
-    lon: &Bound<'_, PyAny>,
-    lat: &Bound<'_, PyAny>,
+    reference: &Bound<'_, PyAny>,
+    lat: Option<&Bound<'_, PyAny>>,
     operation: impl Fn(&str, f64, f64) -> PyResult<String> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
 
-    match CodeInput::parse(code, "code")? {
-        CodeInput::Scalar(code) => operation(
-            &code,
-            finite_coordinate_required("lon", lon)?,
-            finite_coordinate_required("lat", lat)?,
-        )?
-        .into_py_any(py),
+    let codes = CodeInput::parse(code, "code")?;
+    if let Some(geometry) = exact_geometry(reference) {
+        if lat.is_some() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "lat must not be provided when reference is a geometry",
+            ));
+        }
+        let shape = crate::lonlat_shape(geometry)?;
+        let (lon, lat) = crate::point_xy(&shape)?;
+        return match codes {
+            CodeInput::Scalar(code) => operation(&code, lon, lat)?.into_py_any(py),
+            CodeInput::Many(codes) => py
+                .detach(move || {
+                    codes
+                        .iter()
+                        .map(|code| operation(code, lon, lat))
+                        .collect::<PyResult<Vec<_>>>()
+                })?
+                .into_py_any(py),
+        };
+    }
+
+    let lat = lat.ok_or_else(|| {
+        pyo3::exceptions::PyTypeError::new_err("lat is required when reference is a longitude")
+    })?;
+    match codes {
+        CodeInput::Scalar(code) => {
+            let mut expected = crate::coordinate_sequence_len_hint(reference, "lon")?;
+            if expected.is_none() {
+                expected = crate::coordinate_sequence_len_hint(lat, "lat")?;
+            }
+            let mut lon =
+                crate::coordinate_input_with_expected(py, reference, "lon", expected, &|| {
+                    "lon must be finite".into()
+                })?;
+            let expected = expected.or_else(|| (!lon.scalar).then_some(lon.values.len()));
+            let mut lat = crate::coordinate_input_with_expected(py, lat, "lat", expected, &|| {
+                "lat must be finite".into()
+            })?;
+            let scalar = lon.scalar && lat.scalar;
+            broadcast_coordinate_group([(&mut lon, "lon"), (&mut lat, "lat")], "lon and lat")?;
+            let mut output = Vec::with_capacity(lon.values.len());
+            for (&lon, &lat) in lon.values.iter().zip(&lat.values) {
+                output.push(operation(&code, lon, lat)?);
+            }
+            if scalar {
+                output
+                    .into_iter()
+                    .next()
+                    .expect("scalar coordinates produce one code")
+                    .into_py_any(py)
+            } else {
+                output.into_py_any(py)
+            }
+        },
         CodeInput::Many(codes) => {
-            let lon = F64Param::parse(lon, "lon", codes.len())?;
+            let lon = F64Param::parse(reference, "lon", codes.len())?;
             let lat = F64Param::parse(lat, "lat", codes.len())?;
             py.detach(move || {
                 codes
@@ -288,8 +335,11 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
 /// ----------
 /// code : str or iterable of str
 ///     A full, unpadded plus code with at least 6 digits.
-/// reference, lat : float or sequence of float
-///     The reference location(s).
+/// reference : Point or float
+///     A CRS-aware reference point or longitude column.
+/// lat : float or sequence of float, optional
+///     Latitude column when ``reference`` is a longitude. Coordinate columns
+///     broadcast with one another and with a scalar code.
 ///
 /// Returns
 /// -------
@@ -310,12 +360,15 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
 /// >>> import gometry as gm
 /// >>> gm.pluscode_shorten('8FVC9G8F+6X', 8.5, 47.4)
 /// '9G8F+6X'
+/// >>> gm.pluscode_shorten('8FVC9G8F+6X', gm.Point(8.5, 47.4, crs=4326))
+/// '9G8F+6X'
 #[pyfunction]
+#[pyo3(signature = (code, reference, lat = None), text_signature = "(code, reference, lat=None)")]
 pub(crate) fn pluscode_shorten(
     py: Python<'_>,
     code: &Bound<'_, PyAny>,
     reference: &Bound<'_, PyAny>,
-    lat: &Bound<'_, PyAny>,
+    lat: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     code_lonlat_broadcast(py, code, reference, lat, |code, lon, lat| {
         geographic::validate_lonlat_xy(lon, lat)?;
@@ -330,8 +383,11 @@ pub(crate) fn pluscode_shorten(
 /// code : str or iterable of str
 ///     A short plus code (e.g. ``'9G8F+6X'``); a full code passes through
 ///     normalized.
-/// reference, lat : float or sequence of float
-///     The reference location(s) the code is near.
+/// reference : Point or float
+///     A CRS-aware reference point or longitude column.
+/// lat : float or sequence of float, optional
+///     Latitude column when ``reference`` is a longitude. Coordinate columns
+///     broadcast with one another and with a scalar code.
 ///
 /// Returns
 /// -------
@@ -350,12 +406,15 @@ pub(crate) fn pluscode_shorten(
 /// >>> import gometry as gm
 /// >>> gm.pluscode_recover('9G8F+6X', 8.5, 47.4)
 /// '8FVC9G8F+6X'
+/// >>> gm.pluscode_recover('9G8F+6X', gm.Point(8.5, 47.4, crs=4326))
+/// '8FVC9G8F+6X'
 #[pyfunction]
+#[pyo3(signature = (code, reference, lat = None), text_signature = "(code, reference, lat=None)")]
 pub(crate) fn pluscode_recover(
     py: Python<'_>,
     code: &Bound<'_, PyAny>,
     reference: &Bound<'_, PyAny>,
-    lat: &Bound<'_, PyAny>,
+    lat: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     code_lonlat_broadcast(py, code, reference, lat, |code, lon, lat| {
         geographic::validate_lonlat_xy(lon, lat)?;

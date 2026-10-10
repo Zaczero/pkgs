@@ -55,17 +55,18 @@ macro_rules! row_iter_pymethods {
                     ))
             }
 
-            /// ``sys.getsizeof`` support: the iterator plus the logical
+            /// ``sys.getsizeof`` support: Python's allocation base plus the logical
             /// payload it keeps alive while iterating.
             ///
             /// Raises
             /// ------
             /// OverflowError
             ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-            fn __sizeof__(&self) -> pyo3::PyResult<isize> {
+            fn __sizeof__(slf: &pyo3::Bound<'_, Self>) -> pyo3::PyResult<isize> {
                 crate::py::sizeof::python_sizeof(
-                    std::mem::size_of_val(self),
-                    crate::HeapSize::heap_bytes(self),
+                    slf.py(),
+                    slf.as_any(),
+                    crate::HeapSize::heap_bytes(&*slf.borrow()),
                 )
             }
 

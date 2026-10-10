@@ -63,8 +63,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `a.equals(b)` | [`gm.equals(a, b)`][gometry.equals] |
 | normalized equality | [`gm.equals_exact(a.normalize(), b.normalize())`][gometry.equals_exact] |
 | `a.relate(b)` / `a.relate_pattern(b, p)` | [`gm.relate(a, b)`][gometry.relate] / [`gm.relate_pattern(a, b, p)`][gometry.relate_pattern] |
-| `shapely.contains_xy(g, x, y)` | [`gm.contains_xy(g, x, y)`][gometry.contains_xy] |
-| `shapely.intersects_xy(g, x, y)` | [`gm.intersects_xy(g, x, y)`][gometry.intersects_xy] |
+| `shapely.contains_xy(g, x, y)` | [`gm.contains(g, x=x, y=y)`][gometry.contains] |
+| `shapely.intersects_xy(g, x, y)` | [`gm.intersects(g, x=x, y=y)`][gometry.intersects] |
 | `a.dwithin(b, d)` | [`gm.dwithin(a, b, distance, unit=…)`][gometry.dwithin] / [`idx.query(..., predicate="dwithin", distance=..., unit=...)`][gometry.SpatialIndex.query] |
 
 ### Measurement
@@ -149,7 +149,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | EWKB | `gm.from_wkb(b)` / `g.to_wkb(include_srid=True)` |
 | [WKT](https://www.ogc.org/standard/sfa/) `from_wkt(s)` / `to_wkt(g)` | [`gm.from_wkt(s)`][gometry.from_wkt] / `g.to_wkt()` |
 | [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) | `gm.from_geojson(obj)` / `g.to_geojson()` |
-| GeoJSON features w/ attributes | [`gm.from_features(fc)`][gometry.from_features] → validated [`Features`][gometry.Features] record; inverse [`gm.to_feature_collection(geoms, properties=..., ids=...)`][gometry.to_feature_collection] |
+| GeoJSON features w/ attributes | [`gm.from_geojson(fc, features=True)`][gometry.from_geojson] → validated [`Features`][gometry.Features] record; inverse [`gm.to_feature_collection(geoms, properties=..., ids=...)`][gometry.to_feature_collection] |
 | `geom.__geo_interface__` | [`geom.__geo_interface__`](../ecosystem/text-formats.md#__geo_interface__) |
 | [GeoArrow](https://geoarrow.org/) | [`gm.from_arrow(obj)`][gometry.from_arrow] / [`geom.to_arrow()`][gometry.Geometry.to_arrow] |
 | `shapely.to_wkb(Point(...))` / `shapely.to_wkb(box(...))` | [`gm.Point(x, y).to_wkb(precision=...)`][gometry.Geometry.to_wkb] / `gm.box(...).to_wkb(include_srid=..., precision=...)` |
@@ -187,7 +187,7 @@ for coordinate exports without changing the geometry.
 | `crs.axis_info` | [`gm.CRS(c).axis_order`][gometry.CRS.axis_order] | Diagnostic only; boundary stays X/Y. |
 | `crs.to_authority()` / `to_epsg()` | [`gm.CRS(c).to_authority()`][gometry.CRS.to_authority] / `.to_epsg()` | |
 | `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()`; pass `as_dict=True` for a mapping | |
-| `crs == other` | `gm.CRS(c) == other` | `CRS` compares by code/string. |
+| `crs == other` | `gm.CRS(c) == gm.CRS(other)` | Structural equality compares stored definitions; use `same_as` for operational equivalence. |
 | `CRS.from_user_input(...)` normalize | [`gm.CRS(c).definition`][gometry.CRS.definition] / [`gm.CRS(c).identify()`][gometry.CRS.identify] | `definition` retains normalized authored text; `identify()` supplies authority metadata. |
 | `crs.to_2d()` / `to_3d()` | [`gm.CRS(c).to_2d()`][gometry.CRS.to_2d] / `.to_3d()` | Return a `CRS`. |
 | unit / factors | [`gm.crs_unit(c)`][gometry.crs_unit] / [`gm.crs_units(c)`][gometry.crs_units] / [`gm.CRS(c).factors(lon, lat)`][gometry.CRS.factors] | |
@@ -226,7 +226,7 @@ for coordinate exports without changing the geometry.
 |---|---|---|
 | `CellId.from_lat_lng(...).parent(level)` | [`gm.S2Cell(point, level=...)`][gometry.S2Cell] | |
 | `Cell(cell_id)` boundary | [`cell.polygon`][gometry.Cell.polygon] / [`cells.polygon`][gometry.CellArray.polygon] | |
-| `RegionCoverer().get_covering(region)` | [`gm.s2_cover_adaptive(geom, ...)`][gometry.s2_cover_adaptive] | `target_cells` guides refinement; `max_cells` is the hard output cap. |
+| `RegionCoverer().get_covering(region)` | [`gm.s2_cover(geom, ...)`][gometry.s2_cover] | `target_cells` guides refinement; `max_cells` is the hard output cap. |
 | `RegionCoverer(min_level=L, max_level=L).get_covering(region)` | [`gm.s2_cover(geom, level=L, max_cells=...)`][gometry.s2_cover] | The requested level is never coarsened. |
 | `CellUnion` set ops | [`gm.s2_union(a, b)`][gometry.s2_union] / [`gm.s2_intersection(a, b)`][gometry.s2_intersection] / [`gm.s2_difference(a, b)`][gometry.s2_difference] | |
 | `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | |

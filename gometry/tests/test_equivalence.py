@@ -414,12 +414,12 @@ def test_geometry_returning_ops_carry_the_input_frame(
 ) -> None:
     result = fn()
     if isinstance(result, gm.GeometryArray):
-        assert result.crs == 'EPSG:3857'
+        assert result.crs == gm.CRS('EPSG:3857')
         assert result.epoch == 2020.0
     geoms = each_geometry(result)
     assert geoms, f'{name} returned no geometries to check'
     for geom in geoms:
-        assert geom.crs == 'EPSG:3857'
+        assert geom.crs == gm.CRS('EPSG:3857')
         assert geom.epoch == 2020.0
 
 
@@ -523,7 +523,7 @@ def test_wkt_wkb_round_trip_identity(wkt: str) -> None:
     assert gm.from_wkb(geom.to_wkb()).to_wkt() == wkt
     ewkb = gm.from_wkb(geom.to_wkb(include_srid=True))
     assert ewkb.to_wkt() == wkt
-    assert ewkb.crs == 'EPSG:4326'
+    assert ewkb.crs == gm.CRS('EPSG:4326')
     if set(geom.coordinate_axes) <= {'X', 'Y', 'Z'}:
         assert gm.from_geojson(geom.to_geojson()).to_wkt() == wkt
 

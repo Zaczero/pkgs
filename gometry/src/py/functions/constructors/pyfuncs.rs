@@ -3,15 +3,18 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
+use crate::boundary::coordinate_input::broadcast_optional_coordinate_input;
+use crate::boundary::metadata::resolve_frame_rows;
+use crate::geometry::{GeometryKind, MOrdinate, Point, Shape, ZOrdinate};
+use crate::py::errors::geometry_type_err;
 use crate::py::functions::constructors::{
-    Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
-    PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
+    Bound, CoordSeq, Frame, InvalidGeometryError, PyAny, PyAnyMethods as _, PyGeometry,
+    PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
     broadcast_crs_coordinate_inputs, build_box_shape, build_geometry_array,
-    coordinate_column_values_from_buffer, coordinate_epoch_option, coordinate_inputs_are_scalar,
-    finite_coordinate_required, line_string_from_data_item, multi_line_string_from_data_item,
-    multi_point_from_data_item, multi_polygon_from_data_item,
-    optional_coordinate_column_values_from_buffer, parse_crs, parse_crs_epoch,
-    polygon_from_data_item, pyfunction,
+    coordinate_column_values_from_buffer, coordinate_epoch_option, finite_coordinate_required,
+    line_string_from_data_item, multi_line_string_from_data_item, multi_point_from_data_item,
+    multi_polygon_from_data_item, optional_coordinate_column_values_from_buffer, parse_crs,
+    parse_crs_epoch, polygon_from_data_item, pyfunction,
 };
 use crate::py::numpy;
 
@@ -103,15 +106,16 @@ pub(super) fn box_(
 
 /// Create a ``GeometryArray`` of points from parallel coordinate columns.
 ///
-/// Taking separate ``x`` and ``y`` (not interleaved tuples) keeps axis order
-/// explicit and avoids the lon/lat-vs-lat/lon footgun. Each column accepts a
-/// scalar (broadcast to every row) or a sequence of floats (one per point).
+/// Pass either coordinate rows or separate ``x``/``y`` columns. Separate
+/// columns keep axis order explicit and accept scalars that broadcast across
+/// rows; when both are scalars, the result contains one point.
 ///
 /// Parameters
 /// ----------
-/// x, y : float or sequence of float
-///     X and Y ordinates. At least one must be sequence of float to set the row count;
-///     scalars broadcast numpy-style.
+/// x : coordinate rows or float or sequence of float
+///     Coordinate rows as ``(x, y[, z[, m]])`` values, or the X column.
+/// y : float or sequence of float, optional
+///     Y column when ``x`` is an X column. Omit it when ``x`` contains rows.
 ///
 /// z, m : float or sequence of float, optional
 ///     Z and M ordinates, broadcast like ``x``/``y``.
@@ -135,7 +139,7 @@ pub(super) fn box_(
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
 /// GeometryError
-///     If every argument is scalar (use `Point`) or ``epoch`` is invalid.
+///     If ``epoch`` is invalid.
 ///
 /// See Also
 /// --------
@@ -146,17 +150,24 @@ pub(super) fn box_(
 /// >>> import gometry as gm
 /// >>> gm.points([0, 1], [0, 1]).to_wkt()
 /// ['POINT (0 0)', 'POINT (1 1)']
+/// >>> gm.points(1, 2).to_wkt()
+/// ['POINT (1 2)']
+/// >>> gm.points([(1, 2), (3, 4)]).to_wkt()
+/// ['POINT (1 2)', 'POINT (3 4)']
 #[pyfunction]
-#[pyo3(signature = (x, y, *, z = None, m = None, crs = None, epoch = None))]
+#[pyo3(signature = (x, y = None, *, z = None, m = None, crs = None, epoch = None))]
 pub(super) fn points(
     py: Python<'_>,
     x: &Bound<'_, PyAny>,
-    y: &Bound<'_, PyAny>,
+    y: Option<&Bound<'_, PyAny>>,
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
+    let Some(y) = y else {
+        return points_from_rows(py, x, z, m, crs, epoch);
+    };
     for (name, value) in [("x", x), ("y", y)] {
         crate::reject_multidimensional_coordinate_array(value, name)?;
     }
@@ -204,11 +215,6 @@ pub(super) fn points(
     let established =
         established.or_else(|| z.as_ref().filter(|c| !c.scalar).map(|c| c.values.len()));
     let mut m = crate::optional_coordinate_input_with_expected(py, m, "m", established)?;
-    if coordinate_inputs_are_scalar(&x, &y, z.as_ref(), m.as_ref()) {
-        return Err(GeometryError::new_err(
-            "points expects coordinate columns; use Point(x, y) for a single point",
-        ));
-    }
     broadcast_crs_coordinate_inputs(&mut x, &mut y, &mut z, &mut m)?;
     let frame = parse_crs_epoch(crs, epoch)?;
     let seq = CoordSeq::from_owned_columns(
@@ -218,6 +224,153 @@ pub(super) fn points(
         m.map(|value| value.values),
     )?;
     Ok(PyGeometryArray::packed_points(seq, frame)?)
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "embedded and supplied ordinates must be exactly equal; a tolerance would accept a different coordinate"
+)]
+fn points_from_rows(
+    py: Python<'_>,
+    values: &Bound<'_, PyAny>,
+    z: Option<&Bound<'_, PyAny>>,
+    m: Option<&Bound<'_, PyAny>>,
+    crs: Option<&Bound<'_, PyAny>>,
+    epoch: Option<&Bound<'_, PyAny>>,
+) -> PyResult<PyGeometryArray> {
+    numpy::reject_masked_array(values)?;
+    let iter = values.try_iter()?;
+    let row_capacity = crate::optional_len(values)?.unwrap_or_default();
+    let mut shapes = Vec::with_capacity(row_capacity);
+    let mut frames: Option<Vec<Frame>> = None;
+    for (row, item) in iter.enumerate() {
+        let item = item?;
+        crate::check_python_signals(py, row)?;
+        let (shape, frame) = if let Some(geometry) = crate::exact_geometry(&item) {
+            match geometry.shape.shape() {
+                Shape::Point(_) | Shape::Empty(GeometryKind::Point, _) => {
+                    (geometry.shape.shape().clone(), geometry.frame.clone())
+                },
+                shape @ (Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..)) => {
+                    return Err(crate::note_array_row(
+                        geometry_type_err(format!(
+                            "points rows must be Points, got {}",
+                            shape.geometry_type()
+                        )),
+                        row,
+                    ));
+                },
+            }
+        } else {
+            let point = crate::extract_coordinate(&item)
+                .map_err(|error| crate::note_array_row(error, row))?;
+            (Shape::Point(point), Frame::None)
+        };
+        if let Some(frames) = &mut frames {
+            frames.push(frame);
+        } else if !matches!(frame, Frame::None) {
+            let mut row_frames = Vec::with_capacity(row_capacity);
+            row_frames.resize(shapes.len(), Frame::None);
+            row_frames.push(frame);
+            frames = Some(row_frames);
+        }
+        shapes.push(shape);
+    }
+
+    let mut z = crate::optional_coordinate_input_with_expected(py, z, "z", Some(shapes.len()))?;
+    let mut m = crate::optional_coordinate_input_with_expected(py, m, "m", Some(shapes.len()))?;
+    broadcast_optional_coordinate_input(&mut z, shapes.len(), "point rows and z")?;
+    broadcast_optional_coordinate_input(&mut m, shapes.len(), "point rows and m")?;
+    for (row, shape) in shapes.iter_mut().enumerate() {
+        let z_value = z.as_ref().map(|input| {
+            input
+                .values
+                .get(row)
+                .copied()
+                .expect("broadcast z input has one value per geometry row")
+        });
+        let m_value = m.as_ref().map(|input| {
+            input
+                .values
+                .get(row)
+                .copied()
+                .expect("broadcast m input has one value per geometry row")
+        });
+        match shape {
+            Shape::Point(point) => {
+                let existing_z = point.z();
+                let existing_m = point.m();
+                if z_value.is_some_and(|value| existing_z.is_some_and(|old| old != value)) {
+                    return Err(crate::note_array_row(
+                        InvalidGeometryError::new_err(
+                            "z column conflicts with an embedded point ordinate",
+                        ),
+                        row,
+                    ));
+                }
+                if m_value.is_some_and(|value| existing_m.is_some_and(|old| old != value)) {
+                    return Err(crate::note_array_row(
+                        InvalidGeometryError::new_err(
+                            "m column conflicts with an embedded point ordinate",
+                        ),
+                        row,
+                    ));
+                }
+                *point = Point::new_raw_axes(
+                    point.x,
+                    point.y,
+                    ZOrdinate(existing_z.or(z_value)),
+                    MOrdinate(existing_m.or(m_value)),
+                );
+            },
+            Shape::Empty(GeometryKind::Point, axes) => {
+                if z_value.is_some() || m_value.is_some() {
+                    return Err(crate::note_array_row(
+                        InvalidGeometryError::new_err(
+                            "ordinate columns cannot add coordinates to an empty Point",
+                        ),
+                        row,
+                    ));
+                }
+                *shape = Shape::typed_empty(GeometryKind::Point, *axes);
+            },
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(
+                GeometryKind::MultiPoint
+                | GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::Polygon
+                | GeometryKind::MultiPolygon
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => unreachable!("point row admission accepts only Point geometries"),
+        }
+    }
+    let explicit = parse_crs_epoch(crs, epoch)?;
+    let frame = if let Some(mut frames) = frames {
+        resolve_frame_rows(
+            &mut frames,
+            crate::FrameAdoption {
+                crs: explicit.crs_owned(),
+                epoch: explicit.epoch(),
+            },
+            "points",
+        )?
+    } else {
+        explicit
+    };
+    Ok(PyGeometryArray::from_shapes(shapes, frame)?)
 }
 
 /// Fast path for `points(x, y, …)` when every supplied column is a real f64
@@ -283,8 +436,8 @@ fn try_points_from_arc_columns(
 /// Parameters
 /// ----------
 /// minx, miny, maxx, maxy : float or sequence of float
-///     Rectangle bounds per row. At least one must be sequence of float; scalars
-///     broadcast numpy-style.
+///     Rectangle bounds per row. Scalars broadcast numpy-style; four scalar
+///     bounds produce a one-row array.
 ///
 /// crs : CRS-like, optional
 ///     CRS applied to every box. Geographic rows follow the same native-range
@@ -313,8 +466,8 @@ fn try_points_from_arc_columns(
 ///     If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
 ///     without a geographic CRS.
 /// GeometryError
-///     If every argument is scalar (use `box`), ``epoch`` is invalid, or wrapped
-///     geographic bounds lie outside their CRS frame.
+///     If ``epoch`` is invalid, or wrapped geographic bounds lie outside their
+///     CRS frame.
 ///
 /// Examples
 /// --------
@@ -361,11 +514,6 @@ pub(super) fn boxes(
     let mut maxy = crate::coordinate_input_with_expected(py, maxy, "maxy", expected, &|| {
         "maxy must be finite".into()
     })?;
-    if coordinate_inputs_are_scalar(&minx, &miny, Some(&maxx), Some(&maxy)) {
-        return Err(GeometryError::new_err(
-            "boxes expects bound columns; use box(minx, miny, maxx, maxy) for a single rectangle",
-        ));
-    }
     broadcast_coordinate_group(
         [
             (&mut minx, "minx"),
@@ -391,12 +539,13 @@ pub(super) fn boxes(
     Ok(rows.finish(frame)?)
 }
 
-/// Create a ``GeometryArray`` of linestrings from per-line coordinate inputs.
+/// Create a ``GeometryArray`` of linestrings from coordinate rows or Linestrings.
 ///
 /// Parameters
 /// ----------
 /// values : sequence
-///     Each member is a raw coordinate sequence accepted by `LineString`.
+///     Each member is a ``LineString`` or a raw coordinate sequence accepted
+///     by `LineString`.
 ///
 /// crs : CRS-like, optional
 ///     CRS applied to every linestring.
@@ -414,9 +563,11 @@ pub(super) fn boxes(
 /// InvalidGeometryError
 ///     If a member line has fewer than two vertices or non-finite coordinates.
 /// TypeError
-///     If a member is an already-built geometry; use `GeometryArray(values)`.
+///     If a geometry row is not a ``LineString``.
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+/// CRSMismatchError
+///     If geometry rows do not share a CRS or coordinate epoch.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
 ///
@@ -442,12 +593,13 @@ pub(super) fn line_strings(
     )
 }
 
-/// Create a ``GeometryArray`` of polygons from per-polygon ring inputs.
+/// Create a ``GeometryArray`` of polygons from raw coordinates or Polygons.
 ///
 /// Parameters
 /// ----------
 /// values : sequence
-///     Each member is a raw shell coordinate sequence or ``[shell, *holes]``.
+///     Each member is a ``Polygon``, a raw shell coordinate sequence, or
+///     ``[shell, *holes]``.
 ///
 /// crs : CRS-like, optional
 ///     CRS applied to every polygon.
@@ -465,9 +617,11 @@ pub(super) fn line_strings(
 /// InvalidGeometryError
 ///     If a ring has fewer than three corners or non-finite coordinates.
 /// TypeError
-///     If a member is an already-built geometry; use `GeometryArray(values)`.
+///     If a geometry row is not a ``Polygon``.
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+/// CRSMismatchError
+///     If geometry rows do not share a CRS or coordinate epoch.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
 ///
@@ -493,12 +647,13 @@ pub(super) fn polygons(
     )
 }
 
-/// Create a ``GeometryArray`` of multipoints from per-multipoint inputs.
+/// Create a ``GeometryArray`` of multipoints from per-row inputs.
 ///
 /// Parameters
 /// ----------
 /// values : sequence
-///     Each member is a raw coordinate sequence accepted by `MultiPoint`.
+///     Each member is a ``MultiPoint`` or input accepted by `MultiPoint`,
+///     including ``Point`` members and raw coordinate values.
 ///
 /// crs : CRS-like, optional
 ///     CRS applied to every multipoint.
@@ -516,9 +671,12 @@ pub(super) fn polygons(
 /// InvalidGeometryError
 ///     If any coordinate is non-finite or has mixed dimensionality.
 /// TypeError
-///     If a member is an already-built geometry; use `GeometryArray(values)`.
+///     If a geometry row is not a ``MultiPoint``, or a member is not a
+///     ``Point``.
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+/// CRSMismatchError
+///     If geometry rows or multipart members do not share a CRS or epoch.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
 ///
@@ -543,12 +701,13 @@ pub(super) fn multi_points(
     )
 }
 
-/// Create a ``GeometryArray`` of multilinestrings from per-multiline inputs.
+/// Create a ``GeometryArray`` of multilinestrings from per-row inputs.
 ///
 /// Parameters
 /// ----------
 /// values : sequence
-///     Each member is raw line coordinate sequences accepted by `MultiLineString`.
+///     Each member is a ``MultiLineString`` or input accepted by
+///     `MultiLineString`, including ``LineString`` members.
 ///
 /// crs : CRS-like, optional
 ///     CRS applied to every multilinestring.
@@ -566,9 +725,12 @@ pub(super) fn multi_points(
 /// InvalidGeometryError
 ///     If a member line has fewer than two vertices or non-finite coordinates.
 /// TypeError
-///     If a member is an already-built geometry; use `GeometryArray(values)`.
+///     If a geometry row is not a ``MultiLineString``, or a member is not a
+///     ``LineString``.
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+/// CRSMismatchError
+///     If geometry rows or multipart members do not share a CRS or epoch.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
 ///
@@ -593,12 +755,13 @@ pub(super) fn multi_line_strings(
     )
 }
 
-/// Create a ``GeometryArray`` of multipolygons from per-multipolygon inputs.
+/// Create a ``GeometryArray`` of multipolygons from per-row inputs.
 ///
 /// Parameters
 /// ----------
 /// values : sequence
-///     Each member is raw polygon coordinate sequences accepted by `MultiPolygon`.
+///     Each member is a ``MultiPolygon`` or input accepted by `MultiPolygon`,
+///     including ``Polygon`` members and shell/ring coordinate shorthand.
 ///
 /// crs : CRS-like, optional
 ///     CRS applied to every multipolygon.
@@ -616,9 +779,12 @@ pub(super) fn multi_line_strings(
 /// InvalidGeometryError
 ///     If any ring has fewer than three corners or non-finite coordinates.
 /// TypeError
-///     If a member is an already-built geometry; use `GeometryArray(values)`.
+///     If a geometry row is not a ``MultiPolygon``, or a member is not a
+///     ``Polygon``.
 /// CRSError
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+/// CRSMismatchError
+///     If geometry rows or multipart members do not share a CRS or epoch.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
 ///

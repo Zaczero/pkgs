@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Validate the built documentation users will receive.
 
-Run after ``properdocs build --strict``.  Properdocs owns Markdown parsing and
-cross-reference validation; this check adds only the structural facts that the
-builder cannot know: one canonical page per exported symbol, unique HTML ids,
-public signatures without private helper names, and linked See Also entries.
+Run after ``properdocs build --strict``. Properdocs owns Markdown parsing and
+cross-reference validation; this check verifies the built API against source
+declarations and retains the canonical-anchor, privacy, and local-link checks.
 """
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ if str(_TOOLS_ROOT) not in sys.path:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from api_structure import generated_api_nav_paths
 from public_inventory import load_public_symbols
+from site_contracts import collect_errors as collect_site_contract_errors
 
 _SEE_ALSO = re.compile(
     r'<details[^>]*class="[^"]*\bsee-also\b[^"]*"[^>]*>(?P<body>.*?)</details>',
@@ -58,6 +58,7 @@ class RenderedSignature:
     subject: str
     source: str
     form: RenderedCallForm | None
+    error: str | None = None
 
 
 @dataclass(slots=True)
@@ -296,12 +297,18 @@ def rendered_call_forms(source: str) -> dict[str, tuple[RenderedSignature, ...]]
     parser.close()
     grouped: dict[str, list[RenderedSignature]] = {}
     for subject, signature in parser.values:
+        if subject in parser.attributes:
+            form = None
+            error = None
+        else:
+            try:
+                form = _signature_form(signature)
+                error = None
+            except ValueError as parse_error:
+                form = None
+                error = str(parse_error)
         grouped.setdefault(subject, []).append(
-            RenderedSignature(
-                subject,
-                signature,
-                None if subject in parser.attributes else _signature_form(signature),
-            )
+            RenderedSignature(subject, signature, form, error)
         )
     return {subject: tuple(signatures) for subject, signatures in grouped.items()}
 
@@ -349,6 +356,7 @@ def collect_errors(site: Path = SITE) -> list[str]:
 
     errors: list[str] = []
     pages: dict[Path, str] = {}
+    canonical_pages: dict[str, Path] = {}
     for path in sorted(site.rglob('*.html')):
         source = path.read_text(encoding='utf-8', errors='replace')
         pages[path] = source
@@ -356,6 +364,9 @@ def collect_errors(site: Path = SITE) -> list[str]:
 
         ids = _Ids()
         ids.feed(source)
+        canonical_pages.update({
+            ident: relative for ident in ids.values if ident.startswith('gometry.')
+        })
         duplicates = sorted(
             ident for ident, count in Counter(ids.values).items() if count > 1
         )
@@ -406,7 +417,8 @@ def collect_errors(site: Path = SITE) -> list[str]:
                 f'gometry.{name}: expected one canonical API anchor, found {count}'
             )
 
-    for subject, signatures in rendered_call_forms(api_html).items():
+    rendered = rendered_call_forms(api_html)
+    for subject, signatures in rendered.items():
         for signature in signatures:
             visible = signature.source
             leaked = sorted({
@@ -418,6 +430,17 @@ def collect_errors(site: Path = SITE) -> list[str]:
                 errors.append(
                     f'{subject}: private names in rendered signature: {leaked}'
                 )
+
+    errors.extend(
+        collect_site_contract_errors(
+            site,
+            pages,
+            rendered,
+            canonical_pages,
+            gm,
+            ROOT / 'python' / 'gometry',
+        )
+    )
 
     for path, source in pages.items():
         if not path.is_relative_to(api_site):
@@ -462,7 +485,7 @@ def main() -> int:
     from runtime_artifact import require_runtime
 
     prepend_tools_import_paths()
-    require_runtime(ROOT)
+    require_runtime(ROOT, prepare_if_stale=False)
     errors = collect_errors()
     lychee = shutil.which('lychee')
     if lychee is None:

@@ -232,7 +232,7 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
     assert gm.equals(polygon.convex_hull(), polygon)
     assert point_hull.area == 1
     assert concave_hull.geometry_type == 'Polygon'
-    assert concave_hull.crs == 'EPSG:3857'
+    assert concave_hull.crs == gm.CRS('EPSG:3857')
     assert 0 < concave_hull.area < concave_points.convex_hull().area
     assert all(
         (
@@ -247,7 +247,7 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
     with pytest.raises(ValueError, match='non-negative finite'):
         concave_points.concave_hull(concavity=-1)
     assert label.geometry_type == 'Point'
-    assert label.crs == 'EPSG:3857'
+    assert label.crs == gm.CRS('EPSG:3857')
     assert label.x == pytest.approx(2)
     assert label.y == pytest.approx(1)
     assert gm.covered_by(label, polygon)
@@ -270,16 +270,16 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
     planar_pole = tall.polylabel(tolerance=0.001, unit='planar')
     assert (planar_pole.x, planar_pole.y) == pytest.approx((5.0, 60.5))
     assert len(triangles) == 2
-    assert triangles.crs == 'EPSG:3857'
+    assert triangles.crs == gm.CRS('EPSG:3857')
     assert all(triangle.geometry_type == 'Polygon' for triangle in triangles)
     assert sum(triangle.area for triangle in triangles) == pytest.approx(1)
     assert len(constrained_triangles) > 2
-    assert constrained_triangles.crs == 'EPSG:3857'
+    assert constrained_triangles.crs == gm.CRS('EPSG:3857')
     assert sum(triangle.area for triangle in constrained_triangles) == pytest.approx(
         polygon_with_hole.area
     )
     assert len(polygon_triangles) == 4
-    assert polygon_triangles.crs == 'EPSG:3857'
+    assert polygon_triangles.crs == gm.CRS('EPSG:3857')
     assert all(triangle.geometry_type == 'Polygon' for triangle in polygon_triangles)
     assert sum(triangle.area for triangle in polygon_triangles) == pytest.approx(
         concave_polygon.area
@@ -301,7 +301,7 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
     assert len(array_polygon_triangles[0]) == len(polygon_triangles)
     assert len(array_polygon_triangles[1]) == len(holed_polygon_triangles)
     assert len(voronoi_cells) == 4
-    assert voronoi_cells.crs == 'EPSG:3857'
+    assert voronoi_cells.crs == gm.CRS('EPSG:3857')
     assert all(cell.geometry_type == 'Polygon' for cell in voronoi_cells)
     assert sum(cell.area for cell in voronoi_cells) == pytest.approx(1)
     assert len(voronoi_edge_lines) > 0
@@ -467,7 +467,7 @@ def test_concave_hull_preserves_zm_and_crs_on_native_vertices() -> None:
         crs=3857,
     )
     hull = points.concave_hull(concavity=1.0)
-    assert hull.crs == 'EPSG:3857'
+    assert hull.crs == gm.CRS('EPSG:3857')
     assert hull.coordinate_axes == 'XYZM'
     assert {
         coord
@@ -507,7 +507,7 @@ def test_polygonize_builds_polygons_from_exact_noded_linework() -> None:
     array_polygons = gm.GeometryArray([square_edges]).polygonize()
     pooled_full = gm.polygonize_all([square_edges], diagnostics=True)
     assert len(polygons) == 1
-    assert polygons.crs == 'EPSG:3857'
+    assert polygons.crs == gm.CRS('EPSG:3857')
     assert polygons[0].geometry_type == 'Polygon'
     assert polygons[0].area == pytest.approx(1)
     assert [
@@ -517,7 +517,7 @@ def test_polygonize_builds_polygons_from_exact_noded_linework() -> None:
             for groups in (full_cuts, full_dangles, full_invalid)
         ],
     ] == [1, 0, 1, 0]
-    assert full_polygons.crs == 'EPSG:3857'
+    assert full_polygons.crs == gm.CRS('EPSG:3857')
     assert full_dangles[0][0].to_wkt() == 'LINESTRING (2 2, 3 3)'
     assert top_level_full[0][0].area == pytest.approx(1)
     assert [
@@ -529,8 +529,8 @@ def test_polygonize_builds_polygons_from_exact_noded_linework() -> None:
     assert len(array_polygons) == 1
     assert len(pooled_full[0]) == 1
     assert len(pooled_full[2][0]) == 1
-    assert pooled_full.polygons.crs == 'EPSG:3857'
-    assert pooled_full.dangles[0].crs == 'EPSG:3857'
+    assert pooled_full.polygons.crs == gm.CRS('EPSG:3857')
+    assert pooled_full.dangles[0].crs == gm.CRS('EPSG:3857')
     assert len(with_hole) == 2
     np.testing.assert_allclose(
         sorted(round(polygon.area, 4) for polygon in with_hole), [4.0, 12.0]
@@ -570,10 +570,10 @@ def test_polygonize_full_preserves_epoch() -> None:
         [[(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 0)]], crs=4326, epoch=2020.0
     )
     result = gm.polygonize_all([ring], diagnostics=True)
-    assert result.polygons.crs == 'EPSG:4326'
+    assert result.polygons.crs == gm.CRS('EPSG:4326')
     assert result.polygons.epoch == 2020.0
     for groups in (result.cut_edges, result.dangles, result.invalid_rings):
-        assert groups[0].crs == 'EPSG:4326'
+        assert groups[0].crs == gm.CRS('EPSG:4326')
         assert groups[0].epoch == 2020.0
 
 

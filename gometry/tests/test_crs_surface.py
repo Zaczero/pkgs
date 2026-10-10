@@ -117,19 +117,19 @@ def test_to_crs_transforms_estimated_local_crs_roundtrip() -> None:
     geom = gm.Point(21.0, 52.0, z=9.0, m=10.0, crs=4326)
     projected = geom.to_crs(geom.estimate_local_crs())
     recovered = projected.to_crs(4326)
-    assert projected.crs == 'EPSG:32634'
+    assert projected.crs == gm.CRS('EPSG:32634')
     assert projected.coords.to_nested() == pytest.approx(
         [499999.999, 5761038.2, 9.0, 10.0], rel=1e-06
     )
     assert recovered.coords.to_nested() == pytest.approx(
         [21.0, 52.0, 9.0, 10.0], abs=1e-06
     )
-    assert projected.buffer(100).crs == 'EPSG:32634'
+    assert projected.buffer(100).crs == gm.CRS('EPSG:32634')
 
 
 def test_estimate_local_crs_is_extent_aware_and_fail_closed() -> None:
     warsaw = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    assert warsaw.estimate_local_crs() == 'EPSG:32634'
+    assert warsaw.estimate_local_crs() == gm.CRS('EPSG:32634')
     assert warsaw.to_crs(3857).estimate_local_crs() == warsaw.estimate_local_crs()
     assert gm.Point(0.0, 89.0, crs=4326).estimate_local_crs().is_projected
     assert gm.Point(0.0, -89.0, crs=4326).estimate_local_crs().is_projected
@@ -151,7 +151,7 @@ def test_estimate_local_crs_is_extent_aware_and_fail_closed() -> None:
 
 def test_geometry_array_estimate_local_crs_skips_missing_rows() -> None:
     array = gm.GeometryArray([None, gm.Point(21.0, 52.0, crs=4326)])
-    assert array.estimate_local_crs() == 'EPSG:32634'
+    assert array.estimate_local_crs() == gm.CRS('EPSG:32634')
     with pytest.raises(gm.CRSError, match='present, non-empty'):
         gm.GeometryArray([None], crs=4326).estimate_local_crs()
 
@@ -184,7 +184,7 @@ def test_to_crs_uses_proj_for_authority_crs_outside_fast_path() -> None:
         web = point.to_crs(3857)
     with pytest.warns(gm.AccuracyWarning, match='uk_os_OSTN15_NTv2_OSGBtoETRS[.]tif'):
         batch = gm.points([530000, 700000], [180000, 570000], crs=27700).to_crs(4326)
-    assert lonlat.crs == 'EPSG:4326'
+    assert lonlat.crs == gm.CRS('EPSG:4326')
     assert lonlat.coordinate_axes == 'XYZM'
     assert lonlat.coords.to_nested() == pytest.approx([
         -0.12835394047946935,
@@ -192,14 +192,14 @@ def test_to_crs_uses_proj_for_authority_crs_outside_fast_path() -> None:
         42,
         7,
     ])
-    assert web.crs == 'EPSG:3857'
+    assert web.crs == gm.CRS('EPSG:3857')
     assert web.coords.to_nested() == pytest.approx([
         -14288.295295484671,
         6710932.763391882,
         42,
         7,
     ])
-    assert batch.crs == 'EPSG:4326'
+    assert batch.crs == gm.CRS('EPSG:4326')
     assert [
         coordinate for geometry in batch for coordinate in geometry.coords.to_nested()
     ] == pytest.approx([

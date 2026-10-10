@@ -86,7 +86,6 @@ PAGES: tuple[Page, ...] = (
             section(
                 'contains',
                 'contains_properly',
-                'contains_xy',
                 'covered_by',
                 'covers',
                 'crosses',
@@ -96,7 +95,6 @@ PAGES: tuple[Page, ...] = (
                 'equals_exact',
                 'equals_identical',
                 'intersects',
-                'intersects_xy',
                 'overlaps',
                 'relate',
                 'relate_pattern',
@@ -199,7 +197,6 @@ PAGES: tuple[Page, ...] = (
         (
             section(
                 'from_arrow',
-                'from_features',
                 'from_geojson',
                 'from_polyline',
                 'from_wkb',
@@ -364,4 +361,8 @@ def resolved_symbols(page: Page, exports: set[str]) -> tuple[str, ...]:
 
 
 def generated_api_nav_paths() -> frozenset[str]:
-    return frozenset({'api/index.md', *(f'api/{page.path}.md' for page in PAGES)})
+    return frozenset({
+        'api/index.md',
+        'api/types.md',
+        *(f'api/{page.path}.md' for page in PAGES),
+    })

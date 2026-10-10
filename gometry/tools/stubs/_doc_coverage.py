@@ -147,8 +147,8 @@ _OP_EXTRAS: dict[str, frozenset[str]] = {
     'clip_by_rect': frozenset({'GeometryError'}),
     'to_wkt': frozenset({'CRSError', 'GeometryError'}),
     'to_wkb': frozenset({'CRSError'}),
-    'contains_xy': frozenset({'InvalidGeometryError'}),
-    'intersects_xy': frozenset({'InvalidGeometryError'}),
+    'contains': frozenset({'InvalidGeometryError'}),
+    'intersects': frozenset({'InvalidGeometryError'}),
     'require': frozenset({'InvalidGeometryError', 'CRSMismatchError'}),
     'dwithin': frozenset({'GeometryError'}),
     'relate_pattern': frozenset({'GeometryError'}),
@@ -294,7 +294,6 @@ def required_raises(
     if qualname in (
         'h3_cover',
         's2_cover',
-        's2_cover_adaptive',
         'geohash_cover',
         'tile_cover',
     ):

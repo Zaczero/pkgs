@@ -9,6 +9,7 @@ itself fails from degrees).
 """
 
 import math
+from collections.abc import Callable
 
 import gometry as gm
 import numpy as np
@@ -108,7 +109,7 @@ def test_pluscode_rejects_out_of_range_bare_coordinates() -> None:
 def test_pluscode_polygon_short_codes_and_validity() -> None:
     # decoding.csv vectors: code -> (lng_lo, lat_lo, lng_hi, lat_hi).
     area = gm.pluscode_polygon('8FVC2222+22')
-    assert area.crs == 'OGC:CRS84'
+    assert area.crs == gm.CRS('OGC:CRS84')
     assert area.bounds == (8.0, 47.0, 8.000125, 47.000125)
     assert gm.pluscode_polygon('62G20000+').bounds == (-180.0, 0.0, -179.0, 1.0)
     assert gm.pluscode_polygon('8FVC2222+22GG').bounds == (
@@ -136,7 +137,7 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
     )
     bulk = gm.pluscode_polygon(['8FVC2222+22', '62G20000+'])
     assert isinstance(bulk, gm.GeometryArray)
-    assert bulk.crs == 'OGC:CRS84'
+    assert bulk.crs == gm.CRS('OGC:CRS84')
     assert bulk.bounds.tolist() == [
         [8.0, 47.0, 8.000125, 47.000125],
         [-180.0, 0.0, -179.0, 1.0],
@@ -172,6 +173,45 @@ def test_pluscode_shortening_obeys_the_six_digit_limit() -> None:
     code = '9C3W9QCJ+2VX'
     assert gm.pluscode_shorten(code, -1.217765625, 51.3701125) == 'CJ+2VX'
     assert gm.pluscode_shorten(code, -1.217765625, 52.3701125) == '3W9QCJ+2VX'
+
+
+def test_pluscode_reference_accepts_crs_aware_points() -> None:
+    code = '9C3W9QCJ+2VX'
+    point = gm.Point(-1.217765625, 51.3701125, crs=4326)
+    expected_full = '9C3W9QCJ+2VX'
+    expected_short = 'CJ+2VX'
+
+    assert gm.pluscode_shorten(code, point) == expected_short
+    assert gm.pluscode_shorten(code, point.to_crs(3857)) == expected_short
+    assert gm.pluscode_recover(expected_short, point) == expected_full
+    assert gm.pluscode_recover(expected_short, point.to_crs(3857)) == expected_full
+
+    assert gm.pluscode_recover(
+        ['CJ+2VX', '9QCJ+2VX'],
+        point,
+    ) == [expected_full, expected_full]
+
+    with pytest.raises(TypeError, match='lat must not be provided'):
+        gm.pluscode_shorten(code, point, 51.3701125)
+
+
+def test_pluscode_scalar_code_broadcasts_over_coordinate_columns() -> None:
+    code = '9C3W9QCJ+2VX'
+    expected_full = '9C3W9QCJ+2VX'
+    expected_short = 'CJ+2VX'
+    assert gm.pluscode_shorten(
+        code,
+        [-1.217765625, -1.232865625],
+        [51.3701125, 51.3701125],
+    ) == [expected_short, '9QCJ+2VX']
+    assert gm.pluscode_recover(
+        expected_short,
+        [-1.217765625, -1.217765625],
+        [51.3701125, 51.3701125],
+    ) == [expected_full, expected_full]
+
+    with pytest.raises(gm.InvalidGeometryError, match='same length'):
+        gm.pluscode_shorten(code, [-1.217765625, -1.232865625], [51.3701125])
 
 
 def test_osm_shortlink_round_trips() -> None:
@@ -294,3 +334,52 @@ def test_geocode_encoders_broadcast_coordinate_lanes_and_propagate_missing() -> 
         gm.pluscode_encode(gm.box(0, 0, 1, 1, crs=4326))
     with pytest.raises(gm.GeometryTypeError, match='Point'):
         gm.osm_shortlink_encode(gm.box(0, 0, 1, 1, crs=4326))
+
+
+@pytest.mark.parametrize(
+    'encoder',
+    [
+        pytest.param(gm.pluscode_encode, id='pluscode'),
+        pytest.param(gm.osm_shortlink_encode, id='osm-shortlink'),
+    ],
+)
+def test_projected_nullable_geocode_failure_keeps_gathered_logical_row(
+    encoder: Callable[..., object],
+) -> None:
+    source = gm.GeometryArray([
+        None,
+        gm.Point(500_000.0, 0.0, crs=32660),
+        None,
+        gm.Point(1e300, 1e300, crs=32660),
+    ])
+    selected = source[[1, 0, 3, 2]]
+
+    assert selected.is_missing.tolist() == [False, True, False, True]
+    assert isinstance(encoder(selected[0]), str)
+    with pytest.raises(gm.TransformError, match='transverse Mercator domain') as error:
+        encoder(selected)
+    assert error.value.__notes__ == ['while processing array element 2']
+
+
+@pytest.mark.parametrize(
+    'encoder',
+    [
+        pytest.param(gm.pluscode_encode, id='pluscode'),
+        pytest.param(gm.osm_shortlink_encode, id='osm-shortlink'),
+    ],
+)
+def test_projected_gathered_geocode_failure_keeps_logical_row(
+    encoder: Callable[..., object],
+) -> None:
+    source = gm.GeometryArray([
+        gm.Point(1e300, 1e300, crs=32660),
+        gm.Point(500_000.0, 0.0, crs=32660),
+        gm.Point(500_000.0, 0.0, crs=32660),
+    ])
+    selected = source[[1, 2, 0]]
+
+    assert selected.is_missing.tolist() == [False, False, False]
+    assert isinstance(encoder(selected[0]), str)
+    with pytest.raises(gm.TransformError, match='transverse Mercator domain') as error:
+        encoder(selected)
+    assert error.value.__notes__ == ['while processing array element 2']

@@ -1,4 +1,4 @@
-"""Packed polygon contains_xy / intersects_xy — storage-twin parity."""
+"""Packed polygon coordinate predicates — storage-twin parity."""
 
 from __future__ import annotations
 
@@ -17,16 +17,16 @@ def test_packed_polygons_point_predicate_matches_mixed_storage() -> None:
     assert bools(gm.covers(packed, point)) == bools(gm.covers(mixed, point))
 
 
-def test_packed_polygons_contains_xy_matches_mixed_storage() -> None:
+def test_packed_polygons_coordinate_predicates_match_mixed_storage() -> None:
     packed, mixed = polygon_storage_twins()
     xs = [0.5, 1.5, 3.0]
     ys = [0.5, 1.5, 1.0]
     for poly_packed, poly_mixed in zip(packed, mixed, strict=True):
-        assert bools(gm.contains_xy(poly_packed, xs, ys)) == bools(
-            gm.contains_xy(poly_mixed, xs, ys)
+        assert bools(gm.contains(poly_packed, x=xs, y=ys)) == bools(
+            gm.contains(poly_mixed, x=xs, y=ys)
         )
-        assert bools(gm.intersects_xy(poly_packed, xs, ys)) == bools(
-            gm.intersects_xy(poly_mixed, xs, ys)
+        assert bools(gm.intersects(poly_packed, x=xs, y=ys)) == bools(
+            gm.intersects(poly_mixed, x=xs, y=ys)
         )
 
 

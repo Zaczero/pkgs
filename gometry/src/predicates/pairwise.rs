@@ -36,9 +36,9 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -153,12 +153,12 @@ pub(crate) fn shortest_line(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
-/// path : {'geodesic', 'rhumb'}, default 'geodesic'
-///     Route for point operands. Rhumb distance requires a geographic CRS and
-///     uses meters.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
+/// path : {'geodesic', 'rhumb'}, default varies by call form
+///     Route for point operands. Omit for geodesic distance; rhumb distance
+///     requires ``path='rhumb'`` and a geographic CRS and uses meters.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -229,9 +229,9 @@ pub(crate) fn distance(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -289,9 +289,9 @@ pub(crate) fn distance_3d(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 /// max_error : float, optional
 ///     Positive finite scalar absolute error bound in final result units.
 ///     Planar results default to a certified relative error of at most
@@ -357,8 +357,8 @@ pub(crate) fn hausdorff_distance(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     The two linestrings.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     The line operands; scalar and sequence inputs broadcast pairwise.
 /// densify : float, optional
 ///     Subdivide every segment into pieces no longer than this
 ///     fraction of its length (in ``(0, 1]``) before measuring,
@@ -427,9 +427,10 @@ pub(crate) fn frechet_distance(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch. Unpack order is point on ``left``, then on ``right``.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames. Unpack order is point on
+///     ``left``, then on ``right``.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -467,9 +468,11 @@ pub(crate) fn nearest_points(
     right: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
     let admission = crate::dispatch::admit_binary(
-        left,
-        right,
+        &left,
+        &right,
         crate::dispatch::MetricOp::NearestPoints.name(),
     )?;
     let model = resolve_metric(
@@ -577,9 +580,9 @@ pub(crate) fn nearest_points(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 /// distance : float or sequence of float
 ///     CRS-aware distance threshold: geodesic meters on a geographic CRS,
 ///     native linear units on a projected CRS, raw coordinate units when
@@ -634,8 +637,10 @@ pub(crate) fn dwithin(
     distance: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let left_array = exact_geometry_array(left);
-    let right_array = exact_geometry_array(right);
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let left_array = exact_geometry_array(&left);
+    let right_array = exact_geometry_array(&right);
     // The per-element distance lane needs an array operand (its result is one
     // bool per row); the broadcast length comes from that operand.
     let Some(len) = (match (left_array, right_array) {
@@ -644,15 +649,15 @@ pub(crate) fn dwithin(
     }) else {
         // Two scalars: a single bool, so the distance must be scalar too.
         let distance = validate_dwithin_distance_arg(distance)?;
-        let left_input = classify_required(left)?;
-        let right_input = classify_required(right)?;
+        let left_input = classify_required(&left)?;
+        let right_input = classify_required(&right)?;
         let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
         return crate::dispatch::dispatch_dwithin_admitted(py, &admission, distance, unit);
     };
     let distance = crate::F64Param::parse_raw(distance, "distance", len)?;
     distance.try_validate(|value| validate_dwithin_distance(value).map(|_| ()))?;
-    let left_input = classify_required(left)?;
-    let right_input = classify_required(right)?;
+    let left_input = classify_required(&left)?;
+    let right_input = classify_required(&right)?;
     let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
     let Some(scalar) = distance.as_scalar() else {
         // `dwithin` is symmetric, so route the ARRAY operand as the primary and

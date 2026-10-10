@@ -9,8 +9,9 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Two lineal geometries.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Two lineal operands. Scalar and sequence inputs broadcast pairwise;
+///     sequences must have equal length and compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------

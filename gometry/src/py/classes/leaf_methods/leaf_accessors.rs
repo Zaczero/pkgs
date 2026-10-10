@@ -56,8 +56,9 @@ impl PyPoint {
     /// distance : float or sequence of float
     ///     Finite, non-negative distance to travel in CRS-natural units, unless
     ///     `unit` is set.
-    /// path : {'geodesic', 'rhumb'}, default 'geodesic'
-    ///     Route model. Rhumb paths require a geographic CRS and use meters.
+    /// path : {'geodesic', 'rhumb'}
+    ///     Route model. Geodesic forms omit ``path``; rhumb forms require
+    ///     ``path='rhumb'`` and a geographic CRS.
     #[doc = unit_parameter_doc!()]
     ///     ``path='rhumb'`` uses meters and does not accept a unit override.
     ///

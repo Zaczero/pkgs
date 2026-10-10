@@ -94,6 +94,32 @@ def test_segment_distance_scalar_and_array_result_paths_match() -> None:
     np.testing.assert_array_equal(gm.distance_3d(values, target), expected)
 
 
+def test_array_distance_3d_rejects_missing_z_at_the_logical_row() -> None:
+    values = gm.GeometryArray([
+        _point((0.0, 0.0, 0.0)),
+        None,
+        gm.Point(1.0, 0.0),
+    ])
+    target = _point((0.0, 0.0, 1.0))
+
+    with pytest.raises(gm.InvalidGeometryError, match='array element 2'):
+        gm.distance_3d(values, target)
+
+
+def test_array_distance_3d_keeps_missing_and_empty_sentinels() -> None:
+    values = gm.GeometryArray([
+        _point((0.0, 0.0, 0.0)),
+        None,
+        gm.from_wkt('POINT Z EMPTY'),
+    ])
+    target = _point((0.0, 0.0, 1.0))
+
+    result = gm.distance_3d(values, target)
+    assert result[0] == 1.0
+    assert math.isnan(result[1])
+    assert result[2] == math.inf
+
+
 def test_segment_distance_handles_degenerate_parallel_and_outside_cases() -> None:
     assert gm.distance_3d(
         _line((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),

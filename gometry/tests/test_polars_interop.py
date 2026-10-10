@@ -32,6 +32,23 @@ def test_to_polars_wkb(points: gm.GeometryArray) -> None:
     assert restored.crs == points.crs
 
 
+def test_format_readers_normalize_nullable_polars_columns() -> None:
+    point = gm.Point(1, 2, crs=4326)
+    wkts = pl.Series('wkt', ['POINT (1 2)', None], dtype=pl.String)
+    wkbs = pl.Series('wkb', [point.to_wkb(), None], dtype=pl.Binary)
+    geojson = pl.Series(
+        'geojson',
+        ['{"type":"Point","coordinates":[1,2]}', None],
+        dtype=pl.String,
+    )
+    polylines = pl.Series('polyline', [point.to_polyline(), None], dtype=pl.String)
+
+    assert gm.from_wkt(wkts).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(wkbs).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_geojson(geojson).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_polyline(polylines).to_wkt() == ['POINT (1 2)', None]
+
+
 def test_to_polars_rejects_epoch_loss_without_flag(
     points: gm.GeometryArray,
 ) -> None:
@@ -49,11 +66,11 @@ def test_crs84_encodes_via_wire_alias_and_non_alias_needs_drop() -> None:
     points = gm.GeometryArray([gm.Point(1, 2)], crs='OGC:CRS84')
     series = to_polars(points)
     decoded = from_polars(series)
-    assert decoded.crs == 'EPSG:4326'
+    assert decoded.crs == gm.CRS('EPSG:4326')
     assert canon(decoded) == canon(gm.GeometryArray([gm.Point(1, 2)], crs=4326))
     # Explicit alias restore at decode.
     restored = from_polars(series, crs='OGC:CRS84')
-    assert restored.crs == 'OGC:CRS84'
+    assert restored.crs == gm.CRS('OGC:CRS84')
     assert canon(restored) == canon(points)
 
     # A non-alias non-EPSG CRS still requires drop_crs acknowledgement.

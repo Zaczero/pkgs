@@ -94,9 +94,12 @@ def test_geojson_structural_limit_precedes_default_serde_recursion() -> None:
         'geometry': None,
         'properties': json.loads(nested),
     })
-    for reader, payload in ((gm.from_geojson, nested), (gm.from_features, feature)):
+    for reader, payload, retain_features in (
+        (gm.from_geojson, nested, False),
+        (gm.from_geojson, feature, True),
+    ):
         with pytest.raises(gm.ParseError, match='structural limit of 272'):
-            reader(payload)
+            reader(payload, features=retain_features)
 
 
 @pytest.mark.parametrize('depth', [127, 128])
@@ -109,7 +112,9 @@ def test_feature_geometry_accepts_boundary(depth: int, as_bytes: bool) -> None:
         'properties': {},
     }
     text = json.dumps(feature)
-    restored = gm.from_features(text.encode() if as_bytes else text).geometries[0]
+    restored = gm.from_geojson(
+        text.encode() if as_bytes else text, features=True
+    ).geometries[0]
     assert restored.to_wkt() == shape.to_wkt()
 
 
@@ -122,7 +127,7 @@ def test_feature_geometry_rejects_129(as_bytes: bool) -> None:
     }
     text = json.dumps(feature)
     with pytest.raises(gm.ParseError, match='nesting exceeds'):
-        gm.from_features(text.encode() if as_bytes else text)
+        gm.from_geojson(text.encode() if as_bytes else text, features=True)
 
 
 def test_structure_preserving_operations_accept_boundary() -> None:
@@ -200,7 +205,7 @@ assert shape.minimum_bounding_circle().geometry_type == 'Point'
 bounds = shape.bounds
 assert all(math.copysign(1.0, bounds[i]) == 1.0 for i in (0, 2))
 assert all(math.copysign(1.0, bounds[i]) == -1.0 for i in (1, 3))
-assert shape.estimate_local_crs() == 'EPSG:32631'
+assert shape.estimate_local_crs() == gm.CRS('EPSG:32631')
 print(sys.argv[1])
 """
     result = subprocess.run(
@@ -272,7 +277,7 @@ if isinstance(actual, float):
 elif operation == 'estimate_local_crs':
     assert actual == expected
 else:
-    assert actual.crs == 'EPSG:4326'
+    assert actual.crs == gm.CRS('EPSG:4326')
     assert gm.equals(actual, expected), (actual, expected)
 """
     result = subprocess.run(
@@ -476,7 +481,7 @@ def test_shared_set_operations_match_unshared_wkb_expansion(
     for predicate in (gm.intersects, gm.disjoint, gm.covers):
         assert predicate(shared, probe) == predicate(expanded, probe), (name, depth)
     assert gm.covered_by(probe, shared) == gm.covered_by(probe, expanded), (name, depth)
-    assert gm.intersects_xy(shared, x, y) == gm.intersects_xy(expanded, x, y), (
+    assert gm.intersects(shared, x=x, y=y) == gm.intersects(expanded, x=x, y=y), (
         name,
         depth,
     )
@@ -560,10 +565,10 @@ for _ in range(128):
 
 hull = shape.concave_hull(concavity=10.0)
 assert hull.coordinate_axes == 'XYZM'
-assert hull.crs == 'EPSG:4326'
+assert hull.crs == gm.CRS('EPSG:4326')
 edge = next(coord for coord in hull.exterior.coords if coord[1] == 1.0)
 assert (edge[2], edge[3]) == (50.0, 5.0)
-assert math.copysign(1.0, edge[0]) == 1.0
+assert math.copysign(1.0, edge[0]) == -1.0
 """
     result = subprocess.run(
         [sys.executable, '-c', script],

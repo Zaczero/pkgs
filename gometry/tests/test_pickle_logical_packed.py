@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import pickle
 import struct
 
@@ -101,7 +102,11 @@ def test_packed_payload_omits_unselected_parent_coordinates(
 ) -> None:
     selected = gm.from_wkt(rows)[[1]]
     _, args = selected.__reduce_ex__(5)
-    coordinate_payload = b''.join(value for value in args[:4] if value is not None)
+    coordinate_payload = b''.join(
+        bytes(value.raw()) if isinstance(value, pickle.PickleBuffer) else value
+        for value in args[:4]
+        if value is not None
+    )
 
     assert struct.pack('<d', 1234567.25) not in coordinate_payload
     assert selected.to_wkt() == [selected_wkt]
@@ -124,7 +129,7 @@ def test_nullable_packed_pickle_keeps_present_payload_and_logical_mask(
 ) -> None:
     values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
     _, args = values.__reduce_ex__(5)
-    assert args[-1] == b'\x00\x01\x00'
+    assert bytes(args[-1].raw()) == b'\x00\x01\x00'
     restored = pickle.loads(pickle.dumps(values, protocol=5))
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
     assert restored.is_missing.tolist() == [False, True, False]
@@ -133,6 +138,45 @@ def test_nullable_packed_pickle_keeps_present_payload_and_logical_mask(
     assert (
         restored.to_arrow().type.extension_name == values.to_arrow().type.extension_name
     )
+
+
+def test_protocol_five_pickle_buffers_roundtrip_after_source_drop() -> None:
+    sources = [
+        gm.points([0.0, 1.0, 2.0], [2.0, 3.0, 4.0], crs=4326, epoch=2020.5)[1:],
+        gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.5)[[1, 0]],
+        gm.GeometryArray([
+            gm.LineString([(0, 0), (1, 1)], z=[2, 3], m=[4, 5], crs=4326),
+            None,
+            gm.LineString([(2, 2), (3, 3)], z=[6, 7], m=[8, 9], crs=4326),
+        ]).set_epoch(2020.5),
+        gm.GeometryArray([
+            gm.Point(0, 0, crs=4326),
+            gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)], crs=4326),
+            None,
+        ]),
+    ]
+    pickles: list[tuple[bytes, list[pickle.PickleBuffer], list[str | None]]] = []
+
+    for source in sources:
+        buffers: list[pickle.PickleBuffer] = []
+        payload = pickle.dumps(source, protocol=5, buffer_callback=buffers.append)
+        assert buffers
+        assert all(buffer.raw().readonly for buffer in buffers)
+        pickles.append((payload, buffers, source.to_wkt(drop_epoch=True)))
+
+    del source
+    del sources
+    gc.collect()
+
+    for payload, buffers, expected_wkt in pickles:
+        with pytest.raises(pickle.UnpicklingError, match='out-of-band'):
+            pickle.loads(payload)
+        with pytest.raises(pickle.UnpicklingError):
+            pickle.loads(payload, buffers=buffers[:-1])
+
+        restored = pickle.loads(payload, buffers=buffers)
+        assert isinstance(restored, gm.GeometryArray)
+        assert restored.to_wkt(drop_epoch=True) == expected_wkt
 
 
 @pytest.mark.parametrize(
@@ -562,12 +606,12 @@ def test_pickle_packed_polygon_drop_missing_gather_filter_round_trip() -> None:
 def test_pickle_malformed_wkb_polygon_stays_mixed_not_packed() -> None:
     """The mixed WKB unpickler must not opportunistically pack.
 
-    Uses a *valid, pack-admissible* polygon WKB so swapping
-    ``mixed`` for ``pack_or_mixed`` would produce packed storage and fail
+    Uses a *valid, pack-admissible* polygon WKB so replacing the mixed
+    unpickler with ``PyGeometryArray::from_shapes`` would produce packed storage and fail
     the reduce-name check (malformed WKB demotes under pack_admission and
     would not detect that swap).
     """
-    # Closed 4-vertex polygon — would pack under pack_or_mixed.
+    # Closed 4-vertex polygon — the standard shape builder packs it.
     wkb = gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)]).to_wkb()
     arr = _lib._unpickle_geometry_array_v1([wkb], None, None, None)
     assert len(arr) == 1

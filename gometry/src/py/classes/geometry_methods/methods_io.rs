@@ -111,8 +111,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        arrow::reject_requested_schema(requested_schema)?;
-        arrow_c::geometry_to_array_capsules(py, self)
+        arrow_c::geometry_to_array_capsules(py, self, requested_schema)
     }
 
     #[pyo3(signature = (requested_schema = None))]
@@ -121,8 +120,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        arrow::reject_requested_schema(requested_schema)?;
-        arrow_c::geometry_to_stream_capsule(py, self)
+        arrow_c::geometry_to_stream_capsule(py, self, requested_schema)
     }
     pub fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         const WKT_LIMIT: usize = 120;
@@ -304,9 +302,10 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         Ok(measure.bytes_pyint(py))
     }
 
-    /// Retained native cost of this geometry for ``sys.getsizeof``.
+    /// Python's allocation base plus the retained native cost of this geometry
+    /// for ``sys.getsizeof``.
     ///
-    /// Counts the Python-facing struct, the Arc-owned ``ShapeData`` block
+    /// Counts the Python object allocation base and the Arc-owned ``ShapeData`` block
     /// (including the ``Shape`` payload — coordinate columns **and**
     /// container allocations such as multipart ``Vec``s, polygon hole
     /// ``Arc``s, and nested collection members), any attached
@@ -331,10 +330,11 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    pub fn __sizeof__(&self) -> PyResult<isize> {
+    pub fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
         python_sizeof(
-            std::mem::size_of::<Self>(),
-            crate::HeapSize::heap_bytes(self),
+            slf.py(),
+            slf.as_any(),
+            crate::HeapSize::heap_bytes(&*slf.borrow()),
         )
     }
 }

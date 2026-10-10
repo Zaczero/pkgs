@@ -58,7 +58,7 @@ impl EmbeddingDomain {
         }
         match self {
             Self::Plane => true,
-            Self::Rectangle(bounds) => bounds.contains_xy(candidate),
+            Self::Rectangle(bounds) => bounds.contains_point(candidate),
             Self::Geographic(frame) => {
                 let longitude_axis = frame.longitude();
                 let half_period = longitude_axis.half_period();

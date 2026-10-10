@@ -139,8 +139,8 @@ use proj::{
 pub(crate) use rhumb::distance_rhumb_crs;
 pub(crate) use rhumb::{distance_rhumb_crs_at, rhumb_bearing_crs_at, rhumb_destination_crs_at};
 pub(crate) use runtime::{
-    clear_cache, configure_runtime, coordinate_identity_crs, cstring, definition, normalize,
-    normalize_pair, reset_runtime_config, runtime_state_snapshot,
+    ConfigUpdate, clear_cache, configure_runtime, coordinate_identity_crs, cstring, definition,
+    normalize, normalize_pair, reset_runtime_config, runtime_state_snapshot,
 };
 pub(crate) use transform::{
     apply_operation, coordinates_are_finite, is_wgs84_lonlat, parse_epsg, proj_transform_error,

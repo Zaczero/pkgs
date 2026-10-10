@@ -107,9 +107,9 @@ def test_s2_point_cell_boundary_and_parent() -> None:
     assert cell.intersects(parent)
     assert {cell, geometry_cell, parent} == {cell, parent}
     assert hash(cell) == hash(geometry_cell)
-    assert cell.center.crs == 'OGC:CRS84'
+    assert cell.center.crs == gm.CRS('OGC:CRS84')
     assert boundary.geometry_type == 'Polygon'
-    assert boundary.crs == 'OGC:CRS84'
+    assert boundary.crs == gm.CRS('OGC:CRS84')
     assert (
         gm.CellArray([cell.token], type=gm.S2Cell).polygon[0].to_wkt()
         == boundary.to_wkt()
@@ -136,7 +136,7 @@ def test_s2_bounds_coverage_membership() -> None:
     assert int(coverage[0]) in coverage
     assert coverage[0].token in coverage
     assert gm.S2Cell(30.0, 52.0, level=12) not in coverage
-    assert coverage.polygon.crs == 'OGC:CRS84'
+    assert coverage.polygon.crs == gm.CRS('OGC:CRS84')
     np.testing.assert_array_equal(
         gm.contains(polygon, gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)),
         [True, False],
@@ -406,7 +406,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
     """Adaptive bbox windows share one finite deduplicated output budget."""
     separated = gm.MultiPoint([(0.0, 0.0), (120.0, 0.0)], crs=4326)
     with pytest.raises(gm.GeometryError, match='max_cells'):
-        gm.s2_cover_adaptive(
+        gm.s2_cover(
             separated,
             cell_rule='bbox',
             min_level=0,
@@ -415,7 +415,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
             max_cells=1,
         )
 
-    covered = gm.s2_cover_adaptive(
+    covered = gm.s2_cover(
         separated,
         cell_rule='bbox',
         min_level=0,
@@ -427,7 +427,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
     assert [cell.id for cell in covered] == sorted({cell.id for cell in covered})
 
     same_cell = gm.MultiPoint([(-75.0, 40.0), (-74.99, 40.01)], crs=4326)
-    deduplicated = gm.s2_cover_adaptive(
+    deduplicated = gm.s2_cover(
         same_cell,
         cell_rule='bbox',
         min_level=0,
@@ -446,7 +446,7 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
     for cover, options in (
         (gm.s2_cover, {'level': 8, 'max_cells': None}),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -455,7 +455,7 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
             },
         ),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -464,7 +464,7 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
             },
         ),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -1062,7 +1062,7 @@ def test_s2_within_line_is_empty_at_every_level_mod_and_budget() -> None:
     line = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
     for level_mod in (1, 2, 3):
         for max_cells in (None, 1):
-            assert not gm.s2_cover_adaptive(
+            assert not gm.s2_cover(
                 line,
                 cell_rule='within',
                 min_level=0,
@@ -1406,11 +1406,11 @@ def test_geohash_and_tile_coverage_classify_exactly() -> None:
         assert all(gm.intersects(box, cell.polygon) for cell in inter)
         assert gm.contains(box, gm.Point(13.4, 52.5, crs=4326))
         assert not gm.contains(box, gm.Point(0, 0, crs=4326))
-        assert gm.contains_xy(box, 13.4, 52.5)
+        assert gm.contains(box, x=13.4, y=52.5)
         np.testing.assert_array_equal(
-            gm.contains_xy(box, [13.4, 0.0], [52.5, 0.0]), [True, False]
+            gm.contains(box, x=[13.4, 0.0], y=[52.5, 0.0]), [True, False]
         )
-        assert gm.intersects_xy(box, 13.2, 52.4)
+        assert gm.intersects(box, x=13.2, y=52.4)
         polys = coverage.polygon
         assert len(polys) == len(coverage)
         assert all(p.geometry_type == 'Polygon' for p in polys)

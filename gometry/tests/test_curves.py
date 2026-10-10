@@ -37,7 +37,7 @@ def test_morton_keys_interleave_and_sort_orders_storage() -> None:
     ]
     scattered = gm.points([5.0, 0.0, 5.1, 0.1], [5.0, 0.0, 5.1, 0.1], crs=3857)
     ordered = scattered.sort_by_spatial_key(curve='hilbert')
-    assert ordered.crs == 'EPSG:3857'
+    assert ordered.crs == gm.CRS('EPSG:3857')
     assert [round(p.x, 1) for p in ordered] == [0.0, 0.1, 5.0, 5.1]
     assert [round(p.x, 1) for p in scattered.sort_by_spatial_key(curve='morton')] == [
         0.0,
