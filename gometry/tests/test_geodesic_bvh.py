@@ -8,9 +8,7 @@ import math
 import gometry as gm
 import pytest
 
-pyproj = pytest.importorskip(
-    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
-)
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 Geod = pyproj.Geod
 
 GEOD = Geod(ellps='WGS84')

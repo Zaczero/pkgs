@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 pd = pytest.importorskip(
-    'pandas', reason='pandas==3.0.5 optional extension-array wheel is unavailable here'
+    'pandas', reason='pandas is an optional extension-array dependency'
 )
 base = pytest.importorskip(
     'pandas.tests.extension.base',

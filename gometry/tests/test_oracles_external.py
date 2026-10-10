@@ -11,14 +11,12 @@ from tests._support import (
     h3_oracle,
 )
 
-pyproj = pytest.importorskip(
-    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
-)
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 s2sphere = pytest.importorskip(
-    's2sphere', reason='s2sphere==0.2.5 optional oracle wheel is unavailable here'
+    's2sphere', reason='s2sphere is an optional oracle dependency'
 )
 shapely = pytest.importorskip(
-    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+    'shapely', reason='shapely is an optional oracle dependency'
 )
 
 

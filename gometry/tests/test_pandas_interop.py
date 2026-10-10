@@ -10,9 +10,7 @@ import pytest
 
 from tests._support import canon
 
-pd = pytest.importorskip(
-    'pandas', reason='pandas==3.0.5 optional interop wheel is unavailable here'
-)
+pd = pytest.importorskip('pandas', reason='pandas is an optional interop dependency')
 from_pandas = importlib.import_module('gometry._from_pandas').from_pandas
 _pandas = importlib.import_module('gometry._pandas')
 GeometryDtype = _pandas.GeometryDtype

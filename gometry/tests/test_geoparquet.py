@@ -13,11 +13,11 @@ from tests._support import canon
 
 shapely_geometry = pytest.importorskip(
     'shapely.geometry',
-    reason='shapely==2.1.2 optional GeoParquet geometry wheel is unavailable here',
+    reason='shapely is an optional GeoParquet geometry dependency',
 )
 gpd = pytest.importorskip(
     'geopandas',
-    reason='geopandas==1.1.4 optional GeoParquet wheel is unavailable here',
+    reason='geopandas is an optional GeoParquet dependency',
 )
 LineString = shapely_geometry.LineString
 Point = shapely_geometry.Point

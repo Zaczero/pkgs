@@ -9,9 +9,7 @@ import gometry as gm
 import pytest
 from gometry import _lib
 
-pa = pytest.importorskip(
-    'pyarrow', reason='pyarrow==25.0.1 optional Arrow wheel is unavailable here'
-)
+pa = pytest.importorskip('pyarrow', reason='pyarrow is an optional Arrow dependency')
 
 
 def _iso_dim(type_code: int) -> int:

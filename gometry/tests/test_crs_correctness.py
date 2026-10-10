@@ -20,9 +20,7 @@ from tests._support import (
     ids,
 )
 
-pyproj = pytest.importorskip(
-    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
-)
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 Geod = pyproj.Geod
 
 FOOT_CRS = 2263

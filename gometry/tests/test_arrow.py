@@ -27,9 +27,7 @@ from tests._support import (
     with_validity,
 )
 
-pa = pytest.importorskip(
-    'pyarrow', reason='pyarrow==25.0.1 optional Arrow wheel is unavailable here'
-)
+pa = pytest.importorskip('pyarrow', reason='pyarrow is an optional Arrow dependency')
 
 _WGS84_PROJJSON_METADATA = _json.dumps(
     {'crs': _CRS(4326).to_projjson(as_dict=True), 'crs_type': 'projjson'},

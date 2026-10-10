@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 shapely = pytest.importorskip(
-    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+    'shapely', reason='shapely is an optional oracle dependency'
 )
 
 

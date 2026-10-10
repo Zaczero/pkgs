@@ -12,11 +12,9 @@ import pytest
 from tests._support import GOMETRY_ROOT, load_tool
 
 shapely = pytest.importorskip(
-    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+    'shapely', reason='shapely is an optional oracle dependency'
 )
-pyproj = pytest.importorskip(
-    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
-)
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 Geod = pyproj.Geod
 
 _CHART_EDGE_REFERENCE = load_tool(
