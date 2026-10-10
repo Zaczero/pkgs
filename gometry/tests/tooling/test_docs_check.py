@@ -15,7 +15,7 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import griffe
 import pytest
@@ -484,6 +484,23 @@ def test_rendered_signature_parser_keeps_tokens_and_parameter_kinds() -> None:
     assert missing_star != signature.form
 
 
+def test_rendered_property_signature_is_not_parsed_as_a_call() -> None:
+    check = _check()
+    source = """\
+<div class="doc doc-object doc-attribute">
+  <h3 id="gometry.CRS.area_of_use">
+    <code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>
+  </h3>
+  <div class="language-python doc-signature highlight"><pre><span class="n">area_of_use</span><span class="p">:</span> <span class="n">CrsAreaOfUse</span> <span class="o">|</span> <span class="kc">None</span></pre></div>
+</div>
+"""
+
+    signature = check.rendered_call_forms(source)['gometry.CRS.area_of_use'][0]
+
+    assert signature.source == 'area_of_use: CrsAreaOfUse | None'
+    assert signature.form is None
+
+
 def test_real_handler_renders_parameter_kinds_and_default_states(
     tmp_path: Path,
 ) -> None:
@@ -571,10 +588,18 @@ class Methods:
     )
 
 
-def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(
+def test_doc_integrity_checks_only_resolved_public_doc_carriers(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    pytest.importorskip(
+        'tree_sitter',
+        reason='tree-sitter==0.26.0 has no CPython 3.14t wheel',
+    )
+    pytest.importorskip(
+        'tree_sitter_rust',
+        reason='tree-sitter-rust==0.24.2 has no CPython 3.14t wheel',
+    )
     import importlib
 
     integrity = load_tool(
@@ -587,13 +612,15 @@ def test_shared_doc_parser_checks_stub_and_raw_rust_duplicates(
     stub_path.write_text(
         '''\
 class Widget:
-    """A widget.
+    """Stale stub prose.
 
-    Args:
-        size (int): The size.
+    Notes
+    -----
+    This is not the resolved runtime carrier.
 
-    Arguments:
-        size (int): The repeated size.
+    Notes
+    -----
+    The stale duplicate is not inspected.
     """
 '''
     )
@@ -601,21 +628,15 @@ class Widget:
     src_root.mkdir()
     (src_root / 'lib.rs').write_text(
         """\
-docs! {
-    #[cfg(test)]
-    /// Build a widget.
-    ///
-    /// Parameters
-    /// ----------
-    /// size : int
-    ///     The size.
-    ///
-    /// Parameters
-    /// ----------
-    /// size : int
-    ///     The repeated size.
-    pub fn build(size: usize) {}
-}
+/// A duplicate on an unexported Rust item is not a public doc carrier.
+///
+/// Raises
+/// ------
+/// GeometryError
+///     First entry.
+/// GeometryError
+///     Duplicate entry.
+fn private_helper() {}
 """
     )
     runtime_package = tmp_path / 'runtime' / 'fakepkg'
@@ -626,7 +647,18 @@ docs! {
 __all__ = ['Widget']
 
 class Widget:
-    """A widget."""
+    """A widget.
+
+    Parameters
+    ----------
+    size : int
+        The size.
+
+    Parameters
+    ----------
+    size : int
+        The duplicate parameter.
+    """
 '''
     )
     monkeypatch.syspath_prepend(str(runtime_package.parent))
@@ -639,11 +671,14 @@ class Widget:
 
     errors = integrity.collect_errors(cfg, runtime)
 
-    assert any('_lib.pyi' in error and "'Parameters'" in error for error in errors)
-    assert any('src/lib.rs' in error and "'Parameters'" in error for error in errors)
+    assert len(errors) == 1, errors
+    assert errors[0].endswith("Widget: duplicate 'Parameters' section")
+    assert str(stub_path) in errors[0]
+    assert 'Notes' not in errors[0]
+    assert 'src/lib.rs' not in errors[0]
 
 
-def test_scalar_geometry_array_returns_cover_overloads_and_properties(
+def test_shared_subject_return_check_covers_overloads_and_properties(
     tmp_path: Path,
 ) -> None:
     model = load_tool(
@@ -698,14 +733,210 @@ class GeometryArray:
 '''
     )
 
-    errors = model._scalar_array_return_errors(stub, object())
+    tree = ast.parse(stub.read_text(encoding='utf-8'))
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    from pyo3stubs.doc_structure import DocLocation
+
+    def subject(
+        class_name: str,
+        member_name: str,
+        kind: Literal['callable', 'property'] = 'callable',
+    ):
+        class_node = classes[class_name]
+        declarations = tuple(
+            node
+            for node in class_node.body
+            if isinstance(node, ast.FunctionDef) and node.name == member_name
+        )
+        carrier = declarations[-1]
+        return model.DocSubject(
+            f'{class_name}.{member_name}',
+            kind,
+            ast.get_docstring(carrier),
+            (),
+            DocLocation(str(stub), carrier.lineno),
+            declarations,
+        )
+
+    subjects = (
+        subject('Geometry', 'buffer'),
+        subject('Geometry', 'centroid'),
+        subject('Geometry', 'bounds', 'property'),
+        subject('GeometryArray', 'buffer'),
+    )
+    errors = model._scalar_array_return_errors(subjects, tree)
 
     assert len(errors) == 2, errors
     assert any('Geometry.centroid' in error for error in errors)
     assert any('Geometry.bounds' in error for error in errors)
 
 
-def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
+def test_shared_subject_return_check_resolves_generic_classes_and_descriptors(
+    tmp_path: Path,
+) -> None:
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    stub = tmp_path / '_lib.pyi'
+    stub.write_text(
+        '''\
+from typing import Generic, Self, TypeVar
+
+_GroupValuesT_co = TypeVar('_GroupValuesT_co', covariant=True)
+U = TypeVar('U')
+V = TypeVar('V')
+W = TypeVar('W')
+X = TypeVar('X')
+
+class GeometryArray(Generic[W]):
+    def restore(self) -> Self:
+        """Restore the array.
+
+        Returns
+        -------
+        GeometryArray[W]
+            This array.
+        """
+
+class _CellGeometryProjection(Generic[W]):
+    def __get__(
+        self,
+        instance: CellArray,
+        owner: type[CellArray] | None = None,
+    ) -> GeometryArray[W]: ...
+
+    def __get__(self, instance: None, owner: type[CellArray]) -> Self: ...
+
+class CellArray:
+    center: _CellGeometryProjection[Point]
+    """The center geometries.
+
+    Returns
+    -------
+    GeometryArray[Point]
+        The projected geometry values.
+    """
+
+class Groups(Generic[_GroupValuesT_co]):
+    @property
+    def values(self) -> _GroupValuesT_co:
+        """The flat backing column.
+
+        Returns
+        -------
+        numpy.ndarray or GeometryArray or CellArray
+            The selected backing column.
+        """
+
+class CellGroups(Generic[U]):
+    @property
+    def values(self) -> U:
+        """The cell backing column.
+
+        Returns
+        -------
+        GeometryArray
+            The documented but unsupported backing type.
+        """
+
+class Deferred(Generic[V]):
+    @property
+    def values(self) -> V:
+        """The externally specialized backing column.
+
+        Returns
+        -------
+        GeometryArray
+            A type that has no in-stub specialization.
+        """
+
+class PayloadBox(Generic[X]):
+    @property
+    def payload(self) -> X:
+        """The wrapped payload.
+
+        Returns
+        -------
+        GeometryArray
+            The specialized payload.
+        """
+
+class Geometry:
+    @property
+    def bounds(self) -> tuple[float, float, float, float]:
+        """The scalar bounds.
+
+        Returns
+        -------
+        GeometryArray
+            An incompatible concrete binding type.
+        """
+
+def geometry_groups() -> Groups[GeometryArray]: ...
+def cell_groups() -> Groups[CellArray]: ...
+def numpy_groups() -> Groups[npt.NDArray[np.int64]]: ...
+def cell_only_groups() -> CellGroups[CellArray]: ...
+def geometry_box() -> PayloadBox[GeometryArray[Point]]: ...
+'''
+    )
+    tree = ast.parse(stub.read_text(encoding='utf-8'))
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+    from pyo3stubs.doc_structure import DocLocation
+
+    def subject(
+        class_name: str,
+        member_name: str,
+        kind: Literal['callable', 'property'] = 'property',
+    ):
+        class_node = classes[class_name]
+        declaration = next(
+            node
+            for node in class_node.body
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == member_name
+            )
+            or (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == member_name
+            )
+        )
+        if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            prose = ast.get_docstring(declaration)
+        else:
+            index = class_node.body.index(declaration)
+            following = class_node.body[index + 1]
+            prose = following.value.value
+        return model.DocSubject(
+            f'{class_name}.{member_name}',
+            kind,
+            prose,
+            (),
+            DocLocation(str(stub), declaration.lineno),
+            (declaration,),
+        )
+
+    errors = model._scalar_array_return_errors(
+        (
+            subject('Groups', 'values'),
+            subject('CellGroups', 'values'),
+            subject('Deferred', 'values'),
+            subject('PayloadBox', 'payload'),
+            subject('GeometryArray', 'restore', 'callable'),
+            subject('CellArray', 'center'),
+            subject('Geometry', 'bounds'),
+        ),
+        tree,
+    )
+
+    assert len(errors) == 2, errors
+    assert any('CellGroups.values' in error for error in errors)
+    assert any('Geometry.bounds' in error for error in errors)
+    assert not any('Deferred.values' in error for error in errors)
+
+
+def test_doc_model_requires_quoted_literal_values_in_type_entries() -> None:
     from pyo3stubs.doc_structure import DocLocation
 
     model = load_tool(
@@ -722,36 +953,6 @@ def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
         )
 
     subjects = (
-        subject(
-            'GeometryArray.buffer',
-            """\
-            Return one result per element.
-
-            Returns
-            -------
-            GeometryArray[Geometry]
-            """,
-        ),
-        subject(
-            'Geometry.intersection',
-            """\
-            Intersect the geometries (planar).
-
-            Returns
-            -------
-            Geometry
-            """,
-        ),
-        subject(
-            'Geometry.simplify',
-            """\
-            Simplify the geometry (planar).
-
-            Returns
-            -------
-            Geometry
-            """,
-        ),
         subject(
             'Geometry.buffer',
             """\
@@ -770,7 +971,7 @@ def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
         subject(
             'Geometry.buffer',
             """\
-            Buffer with an ambiguous unit.
+            Buffer with an unquoted enum-like type.
 
             Parameters
             ----------
@@ -782,34 +983,11 @@ def test_doc_model_keeps_row_units_planarity_and_literal_value_claims() -> None:
             Geometry
             """,
         ),
-        subject(
-            'from_array',
-            """\
-            Return the array representation.
-
-            Returns
-            -------
-            ndarray of float64
-            """,
-        ),
     )
 
-    errors = model._doc_content_errors(subjects)
+    errors = model._doc_type_expression_errors(subjects)
 
-    assert any(
-        'GeometryArray.buffer' in error and 'per element' in error for error in errors
-    )
-    assert any(
-        'Geometry.intersection' in error and 'planar' in error for error in errors
-    )
-    assert not any(
-        'Geometry.simplify' in error and 'planar' in error for error in errors
-    )
-    assert not any('quoted unit' in error and 'enum' in error for error in errors)
-    assert any(
-        'ambiguous unit' not in error and 'enum values' in error for error in errors
-    )
-    assert any('from_array' in error and 'numpy.ndarray' in error for error in errors)
+    assert errors == ['Geometry.buffer: enum values in a type field must be quoted']
 
 
 def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
@@ -1126,7 +1304,7 @@ def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
     assert set(contracts) == {f'gometry.{name}' for name in names}
     expected_counts = {
         'GeohashCell': 3,
-        'Point': 2,
+        'Point': 3,
         'LineString': 3,
         'Polygon': 3,
         'CellArray': 16,
@@ -1195,6 +1373,22 @@ def test_constructor_parameter_tables_show_authored_defaults() -> None:
         assert (
             ''.join(parser.disclosures[0]['summary']).strip() == 'Accepted call forms'
         )
+
+
+def test_constructor_default_projection_keeps_differing_accepted_forms() -> None:
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    forms = (
+        ((('keyword-only', 'value', 'int', None),), None),
+        ((('keyword-only', 'value', 'int', '1'),), None),
+        ((('keyword-only', 'value', 'int', '2'),), None),
+    )
+
+    defaults, conflicts = model._call_form_defaults(forms)
+
+    assert defaults == {'value': '1'}
+    assert conflicts == []
 
 
 def test_constructor_class_template_renders_the_source_ast_form_sequence() -> None:

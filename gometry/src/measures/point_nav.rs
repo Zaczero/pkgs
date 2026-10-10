@@ -64,7 +64,7 @@ pub(crate) fn bearing_degrees(dx: f64, dy: f64) -> f64 {
     }
 }
 
-fn rhumb_distance_points(
+fn distance_rhumb_points(
     crs: &str,
     frame: GeographicFrame,
     from: Point,
@@ -73,7 +73,7 @@ fn rhumb_distance_points(
 ) -> PyResult<f64> {
     let from = to_geodesic_point(frame, from)?;
     let to = to_geodesic_point(frame, to)?;
-    Ok(crs::rhumb_distance_crs_at(
+    Ok(crs::distance_rhumb_crs_at(
         crs, from.x, from.y, to.x, to.y, state,
     )?)
 }
@@ -340,7 +340,7 @@ fn rhumb_interpolate_point(
 ) -> PyResult<Shape> {
     let from_geodesic = to_geodesic_point(frame, from)?;
     let to_geodesic = to_geodesic_point(frame, to)?;
-    let total = crs::rhumb_distance_crs_at(
+    let total = crs::distance_rhumb_crs_at(
         crs,
         from_geodesic.x,
         from_geodesic.y,
@@ -456,7 +456,7 @@ pub(crate) fn point_cross_track_distance(
     cross_track_points(&crs, frame, probe, from, to, &state)
 }
 
-pub(crate) fn point_rhumb_distance(geometry: &PyGeometry, other: &PyGeometry) -> PyResult<f64> {
+pub(crate) fn point_distance_rhumb(geometry: &PyGeometry, other: &PyGeometry) -> PyResult<f64> {
     const OP: MetricOp = MetricOp::RhumbDistance;
     let from = point_operand(geometry, OP)?;
     let to = point_operand(other, OP)?;
@@ -569,14 +569,8 @@ fn cross_track_points(
     to: Point,
     state: &crs::RuntimeState,
 ) -> PyResult<f64> {
-    if (from.x, from.y).eq(&(to.x, to.y)) {
-        return Err(InvalidGeometryError::new_err(
-            "cross_track_distance requires distinct start and end points",
-        ));
-    }
+    let (from, to) = cross_track_endpoints(frame, from, to)?;
     let probe = to_geodesic_point(frame, probe)?;
-    let from = to_geodesic_point(frame, from)?;
-    let to = to_geodesic_point(frame, to)?;
     Ok(crs::geodesic_cross_track_crs_at(
         crs,
         (probe.x, probe.y),
@@ -593,20 +587,42 @@ fn cross_track_points_with_radius(
     from: Point,
     to: Point,
 ) -> PyResult<f64> {
-    if (from.x, from.y).eq(&(to.x, to.y)) {
-        return Err(InvalidGeometryError::new_err(
-            "cross_track_distance requires distinct start and end points",
-        ));
-    }
+    let (from, to) = cross_track_endpoints(frame, from, to)?;
     let probe = to_geodesic_point(frame, probe)?;
-    let from = to_geodesic_point(frame, from)?;
-    let to = to_geodesic_point(frame, to)?;
     Ok(crs::geodesic_cross_track_with_radius(
         radius,
         (probe.x, probe.y),
         (from.x, from.y),
         (to.x, to.y),
     )?)
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "geographic quotient identity and exact antipodes have no epsilon neighborhood"
+)]
+fn cross_track_endpoints(
+    frame: GeographicFrame,
+    from: Point,
+    to: Point,
+) -> PyResult<(Point, Point)> {
+    let from_geodesic = to_geodesic_point(frame, from)?;
+    let to_geodesic = to_geodesic_point(frame, to)?;
+    let same_point = frame.quotient_vertex(from.x, from.y) == frame.quotient_vertex(to.x, to.y);
+    let opposite_latitudes = from_geodesic.y == -to_geodesic.y;
+    let opposite_poles = from_geodesic.y.abs() == 90.0;
+    let opposite_longitudes = matches!(
+        GeographicFrame::crs84()
+            .longitude()
+            .shortest_alias_step(from_geodesic.x, to_geodesic.x),
+        Ok(crate::geographic::EdgeDirection::HalfTurn(_))
+    );
+    if same_point || (opposite_latitudes && (opposite_poles || opposite_longitudes)) {
+        return Err(InvalidGeometryError::new_err(
+            "cross_track_distance requires start and end points that define a unique great circle; coincident and antipodal endpoints are invalid",
+        ));
+    }
+    Ok((from_geodesic, to_geodesic))
 }
 
 enum PointOperand<'a> {
@@ -917,7 +933,7 @@ impl PointBinaryF64Kernel for RhumbDistanceKernel {
         left: Point,
         right: Point,
     ) -> PyResult<f64> {
-        rhumb_distance_points(&metric.crs, metric.frame, left, right, &metric.state)
+        distance_rhumb_points(&metric.crs, metric.frame, left, right, &metric.state)
     }
 }
 
@@ -2674,7 +2690,8 @@ pub(crate) fn bearing(
 /// CRSError
 ///     If the CRS is missing or not geographic.
 /// InvalidGeometryError
-///     If ``start`` equals ``end``.
+///     If ``start`` and ``end`` are coincident or antipodal and therefore do
+///     not define a unique great circle.
 ///
 /// Examples
 /// --------
@@ -2861,43 +2878,13 @@ pub(crate) fn point_between(
     }
 }
 
-/// Rhumb-line (loxodrome) distance between two points, in meters.
-///
-/// The length of the constant-bearing track on the CRS ellipsoid — the
-/// navigation sibling of the (shorter) geodesic `distance`. Geographic CRS
-/// only. An empty point is infinitely far, as for `distance`.
-///
-/// Parameters
-/// ----------
-/// left, right : Point or GeometryArray
-///     Endpoints; must share a geographic CRS.
-///
-/// Returns
-/// -------
-/// float or numpy.ndarray
-///     Meters along the rhumb line.
-///
-/// Raises
-/// ------
-/// GeometryTypeError
-///     If either operand is not a `Point`.
-/// CRSMismatchError
-///     If the operands' CRS or coordinate-epoch metadata differ.
-/// CRSError
-///     If the CRS is missing or not geographic.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> jfk, lhr = gm.Point(-73.8, 40.6, crs=4326), gm.Point(-0.5, 51.6, crs=4326)
-/// >>> round(gm.rhumb_distance(jfk, lhr) / 1000, 1)
-/// 5771.1
-#[pyfunction]
-pub(crate) fn rhumb_distance(
+pub(crate) fn distance_rhumb(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
+    unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    reject_rhumb_unit(unit, MetricOp::RhumbDistance)?;
     point_binary_f64(
         py,
         left,
@@ -2905,7 +2892,7 @@ pub(crate) fn rhumb_distance(
         MetricOp::RhumbDistance,
         |crs| require_geographic_model(crs, MetricOp::RhumbDistance),
         RhumbDistanceKernel,
-        point_rhumb_distance,
+        point_distance_rhumb,
     )
 }
 

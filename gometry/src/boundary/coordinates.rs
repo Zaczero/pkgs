@@ -2052,6 +2052,10 @@ fn owners_identical(left: &CoordinateOwner, right: &CoordinateOwner) -> bool {
 }
 
 /// Numeric column equality, matching Python tuple equality for visible ordinates.
+#[expect(
+    clippy::float_cmp,
+    reason = "Coordinates equality follows Python's exact numeric equality semantics"
+)]
 fn f64_columns_equal(left: &[f64], right: &[f64]) -> bool {
     if left.len() != right.len() {
         return false;

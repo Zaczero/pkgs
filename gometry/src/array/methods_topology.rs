@@ -49,8 +49,8 @@ impl PyGeometryArray {
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     CRS as an EPSG code or authority/WKT string.
+    /// crs : CRS-like
+    ///     Any supported CRS-like input.
     ///
     /// overwrite : bool, default False
     ///     Allow replacing an existing, different CRS label.
@@ -125,8 +125,8 @@ impl PyGeometryArray {
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     CRS as an EPSG code or authority/WKT string.
+    /// crs : CRS-like
+    ///     Any supported CRS-like input.
     ///
     /// area_of_interest : sequence of float, optional
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.

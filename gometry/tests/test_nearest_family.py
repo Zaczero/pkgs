@@ -22,7 +22,11 @@ from fractions import Fraction
 
 import gometry as gm
 import pytest
-from pyproj import Geod
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 oracle wheel is unavailable for this interpreter'
+)
+Geod = pyproj.Geod
 
 
 def _endpoints(line: gm.Geometry) -> list[tuple[float, float]]:

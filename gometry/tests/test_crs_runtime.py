@@ -4,6 +4,7 @@ runtime config, cache info, and the PROJ authority metadata surface.
 
 from __future__ import annotations
 
+import inspect
 import math
 import shutil
 import subprocess
@@ -61,8 +62,15 @@ def _run_isolated_child(code: str, tmpdir: str) -> subprocess.CompletedProcess[s
 
 
 def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) -> None:
+    parameters = inspect.signature(gm.crs_configure).parameters
+    assert tuple(parameters) == ('search_paths', 'user_writable_directory')
+    assert parameters['search_paths'].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters['user_writable_directory'].kind is inspect.Parameter.KEYWORD_ONLY
+
     original = gm.crs_configure()
     assert original == {'search_paths': None, 'user_writable_directory': None}
+    with pytest.raises(TypeError):
+        gm.crs_configure(None)
     before = gm.CRS(4326).info
     engine = gm.crs_engine()
     search_paths = None
@@ -147,11 +155,11 @@ def test_crs_cache_info_reports_current_thread_cache_state() -> None:
         'proj_operation',
         'crs_info',
         'crs_catalog',
+        'crs_catalog_name_matches',
         'crs_units',
         'crs_celestial_bodies',
         'crs_non_deprecated',
         'crs_authority_matches',
-        'crs_search',
         'crs_operations',
         'crs_comparison',
         'crs_factors',

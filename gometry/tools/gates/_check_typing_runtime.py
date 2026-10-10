@@ -21,6 +21,7 @@ Exit 1 on any failure. The final line is ``TOTAL FAILURES: N``.
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
 import sys
 import typing
@@ -45,7 +46,7 @@ _NEGATIVES = _ROOT / 'tests/typing/negatives.py'
 _PYRIGHT_PRECISION = _ROOT / 'tests/typing/pyright_precision.py'
 
 _TOP_LEVEL_HINT_TARGETS = (
-    'from_features',
+    'from_geojson',
     'to_feature',
     'to_feature_collection',
 )
@@ -264,6 +265,15 @@ def _check_mypy(errors: list[str], label: str, *targets: str) -> None:
     """
     from mypy import api
 
+    # Mypy does not resolve imports through PYTHONPATH. Pin this checkout's
+    # handwritten facade stubs before any installed editable package.
+    previous_mypy_path = os.environ.get('MYPYPATH')
+    local_mypy_path = str(_ROOT / 'python')
+    os.environ['MYPYPATH'] = (
+        local_mypy_path
+        if not previous_mypy_path
+        else os.pathsep.join((local_mypy_path, previous_mypy_path))
+    )
     # A cache directory private to this gate.  Both typing gates call
     # `mypy.api.run` in-process; sharing mypy's default `.mypy_cache` means each
     # one invalidates the other's build, so alternating them leaves both cold
@@ -271,14 +281,20 @@ def _check_mypy(errors: list[str], label: str, *targets: str) -> None:
     # latent hazard: under xdist the two gates can run concurrently in different
     # workers against one cache directory.  mypy validates cache entries by
     # content hash, so a warm cache still fails on a real error.
-    stdout, stderr, status = api.run([
-        *targets,
-        '--cache-dir',
-        str(_ROOT / 'target' / 'mypy-cache' / 'typing-runtime'),
-        '--warn-unused-ignores',
-        '--no-error-summary',
-        '--no-color-output',
-    ])
+    try:
+        stdout, stderr, status = api.run([
+            *targets,
+            '--cache-dir',
+            str(_ROOT / 'target' / 'mypy-cache' / 'typing-runtime'),
+            '--warn-unused-ignores',
+            '--no-error-summary',
+            '--no-color-output',
+        ])
+    finally:
+        if previous_mypy_path is None:
+            os.environ.pop('MYPYPATH', None)
+        else:
+            os.environ['MYPYPATH'] = previous_mypy_path
     if status != 0:
         errors.append(f'{label} mypy failed:\n' + (stdout + stderr).strip())
 

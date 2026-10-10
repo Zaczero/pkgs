@@ -190,6 +190,33 @@ impl StreamingShapes {
         Ok(())
     }
 
+    /// Append logical shape outputs and their validity in one publication pass.
+    pub(crate) fn try_extend_shapes(
+        &mut self,
+        shapes: Vec<Shape>,
+        missing: Option<&ValidityMask>,
+    ) -> crate::error::Result<()> {
+        if let Some(mask) = missing {
+            if mask.len() != shapes.len() {
+                return Err(GeometryErrorKind::message(
+                    "logical nullable payload length must match the missing mask",
+                ));
+            }
+            for (row, shape) in shapes.into_iter().enumerate() {
+                if mask.is_missing(row) {
+                    self.try_push_missing()?;
+                } else {
+                    self.try_push(shape)?;
+                }
+            }
+        } else {
+            for shape in shapes {
+                self.try_push(shape)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Append a missing logical row. Point payload stays present-only; line
     /// and polygon CSR state receives a zero-width logical window.
     pub(crate) fn try_push_missing(&mut self) -> crate::error::Result<()> {

@@ -20,6 +20,7 @@ import math
 import os
 import platform
 import random
+import selectors
 import statistics
 import subprocess
 import sys
@@ -134,6 +135,9 @@ def _run_case_process(
     timeout: int = CASE_TIMEOUT_SECONDS,
     environment: dict[str, str] | None = None,
     pass_fds: tuple[int, ...] = (),
+    on_ready: Callable[[dict[str, Any]], None] | None = None,
+    on_permission: Callable[[dict[str, Any]], None] | None = None,
+    on_measurement_done: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     result = benchmark_runtime.run_controlled_process(
         command,
@@ -144,6 +148,9 @@ def _run_case_process(
         timeout=timeout,
         environment=environment,
         pass_fds=pass_fds,
+        on_ready=on_ready,
+        on_permission=on_permission,
+        on_measurement_done=on_measurement_done,
     )
     return {
         'observation': result['observation'],
@@ -484,6 +491,73 @@ def _validate_counters(
         )
 
 
+def _validate_interval_counters(
+    counters: dict[str, dict[str, Any]],
+    events: Sequence[str],
+) -> None:
+    for event in events:
+        entry = counters.get(event)
+        if not isinstance(entry, dict):
+            raise SystemExit(f'perf interval omitted typed status for {event!r}')
+        status = entry.get('status')
+        value = entry.get('counter_value')
+        if status == 'unavailable':
+            if value is not None or entry.get('raw_value') is not None:
+                raise SystemExit(
+                    f'perf unavailable event {event!r} contains a numeric value'
+                )
+            continue
+        coverage = entry.get('coverage')
+        if (
+            not _counter_value_is_usable(entry)
+            or not isinstance(coverage, (int, float))
+            or isinstance(coverage, bool)
+            or not math.isfinite(coverage)
+            or not MIN_COUNTER_COVERAGE <= coverage <= 1.0
+        ):
+            raise SystemExit(f'perf interval event {event!r} has invalid status')
+
+
+def _counter_value_is_usable(entry: dict[str, Any]) -> bool:
+    value = entry.get('counter_value')
+    return (
+        entry.get('status') == 'ok'
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+        and (not isinstance(value, float) or math.isfinite(value))
+    )
+
+
+def _unavailable_counters(
+    events: Sequence[str],
+    reason: str,
+) -> dict[str, dict[str, Any]]:
+    return {event: _unavailable_counter(event, reason) for event in events}
+
+
+def _unavailable_window(
+    case_process: dict[str, Any],
+    *,
+    events: Sequence[str],
+    reason: str,
+) -> dict[str, Any]:
+    pid = case_process.get('pid')
+    return {
+        'status': 'unavailable',
+        'scope': 'permission-to-measurement-done',
+        'pid': pid,
+        'tid': pid,
+        'invocation_id': case_process.get('invocation_id'),
+        'inherit': False,
+        'enabled_at_ns': None,
+        'measurement_done_at_ns': None,
+        'disabled_at_ns': None,
+        'events': list(events),
+        'reason': reason,
+    }
+
+
 def _perf_control_command(
     perf_binary: str, events: Sequence[str], log_fd: int
 ) -> list[str]:
@@ -591,7 +665,7 @@ def check_perf_capability(
         version = perf_version(perf_binary)
     except SystemExit as error:
         return {
-            'status': 'capability-null',
+            'status': 'unavailable',
             'reason': str(error),
             'events': list(requested),
             'event_groups': [],
@@ -606,7 +680,7 @@ def check_perf_capability(
         controls.append(single)
         if single['status'] != 'ok':
             return {
-                'status': 'capability-null',
+                'status': 'unavailable',
                 'reason': f'event {event!r} failed its positive control',
                 'events': list(requested),
                 'event_groups': [],
@@ -637,6 +711,257 @@ def check_perf_capability(
     }
 
 
+def _unavailable_counter(event: str, reason: str) -> dict[str, Any]:
+    return _counter_entry(
+        event,
+        status='unavailable',
+        error=reason,
+    )
+
+
+class _PerfCounterWindow:
+    """Control one attached caller-thread counter interval for one case PID."""
+
+    def __init__(
+        self,
+        events: Sequence[str],
+        *,
+        perf_binary: str,
+        minimum_coverage: float,
+    ) -> None:
+        self.events = expand_perf_events(events)
+        self.perf_binary = perf_binary
+        self.minimum_coverage = minimum_coverage
+        self.process: subprocess.Popen[bytes] | None = None
+        self.control_write: int | None = None
+        self.ack_read: int | None = None
+        self.ack_buffer = bytearray()
+        # These logs span the counter window and close with its owner.
+        self.log = tempfile.TemporaryFile()  # noqa: SIM115
+        try:
+            self.stderr = tempfile.TemporaryFile()  # noqa: SIM115
+        except BaseException:
+            self.log.close()
+            raise
+        self.command: list[str] | None = None
+        self.status = 'unavailable'
+        self.reason = 'perf interval did not start'
+        self.pid: int | None = None
+        self.invocation_id: str | None = None
+        self.enabled_ns: int | None = None
+        self.measurement_done_ns: int | None = None
+        self.disabled_ns: int | None = None
+        self.counters: dict[str, dict[str, Any]] | None = None
+
+    def _send_control(self, command: str) -> None:
+        if self.control_write is None or self.ack_read is None:
+            raise RuntimeError('perf control descriptors are not open')
+        os.write(self.control_write, command.encode() + b'\n')
+        deadline = time.monotonic() + PERF_CONTROL_TIMEOUT_SECONDS
+        selector = selectors.DefaultSelector()
+        selector.register(self.ack_read, selectors.EVENT_READ)
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    raise TimeoutError(f'perf {command} acknowledgement timed out')
+                chunk = os.read(self.ack_read, 4096)
+                if not chunk:
+                    raise RuntimeError(f'perf exited before acknowledging {command}')
+                self.ack_buffer.extend(chunk)
+                self.ack_buffer[:] = self.ack_buffer.lstrip(b'\x00')
+                if b'\n' not in self.ack_buffer:
+                    continue
+                line, _, rest = self.ack_buffer.partition(b'\n')
+                self.ack_buffer[:] = rest.lstrip(b'\x00')
+                if line.strip(b'\x00') != b'ack':
+                    raise RuntimeError(
+                        f'perf returned an invalid {command} acknowledgement: {line!r}'
+                    )
+                return
+        finally:
+            selector.close()
+
+    def _terminate(self) -> None:
+        process = self.process
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    def _mark_unavailable(self, reason: str) -> None:
+        self.status = 'unavailable'
+        self.reason = reason
+        self._terminate()
+
+    def attach(self, ready: dict[str, Any]) -> None:
+        pid = ready.get('pid')
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            self._mark_unavailable('case ready record has no usable process ID')
+            return
+        self.pid = pid
+        self.invocation_id = ready['invocation_id']
+        control_read = control_write = ack_read = ack_write = None
+        try:
+            control_read, control_write = os.pipe()
+            ack_read, ack_write = os.pipe()
+            event_group = (
+                '{' + ','.join(self.events) + '}'
+                if len(self.events) > 1
+                else self.events[0]
+            )
+            self.command = [
+                self.perf_binary,
+                'stat',
+                '--all-user',
+                '--no-inherit',
+                '--delay=-1',
+                f'--control=fd:{control_read},{ack_write}',
+                '-x,',
+                '--no-big-num',
+                '--log-fd',
+                str(self.log.fileno()),
+                '-e',
+                event_group,
+                '--tid',
+                str(pid),
+            ]
+            self.process = subprocess.Popen(
+                self.command,
+                cwd=GOMETRY_ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=self.stderr,
+                pass_fds=(control_read, ack_write, self.log.fileno()),
+                start_new_session=True,
+            )
+            os.close(control_read)
+            control_read = None
+            os.close(ack_write)
+            ack_write = None
+            self.control_write = control_write
+            control_write = None
+            self.ack_read = ack_read
+            ack_read = None
+        except (FileNotFoundError, OSError, RuntimeError) as error:
+            self._mark_unavailable(
+                f'perf could not attach to the measured thread: {error}'
+            )
+            return
+        finally:
+            for descriptor in (control_read, control_write, ack_read, ack_write):
+                if descriptor is not None:
+                    os.close(descriptor)
+
+    def enable(self, _ready: dict[str, Any]) -> None:
+        if self.process is None:
+            return
+        try:
+            self._send_control('enable')
+        except (OSError, RuntimeError, TimeoutError) as error:
+            self._mark_unavailable(f'perf could not enable the counter window: {error}')
+            return
+        self.enabled_ns = time.monotonic_ns()
+        self.status = 'running'
+        self.reason = ''
+
+    def stop(self, _measurement_done: dict[str, Any]) -> None:
+        self.measurement_done_ns = time.monotonic_ns()
+        if self.status != 'running':
+            return
+        try:
+            self._send_control('disable')
+        except (OSError, RuntimeError, TimeoutError) as error:
+            self._mark_unavailable(f'perf interval could not stop: {error}')
+            return
+        self.disabled_ns = time.monotonic_ns()
+        self.status = 'stopped'
+
+    def finish(self) -> dict[str, Any]:
+        if self.status in {'running', 'stopped'} and self.process is not None:
+            try:
+                self.process.wait(timeout=PERF_CONTROL_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                self._mark_unavailable('perf did not exit with the measured process')
+        if self.status == 'stopped' and self.process is not None:
+            if self.process.returncode != 0:
+                self._mark_unavailable(
+                    f'perf exited with status {self.process.returncode}'
+                )
+            else:
+                self.log.seek(0)
+                output = self.log.read().decode(errors='replace')
+                parsed = parse_perf_output(
+                    output,
+                    self.events,
+                    minimum_coverage=self.minimum_coverage,
+                )
+                self.counters = {}
+                for event, entry in parsed.items():
+                    if (
+                        entry.get('status') == 'ok'
+                        and isinstance(entry.get('raw_value'), (int, float))
+                        and not isinstance(entry.get('raw_value'), bool)
+                        and entry.get('coverage') is not None
+                    ):
+                        self.counters[event] = entry
+                    else:
+                        reason = entry.get('error') or (
+                            f'perf did not produce a usable {event} count'
+                        )
+                        self.counters[event] = _unavailable_counter(event, reason)
+                available = sum(
+                    entry['status'] == 'ok' for entry in self.counters.values()
+                )
+                if available == len(self.events):
+                    self.status = 'available'
+                    self.reason = ''
+                elif available:
+                    self.status = 'partial'
+                    self.reason = 'one or more requested events were unavailable'
+                else:
+                    self.status = 'unavailable'
+                    self.reason = 'no requested event produced a usable count'
+        if self.counters is None:
+            self.counters = {
+                event: _unavailable_counter(
+                    event,
+                    self.reason or 'perf interval is unavailable',
+                )
+                for event in self.events
+            }
+        record = {
+            'status': self.status,
+            'scope': 'permission-to-measurement-done',
+            'pid': self.pid,
+            'tid': self.pid,
+            'invocation_id': self.invocation_id,
+            'inherit': False,
+            'enabled_at_ns': self.enabled_ns,
+            'measurement_done_at_ns': self.measurement_done_ns,
+            'disabled_at_ns': self.disabled_ns,
+            'events': list(self.events),
+        }
+        if self.reason:
+            record['reason'] = self.reason
+        if self.command is not None:
+            record['command'] = self.command
+        return {'counter_window': record, 'counters': self.counters}
+
+    def close(self) -> None:
+        self._terminate()
+        for descriptor in (self.control_write, self.ack_read):
+            if descriptor is not None:
+                os.close(descriptor)
+        self.control_write = self.ack_read = None
+        self.log.close()
+        self.stderr.close()
+
+
 def _run_case_with_perf_group(
     python: str,
     case: Path,
@@ -649,55 +974,28 @@ def _run_case_with_perf_group(
     perf_binary: str = PERF_BINARY,
     minimum_coverage: float = MIN_COUNTER_COVERAGE,
 ) -> dict[str, Any]:
-    """Run one validated case under one non-multiplexed perf event group."""
+    """Run one case with one caller-thread counter window."""
     requested = expand_perf_events(events)
-    with tempfile.TemporaryFile() as perf_log:
-        log_fd = perf_log.fileno()
-        command = [
-            perf_binary,
-            'stat',
-            '--all-user',
-            '-x,',
-            '--no-big-num',
-            '--log-fd',
-            str(log_fd),
-        ]
-        command.extend((
-            '-e',
-            ('{' + ','.join(requested) + '}') if len(requested) > 1 else requested[0],
-        ))
-        command.extend(('--', python, str(case), *extra))
-        try:
-            result = _run_case_process(
-                command,
-                case=case,
-                side=side,
-                subject=receipt_binding,
-                package_root=package_root,
-                environment={**os.environ, 'LC_ALL': 'C', 'LANG': 'C'},
-                pass_fds=(log_fd,),
-            )
-        except subprocess.TimeoutExpired as error:
-            raise SystemExit(
-                f'{case}: perf-wrapped case exceeded the '
-                f'{CASE_TIMEOUT_SECONDS}s per-block timeout'
-            ) from error
-        except (FileNotFoundError, OSError) as error:
-            raise SystemExit(
-                f'perf counters requested but {perf_binary!r} cannot execute: {error}'
-            ) from error
-        perf_log.seek(0)
-        perf_output = perf_log.read().decode(errors='replace')
-    counters = parse_perf_output(
-        perf_output, requested, minimum_coverage=minimum_coverage
+    window = _PerfCounterWindow(
+        requested,
+        perf_binary=perf_binary,
+        minimum_coverage=minimum_coverage,
     )
-    _validate_counters(counters, requested)
-    result.update({
-        'counters': counters,
-        'command': command,
-        'perf_output': perf_output,
-        'perf_stderr': result['case_stderr'],
-    })
+    try:
+        result = _run_case_process(
+            [python, str(case), *extra],
+            case=case,
+            side=side,
+            subject=receipt_binding,
+            package_root=package_root,
+            on_ready=window.attach,
+            on_permission=window.enable,
+            on_measurement_done=window.stop,
+        )
+        window_result = window.finish()
+    finally:
+        window.close()
+    result.update(window_result)
     return result
 
 
@@ -759,8 +1057,8 @@ def run_case_with_perf(
     first_before = first['provenance_before']
     first_after = first['provenance_after']
     counters: dict[str, dict[str, Any]] = {}
-    commands: list[list[str]] = []
     case_processes: list[dict[str, Any]] = []
+    counter_windows: list[dict[str, Any]] = []
     for _group, result in zip(groups, results, strict=True):
         if _observation_identity(result['observation']) != _observation_identity(
             first_observation
@@ -777,13 +1075,15 @@ def run_case_with_perf(
             if event in counters:
                 raise SystemExit(f'perf split groups duplicated counter {event!r}')
             counters[event] = counter
-        commands.append(result['command'])
         case_processes.append(result['case_process'])
+        counter_windows.append(result['counter_window'])
     merged = dict(first)
+    merged.pop('counter_window', None)
+    merged.pop('case_process', None)
     merged['counters'] = counters
-    merged['commands'] = commands
     merged['event_groups'] = [list(group) for group in groups]
     merged['case_processes'] = case_processes
+    merged['counter_windows'] = counter_windows
     return merged
 
 
@@ -884,6 +1184,34 @@ def run_blocks(
     return {'samples': samples, 'blocks': blocks}
 
 
+def _annotate_unavailable_counters(
+    block_run: dict[str, Any],
+    events: Sequence[str],
+    reason: str,
+) -> None:
+    requested = expand_perf_events(events)
+    for block in block_run['blocks']:
+        for side in ('A', 'B'):
+            arm = block['arms'][side]
+            case_process = arm['case_process']
+            arm['counters'] = _unavailable_counters(requested, reason)
+            window = _unavailable_window(
+                case_process,
+                events=requested,
+                reason=reason,
+            )
+            window['measurement_done_at_ns'] = arm.get('measurement_done_monotonic_ns')
+            arm['counter_windows'] = [window]
+        block['counter_ratios'] = {
+            event: {
+                'status': 'unavailable',
+                'a_over_b': None,
+                'reason': reason,
+            }
+            for event in requested
+        }
+
+
 def run_blocks_with_perf(
     sides: dict[str, str],
     case: Path,
@@ -977,7 +1305,7 @@ def run_blocks_with_perf(
                         f'{case}: perf producer identity changed across blocks'
                     )
                 producer_by_side[side] = common
-            _validate_counters(result['counters'], requested)
+            _validate_interval_counters(result['counters'], requested)
             arms[side] = result
         metric, unit = _validate_pair_arms(arms, case)
         block_ended = clock_ns()
@@ -1005,9 +1333,9 @@ def run_blocks_with_perf(
                 file=sys.stderr,
             )
         block['counter_ratios'] = {
-            event: _finite_ratio(
-                block['arms']['A']['counters'][event]['counter_value'],
-                block['arms']['B']['counters'][event]['counter_value'],
+            event: _counter_ratio_record(
+                block['arms']['A']['counters'][event],
+                block['arms']['B']['counters'][event],
             )
             for event in requested
         }
@@ -1204,6 +1532,7 @@ def summarize_counter_ratios(
     if not measured:
         raise ValueError('counter summary requires at least one measured block')
     summary: dict[str, Any] = {
+        'status': 'available',
         'primary_event': (
             'instructions' if 'instructions' in requested else requested[0]
         ),
@@ -1211,15 +1540,52 @@ def summarize_counter_ratios(
         'B': {},
         'ratios': {},
     }
+    any_available = False
+    any_unavailable = False
     for event_index, event in enumerate(requested):
-        values_a = [
-            block['arms']['A']['counters'][event]['counter_value'] for block in measured
-        ]
-        values_b = [
-            block['arms']['B']['counters'][event]['counter_value'] for block in measured
-        ]
-        if any(value is None for value in (*values_a, *values_b)):
-            raise ValueError(f'counter {event!r} has an incomplete measured block')
+        entries_a = [block['arms']['A']['counters'][event] for block in measured]
+        entries_b = [block['arms']['B']['counters'][event] for block in measured]
+        valid_a = all(_counter_value_is_usable(entry) for entry in entries_a)
+        valid_b = all(_counter_value_is_usable(entry) for entry in entries_b)
+        any_available |= any(
+            _counter_value_is_usable(entry) for entry in (*entries_a, *entries_b)
+        )
+        if not valid_a or not valid_b:
+            any_unavailable = True
+            reason = next(
+                (
+                    entry.get('error')
+                    or f'{event} counter is unavailable for a measured arm'
+                    for entry in (*entries_a, *entries_b)
+                    if not _counter_value_is_usable(entry)
+                ),
+                f'{event} counter is unavailable',
+            )
+            summary['A'][event] = (
+                {'status': 'unavailable', 'reason': reason}
+                if not valid_a
+                else summarize_counter_values(
+                    [entry['counter_value'] for entry in entries_a],
+                    seed ^ (event_index * 2 + 1),
+                )
+            )
+            summary['B'][event] = (
+                {'status': 'unavailable', 'reason': reason}
+                if not valid_b
+                else summarize_counter_values(
+                    [entry['counter_value'] for entry in entries_b],
+                    seed ^ (event_index * 2 + 2),
+                )
+            )
+            summary['ratios'][event] = {
+                'status': 'unavailable',
+                'a_over_b': None,
+                'ci95': None,
+                'reason': reason,
+            }
+            continue
+        values_a = [entry['counter_value'] for entry in entries_a]
+        values_b = [entry['counter_value'] for entry in entries_b]
         summary['A'][event] = summarize_counter_values(
             values_a, seed ^ (event_index * 2 + 1)
         )
@@ -1244,7 +1610,35 @@ def summarize_counter_ratios(
             'a_over_b': median_ratio,
             'ci95': [ci_low, ci_high],
         }
+    if any_unavailable:
+        summary['status'] = 'partial' if any_available else 'unavailable'
     return summary
+
+
+def _counter_ratio_record(
+    arm_a: dict[str, Any],
+    arm_b: dict[str, Any],
+) -> dict[str, Any]:
+    for entry in (arm_a, arm_b):
+        if not _counter_value_is_usable(entry):
+            return {
+                'status': 'unavailable',
+                'a_over_b': None,
+                'reason': entry.get('error') or 'requested counter is unavailable',
+            }
+    value_a = float(arm_a['counter_value'])
+    value_b = float(arm_b['counter_value'])
+    if value_b == 0:
+        return {
+            'status': 'undefined-zero-denominator',
+            'a_over_b': None,
+            'reason': 'candidate counter value is zero',
+        }
+    return {
+        'status': 'ok',
+        'a_over_b': value_a / value_b,
+        'reason': None,
+    }
 
 
 def bootstrap_ratio_ci(
@@ -1403,13 +1797,16 @@ def main() -> int:
     parser.add_argument(
         '--perf',
         action='store_true',
-        help='collect optional user-mode perf counters around every case run',
+        help=(
+            'collect optional caller-thread perf counters from permission to '
+            'measurement-done for each case invocation'
+        ),
     )
     parser.add_argument(
         '--perf-event',
         dest='perf_events',
         action='append',
-        help='perf event to collect; repeat or comma-separate (implies --perf)',
+        help='perf event to collect per case invocation; repeat or comma-separate (implies --perf)',
     )
     parser.add_argument(
         'extra', nargs='*', help='extra args forwarded to the case script'
@@ -1463,45 +1860,45 @@ def main() -> int:
     else:
         perf_capability = check_perf_capability(perf_events)
         if perf_capability['status'] != 'available':
-            capability_record = {
-                'schema_version': 1,
-                'observation_type': 'typed-paired-comparison',
-                'case': str(args.case),
-                'case_sha256': hashlib.sha256(args.case.read_bytes()).hexdigest(),
-                'python': {'A': args.a, 'B': args.b},
-                'perf': {
-                    'enabled': True,
-                    'status': 'capability-null',
-                    'events': list(perf_events),
-                    'capability': perf_capability,
-                },
-                'publishable': False,
-            }
-            if args.json_out is not None:
-                args.json_out.parent.mkdir(parents=True, exist_ok=True)
-                args.json_out.write_text(
-                    json.dumps(capability_record, indent=2, sort_keys=True) + '\n'
-                )
             print(
-                'PERF CAPABILITY NULL: '
+                'PERF COUNTERS UNAVAILABLE: '
                 f'{perf_capability.get("reason", "requested events are unavailable")}',
                 file=sys.stderr,
             )
-            return 2
-        perf_info = perf_capability['perf']
-        perf_run = run_blocks_with_perf(
-            {'A': args.a, 'B': args.b},
-            args.case,
-            args.extra,
-            events=perf_events,
-            warmup=args.warmup,
-            rounds=args.rounds,
-            seed=args.seed,
-            receipt_bindings=receipt_bindings,
-            package_roots=package_roots,
-            event_groups=perf_capability['event_groups'],
-        )
-        block_run = perf_run
+            block_run = run_blocks(
+                {'A': args.a, 'B': args.b},
+                args.case,
+                args.extra,
+                warmup=args.warmup,
+                rounds=args.rounds,
+                seed=args.seed,
+                receipt_bindings=receipt_bindings,
+                package_roots=package_roots,
+            )
+            _annotate_unavailable_counters(
+                block_run,
+                perf_events,
+                str(
+                    perf_capability.get(
+                        'reason', 'requested performance counters are unavailable'
+                    )
+                ),
+            )
+        else:
+            perf_info = perf_capability['perf']
+            perf_run = run_blocks_with_perf(
+                {'A': args.a, 'B': args.b},
+                args.case,
+                args.extra,
+                events=perf_events,
+                warmup=args.warmup,
+                rounds=args.rounds,
+                seed=args.seed,
+                receipt_bindings=receipt_bindings,
+                package_roots=package_roots,
+                event_groups=perf_capability['event_groups'],
+            )
+            block_run = perf_run
     samples = block_run['samples']
     blocks = block_run['blocks']
     measured_blocks = [block for block in blocks if block['measured']]
@@ -1523,10 +1920,22 @@ def main() -> int:
         if significant
         else 'INCONCLUSIVE (paired log-ratio bootstrap CI includes 1.0; no directional result)'
     )
-    timing_semantics = (
-        'perf-instrumented-diagnostic' if perf_run is not None else 'uninstrumented'
+    counter_summary = (
+        None
+        if perf_events is None
+        else summarize_counter_ratios(blocks, perf_events, args.seed ^ 0xC0)
     )
-    if perf_run is not None:
+    perf_instrumented = perf_events is not None and any(
+        window.get('enabled_at_ns') is not None
+        for block in blocks
+        for arm in block.get('arms', {}).values()
+        for window in arm.get('counter_windows', [])
+        if isinstance(window, dict)
+    )
+    timing_semantics = (
+        'perf-instrumented-diagnostic' if perf_instrumented else 'uninstrumented'
+    )
+    if perf_instrumented:
         verdict = f'PERF-INSTRUMENTED DIAGNOSTIC: {verdict}'
     record = {
         'schema_version': 1,
@@ -1553,7 +1962,7 @@ def main() -> int:
         },
         'measurement': {'metric': metric, 'unit': unit, 'direction': 'lower_is_better'},
         'timing_semantics': timing_semantics,
-        'release_latency_eligible': perf_run is None,
+        'release_latency_eligible': not perf_instrumented,
         'A': summary_a,
         'B': summary_b,
         'relative_ratio_a_over_b': ratio,
@@ -1564,34 +1973,32 @@ def main() -> int:
         'verdict': verdict,
         'blocks': blocks,
     }
-    if perf_run is not None and perf_info is not None and perf_events is not None:
-        counter_summary = summarize_counter_ratios(
-            perf_run['blocks'],
-            perf_events,
-            args.seed ^ 0xC0,
-        )
+    if perf_events is not None and counter_summary is not None:
         record['perf'] = {
             'enabled': True,
-            'status': 'available',
+            'status': counter_summary['status'],
             'binary': PERF_BINARY,
-            'version': perf_info['version'],
-            'version_command': perf_info['command'],
+            'version': (
+                perf_info.get('version') if isinstance(perf_info, dict) else None
+            ),
+            'version_command': (
+                perf_info.get('command') if isinstance(perf_info, dict) else None
+            ),
             'events': list(perf_events),
             'all_user': True,
+            'thread_scope': 'caller-thread',
+            'inherit': False,
+            'interval_scope': 'permission-to-measurement-done',
             'format': 'csv',
             'locale': {'LC_ALL': 'C', 'LANG': 'C'},
             'minimum_coverage': MIN_COUNTER_COVERAGE,
             'capability': perf_capability,
             'summary': counter_summary,
-            'commands': [
-                command
-                for block in perf_run['blocks']
-                for side in ('A', 'B')
-                for command in block['arms'][side].get(
-                    'commands', [block['arms'][side]['command']]
-                )
-            ],
-            'timing_semantics': 'instrumented-perf-run; not uninstrumented release latency',
+            'timing_semantics': (
+                'instrumented-perf-run; not uninstrumented release latency'
+                if perf_instrumented
+                else 'counters unavailable; timing remained uninstrumented'
+            ),
         }
     for label, summary in (('A (baseline)', summary_a), ('B (candidate)', summary_b)):
         ci = summary['median_ci95']
@@ -1605,16 +2012,22 @@ def main() -> int:
         f'|difference|={delta:.9g} ratio paired_spread={noise:.9g} ratio'
     )
     print(f'VERDICT: {verdict}')
-    if perf_run is not None and perf_events is not None:
-        primary_event = record['perf']['summary']['primary_event']
-        primary = record['perf']['summary']['ratios'][primary_event]
-        if primary['status'] == 'ok':
-            print(
-                f'PERF {primary_event} A/B={primary["a_over_b"]:.4f} '
-                f'95%CI=[{primary["ci95"][0]:.4f}, {primary["ci95"][1]:.4f}]'
-            )
-        else:
-            print(f'PERF {primary_event} A/B=undefined ({primary["status"]})')
+    if perf_events is not None and counter_summary is not None:
+        for event in perf_events:
+            event_summary = counter_summary['ratios'][event]
+            if event_summary['status'] == 'ok':
+                print(
+                    f'PERF {event} A/B={event_summary["a_over_b"]:.4f} '
+                    f'95%CI=[{event_summary["ci95"][0]:.4f}, '
+                    f'{event_summary["ci95"][1]:.4f}]'
+                )
+            elif event_summary['status'] == 'undefined-zero-denominator':
+                print(f'PERF {event} A/B=undefined (observed zero denominator)')
+            else:
+                print(
+                    f'PERF {event} UNAVAILABLE: '
+                    f'{event_summary.get("reason", "counter was not usable")}'
+                )
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')

@@ -67,7 +67,7 @@ def test_wkb_accepts_any_buffer_exporter() -> None:
 def test_mappings_accepted_everywhere_dicts_are() -> None:
     geojson = types.MappingProxyType({'type': 'Point', 'coordinates': [1.0, 2.0]})
     assert gm.from_geojson(geojson, crs=None) == gm.Point(1, 2)
-    projjson = types.MappingProxyType(gm.CRS(4326).to_projjson_dict())
+    projjson = types.MappingProxyType(gm.CRS(4326).to_projjson(as_dict=True))
     assert gm.CRS(projjson).same_as(gm.CRS(4326), mode='exact')
     assert gm.CRS(types.MappingProxyType(gm.CRS(32633).to_cf())).to_epsg() == 32633
     assert gm.Point(0, 0, crs=projjson).crs.to_epsg() == 4326

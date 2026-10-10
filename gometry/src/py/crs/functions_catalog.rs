@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::collections::HashSet;
 
 use crate::py::crs::{
     Bound, CRSError, PyAny, PyList, PyResult, Python, crs, crs_normalize, parse_area, pyfunction,
@@ -54,8 +54,8 @@ pub(crate) fn crs_codes(
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
@@ -66,63 +66,12 @@ pub(crate) fn crs_non_deprecated(
     Ok(crs::non_deprecated(&crs_normalize(value)?)?)
 }
 
-/// Search the PROJ catalog for CRS by name.
-///
-/// Parameters
-/// ----------
-/// name : str
-///     Substring to match against CRS names.
-/// authority : str, optional
-///     Restrict to this authority.
-/// kind : str, optional
-///     Restrict to a CRS kind (e.g. ``"projected"``).
-/// approximate : bool, optional
-///     Allow approximate name matching (default ``False``).
-/// limit : int, optional
-///     Maximum number of results.
-///
-/// Returns
-/// -------
-/// list of CrsCatalogInfo
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> gm.crs_search('WGS 84')[0]['code']
-/// '4326'
-#[pyfunction]
-#[pyo3(signature = (name, *, authority = None, kind = None, approximate = false, limit = 20))]
-pub(crate) fn crs_search(
-    py: Python<'_>,
-    name: &str,
-    authority: Option<String>,
-    kind: Option<String>,
-    approximate: bool,
-    #[pyo3(from_py_with = crate::strict_i64)] limit: i64,
-) -> PyResult<Vec<crs::AuthorityObjectInfo>> {
-    let limit = crs_search_limit(limit)?;
-    let options = crs::CrsSearchOptions {
-        authority,
-        kind: kind
-            .as_deref()
-            .map(|kind| crs::CrsObjectKind::parse_crs(Some(kind)))
-            .transpose()?,
-        approximate,
-        limit,
-    };
-    // A catalog scan over PROJ's database, detached like every other bulk
-    // PROJ call.
-    Ok(py.detach(|| crs::search(name, &options))?)
-}
-
-pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {
-    Ok(crs::validate_search_limit(limit)?)
-}
-
 /// Catalog of CRS in the database matching the given filters.
 ///
 /// Parameters
 /// ----------
+/// name : str, optional
+///     Match CRS names using PROJ's database name matcher.
 /// authority : str, optional
 ///     Registry authority to search (default ``"EPSG"``).
 /// kind : str, optional
@@ -137,6 +86,10 @@ pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {
 ///     Include deprecated CRS (default ``False``).
 /// celestial_body : str, optional
 ///     Restrict to this celestial body.
+/// approximate : bool, default False
+///     Allow approximate matching when ``name`` is supplied.
+/// limit : int, optional
+///     Maximum number of returned records; omitted means no result limit.
 ///
 /// Returns
 /// -------
@@ -145,33 +98,74 @@ pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {
 /// Examples
 /// --------
 /// >>> import gometry as gm
-/// >>> gm.crs_catalog(authority='EPSG')[0]['code']
-/// '2000'
+/// >>> any(item['crs'] == 'EPSG:4326' for item in gm.crs_catalog(name='WGS 84'))
+/// True
 #[pyfunction]
-#[pyo3(signature = (*, authority = None, kind = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false, celestial_body = None))]
+#[pyo3(signature = (name = None, *, authority = None, kind = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false, celestial_body = None, approximate = false, limit = None))]
 pub(crate) fn crs_catalog(
+    py: Python<'_>,
+    name: Option<&str>,
     authority: Option<&str>,
     kind: Option<String>,
     area_of_interest: Option<&Bound<'_, PyAny>>,
     contains_area_of_interest: bool,
     allow_deprecated: bool,
     celestial_body: Option<String>,
+    approximate: bool,
+    limit: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<crs::CrsCatalogInfo>> {
     if matches!(authority, Some("")) {
         return Err(CRSError::new_err(
             "CRS catalog authority must be a non-empty string",
         ));
     }
-    Ok(crs::catalog(authority, &crs::CrsCatalogOptions {
-        kind: kind
-            .as_deref()
-            .map(|kind| crs::CrsObjectKind::parse_crs(Some(kind)))
-            .transpose()?,
+    let limit = limit
+        .map(crate::strict_i64)
+        .transpose()?
+        .map(|limit| {
+            usize::try_from(limit)
+                .ok()
+                .filter(|limit| *limit > 0)
+                .ok_or_else(|| {
+                    CRSError::new_err(format!(
+                        "CRS catalog limit must be a positive integer, got {limit}"
+                    ))
+                })
+        })
+        .transpose()?;
+    let kind = kind
+        .as_deref()
+        .map(|kind| crs::CrsObjectKind::parse_crs(Some(kind)))
+        .transpose()?;
+    let options = crs::CrsCatalogOptions {
+        kind,
         area: parse_area(area_of_interest, "area_of_interest")?,
         contains_area: contains_area_of_interest,
         allow_deprecated,
         celestial_body,
-    })?)
+    };
+    let state = crs::runtime_state_snapshot()?;
+    let mut items = crs::catalog_with_state(authority, &options, &state)?;
+    if let Some(name) = name {
+        if name.trim().is_empty() {
+            return Err(CRSError::new_err(
+                "CRS catalog name must be a non-empty string",
+            ));
+        }
+        let name_options = crs::CrsNameMatchOptions {
+            authority: Some(authority.unwrap_or("EPSG").to_owned()),
+            kind,
+            approximate,
+        };
+        let matches =
+            py.detach(|| crs::catalog_name_matches_with_state(name, &name_options, &state))?;
+        let matches: HashSet<_> = matches.into_iter().collect();
+        items.retain(|item| matches.contains(&item.crs));
+    }
+    if let Some(limit) = limit {
+        items.truncate(limit);
+    }
+    Ok(items)
 }
 
 /// UTM-zone CRS from the catalog.
@@ -251,7 +245,7 @@ pub(crate) fn crs_celestial_bodies<'py>(
 /// Parameters
 /// ----------
 /// value : CRS-like
-///     CRS as an EPSG code or authority/WKT string.
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------

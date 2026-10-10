@@ -1092,6 +1092,135 @@ def test_sample_points_is_deterministic_and_area_weighted() -> None:
     assert len(gm.box(0, 0, 1, 1).sample_points(9, seed=2)) == 9
 
 
+def test_sample_points_geographic_lines_use_retained_support_and_keep_row_seeds() -> (
+    None
+):
+    line = gm.LineString([(170.0, 0.0), (-170.0, 0.0)], crs=4326)
+    samples = line.sample_points(8, seed=1)
+    coordinates = [(point.x, point.y) for point in samples]
+
+    assert len(coordinates) == 8
+    assert all(not (-170.0 < x < 170.0) and y == 0.0 for x, y in coordinates)
+    assert coordinates[0] == pytest.approx((-171.12871538270292, 0.0), abs=1.0e-12)
+    assert (
+        len(
+            gm.LineString([(0.0, 100.0), (1.0, 101.0)], crs=4326).sample_points(
+                0, seed=1
+            )
+        )
+        == 0
+    )
+
+    rows = gm.GeometryArray([line, line], crs=4326)
+    groups = rows.sample_points(5, seed=7)
+    assert [(point.x, point.y) for point in groups[0]] == [
+        (point.x, point.y) for point in line.sample_points(5, seed=7)
+    ]
+    varied = rows.sample_points([2, 3], seed=[11, 12])
+    for index, (count, seed) in enumerate(((2, 11), (3, 12))):
+        assert [(point.x, point.y) for point in varied[index]] == [
+            (point.x, point.y) for point in rows[index].sample_points(count, seed=seed)
+        ]
+    gathered = rows[[1, 0, 1]]
+    gathered_groups = gathered.sample_points(3, seed=13)
+    assert [(point.x, point.y) for point in gathered_groups[0]] == [
+        (point.x, point.y) for point in gathered[0].sample_points(3, seed=13)
+    ]
+    assert [(point.x, point.y) for point in gathered_groups[0]] != [
+        (point.x, point.y) for point in gathered_groups[2]
+    ]
+    nullable = gm.GeometryArray([line, None, line], crs=4326)
+    nullable_groups = nullable.sample_points([2, 1, 3], seed=[11, 99, 12])
+    assert [len(group) for group in nullable_groups] == [2, 0, 3]
+    for index, (count, seed) in ((0, (2, 11)), (2, (3, 12))):
+        assert [(point.x, point.y) for point in nullable_groups[index]] == [
+            (point.x, point.y) for point in line.sample_points(count, seed=seed)
+        ]
+
+
+def test_sample_points_geographic_segment_weights_use_retained_lengths() -> None:
+    mixed = gm.from_wkt('MULTILINESTRING ((170 0, -170 0), (0 0, 100 0))', crs=4326)
+
+    point = mixed.sample_points(1, seed=0)[0]
+
+    # The first splitmix selection draw is 0.652448..., between the corrected
+    # 1:5 boundary (1/6) and the raw-chord boundary (340/440). The retained
+    # weights therefore select the ordinary 100-degree segment; the following
+    # placement draw is 0.701212....
+    assert (point.x, point.y) == pytest.approx((70.12121095215252, 0.0), abs=1.0e-12)
+
+
+def test_sample_points_geographic_circle_and_period_alias_support() -> None:
+    circle = gm.LineString([(0.0, 0.0), (360.0, 0.0)], crs=4326)
+    circle_points = circle.sample_points(16, seed=3)
+    assert len(circle_points) == 16
+    assert all(0.0 <= point.x <= 360.0 and point.y == 0.0 for point in circle_points)
+
+    for coordinates, aliases in (
+        ([(-180.0, 0.0), (180.0, 0.0)], {-180.0, 180.0}),
+        ([(0.0, 0.0), (720.0, 0.0)], {0.0, 720.0}),
+    ):
+        line = gm.LineString(coordinates, crs=4326)
+        points = line.sample_points(16, seed=3)
+        assert all(point.x in aliases and point.y == 0.0 for point in points)
+
+
+def test_sample_points_geographic_area_keeps_overlap_multiplicity() -> None:
+    crossing = gm.Polygon([(170, 0), (-170, 0), (-170, 10), (170, 10)], crs=4326)
+    ordinary = gm.box(0, 0, 20, 10, crs=4326)
+    overlapping_members = gm.MultiPolygon([crossing, crossing, ordinary], crs=4326)
+
+    point = overlapping_members.sample_points(1, seed=0)[0]
+
+    # The first split member contributes 200 square degrees, the duplicate
+    # contributes another 200, and the ordinary member contributes 200. Seed
+    # zero selects the duplicate crossing support only when member multiplicity
+    # remains in the weighted sample space.
+    assert abs(point.x) > 170.0
+    assert 0.0 <= point.y <= 10.0
+
+
+def test_sample_points_geographic_areas_use_split_seam_and_pole_support() -> None:
+    shell = [(160, -20), (-160, -20), (-160, 20), (160, 20)]
+    hole = [(170, -5), (180, -5), (-170, -5), (-170, 5), (180, 5), (170, 5)]
+    donut = gm.Polygon(shell, holes=[hole], crs=4326)
+    hole_geometry = gm.Polygon(hole, crs=4326)
+    donut_points = donut.sample_points(64, seed=9)
+    assert all(gm.within(point, donut) for point in donut_points)
+    assert not any(gm.within(point, hole_geometry) for point in donut_points)
+
+    band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
+    band_points = band.sample_points(32, seed=12)
+    assert all(
+        -180.0 <= point.x <= 180.0 and -30.0 <= point.y <= 30.0 for point in band_points
+    )
+    assert all(gm.within(point, band) for point in band_points)
+
+    def latitude_ring(latitude: int) -> list[tuple[int, int]]:
+        return [(longitude, latitude) for longitude in (0, 60, 120, 180, 240, 300)]
+
+    annulus = gm.Polygon(latitude_ring(70), holes=[latitude_ring(80)], crs=4326)
+    annulus_points = annulus.sample_points(32, seed=13)
+    assert all(gm.within(point, annulus) for point in annulus_points)
+
+
+def test_sample_points_raw_compatible_geographic_support_keeps_base_bits() -> None:
+    geographic = (
+        gm.LineString([(190.0, 10.0), (200.0, 20.0)], crs=4326),
+        gm.Polygon([(190, 10), (200, 10), (200, 20), (190, 20)], crs=4326),
+    )
+    planar = (
+        gm.LineString([(190.0, 10.0), (200.0, 20.0)]),
+        gm.Polygon([(190, 10), (200, 10), (200, 20), (190, 20)]),
+    )
+    for geographic_shape, planar_shape in zip(geographic, planar, strict=True):
+        geographic_samples = geographic_shape.sample_points(7, seed=19)
+        planar_samples = planar_shape.sample_points(7, seed=19)
+        assert [(point.x.hex(), point.y.hex()) for point in geographic_samples] == [
+            (point.x.hex(), point.y.hex()) for point in planar_samples
+        ]
+
+
 def test_sample_points_error_gates() -> None:
     box = gm.box(0, 0, 1, 1)
     with pytest.raises(gm.GeometryError, match='count must be >= 0'):
@@ -1124,7 +1253,9 @@ def test_vertex_inventing_ops_have_fixed_2d_results() -> None:
     z_with_dangle = gm.from_wkt(
         'MULTILINESTRING Z ((0 0 5, 1 0 5), (1 0 5, 1 1 5), (1 1 5, 0 0 5), (2 2 5, 3 3 5))'
     )
-    polygons, _cuts, dangles, _invalid = gm.polygonize_full([z_with_dangle])
+    polygons, _cuts, dangles, _invalid = gm.polygonize_all(
+        [z_with_dangle], diagnostics=True
+    )
     assert polygons[0].coordinate_axes == 'XYZ'
     assert dangles[0] and all(d.coordinate_axes == 'XYZ' for d in dangles[0])
     bowtie_z = gm.from_wkt('POLYGON Z ((0 0 1, 2 2 5, 2 0 3, 0 2 7, 0 0 1))')

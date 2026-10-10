@@ -125,7 +125,7 @@ def test_crs_free_geojson_round_trip_declares_crs84() -> None:
     assert decoded.crs == gm.CRS('OGC:CRS84')
 
     feature = gm.to_feature(point)
-    assert gm.from_features(feature).geometries.crs == gm.CRS('OGC:CRS84')
+    assert gm.from_geojson(feature, features=True).geometries.crs == gm.CRS('OGC:CRS84')
 
 
 def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
@@ -180,7 +180,7 @@ def test_b1_to_feature_requires_explicit_epoch_drop() -> None:
     feature = gm.to_feature(point, drop_epoch=True)
     assert 'epoch' not in feature
     assert set(feature) >= {'type', 'geometry', 'properties'}
-    decoded = gm.from_features(feature)
+    decoded = gm.from_geojson(feature, features=True)
     assert decoded.geometries[0].epoch is None
 
 

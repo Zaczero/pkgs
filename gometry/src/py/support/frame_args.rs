@@ -29,7 +29,7 @@ pub(crate) fn parse_crs(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Crs
 
 /// A ``crs=`` parameter whose default is gometry's WGS84 lon/lat label rather
 /// than "no CRS" — the shape every parser of an inherently-WGS84 format needs
-/// (`from_geojson`, `from_features`, `from_polyline`).
+/// (`from_geojson`, `from_polyline`).
 ///
 /// It exists as one type so the default cannot drift per parser. It did: the
 /// `geojson` lane defaulted to [`WGS84_LONLAT`] while the polyline lane

@@ -95,6 +95,20 @@ def test_from_wkb_crs_is_a_fallback_not_an_override() -> None:
         gm.from_wkt('SRID=4326;POINT (1 2)', crs=3857)
 
 
+def test_from_wkb_distinguishes_byte_buffers_from_object_row_arrays() -> None:
+    point = gm.Point(1, 2)
+    payload = point.to_wkb()
+    unsigned_bytes = np.frombuffer(payload, dtype=np.uint8)
+    signed_bytes = np.frombuffer(payload, dtype=np.int8)
+    object_rows = np.array([payload, None], dtype=object)
+    fixed_bytes_rows = np.array([payload], dtype=np.bytes_)
+
+    assert gm.from_wkb(unsigned_bytes) == point
+    assert gm.from_wkb(signed_bytes) == point
+    assert gm.from_wkb(object_rows).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(fixed_bytes_rows).to_wkt() == ['POINT (1 2)']
+
+
 def test_batch_wkt_wkb_plain_rows_share_explicit_frame() -> None:
     wkts = ['POINT (1 2)', 'POINT (3 4)']
     from_wkt = gm.from_wkt(wkts, crs=4326, epoch=2020.0)
@@ -334,7 +348,7 @@ def test_m05_mixed_within_sequence_axes_rejected_uniform_constraint() -> None:
     }
     for frontend in (feature, json.dumps(feature), json.dumps(feature).encode()):
         with pytest.raises(gm.ParseError, match=match):
-            gm.from_features(frontend)
+            gm.from_geojson(frontend, features=True)
         with pytest.raises(gm.ParseError, match=match):
             gm.from_geojson(frontend)
 
@@ -686,8 +700,8 @@ def test_geojson_duplicate_key_last_wins_all_frontends() -> None:
             gm.from_geojson(v)
 
 
-def test_m03_from_features_rejects_dual_defining_members() -> None:
-    """m03: from_features shares from_geojson's RFC §7.1 defining-member check.
+def test_m03_from_geojson_rejects_dual_defining_members() -> None:
+    """m03: from_geojson shares from_geojson's RFC §7.1 defining-member check.
 
     EXACT repro: a Feature carrying both defining ``coordinates`` and
     ``geometry`` must be REJECTED on dict/str/bytes — not accepted by ignoring
@@ -707,7 +721,7 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
             gm.ParseError,
             match=r'coordinates.*geometries|RFC 7946',
         ) as raised:
-            gm.from_features(frontend)
+            gm.from_geojson(frontend, features=True)
         assert type(raised.value) is gm.ParseError
         # Parity with from_geojson.
         with pytest.raises(gm.ParseError, match=r'coordinates|RFC 7946'):
@@ -724,7 +738,7 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
         json.dumps(collection).encode(),
     ):
         with pytest.raises(gm.ParseError, match=r'coordinates|RFC 7946'):
-            gm.from_features(frontend)
+            gm.from_geojson(frontend, features=True)
 
     # Positive: a valid Feature still parses on all frontends.
     valid = {
@@ -733,7 +747,7 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
         'properties': {'k': 1},
     }
     for frontend in (valid, json.dumps(valid), json.dumps(valid).encode()):
-        feats = gm.from_features(frontend)
+        feats = gm.from_geojson(frontend, features=True)
         assert feats.geometries.to_wkt() == ['POINT (1 2)']
         assert feats.properties == ({'k': 1},)
 
@@ -986,7 +1000,7 @@ def test_geometry_array_accepts_direct_geojson_mapping_rows() -> None:
         gm.GeometryArray([{'type': 'Point', 'coordinates': [1]}])
 
 
-def test_from_features_text_fast_path_preserves_geojson_payloads() -> None:
+def test_from_geojson_text_fast_path_preserves_geojson_payloads() -> None:
     payload = {
         'type': 'FeatureCollection',
         'features': [
@@ -1016,7 +1030,7 @@ def test_from_features_text_fast_path_preserves_geojson_payloads() -> None:
             },
         ],
     }
-    parsed = gm.from_features(json.dumps(payload))
+    parsed = gm.from_geojson(json.dumps(payload), features=True)
     assert parsed.geometries.to_wkt() == [
         'POINT (1 2)',
         'LINESTRING (0 0, 1 1)',
@@ -1029,56 +1043,62 @@ def test_from_features_text_fast_path_preserves_geojson_payloads() -> None:
     )
     assert parsed.ids == ('point-a', 42, None)
     assert (
-        gm.from_features(json.dumps(payload).encode()).properties == parsed.properties
+        gm.from_geojson(json.dumps(payload).encode(), features=True).properties
+        == parsed.properties
     )
-    assert gm.from_features(bytearray(json.dumps(payload), 'utf-8')).ids == parsed.ids
+    assert (
+        gm.from_geojson(bytearray(json.dumps(payload), 'utf-8'), features=True).ids
+        == parsed.ids
+    )
 
-    single = gm.from_features(json.dumps(payload['features'][0]))
+    single = gm.from_geojson(json.dumps(payload['features'][0]), features=True)
     assert single.geometries.to_wkt() == ['POINT (1 2)']
     assert single.properties == (payload['features'][0]['properties'],)
     assert single.ids == ('point-a',)
 
-    empty = gm.from_features('{"type":"FeatureCollection","features":[]}')
+    empty = gm.from_geojson('{"type":"FeatureCollection","features":[]}', features=True)
     assert len(empty.geometries) == 0
     assert empty.properties == ()
     assert empty.ids == ()
 
 
-def test_from_features_text_fast_path_errors_match_python_path() -> None:
+def test_from_geojson_text_fast_path_errors_match_python_path() -> None:
     missing_geometry = '{"type":"Feature","properties":{}}'
     with pytest.raises(
         gm.ParseError, match='each feature must have a geometry'
     ) as missing:
-        gm.from_features(missing_geometry)
+        gm.from_geojson(missing_geometry, features=True)
     assert missing.value.format == 'geojson'
 
     with pytest.raises(gm.ParseError, match='Feature, FeatureCollection') as bad_kind:
-        gm.from_features('{"type":"Nonsense"}')
+        gm.from_geojson('{"type":"Nonsense"}', features=True)
     assert bad_kind.value.format == 'geojson'
 
     with pytest.raises(
         gm.ParseError, match='feature collection features must be iterable'
     ):
-        gm.from_features('{"type":"FeatureCollection","features":123}')
+        gm.from_geojson('{"type":"FeatureCollection","features":123}', features=True)
     with pytest.raises(gm.ParseError, match='properties must be a mapping'):
-        gm.from_features(
+        gm.from_geojson(
             '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
-            '"properties":3}'
+            '"properties":3}',
+            features=True,
         )
     with pytest.raises(gm.ParseError, match='feature id'):
-        gm.from_features(
+        gm.from_geojson(
             '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
-            '"id":true}'
+            '"id":true}',
+            features=True,
         )
     with pytest.raises(
         gm.CRSError,
         match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
-        gm.from_features(missing_geometry, crs=None, epoch=2020.0)
+        gm.from_geojson(missing_geometry, crs=None, epoch=2020.0, features=True)
     with pytest.raises(gm.CRSError, match='WGS84'):
-        gm.from_features(missing_geometry, crs='EPSG:3857')
+        gm.from_geojson(missing_geometry, crs='EPSG:3857', features=True)
     with pytest.raises(gm.GeometryError, match='coordinate epoch must be a finite'):
-        gm.from_features(missing_geometry, epoch=math.inf)
+        gm.from_geojson(missing_geometry, epoch=math.inf, features=True)
 
 
 @pytest.mark.parametrize(
@@ -1089,9 +1109,9 @@ def test_from_features_text_fast_path_errors_match_python_path() -> None:
         '[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2],"c\\u0072s":{"type":"name","properties":{"name":"EPSG:4326"}}}}]',
     ],
 )
-def test_from_features_single_pass_captures_escaped_legacy_crs(payload: str) -> None:
+def test_from_geojson_single_pass_captures_escaped_legacy_crs(payload: str) -> None:
     with pytest.raises(gm.ParseError, match='conflicts with crs=None'):
-        gm.from_features(payload, crs=None)
+        gm.from_geojson(payload, crs=None, features=True)
 
     # Backslashes in ordinary feature side data no longer trigger a second
     # whole-document parse; they remain ordinary JSON strings.
@@ -1099,7 +1119,9 @@ def test_from_features_single_pass_captures_escaped_legacy_crs(payload: str) -> 
         '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
         '"properties":{"path":"C:\\\\tiles\\\\a"}}'
     )
-    assert gm.from_features(clean).properties == ({'path': 'C:\\tiles\\a'},)
+    assert gm.from_geojson(clean, features=True).properties == (
+        {'path': 'C:\\tiles\\a'},
+    )
 
 
 def test_require_parses_wkt_wkb_and_geojson() -> None:

@@ -9,7 +9,11 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 oracle wheel is unavailable for this interpreter'
+)
+Geod = pyproj.Geod
 
 
 def test_line_interpolate_and_locate_point_are_rust_backed_and_preserve_axes() -> None:
@@ -227,15 +231,19 @@ def test_split_lines_by_points_is_rust_backed_and_preserves_crs_and_measures() -
         'LINESTRING (1 1, 2 1)',
     ]
     assert all(piece.crs == gm.CRS('EPSG:3857') for piece in multiline_pieces)
-    assert [piece.to_wkt() for piece in array_pieces] == [
+    assert array_pieces.offsets.tolist() == [0, 2]
+    assert [piece.to_wkt() for piece in array_pieces[0]] == [
         piece.to_wkt() for piece in top_level
     ]
     assert [piece.to_wkt() for piece in scalar_array_splitter_pieces] == [
         piece.to_wkt() for piece in pieces
     ]
-    assert [piece.to_wkt() for piece in pairwise_array_pieces] == [
+    assert pairwise_array_pieces.offsets.tolist() == [0, 2, 4]
+    assert [piece.to_wkt() for piece in pairwise_array_pieces[0]] == [
         'LINESTRING ZM (0 0 0 10, 2 0 4 14)',
         'LINESTRING ZM (2 0 4 14, 4 0 8 18)',
+    ]
+    assert [piece.to_wkt() for piece in pairwise_array_pieces[1]] == [
         'LINESTRING (0 0, 3 0)',
         'LINESTRING (3 0, 6 0)',
     ]
@@ -422,6 +430,25 @@ def test_measured_lrs_and_distance_3d_have_free_and_array_forms() -> None:
     )
     with pytest.raises(ValueError, match='matching CRS'):
         gm.distance_3d(gm.from_wkt('POINT Z (0 0 0)', crs=4326), b)
+
+
+def test_scalar_m_interpolation_accepts_a_station_column() -> None:
+    line = gm.from_wkt('LINESTRING ZM (0 0 10 0, 10 0 20 100)')
+
+    points = line.line_interpolate([25.0, 75.0], basis='m')
+
+    assert isinstance(points, gm.GeometryArray)
+    assert points.to_wkt() == [
+        'POINT ZM (2.5 0 12.5 25)',
+        'POINT ZM (7.5 0 17.5 75)',
+    ]
+    assert line.line_interpolate(np.array([25.0, 75.0]), basis='m').to_wkt() == (
+        points.to_wkt()
+    )
+
+    non_monotonic = gm.from_wkt('LINESTRING M (0 0 0, 1 0 2, 2 0 1)')
+    with pytest.raises(gm.InvalidGeometryError, match='monotonic'):
+        non_monotonic.line_interpolate([0.5, 1.5], basis='m')
 
 
 def test_distance_3d_generalized_over_linework() -> None:

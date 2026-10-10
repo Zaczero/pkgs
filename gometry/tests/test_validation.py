@@ -654,7 +654,9 @@ def test_repair_is_deterministic() -> None:
     ])
     assert len({bowtie.repair().to_wkt() for _ in range(20)}) == 1
     assert len({bowtie.repair(method='structure').to_wkt() for _ in range(20)}) == 1
-    assert len({'|'.join(gm.polygonize(list(lines)).to_wkt()) for _ in range(20)}) == 1
+    assert (
+        len({'|'.join(gm.polygonize_all(list(lines)).to_wkt()) for _ in range(20)}) == 1
+    )
 
 
 def test_repair_methods_union_distinct_polygon_members() -> None:
@@ -736,12 +738,13 @@ def test_polygonize_assembles_one_universe_across_array_rows() -> None:
         gm.LineString([(1, 0), (1, 1)]),
         gm.LineString([(1, 1), (0, 0)]),
     ])
-    # The free polygonize pools ALL rows' edges into one planar graph, so a ring
+    # The free `polygonize_all` pools ALL rows' edges into one planar graph, so a ring
     # closes from edges spread across rows.
-    polygons = gm.polygonize(lines)
-    assert gm.polygonize(lines[0]) == lines[0].polygonize()
+    polygons = gm.polygonize_all(lines)
+    assert gm.polygonize_all(lines[0]) == lines[0].polygonize()
     assert (
-        gm.polygonize_full(lines[0]).polygons == gm.polygonize_full([lines[0]]).polygons
+        gm.polygonize_all(lines[0], diagnostics=True).polygons
+        == gm.polygonize_all([lines[0]], diagnostics=True).polygons
     )
     assert len(polygons) == 1
     assert polygons[0].area == pytest.approx(0.5)
@@ -750,8 +753,10 @@ def test_polygonize_assembles_one_universe_across_array_rows() -> None:
     per_row = lines.polygonize()
     assert isinstance(per_row, gm.Groups)
     assert [len(per_row[i]) for i in range(len(per_row))] == [0, 0, 0]
-    # The free full variant uses the same explicit pooled ownership.
-    full_polygons, cuts, dangles, invalid = gm.polygonize_full(lines)
+    # Diagnostics preserve the pooled polygons and add source-row linework.
+    result = gm.polygonize_all(lines, diagnostics=True)
+    full_polygons, cuts, dangles, invalid = result
+    assert result.polygons == polygons
     assert len(full_polygons) == 1
     assert [sum(len(row) for row in groups) for groups in (cuts, dangles, invalid)] == [
         0,
@@ -761,8 +766,8 @@ def test_polygonize_assembles_one_universe_across_array_rows() -> None:
     assert not hasattr(lines, 'polygonize_full')
 
     masked = gm.GeometryArray([lines[0], None, lines[1], lines[2]])
-    assert gm.polygonize(masked) == polygons
-    assert gm.polygonize_full(masked).polygons == full_polygons
+    assert gm.polygonize_all(masked) == polygons
+    assert gm.polygonize_all(masked, diagnostics=True).polygons == full_polygons
 
 
 def test_polygonize_auto_nodes_crossing_linework() -> None:
@@ -785,7 +790,7 @@ def test_polygonize_full_groups_noded_diagnostics_by_source_row() -> None:
     square = gm.LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
     crossing = gm.LineString([(-1, 1), (3, 1)])
 
-    result = gm.polygonize_full(gm.GeometryArray([square, crossing]))
+    result = gm.polygonize_all(gm.GeometryArray([square, crossing]), diagnostics=True)
 
     assert len(result.dangles) == 2
     assert len(result.dangles[0]) == 0
@@ -807,7 +812,9 @@ def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() ->
     missing = None
     second = gm.from_wkt('LINESTRING Z (0 0 99, -1 0 100)')
 
-    result = gm.polygonize_full(gm.GeometryArray([first, missing, second]))
+    result = gm.polygonize_all(
+        gm.GeometryArray([first, missing, second]), diagnostics=True
+    )
 
     assert len(result.dangles) == 3
     assert len(result.dangles[0]) == 1
@@ -829,7 +836,9 @@ def test_polygonize_full_diagnostic_rows_scope_mixed_axes() -> None:
     z_line = gm.from_wkt('LINESTRING Z (0 0 1, 1 0 2)')
     m_line = gm.from_wkt('LINESTRING M (0 0 10, -1 0 20)')
 
-    result = gm.polygonize_full(gm.GeometryArray([z_line, None, m_line]))
+    result = gm.polygonize_all(
+        gm.GeometryArray([z_line, None, m_line]), diagnostics=True
+    )
 
     assert len(result.dangles) == 3
     assert result.dangles[0][0].coordinate_axes == 'XYZ'

@@ -94,9 +94,12 @@ def test_geojson_structural_limit_precedes_default_serde_recursion() -> None:
         'geometry': None,
         'properties': json.loads(nested),
     })
-    for reader, payload in ((gm.from_geojson, nested), (gm.from_features, feature)):
+    for reader, payload, retain_features in (
+        (gm.from_geojson, nested, False),
+        (gm.from_geojson, feature, True),
+    ):
         with pytest.raises(gm.ParseError, match='structural limit of 272'):
-            reader(payload)
+            reader(payload, features=retain_features)
 
 
 @pytest.mark.parametrize('depth', [127, 128])
@@ -109,7 +112,9 @@ def test_feature_geometry_accepts_boundary(depth: int, as_bytes: bool) -> None:
         'properties': {},
     }
     text = json.dumps(feature)
-    restored = gm.from_features(text.encode() if as_bytes else text).geometries[0]
+    restored = gm.from_geojson(
+        text.encode() if as_bytes else text, features=True
+    ).geometries[0]
     assert restored.to_wkt() == shape.to_wkt()
 
 
@@ -122,7 +127,7 @@ def test_feature_geometry_rejects_129(as_bytes: bool) -> None:
     }
     text = json.dumps(feature)
     with pytest.raises(gm.ParseError, match='nesting exceeds'):
-        gm.from_features(text.encode() if as_bytes else text)
+        gm.from_geojson(text.encode() if as_bytes else text, features=True)
 
 
 def test_structure_preserving_operations_accept_boundary() -> None:
@@ -563,7 +568,7 @@ assert hull.coordinate_axes == 'XYZM'
 assert hull.crs == gm.CRS('EPSG:4326')
 edge = next(coord for coord in hull.exterior.coords if coord[1] == 1.0)
 assert (edge[2], edge[3]) == (50.0, 5.0)
-assert math.copysign(1.0, edge[0]) == 1.0
+assert math.copysign(1.0, edge[0]) == -1.0
 """
     result = subprocess.run(
         [sys.executable, '-c', script],

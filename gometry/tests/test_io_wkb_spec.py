@@ -6,9 +6,10 @@ import pickle
 import struct
 
 import gometry as gm
-import pyarrow as pa
 import pytest
 from gometry import _lib
+
+pa = pytest.importorskip('pyarrow', reason='pyarrow is an optional Arrow dependency')
 
 
 def _iso_dim(type_code: int) -> int:

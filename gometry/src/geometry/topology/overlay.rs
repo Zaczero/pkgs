@@ -2958,6 +2958,7 @@ fn canonicalize_ring_vertices(
 mod tests {
     use super::*;
     use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
+    use crate::geometry::overlay::{Strictness, overlay_all};
 
     #[test]
     fn canonical_full_band_ring_uses_its_chart_orientation() {
@@ -3003,7 +3004,13 @@ mod tests {
         match shape {
             Shape::Point(point) => *point,
             Shape::MultiPoint(points) if points.len() == 1 => points.point_at(0),
-            _ => panic!("Q emitted one point, got {shape:?}"),
+            Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..)
+            | Shape::MultiPoint(_) => panic!("Q emitted one point, got {shape:?}"),
         }
     }
 
@@ -3071,11 +3078,11 @@ mod tests {
             crate::geometry::GeographicTopologyRoute::Quotient
         );
 
-        let output = crate::geometry::overlay::overlay_all(
+        let output = overlay_all(
             &shapes,
             crate::geometry::TopologyDomain::Geographic(frame),
             OverlayOp::Union,
-            crate::geometry::overlay::Strictness::Lenient,
+            Strictness::Lenient,
         )
         .expect("mixed geographic union emits");
         let mut points = Vec::new();
@@ -3148,7 +3155,10 @@ mod tests {
         assert_eq!(
             emitted
                 .iter()
-                .find(|point| point.x == -180.0 && point.y == -0.0)
+                .find(|point| {
+                    point.x.to_bits() == (-180.0_f64).to_bits()
+                        && point.y.to_bits() == (-0.0_f64).to_bits()
+                })
                 .map(|point| emitted_node_key(frame, point.xy()).unwrap()),
             Some(EmittedNodeKey::Coordinate(
                 (-180.0_f64).to_bits(),

@@ -175,7 +175,7 @@ pub(crate) fn point_set_centroid(shape: &Shape, frame: GeographicFrame) -> Resul
     {
         return Ok(None);
     }
-    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame) else {
         return Ok(None);
     };
     let raw_extrema = match center {
@@ -205,7 +205,7 @@ pub(crate) fn point_set_surface(shape: &Shape, frame: GeographicFrame) -> Result
     {
         return Ok(None);
     }
-    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame) else {
         return Ok(None);
     };
     let raw_extrema = match center {
@@ -507,7 +507,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(shape, GeographicFrame::crs84())
                 .expect("center summary"),
-            Some(PointSetCenter::Chart(None))
+            PointSetCenter::Chart(None)
         ));
         let Err(centroid_error) = point_set_centroid(shape, GeographicFrame::crs84()) else {
             panic!("centroid must reject the non-finite source coordinate");
@@ -573,7 +573,7 @@ mod tests {
         );
         let frame = GeographicFrame::crs84();
 
-        let Some(PointSetCenter::Ordinary((x, y))) =
+        let PointSetCenter::Ordinary((x, y)) =
             crate::geometry::point_set_center_summary(&shape, frame)
                 .expect("ordinary point-set center")
         else {
@@ -596,7 +596,7 @@ mod tests {
         let shape = multipoint(&[point(100.0, 0.0), point(110.0, 10.0)], CoordinateAxes::XY);
         let frame = GeographicFrame::crs84();
 
-        let Some(PointSetCenter::Ordinary((x, y))) =
+        let PointSetCenter::Ordinary((x, y)) =
             crate::geometry::point_set_center_summary(&shape, frame)
                 .expect("actual bounds certify ordinary support")
         else {
@@ -624,7 +624,7 @@ mod tests {
         let shape = multipoint(&[point(1.0, 2.0), point(3.0, 4.0)], CoordinateAxes::XY);
         let frame = GeographicFrame::crs84();
 
-        let Some(PointSetCenter::Ordinary((x, y))) =
+        let PointSetCenter::Ordinary((x, y)) =
             crate::geometry::point_set_center_summary(&shape, frame)
                 .expect("finite actual bounds certify ordinary support")
         else {
@@ -649,7 +649,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&ordinary, frame)
                 .expect("ordinary grad support"),
-            Some(PointSetCenter::Ordinary((0.0, 0.0)))
+            PointSetCenter::Ordinary((0.0, 0.0))
         ));
 
         let half_period = frame.longitude().half_period();
@@ -658,7 +658,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&half_turn, frame)
                 .expect("half-turn chart support"),
-            Some(PointSetCenter::Chart(Some(bounds)))
+            PointSetCenter::Chart(Some(bounds))
                 if bounds == Bounds::new_raw(-half_period / 2.0, 0.0, half_period / 2.0, 0.0)
         ));
 
@@ -667,7 +667,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&polar, frame)
                 .expect("polar chart support"),
-            Some(PointSetCenter::Chart(Some(bounds)))
+            PointSetCenter::Chart(Some(bounds))
                 if bounds == Bounds::new_raw(0.0, 0.0, 1.0, pole)
         ));
 
@@ -675,7 +675,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&seam, frame)
                 .expect("seam chart support"),
-            Some(PointSetCenter::Chart(Some(bounds)))
+            PointSetCenter::Chart(Some(bounds))
                 if bounds == Bounds::new_raw(-199.0, 0.0, 199.0, 0.0)
         ));
     }
@@ -763,7 +763,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&shape, GeographicFrame::crs84())
                 .expect("summary needs only point presence"),
-            Some(PointSetCenter::Chart(None))
+            PointSetCenter::Chart(None)
         ));
         let error = point_set_centroid(&shape, GeographicFrame::crs84())
             .expect_err("the chart owner rejects the nonfinite point")

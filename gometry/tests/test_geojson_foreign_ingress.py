@@ -74,7 +74,7 @@ _LEGACY_CRS84 = {'type': 'name', 'properties': {'name': 'OGC:CRS84'}}
 
 
 def test_from_geojson_rejects_nested_geometry_crs_conflict() -> None:
-    """EXACT repro: nested geometry crs=3857 vs crs=4326 must reject like from_features."""
+    """EXACT repro: nested geometry crs=3857 vs crs=4326 must reject like from_geojson."""
     feature = {
         'type': 'Feature',
         'geometry': {
@@ -88,7 +88,7 @@ def test_from_geojson_rejects_nested_geometry_crs_conflict() -> None:
         gm.from_geojson(feature, crs=4326)
     assert exc_info.value.format == 'geojson'
     with pytest.raises(gm.ParseError, match='legacy GeoJSON CRS member') as exc_info:
-        gm.from_features(feature, crs=4326)
+        gm.from_geojson(feature, crs=4326, features=True)
     assert exc_info.value.format == 'geojson'
 
 
@@ -150,7 +150,7 @@ def test_from_geojson_nested_crs_all_frontends() -> None:
         pytest.param('bytes', id='bytes'),
     ],
 )
-def test_from_features_reports_envelope_crs_conflict_first(carrier: str) -> None:
+def test_from_geojson_reports_envelope_crs_conflict_first(carrier: str) -> None:
     """Feature envelope CRS wins diagnostic precedence for every carrier."""
     feature = {
         'type': 'Feature',
@@ -170,7 +170,7 @@ def test_from_features_reports_envelope_crs_conflict_first(carrier: str) -> None
     }[carrier]
 
     with pytest.raises(gm.ParseError, match=r'\(EPSG:3857\)') as exc_info:
-        gm.from_features(data, crs=4326)
+        gm.from_geojson(data, crs=4326, features=True)
     assert exc_info.value.format == 'geojson'
 
 
@@ -386,7 +386,7 @@ def test_geojson_malformed_geometry_has_one_path_across_text_mapping_interface()
     feature = {'type': 'Feature', 'geometry': payload, 'properties': {}}
     for value in (feature, json.dumps(feature)):
         with pytest.raises(gm.ParseError) as feature_error:
-            gm.from_features(value)
+            gm.from_geojson(value, features=True)
         assert feature_error.value.path == (
             '$.geometry.geometries[0].coordinates[1][1]'
         )
@@ -566,7 +566,7 @@ def test_feature_valued_geo_interface_crs() -> None:
     _assert_geojson_parse_error(exc_info.value)
 
 
-def test_from_features_nested_feature_geometry_slot_parity() -> None:
+def test_from_geojson_nested_feature_geometry_slot_parity() -> None:
     """Nested Feature in Feature.geometry is ParseError on Mapping/text/bytes."""
     nested = {
         'type': 'Feature',
@@ -580,7 +580,7 @@ def test_from_features_nested_feature_geometry_slot_parity() -> None:
     text = json.dumps(nested)
     for data in (nested, text, text.encode()):
         with pytest.raises(gm.ParseError) as exc_info:
-            gm.from_features(data)
+            gm.from_geojson(data, features=True)
         assert exc_info.value.format == 'geojson'
 
 
@@ -588,30 +588,39 @@ def test_from_geojson_fixed_document_semantics() -> None:
     """Fixed policy: omitted = OGC:CRS84; CRS84 accepts; 3857 / crs=None reject."""
     plain = {'type': 'Point', 'coordinates': [1, 2]}
     assert gm.from_geojson(plain).crs == gm.CRS('OGC:CRS84')
-    assert gm.from_features({
-        'type': 'Feature',
-        'geometry': plain,
-        'properties': {},
-    }).geometries.crs == gm.CRS('OGC:CRS84')
+    assert gm.from_geojson(
+        {
+            'type': 'Feature',
+            'geometry': plain,
+            'properties': {},
+        },
+        features=True,
+    ).geometries.crs == gm.CRS('OGC:CRS84')
 
     crs84 = _legacy_mapping('OGC:CRS84')
     assert gm.from_geojson(crs84).crs == gm.CRS('OGC:CRS84')
-    assert gm.from_features({
-        'type': 'Feature',
-        'geometry': crs84,
-        'properties': {},
-    }).geometries.crs == gm.CRS('OGC:CRS84')
+    assert gm.from_geojson(
+        {
+            'type': 'Feature',
+            'geometry': crs84,
+            'properties': {},
+        },
+        features=True,
+    ).geometries.crs == gm.CRS('OGC:CRS84')
 
     conflict = _legacy_mapping('EPSG:3857')
     with pytest.raises(gm.ParseError) as exc_info:
         gm.from_geojson(conflict)
     _assert_geojson_parse_error(exc_info.value)
     with pytest.raises(gm.ParseError) as exc_info:
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': conflict,
-            'properties': {},
-        })
+        gm.from_geojson(
+            {
+                'type': 'Feature',
+                'geometry': conflict,
+                'properties': {},
+            },
+            features=True,
+        )
     _assert_geojson_parse_error(exc_info.value)
 
     with pytest.raises(gm.ParseError, match='conflicts with crs=None') as exc_info:
@@ -734,14 +743,14 @@ def test_valid_geometry_corpus() -> None:
         assert gm.from_geojson(text.encode()).to_wkt() == wkt
 
 
-def test_from_features_valid_feature() -> None:
-    """Positive: from_features still accepts Feature / FeatureCollection."""
+def test_from_geojson_valid_feature() -> None:
+    """Positive: from_geojson still accepts Feature / FeatureCollection."""
     feature = {
         'type': 'Feature',
         'properties': {'a': 1},
         'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
     }
-    feats = gm.from_features(feature)
+    feats = gm.from_geojson(feature, features=True)
     assert feats.geometries.to_wkt() == ['POINT (1 2)']
     assert feats.properties == ({'a': 1},)
 
@@ -783,7 +792,7 @@ def test_mixed_polygon_ring_axes_reject_all_geojson_readers() -> None:
     feature = {'type': 'Feature', 'geometry': geometry, 'properties': {}}
     for data in [feature, json.dumps(feature), json.dumps(feature).encode()]:
         _assert_mixed_ring_parse_error(
-            lambda data=data: gm.from_features(data, crs=None),
+            lambda data=data: gm.from_geojson(data, crs=None, features=True),
             '$.geometry.coordinates[1]',
         )
 
@@ -794,7 +803,7 @@ def test_mixed_polygon_ring_axes_reject_all_geojson_readers() -> None:
             '$.features[0].geometry.coordinates[1]',
         )
         _assert_mixed_ring_parse_error(
-            lambda data=data: gm.from_features(data, crs=None),
+            lambda data=data: gm.from_geojson(data, crs=None, features=True),
             '$.features[0].geometry.coordinates[1]',
         )
 
@@ -824,6 +833,6 @@ def test_mixed_multipolygon_ring_axes_reject_all_geojson_readers() -> None:
     feature = {'type': 'Feature', 'geometry': geometry, 'properties': {}}
     for data in [feature, json.dumps(feature), json.dumps(feature).encode()]:
         _assert_mixed_ring_parse_error(
-            lambda data=data: gm.from_features(data, crs=None),
+            lambda data=data: gm.from_geojson(data, crs=None, features=True),
             '$.geometry.coordinates[0][1]',
         )

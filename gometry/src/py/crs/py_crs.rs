@@ -7,6 +7,7 @@ use crate::py::crs::{
     Bound, Crs, IntoPyObject as _, Py, PyAny, PyResult, Python, crs, crs_parse_required, pyclass,
     pymethods,
 };
+use crate::py::sizeof::python_sizeof;
 /// Coordinate reference system.
 ///
 /// A PROJ-backed CRS object: introspect it (``crs.is_geographic``,
@@ -194,7 +195,7 @@ impl PyCrs {
     /// the lazily cached `CrsInfo`. Opaque PROJ process-global caches are not
     /// owned by the Python object and are not counted.
     fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
-        crate::py::sizeof::python_sizeof(slf.py(), slf.as_any(), slf.borrow().retained_heap_bytes())
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().retained_heap_bytes())
     }
 }
 

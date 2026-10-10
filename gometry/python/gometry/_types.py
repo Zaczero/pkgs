@@ -34,6 +34,7 @@ from typing import (
     NotRequired,
     Protocol,
     Self,
+    SupportsIndex,
     TypeAlias,
     TypedDict,
     TypeVar,
@@ -250,6 +251,7 @@ __all__ = [
     'TransformDirection',
     'TriangulationMethod',
     'VoronoiClip',
+    'VoronoiOutput',
     'WktAxisRule',
     'WktVersion',
 ]
@@ -285,6 +287,9 @@ NavigationPath: TypeAlias = Literal['geodesic', 'rhumb']
 JoinStyle: TypeAlias = Literal['round', 'miter', 'bevel']
 #: Voronoi clipping mode (a ``Polygon`` clip is passed as the geometry itself).
 VoronoiClip: TypeAlias = Literal['padded', 'envelope']
+#: Geometry representation returned by ``Geometry.voronoi`` and
+#: ``GeometryArray.voronoi``.
+VoronoiOutput: TypeAlias = Literal['polygons', 'edges']
 #: Which grid cells a coverage materializes (the tiling rule), strictest to
 #: loosest — uniform across H3, S2, geohash, and tiles.
 CellRule: TypeAlias = Literal['center', 'within', 'overlap', 'bbox']
@@ -311,12 +316,24 @@ class Cell(Protocol):
 
     @property
     def token(self) -> str:
-        """The cell id in its system's canonical lowercase text form."""
+        """The cell id in its system's canonical lowercase text form.
+
+        Returns
+        -------
+        str
+            Canonical text for this cell.
+        """
         ...
 
     @property
     def center(self) -> Point:
-        """Cell center as a WGS 84 ``Point`` (lon/lat)."""
+        """Cell center as a WGS 84 ``Point`` (lon/lat).
+
+        Returns
+        -------
+        Point
+            The center in longitude/latitude coordinates.
+        """
         ...
 
     @property
@@ -324,6 +341,11 @@ class Cell(Protocol):
         """The cell as a filled WGS 84 ``Polygon`` (lon/lat).
 
         H3 and S2 emit planar chord proxies for their true spherical edges.
+
+        Returns
+        -------
+        Polygon
+            The filled cell boundary in longitude/latitude coordinates.
         """
         ...
 
@@ -334,6 +356,11 @@ class Cell(Protocol):
         How many there are is system-specific, and can vary with position:
         six around an H3 hexagon but five around a pentagon, four for S2,
         eight for geohash away from the poles.
+
+        Returns
+        -------
+        CellArray[Self]
+            The edge-adjacent cells at the same depth.
         """
         ...
 
@@ -343,23 +370,72 @@ class Cell(Protocol):
 
         H3 and S2 use an authalic sphere; geohash and tile use the WGS 84
         ellipsoidal area of their lon/lat rectangle.
+
+        Returns
+        -------
+        float
+            Area in square meters.
         """
         ...
 
     def parent(self, depth: int | None = None, /) -> Self:
-        """Parent cell at a coarser depth, one step coarser by default."""
+        """Parent cell at a coarser depth, one step coarser by default.
+
+        Parameters
+        ----------
+        depth : int or None, optional, default None
+            Requested parent depth; ``None`` selects one step coarser.
+
+        Returns
+        -------
+        Self
+            The ancestor at the requested depth.
+        """
         ...
 
     def children(self, depth: int | None = None, /) -> CellArray[Self]:
-        """Child cells at a finer depth, one step finer by default."""
+        """Child cells at a finer depth, one step finer by default.
+
+        Parameters
+        ----------
+        depth : int or None, optional, default None
+            Requested child depth; ``None`` selects one step finer.
+
+        Returns
+        -------
+        CellArray[Self]
+            The cells at the requested depth.
+        """
         ...
 
     def children_count(self, depth: int | None = None, /) -> int:
-        """Count descendants at a finer depth without materializing them."""
+        """Count descendants at a finer depth without materializing them.
+
+        Parameters
+        ----------
+        depth : int or None, optional, default None
+            Requested child depth; ``None`` selects one step finer.
+
+        Returns
+        -------
+        int
+            Number of cells at the requested depth.
+        """
         ...
 
     def contains(self, other: Self | str) -> bool:
-        """Whether this cell is, or is an ancestor of, ``other``."""
+        """Whether this cell is, or is an ancestor of, ``other``.
+
+        Parameters
+        ----------
+        other : Self or str
+            A cell or its canonical token.
+
+        Returns
+        -------
+        bool
+            Whether ``other`` is this cell or one of its descendants.
+        """
         ...
 
     def intersects(self, other: Self | str) -> bool:
@@ -367,6 +443,16 @@ class Cell(Protocol):
 
         Hierarchy cells cannot partially overlap, so this holds exactly when
         one of the two contains the other.
+
+        Parameters
+        ----------
+        other : Self or str
+            A cell or its canonical token.
+
+        Returns
+        -------
+        bool
+            Whether the two cells overlap hierarchically.
         """
         ...
 
@@ -396,7 +482,7 @@ CrsKind: TypeAlias = Literal[
     'unknown',
 ]
 
-#: ``kind=`` filter accepted by ``gm.crs_search`` / ``gm.crs_catalog``
+#: ``kind=`` filter accepted by ``gm.crs_catalog``
 #: (``CrsObjectKind::parse_crs`` — CRS types only).
 CrsCatalogKind: TypeAlias = Literal[
     'crs',
@@ -512,34 +598,29 @@ FeatureId: TypeAlias = str | int | float | None
 
 
 class Features:
-    """Parsed GeoJSON features: geometries plus parallel properties and ids.
+    """Aligned feature columns returned by ``from_geojson(..., features=True)``.
 
-    Returned by `from_features`. Destructures as
-    ``geometries, properties, ids = features`` and supports ``match``
-    patterns via ``__match_args__``. Deliberately not a tuple and has no
-    ``len()`` because a field count of three reads like a feature count; use
-    ``len(features.geometries)`` for the row count. The
-    outer metadata tuples cannot drift out of alignment; property dictionaries
-    remain editable.
-
-    Hand-written frozen slots (not ``@dataclass``) so cold ``import gometry``
-    never pays the ``dataclasses``/``inspect`` import chain.
+    Unpack as ``geometries, properties, ids = features``. Each metadata entry
+    corresponds to the geometry at the same row; use ``len(features.geometries)``
+    for the feature count. The outer columns are fixed, while property
+    dictionaries remain editable.
     """
 
     __slots__ = ('geometries', 'ids', 'properties')
     __match_args__ = ('geometries', 'properties', 'ids')
 
     geometries: GeometryArray[Geometry | None]
-    """The parsed geometries, one row per feature."""
+    """One parsed geometry or ``None`` per input feature."""
 
     properties: tuple[dict[str, Any] | None, ...]
-    """Per-feature property mappings, row-aligned with ``geometries``.
+    """Row-aligned property mappings; ``None`` means no properties were supplied.
 
-    An entry is ``None`` where the feature carried no properties.
+    A single input mapping is shallow-copied for each row, so editing one
+    returned dictionary does not change another row.
     """
 
     ids: tuple[FeatureId, ...]
-    """Per-feature ids, row-aligned with ``geometries``.
+    """Row-aligned string, non-boolean integer, finite float, or ``None`` ids.
 
     An entry is ``None`` where the feature carried no id.
     """
@@ -552,11 +633,35 @@ class Features:
         | None = None,
         ids: Iterable[FeatureId] | None = None,
     ) -> None:
-        """Validate and freeze the three aligned outer columns.
+        """Build row-aligned feature columns.
 
-        ``None`` supplies one missing value per geometry. A single properties
-        mapping broadcasts through independent shallow ``dict`` copies; row
-        iterables are consumed exactly once.
+        Parameters
+        ----------
+        geometries : GeometryArray[Geometry | None]
+            One geometry or ``None`` for each input feature.
+        properties : Mapping[str, Any] or Iterable[Mapping[str, Any] | None] or None
+            A mapping or object with a callable ``keys()`` is broadcast as an
+            independent shallow copy per row. An iterable supplies one mapping
+            or ``None`` per geometry and is consumed once. ``None`` supplies
+            one missing-properties value per geometry.
+        ids : Iterable[FeatureId] or None
+            One string, non-boolean integer, finite float, or ``None`` per
+            geometry. ``None`` supplies one missing id per geometry.
+
+        Returns
+        -------
+        Features
+            The geometry, property, and id columns aligned by input row.
+
+        Raises
+        ------
+        TypeError
+            If geometries is not a GeometryArray, a property input is not a
+            mapping or row iterable, a property key is not a string, or an id
+            is not a string, non-boolean integer, finite float, or ``None``.
+        GeometryError
+            If property or id rows do not match the geometry count, property
+            keys repeat, or a numeric id is not finite.
         """
         if not isinstance(geometries, GeometryArray):
             raise TypeError('geometries must be a GeometryArray')
@@ -793,7 +898,7 @@ def _restore_extremes_v1(
 class PolygonizeResult(NamedTuple):
     """Full polygonization output: the polygons plus the leftover linework.
 
-    Returned by `polygonize_full`; unpacks as ``(polygons, cut_edges,
+    Returned by `polygonize_all(diagnostics=True)`; unpacks as ``(polygons, cut_edges,
     dangles, invalid_rings)``, or use the named fields. ``polygons`` is the
     pooled result; each diagnostic is a ``Groups[GeometryArray[LineString]]``
     with one row per input source.
@@ -855,6 +960,30 @@ class SupportsToWkt(Protocol):
     def to_wkt(self) -> str: ...
 
 
+class _SupportsToAuthority(Protocol):
+    def to_authority(
+        self,
+    ) -> tuple[str, str | SupportsIndex] | list[str | SupportsIndex] | None: ...
+
+
+class _SupportsToEpsg(Protocol):
+    def to_epsg(self) -> SupportsIndex | None: ...
+
+
+class _SupportsToJson(Protocol):
+    def to_json(self) -> str: ...
+
+
+class _SupportsCrsHolder(Protocol):
+    @property
+    def crs(self) -> CrsInput | None: ...
+
+
+class _SupportsSrsHolder(Protocol):
+    @property
+    def srs(self) -> CrsInput | None: ...
+
+
 #: A float lane: any iterable of floats, or a PEP-3118 buffer exporter
 #: (numpy arrays — float32 included — ``array.array``, memoryviews). Buffer
 #: values are copied into native storage; float32 values are converted to f64.
@@ -882,16 +1011,22 @@ ParseFormat: TypeAlias = Literal[
 ]
 
 #: Anything accepted where a CRS is expected: an authority string
-#: (``'EPSG:4326'``, WKT, PROJ), an EPSG code, an ``(authority, code)`` pair,
-#: a PROJJSON/CF mapping, or any object exposing ``to_wkt()`` (``gometry.CRS``,
-#: ``pyproj.CRS``).
+#: (``'EPSG:4326'``, WKT, PROJ), an integer-like EPSG code, an
+#: ``(authority, code)`` pair, a PROJJSON/CF mapping, or a CRS-like object
+#: exposing a supported conversion or holder protocol (including ``gometry.CRS``
+#: and ``pyproj.CRS``).
 CrsInput: TypeAlias = (
     str
-    | int
-    | tuple[str, str | int]
-    | list[str | int]
+    | SupportsIndex
+    | tuple[str, str | SupportsIndex]
+    | list[str | SupportsIndex]
     | Mapping[str, Any]
     | SupportsToWkt
+    | _SupportsToAuthority
+    | _SupportsToEpsg
+    | _SupportsToJson
+    | _SupportsCrsHolder
+    | _SupportsSrsHolder
 )
 
 # ---------------------------------------------------------------------------
@@ -969,9 +1104,10 @@ keys are rejected at parse time.
 class GeoJsonFeature(TypedDict):
     """A gometry-parseable GeoJSON Feature object (RFC 7946 §3.2).
 
-    ``geometry`` may be ``None`` for missing rows in bulk FeatureCollection /
-    ``from_features`` ingestion. Scalar ``from_geojson`` of a Feature rejects
-    null geometry — use :class:`GeoJsonFeatureNonNull` for that overload.
+    ``geometry`` may be ``None`` in a FeatureCollection, in a GeoJSON row
+    column, or with ``from_geojson(..., features=True)``. Geometry-only
+    decoding rejects a scalar null-geometry Feature; use
+    :class:`GeoJsonFeatureNonNull` for that overload.
     """
 
     type: Literal['Feature']

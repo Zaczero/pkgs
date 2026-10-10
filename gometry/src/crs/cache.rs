@@ -8,8 +8,8 @@ use smol_str::SmolStr;
 use crate::crs::geodesic::AuthalicSeries;
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
-    CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
-    CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
+    CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsNameMatchOptions, CrsProjJsonOptions,
+    CrsProjOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
     ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
     TransformOptions, UnitInfo, WktVersion, preserve_resource_error, runtime,
     runtime_state_snapshot,
@@ -91,10 +91,10 @@ pub(super) struct CachedCrsAuthorityMatches {
     pub items: Vec<IdentifyCandidate>,
 }
 
-pub(super) struct CachedCrsSearch {
+pub(super) struct CachedCrsNameMatch {
     pub name: String,
-    pub options: CrsSearchOptions,
-    pub items: Vec<AuthorityObjectInfo>,
+    pub options: CrsNameMatchOptions,
+    pub items: Vec<String>,
 }
 
 pub(super) struct CachedCrsOperations {
@@ -281,7 +281,7 @@ crs_cache! {
     reported CRS_CELESTIAL_BODIES_CACHE, CRS_CELESTIAL_BODIES_CACHE_CAPACITY, CachedCelestialBodies, 8, "crs_celestial_bodies";
     reported NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, CachedAuthorityObjects, 16, "crs_non_deprecated";
     reported CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY, CachedCrsAuthorityMatches, 32, "crs_authority_matches";
-    reported CRS_SEARCH_CACHE, CRS_SEARCH_CACHE_CAPACITY, CachedCrsSearch, 16, "crs_search";
+    reported CRS_NAME_MATCH_CACHE, CRS_NAME_MATCH_CACHE_CAPACITY, CachedCrsNameMatch, 16, "crs_catalog_name_matches";
     reported CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CachedCrsOperations, 256, "crs_operations";
     reported CRS_COMPARISON_CACHE, CRS_COMPARISON_CACHE_CAPACITY, CachedCrsComparison, 32, "crs_comparison";
     reported CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CachedProjectionFactorsObject, 256, "crs_factors";
@@ -543,14 +543,16 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
-    use crate::crs::catalog::{authority_matches, catalog_with_state};
+    use crate::crs::catalog::{
+        authority_matches, catalog_name_matches_with_state, catalog_with_state,
+    };
     use crate::crs::geodesic::with_geodesic_at;
     use crate::crs::operations::operations_info;
     use crate::crs::{
         ConfigUpdate, CrsObjectKind, ProjDirection, RUNTIME_STATE_TEST_LOCK, TransformPlan,
-        WGS84_A, apply_operation, catalog, clear_cache, configure_runtime, factors, info,
-        non_deprecated, operation_info_at, reset_runtime_config, rhumb_distance_crs, same, search,
-        to_wkt_with_options, transform_coordinates,
+        WGS84_A, apply_operation, clear_cache, configure_runtime, distance_rhumb_crs, factors,
+        info, non_deprecated, operation_info_at, reset_runtime_config, same, to_wkt_with_options,
+        transform_coordinates,
     };
 
     fn resolve_geodesic(crs: &str) {
@@ -588,7 +590,7 @@ mod tests {
             CRS_CELESTIAL_BODIES_CACHE.with(|cache| cache.borrow().len()),
             NON_DEPRECATED_CACHE.with(|cache| cache.borrow().len()),
             CRS_AUTHORITY_MATCH_CACHE.with(|cache| cache.borrow().len()),
-            CRS_SEARCH_CACHE.with(|cache| cache.borrow().len()),
+            CRS_NAME_MATCH_CACHE.with(|cache| cache.borrow().len()),
             CRS_OPERATIONS_CACHE.with(|cache| cache.borrow().len()),
             CRS_COMPARISON_CACHE.with(|cache| cache.borrow().len()),
             CRS_FACTOR_CACHE.with(|cache| cache.borrow().len()),
@@ -609,6 +611,7 @@ mod tests {
 
     fn warm_representative_thread_caches() {
         let options = TransformOptions::default();
+        let state = runtime_state_snapshot().unwrap();
         let catalog_options = CrsCatalogOptions {
             kind: Some(CrsObjectKind::Geographic2dCrs),
             area: None,
@@ -616,15 +619,14 @@ mod tests {
             allow_deprecated: false,
             celestial_body: Some("Earth".to_owned()),
         };
-        let search_options = CrsSearchOptions {
+        let name_match_options = CrsNameMatchOptions {
             authority: Some("EPSG".to_owned()),
             kind: Some(CrsObjectKind::Geographic2dCrs),
             approximate: false,
-            limit: std::num::NonZeroUsize::new(5).unwrap(),
         };
 
         info("EPSG:4326").unwrap();
-        catalog(Some("EPSG"), &catalog_options).unwrap();
+        catalog_with_state(Some("EPSG"), &catalog_options, &state).unwrap();
         non_deprecated("EPSG:4326").unwrap();
         authority_matches(
             "EPSG:4326",
@@ -632,12 +634,12 @@ mod tests {
             Confidence::try_new("min_confidence", 70).unwrap(),
         )
         .unwrap();
-        search("WGS 84", &search_options).unwrap();
+        catalog_name_matches_with_state("WGS 84", &name_match_options, &state).unwrap();
         operations_info("EPSG:4267", "EPSG:4326", &options).unwrap();
         same("EPSG:4326", "OGC:CRS84", CrsComparison::IgnoreAxisOrder).unwrap();
         factors("EPSG:3857", -73.0, 41.0, false).unwrap();
         resolve_geodesic("EPSG:4326");
-        rhumb_distance_crs("EPSG:4326", -73.0, 41.0, -72.0, 42.0).unwrap();
+        distance_rhumb_crs("EPSG:4326", -73.0, 41.0, -72.0, 42.0).unwrap();
         to_wkt_with_options(
             "EPSG:4326",
             WktVersion::Wkt2_2019,

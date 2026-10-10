@@ -212,10 +212,10 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
         concave_polygon,
         polygon_with_hole,
     ]).triangulate(method='earcut')
-    voronoi_cells = triangulation_points.voronoi_polygons(clip='envelope')
-    voronoi_edges = triangulation_points.voronoi_edges(clip='envelope')
-    clipped_voronoi_cells = triangulation_points.voronoi_polygons(
-        clip=gm.box(-1, -1, 2, 2, crs=3857)
+    voronoi_cells = triangulation_points.voronoi(output='polygons', clip='envelope')
+    voronoi_edge_lines = triangulation_points.voronoi(output='edges', clip='envelope')
+    clipped_voronoi_cells = triangulation_points.voronoi(
+        output='polygons', clip=gm.box(-1, -1, 2, 2, crs=3857)
     )
     assert polygon.centroid().to_wkt() == 'POINT (2 1)'
     assert centroids[0].to_wkt() == 'POINT (2 1)'
@@ -304,29 +304,45 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
     assert voronoi_cells.crs == gm.CRS('EPSG:3857')
     assert all(cell.geometry_type == 'Polygon' for cell in voronoi_cells)
     assert sum(cell.area for cell in voronoi_cells) == pytest.approx(1)
-    assert len(voronoi_edges) > 0
-    assert all(edge.geometry_type == 'LineString' for edge in voronoi_edges)
-    assert len(triangulation_points.voronoi_polygons(clip='envelope')) == len(
+    assert len(voronoi_edge_lines) > 0
+    assert all(edge.geometry_type == 'LineString' for edge in voronoi_edge_lines)
+    assert len(triangulation_points.voronoi(output='polygons', clip='envelope')) == len(
         voronoi_cells
     )
     assert len(
-        gm.GeometryArray([triangulation_points]).voronoi_edges(clip='envelope')[0]
-    ) == len(voronoi_edges)
+        gm.GeometryArray([triangulation_points]).voronoi(
+            output='edges', clip='envelope'
+        )[0]
+    ) == len(voronoi_edge_lines)
     assert all(
         gm.covers(gm.box(-1, -1, 2, 2, crs=3857), cell)
         for cell in clipped_voronoi_cells
     )
     assert len(gm.MultiPoint([(0, 0), (1, 0)]).triangulate(method='delaunay')) == 0
-    assert len(gm.Point(0, 0).voronoi_polygons()) == 0
-    assert len(gm.MultiPoint([(0, 0), (1, 0), (2, 0)]).voronoi_polygons()) == 3
+    assert (
+        len(
+            gm.Point(0, 0).voronoi(
+                output='polygons',
+            )
+        )
+        == 0
+    )
+    assert (
+        len(
+            gm.MultiPoint([(0, 0), (1, 0), (2, 0)]).voronoi(
+                output='polygons',
+            )
+        )
+        == 3
+    )
     with pytest.raises(ValueError, match='unknown Voronoi clip'):
-        triangulation_points.voronoi_polygons(clip='bad')
+        triangulation_points.voronoi(output='polygons', clip='bad')
     with pytest.raises(TypeError, match='clip geometry must be a Polygon'):
-        triangulation_points.voronoi_polygons(clip=gm.Point(0, 0))
+        triangulation_points.voronoi(output='polygons', clip=gm.Point(0, 0))
     clip_box = gm.box(-1, -1, 2, 2)
     with pytest.raises(ValueError, match='matching CRS'):
-        triangulation_points.set_crs('EPSG:3857').voronoi_polygons(
-            clip=clip_box.set_crs('EPSG:4326')
+        triangulation_points.set_crs('EPSG:3857').voronoi(
+            output='polygons', clip=clip_box.set_crs('EPSG:4326')
         )
     with pytest.raises(TypeError, match='Polygon or MultiPolygon'):
         gm.Point(0, 0).triangulate(method='constrained')
@@ -480,16 +496,16 @@ def test_polygonize_builds_polygons_from_exact_noded_linework() -> None:
     )
     polygons = square_edges.polygonize()
     top_level = square_edges.polygonize()
-    full_polygons, full_cuts, full_dangles, full_invalid = gm.polygonize_full([
-        square_edges
-    ])
-    top_level_full = gm.polygonize_full([square_edges])
-    invalid_full = gm.polygonize_full([
-        gm.MultiLineString([[(0, 0), (1, 0)], [(0, 0), (1, 0)]])
-    ])
+    full_polygons, full_cuts, full_dangles, full_invalid = gm.polygonize_all(
+        [square_edges], diagnostics=True
+    )
+    top_level_full = gm.polygonize_all([square_edges], diagnostics=True)
+    invalid_full = gm.polygonize_all(
+        [gm.MultiLineString([[(0, 0), (1, 0)], [(0, 0), (1, 0)]])], diagnostics=True
+    )
     with_hole = hole_edges.polygonize()
     array_polygons = gm.GeometryArray([square_edges]).polygonize()
-    pooled_full = gm.polygonize_full([square_edges])
+    pooled_full = gm.polygonize_all([square_edges], diagnostics=True)
     assert len(polygons) == 1
     assert polygons.crs == gm.CRS('EPSG:3857')
     assert polygons[0].geometry_type == 'Polygon'
@@ -553,7 +569,7 @@ def test_polygonize_full_preserves_epoch() -> None:
     ring = gm.MultiLineString(
         [[(0, 0), (1, 0)], [(1, 0), (1, 1)], [(1, 1), (0, 0)]], crs=4326, epoch=2020.0
     )
-    result = gm.polygonize_full([ring])
+    result = gm.polygonize_all([ring], diagnostics=True)
     assert result.polygons.crs == gm.CRS('EPSG:4326')
     assert result.polygons.epoch == 2020.0
     for groups in (result.cut_edges, result.dangles, result.invalid_rings):
@@ -570,8 +586,8 @@ def test_polygonize_full_diagnostics_keep_source_rows_after_missing_input() -> N
     dangle = gm.LineString([(-1, 5), (0, 5)])
     invalid = gm.MultiLineString([[(10, 0), (11, 0)], [(10, 0), (11, 0)]])
 
-    result = gm.polygonize_full(
-        gm.GeometryArray([None, joined_cycles, dangle, invalid])
+    result = gm.polygonize_all(
+        gm.GeometryArray([None, joined_cycles, dangle, invalid]), diagnostics=True
     )
 
     assert len(result.polygons) == 2
@@ -597,21 +613,17 @@ def test_polygonize_full_diagnostics_keep_source_rows_after_missing_input() -> N
     [(3857, 2020.0), (4326, 2021.0)],
     ids=['crs-mismatch', 'epoch-mismatch'],
 )
-@pytest.mark.parametrize(
-    'operation',
-    [gm.polygonize, gm.polygonize_full],
-    ids=['polygonize', 'polygonize-full'],
-)
+@pytest.mark.parametrize('diagnostics', [False, True], ids=['polygons', 'diagnostics'])
 def test_pooled_polygonize_rejects_crs_and_epoch_mismatches(
     right_crs: int,
     right_epoch: float,
-    operation,
+    diagnostics: bool,
 ) -> None:
     left = gm.LineString([(0, 0), (1, 0)], crs=4326, epoch=2020.0)
     right = gm.LineString([(1, 0), (1, 1)], crs=right_crs, epoch=right_epoch)
 
     with pytest.raises(gm.CRSMismatchError):
-        operation([left, right])
+        gm.polygonize_all([left, right], diagnostics=diagnostics)
 
 
 def test_empty_polygon_rejects_non_iterable_holes() -> None:

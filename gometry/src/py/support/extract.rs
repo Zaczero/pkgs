@@ -7,10 +7,10 @@ use crate::py::errors;
 use crate::py::errors::GeometryError;
 use crate::py::numpy::reject_masked_array;
 use crate::py::support::{
-    Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Point, Polygon, PyAny,
-    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape,
-    Value, classify_input, coerce_geometry, exact_geometry, float_values_at_most,
-    float_values_exact, is_mapping_like, is_py_bytes_or_bytearray, parse_geojson_geometry_value,
+    Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Point, PyAny,
+    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Shape, Value,
+    classify_input, coerce_geometry, exact_geometry, float_values_at_most, float_values_exact,
+    is_mapping_like, is_py_bytes_or_bytearray, parse_geojson_geometry_value,
 };
 
 pub(crate) fn point_xy(shape: &Shape) -> PyResult<(f64, f64)> {
@@ -148,7 +148,7 @@ pub(crate) fn parse_owned_geometry_item(
             )?
             else {
                 return Err(crate::io::IoError::geojson(
-                    "Feature has null geometry (an unlocated feature); parse the FeatureCollection with from_geojson/from_features, where null geometries become missing rows",
+                    "Feature has null geometry (an unlocated feature); parse the FeatureCollection with from_geojson, where null geometries become missing rows, or use from_geojson(..., features=True) to retain its properties and ID",
                 ));
             };
             Ok(PyGeometry::with_frame(shape, frame))
@@ -350,37 +350,6 @@ pub(crate) fn ensure_homogeneous_axes(points: &[Point]) -> PyResult<()> {
         ));
     }
     Ok(())
-}
-
-pub(crate) fn extract_lines(value: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<Point>>> {
-    crate::collect_py_iter(value, |item| extract_points(&item, None, None))
-}
-
-pub(crate) fn extract_polygons(value: &Bound<'_, PyAny>) -> PyResult<Vec<Polygon>> {
-    crate::collect_py_iter(value, |item| {
-        if let Some(geometry) = exact_geometry(&item) {
-            if let Shape::Polygon(polygon) = geometry.shape.shape() {
-                return Ok(polygon.clone());
-            }
-            return Err(errors::geometry_type_err(
-                "multi_polygon geometry members must be Polygon geometries",
-            ));
-        }
-        let rings = crate::collect_py_iter(&item, Ok)?;
-        let Some((shell, remaining)) = rings.split_first() else {
-            return Err(InvalidGeometryError::new_err(
-                "multi_polygon member requires a shell",
-            ));
-        };
-        let mut holes = Vec::with_capacity(remaining.len());
-        for ring in remaining {
-            holes.push(Ring::closed(extract_points(ring, None, None)?)?);
-        }
-        Ok(Polygon::new(
-            Ring::closed(extract_points(shell, None, None)?)?,
-            holes,
-        ))
-    })
 }
 
 pub(crate) fn optional_coordinates(

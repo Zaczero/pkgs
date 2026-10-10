@@ -15,7 +15,6 @@ import sys
 from typing import Any, cast
 
 import gometry as gm
-import pyarrow as pa
 import pytest
 from gometry._lib import CRS as _CRS
 
@@ -28,8 +27,10 @@ from tests._support import (
     with_validity,
 )
 
+pa = pytest.importorskip('pyarrow', reason='pyarrow is an optional Arrow dependency')
+
 _WGS84_PROJJSON_METADATA = _json.dumps(
-    {'crs': _CRS(4326).to_projjson_dict(), 'crs_type': 'projjson'},
+    {'crs': _CRS(4326).to_projjson(as_dict=True), 'crs_type': 'projjson'},
     separators=(',', ':'),
 ).encode()
 
@@ -74,6 +75,25 @@ _ARROW_LAYOUT_WKTS: dict[str, tuple[str, str, str]] = {
         'POLYGON ((3 3, 4 3, 4 4, 3 4, 3 3))',
     ),
 }
+
+
+def test_format_readers_normalize_arrow_scalars_and_nulls() -> None:
+    point = gm.Point(1, 2, crs=4326)
+    wkts = pa.array(['POINT (1 2)', None])
+    wkbs = pa.chunked_array([
+        pa.array([point.to_wkb()]),
+        pa.array([None], type=pa.binary()),
+    ])
+    geojson = pa.array([_json.dumps({'type': 'Point', 'coordinates': [1, 2]}), None])
+    polylines = pa.chunked_array([
+        pa.array([point.to_polyline()]),
+        pa.array([None], type=pa.string()),
+    ])
+
+    assert gm.from_wkt(wkts).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(wkbs).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_geojson(geojson).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_polyline(polylines).to_wkt() == ['POINT (1 2)', None]
 
 
 @pytest.mark.parametrize('layout', list(_ARROW_LAYOUT_WKTS))
@@ -827,7 +847,7 @@ def test_arrow_capsule_roundtrip_via_pyarrow_array_protocol() -> None:
             arrow.type.__arrow_ext_serialize__()
             == _json.dumps(
                 {
-                    'crs': _CRS(4326).to_projjson_dict(),
+                    'crs': _CRS(4326).to_projjson(as_dict=True),
                     'crs_type': 'projjson',
                     'epoch': 2020.0,
                 },

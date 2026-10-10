@@ -152,6 +152,15 @@ The raw-coordinate [`CRS.factors`][gometry.CRS.factors] retains its documented
 degree/radian argument switch; the native-frame rule above describes geometry
 metrics and topology.
 
+### CRS inputs
+
+Constructors, metadata assignment, transforms, and CRS exporters accept the same
+CRS-like inputs: authority, WKT, or PROJ strings; non-boolean integer-like EPSG
+codes; two-item authority/code pairs; PROJJSON or CF mappings; and objects that
+provide CRS conversion methods such as `to_authority()`, `to_epsg()`, `to_wkt()`,
+or `to_json()`. Objects may also expose a nested `.crs` or `.srs` value in one of
+those forms. Invalid codes and definitions raise `CRSError`.
+
 ### Polar rings and full-turn edges
 
 Geographic topology distinguishes an explicit one-period edge between ordinary
@@ -442,33 +451,45 @@ composite algorithms.
 With CRS-aware units, geographic linework distance, nearest-point witnesses,
 and `line_locate` use a minimum over each straight chart edge's parameter `t`.
 Each sample evaluates geodesic distance from the query to the chart position. A
-global interval search combines a Lipschitz lower bound with a sampled
-second-order bound; degenerate edges and pole queries use their exact families.
-A witness lies on the chart edge, and LRS carries its ordinates by the fraction
-of edge arclength.
+global interval search combines a Lipschitz lower bound with analytic speed and
+covariant-acceleration bounds. Its second-order Taylor bound applies only when
+the full distance interval lies inside a certified normal neighborhood;
+otherwise the search uses the Lipschitz bound. Degenerate edges and pole
+queries use their direct families. A witness lies on the chart edge, and LRS
+carries its ordinates by the fraction of edge arclength.
 
 The attained binary64 minimum uses the radius-scaled gap `4e-11 × a` and a
 maximum of 128 evaluations per point-edge query. If the search reaches that
-budget, it returns its best attained distance and parameter. These are numerical
-quality budgets, not universal real-arithmetic error certificates. Search
-results are attained witnesses, not topological contacts. Exact chart topology
-establishes contact; a small positive distance does not.
-`line_locate` uses the attained parameter's ellipsoidal chart-edge arclength and
-adds the prefix before that edge. Point-to-chart-edge `dwithin` compares the
-same attained distance inclusively with the supplied radius. It does not add a
-contact tolerance or widen the radius by pruning slack. A positive infinite
-radius returns `True` for admitted non-empty operands without forcing an
-unrepresentable distance result. Vectorized results retain one boolean per
-input pair: missing rows and present empty geometries remain in place as `False`.
+budget, distance, nearest-point, and `line_locate` return their best attained
+sample. These are numerical quality budgets, not universal real-arithmetic
+error certificates. Search results are attained witnesses, not topological
+contacts. Exact chart topology establishes contact; a small positive distance
+does not. `line_locate` uses the attained parameter's ellipsoidal chart-edge
+arclength and adds the prefix before that edge.
+
+Point-to-chart-edge `dwithin` returns `True` only after an attained sample is at
+or below the supplied radius, and returns `False` only when its search certifies
+the threshold result. Its evaluation allowance is derived from binary64
+parameter-refinement depth and the number of live intervals, with a
+16,384-evaluation safety ceiling per point-edge query. If that allowance, the
+safety ceiling, or binary64 parameter precision ends while the bounds straddle
+the radius, `dwithin` raises `CRSError` rather than reporting `False`. It does
+not add a contact tolerance or widen the radius by pruning slack. A positive
+infinite radius returns `True` for admitted non-empty operands without forcing
+an unrepresentable distance result. Vectorized results retain one boolean per
+input pair: missing rows and present empty geometries remain in place as
+`False`; a nonconvergent present pair raises instead of receiving a boolean.
 
 Geographic Hausdorff measures the continuous linework supports of the stored
 chart edges: the source ranges over each straight longitude/latitude edge, and
 its distance to the target is the minimum geodesic distance to target edges and
 isolated points. A global frontier combines a Lipschitz upper bound with a
-second-order Taylor bound from fixed target witnesses; each reported value is
-an attained source/target pair, not an interval bound. Its algorithmic gap is
-`a * (0.01 / 6_378_137)`, about one centimetre for WGS 84. These binary64
-budgets are numerical quality targets, not real-arithmetic certificates.
+second-order Taylor upper bound from fixed target witnesses only inside a
+certified normal neighborhood; elsewhere it uses the Lipschitz upper bound.
+Each reported value is an attained source/target pair, not an interval bound.
+Its algorithmic gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS
+84. These binary64 budgets are numerical quality targets, not real-arithmetic
+certificates.
 Geographic Hausdorff supports point and linework operands only; filled polygon
 interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
 geographic path; its algorithmic gap does not promise a caller-requested bound.
@@ -487,6 +508,9 @@ geographic CRS these operations are
 geodesic; on a projected or CRS-free point they are planar.
 
 - [`gm.bearing(pt, other)`][gometry.bearing] — initial heading (degrees) from one point to another.
+- [`gm.distance(a, b, path='rhumb')`][gometry.distance] — constant-bearing distance
+  in meters between points on a geographic CRS. This route option applies only
+  to point operands and does not accept a `unit` override.
 - [`pt.destination(bearing, distance)`][gometry.Point.destination] — walk `distance` in CRS-natural units
   (meters on a geographic CRS; native linear units when projected; coordinate
   units when CRS-free; override with `unit=`) along `bearing` degrees and return
@@ -504,6 +528,11 @@ import gometry as gm
 start = gm.Point(2.3522, 48.8566, crs=4326)
 arrival = start.destination(45.0, 100_000.0)
 print(arrival.to_wkt())
+print(round(gm.distance(
+    gm.Point(-73.8, 40.6, crs=4326),
+    gm.Point(-0.5, 51.6, crs=4326),
+    path='rhumb',
+) / 1000))
 
 ```
 
@@ -860,8 +889,10 @@ spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 coordinates in the CRS-native longitude quotient. Validity uses a faithful
 planar partition when the stored chart preserves source coordinates; otherwise
 it reads exact Q incidence without shifting stored longitudes. Operations that
-construct split output insert affine crossing vertices into straight edges in
-the unwrapped longitude/latitude chart. Geographic shape measures
+construct split output insert affine X/Y crossings into straight edges in the
+unwrapped longitude/latitude chart. Eligible Z/M at inserted crossings follow
+ellipsoidal arclength along the retained source edge; authored full-period
+edges keep their path through quarter witnesses. Geographic shape measures
 ([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
 edges, so splitting preserves ellipsoidal length and area to rounding.
 Point-to-point [`distance`][gometry.distance] continues to use the shortest
@@ -1074,15 +1105,22 @@ print("gometry reads as (lon, lat):", list(p.coords))
 Round-trip a CRS to the standard text formats with
 [`CRS.to_wkt`][gometry.CRS.to_wkt] ([ISO 19162](https://www.iso.org/standard/76496.html)
 / OGC WKT for CRS — not geometry WKT), [`CRS.to_proj`][gometry.CRS.to_proj], and
-the PROJJSON helpers:
+[`CRS.to_projjson`][gometry.CRS.to_projjson]. The PROJJSON exporter returns text
+by default; use `as_dict=True` for a fresh Python mapping.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 print(gm.CRS(4326).to_proj())
 print(gm.CRS(4326).to_wkt()[:60], "...")
+print(gm.CRS(4326).to_projjson(as_dict=True)['type'])
 
 ```
+
+Use [`gm.crs_catalog`][gometry.crs_catalog] to inspect the PROJ CRS database.
+Its optional `name` filter composes with authority, CRS kind, area, deprecation,
+and celestial-body filters. Results are complete `CrsCatalogInfo` records;
+without `limit`, the catalogue returns every matching record.
 
 ## Raw coordinate transforms
 

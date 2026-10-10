@@ -45,7 +45,7 @@ pub(crate) fn polygonize_result_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3
 }
 
 /// Cached `gometry._types.Features` constructor returned by the native
-/// `from_features` boundary.
+/// `from_geojson(..., features=True)` boundary.
 pub(crate) fn features_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyType>> {
     static CELL: pyo3::sync::PyOnceLock<Py<pyo3::types::PyType>> = pyo3::sync::PyOnceLock::new();
     CELL.import(py, "gometry._types", "Features")
@@ -78,14 +78,14 @@ pub(crate) use bounds_index::{
     bounds_envelope, global_geographic_candidate_envelope, index_envelopes, point_from_bounds,
 };
 pub(crate) use constructive::{
-    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edges_flatten,
+    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edge_lines_flatten,
     voronoi_flatten,
 };
 pub(crate) use extract::{
     GeometryValues, OwnedBytes, coerce_present_geometry_items, copy_wkb_payload,
     ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate, extract_coordinate_or_empty,
-    extract_lines, extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
-    optional_coordinates, own_geometry_item, parse_owned_geometry_item, point_xy,
+    extract_points, geometry_items, missing_geometry_items_error, optional_coordinates,
+    own_geometry_item, parse_owned_geometry_item, point_xy,
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,
@@ -95,10 +95,11 @@ pub(crate) use geojson::{
     GeoJsonDecodeContext, JsonValueError, MAX_JSON_NESTING, ScalarOrIterator,
     classify_scalar_or_iterator, coerce_geojson_geometry_value, coerce_geojson_geometry_value_at,
     deserialize_json, is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray,
-    is_wgs84_family_crs, is_wkt_string, mapping_as_dict, parse_geojson_geometry_value,
-    parse_geojson_slice, parse_geojson_text, py_to_geojson_data_value, py_to_geojson_json_value,
-    py_to_json_value, py_to_json_value_classified, require_geojson_crs,
-    validate_geojson_feature_side_data, validate_geojson_json_value,
+    is_wgs84_family_crs, is_wkt_string, mapping_as_dict, normalize_format_column,
+    parse_geojson_geometry_value, parse_geojson_slice, parse_geojson_text,
+    py_to_geojson_data_value, py_to_geojson_json_value, py_to_json_value,
+    py_to_json_value_classified, require_geojson_crs, validate_geojson_feature_side_data,
+    validate_geojson_json_value,
 };
 pub(crate) use io_encoders::box_polygon;
 pub(crate) use linref::{
@@ -113,6 +114,7 @@ pub(crate) use nearest::{
 };
 pub(crate) use tokens::{
     _token_vocabulary, LineReferenceBasis, NavigationPath, SpatialCurve, TriangulationMethod,
+    VoronoiOutput,
 };
 pub(crate) use validate::{
     check_i32_min, note_array_row, parse_curve_bounds, parse_precision, parse_spatial_index_handle,

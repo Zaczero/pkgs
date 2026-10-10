@@ -10,6 +10,8 @@ use crate::py::support::{
     Bound, CoordSeq, GeometryError, LineIndex, PlanarMetric, Point, PyAny, PyResult, Result, Shape,
     float_values,
 };
+#[cfg(test)]
+use crate::test_support::linear_reference_counters;
 
 fn chart_line_index(
     line: &PreparedPlan,
@@ -17,7 +19,7 @@ fn chart_line_index(
     metric: &GeodesicMetric,
 ) -> Result<std::sync::Arc<ChartLineIndex>> {
     #[cfg(test)]
-    crate::test_support::linear_reference_counters::prepared_chart_index_resolution();
+    linear_reference_counters::prepared_chart_index_resolution();
     GeographicPrepared::try_new(line, cache, metric.frame)?;
     line.chart_line_index(
         cache,
@@ -69,13 +71,11 @@ pub(crate) enum PreparedLineLocate<'a> {
 
 impl PreparedLineLocate<'_> {
     pub(crate) fn locate(&self, query: Point) -> Result<f64> {
-        match self {
-            Self::GeographicDistance { metric, .. } | Self::GeographicMeasure { metric, .. }
-                if !query.x.is_nan() =>
-            {
-                crate::crs::ensure_geographic_lonlat_in_frame(metric.frame, query.x, query.y)?;
-            },
-            _ => {},
+        if let Self::GeographicDistance { metric, .. } | Self::GeographicMeasure { metric, .. } =
+            self
+            && !query.x.is_nan()
+        {
+            crate::crs::ensure_geographic_lonlat_in_frame(metric.frame, query.x, query.y)?;
         }
         self.locate_admitted(query)
     }
@@ -547,7 +547,9 @@ pub(crate) fn line_locate_coordseq(
 
 #[cfg(test)]
 mod tests {
-    use super::{InterpolatePlan, PreparedPlan, line_interpolate_points_shape};
+    use super::{
+        InterpolatePlan, PreparedPlan, line_interpolate_points_shape, linear_reference_counters,
+    };
     use crate::crs::{MetricModel, ResolvedMetric};
     use crate::dispatch::Lane;
     use crate::geometry::{ChartLineIndex, CoordSeq, FrameDependentCaches, LineSeq, Point, Shape};
@@ -584,11 +586,11 @@ mod tests {
             let line = line(has_z, has_m);
             let cache = FrameDependentCaches::default();
             let plan = InterpolatePlan::Count(5);
-            crate::test_support::linear_reference_counters::reset();
+            linear_reference_counters::reset();
             let metric = ResolvedMetric::from_model(model).unwrap();
             let many =
                 line_interpolate_points_shape(&metric, &line, &cache, &plan, Lane::Scalar).unwrap();
-            let counts = crate::test_support::linear_reference_counters::snapshot();
+            let counts = linear_reference_counters::snapshot();
             assert_eq!(counts.resolved_metrics, 1);
             if matches!(&metric, ResolvedMetric::Geodesic(_)) {
                 assert_eq!(counts.prepared_chart_index_resolutions, 1);
@@ -598,7 +600,7 @@ mod tests {
             let singles = match model {
                 MetricModel::Planar { .. } => (0..5)
                     .map(|sample| {
-                        line.line_interpolate_point(sample as f64 / 4.0, true)
+                        line.line_interpolate_point(f64::from(sample) / 4.0, true)
                             .unwrap()
                     })
                     .collect::<Vec<_>>(),
@@ -608,7 +610,11 @@ mod tests {
                         (0..5)
                             .map(|sample| {
                                 index
-                                    .interpolate_route_position(sample as f64 / 4.0, true, metric)
+                                    .interpolate_route_position(
+                                        f64::from(sample) / 4.0,
+                                        true,
+                                        metric,
+                                    )
                                     .map(Shape::Point)
                             })
                             .collect::<crate::error::Result<Vec<_>>>()
@@ -653,7 +659,7 @@ mod tests {
             crate::crs::ensure_geographic_coordseq_in_frame(frame, line).unwrap();
             crate::crs::ensure_geographic_lonlat_in_frame(frame, query.x, query.y).unwrap();
         }
-        crate::test_support::linear_reference_counters::reset();
+        linear_reference_counters::reset();
         let located = crate::crs::with_geographic_coordseq_metric_at(&crs, &state, |metric| {
             lines
                 .iter()
@@ -676,7 +682,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0.5_f64.to_bits(), 0.5_f64.to_bits()],
         );
-        let counts = crate::test_support::linear_reference_counters::snapshot();
+        let counts = linear_reference_counters::snapshot();
         assert_eq!(counts.geographic_metric_scopes, 1);
         assert_eq!(counts.coordseq_chart_index_builds, lines.len());
     }

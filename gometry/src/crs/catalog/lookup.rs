@@ -82,14 +82,6 @@ pub(crate) fn codes(
     })?
 }
 
-pub(crate) fn catalog(
-    authority: Option<&str>,
-    options: &CrsCatalogOptions,
-) -> Result<Vec<CrsCatalogInfo>> {
-    let state = runtime_state_snapshot()?;
-    catalog_with_state(authority, options, &state)
-}
-
 pub(crate) fn catalog_with_state(
     authority: Option<&str>,
     options: &CrsCatalogOptions,

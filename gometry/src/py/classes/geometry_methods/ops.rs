@@ -11,10 +11,12 @@ use crate::py::classes::geometry_methods::{
     Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
 };
 use crate::py::support;
+use crate::py::support::VoronoiOutput;
 use crate::{
     Frame, PyGeometryArray, PyValidationReport, RepairMethod, Shape, VoronoiClipInput, geometry,
     io, parse_cdt_refinement, parse_precision, parse_sample_count, parse_sample_seed,
-    require_geojson_crs, validate_subdivide_max_vertices, voronoi_edges_flatten, voronoi_flatten,
+    require_geojson_crs, validate_subdivide_max_vertices, voronoi_edge_lines_flatten,
+    voronoi_flatten,
 };
 
 fn publish_triangle_shapes_for_domain(
@@ -256,18 +258,23 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         let count = parse_sample_count(count)?;
         let seed = parse_sample_seed(seed)?;
+        let domain = if count == 0 {
+            crate::geometry::TopologyDomain::Cartesian
+        } else {
+            crate::geometry::topology_domain(&self.frame)?
+        };
         // A scalar IS row 0: derive its stream exactly as the array lane
         // derives row 0's, so `arr.sample_points(n, seed=s)[0]` and
         // `arr[0].sample_points(n, seed=s)` agree. Using the raw seed here made
         // the two spellings of one operation disagree for the same input.
         let shape = Arc::clone(&self.shape);
         let points = py.detach(move || {
-            shape.sample_points(count, crate::geometry::row_sample_seed(seed, 0))
+            shape.sample_points_in_domain(count, crate::geometry::row_sample_seed(seed, 0), domain)
         })?;
         self.parts_to_array(points.into_iter().map(Shape::Point))
     }
 
-    pub(crate) fn voronoi_polygons_impl(
+    pub(crate) fn voronoi_cells_impl(
         &self,
         py: Python<'_>,
         tolerance: f64,
@@ -279,24 +286,37 @@ impl PyGeometry {
             self.frame.clone(),
             tolerance,
             clip,
-            "voronoi_polygons",
+            "voronoi_cells",
             Shape::voronoi_polygon_outputs_budgeted,
         )
     }
 
-    pub(crate) fn voronoi_edges_impl(
+    pub(crate) fn voronoi_edge_lines_impl(
         &self,
         py: Python<'_>,
         tolerance: f64,
         clip: &VoronoiClipInput,
     ) -> PyResult<PyGeometryArray> {
-        voronoi_edges_flatten(
+        voronoi_edge_lines_flatten(
             py,
             std::iter::once(Arc::clone(&self.shape)),
             self.frame.clone(),
             tolerance,
             clip,
         )
+    }
+
+    pub(crate) fn voronoi_impl(
+        &self,
+        py: Python<'_>,
+        output: VoronoiOutput,
+        tolerance: f64,
+        clip: &VoronoiClipInput,
+    ) -> PyResult<PyGeometryArray> {
+        match output {
+            VoronoiOutput::Polygons => self.voronoi_cells_impl(py, tolerance, clip),
+            VoronoiOutput::Edges => self.voronoi_edge_lines_impl(py, tolerance, clip),
+        }
     }
 
     pub(crate) fn split_shape_detached(

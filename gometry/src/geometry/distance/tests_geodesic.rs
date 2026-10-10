@@ -5,8 +5,8 @@
 use geographiclib_rs::{Geodesic, InverseGeodesic as _};
 use pyo3::prelude::*;
 
-use crate::crs::frame::{Frame, crs_arc_static};
-use crate::crs::{PointEdgeScratch, with_ellipsoid_metric};
+use crate::crs::frame::{Frame, crs_arc, crs_arc_static};
+use crate::crs::{PointEdgeScratch, point_edge_test_counters, with_ellipsoid_metric};
 use crate::error::Result;
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::distance::frechet::frechet_dp_columns;
@@ -17,7 +17,7 @@ use crate::geometry::distance::{
 };
 use crate::geometry::{
     ChartMetric, FrameDependentCaches, GeodesicMetric, GeographicPrepared, MOrdinate, Point,
-    PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
+    PointEdgeQueryResult, PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
 };
 
 const MINIMUM_GAP_METERS: f64 = 4e-11 * 6_378_137.0;
@@ -504,7 +504,7 @@ fn public_distance_measures_a_full_turn_line_as_its_parallel() {
         .into_pyobject(py)
         .expect("linestring binds as its public typed geometry");
 
-        let distance = crate::distance(py, &point, &line, None)
+        let distance = crate::distance(py, &point, &line, crate::NavigationPath::Geodesic, None)
             .expect("public distance succeeds")
             .bind(py)
             .extract::<f64>()
@@ -848,6 +848,192 @@ fn chart_edge_contacts_at_high_latitudes_are_zero_distance() -> Result<()> {
         Ok(())
     })?;
     Ok(())
+}
+
+#[test]
+fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
+    crate::test_support::initialize_python();
+    let geodesic = Geodesic::wgs84();
+    let cases = [
+        (
+            "long oblique",
+            p(-70.0, 10.0),
+            p(80.0, 55.0),
+            0.314_159_265_358_979_3,
+            0.0,
+            0.0001,
+        ),
+        (
+            "meridian between derivative nodes",
+            p(0.0, -72.384_836_123_684_47),
+            p(0.0, 72.384_836_123_684_47),
+            0.314_159_265_358_979_3,
+            0.001,
+            0.0,
+        ),
+        (
+            "near-pole parallel",
+            p(-45.0, 80.0),
+            p(45.0, 80.0),
+            0.314_159_265_358_979_3,
+            0.0,
+            9.999_999_999,
+        ),
+        (
+            "near-antipodal short edge",
+            p(0.0, 0.0),
+            p(1.0e-10, 0.0),
+            0.314_159_265_358_979_3,
+            179.999,
+            0.001,
+        ),
+    ];
+    let mut observations = Vec::with_capacity(cases.len());
+    with_ellipsoid_metric("EPSG:4326", &[], |metric| {
+        for (name, start, end, parameter, dx, dy) in cases {
+            let witness = p(
+                start.x + (end.x - start.x) * parameter,
+                start.y + (end.y - start.y) * parameter,
+            );
+            let query = p(witness.x + dx, witness.y + dy);
+            let attained: f64 = geodesic.inverse(query.y, query.x, witness.y, witness.x);
+            let scale = attained.max(1.0);
+            let rounding = 32.0 * (scale.next_up() - scale);
+            let limit = (attained + 4.0e-11 * 6_378_137.0 + rounding).next_up();
+            let edge = metric.chart_edge(start, end)?;
+            let envelope_lower = metric.point_envelope_bound(query)(edge.bounds());
+            let internal = metric.point_edge_query(
+                query,
+                &edge,
+                envelope_lower,
+                crate::geometry::PointEdgeQuery::Dwithin { limit },
+                &mut PointEdgeScratch::default(),
+            )?;
+            let classification = match internal {
+                crate::geometry::PointEdgeQueryResult::Within { .. } => "within",
+                crate::geometry::PointEdgeQueryResult::Outside { lower_bound, .. } => {
+                    assert!(
+                        lower_bound > limit,
+                        "{name}: outside requires lower {lower_bound} > limit {limit}"
+                    );
+                    "outside"
+                },
+                crate::geometry::PointEdgeQueryResult::Unresolved { .. } => "unresolved",
+                other @ (PointEdgeQueryResult::Excluded | PointEdgeQueryResult::Minimum(_)) => {
+                    panic!("{name}: unexpected threshold result {other:?}")
+                },
+            };
+            observations.push((name, start, end, query, limit, attained, classification));
+        }
+        Ok(())
+    })?;
+
+    for (name, start, end, query, limit, attained, classification) in observations {
+        Python::attach(|py| {
+            let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
+                .expect("WGS 84 is a valid geographic frame");
+            let point = crate::Typed(crate::PyGeometry::with_frame(
+                Shape::Point(query),
+                frame.clone(),
+            ))
+            .into_pyobject(py)
+            .expect("query point binds as its public typed geometry");
+            let line = crate::Typed(crate::PyGeometry::with_frame(line(vec![start, end]), frame))
+                .into_pyobject(py)
+                .expect("source line binds as its public typed geometry");
+            let distance = limit
+                .into_pyobject(py)
+                .expect("threshold binds as a Python float");
+            let result = crate::dwithin(py, point.as_any(), line.as_any(), distance.as_any(), None);
+            match classification {
+                "within" => assert!(
+                    result
+                        .expect("a sampled chart witness within the radius returns True")
+                        .bind(py)
+                        .extract::<bool>()
+                        .expect("dwithin result is bool")
+                ),
+                "unresolved" => assert!(
+                    result
+                        .expect_err("an unresolved threshold raises instead of returning False")
+                        .to_string()
+                        .contains("geodesic dwithin did not converge within its binary64 parameter-search budget")
+                ),
+                "outside" => {
+                    assert!(
+                        attained <= limit,
+                        "{name}: independent point witness {attained} exceeds {limit}"
+                    );
+                    assert!(
+                        result
+                            .expect("independent interior witness proves the result within")
+                            .bind(py)
+                            .extract::<bool>()
+                            .expect("dwithin result is bool")
+                    );
+                },
+                _ => unreachable!("the internal result classified the threshold"),
+            }
+        });
+    }
+    Ok(())
+}
+
+#[test]
+fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
+    const MIXED_UNIT_CRS: &str = r#"GEOGCRS["West-radian south-grad WGS84",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",west,ORDER[1],ANGLEUNIT["radian",1]],
+ AXIS["Latitude",south,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"#;
+    let longitudes = (0..=8).map(|index| 170.0 + 2.5 * f64::from(index));
+    let source_points = longitudes
+        .clone()
+        .map(|longitude| p(-longitude.to_radians(), -60.0 * 10.0 / 9.0))
+        .collect();
+    let target_points = longitudes
+        .map(|longitude| p(-longitude.to_radians(), -60.01 * 10.0 / 9.0))
+        .collect();
+    let source = line(source_points);
+    let target = line(target_points);
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 180.0, 60.01, 180.0);
+
+    Python::initialize();
+    Python::attach(|py| {
+        const EDGE_SAMPLE_LIMIT: u64 = 10_000;
+        let frame =
+            Frame::new(Some(crs_arc(MIXED_UNIT_CRS)), None).expect("mixed-unit geographic CRS");
+        let source = crate::Typed(crate::PyGeometry::with_frame(source, frame.clone()))
+            .into_pyobject(py)
+            .expect("source line binds as a public typed geometry");
+        let target = crate::Typed(crate::PyGeometry::with_frame(target, frame))
+            .into_pyobject(py)
+            .expect("target line binds as a public typed geometry");
+        chart_hausdorff_counters::reset();
+        point_edge_test_counters::reset();
+        point_edge_test_counters::set_sample_limit(EDGE_SAMPLE_LIMIT);
+
+        let result = crate::hausdorff_distance(py, source.as_any(), target.as_any(), None, None);
+        let source_evaluations = chart_hausdorff_counters::source_evaluations();
+        let edge_evaluations = point_edge_test_counters::samples();
+        point_edge_test_counters::reset();
+
+        assert!(
+            source_evaluations <= 32,
+            "public Hausdorff visited {source_evaluations} source parameters"
+        );
+        assert!(
+            edge_evaluations <= EDGE_SAMPLE_LIMIT,
+            "public Hausdorff evaluated {edge_evaluations} point-edge samples"
+        );
+        let result = result.expect("public geographic Hausdorff call");
+        let actual = result
+            .bind(py)
+            .extract::<f64>()
+            .expect("Hausdorff result is a float");
+        assert!((actual - expected).abs() <= 0.01);
+    });
 }
 
 #[test]

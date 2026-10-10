@@ -59,11 +59,14 @@ those exact byte bindings. Per-invocation process IDs identify the observation;
 they are not treated as stable producer identity.
 
 The operation timers begin after admission and setup. `bench_ab.py --perf`
-retains its whole-command counter scope, including startup and admission; those
-counters are diagnostic and do not qualify as release latency. Runs also record
-the host's CPU, governor, cache topology, and memory policy. A host fact the
-kernel does not expose stays recorded as unavailable rather than becoming a
-claim about some other machine.
+attaches user-mode counters to the case's main thread for one interval per
+invocation, from permission until the case reports measurement-done. Existing
+case repetitions stay within that interval; split event groups use separate
+invocations. Counter records are diagnostic, never release latency. An
+unavailable event remains explicitly marked unavailable with a null value.
+Runs also record the host's CPU, governor, cache topology, and memory policy. A
+host fact the kernel does not expose stays recorded as unavailable rather than
+becoming a claim about some other machine.
 
 ## See Also
 

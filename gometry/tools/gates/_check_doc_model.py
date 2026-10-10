@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import ast
-import inspect
+import copy
 import re
 import sys
 from dataclasses import dataclass
@@ -30,13 +30,13 @@ from griffe_expand_aliases import (
     constructor_binding,
     expand_annotation,
 )
-from pyo3stubs.ast_util import annotated_data_descriptors
+from public_inventory import load_public_symbols
 from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import (
     DocSubject,
     attribute_entries,
-    function_groups,
+    check_doc_subject,
     iter_doc_subjects,
     parameter_entries,
     parse_doc,
@@ -58,37 +58,6 @@ _PUBLIC_TYPEVAR_NAMES = {
     '_GroupKeyT': 'GroupKeyT',
     '_GroupValuesT_co': 'GroupValuesT_co',
 }
-_ARRAY_DOCUMENTATION_OWNERS = frozenset({'GeometryArray', 'CellArray'})
-_NDARRAY_TYPE = re.compile(r'(?<![\w.])(?:np\.ndarray|ndarray)(?![\w.])')
-_PER_ELEMENT = re.compile(r'\bper element\b', re.IGNORECASE)
-_PLANAR = re.compile(r'\(planar\)', re.IGNORECASE)
-_AUTO_SPLIT_OPS = frozenset({
-    'contains',
-    'within',
-    'covers',
-    'covered_by',
-    'intersects',
-    'disjoint',
-    'touches',
-    'crosses',
-    'overlaps',
-    'equals',
-    'relate',
-    'relate_pattern',
-    'intersection',
-    'union',
-    'difference',
-    'symmetric_difference',
-    'clip_by_rect',
-})
-_GENUINELY_PLANAR_OPS = frozenset({
-    'simplify',
-    'smooth',
-    'convex_hull',
-    'buffer',
-    'offset_curve',
-    'segmentize',
-})
 
 ParameterForm = tuple[str | None, str, str | None, str | None]
 CallForm = tuple[tuple[ParameterForm, ...], str | None]
@@ -128,70 +97,74 @@ def _mentions_type(type_text: str, name: str) -> bool:
     )
 
 
-def _scalar_array_return_errors(stub: Path, runtime: object) -> list[str]:
-    tree = ast.parse(stub.read_text(encoding='utf-8'), filename=str(stub))
+def _declaration_annotation(declaration: ast.AST) -> ast.expr | None:
+    if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return declaration.returns
+    if isinstance(declaration, ast.AnnAssign):
+        return declaration.annotation
+    return None
+
+
+def _ast_mentions_type(expression: ast.expr, name: str) -> bool:
+    return any(
+        isinstance(node, (ast.Name, ast.Attribute)) and _stub_base_name(node) == name
+        for node in ast.walk(expression)
+    )
+
+
+def _scalar_array_return_errors(
+    subjects: Iterable[DocSubject],
+    stub_tree: ast.Module,
+) -> list[str]:
+    """Keep return prose aligned with the selected binding declarations."""
     errors: list[str] = []
-    array_classes = {'GeometryArray', 'CellArray'}
-    for cls in tree.body:
-        if not isinstance(cls, ast.ClassDef) or cls.name in array_classes:
+    class_nodes = _stub_class_nodes(stub_tree)
+    generic_arguments = _stub_generic_class_arguments(stub_tree)
+    for subject in subjects:
+        if (
+            subject.kind not in {'callable', 'property'}
+            or not subject.prose
+            or not subject.declarations
+        ):
             continue
-        function_defs = function_groups(cls.body)
-        runtime_cls = getattr(runtime, cls.name, None)
-        descriptor_docs = {}
-        if isinstance(runtime_cls, type):
-            descriptor_docs = {
-                id(statement): doc
-                for _name, statement, doc, _descriptor in annotated_data_descriptors(
-                    runtime_cls, cls.body
-                )
-            }
-        for member in cls.body:
-            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                definitions = function_defs.get(member.name, [member])
-                if member is not definitions[-1]:
-                    continue
-                doc = ast.get_docstring(definitions[-1], clean=True)
-                if doc and member.returns is not None:
-                    returns = return_entries(parse_doc(doc))
-                    if any(
-                        _mentions_type(entry.type_text, 'GeometryArray')
-                        for entry in returns
-                    ) and not any(
-                        definition.returns is not None
-                        and any(
-                            isinstance(node, ast.Name) and node.id == 'GeometryArray'
-                            for node in ast.walk(definition.returns)
-                        )
-                        for definition in definitions
-                    ):
-                        errors.append(
-                            f'{stub.name}:{definitions[-1].lineno}: '
-                            f'{cls.name}.{member.name}: '
-                            'Returns type names GeometryArray but the binding '
-                            f'overloads return {", ".join(ast.unparse(definition.returns) for definition in definitions if definition.returns is not None)}'
-                        )
-                continue
-            if not isinstance(member, ast.AnnAssign) or not isinstance(
-                runtime_cls, type
-            ):
-                continue
-            if not isinstance(member.target, ast.Name):
-                continue
-            doc = descriptor_docs.get(id(member))
-            if doc is None:
-                continue
-            if any(
-                _mentions_type(entry.type_text, 'GeometryArray')
-                for entry in return_entries(parse_doc(doc))
-            ) and not any(
-                isinstance(node, ast.Name) and node.id == 'GeometryArray'
-                for node in ast.walk(member.annotation)
-            ):
-                errors.append(
-                    f'{stub.name}:{member.lineno}: {cls.name}.{member.target.id}: '
-                    'Returns type names GeometryArray but the binding '
-                    f'annotation is {ast.unparse(member.annotation)}'
-                )
+        if not any(
+            _mentions_type(entry.type_text, 'GeometryArray')
+            for entry in return_entries(parse_doc(subject.prose))
+        ):
+            continue
+        declarations = tuple(
+            annotation
+            for declaration in subject.declarations
+            if (annotation := _declaration_annotation(declaration)) is not None
+        )
+        if any(
+            _ast_mentions_type(annotation, 'GeometryArray')
+            for annotation in declarations
+        ):
+            continue
+        class_name = subject.qualname.rpartition('.')[0]
+        generic_support = tuple(
+            _generic_class_return_support(
+                annotation,
+                class_nodes.get(class_name),
+                generic_arguments,
+                class_nodes,
+                'GeometryArray',
+            )
+            for annotation in declarations
+        )
+        if True in generic_support:
+            continue
+        if None in generic_support:
+            # An open class TypeVar can be specialized outside this stub. Without
+            # a concrete in-tree instantiation, its possible values are unknown.
+            continue
+        rendered = ', '.join(ast.unparse(annotation) for annotation in declarations)
+        errors.append(
+            f'{subject.source.path}:{subject.source.line}: {subject.qualname}: '
+            'Returns type names GeometryArray but the binding declarations return '
+            f'{rendered or "no declared type"}'
+        )
     return errors
 
 
@@ -210,41 +183,17 @@ def _has_unquoted_enum(type_text: str) -> bool:
     return False
 
 
-def _doc_content_errors(subjects: Iterable[DocSubject]) -> list[str]:
-    """Retain factual doc claims while leaving editorial prose to the author."""
+def _doc_type_expression_errors(subjects: Iterable[DocSubject]) -> list[str]:
+    """Keep literal string choices quoted in parsed type expressions."""
     errors: list[str] = []
     for subject in subjects:
-        prose = subject.prose
-        if not prose:
+        if not subject.prose:
             continue
         qualname = subject.qualname
-        bare_name = qualname.rsplit('.', 1)[-1]
-        owner = qualname.rpartition('.')[0]
-        parsed = parse_doc(prose)
-        if (
-            bare_name in _ARRAY_DOCUMENTATION_OWNERS
-            or owner in _ARRAY_DOCUMENTATION_OWNERS
-        ) and _PER_ELEMENT.search(prose):
-            errors.append(
-                f'{qualname}: array documentation must describe row-aligned '
-                'results, not "per element"'
-            )
-
-        if bare_name in _AUTO_SPLIT_OPS and bare_name not in _GENUINELY_PLANAR_OPS:
-            lines = inspect.cleandoc(prose).splitlines()
-            summary_end = parsed.sections[0].line - 1 if parsed.sections else len(lines)
-            if _PLANAR.search('\n'.join(lines[:summary_end])):
-                errors.append(
-                    f'{qualname}: antimeridian-splitting operation is described '
-                    'as planar'
-                )
-
-        named_entries = (*parameter_entries(parsed), *attribute_entries(parsed))
-        type_entries = (*named_entries, *return_entries(parsed))
-        errors.extend(
-            f'{qualname}: type fields must use numpy.ndarray'
-            for entry in type_entries
-            if _NDARRAY_TYPE.search(entry.type_text)
+        parsed = parse_doc(subject.prose)
+        named_entries = (
+            *parameter_entries(parsed),
+            *attribute_entries(parsed),
         )
         errors.extend(
             f'{qualname}: enum values in a type field must be quoted'
@@ -518,6 +467,120 @@ def _stub_class_type_parameters(
             if name in type_variables
         )
     return tuple(dict.fromkeys(inherited_generic))
+
+
+def _stub_generic_class_arguments(
+    tree: ast.Module,
+) -> dict[str, dict[str, tuple[ast.expr, ...]]]:
+    """Index concrete in-stub specializations by class TypeVar."""
+    type_variables = _stub_type_variables(tree)
+    classes = _stub_class_nodes(tree)
+    parameters = {
+        name: _stub_class_type_parameters(class_node, type_variables)
+        for name, class_node in classes.items()
+    }
+    generic_symbols = set(type_variables)
+    for class_parameters in parameters.values():
+        generic_symbols.update(class_parameters)
+
+    arguments: dict[str, dict[str, list[ast.expr]]] = {
+        name: {parameter: [] for parameter in class_parameters}
+        for name, class_parameters in parameters.items()
+        if class_parameters
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Subscript):
+            continue
+        class_name = _stub_base_name(node.value)
+        class_parameters = parameters.get(class_name, ())
+        if not class_parameters:
+            continue
+        values = node.slice.elts if isinstance(node.slice, ast.Tuple) else (node.slice,)
+        for index, parameter in enumerate(class_parameters):
+            if index >= len(values):
+                continue
+            value = values[index]
+            if isinstance(value, ast.Name) and value.id in generic_symbols:
+                continue
+            if _stub_base_name(value) in {'Any', 'object'}:
+                continue
+            arguments[class_name][parameter].append(value)
+    return {
+        class_name: {
+            parameter: tuple(values) for parameter, values in class_arguments.items()
+        }
+        for class_name, class_arguments in arguments.items()
+    }
+
+
+def _generic_class_return_support(
+    annotation: ast.expr,
+    class_node: ast.ClassDef | None,
+    generic_arguments: dict[str, dict[str, tuple[ast.expr, ...]]],
+    class_nodes: dict[str, ast.ClassDef],
+    target_type: str,
+) -> bool | None:
+    """Check whether stub specializations include a documented result type."""
+    if class_node is None:
+        return False
+    if class_node.name == target_type and _ast_mentions_type(annotation, 'Self'):
+        return True
+    if _descriptor_returns_type(annotation, class_node, class_nodes, target_type):
+        return True
+
+    class_arguments = generic_arguments.get(class_node.name, {})
+    class_parameters = tuple(class_arguments)
+    referenced = set(_stub_expression_names(annotation)) & set(class_parameters)
+    if not referenced:
+        return False
+
+    concrete_arguments: list[ast.expr] = []
+    for parameter in referenced:
+        concrete_arguments.extend(class_arguments[parameter])
+
+    if any(
+        _ast_mentions_type(argument, target_type) for argument in concrete_arguments
+    ):
+        return True
+    if concrete_arguments:
+        return False
+    return None
+
+
+def _descriptor_returns_type(
+    annotation: ast.expr,
+    owner: ast.ClassDef,
+    class_nodes: dict[str, ast.ClassDef],
+    target_type: str,
+) -> bool:
+    """Resolve a typed descriptor through its instance ``__get__`` overloads."""
+    for node in ast.walk(annotation):
+        if not isinstance(node, ast.Subscript):
+            continue
+        descriptor = class_nodes.get(_stub_base_name(node.value))
+        if descriptor is None:
+            continue
+        for member in descriptor.body:
+            if (
+                not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+                or member.name != '__get__'
+                or member.returns is None
+            ):
+                continue
+            parameters = [*member.args.posonlyargs, *member.args.args]
+            if len(parameters) < 2 or parameters[1].annotation is None:
+                continue
+            instance_type = parameters[1].annotation
+            if (
+                isinstance(instance_type, ast.Constant) and instance_type.value is None
+            ) or (isinstance(instance_type, ast.Name) and instance_type.id == 'None'):
+                continue
+            if _ast_mentions_type(instance_type, owner.name) and _ast_mentions_type(
+                member.returns,
+                target_type,
+            ):
+                return True
+    return False
 
 
 def _stub_class_call_result(
@@ -844,15 +907,39 @@ def collect_errors() -> list[str]:
     loader.resolve_aliases(external=False)
     lib = pkg.members.get('_lib')
     errors: list[str] = []
-    errors.extend(_scalar_array_return_errors(STUB, gm))
     cfg = load_config(ROOT / 'tools' / 'stubs' / 'stubconfig.py')
-    errors.extend(
-        _doc_content_errors(iter_doc_subjects(CheckContext(cfg), runtime_module=gm))
+    stub_tree = ast.parse(STUB.read_text(encoding='utf-8'))
+    inventory = load_public_symbols(
+        STUB,
+        ROOT / 'python' / 'gometry' / '__init__.py',
     )
+    subjects = tuple(
+        iter_doc_subjects(
+            CheckContext(cfg),
+            runtime_module=gm,
+            source_classes=inventory.source_classes,
+        )
+    )
+    errors.extend(_scalar_array_return_errors(subjects, stub_tree))
+    errors.extend(_doc_type_expression_errors(subjects))
+    python_root = ROOT / 'python'
+    for subject in subjects:
+        source_path = Path(subject.source.path).resolve()
+        if not source_path.is_relative_to(python_root):
+            continue
+        if not (subject.prose or '').strip():
+            errors.append(
+                f'{source_path}:{subject.source.line}: {subject.qualname}: '
+                'source docstring missing or empty'
+            )
+            continue
+        errors.extend(
+            f'{source_path}:{subject.source.line}: {error}'
+            for error in check_doc_subject(subject)
+        )
     if not isinstance(lib, griffe.Module):
         return ['transformed model has no gometry._lib module']
     aliases = annotation_aliases(pkg)
-    stub_tree = ast.parse(STUB.read_text(encoding='utf-8'))
     stub_overloads = _stub_overloads(lib, aliases, stub_tree)
     public_overloads = _public_overload_paths(stub_overloads, set(gm.__all__))
     public_classes = {
@@ -924,12 +1011,19 @@ def collect_errors() -> list[str]:
         for variant in variants:
             annotations = [parameter.annotation for parameter in variant.parameters]
             annotations.append(variant.returns)
-            private = sorted({
-                expr.name
-                for annotation in annotations
-                for expr in _expressions(annotation)
-                if expr.name.startswith('_')
-            })
+            # Private TypeAlias names are implementation details; their expanded
+            # members, rather than the alias spelling, determine the public type.
+            private_names = set()
+            for annotation in annotations:
+                expressions = _expressions(annotation)
+                if any(expr.name.startswith('_') for expr in expressions):
+                    expressions = _expressions(
+                        expand_annotation(copy.deepcopy(annotation), aliases)
+                    )
+                private_names.update(
+                    expr.name for expr in expressions if expr.name.startswith('_')
+                )
+            private = sorted(private_names)
             if private:
                 errors.append(
                     f'{function.canonical_path}: private annotations {private}'

@@ -302,6 +302,22 @@ fn lonlat_domain(row: usize, x: f64, y: f64) -> Result<(), LonLatPointsError> {
     geographic::validate_lonlat_xy(x, y).map_err(|error| LonLatPointsError::Row(row, error))
 }
 
+fn transform_failure_to_row(
+    failure: crate::crs::TransformFailure,
+    present_rows: &[usize],
+) -> LonLatPointsError {
+    let crate::crs::TransformFailure { error, coordinate } = failure;
+    match coordinate {
+        Some(coordinate) => LonLatPointsError::Row(
+            *present_rows
+                .get(coordinate)
+                .expect("transform failure coordinate belongs to the present-row batch"),
+            error,
+        ),
+        None => LonLatPointsError::Setup(error),
+    }
+}
+
 fn transform_present(
     crs: &str,
     xs: &mut [f64],
@@ -322,8 +338,8 @@ fn transform_present(
     }
     let plan =
         crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
-    plan.transform_coordinates(&mut px, &mut py, crate::Zt::None)
-        .map_err(LonLatPointsError::Setup)?;
+    plan.transform_coordinates_indexed(&mut px, &mut py, crate::Zt::None)
+        .map_err(|failure| transform_failure_to_row(failure, present))?;
     for ((&row, x), y) in present.iter().zip(px).zip(py) {
         lonlat_domain(row, x, y)?;
         *xs.get_mut(row)
@@ -342,8 +358,8 @@ fn transform_compact_present(
 ) -> Result<(), LonLatPointsError> {
     let plan =
         crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
-    plan.transform_coordinates(xs, ys, crate::Zt::None)
-        .map_err(LonLatPointsError::Setup)?;
+    plan.transform_coordinates_indexed(xs, ys, crate::Zt::None)
+        .map_err(|failure| transform_failure_to_row(failure, present_rows))?;
     for (index, &row) in present_rows.iter().enumerate() {
         lonlat_domain(
             row,
@@ -1052,16 +1068,33 @@ mod dwithin_parity_tests {
 
 #[cfg(test)]
 mod lonlat_points_tests {
-    use super::{LonLatPointRows, LonLatPointsError, lonlat_points};
+    use super::{GeometryArrayStorage, LonLatPointRows, LonLatPointsError, lonlat_points};
     use crate::array::PyGeometryArray;
     use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::storage::ValidityMask;
-    use crate::geometry::{CoordSeq, Point};
+    use crate::geometry::{CoordSeq, Point, Shape};
     use crate::io::parse_wkt;
 
     fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
         PyGeometryArray::packed_points(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap(), frame)
             .unwrap()
+    }
+
+    fn assert_transform_error_row(array: &PyGeometryArray, expected_row: usize) {
+        match lonlat_points(array) {
+            Err(LonLatPointsError::Row(row, error)) => {
+                assert_eq!(row, expected_row);
+                assert!(
+                    error.to_string().contains("transverse Mercator domain"),
+                    "unexpected projected coordinate error: {error}"
+                );
+            },
+            Err(LonLatPointsError::Type) => panic!("expected a projected row error, got Type"),
+            Err(LonLatPointsError::Setup(error)) => {
+                panic!("expected a projected row error, got Setup({error})")
+            },
+            Ok(_) => panic!("expected a projected coordinate error on row {expected_row}"),
+        }
     }
 
     #[test]
@@ -1116,6 +1149,58 @@ mod lonlat_points_tests {
         assert_eq!(row, 1);
         assert!((point.x - 8.628).abs() < 1e-10);
         assert!((point.y - 47.366).abs() < 1e-10);
+    }
+
+    #[test]
+    fn compact_projected_transform_failure_maps_present_rank_to_logical_row() {
+        let present = packed_xy(
+            vec![500_000.0, 1e300],
+            vec![0.0, 1e300],
+            Frame::Crs(crs_arc_static("EPSG:32660")),
+        );
+        let array = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask"),
+        )
+        .unwrap();
+
+        assert_transform_error_row(&array, 3);
+    }
+
+    #[test]
+    fn mixed_point_transform_failure_maps_present_rank_to_logical_row() {
+        let array = PyGeometryArray::mixed_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(10.0, 20.0)),
+                Shape::Point(Point::new_raw_xy(500_000.0, 0.0)),
+                Shape::Point(Point::new_raw_xy(30.0, 40.0)),
+                Shape::Point(Point::new_raw_xy(1e300, 1e300)),
+            ],
+            Frame::Crs(crs_arc_static("EPSG:32660")),
+        )
+        .unwrap()
+        .with_missing_mask(Some(
+            ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask"),
+        ))
+        .unwrap();
+        assert!(matches!(array.storage(), GeometryArrayStorage::Mixed(_)));
+
+        assert_transform_error_row(&array, 3);
+    }
+
+    #[test]
+    fn projected_transform_plan_failure_remains_setup() {
+        let unavailable = "urn:example:unavailable";
+        let array = packed_xy(
+            vec![1.0],
+            vec![2.0],
+            Frame::Crs(crs_arc_static(unavailable)),
+        );
+
+        assert!(matches!(
+            lonlat_points(&array),
+            Err(LonLatPointsError::Setup(_))
+        ));
     }
 
     #[test]

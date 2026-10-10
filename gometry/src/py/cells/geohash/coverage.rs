@@ -35,10 +35,10 @@ pub(super) fn geohash_cell_array(cells: impl IntoIterator<Item = Geohash>) -> Py
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry or GeometryArray
+/// geom : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
-///     flat cell array; an array returns one grouped cell row per input
-///     geometry, preserving source-row association.
+///     flat cell array; an array or iterable returns one group per input row.
+///     ``None`` and empty geometries produce empty groups.
 ///
 /// precision : int
 ///     Geohash precision (``1``-``12``; finer at higher values).

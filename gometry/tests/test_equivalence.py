@@ -378,7 +378,12 @@ FRAME_CASES: list[tuple[str, Callable[[], object]]] = [
     ),
     ('parts', lambda: _FRAME_SITES().parts),
     ('triangulate', lambda: _FRAME_SITES().triangulate(method='delaunay')),
-    ('voronoi_polygons', lambda: _FRAME_SITES().voronoi_polygons()),
+    (
+        'voronoi_cells',
+        lambda: _FRAME_SITES().voronoi(
+            output='polygons',
+        ),
+    ),
     (
         'triangulate_array',
         lambda: (

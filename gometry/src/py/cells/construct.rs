@@ -11,6 +11,7 @@ use crate::grid::tile::{TILE_MAX_LATITUDE, Tile};
 use crate::py::cells::coverage_ops::{GridSourceAdmission, admit_grid_geometry};
 use crate::py::cells::geohash::{PyGeohashCell, geohash_cell_arg, parse_geohash_precision};
 use crate::py::cells::h3::{PyH3Cell, h3_cell_from_xy, h3_cell_index, parse_h3_resolution};
+use crate::py::cells::input::{PointCellInput, point_cell_input};
 use crate::py::cells::s2::{PyS2Cell, parse_s2_level_validated, s2_cell_from_xy, s2_cell_id};
 use crate::py::cells::tiles::{PyTile, parse_tile_zoom, tile_arg};
 use crate::py::cells::{
@@ -284,11 +285,49 @@ where
              {class_name}(point, {depth_kw}=...) for a single cell"
         )));
     }
-    if let Some(array) = exact_geometry_array(values) {
+    let mut matrix = None;
+    let array = if let Some(array) = exact_geometry_array(values) {
+        Some(array.clone())
+    } else if lat.is_none() {
+        match point_cell_input(values)? {
+            Some(PointCellInput::GeometryArray(array)) => Some(array),
+            Some(PointCellInput::Coordinates(longitudes, latitudes)) => {
+                matrix = Some((longitudes, latitudes));
+                None
+            },
+            Some(PointCellInput::MissingRows(len)) => {
+                let _depth = I64Param::parse(depth, depth_kw, len)?;
+                return Ok(if len == 0 {
+                    PyCellArray::from_ids(kind, Vec::new())
+                } else {
+                    PyCellArray::from_ids_with_missing(kind, vec![0; len], vec![true; len])
+                });
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+    if let Some(array) = array.as_ref() {
         if lat.is_some() {
             return Err(PyTypeError::new_err(
                 "lat must not be provided when values is a geometry array",
             ));
+        }
+        if array.len() == 0
+            || array
+                .missing()
+                .is_some_and(|missing| missing.present_count() == 0)
+        {
+            let _depth = I64Param::parse(depth, depth_kw, array.len())?;
+            return Ok(if array.len() == 0 {
+                PyCellArray::from_ids(kind, Vec::new())
+            } else {
+                PyCellArray::from_ids_with_missing(kind, vec![0; array.len()], vec![
+                    true;
+                    array.len()
+                ])
+            });
         }
         let (xs, ys) = GridSourceAdmission::admit_point_columns(array).map_err(PyErr::from)?;
         let depth = I64Param::parse(depth, depth_kw, array.len())?;
@@ -315,6 +354,21 @@ where
             Some(missing) => PyCellArray::from_ids_with_missing(kind, ids, missing),
             None => PyCellArray::from_ids(kind, ids),
         });
+    }
+    if let Some((longitudes, latitudes)) = matrix {
+        let len = longitudes.len();
+        let depth = I64Param::parse(depth, depth_kw, len)?;
+        let ids = py.detach(move || {
+            let mut ids = Vec::with_capacity(len);
+            for (row, (longitude, latitude)) in longitudes.into_iter().zip(latitudes).enumerate() {
+                let (longitude, latitude) = crate::grid::canonical_lonlat(longitude, latitude);
+                geographic::validate_lonlat_xy(longitude, latitude)?;
+                let depth = validate_depth(depth.get(row))?;
+                ids.push(from_xy(longitude, latitude, depth)?.into_cell_array_id());
+            }
+            Ok::<_, PyErr>(ids)
+        })?;
+        return Ok(PyCellArray::from_ids(kind, ids));
     }
     let lat = lat
         .ok_or_else(|| PyTypeError::new_err("lat is required when values is a longitude column"))?;

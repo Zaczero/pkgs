@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import gometry as gm
-import polars as pl
 import pytest
 from gometry._polars import from_polars, to_polars
 
 from tests._support import canon
+
+pl = pytest.importorskip(
+    'polars',
+    reason='polars-runtime-32==1.43.2 has no CPython 3.14t wheel',
+)
 
 
 @pytest.fixture
@@ -26,6 +30,23 @@ def test_to_polars_wkb(points: gm.GeometryArray) -> None:
     restored = from_polars(series)
     assert canon(restored) == canon(points)
     assert restored.crs == points.crs
+
+
+def test_format_readers_normalize_nullable_polars_columns() -> None:
+    point = gm.Point(1, 2, crs=4326)
+    wkts = pl.Series('wkt', ['POINT (1 2)', None], dtype=pl.String)
+    wkbs = pl.Series('wkb', [point.to_wkb(), None], dtype=pl.Binary)
+    geojson = pl.Series(
+        'geojson',
+        ['{"type":"Point","coordinates":[1,2]}', None],
+        dtype=pl.String,
+    )
+    polylines = pl.Series('polyline', [point.to_polyline(), None], dtype=pl.String)
+
+    assert gm.from_wkt(wkts).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(wkbs).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_geojson(geojson).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_polyline(polylines).to_wkt() == ['POINT (1 2)', None]
 
 
 def test_to_polars_rejects_epoch_loss_without_flag(

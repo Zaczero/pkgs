@@ -178,9 +178,12 @@ impl SchemaNode {
         &self,
         requested_schema: &Bound<'_, PyAny>,
     ) -> PyResult<Option<bool>> {
-        if !requested_schema.is_instance_of::<PyCapsule>()
-            || unsafe { ffi::PyCapsule_IsValid(requested_schema.as_ptr(), schema_capsule_name()) }
-                == 0
+        if !requested_schema.is_instance_of::<PyCapsule>() {
+            return Ok(None);
+        }
+        // SAFETY: `requested_schema` is a live Python object retained by `Bound`;
+        // PyCapsule_IsValid checks its type/name without dereferencing its payload.
+        if unsafe { ffi::PyCapsule_IsValid(requested_schema.as_ptr(), schema_capsule_name()) } == 0
         {
             return Ok(None);
         }
@@ -227,6 +230,8 @@ impl SchemaNode {
         if child_count != self.children.len() {
             return Ok(None);
         }
+        // SAFETY: the caller retains the live schema capsule for the duration
+        // of this comparison, so its producer-owned metadata remains readable.
         let actual_metadata = unsafe { import::schema_metadata_pairs_owned(schema)? };
         let mut actual_metadata = actual_metadata
             .into_iter()

@@ -353,10 +353,14 @@ macro_rules! h3_index_array_common {
                 self.len() != 0
             }
 
-            /// Select by integer, slice, or fancy index.
+            /// Select by integer-like scalar, slice, or fancy index.
             ///
-            /// An ``int`` returns one edge/vertex. A ``slice`` or fancy index
-            /// returns an array of the same type.
+            /// An ``int``, object implementing ``__index__``, or
+            /// zero-dimensional integer ndarray returns one edge/vertex. A
+            /// ``slice``, integer sequence, one-dimensional integer ndarray,
+            /// or boolean mask returns an array of the same type. Boolean
+            /// scalars and NumPy index arrays with rank above one raise
+            /// ``TypeError``.
             ///
             /// Returns
             /// -------

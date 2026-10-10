@@ -21,10 +21,11 @@ impl<'a, 'py> FromPyObject<'a, 'py> for ConfigureArgument {
 
 #[pyfunction(
     signature = (
+        *,
         search_paths = ConfigureArgument::Omitted,
         user_writable_directory = ConfigureArgument::Omitted
     ),
-    text_signature = "($module, /, *, search_paths=..., user_writable_directory=...)"
+    text_signature = "(*, search_paths=..., user_writable_directory=...)"
 )]
 /// Configure local CRS engine paths.
 ///
@@ -131,7 +132,7 @@ fn parse_search_paths(
         };
         crate::check_python_signals(value.py(), paths.len())?;
         match take_path_string(&item, "search_paths entries") {
-            Ok(owned) => paths.push(owned),
+            Ok(path) => paths.push(path),
             Err(PathTakeError::Provider(err)) => {
                 drop(paths);
                 return Err(err);

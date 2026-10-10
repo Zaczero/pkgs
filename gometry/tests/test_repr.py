@@ -173,7 +173,7 @@ def test_repr_html_contains_svg_and_header():
 
 def test_repr_html_escapes_retained_crs_text_without_changing_repr_or_svg() -> None:
     name = '<img src=x onerror=alert(1)>&unsafe<script>"\'>'
-    projjson = gm.CRS(3857).to_projjson_dict()
+    projjson = gm.CRS(3857).to_projjson(as_dict=True)
     projjson['name'] = name
     projjson.pop('id')
     point = gm.Point(0, 0, crs=projjson)

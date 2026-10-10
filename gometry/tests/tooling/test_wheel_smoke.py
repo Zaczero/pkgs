@@ -782,6 +782,19 @@ def test_runtime_completion_rechecks_admitted_package_bytes(
         runtime_artifact.verify_runtime_completion(admission, runtime)
 
 
+def test_runtime_admission_uses_receipt_without_build_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_build_tool(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail('runtime admission invoked producer build tooling')
+
+    monkeypatch.setattr(quality_runtime, '_tool_output', unexpected_build_tool)
+    monkeypatch.setattr(quality_runtime, 'cargo_metadata', unexpected_build_tool)
+    admission = runtime_artifact.inspect_runtime_inputs(GOMETRY_ROOT)
+    runtime = runtime_artifact.verify_admitted_runtime(admission)
+    runtime_artifact.verify_runtime_completion(admission, runtime)
+
+
 @pytest.mark.parametrize(
     ('member', 'message'),
     [
@@ -2145,10 +2158,12 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
         *,
         cwd: Path,
         env: dict[str, str],
+        capture_output: bool,
     ) -> None:
         nonlocal builds
         assert cwd == root
         assert env['PYO3_PYTHON'] == str(Path(sys.executable).resolve())
+        assert not capture_output, 'quality builds must stream their output'
         output = Path(command[command.index('--out') + 1])
         package_members = {
             f'gometry/{path.relative_to(package).as_posix()}': path.read_bytes()

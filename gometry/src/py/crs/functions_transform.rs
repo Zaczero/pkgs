@@ -58,7 +58,7 @@ pub(crate) fn crs_grid(py: Python<'_>, name: &str) -> PyResult<crs::GridDatabase
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 ///
 /// Returns
 /// -------
@@ -80,7 +80,7 @@ pub(crate) fn crs_operation<'py>(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 /// coord : coordinate
 ///     A coordinate as ``(x, y)``.
 ///
@@ -126,7 +126,7 @@ pub(crate) fn crs_operation_at(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 ///
 /// Returns
 /// -------
@@ -168,7 +168,7 @@ pub(crate) fn crs_operations<'py>(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and target CRS (EPSG code or authority/WKT string).
+///     Source and target CRS-like inputs.
 /// x, y : float or sequence of float
 ///     Coordinate columns (scalars transform a single point).
 /// z : float or sequence of float, optional
@@ -294,8 +294,9 @@ pub(crate) fn crs_transform(
 /// Returns
 /// -------
 /// tuple
-///     The transformed columns — ``(x, y)``, ``(x, y, z)``, or
-///     ``(x, y, z, t)``. Scalars in, scalars out; lane inputs return
+///     The transformed columns — ``(x, y)``, ``(x, y, z)``, ``(x, y, t)``
+///     when T is supplied without Z, or ``(x, y, z, t)``. Scalars in, scalars
+///     out; lane inputs return
 ///     read-only ``float64`` ``numpy.ndarray`` columns (``np.asarray(column)``
 ///     reads the values directly, ``list(column)`` materializes them).
 ///
@@ -304,7 +305,7 @@ pub(crate) fn crs_transform(
 /// TransformError
 ///     If no transform exists between the frames or it fails to apply.
 /// CRSError
-///     If ``source``/``target`` are unrecognized.
+///     If the operation definition is invalid.
 /// InvalidGeometryError
 ///     If coordinate columns are non-finite or differ in length.
 /// GeometryError
@@ -475,7 +476,7 @@ pub(crate) fn coordinates_to_py(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 /// bounds : sequence of float or iterable of sequences of float
 ///     A scalar box is a 4-value ``(minx, miny, maxx, maxy)`` sequence or a
 ///     6-value ``(minx, miny, minz, maxx, maxy, maxz)`` sequence in the source
@@ -809,7 +810,7 @@ fn classify_bounds_shape(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 /// x, y : float or sequence of float
 ///     Coordinates, scalar or batch.
 /// z, t : float or sequence of float, optional
