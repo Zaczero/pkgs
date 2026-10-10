@@ -273,9 +273,9 @@ pub(crate) fn length_natural_array(
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry or GeometryArray
-///     Geometry whose vertices are moved.
-/// reference : Geometry or GeometryArray
+/// geom : Geometry, GeometryArray, or iterable of Geometry or None
+///     Geometry whose vertices are moved. Missing rows remain missing.
+/// reference : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Target geometry to snap onto.
 /// tolerance : float or sequence of float
 ///     Maximum finite non-negative snap distance in coordinate space:
@@ -285,7 +285,7 @@ pub(crate) fn length_natural_array(
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     Snapped result(s).
+///     Snapped result(s), with missing rows preserved.
 ///
 /// Raises
 /// ------

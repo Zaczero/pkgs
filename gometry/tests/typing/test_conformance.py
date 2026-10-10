@@ -1368,6 +1368,86 @@ if TYPE_CHECKING:
     reveal_type(gm.intersects(POLY, x=1.0, y=1.0))
     reveal_type(gm.intersects(POLY, x=0.0, y=[0.0, 1.0]))
     reveal_type(gm.intersects(POLYS, x=0.0, y=0.0))
+
+    def _reveal_overlay_batches() -> None:
+        # Object dtype erases item types; these casts retain the known rows.
+        point_array = cast(
+            'Iterable[gm.Point]',
+            np.asarray([POINT, gm.Point(2, 2)], dtype=object),
+        )
+        nullable_point_array = cast(
+            'Iterable[gm.Point | None]',
+            np.asarray([POINT, None], dtype=object),
+        )
+
+        reveal_type(gm.union(_point_rows, POINT))
+        reveal_type(gm.union(point_array, POINT))
+        reveal_type(gm.union(_nullable_point_rows, POINT))
+        reveal_type(gm.union(nullable_point_array, POINT))
+        reveal_type(gm.intersection(_point_rows, POINT))
+        reveal_type(gm.intersection(point_array, POINT))
+        reveal_type(gm.intersection(_nullable_point_rows, POINT))
+        reveal_type(gm.intersection(nullable_point_array, POINT))
+        reveal_type(gm.difference(_point_rows, POINT))
+        reveal_type(gm.difference(point_array, POINT))
+        reveal_type(gm.difference(_nullable_point_rows, POINT))
+        reveal_type(gm.difference(nullable_point_array, POINT))
+        reveal_type(gm.symmetric_difference(_point_rows, POINT))
+        reveal_type(gm.symmetric_difference(point_array, POINT))
+        reveal_type(gm.symmetric_difference(_nullable_point_rows, POINT))
+        reveal_type(gm.symmetric_difference(nullable_point_array, POINT))
+        reveal_type(gm.snap(_point_rows, POINT, 0.1))
+        reveal_type(gm.snap(point_array, POINT, 0.1))
+        reveal_type(gm.snap(_nullable_point_rows, POINT, 0.1))
+        reveal_type(gm.snap(nullable_point_array, POINT, 0.1))
+        reveal_type(gm.union(POINT, _point_rows))
+        reveal_type(gm.intersection(gm.MultiPoint([POINT]), _point_rows))
+        reveal_type(gm.difference(gm.MultiPoint([POINT]), _point_rows))
+        reveal_type(gm.snap(gm.MultiPoint([POINT]), _point_rows, 0.1))
+        assert_type(
+            gm.union(_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint],
+        )
+        assert_type(
+            gm.union(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+        )
+        assert_type(
+            gm.union(point_array, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint],
+        )
+        assert_type(
+            gm.union(nullable_point_array, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+        )
+        assert_type(gm.intersection(_point_rows, POINT), gm.GeometryArray[gm.Point])
+        assert_type(
+            gm.intersection(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | None],
+        )
+        assert_type(gm.difference(_point_rows, POINT), gm.GeometryArray[gm.Point])
+        assert_type(
+            gm.difference(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | None],
+        )
+        assert_type(
+            gm.symmetric_difference(_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint],
+        )
+        assert_type(
+            gm.symmetric_difference(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+        )
+        assert_type(gm.snap(_point_rows, POINT, 0.1), gm.GeometryArray[gm.Point])
+        assert_type(
+            gm.snap(_nullable_point_rows, POINT, 0.1),
+            gm.GeometryArray[gm.Point | None],
+        )
+        assert_type(
+            gm.snap(gm.MultiPoint([POINT]), _point_rows, 0.1),
+            gm.GeometryArray[gm.MultiPoint],
+        )
+
     reveal_type(gm.contains_properly(BATCH_POINTS, POINT))
     reveal_type(gm.covered_by(BATCH_POINTS, POINT))
     reveal_type(gm.covers(BATCH_POINTS, POINT))

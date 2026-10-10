@@ -172,6 +172,8 @@ if TYPE_CHECKING:
     _dense_overlay: gm.GeometryArray[gm.Geometry] = gm.intersection(
         gm.GeometryArray([POINT, None]), POLY
     )  # type: ignore[assignment]
+    _wrong_union_rows: list[gm.Geometry | int] = [POINT, 1]
+    gm.union(_wrong_union_rows, POINT)  # type: ignore[arg-type]
 
     def _reject_unchecked_nullable_group(
         groups: gm.Groups[gm.GeometryArray[gm.Point | None]],

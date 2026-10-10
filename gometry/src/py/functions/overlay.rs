@@ -121,14 +121,14 @@ pub(crate) fn overlay_operator(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and batch operands broadcast pairwise; batch lengths must match.
+///     Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
@@ -163,14 +163,14 @@ pub(crate) fn intersection(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and batch operands broadcast pairwise; batch lengths must match.
+///     Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
@@ -208,15 +208,15 @@ pub(crate) fn union(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Geometry to subtract from (``left``) and geometry subtracted
-///     (``right``). Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+///     (``right``). Scalar and batch operands broadcast pairwise; batch
+///     lengths must match. Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
@@ -252,14 +252,14 @@ pub(crate) fn difference(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and batch operands broadcast pairwise; batch lengths must match.
+///     Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
