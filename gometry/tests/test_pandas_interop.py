@@ -490,7 +490,11 @@ def test_from_pandas_imports_geoarrow_backed_arrow_dtype() -> None:
 
 def test_from_pandas_keeps_unrelated_arrow_dtypes_out_of_geometry_import() -> None:
     pa = pytest.importorskip('pyarrow')
-    series = pd.Series(pa.array(['not a geometry']))
+    series = pd.Series(
+        pa.array(['not a geometry']),
+        dtype=pd.ArrowDtype(pa.string()),
+    )
+    assert series.dtype == pd.ArrowDtype(pa.string())
 
     with pytest.raises(TypeError):
         from_pandas(series)
