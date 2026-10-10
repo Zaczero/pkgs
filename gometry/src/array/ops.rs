@@ -555,6 +555,11 @@ impl PyGeometryArray {
                     .ok_or_else(|| Error::from(crate::error::ResourceError::SizeOverflow))?;
             }
         }
+        let domain = if total == 0 {
+            crate::geometry::TopologyDomain::Cartesian
+        } else {
+            crate::geometry::topology_domain(&self.frame)?
+        };
         let built = (|| -> Result<crate::CsrBuilder<Shape>, (Error, Option<usize>)> {
             let mut builder = crate::CsrBuilder::<Shape>::with_capacity(total, len);
             for logical_row in self.row_operation().rows_with_missing(|| ()) {
@@ -575,7 +580,9 @@ impl PyGeometryArray {
                         };
                         let points = row
                             .row()
-                            .try_with_shape(|shape| shape.sample_points(count, seed))
+                            .try_with_shape(|shape| {
+                                shape.sample_points_in_domain(count, seed, domain)
+                            })
                             .map_err(|error| (error, None))?;
                         (logical, Some(points))
                     },
