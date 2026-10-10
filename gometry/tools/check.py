@@ -129,6 +129,8 @@ def run(
 ) -> bool:
     print(f'\n==> {" ".join(arguments)}', file=sys.stderr, flush=True)
     child_environment = os.environ.copy() if environment is None else environment.copy()
+    if require_runtime and arguments == DOCS_BUILD:
+        child_environment.pop('MARKDOWN_EXEC_AUTO', None)
     if require_runtime:
         interpreter_bin = str(Path(sys.executable).parent)
         child_environment['PATH'] = os.pathsep.join((
@@ -144,10 +146,12 @@ def run(
         if arguments[0] not in SYSTEM_TOOLS
         else list(arguments)
     )
-    return (
-        subprocess.run(command, cwd=ROOT, check=False, env=child_environment).returncode
-        == 0
-    )
+    try:
+        result = subprocess.run(command, cwd=ROOT, check=False, env=child_environment)
+    except FileNotFoundError as error:
+        print(f'could not execute {command[0]}: {error}', file=sys.stderr)
+        return False
+    return result.returncode == 0
 
 
 def _quality_runtime_module():
