@@ -11,7 +11,7 @@ extension dtype so pandas can resolve its `gometry.geometry` name.
 
 | Extra | Storage | Into gometry | Out of gometry |
 | --- | --- | --- | --- |
-| `pandas` | `GeometryExtensionArray` (`gometry.geometry`) or object Series of geometry-like rows | [`gm.from_pandas(series)`][gometry.from_pandas] | [`array.to_pandas()`][gometry.GeometryArray.to_pandas] |
+| `pandas` (`gometry[pandas]`, `pandas>=3.0.3`; add `gometry[arrow]` for GeoArrow-backed `ArrowDtype`) | `GeometryExtensionArray`, GeoArrow-backed `ArrowDtype`, or object Series | [`gm.from_pandas(series)`][gometry.from_pandas] | [`array.to_pandas()`][gometry.GeometryArray.to_pandas] |
 | `polars` | WKB/EWKB `Binary` Series | [`gm.from_polars(series)`][gometry.from_polars] | [`array.to_polars()`][gometry.GeometryArray.to_polars] |
 | `geopandas` | Shapely geometry column | [`gm.from_geopandas(series_or_frame)`][gometry.from_geopandas] | [`array.to_geopandas()`][gometry.GeometryArray.to_geopandas] |
 
@@ -19,6 +19,7 @@ Install only the boundary you use:
 
 ```bash
 uv add "gometry[pandas]"
+uv add "gometry[arrow]"
 uv add "gometry[polars]"
 uv add "gometry[geopandas]"
 ```
@@ -35,6 +36,13 @@ the Series' storage. `None`, `pd.NA`, and pandas-recognized missing values
 become missing geometry rows; empty geometries remain values. Use
 `from_geopandas()` for a GeoSeries so its CRS metadata is retained.
 
+A pandas Series backed by `pd.ArrowDtype` can also carry a GeoArrow extension
+column. `from_pandas()` passes that Arrow column directly to
+[`from_arrow`][gometry.from_arrow], preserving chunks, nulls, dimensions, CRS,
+and coordinate epoch without converting rows to Python dictionaries. This path
+requires `pyarrow` (`gometry[arrow]`); unrelated Arrow dtypes are rejected as
+non-geometry input.
+
 ```python exec="on" source="block" result="text"
 import pandas as pd
 
@@ -50,6 +58,26 @@ print("dtype:", series.dtype)
 print("registered dtype:", typed.dtype)
 print("rows:", len(series))
 print("frame:", restored.crs.to_authority())
+```
+
+```python exec="on" source="block" result="text"
+import pandas as pd
+import pyarrow as pa
+
+import gometry as gm
+
+geometry = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326, epoch=2020.0)
+arrow = geometry.to_arrow()
+chunked = pa.chunked_array([arrow.slice(0, 1), arrow.slice(1)])
+series = pd.Series(chunked, dtype=pd.ArrowDtype(chunked.type))
+restored = gm.from_pandas(series)
+
+print("dtype:", series.dtype)
+print(
+    "stored CRS definition preserved:",
+    restored.crs.definition == geometry.crs.definition,
+)
+print("epoch:", restored.epoch)
 ```
 
 ```python exec="on" source="block" result="text"
