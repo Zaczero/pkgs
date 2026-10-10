@@ -39,6 +39,12 @@ def test_scalar_factories_are_removed() -> None:
         assert not hasattr(gm, name)
 
 
+def test_points_all_scalar_call_is_a_one_row_array() -> None:
+    points = gm.points(1, 2)
+    assert isinstance(points, gm.GeometryArray)
+    assert points.to_wkt() == ['POINT (1 2)']
+
+
 def test_geometry_base_is_not_constructible() -> None:
     with pytest.raises(TypeError, match='abstract'):
         gm.Geometry()
