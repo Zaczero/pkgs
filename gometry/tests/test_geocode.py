@@ -336,6 +336,30 @@ def test_geocode_encoders_broadcast_coordinate_lanes_and_propagate_missing() -> 
         gm.osm_shortlink_encode(gm.box(0, 0, 1, 1, crs=4326))
 
 
+def test_geocode_decoders_preserve_nullable_code_rows() -> None:
+    point = gm.Point(2.0, 48.0, crs=4326)
+    full_code = gm.pluscode_encode(point)
+    polygons = gm.pluscode_polygon([full_code, None])
+    assert polygons.to_wkt() == [gm.pluscode_polygon(full_code).to_wkt(), None]
+
+    short_code = '9C3W9QCJ+2VX'
+    reference_lon = -1.217765625
+    reference_lat = 51.3701125
+    shortened = gm.pluscode_shorten([short_code, None], reference_lon, reference_lat)
+    recovered = gm.pluscode_recover(['CJ+2VX', None], reference_lon, reference_lat)
+    assert shortened == ['CJ+2VX', None]
+    assert recovered == [short_code, None]
+
+    code = gm.osm_shortlink_encode(point)
+    lon, lat, zoom = gm.osm_shortlink_location([code, None])
+    scalar_lon, scalar_lat, scalar_zoom = gm.osm_shortlink_location(code)
+    assert lon.dtype == lat.dtype == np.dtype(np.float64)
+    assert zoom.dtype == np.dtype(np.int64)
+    assert lon[0] == scalar_lon and lat[0] == scalar_lat
+    assert zoom.tolist() == [scalar_zoom, -1]
+    assert np.isnan(lon[1]) and np.isnan(lat[1])
+
+
 @pytest.mark.parametrize(
     'encoder',
     [

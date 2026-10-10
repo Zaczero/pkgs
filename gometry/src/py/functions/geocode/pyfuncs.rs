@@ -158,7 +158,11 @@ fn code_lonlat_broadcast(
                 .detach(move || {
                     codes
                         .iter()
-                        .map(|code| operation(code, lon, lat))
+                        .map(|code| {
+                            code.as_deref()
+                                .map(|code| operation(code, lon, lat))
+                                .transpose()
+                        })
                         .collect::<PyResult<Vec<_>>>()
                 })?
                 .into_py_any(py),
@@ -205,7 +209,11 @@ fn code_lonlat_broadcast(
                 codes
                     .iter()
                     .enumerate()
-                    .map(|(row, code)| operation(code, lon.get(row), lat.get(row)))
+                    .map(|(row, code)| {
+                        code.as_deref()
+                            .map(|code| operation(code, lon.get(row), lat.get(row)))
+                            .transpose()
+                    })
                     .collect::<pyo3::PyResult<Vec<_>>>()
             })?
             .into_py_any(py)
@@ -278,6 +286,7 @@ pub(crate) fn pluscode_encode(
 /// -------
 /// Polygon or GeometryArray
 ///     The code cell(s), CRS ``OGC:CRS84``.
+///     Missing code rows produce missing polygons.
 ///
 /// Raises
 /// ------
@@ -312,16 +321,17 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
             .into_pyobject(py)?
             .unbind()),
         CodeInput::Many(codes) => {
-            let shapes = py.detach(move || {
-                codes
-                    .iter()
-                    .map(|code| polygon_shape(code))
-                    .collect::<pyo3::PyResult<Vec<_>>>()
+            let array = py.detach(move || {
+                let mut rows = crate::array::StreamingShapes::with_capacity(0, codes.len());
+                for code in codes {
+                    match code {
+                        Some(code) => rows.try_push(polygon_shape(&code)?).map_err(PyErr::from)?,
+                        None => rows.try_push_missing().map_err(PyErr::from)?,
+                    }
+                }
+                rows.finish(frame).map_err(PyErr::from)
             })?;
-            Ok(PyGeometryArray::from_shapes(shapes, frame)?
-                .into_pyobject(py)?
-                .unbind()
-                .into())
+            Ok(array.into_pyobject(py)?.unbind().into())
         },
     }
 }
@@ -333,7 +343,7 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
 ///
 /// Parameters
 /// ----------
-/// code : str or iterable of str
+/// code : str or iterable of str or None
 ///     A full, unpadded plus code with at least 6 digits.
 /// reference : Point or float
 ///     A CRS-aware reference point or longitude column.
@@ -343,8 +353,9 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
 ///
 /// Returns
 /// -------
-/// str or list of str
+/// str or list of str or None
 ///     The shortened code(s) — or the original when the reference is too far.
+///     Missing code rows produce ``None`` entries.
 ///
 /// Raises
 /// ------
@@ -380,7 +391,7 @@ pub(crate) fn pluscode_shorten(
 ///
 /// Parameters
 /// ----------
-/// code : str or iterable of str
+/// code : str or iterable of str or None
 ///     A short plus code (e.g. ``'9G8F+6X'``); a full code passes through
 ///     normalized.
 /// reference : Point or float
@@ -391,8 +402,9 @@ pub(crate) fn pluscode_shorten(
 ///
 /// Returns
 /// -------
-/// str or list of str
+/// str or list of str or None
 ///     The full plus code(s) closest to the reference.
+///     Missing code rows produce ``None`` entries.
 ///
 /// Raises
 /// ------
@@ -477,14 +489,15 @@ pub(crate) fn osm_shortlink_encode(
 ///
 /// Parameters
 /// ----------
-/// code : str or iterable of str
+/// code : str or iterable of str or None
 ///     The shortlink code(s) (the part after ``osm.org/go/``).
 ///
 /// Returns
 /// -------
 /// tuple
 ///     Scalar input returns ``(lon, lat, zoom)``. Bulk input returns
-///     ``(lon_array, lat_array, zoom_array)``.
+///     ``(lon_array, lat_array, zoom_array)``. Missing rows retain their
+///     position with NaN longitude/latitude and zoom ``-1``.
 ///
 /// Raises
 /// ------
@@ -507,15 +520,18 @@ pub(crate) fn osm_shortlink_location(
         CodeInput::Scalar(code) => Ok(shortlink_decode(&code)?.into_pyobject(py)?.unbind().into()),
         CodeInput::Many(codes) => {
             let (lon, lat, zoom) = py.detach(move || {
-                let mut lon = vec![0.0; codes.len()];
-                let mut lat = vec![0.0; codes.len()];
-                let mut zoom = vec![0_i64; codes.len()];
+                let mut lon = vec![f64::NAN; codes.len()];
+                let mut lat = vec![f64::NAN; codes.len()];
+                let mut zoom = vec![-1_i64; codes.len()];
                 for (((lon, lat), zoom), code) in lon
                     .iter_mut()
                     .zip(lat.iter_mut())
                     .zip(zoom.iter_mut())
                     .zip(&codes)
                 {
+                    let Some(code) = code else {
+                        continue;
+                    };
                     let (x, y, z) = shortlink_decode(code)?;
                     *lon = x;
                     *lat = y;

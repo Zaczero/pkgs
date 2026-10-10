@@ -23112,7 +23112,11 @@ def pluscode_polygon(code: str) -> Polygon: ...
 @overload
 def pluscode_polygon(
     code: Iterable[str],
-) -> GeometryArray[Polygon]:
+) -> GeometryArray[Polygon]: ...
+@overload
+def pluscode_polygon(
+    code: Iterable[str | None],
+) -> GeometryArray[Polygon | None]:
     """Return the rectangular cell a plus code covers, as a WGS84 ``Polygon``.
 
     Parameters
@@ -23124,6 +23128,7 @@ def pluscode_polygon(
     -------
     Polygon or GeometryArray
         The code cell(s), CRS ``OGC:CRS84``.
+        Missing code rows produce missing polygons.
 
     Raises
     ------
@@ -23172,7 +23177,15 @@ def pluscode_shorten(
 @overload
 def pluscode_shorten(
     code: Iterable[str], reference: FloatInput, lat: FloatInput
-) -> list[str]:
+) -> list[str]: ...
+@overload
+def pluscode_shorten(
+    code: Iterable[str | None], reference: Point, lat: None = None
+) -> list[str | None]: ...
+@overload
+def pluscode_shorten(
+    code: Iterable[str | None], reference: FloatInput, lat: FloatInput
+) -> list[str | None]:
     """Shorten a full plus code relative to a nearby reference point.
 
     Removes two to six leading digits that the reference location implies;
@@ -23180,7 +23193,7 @@ def pluscode_shorten(
 
     Parameters
     ----------
-    code : str or iterable of str
+    code : str or iterable of str or None
         A full, unpadded plus code with at least 6 digits.
     reference : Point or float
         A CRS-aware reference point or longitude column.
@@ -23190,8 +23203,9 @@ def pluscode_shorten(
 
     Returns
     -------
-    str or list of str
+    str or list of str or None
         The shortened code(s) — or the original when the reference is too far.
+        Missing code rows produce ``None`` entries.
 
     Raises
     ------
@@ -23246,12 +23260,20 @@ def pluscode_recover(
 @overload
 def pluscode_recover(
     code: Iterable[str], reference: FloatInput, lat: FloatInput
-) -> list[str]:
+) -> list[str]: ...
+@overload
+def pluscode_recover(
+    code: Iterable[str | None], reference: Point, lat: None = None
+) -> list[str | None]: ...
+@overload
+def pluscode_recover(
+    code: Iterable[str | None], reference: FloatInput, lat: FloatInput
+) -> list[str | None]:
     """Recover the nearest full plus code from a shortened one.
 
     Parameters
     ----------
-    code : str or iterable of str
+    code : str or iterable of str or None
         A short plus code (e.g. ``'9G8F+6X'``); a full code passes through
         normalized.
     reference : Point or float
@@ -23262,8 +23284,9 @@ def pluscode_recover(
 
     Returns
     -------
-    str or list of str
+    str or list of str or None
         The full plus code(s) closest to the reference.
+        Missing code rows produce ``None`` entries.
 
     Raises
     ------
@@ -23382,6 +23405,14 @@ def osm_shortlink_location(
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
     np.ndarray[tuple[int], np.dtype[np.int64]],
+]: ...
+@overload
+def osm_shortlink_location(
+    code: Iterable[str | None],
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
 ]:
     """Parse an OSM shortlink code back into its location and zoom.
 
@@ -23389,14 +23420,15 @@ def osm_shortlink_location(
 
     Parameters
     ----------
-    code : str or iterable of str
+    code : str or iterable of str or None
         The shortlink code(s) (the part after ``osm.org/go/``).
 
     Returns
     -------
     tuple
         Scalar input returns ``(lon, lat, zoom)``. Bulk input returns
-        ``(lon_array, lat_array, zoom_array)``.
+        ``(lon_array, lat_array, zoom_array)``. Missing rows retain their
+        position with NaN longitude/latitude and zoom ``-1``.
 
     Raises
     ------

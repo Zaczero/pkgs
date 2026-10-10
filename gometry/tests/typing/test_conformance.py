@@ -107,6 +107,42 @@ if TYPE_CHECKING:
     reveal_type(gm.pluscode_recover('CJ+2VX', [-1.2, -1.3], 51.0))
     reveal_type(gm.pluscode_recover('CJ+2VX', _coordinate_rows[:, 0], 51.0))
 
+    def _reveal_nullable_geocode_decoders() -> None:
+        reveal_type(gm.pluscode_polygon(['8FVC9G8F+6X']))
+        reveal_type(gm.pluscode_polygon(['8FVC9G8F+6X', None]))
+        reveal_type(gm.pluscode_shorten(['9C3W9QCJ+2VX'], POINT))
+        reveal_type(gm.pluscode_shorten(['9C3W9QCJ+2VX', None], POINT))
+        reveal_type(gm.pluscode_recover(['CJ+2VX'], POINT))
+        reveal_type(gm.pluscode_recover(['CJ+2VX', None], POINT))
+        reveal_type(gm.osm_shortlink_location(['0MbEUxVoG-']))
+        reveal_type(gm.osm_shortlink_location(['0MbEUxVoG-', None]))
+        assert_type(
+            gm.pluscode_polygon(['8FVC9G8F+6X']),
+            gm.GeometryArray[gm.Polygon],
+        )
+        assert_type(
+            gm.pluscode_polygon(['8FVC9G8F+6X', None]),
+            gm.GeometryArray[gm.Polygon | None],
+        )
+        assert_type(gm.pluscode_shorten(['9C3W9QCJ+2VX'], POINT), list[str])
+        assert_type(
+            gm.pluscode_shorten(['9C3W9QCJ+2VX', None], POINT),
+            list[str | None],
+        )
+        assert_type(gm.pluscode_recover(['CJ+2VX'], POINT), list[str])
+        assert_type(
+            gm.pluscode_recover(['CJ+2VX', None], POINT),
+            list[str | None],
+        )
+        assert_type(
+            gm.osm_shortlink_location(['0MbEUxVoG-']),
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], _Int64Array1D],
+        )
+        assert_type(
+            gm.osm_shortlink_location(['0MbEUxVoG-', None]),
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], _Int64Array1D],
+        )
+
     reveal_type(gm.h3_cells(_dense_points, resolution=7))
     reveal_type(gm.h3_cells(_nullable_points, resolution=7))
     reveal_type(gm.h3_cells(_point_rows, resolution=7))
