@@ -3527,7 +3527,9 @@ class Geometry:
         """
 
     def split_antimeridian(self) -> Geometry:
-        """Split at the antimeridian. Parts that cross come back as multiple parts
+        """Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+        geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+        come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
         Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
@@ -3695,10 +3697,10 @@ class Geometry:
         and ``seed`` always produce the same points (an explicit seed is required —
         no hidden global RNG). Array rows draw distinct deterministic streams derived
         from ``seed`` and the row index, and a scalar geometry IS row 0 — so
-        ``arr.sample_points(n, seed=s)[0]`` and
-        ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
-        sample and yields no points. Results retain the input CRS and coordinate
-        epoch. Sampled points are new XY locations, so they have no source Z/M.
+                ``arr.sample_points(n, seed=s)[0]`` and
+                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+                sample and yields no points. Results retain the input CRS and coordinate
+                epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
@@ -10267,16 +10269,21 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def split_antimeridian(
         self: GeometryArray[Geometry | None],
     ) -> GeometryArray[Geometry | None]:
-        """Split at the antimeridian. Parts that cross come back as multiple parts
+        """Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+        geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+        come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
-        Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-        running off the seam closes over its pole automatically. Geometries that do
-        not cross are returned unchanged. A split ``LineString`` becomes a
-        ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-        Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        the split subdivides existing chart edges, so ellipsoidal area and perimeter
-        are conserved to rounding.
+        Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+        follow ellipsoidal arclength along the retained source edge. An authored
+        full-period edge is retained with quarter witnesses before its longitudes are
+        canonicalized. The two seam aliases and a displacement of multiple periods do
+        not imply a full-period edge. A ring running off the seam closes over its pole
+        automatically. Geometries that do not cross are returned unchanged. A split
+        ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+        ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+        existing chart edges, so ellipsoidal area and perimeter are conserved to
+        rounding.
 
         Returns
         -------
@@ -10519,10 +10526,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
         and ``seed`` always produce the same points (an explicit seed is required —
         no hidden global RNG). Array rows draw distinct deterministic streams derived
         from ``seed`` and the row index, and a scalar geometry IS row 0 — so
-        ``arr.sample_points(n, seed=s)[0]`` and
-        ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
-        sample and yields no points. Results retain the input CRS and coordinate
-        epoch. Sampled points are new XY locations, so they have no source Z/M.
+                ``arr.sample_points(n, seed=s)[0]`` and
+                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+                sample and yields no points. Results retain the input CRS and coordinate
+                epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
