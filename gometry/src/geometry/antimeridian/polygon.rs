@@ -241,8 +241,8 @@ pub(crate) fn split_geographic_view<M: ChartMetric>(
         return Ok(view.shape().clone());
     }
     let longitude_scale = frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
-    let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
-        * frame.latitude_orientation_sign();
+    let latitude_scale =
+        frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
     let chart = chart_shape(
         view.shape(),
         frame,
@@ -1678,8 +1678,8 @@ mod tests {
             .geographic_frame()
             .unwrap();
         assert_eq!(frame.longitude().period().to_bits(), 400.0_f64.to_bits());
-        let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
-            * frame.latitude_orientation_sign();
+        let latitude_scale =
+            frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
         let chart_bottom = -50.0 * latitude_scale;
         let chart_top = 80.0 * latitude_scale;
         let lower_latitude = 0.0 * latitude_scale;

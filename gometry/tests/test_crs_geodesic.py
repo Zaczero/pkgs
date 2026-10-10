@@ -246,6 +246,29 @@ def test_geodesic_positive_infinite_dwithin_does_not_force_distance_resolution()
     assert gm.dwithin(left, right, math.inf)
 
 
+def test_south_degree_dwithin_resolves_an_attained_endpoint_distance() -> None:
+    longitude = 70.441_298_519_018_83
+    latitude = -63.870_640_325_120_85
+    query_latitude = -63.870_640_324_879_425
+    source = gm.LineString(
+        [(longitude, -latitude), (longitude + 0.5, -latitude)],
+        crs=EAST_DEGREE_SOUTH_LATITUDE_CRS,
+    )
+    query = gm.Point(
+        longitude,
+        -query_latitude,
+        crs=EAST_DEGREE_SOUTH_LATITUDE_CRS,
+    )
+    endpoint_distance = GEOD.inv(
+        longitude,
+        query_latitude,
+        longitude,
+        latitude,
+    )[2]
+
+    assert gm.dwithin(query, source, endpoint_distance, unit='meters')
+
+
 def test_geodesic_positive_infinite_dwithin_broadcasts_over_array_operands() -> None:
     left = gm.points([0.0, 1.0], [0.0, 0.0], crs=4326)
     right = gm.Point(180.0, 0.0, crs=4326)
