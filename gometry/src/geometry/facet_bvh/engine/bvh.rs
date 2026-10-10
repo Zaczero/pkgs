@@ -6,8 +6,8 @@ use crate::geometry::facet_bvh::{
     aabb_max_distance_squared, aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 use crate::geometry::{
-    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, axis_pow2_scale,
-    clearance_aabb_lower_bound, clearance_strip_exceeds, point_on_segment, point_pair_distance_key,
+    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, axis_pow2_scale, clearance_aabb_filter,
+    clearance_strip_exceeds, point_on_segment, point_pair_distance_key,
     point_segment_distance_squared, point_segment_exact_distance_key, point_segment_selection,
     scaled_residual, segment_projection, segments_intersect, source_dot_cmp,
 };
@@ -1163,12 +1163,12 @@ impl ClearanceFacetBvh {
             }
             let local = best.as_ref().map(|(_, key)| key);
             let limit = clearance_segment_limit(local, incumbent)?;
-            if let Some(limit) = limit
-                && clearance_aabb_lower_bound(probe, self.tree.node_aabb(index))
-                    .cmp_distance(limit)?
-                    .is_gt()
-            {
-                continue;
+            if let Some(limit) = limit {
+                let (witness, filter) =
+                    clearance_aabb_filter(probe.xy(), self.tree.node_aabb(index));
+                if filter.cmp_witness_key(witness, limit)?.is_gt() {
+                    continue;
+                }
             }
             let node = self.tree.decode_node(index);
             if let Some(limit) = limit {
@@ -1208,6 +1208,15 @@ impl ClearanceFacetBvh {
                         let ordinal = linework.segment_ordinal(facet, offset);
                         if !keep(probe, ordinal, segment) {
                             continue;
+                        }
+                        if let Some(limit) =
+                            clearance_segment_limit(best.as_ref().map(|(_, key)| key), incumbent)?
+                        {
+                            let (witness, filter) =
+                                clearance_aabb_filter(probe.xy(), segment_aabb(segment));
+                            if filter.cmp_witness_key(witness, limit)?.is_gt() {
+                                continue;
+                            }
                         }
                         let key = point_segment_exact_distance_key(probe.xy(), segment);
                         if key.is_exact_zero()? {

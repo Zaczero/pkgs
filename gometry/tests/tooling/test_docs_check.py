@@ -1304,7 +1304,7 @@ def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
     assert set(contracts) == {f'gometry.{name}' for name in names}
     expected_counts = {
         'GeohashCell': 3,
-        'Point': 2,
+        'Point': 3,
         'LineString': 3,
         'Polygon': 3,
         'CellArray': 16,

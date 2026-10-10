@@ -71,16 +71,11 @@ pub(crate) enum PreparedLineLocate<'a> {
 
 impl PreparedLineLocate<'_> {
     pub(crate) fn locate(&self, query: Point) -> Result<f64> {
-        match self {
-            Self::GeographicDistance { metric, .. } | Self::GeographicMeasure { metric, .. }
-                if !query.x.is_nan() =>
-            {
-                crate::crs::ensure_geographic_lonlat_in_frame(metric.frame, query.x, query.y)?;
-            },
-            Self::PlanarDistance { .. }
-            | Self::PlanarMeasure(_)
-            | Self::GeographicDistance { .. }
-            | Self::GeographicMeasure { .. } => {},
+        if let Self::GeographicDistance { metric, .. } | Self::GeographicMeasure { metric, .. } =
+            self
+            && !query.x.is_nan()
+        {
+            crate::crs::ensure_geographic_lonlat_in_frame(metric.frame, query.x, query.y)?;
         }
         self.locate_admitted(query)
     }

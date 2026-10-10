@@ -211,11 +211,14 @@ def test_match_cells_coverages_reports_and_features() -> None:
     match bowtie.validate():
         case gm.ValidationReport(False, reason):
             assert reason is not None and 'intersection' in reason
-    features = gm.from_features({
-        'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-        'properties': {'name': 'A'},
-    })
+    features = gm.from_geojson(
+        {
+            'type': 'Feature',
+            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+            'properties': {'name': 'A'},
+        },
+        features=True,
+    )
     match features:
         case gm.Features(geometries, properties, ids):
             assert len(geometries) == 1 and properties == ({'name': 'A'},)
@@ -791,11 +794,14 @@ def test_pickle_round_trips_across_protocols(protocol: int) -> None:
         gm.CRS(4326),
         coverage[0],
         gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), target_cells=4)[0],
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-            'properties': {},
-        }),
+        gm.from_geojson(
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+                'properties': {},
+            },
+            features=True,
+        ),
     ]
     for value in values:
         restored = pickle.loads(pickle.dumps(value, protocol))

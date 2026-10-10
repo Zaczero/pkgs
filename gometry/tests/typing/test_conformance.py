@@ -835,6 +835,7 @@ if TYPE_CHECKING:
     import geopandas as gpd
     import pandas as pd
     import polars as pl
+    import pyarrow as pa
 
     class _CrsAuthority:
         def to_authority(self) -> tuple[str, int]: ...
@@ -862,6 +863,88 @@ if TYPE_CHECKING:
     pandas_series = POINTS.to_pandas()
     assert_type(pandas_series, pd.Series)
     assert_type(gm.from_pandas(pandas_series), gm.GeometryArray[gm.Geometry | None])
+
+    reveal_type(gm.from_wkt('POINT (1 2)'))
+    reveal_type(gm.from_wkt(['POINT (1 2)']))
+    reveal_type(gm.from_wkt(['POINT (1 2)', None]))
+    reveal_type(gm.from_wkt(pandas_series))
+
+    wkb_scalar_bytes: bytes = POINT.to_wkb()
+    wkb_scalar_array: npt.NDArray[np.uint8] = np.frombuffer(
+        wkb_scalar_bytes, dtype=np.uint8
+    )
+    wkb_signed_scalar_array: npt.NDArray[np.int8] = np.frombuffer(
+        wkb_scalar_bytes, dtype=np.int8
+    )
+    wkb_object_rows: npt.NDArray[np.object_] = np.array(
+        [wkb_scalar_bytes, None], dtype=object
+    )
+    wkb_fixed_byte_rows: npt.NDArray[np.bytes_] = np.array(
+        [wkb_scalar_bytes], dtype='S'
+    )
+    reveal_type(gm.from_wkb(wkb_scalar_bytes))
+    reveal_type(gm.from_wkb(wkb_scalar_array))
+    reveal_type(gm.from_wkb(wkb_signed_scalar_array))
+    reveal_type(gm.from_wkb(wkb_object_rows))
+    reveal_type(gm.from_wkb(wkb_fixed_byte_rows))
+    reveal_type(gm.from_wkb([wkb_scalar_bytes]))
+    reveal_type(gm.from_wkb([wkb_scalar_bytes, None]))
+    reveal_type(gm.from_wkb(pandas_series))
+
+    reveal_type(gm.from_polyline('_seK_ibE'))
+    reveal_type(gm.from_polyline(['_seK_ibE']))
+    reveal_type(gm.from_polyline(['_seK_ibE', None]))
+    reveal_type(gm.from_polyline(pandas_series))
+    polars_text_column: pl.Series = pl.Series('wkt', ['POINT (1 2)', None])
+    arrow_binary_column: pa.Array = pa.array([wkb_scalar_bytes, None])
+    arrow_text_column: pa.ChunkedArray = pa.chunked_array([
+        pa.array(['POINT (1 2)']),
+        pa.array([None], type=pa.string()),
+    ])
+    reveal_type(gm.from_wkt(polars_text_column))
+    reveal_type(gm.from_wkt(arrow_text_column))
+    reveal_type(gm.from_wkb(arrow_binary_column))
+    reveal_type(gm.from_polyline(arrow_text_column))
+
+    feature_row: sht.GeoJsonFeature = {
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+        'properties': {'name': 'site'},
+    }
+    feature_non_null: sht.GeoJsonFeatureNonNull = {
+        'type': 'Feature',
+        'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+        'properties': {'name': 'site'},
+    }
+    feature_collection: sht.GeoJsonFeatureCollection = {
+        'type': 'FeatureCollection',
+        'features': [feature_row],
+    }
+    feature_rows: list[sht.GeoJsonFeature | None] = [feature_row, None]
+    feature_text: str = '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}'
+    reveal_type(gm.from_geojson(feature_row))
+    reveal_type(gm.from_geojson(feature_collection))
+    reveal_type(gm.from_geojson(feature_rows))
+    reveal_type(gm.from_geojson(pandas_series))
+    reveal_type(gm.from_geojson(feature_non_null, features=False))
+    reveal_type(gm.from_geojson(feature_non_null, features=True))
+    reveal_type(gm.from_geojson(arrow_text_column))
+
+    def _feature_result_for_runtime_flag(features: bool) -> None:
+        reveal_type(gm.from_geojson(feature_text, features=features))
+
+    reveal_type(gm.points([(1.0, 2.0)]))
+    reveal_type(gm.points(1.0, 2.0))
+    reveal_type(gm.Point((1.0, 2.0)))
+    reveal_type(gm.Point(1.0, 2.0))
+    reveal_type(POINTS.to_wkt())
+    reveal_type(gm.GeometryArray([POINT, None]).to_wkt())
+    reveal_type(POINTS.to_wkb())
+    reveal_type(gm.GeometryArray([POINT, None]).to_wkb())
+    reveal_type(POINTS.to_geojson())
+    reveal_type(gm.GeometryArray([POINT, None]).to_geojson())
+    reveal_type(POINTS.to_polyline())
+    reveal_type(gm.GeometryArray([POINT, None]).to_polyline())
 
     polars_series = POINTS.to_polars()
     assert_type(polars_series, pl.Series)

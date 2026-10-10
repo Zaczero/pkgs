@@ -580,12 +580,13 @@ overhead.
 | GeoJSON | `from_geojson(json.loads(s))` | `from_geojson(s)` — `str`/`bytes` |
 | Many points | `GeometryArray([Point(x, y) for ...])` | [`gm.points(xs, ys)`][gometry.points] |
 | WKB/WKT | `[from_wkb(b) for b in blobs]` | `from_wkb(blobs)` — one batch |
-| Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_features(text)`][gometry.from_features] |
+| Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_geojson(text, features=True)`][gometry.from_geojson] |
 
-When you need the per-feature `properties`/`id` alongside geometry,
-[`gm.from_features`][gometry.from_features] parses the whole FeatureCollection in Rust and
-hands back a validated [`Features(geometries, properties, ids)`][gometry.Features] record — one crossing instead of
-a Python loop.
+When you need the per-feature `properties`/`id` alongside geometry, pass
+`features=True` to [`gm.from_geojson`][gometry.from_geojson]. It parses the whole
+FeatureCollection in Rust and returns a validated
+[`Features(geometries, properties, ids)`][gometry.Features] record — one crossing
+instead of a Python loop.
 
 ## Crossing the dataframe / Arrow boundary
 
@@ -593,7 +594,8 @@ Per-row interop conversion changes a columnar boundary into Python object work. 
 converters accept whole columns.
 
 - **pandas:** [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] stores the native array behind a concrete extension dtype;
-  [`gm.from_pandas()`][gometry.from_pandas] returns that same [`GeometryArray`][gometry.GeometryArray] **zero-copy**.
+  [`gm.from_pandas()`][gometry.from_pandas] shares that storage **zero-copy**. It also imports object Series
+  of geometry-like rows; those rows are converted rather than shared.
 - **Polars:** [`arr.to_polars()`][gometry.GeometryArray.to_polars] / [`gm.from_polars()`][gometry.from_polars] encode and decode a whole WKB/EWKB Binary
   Series in native batched calls. The boundary does not require PyArrow.
 - **GeoPandas:** [`gm.from_geopandas()`][gometry.from_geopandas] / [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] convert a `GeoSeries` in one

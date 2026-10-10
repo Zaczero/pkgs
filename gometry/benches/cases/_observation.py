@@ -133,6 +133,18 @@ def finish_measurement() -> dict[str, Any]:
         json.dumps({'benchmark_control': measurement_done}, sort_keys=True),
         flush=True,
     )
+    try:
+        measurement_ack = json.loads(sys.stdin.readline())
+    except (json.JSONDecodeError, OSError) as error:
+        raise SystemExit(
+            f'benchmark driver completion acknowledgement failed: {error}'
+        ) from error
+    if (
+        not isinstance(measurement_ack, dict)
+        or measurement_ack.get('command') != 'measurement-done-ack'
+        or measurement_ack.get('invocation_id') != _INVOCATION_ID
+    ):
+        raise SystemExit('benchmark driver did not acknowledge measured work')
     identity = _RUNTIME.complete()
     if identity is not _COMMON_IDENTITY:
         raise AssertionError('focused case identity changed after driver permission')

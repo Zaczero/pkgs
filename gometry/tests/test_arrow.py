@@ -77,6 +77,25 @@ _ARROW_LAYOUT_WKTS: dict[str, tuple[str, str, str]] = {
 }
 
 
+def test_format_readers_normalize_arrow_scalars_and_nulls() -> None:
+    point = gm.Point(1, 2, crs=4326)
+    wkts = pa.array(['POINT (1 2)', None])
+    wkbs = pa.chunked_array([
+        pa.array([point.to_wkb()]),
+        pa.array([None], type=pa.binary()),
+    ])
+    geojson = pa.array([_json.dumps({'type': 'Point', 'coordinates': [1, 2]}), None])
+    polylines = pa.chunked_array([
+        pa.array([point.to_polyline()]),
+        pa.array([None], type=pa.string()),
+    ])
+
+    assert gm.from_wkt(wkts).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(wkbs).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_geojson(geojson).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_polyline(polylines).to_wkt() == ['POINT (1 2)', None]
+
+
 @pytest.mark.parametrize('layout', list(_ARROW_LAYOUT_WKTS))
 @pytest.mark.parametrize('masked', [False, True], ids=['dense', 'masked'])
 @pytest.mark.parametrize('shape', ['whole', 'sliced', 'chunked'])

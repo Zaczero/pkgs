@@ -197,7 +197,6 @@ PAGES: tuple[Page, ...] = (
         (
             section(
                 'from_arrow',
-                'from_features',
                 'from_geojson',
                 'from_polyline',
                 'from_wkb',

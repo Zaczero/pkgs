@@ -109,13 +109,18 @@ def run(
         cwd=cwd,
         env=env,
         check=False,
-        capture_output=capture_output,
         text=True,
+        **(
+            {'capture_output': True}
+            if capture_output
+            else {'stdout': sys.stderr, 'stderr': sys.stderr}
+        ),
     )
-    if result.stdout:
-        sys.stderr.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
+    if capture_output:
+        if result.stdout:
+            sys.stderr.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
     if result.returncode:
         raise subprocess.CalledProcessError(
             result.returncode,

@@ -595,7 +595,7 @@ FeatureId: TypeAlias = str | int | float | None
 
 
 class Features:
-    """Aligned feature columns returned by ``from_features``.
+    """Aligned feature columns returned by ``from_geojson(..., features=True)``.
 
     Unpack as ``geometries, properties, ids = features``. Each metadata entry
     corresponds to the geometry at the same row; use ``len(features.geometries)``
@@ -1103,9 +1103,10 @@ keys are rejected at parse time.
 class GeoJsonFeature(TypedDict):
     """A gometry-parseable GeoJSON Feature object (RFC 7946 §3.2).
 
-    ``geometry`` may be ``None`` for missing rows in bulk FeatureCollection /
-    ``from_features`` ingestion. Scalar ``from_geojson`` of a Feature rejects
-    null geometry — use :class:`GeoJsonFeatureNonNull` for that overload.
+    ``geometry`` may be ``None`` in a FeatureCollection, in a GeoJSON row
+    column, or with ``from_geojson(..., features=True)``. Geometry-only
+    decoding rejects a scalar null-geometry Feature; use
+    :class:`GeoJsonFeatureNonNull` for that overload.
     """
 
     type: Literal['Feature']

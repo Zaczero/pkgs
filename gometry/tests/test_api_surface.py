@@ -482,6 +482,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'GeometryCollection': str(inspect.signature(gm.GeometryCollection)),
         'box': str(inspect.signature(gm.box)),
         'points': str(inspect.signature(gm.points)),
+        'from_geojson': str(inspect.signature(gm.from_geojson)),
         'gm.crs_transform_bounds': str(inspect.signature(gm.crs_transform_bounds)),
         'gm.crs_roundtrip': str(inspect.signature(gm.crs_roundtrip)),
     }
@@ -535,7 +536,13 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         signatures['box']
         == '(minx, miny, maxx, maxy, *, crs=None, wrap=None, ccw=True, epoch=None)'
     )
-    assert signatures['points'] == '(x, y, *, z=None, m=None, crs=None, epoch=None)'
+    assert (
+        signatures['points'] == '(x, y=None, *, z=None, m=None, crs=None, epoch=None)'
+    )
+    assert (
+        signatures['from_geojson']
+        == "(data, *, features=False, crs='OGC:CRS84', epoch=None)"
+    )
     assert (
         signatures['Polygon']
         == '(shell=None, holes=None, *, x=None, y=None, z=None, m=None, crs=None, epoch=None)'
@@ -696,7 +703,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'explore',
         'frechet_distance',
         'from_arrow',
-        'from_features',
         'from_geojson',
         'from_geopandas',
         'from_geoparquet',

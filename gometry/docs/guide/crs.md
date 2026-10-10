@@ -889,8 +889,10 @@ spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 coordinates in the CRS-native longitude quotient. Validity uses a faithful
 planar partition when the stored chart preserves source coordinates; otherwise
 it reads exact Q incidence without shifting stored longitudes. Operations that
-construct split output insert affine crossing vertices into straight edges in
-the unwrapped longitude/latitude chart. Geographic shape measures
+construct split output insert affine X/Y crossings into straight edges in the
+unwrapped longitude/latitude chart. Eligible Z/M at inserted crossings follow
+ellipsoidal arclength along the retained source edge; authored full-period
+edges keep their path through quarter witnesses. Geographic shape measures
 ([`length`][gometry.length] and [`area`][gometry.area]) integrate those chart
 edges, so splitting preserves ellipsoidal length and area to rounding.
 Point-to-point [`distance`][gometry.distance] continues to use the shortest

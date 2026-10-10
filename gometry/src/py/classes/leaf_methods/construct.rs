@@ -34,14 +34,18 @@ macro_rules! leaf_initializer {
 impl PyPoint {
     /// Create a ``Point`` geometry — ``XY``, ``XYZ``, ``XYM``, or ``XYZM``.
     ///
-    /// Pass ``z`` and/or ``m`` for higher-dimensional points; to build many
-    /// points at once use ``points``.
+    /// Pass one coordinate value or separate ``x``/``y`` scalars. A coordinate
+    /// of length two, three, or four means ``XY``, ``XYZ``, or ``XYZM``.
+    /// Pass ``m=`` to build ``XYM``; to build many points use ``points``.
     ///
     /// Parameters
     /// ----------
-    /// x, y : float, optional
-    ///     Finite coordinates (longitude, latitude in the CRS-native angular
-    ///     units for a geographic ``crs``). Omit both for an empty point.
+    /// x : Point, coordinate sequence, or float, optional
+    ///     A Point to copy, one finite coordinate value, or the X coordinate.
+    ///     Omit both coordinates for an empty point.
+    /// y : float, optional
+    ///     Finite Y coordinate when ``x`` is a scalar. Omit it when ``x`` is a
+    ///     coordinate value or existing Point.
     ///
     /// z : float, optional
     ///     Z (elevation) ordinate, producing an ``XYZ`` or ``XYZM`` point.
@@ -78,6 +82,8 @@ impl PyPoint {
     /// 'POINT Z (1 2 3)'
     /// >>> gm.Point(1, 2, m=9).to_wkt()
     /// 'POINT M (1 2 9)'
+    /// >>> gm.Point((1, 2, 3, 9)).to_wkt()
+    /// 'POINT ZM (1 2 3 9)'
     /// >>> gm.Point(13.4, 52.5, crs=4326).crs
     /// CRS("EPSG:4326")
     /// >>> gm.Point().to_wkt()

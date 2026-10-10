@@ -252,7 +252,6 @@ __all__ = [
     'equals_identical',
     'frechet_distance',
     'from_arrow',
-    'from_features',
     'from_geojson',
     'from_polyline',
     'from_wkb',
@@ -3552,16 +3551,21 @@ class Geometry:
         3
         """
     def split_antimeridian(self) -> Geometry:
-        """Split at the antimeridian. Parts that cross come back as multiple parts
+        """Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+        geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+        come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
-        Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-        running off the seam closes over its pole automatically. Geometries that do
-        not cross are returned unchanged. A split ``LineString`` becomes a
-        ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-        Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        the split subdivides existing chart edges, so ellipsoidal area and perimeter
-        are conserved to rounding.
+        Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+        follow ellipsoidal arclength along the retained source edge. An authored
+        full-period edge is retained with quarter witnesses before its longitudes are
+        canonicalized. The two seam aliases and a displacement of multiple periods do
+        not imply a full-period edge. A ring running off the seam closes over its pole
+        automatically. Geometries that do not cross are returned unchanged. A split
+        ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+        ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+        existing chart edges, so ellipsoidal area and perimeter are conserved to
+        rounding.
 
         Returns
         -------
@@ -3702,17 +3706,25 @@ class Geometry:
     def sample_points(
         self, count: _IntScalar, *, seed: _IntScalar
     ) -> GeometryArray[Point]:
-        """Random points on the geometry. The sample space is the geometry's highest
-        dimension: uniform over area for areal input, along length for lineal input,
-        and across the member points of a point set — falling back a dimension when
-        the higher one is degenerate (a zero-area polygon samples its boundary),
-        like centroid. Deterministic: the same input and ``seed`` always produce
-        the same points (an explicit seed is required — no hidden global RNG). Array
-        rows draw distinct deterministic streams derived from ``seed`` and the row
-        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-        and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-        to sample and yields no points. Sampled points are invented interior points,
-        so they cannot carry the source geometry's Z/M and are returned in XY.
+        """Random points on the geometry. The sample space is its highest
+        dimension: coordinate-area weighted for areal input, coordinate-length
+        weighted for lineal input, and equal weight across point atoms. Geographic
+        lines follow each retained longitude branch, while geographic areas are split
+        into seam- and pole-aware chart parts before sampling. Length and area weights
+        use the native coordinate chart, not ellipsoidal measures; for example, a
+        degree-based 170° to -170° line follows its retained +20° path, contributing
+        20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+        chart area, not the complementary raw-coordinate span. Each logical
+        member contributes separately, so overlapping members retain their sampling
+        multiplicity. A zero-area polygon falls back to its linework, and zero-length
+        linework falls back to vertices, like centroid. Deterministic: the same input
+        and ``seed`` always produce the same points (an explicit seed is required —
+        no hidden global RNG). Array rows draw distinct deterministic streams derived
+        from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+                ``arr.sample_points(n, seed=s)[0]`` and
+                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+                sample and yields no points. Results retain the input CRS and coordinate
+                epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
@@ -4578,6 +4590,17 @@ class Point(Geometry):
     @overload
     def __new__(
         cls,
+        x: Point | _Coordinate,
+        y: None = None,
+        *,
+        z: _FloatScalarInput | None = None,
+        m: _FloatScalarInput | None = None,
+        crs: CrsInput | None = None,
+        epoch: _FloatScalarInput | None = None,
+    ) -> Self: ...
+    @overload
+    def __new__(
+        cls,
         x: _FloatScalarInput,
         y: _FloatScalarInput,
         *,
@@ -4588,14 +4611,18 @@ class Point(Geometry):
     ) -> Self:
         """Create a ``Point`` geometry — ``XY``, ``XYZ``, ``XYM``, or ``XYZM``.
 
-        Pass ``z`` and/or ``m`` for higher-dimensional points; to build many
-        points at once use ``points``.
+        Pass one coordinate value or separate ``x``/``y`` scalars. A coordinate
+        of length two, three, or four means ``XY``, ``XYZ``, or ``XYZM``.
+        Pass ``m=`` to build ``XYM``; to build many points use ``points``.
 
         Parameters
         ----------
-        x, y : float, optional
-            Finite coordinates (longitude, latitude in the CRS-native angular
-            units for a geographic ``crs``). Omit both for an empty point.
+        x : Point, coordinate sequence, or float, optional
+            A Point to copy, one finite coordinate value, or the X coordinate.
+            Omit both coordinates for an empty point.
+        y : float, optional
+            Finite Y coordinate when ``x`` is a scalar. Omit it when ``x`` is a
+            coordinate value or existing Point.
 
         z : float, optional
             Z (elevation) ordinate, producing an ``XYZ`` or ``XYZM`` point.
@@ -4632,6 +4659,8 @@ class Point(Geometry):
         'POINT Z (1 2 3)'
         >>> gm.Point(1, 2, m=9).to_wkt()
         'POINT M (1 2 9)'
+        >>> gm.Point((1, 2, 3, 9)).to_wkt()
+        'POINT ZM (1 2 3 9)'
         >>> gm.Point(13.4, 52.5, crs=4326).crs
         CRS("EPSG:4326")
         >>> gm.Point().to_wkt()
@@ -7645,6 +7674,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> os.path.getsize(path) > 0
         True
         """
+    @overload
+    def to_polyline(
+        self: GeometryArray[Geometry], *, precision: int = 5, drop_epoch: bool = False
+    ) -> list[str]: ...
+    @overload
     def to_polyline(
         self, *, precision: int = 5, drop_epoch: bool = False
     ) -> list[str | None]:
@@ -8283,6 +8317,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'LINESTRING (0 0, 0 2)'
         """
 
+    @overload
+    def to_geojson(
+        self: GeometryArray[Geometry], *, drop_epoch: bool = False
+    ) -> list[str]: ...
+    @overload
     def to_geojson(self, *, drop_epoch: bool = False) -> list[str | None]:
         """Serialize to `GeoJSON` text. `GeoJSON` is WGS84 by specification (RFC 7946):
         CRS-tagged input must use the 2D longitude/latitude family
@@ -10262,16 +10301,21 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def split_antimeridian(
         self: GeometryArray[Geometry | None],
     ) -> GeometryArray[Geometry | None]:
-        """Split at the antimeridian. Parts that cross come back as multiple parts
+        """Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+        geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+        come back as multiple parts
         whose edges follow the seam — each side keeping its own seam sign — so the
         result remains a coordinate-planar longitude/latitude chart for topology.
-        Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-        running off the seam closes over its pole automatically. Geometries that do
-        not cross are returned unchanged. A split ``LineString`` becomes a
-        ``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-        Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-        the split subdivides existing chart edges, so ellipsoidal area and perimeter
-        are conserved to rounding.
+        Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+        follow ellipsoidal arclength along the retained source edge. An authored
+        full-period edge is retained with quarter witnesses before its longitudes are
+        canonicalized. The two seam aliases and a displacement of multiple periods do
+        not imply a full-period edge. A ring running off the seam closes over its pole
+        automatically. Geometries that do not cross are returned unchanged. A split
+        ``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+        ``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+        existing chart edges, so ellipsoidal area and perimeter are conserved to
+        rounding.
 
         Returns
         -------
@@ -10499,17 +10543,25 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def sample_points(
         self, count: _IntInput, *, seed: _IntInput
     ) -> Groups[GeometryArray[Point]]:
-        """Random points on the geometry. The sample space is the geometry's highest
-        dimension: uniform over area for areal input, along length for lineal input,
-        and across the member points of a point set — falling back a dimension when
-        the higher one is degenerate (a zero-area polygon samples its boundary),
-        like centroid. Deterministic: the same input and ``seed`` always produce
-        the same points (an explicit seed is required — no hidden global RNG). Array
-        rows draw distinct deterministic streams derived from ``seed`` and the row
-        index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-        and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-        to sample and yields no points. Sampled points are invented interior points,
-        so they cannot carry the source geometry's Z/M and are returned in XY.
+        """Random points on the geometry. The sample space is its highest
+        dimension: coordinate-area weighted for areal input, coordinate-length
+        weighted for lineal input, and equal weight across point atoms. Geographic
+        lines follow each retained longitude branch, while geographic areas are split
+        into seam- and pole-aware chart parts before sampling. Length and area weights
+        use the native coordinate chart, not ellipsoidal measures; for example, a
+        degree-based 170° to -170° line follows its retained +20° path, contributing
+        20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+        chart area, not the complementary raw-coordinate span. Each logical
+        member contributes separately, so overlapping members retain their sampling
+        multiplicity. A zero-area polygon falls back to its linework, and zero-length
+        linework falls back to vertices, like centroid. Deterministic: the same input
+        and ``seed`` always produce the same points (an explicit seed is required —
+        no hidden global RNG). Array rows draw distinct deterministic streams derived
+        from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+                ``arr.sample_points(n, seed=s)[0]`` and
+                ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+                sample and yields no points. Results retain the input CRS and coordinate
+                epoch. Sampled points are new XY locations, so they have no source Z/M.
 
         Parameters
         ----------
@@ -11186,11 +11238,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POINT M (1 2 5)'
         """
 
+    @overload
+    def to_wkt(
+        self: GeometryArray[Geometry],
+        *,
+        include_srid: bool = False,
+        precision: _IntScalar | None = None,
+        drop_epoch: bool = False,
+    ) -> list[str]: ...
+    @overload
     def to_wkt(
         self,
         *,
         include_srid: bool = False,
-        precision: int | None = None,
+        precision: _IntScalar | None = None,
         drop_epoch: bool = False,
     ) -> list[str | None]:
         """Serialize to Well-Known Text.
@@ -11237,11 +11298,20 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ['POINT (1.5 2.5)']
         """
 
+    @overload
+    def to_wkb(
+        self: GeometryArray[Geometry],
+        *,
+        include_srid: bool = False,
+        precision: _IntScalar | None = None,
+        drop_epoch: bool = False,
+    ) -> list[bytes]: ...
+    @overload
     def to_wkb(
         self,
         *,
         include_srid: bool = False,
-        precision: int | None = None,
+        precision: _IntScalar | None = None,
         drop_epoch: bool = False,
     ) -> list[bytes | None]:
         """Serialize to Well-Known Binary.
@@ -16227,6 +16297,17 @@ def box(
     'POLYGON ((0 0, 0 1, 2 1, 2 0, 0 0))'
     """
 
+@overload
+def points(
+    x: _CoordinatesInput | Iterable[Point],
+    y: None = None,
+    *,
+    z: FloatInput | None = None,
+    m: FloatInput | None = None,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Point]: ...
+@overload
 def points(
     x: FloatInput,
     y: FloatInput,
@@ -16238,15 +16319,16 @@ def points(
 ) -> GeometryArray[Point]:
     """Create a ``GeometryArray`` of points from parallel coordinate columns.
 
-    Taking separate ``x`` and ``y`` (not interleaved tuples) keeps axis order
-    explicit and avoids the lon/lat-vs-lat/lon footgun. Each column accepts a
-    scalar (broadcast to every row) or a sequence of floats (one per point).
+    Pass either coordinate rows or separate ``x``/``y`` columns. Separate
+    columns keep axis order explicit and accept scalars that broadcast across
+    rows; when both are scalars, the result contains one point.
 
     Parameters
     ----------
-    x, y : float or sequence of float
-        X and Y ordinates. At least one must be sequence of float to set the row count;
-        scalars broadcast numpy-style.
+    x : coordinate rows or float or sequence of float
+        Coordinate rows as ``(x, y[, z[, m]])`` values, or the X column.
+    y : float or sequence of float, optional
+        Y column when ``x`` is an X column. Omit it when ``x`` contains rows.
 
     z, m : float or sequence of float, optional
         Z and M ordinates, broadcast like ``x``/``y``.
@@ -16270,7 +16352,7 @@ def points(
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
     GeometryError
-        If every argument is scalar (use `Point`) or ``epoch`` is invalid.
+        If ``epoch`` is invalid.
 
     See Also
     --------
@@ -16281,6 +16363,10 @@ def points(
     >>> import gometry as gm
     >>> gm.points([0, 1], [0, 1]).to_wkt()
     ['POINT (0 0)', 'POINT (1 1)']
+    >>> gm.points(1, 2).to_wkt()
+    ['POINT (1 2)']
+    >>> gm.points([(1, 2), (3, 4)]).to_wkt()
+    ['POINT (1 2)', 'POINT (3 4)']
     """
 
 @overload
@@ -16324,8 +16410,8 @@ def boxes(
     Parameters
     ----------
     minx, miny, maxx, maxy : float or sequence of float
-        Rectangle bounds per row. At least one must be sequence of float; scalars
-        broadcast numpy-style.
+        Rectangle bounds per row. Scalars broadcast numpy-style; four scalar
+        bounds produce a one-row array.
 
     crs : CRS-like, optional
         CRS applied to every box. Geographic rows follow the same native-range
@@ -16354,8 +16440,8 @@ def boxes(
         If ``epoch`` is set without ``crs``, or ``wrap='split'`` is used
         without a geographic CRS.
     GeometryError
-        If every argument is scalar (use `box`), ``epoch`` is invalid, or wrapped
-        geographic bounds lie outside their CRS frame.
+        If ``epoch`` is invalid, or wrapped geographic bounds lie outside their
+        CRS frame.
 
     Examples
     --------
@@ -16365,17 +16451,18 @@ def boxes(
     """
 
 def line_strings(
-    values: Iterable[Iterable[Iterable[float]]],
+    values: Iterable[LineString | _CoordinatesInput],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[LineString]:
-    """Create a ``GeometryArray`` of linestrings from per-line coordinate inputs.
+    """Create a ``GeometryArray`` of linestrings from coordinate rows or Linestrings.
 
     Parameters
     ----------
     values : sequence
-        Each member is a raw coordinate sequence accepted by `LineString`.
+        Each member is a ``LineString`` or a raw coordinate sequence accepted
+        by `LineString`.
 
     crs : CRS-like, optional
         CRS applied to every linestring.
@@ -16393,9 +16480,11 @@ def line_strings(
     InvalidGeometryError
         If a member line has fewer than two vertices or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``LineString``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows do not share a CRS or coordinate epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16408,17 +16497,18 @@ def line_strings(
     """
 
 def polygons(
-    values: Iterable[Iterable[Iterable[float]] | Iterable[Iterable[Iterable[float]]]],
+    values: Iterable[Polygon | _CoordinatesInput | _RingsInput],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[Polygon]:
-    """Create a ``GeometryArray`` of polygons from per-polygon ring inputs.
+    """Create a ``GeometryArray`` of polygons from raw coordinates or Polygons.
 
     Parameters
     ----------
     values : sequence
-        Each member is a raw shell coordinate sequence or ``[shell, *holes]``.
+        Each member is a ``Polygon``, a raw shell coordinate sequence, or
+        ``[shell, *holes]``.
 
     crs : CRS-like, optional
         CRS applied to every polygon.
@@ -16436,9 +16526,11 @@ def polygons(
     InvalidGeometryError
         If a ring has fewer than three corners or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``Polygon``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows do not share a CRS or coordinate epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16451,17 +16543,18 @@ def polygons(
     """
 
 def multi_points(
-    values: Iterable[Iterable[Iterable[float]]],
+    values: Iterable[MultiPoint | Iterable[Point | _Coordinate] | _CoordinatesInput],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[MultiPoint]:
-    """Create a ``GeometryArray`` of multipoints from per-multipoint inputs.
+    """Create a ``GeometryArray`` of multipoints from per-row inputs.
 
     Parameters
     ----------
     values : sequence
-        Each member is a raw coordinate sequence accepted by `MultiPoint`.
+        Each member is a ``MultiPoint`` or input accepted by `MultiPoint`,
+        including ``Point`` members and raw coordinate values.
 
     crs : CRS-like, optional
         CRS applied to every multipoint.
@@ -16479,9 +16572,12 @@ def multi_points(
     InvalidGeometryError
         If any coordinate is non-finite or has mixed dimensionality.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``MultiPoint``, or a member is not a
+        ``Point``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows or multipart members do not share a CRS or epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16493,17 +16589,18 @@ def multi_points(
     """
 
 def multi_line_strings(
-    values: Iterable[Iterable[Iterable[Iterable[float]]]],
+    values: Iterable[MultiLineString | Iterable[LineString | _CoordinatesInput]],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[MultiLineString]:
-    """Create a ``GeometryArray`` of multilinestrings from per-multiline inputs.
+    """Create a ``GeometryArray`` of multilinestrings from per-row inputs.
 
     Parameters
     ----------
     values : sequence
-        Each member is raw line coordinate sequences accepted by `MultiLineString`.
+        Each member is a ``MultiLineString`` or input accepted by
+        `MultiLineString`, including ``LineString`` members.
 
     crs : CRS-like, optional
         CRS applied to every multilinestring.
@@ -16521,9 +16618,12 @@ def multi_line_strings(
     InvalidGeometryError
         If a member line has fewer than two vertices or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``MultiLineString``, or a member is not a
+        ``LineString``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows or multipart members do not share a CRS or epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -16535,17 +16635,20 @@ def multi_line_strings(
     """
 
 def multi_polygons(
-    values: Iterable[Iterable[Iterable[Iterable[Iterable[float]]]]],
+    values: Iterable[
+        MultiPolygon | Iterable[Polygon | _CoordinatesInput | _RingsInput]
+    ],
     *,
     crs: CrsInput | None = None,
     epoch: float | None = None,
 ) -> GeometryArray[MultiPolygon]:
-    """Create a ``GeometryArray`` of multipolygons from per-multipolygon inputs.
+    """Create a ``GeometryArray`` of multipolygons from per-row inputs.
 
     Parameters
     ----------
     values : sequence
-        Each member is raw polygon coordinate sequences accepted by `MultiPolygon`.
+        Each member is a ``MultiPolygon`` or input accepted by `MultiPolygon`,
+        including ``Polygon`` members and shell/ring coordinate shorthand.
 
     crs : CRS-like, optional
         CRS applied to every multipolygon.
@@ -16563,9 +16666,12 @@ def multi_polygons(
     InvalidGeometryError
         If any ring has fewer than three corners or non-finite coordinates.
     TypeError
-        If a member is an already-built geometry; use `GeometryArray(values)`.
+        If a geometry row is not a ``MultiPolygon``, or a member is not a
+        ``Polygon``.
     CRSError
         If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
+    CRSMismatchError
+        If geometry rows or multipart members do not share a CRS or epoch.
     GeometryError
         If ``epoch`` is not a finite decimal year.
 
@@ -17258,6 +17364,14 @@ def from_polyline(
 ) -> Point | LineString: ...
 @overload
 def from_polyline(
+    data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
+    *,
+    precision: int = 5,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: float | None = None,
+) -> GeometryArray[Point | LineString | None]: ...
+@overload
+def from_polyline(
     data: Iterable[str],
     *,
     precision: int = 5,
@@ -17277,15 +17391,16 @@ def from_polyline(
     The Google Encoded Polyline Algorithm Format — the compact lat/lon
     route encoding used by Google Maps, OSRM, and Valhalla. Accepts one
     string (returns a ``Point`` for one coordinate, otherwise a ``LineString``)
-    or an iterable of strings/``None`` rows (returns a `GeometryArray` with
-    missing rows). Polylines are WGS84 by definition, so results carry OGC:CRS84
+    or an iterable/dataframe/Arrow column of strings/``None`` rows (returns a
+    `GeometryArray` with missing rows). Polylines are WGS84 by definition, so results carry OGC:CRS84
     unless ``crs=None`` explicitly requests a CRS-free result;
     ``epoch`` restores coordinate-epoch metadata on round-trip.
 
     Parameters
     ----------
-    data : str or iterable of str
-        Encoded polyline text.
+    data : str, iterable of str, or dataframe/Arrow column
+        Encoded polyline text or a pandas/Polars Series or PyArrow
+        Array/ChunkedArray. Missing column values become missing rows.
     precision : int, default 5
         Decimal digits encoded per ordinate (``0`` to ``11``); 5 is the
         classic default, 6 the high-resolution variant.
@@ -20360,6 +20475,13 @@ def from_wkt(
 ) -> Geometry: ...
 @overload
 def from_wkt(
+    data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def from_wkt(
     data: Iterable[str],
     *,
     crs: CrsInput | None = None,
@@ -20381,9 +20503,10 @@ def from_wkt(
 
     Parameters
     ----------
-    data : str or iterable of str
-        A single WKT/EWKT string, or any iterable of them for a
-        ``GeometryArray``.
+    data : str, iterable of str, or dataframe/Arrow column
+        A single WKT/EWKT string, an iterable of rows, or a pandas/Polars
+        Series or PyArrow Array/ChunkedArray. Missing column values become
+        missing rows.
 
     crs : CRS-like, optional
         CRS for SRID-less input. An embedded SRID that *contradicts* an
@@ -20424,6 +20547,34 @@ def from_wkt(
 
 @overload
 def from_wkb(
+    data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def from_wkb(
+    data: npt.NDArray[np.uint8] | npt.NDArray[np.int8],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> Geometry: ...
+@overload
+def from_wkb(
+    data: npt.NDArray[np.object_],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry | None]: ...
+@overload
+def from_wkb(
+    data: npt.NDArray[np.bytes_],
+    *,
+    crs: CrsInput | None = None,
+    epoch: float | None = None,
+) -> GeometryArray[Geometry]: ...
+@overload
+def from_wkb(
     data: Buffer, *, crs: CrsInput | None = None, epoch: float | None = None
 ) -> Geometry: ...
 @overload
@@ -20455,8 +20606,11 @@ def from_wkb(
 
     Parameters
     ----------
-    data : bytes or sequence of bytes
-        A WKB/EWKB buffer, or an iterable of them for a ``GeometryArray``.
+    data : bytes, byte buffer, iterable of buffers, or dataframe/Arrow column
+        A WKB/EWKB byte buffer, an iterable of byte buffers, or a pandas/Polars
+        Series or PyArrow Array/ChunkedArray of WKB values. A one-byte integer
+        ndarray is one scalar byte buffer; other ndarrays are row columns.
+        Missing column values become missing rows.
 
     crs : CRS-like, optional
         CRS for SRID-less input. An embedded SRID that *contradicts* an
@@ -20771,82 +20925,6 @@ def from_arrow(
     ['POINT (1 2)']
     """
 
-def from_features(
-    features: str
-    | bytes
-    | bytearray
-    | memoryview[Any]
-    | Mapping[str, Any]
-    | Iterable[Mapping[str, Any]],
-    *,
-    crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
-) -> Features:
-    """Parse GeoJSON features into geometries plus parallel properties and ids.
-
-    Accepts a ``FeatureCollection``/``Feature`` mapping, JSON text of one
-    (``str`` or UTF-8 bytes/buffer), or an iterable of ``Feature`` mappings.
-    Unlike `from_geojson`, per-feature ``properties`` and ``id`` values are
-    preserved. Missing ``properties`` normalize to ``{}``; an explicit JSON
-    null remains ``None``.
-
-    Parameters
-    ----------
-    features : str, bytes, mapping, or iterable of mapping
-        A ``FeatureCollection``/``Feature`` mapping, JSON text of one, or an
-        iterable of ``Feature`` mappings.
-    crs : CRS-like, default 'OGC:CRS84'
-        CRS to attach. GeoJSON coordinates are WGS84 by specification, so the
-        default declares OGC:CRS84 (lon/lat); pass ``None`` for CRS-free
-        geometries or ``crs=4326`` for EPSG:4326.
-    epoch : float, optional
-        Coordinate epoch (decimal year) to attach as frame metadata.
-
-    Returns
-    -------
-    Features
-        A ``Features`` record with one row per
-        feature. Null geometries are represented by missing array rows.
-
-    Raises
-    ------
-    ParseError
-        If the input is not a Feature/FeatureCollection/iterable, a feature is
-        malformed, a geometry cannot be parsed, or a legacy ``crs`` member is
-        unsupported or conflicts with ``crs``, a position is outside the WGS84
-        domain, or a ring fails structural admission
-        (``format`` is ``"geojson"``).
-    CRSError
-        If ``crs`` is not recognized or is outside the WGS84 family, or
-        ``epoch`` is set with ``crs=None``.
-    GeometryError
-        If ``epoch`` is not a finite decimal year.
-
-    Notes
-    -----
-    Text input is decoded in Rust. Coordinate numbers follow the same admission
-    as ``from_geojson``: correctly-rounded binary64 floats, and integers only
-    when exactly representable as ``float`` (non-exact integers raise). Feature
-    properties and IDs must contain JSON-compatible values; Python mapping
-    inputs retain property key order and exact integer values.
-
-    See Also
-    --------
-    from_geojson : Decode geometry while dropping feature side data.
-    to_feature_collection : Encode geometry and aligned side data.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> feats = gm.from_features([{
-    ...     'type': 'Feature',
-    ...     'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
-    ...     'properties': {'a': 1},
-    ... }])
-    >>> feats.geometries.to_wkt()
-    ['POINT (1 2)']
-    """
-
 def to_feature(
     geom: Geometry | None,
     *,
@@ -20978,6 +21056,7 @@ def to_feature_collection(
 def from_geojson(
     data: GeoJsonFeatureCollection,
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> GeometryArray[Geometry | None]: ...
@@ -20985,6 +21064,7 @@ def from_geojson(
 def from_geojson(
     data: GeoJsonGeometry | GeoJsonFeatureNonNull,
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Geometry: ...
@@ -20992,29 +21072,67 @@ def from_geojson(
 def from_geojson(
     data: _GeoJsonScalar,
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> Geometry | GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
-    data: Iterable[_GeoJsonScalar | None],
+    data: PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
-    data: _GeoJsonScalar | Iterable[_GeoJsonScalar | None],
+    data: _GeoJsonScalar
+    | PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
     *,
+    features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: float | None = None,
-) -> Geometry | GeometryArray[Geometry | None]:
-    """Parse `geojson` from a string or mapping.
+) -> Geometry | GeometryArray[Geometry | None]: ...
+@overload
+def from_geojson(
+    data: _GeoJsonScalar
+    | PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
+    *,
+    features: Literal[True],
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: float | None = None,
+) -> Features: ...
+@overload
+def from_geojson(
+    data: _GeoJsonScalar
+    | PandasSeries
+    | PolarsSeries
+    | PyArrowArray
+    | PyArrowChunkedArray
+    | Iterable[_GeoJsonScalar | None],
+    *,
+    features: bool,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: float | None = None,
+) -> Geometry | GeometryArray[Geometry | None] | Features:
+    """Parse GeoJSON geometry, rows, or feature metadata.
 
-    A geometry or ``Feature`` decodes to a ``Geometry`` (Feature properties
-    are dropped — see `from_features` to keep them); a ``FeatureCollection``
-    is a feature set, so it decodes to a ``GeometryArray`` with one geometry
-    per feature.
+    A geometry or ``Feature`` decodes to a ``Geometry`` by default; a
+    ``FeatureCollection`` decodes to a ``GeometryArray`` with one geometry per
+    feature. Set ``features=True`` to retain feature properties and IDs in a
+    ``Features`` result.
 
     Coordinate sequences are **axis-uniform**: every position in one sequence
     (LineString, MultiPoint member list, ring, …) must share the same axes
@@ -21026,8 +21144,14 @@ def from_geojson(
 
     Parameters
     ----------
-    data : str or mapping
-        A `geojson` string or mapping (Feature/FeatureCollection ok).
+    data : str, mapping, row iterable, or dataframe/Arrow column
+        A GeoJSON string, mapping, row iterable, or pandas/Polars Series or
+        PyArrow Array/ChunkedArray. Feature and FeatureCollection inputs are
+        accepted. Missing column values become missing rows.
+
+    features : bool, default False
+        Preserve Feature properties and IDs in a ``Features`` result. Geometry-
+        only inputs are not valid when this is ``True``.
 
     crs : CRS-like, default 'OGC:CRS84'
         CRS to attach. `geojson` coordinates are WGS84 by specification, so
@@ -21046,6 +21170,9 @@ def from_geojson(
     Geometry or GeometryArray
         The decoded geometry, or one geometry per feature for a
         ``FeatureCollection``.
+    Features
+        When ``features=True``, one geometry and its aligned properties and ID
+        per input feature.
 
     Raises
     ------
@@ -21069,11 +21196,14 @@ def from_geojson(
     with ``to_geojson``). Integer tokens and Python ``int`` values are admitted
     only when exactly representable as ``float``; non-exact integers raise
     rather than silently rounding. Text and mapping inputs share this rule.
+    Dataframe and Arrow columns are converted to their native Python row values
+    before the same decoder runs.
 
     See Also
     --------
     Geometry.to_geojson : Serialize a geometry to GeoJSON.
-    from_features : Keep per-feature properties and ids.
+    Features : The aligned feature properties and IDs returned by
+        ``features=True``.
 
     Examples
     --------

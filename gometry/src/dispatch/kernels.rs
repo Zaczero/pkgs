@@ -589,6 +589,9 @@ pub(crate) fn unary_split_antimeridian(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
+    if ctx.frame.crs_ref().is_none() {
+        return data.shape().split_antimeridian_in_frame(frame);
+    }
     let metric_access = || {
         ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
             crate::crs::CrsError::invalid(

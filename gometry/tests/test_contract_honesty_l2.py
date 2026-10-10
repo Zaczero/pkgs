@@ -86,9 +86,9 @@ def test_crs_export_defaults_are_literals_and_match_omission() -> None:
         crs.to_projjson(indentation_width=None)
 
 
-def test_from_features_resolves_frame_before_all_input_lanes() -> None:
+def test_from_geojson_resolves_frame_before_all_input_lanes() -> None:
     feature = {'type': 'Feature', 'properties': {}}
     for value in (feature, json.dumps(feature), json.dumps(feature).encode()):
         with pytest.raises(gm.CRSError) as raised:
-            gm.from_features(value, crs='not-a-crs')
+            gm.from_geojson(value, crs='not-a-crs', features=True)
         assert type(raised.value) is gm.CRSError
