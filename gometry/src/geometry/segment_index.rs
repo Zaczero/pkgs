@@ -57,9 +57,7 @@ pub(crate) use index::{
     CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
     CLEARANCE_POINT_RECHECKS,
 };
-pub(crate) use index::{
-    ClearancePointQuery, PointSetIndex, SegmentIndex, clearance_aabb_lower_bound,
-};
+pub(crate) use index::{ClearancePointQuery, PointSetIndex, SegmentIndex};
 pub(in crate::geometry) use order_tree::OrderTree;
 pub(in crate::geometry) use persistent_order::PersistentOrder;
 pub(crate) use stabbing::{
