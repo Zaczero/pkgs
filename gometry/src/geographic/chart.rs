@@ -175,7 +175,7 @@ pub(crate) fn point_set_centroid(shape: &Shape, frame: GeographicFrame) -> Resul
     {
         return Ok(None);
     }
-    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame) else {
         return Ok(None);
     };
     let raw_extrema = match center {
@@ -205,7 +205,7 @@ pub(crate) fn point_set_surface(shape: &Shape, frame: GeographicFrame) -> Result
     {
         return Ok(None);
     }
-    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame) else {
         return Ok(None);
     };
     let raw_extrema = match center {
@@ -505,8 +505,7 @@ mod tests {
         expected_coordinate: &str,
     ) {
         assert!(matches!(
-            crate::geometry::point_set_center_summary(shape, GeographicFrame::crs84())
-                .expect("center summary"),
+            crate::geometry::point_set_center_summary(shape, GeographicFrame::crs84()),
             Some(PointSetCenter::Chart(None))
         ));
         let Err(centroid_error) = point_set_centroid(shape, GeographicFrame::crs84()) else {
@@ -575,7 +574,6 @@ mod tests {
 
         let Some(PointSetCenter::Ordinary((x, y))) =
             crate::geometry::point_set_center_summary(&shape, frame)
-                .expect("ordinary point-set center")
         else {
             panic!("small symmetric support has an ordinary center");
         };
@@ -598,7 +596,6 @@ mod tests {
 
         let Some(PointSetCenter::Ordinary((x, y))) =
             crate::geometry::point_set_center_summary(&shape, frame)
-                .expect("actual bounds certify ordinary support")
         else {
             panic!("actual narrow bounds recover the ordinary route");
         };
@@ -626,7 +623,6 @@ mod tests {
 
         let Some(PointSetCenter::Ordinary((x, y))) =
             crate::geometry::point_set_center_summary(&shape, frame)
-                .expect("finite actual bounds certify ordinary support")
         else {
             panic!("an ordinary proof returns its mean, not support bounds");
         };
@@ -647,8 +643,7 @@ mod tests {
         let frame = GeographicFrame::try_new(unit, unit, 0.0).expect("grad frame");
         let ordinary = multipoint_columns(vec![-20.0, 20.0], vec![-30.0, 30.0]);
         assert!(matches!(
-            crate::geometry::point_set_center_summary(&ordinary, frame)
-                .expect("ordinary grad support"),
+            crate::geometry::point_set_center_summary(&ordinary, frame),
             Some(PointSetCenter::Ordinary((0.0, 0.0)))
         ));
 
@@ -656,8 +651,7 @@ mod tests {
         let half_turn =
             multipoint_columns(vec![-half_period / 2.0, half_period / 2.0], vec![0.0; 2]);
         assert!(matches!(
-            crate::geometry::point_set_center_summary(&half_turn, frame)
-                .expect("half-turn chart support"),
+            crate::geometry::point_set_center_summary(&half_turn, frame),
             Some(PointSetCenter::Chart(Some(bounds)))
                 if bounds == Bounds::new_raw(-half_period / 2.0, 0.0, half_period / 2.0, 0.0)
         ));
@@ -665,16 +659,14 @@ mod tests {
         let pole = frame.chart_pole_latitude(ChartPole::North);
         let polar = multipoint_columns(vec![0.0, 1.0], vec![0.0, pole]);
         assert!(matches!(
-            crate::geometry::point_set_center_summary(&polar, frame)
-                .expect("polar chart support"),
+            crate::geometry::point_set_center_summary(&polar, frame),
             Some(PointSetCenter::Chart(Some(bounds)))
                 if bounds == Bounds::new_raw(0.0, 0.0, 1.0, pole)
         ));
 
         let seam = multipoint_columns(vec![199.0, -199.0], vec![0.0; 2]);
         assert!(matches!(
-            crate::geometry::point_set_center_summary(&seam, frame)
-                .expect("seam chart support"),
+            crate::geometry::point_set_center_summary(&seam, frame),
             Some(PointSetCenter::Chart(Some(bounds)))
                 if bounds == Bounds::new_raw(-199.0, 0.0, 199.0, 0.0)
         ));
@@ -761,8 +753,7 @@ mod tests {
         }
 
         assert!(matches!(
-            crate::geometry::point_set_center_summary(&shape, GeographicFrame::crs84())
-                .expect("summary needs only point presence"),
+            crate::geometry::point_set_center_summary(&shape, GeographicFrame::crs84()),
             Some(PointSetCenter::Chart(None))
         ));
         let error = point_set_centroid(&shape, GeographicFrame::crs84())

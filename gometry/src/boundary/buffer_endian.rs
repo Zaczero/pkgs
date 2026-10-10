@@ -121,8 +121,10 @@ fn validate_buffer_stride_span<T: Element>(buffer: &PyBuffer<T>) -> PyResult<()>
     let mut minimum = 0_isize;
     let mut maximum = 0_isize;
     for (&dimension, &stride) in shape.iter().zip(strides) {
-        let steps = isize::try_from(dimension - 1)
-            .map_err(|_| PyOverflowError::new_err("buffer stride span overflows"))?;
+        let steps = dimension
+            .checked_sub(1)
+            .and_then(|steps| isize::try_from(steps).ok())
+            .ok_or_else(|| PyOverflowError::new_err("buffer stride span overflows"))?;
         let offset = steps
             .checked_mul(stride)
             .ok_or_else(|| PyOverflowError::new_err("buffer stride span overflows"))?;

@@ -10,6 +10,8 @@ use crate::boundary::input;
 use crate::geographic::PeriodicAxis;
 use crate::geometry::storage::builder::PackedColumnBuilder;
 use crate::geometry::storage::gather::gather_line_columns;
+#[cfg(test)]
+use crate::geometry::storage::record_csr_size_row_visit;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, column_window,
     csr_value_range, csr_value_window, line_logical_len, physical_row,
@@ -85,7 +87,7 @@ impl PyGeometryArray {
                         rows.clone()
                             .map(|logical| {
                                 #[cfg(test)]
-                                crate::geometry::storage::record_csr_size_row_visit();
+                                record_csr_size_row_visit();
                                 map.csr_window(offsets, logical).len()
                             })
                             .fold(0, usize::saturating_add)
@@ -114,7 +116,7 @@ impl PyGeometryArray {
                                 .clone()
                                 .map(|logical| {
                                     #[cfg(test)]
-                                    crate::geometry::storage::record_csr_size_row_visit();
+                                    record_csr_size_row_visit();
                                     map.csr_window(polygon_offsets.as_slice(), logical).len()
                                 })
                                 .fold(0_usize, usize::saturating_add);
@@ -122,7 +124,7 @@ impl PyGeometryArray {
                                 .clone()
                                 .map(|logical| {
                                     #[cfg(test)]
-                                    crate::geometry::storage::record_csr_size_row_visit();
+                                    record_csr_size_row_visit();
                                     let rings = map.csr_window(polygon_offsets.as_slice(), logical);
                                     if rings.is_empty() {
                                         0

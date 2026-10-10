@@ -62,11 +62,18 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
         return pieces;
     }
     let last = *coords.last().expect("segmented chains have coordinates");
-    let first_piece_start = pieces[0][0];
+    let first_piece_start = pieces
+        .first()
+        .and_then(|piece| piece.first())
+        .copied()
+        .expect("a seam split has a leading piece");
     if same_point(last, first_piece_start) {
         // A ring: the trailing run continues the leading piece.
-        piece.append(&mut pieces[0]);
-        pieces[0] = piece;
+        let leading = pieces
+            .first_mut()
+            .expect("a seam split has a leading piece");
+        piece.append(leading);
+        *leading = piece;
     } else {
         piece.push(last);
         pieces.push(piece);
@@ -92,9 +99,16 @@ pub(crate) enum SeamRing {
 /// interior occupies, which neither neighbour alone determines. A run that
 /// returns to its entry latitude on the side it entered from only touches the
 /// seam.
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "cycle offsets stay within the allocated nonempty ring and wrap before indexing"
+)]
 pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
     let coords = dedup_consecutive(points.to_vec());
-    let cycle = &coords[..coords.len().saturating_sub(1)];
+    let Some((_, cycle)) = coords.split_last() else {
+        return SeamRing::Whole(points.to_vec());
+    };
     let Some(start) = cycle.iter().position(|&point| !on_seam(point)) else {
         // Preserve the source seam runs. A ring that spells both seam aliases
         // without intermediate longitudes collapses to this support.
@@ -144,12 +158,14 @@ pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
         // `whole` runs from the first off-seam vertex back to it.
         whole.pop();
         whole.rotate_right(start);
-        whole.push(whole[0]);
+        whole.push(*whole.first().expect("a non-crossing ring has a vertex"));
         return SeamRing::Whole(whole);
     }
     // The trailing piece ends at the ring's start, where the leading piece
     // begins.
-    let leading = &mut pieces[0];
+    let leading = pieces
+        .first_mut()
+        .expect("a transiting ring has a leading seam piece");
     piece.extend(leading.drain(1..));
     *leading = piece;
     SeamRing::Pieces(pieces)

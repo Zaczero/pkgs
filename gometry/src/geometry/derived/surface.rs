@@ -536,6 +536,10 @@ mod tests {
         (point.x, point.y)
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the exact-oracle fixtures use bounded dyadic coordinates"
+    )]
     fn scaled_dyadic(value: f64, scale: u32) -> i128 {
         if value == 0.0 {
             return 0;
@@ -557,6 +561,10 @@ mod tests {
         numerator << (scale - denominator)
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the exact-oracle fixtures keep determinant intermediates within i128"
+    )]
     fn exact_orientation(a: Point, b: Point, point: Point) -> std::cmp::Ordering {
         // These fixtures are dyadic; a common power-of-two denominator makes
         // every orientation an exact integer determinant.
@@ -632,9 +640,9 @@ mod tests {
     }
 
     fn first_component_work(shape: &Shape) -> usize {
-        let mut visits = 0;
+        let mut visits = 0_usize;
         match shape.try_for_each_first_component(&mut |_| {
-            visits += 1;
+            visits = visits.checked_add(1).expect("component count fits usize");
             Ok::<_, std::convert::Infallible>(())
         }) {
             Ok(()) => {},

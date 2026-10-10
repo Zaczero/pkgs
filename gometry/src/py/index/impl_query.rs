@@ -1838,11 +1838,15 @@ mod tests {
             }
 
             assert!(
-                retained_deltas.windows(2).all(|pair| pair[0] == pair[1]),
+                retained_deltas
+                    .array_windows::<2>()
+                    .all(|&[left, right]| left == right),
                 "index-minus-source retained heap must not grow with M: {retained_deltas:?}"
             );
             assert!(
-                allocation_counts.windows(2).all(|pair| pair[0] == pair[1]),
+                allocation_counts
+                    .array_windows::<2>()
+                    .all(|&[left, right]| left == right),
                 "warmed public operation allocation requests must not grow with M: {allocation_counts:?}"
             );
         });
