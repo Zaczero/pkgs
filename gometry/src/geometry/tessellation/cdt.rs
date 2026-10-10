@@ -27,7 +27,9 @@ use std::collections::{BinaryHeap, VecDeque};
 use rstar::{AABB, RTree, RTreeObject};
 
 use super::super::RingOwner;
-use super::exact_delaunay::{EMPTY, FaceId, FaceSide, HalfedgeId, Located, Mesh, site_xy};
+use super::exact_delaunay::{
+    EMPTY, FaceId, FaceSide, HalfedgeId, Located, LocationOutcome, Mesh, site_xy,
+};
 use crate::collections::{HashMap, HashSet};
 use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::ExactSign;
@@ -930,7 +932,8 @@ impl ConstrainedMesh {
         sources: &[SourceConstraint],
         source_rings: Vec<SourceRingStart>,
     ) -> Result<Option<Self>> {
-        let Some(mesh) = Mesh::try_delaunay(points)? else {
+        let xy = |site| site_xy(points, site);
+        let Some(mesh) = Mesh::try_delaunay(&xy, points.len())? else {
             return Ok(None);
         };
         let constrained = vec![false; mesh.edge_count()];
@@ -948,7 +951,6 @@ impl ConstrainedMesh {
             provenance,
             split_certificates: Vec::new(),
         };
-        let xy = |site| site_xy(points, site);
         for source in sources {
             this.insert_constraint(
                 &xy,
@@ -1398,17 +1400,21 @@ impl ConstrainedMesh {
             } else {
                 match self
                     .mesh
-                    .locate_bounded(&xy_now, face, center, &self.constrained)
+                    .locate_bounded(&xy_now, face, center, &self.constrained)?
                 {
-                    Ok(Located::OnEdge(edge)) if self.is_constrained(edge) => {
+                    LocationOutcome::Located(Located::OnEdge(edge))
+                        if self.is_constrained(edge) =>
+                    {
                         self.prepare_split(&xy_now, points, &circles, edge)?
                     },
-                    Ok(located) => Some(PreparedSplit {
+                    LocationOutcome::Located(located) => Some(PreparedSplit {
                         candidate: center,
                         located,
                         source: None,
                     }),
-                    Err(edge) => self.prepare_split(&xy_now, points, &circles, edge)?,
+                    LocationOutcome::Blocked(edge) => {
+                        self.prepare_split(&xy_now, points, &circles, edge)?
+                    },
                 }
             };
             let Some(PreparedSplit {
@@ -1575,13 +1581,18 @@ impl ConstrainedMesh {
         let midpoint = XY::new(f64::midpoint(ps.x, pt.x), f64::midpoint(ps.y, pt.y));
         let located = match self
             .mesh
-            .locate_bounded(xy, e.face(), midpoint, &self.constrained)
+            .locate_bounded(xy, e.face(), midpoint, &self.constrained)?
         {
-            Ok(Located::OnEdge(slot)) if slot == e || slot.index() == self.mesh.twin(e) => {
+            LocationOutcome::Located(Located::OnEdge(slot))
+                if slot == e || slot.index() == self.mesh.twin(e) =>
+            {
                 Located::OnEdge(e)
             },
-            Ok(Located::Inside(face)) => Located::Inside(face),
-            Ok(Located::OnVertex | Located::OnEdge(_) | Located::Outside(_)) | Err(_) => {
+            LocationOutcome::Located(Located::Inside(face)) => Located::Inside(face),
+            LocationOutcome::Located(
+                Located::OnVertex | Located::OnEdge(_) | Located::Outside(_),
+            )
+            | LocationOutcome::Blocked(_) => {
                 return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
             },
         };
@@ -1687,20 +1698,22 @@ impl ConstrainedMesh {
     ) -> Result<Located> {
         let twin = self.mesh.twin(e);
         let twin = (twin != EMPTY).then(|| HalfedgeId::from_index(twin));
-        match self.mesh.locate_bounded(xy, e.face(), point, &[]) {
-            Ok(Located::OnVertex | Located::Outside(_)) => {
+        match self.mesh.locate_bounded(xy, e.face(), point, &[])? {
+            LocationOutcome::Located(Located::OnVertex | Located::Outside(_)) => {
                 Err(GeometryErrorKind::unrepresentable_output("triangulate"))
             },
-            Ok(Located::Inside(face)) => Ok(Located::Inside(face)),
-            Ok(Located::OnEdge(slot)) if slot == e || twin == Some(slot) => Ok(Located::OnEdge(e)),
-            Ok(Located::OnEdge(slot)) if self.is_constrained(slot) => {
+            LocationOutcome::Located(Located::Inside(face)) => Ok(Located::Inside(face)),
+            LocationOutcome::Located(Located::OnEdge(slot)) if slot == e || twin == Some(slot) => {
+                Ok(Located::OnEdge(e))
+            },
+            LocationOutcome::Located(Located::OnEdge(slot)) if self.is_constrained(slot) => {
                 Err(GeometryErrorKind::unrepresentable_output("triangulate"))
             },
-            Ok(Located::OnEdge(slot)) => Ok(Located::OnEdge(slot)),
-            Err(edge) => {
+            LocationOutcome::Located(Located::OnEdge(slot)) => Ok(Located::OnEdge(slot)),
+            LocationOutcome::Blocked(edge) => {
                 if self.mesh.twin(edge) == EMPTY {
                     Ok(Located::Outside(edge))
-                } else if let Some(edge) = self.mesh.outside_edge(xy, point) {
+                } else if let Some(edge) = self.mesh.outside_edge(xy, point)? {
                     Ok(Located::Outside(edge))
                 } else {
                     Err(GeometryErrorKind::unrepresentable_output("triangulate"))
@@ -1853,7 +1866,8 @@ impl ConstrainedMesh {
                 faces.push(self.mesh.triangle(face));
             }
         }
-        super::exact_delaunay::canonicalize_triangles(&mut faces, |site| site_xy(&points, site));
+        let xy = |site| site_xy(&points, site);
+        super::exact_delaunay::canonicalize_triangles(&xy, &mut faces);
         Ok(ConstrainedMeshPlan {
             vertices: points,
             faces,
