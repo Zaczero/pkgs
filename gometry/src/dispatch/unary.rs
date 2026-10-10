@@ -480,7 +480,6 @@ pub(crate) fn unary_array_linref_with_model(
     kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
     let frame = array.frame.clone();
-    let output_frame = frame.clone();
     let array = array.clone();
     let result = py.detach(move || {
         let mut rows = array.row_operation();
@@ -521,7 +520,7 @@ pub(crate) fn unary_array_linref_with_model(
         Ok(output)
     });
     let output = result.map_err(rows_err)?;
-    output.finish(output_frame).map_err(PyErr::from)
+    output.finish(frame).map_err(PyErr::from)
 }
 
 /// Geometry-returning array lane for constructive operations whose generated
@@ -798,7 +797,13 @@ mod shape_streaming_tests {
                         Shape::LineString(_) => Err(crate::geometry::GeometryErrorKind::message(
                             "row kernel failure",
                         )),
-                        shape => Ok(shape.clone()),
+                        Shape::Point(_)
+                        | Shape::MultiPoint(_)
+                        | Shape::MultiLineString(_)
+                        | Shape::Polygon(_)
+                        | Shape::MultiPolygon(_)
+                        | Shape::GeometryCollection(_)
+                        | Shape::Empty(..) => Ok(plan.shape().clone()),
                     }
                 })
                 .expect_err("the first row error is propagated");
