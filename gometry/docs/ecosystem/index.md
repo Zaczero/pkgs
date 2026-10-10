@@ -36,7 +36,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 | **Arrow / GeoArrow** | *(native capsules)* | consume `__arrow_c_array__`/`__arrow_c_stream__` | export `__arrow_c_*__` capsules | PROJJSON | native packed layouts |
 | **pyarrow** | `gometry[arrow]` | [`from_arrow`][gometry.from_arrow] | [`to_arrow`][gometry.Geometry.to_arrow] | PROJJSON | native layouts |
 | **GeoParquet** | `gometry[arrow]` | [`from_geoparquet`][gometry.from_geoparquet] | [`arr.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] | PROJJSON header | via pyarrow |
-| **pandas** | `gometry[pandas]` | [`from_pandas`][gometry.from_pandas] | [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] | dtype object | native extension storage |
+| **pandas** | `gometry[pandas]` | [`from_pandas`][gometry.from_pandas] | [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] | registered `gometry.geometry` dtype | native extension storage |
 | **polars** | `gometry[polars]` | [`gm.from_polars(series)`][gometry.from_polars] | [`arr.to_polars()`][gometry.GeometryArray.to_polars] | EWKB EPSG SRID only | encode/decode copy |
 | **GeoPandas** | `gometry[geopandas]` | [`from_geopandas`][gometry.from_geopandas] | [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] | from frame | vectorized WKB |
 | **Arrow C consumers** | *(none)* | — | consume gometry `__arrow_c_*__` | metadata | capsule path |

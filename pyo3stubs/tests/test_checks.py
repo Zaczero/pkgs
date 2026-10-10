@@ -895,6 +895,33 @@ def test_text_signature_flags_param_drift(tmp_path, pristine_src):
     assert any('text_signature params' in e for e in errors), errors
 
 
+def test_text_signature_matches_keyword_only_args_after_module_receiver(
+    tmp_path,
+    pristine_src,
+):
+    source = seeded(
+        seeded(
+            pristine_src,
+            'signature = (a, b = "x"),',
+            'signature = (*, a, b = "x"),',
+        ),
+        'text_signature = "(a, b=\'x\')"',
+        'text_signature = "($module, /, *, a, b=\'x\')"',
+    )
+    assert text_signature(make_config(tmp_path, src_text=source)) == []
+
+    positional_source = seeded(
+        source,
+        'signature = (*, a, b = "x"),',
+        'signature = (a, b = "x"),',
+    )
+    positional_root = tmp_path / 'positional'
+    positional_root.mkdir()
+    errors = text_signature(make_config(positional_root, src_text=positional_source))
+    assert len(errors) == 1, errors
+    assert 'text_signature params' in errors[0]
+
+
 def test_text_signature_flags_literal_default_drift(tmp_path, pristine_src):
     mutated = seeded(pristine_src, 'b = "x"', 'b = "y"')
     errors = text_signature(make_config(tmp_path, src_text=mutated))

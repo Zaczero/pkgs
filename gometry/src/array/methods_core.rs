@@ -857,12 +857,17 @@ impl PyGeometryArray {
     /// >>> arr = gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])])
     /// >>> arr.map_coordinates(lambda m: m + 1).to_wkt()
     /// ['LINESTRING (1 1, 2 2)']
-    pub fn map_coordinates(&self, py: Python<'_>, func: &Bound<'_, PyAny>) -> PyResult<Self> {
+    pub fn map_coordinates(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        func: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
         // Same union-axes + per-row replace path as set_coordinates; no early
         // reject when uniform_axes() is None.
-        let coords = PyCoordinates::new(self.coordinate_view());
+        let array = slf.borrow();
+        let coords = PyCoordinates::new(array.coordinate_view(), slf.clone().unbind().into_any());
         let replacement = map_coordinates_callback(py, coords, func)?;
-        replace_array_coordinates(self, py, replacement)
+        replace_array_coordinates(&array, py, replacement)
     }
     /// Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
     /// areal (see `Geometry.topological_dimension`). Missing rows use ``-1``;

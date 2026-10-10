@@ -39,9 +39,9 @@ macro_rules! grid_cell_common_pymethods {
                 $nbytes
             }
 
-            /// `sys.getsizeof` support: scalar cells are heap-free value ids.
-            const fn __sizeof__(&self) -> usize {
-                std::mem::size_of::<Self>()
+            /// `sys.getsizeof` support for this heap-free scalar cell.
+            fn __sizeof__(slf: &pyo3::Bound<'_, Self>) -> pyo3::PyResult<isize> {
+                $crate::py::sizeof::python_sizeof(slf.py(), slf.as_any(), 0)
             }
 
             fn __hash__(&self) -> u64 {

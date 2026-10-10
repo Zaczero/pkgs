@@ -1,6 +1,6 @@
-use pyo3::PyErr;
-use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyOverflowError, PyValueError};
 use pyo3::types::PyInt;
+use pyo3::{IntoPyObjectExt as _, PyErr};
 
 use crate::boundary::reserve::py_iter_or_none;
 use crate::geometry::storage;
@@ -17,12 +17,6 @@ use crate::py::sizeof::python_sizeof;
 
 #[pymethods]
 impl PyCoordinates {
-    // NEP 13: opt out of numpy ufunc dispatch (we have our own & | - ^ /
-    // predicates)
-    #[classattr]
-    #[expect(non_upper_case_globals, reason = "Python dunder name")]
-    const __array_ufunc__: Option<Py<PyAny>> = None;
-
     /// Number of vertices in this coordinate view.
     ///
     /// Returns
@@ -47,19 +41,23 @@ impl PyCoordinates {
         self.view.nbytes_pyint(py)
     }
 
-    /// ``sys.getsizeof`` support: the wrapper plus the logical Rust-side
-    /// coordinate heap retained by this view (ordinate payload and structural
-    /// row metadata for array-backed views). Shared backing buffers are
-    /// reported like NumPy views, not as the full parent allocation. Parent
-    /// geometry/array sidecars (prepared caches, coverage membership, …) are
-    /// not owned by the view and are not counted here.
+    /// ``sys.getsizeof`` support: Python's allocation base plus the logical
+    /// Rust-side coordinate heap retained by this view (ordinate payload and
+    /// structural row metadata for array-backed views). Shared backing buffers
+    /// are estimated from the visible view, not the full parent allocation.
+    /// Parent geometry/array sidecars (prepared caches, coverage membership,
+    /// …) are not owned by the view and are not counted here.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    pub fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.view.logical_heap_bytes())
+    pub fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(
+            slf.py(),
+            slf.as_any(),
+            slf.borrow().view.logical_heap_bytes(),
+        )
     }
 
     /// Select vertices by integer or slice.
@@ -166,10 +164,16 @@ impl PyCoordinates {
         )
     }
 
-    pub fn __reduce__(&self) -> PyResult<Py<PyAny>> {
-        Err(PyTypeError::new_err(
-            "cannot pickle Coordinates; use numpy.asarray(coords) to materialize coordinates",
-        ))
+    pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        let callable = crate::gometry_lib_module(py)?
+            .getattr(pyo3::intern!(py, "_unpickle_coordinates_v1"))?
+            .unbind();
+        let args = (
+            self.owner.clone_ref(py),
+            self.layout.map(CoordinateAxes::as_str),
+        )
+            .into_py_any(py)?;
+        Ok((callable, args))
     }
 
     pub fn __copy__(slf: &Bound<'_, Self>) -> Py<Self> {
@@ -221,9 +225,10 @@ impl PyCoordinates {
     /// >>> coords = gm.LineString([(0, 0), (1, 1)]).coords
     /// >>> coords.select('XYZ').to_nested()
     /// [(0.0, 0.0, None), (1.0, 1.0, None)]
-    pub fn select(&self, axes: CoordinateAxes) -> Self {
+    pub fn select(&self, py: Python<'_>, axes: CoordinateAxes) -> Self {
         Self {
             view: self.view.clone(),
+            owner: self.owner.clone_ref(py),
             layout: Some(axes),
         }
     }

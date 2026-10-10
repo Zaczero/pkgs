@@ -176,7 +176,7 @@ def test_orient_polygons_ccw() -> None:
 def test_empty_polygon_shell_kwarg_spelling() -> None:
     """Unique empty-Polygon spelling: shell=[] with CRS (matrices cover bare ctors)."""
     assert gm.Polygon(shell=[], crs=4326).to_wkt() == 'POLYGON EMPTY'
-    assert gm.Polygon(shell=[], crs=4326).crs == 'EPSG:4326'
+    assert gm.Polygon(shell=[], crs=4326).crs == gm.CRS('EPSG:4326')
 
 
 _EMPTY_CTORS = [
@@ -249,7 +249,7 @@ def test_empty_constructors_carry_crs_and_epoch(
     geom = ctor(crs=4326, epoch=2020.0)
     assert geom.geometry_type == gtype
     assert geom.is_empty
-    assert geom.crs == 'EPSG:4326'
+    assert geom.crs == gm.CRS('EPSG:4326')
     assert geom.epoch == pytest.approx(2020.0)
 
 
@@ -265,12 +265,20 @@ def test_empty_collection_constructors_wkb_round_trip() -> None:
         assert gm.from_wkb(geom.to_wkb()).to_wkt() == wkt
 
 
-def test_empty_constructor_argument_errors() -> None:
-    with pytest.raises(TypeError, match='coordinate must be a float or an iterable'):
+def test_point_rejects_one_scalar_coordinate_as_wrong_type() -> None:
+    with pytest.raises(TypeError, match='coordinate must be a float'):
         gm.Point(1)
-    with pytest.raises(ValueError):
+
+
+def test_empty_point_rejects_ordinates_without_xy() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match='empty point takes no z/m'):
         gm.Point(z=3)
-    with pytest.raises(ValueError):
+
+
+def test_empty_polygon_rejects_holes() -> None:
+    with pytest.raises(
+        gm.InvalidGeometryError, match='empty polygon cannot have holes'
+    ):
         gm.Polygon([], holes=[[(0, 0), (1, 0), (1, 1)]])
 
 

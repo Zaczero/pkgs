@@ -1185,7 +1185,9 @@ execution from whether a PROJ cache entry remains.
 
 [`gm.crs_configure`][gometry.crs_configure] applies only the options supplied
 and returns the effective configuration, so calling it without arguments reads
-the configuration. If the supplied options already match the effective
+the configuration. Omit a keyword to preserve that setting, or pass ``None`` to
+restore just that setting to its default. A saved configuration can be restored
+by passing both of its fields explicitly. If the supplied options already match the effective
 configuration, the update is a no-op: the generation and warm products remain
 available. An effective
 configuration change advances the generation and invalidates each thread's

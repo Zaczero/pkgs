@@ -129,7 +129,7 @@ def test_simplify_vw_area_criterion_and_topology_preservation() -> None:
     by_array = array.simplify(1.0, method='vw')
     by_free = cast('gm.GeometryArray', array.simplify(1.0, method='vw'))
     assert gm.equals(by_array[0], by_free[0])
-    assert by_array.crs == 'EPSG:4326'
+    assert by_array.crs == gm.CRS('EPSG:4326')
     lifted = gm.LineString([(0, 0), (1, 0.1), (2, 0)], z=[5, 6, 7])
     assert list(lifted.simplify(5.0, method='vw').coords) == [
         (0.0, 0.0, 5.0),
@@ -507,7 +507,7 @@ def test_minimum_bounding_circle_is_smallest_enclosing() -> None:
     assert math.isnan(gm.LineString([]).minimum_bounding_radius())
     shapely = pytest.importorskip('shapely')
     array = gm.GeometryArray([points], crs=3857)
-    assert array.minimum_bounding_circle().crs == 'EPSG:3857'
+    assert array.minimum_bounding_circle().crs == gm.CRS('EPSG:3857')
     assert array.minimum_bounding_circle()[0].geometry_type == 'Polygon'
     np.testing.assert_allclose(
         array.minimum_bounding_radius(), [points.minimum_bounding_radius()]
@@ -540,7 +540,7 @@ def test_minimum_bounding_radius_is_crs_aware_with_planar_escape() -> None:
         [radius],
     )
     circle = points.minimum_bounding_circle()
-    assert circle.crs == 'EPSG:4326'
+    assert circle.crs == gm.CRS('EPSG:4326')
     assert circle.geometry_type == 'Polygon'
     assert points.minimum_bounding_circle(unit='planar').bounds == pytest.approx((
         -0.5,
@@ -627,7 +627,7 @@ def test_geographic_concave_hull_preserves_selected_zm_provenance(
         hull = hull[0]
     coordinates = list(hull.exterior.coords)
     assert hull.coordinate_axes == 'XYZM'
-    assert hull.crs == 'EPSG:4326'
+    assert hull.crs == gm.CRS('EPSG:4326')
     assert coordinates[0] == coordinates[-1]
     assert set(coordinates[:-1]) == set(outer)
 
@@ -652,7 +652,7 @@ def test_geographic_concave_hull_empty_preserves_polygon_type() -> None:
     empty = gm.GeometryCollection([], crs=4326)
     hull = empty.concave_hull()
     assert hull.to_wkt() == 'POLYGON EMPTY'
-    assert hull.crs == 'EPSG:4326'
+    assert hull.crs == gm.CRS('EPSG:4326')
 
 
 def test_envelope_and_mrr_empty_are_typed() -> None:
@@ -784,7 +784,7 @@ def test_subdivide_bounds_complexity_and_covers_input() -> None:
     parts = ring.subdivide(max_vertices=64)
     assert len(parts) > 1
     assert all(len(cast('gm.Polygon', part).exterior.coords) <= 64 for part in parts)
-    assert parts.crs == 'EPSG:4326'
+    assert parts.crs == gm.CRS('EPSG:4326')
     union = gm.union_all(parts)
     assert abs(union.area - ring.area) <= 1e-06 * ring.area
     assert len(gm.box(0, 0, 1, 1).subdivide()) == 1
@@ -875,7 +875,7 @@ def test_dissolve_unions_per_group_in_first_occurrence_order() -> None:
     assert abs(geometries[0].area - 2.5) < 1e-09
     assert gm.equals(geometries[1], gm.box(5, 5, 6, 6))
     tagged = gm.GeometryArray([gm.box(0, 0, 1, 1, crs=4326)], crs=4326)
-    assert tagged.dissolve(by=[0])[0].crs == 'EPSG:4326'
+    assert tagged.dissolve(by=[0])[0].crs == gm.CRS('EPSG:4326')
     _, keyed_groups = array.dissolve(by=[(2, 1), 0, (2, 1), 0])
     assert keyed_groups == [(2, 1), 0]
     with pytest.raises(gm.GeometryError, match='one key per geometry'):
@@ -953,7 +953,7 @@ def test_swap_xy_exchanges_axes_and_keeps_zm() -> None:
     swapped = gm.LineString([(1, 2), (3, 4)], z=[9, 8], m=[1, 2]).swap_xy()
     assert swapped.to_wkt() == 'LINESTRING ZM (2 1 9 1, 4 3 8 2)'
     array = gm.points([1.0, 2.0], [3.0, 4.0], crs=3857).swap_xy()
-    assert array.crs == 'EPSG:3857'
+    assert array.crs == gm.CRS('EPSG:3857')
     assert (array[0].x, array[0].y) == (3.0, 1.0)
     assert gm.equals(array.swap_xy()[1], gm.Point(2.0, 4.0, crs=3857))
     assert gm.box(0, 1, 2, 3).swap_xy().bounds == (1.0, 0.0, 3.0, 2.0)
@@ -988,7 +988,7 @@ def test_snap_to_grid_snaps_dedups_and_collapses() -> None:
     assert snapped_box.area == 2.0
     assert gm.equals(gm.Point(0.2, 0.1).snap_to_grid(1), gm.Point(0, 0))
     array = gm.GeometryArray([gm.Point(0.2, 0.1, crs=4326)]).snap_to_grid(1)
-    assert array.crs == 'EPSG:4326'
+    assert array.crs == gm.CRS('EPSG:4326')
     assert gm.equals(array[0], gm.Point(0, 0, crs=4326))
     with pytest.raises(gm.GeometryError, match='positive finite'):
         gm.Point(0, 0).snap_to_grid(0)
@@ -1028,7 +1028,7 @@ def test_sample_points_is_deterministic_and_area_weighted() -> None:
     box = gm.box(0, 0, 1, 1, crs=3857)
     first = box.sample_points(100, seed=7)
     again = box.sample_points(100, seed=7)
-    assert first.crs == 'EPSG:3857'
+    assert first.crs == gm.CRS('EPSG:3857')
     assert len(first) == 100
     assert [(p.x, p.y) for p in first] == [(p.x, p.y) for p in again]
     assert all(gm.within(p, box) for p in first)
@@ -1341,7 +1341,7 @@ def test_build_area_and_node_surfaces_agree() -> None:
     array_built = gm.GeometryArray([square_edges]).build_area()[0]
     assert built.geometry_type == 'Polygon'
     assert built.area == pytest.approx(1.0)
-    assert built.crs == 'EPSG:3857'
+    assert built.crs == gm.CRS('EPSG:3857')
     assert top_level.to_wkt() == built.to_wkt()
     assert array_built.to_wkt() == built.to_wkt()
     hole_edges = gm.GeometryCollection(
@@ -1364,7 +1364,7 @@ def test_build_area_and_node_surfaces_agree() -> None:
     array_noded = gm.GeometryArray([crossing]).node()[0]
     assert noded.geometry_type == 'MultiLineString'
     assert noded.num_geometries == 4
-    assert noded.crs == 'EPSG:3857'
+    assert noded.crs == gm.CRS('EPSG:3857')
     assert any(coord[:2] == (1.0, 0.0) for line in noded.parts for coord in line.coords)
     assert top_noded.to_wkt() == noded.to_wkt()
     assert array_noded.to_wkt() == noded.to_wkt()

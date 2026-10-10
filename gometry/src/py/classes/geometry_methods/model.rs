@@ -422,8 +422,8 @@ impl PyGeometryParts {
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     fn __repr__(&self) -> String {

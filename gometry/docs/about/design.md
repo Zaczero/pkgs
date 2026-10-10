@@ -253,7 +253,7 @@ as in [`line_strings`][gometry.line_strings] and [`union_all`][gometry.union_all
 [`gm.Point`][gometry.Point] accepts `crs=4326` to make geographic axis order
 explicit while storing coordinates as X/Y. Geometry GeoJSON readers use
 [`gm.from_geojson`][gometry.from_geojson]; feature properties and IDs are
-available through [`gm.from_geojson(..., features=True)`][gometry.from_geojson].
+available through [`gm.from_geojson(data, features=True)`][gometry.from_geojson].
 
 The GeoPandas `clip(mask)` task is
 [`gm.intersection`][gometry.intersection], with
@@ -310,10 +310,10 @@ aliases. Empty geometries are ordinary values rather than interned singletons.
 [`CellArray`][gometry.CellArray], and [`SpatialIndex`][gometry.SpatialIndex]
 implements mapping and iteration protocols.
 
-CRS equality also follows Python's hash contract: `CRS` values compare to
-matching input representations such as `4326` and `"EPSG:4326"`, so `CRS` is
-unhashable. Use [`CRS.to_authority`][gometry.CRS.to_authority] or
-[`CRS.to_epsg`][gometry.CRS.to_epsg] when a dictionary or set key is needed.
+CRS equality compares stored definitions between `CRS` instances and supports
+hashing. Construct `CRS(value)` before comparing raw input when stored identity
+is intended; use [`CRS.same_as`][gometry.CRS.same_as] for operational
+equivalence.
 
 ## CRS and candidate boundaries
 

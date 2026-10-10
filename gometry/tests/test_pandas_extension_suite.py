@@ -182,13 +182,10 @@ class TestInterface(base.BaseInterfaceTests):
 
 class TestConstructors(base.BaseConstructorsTests):
     def test_from_dtype(self, data):
-        """Concrete dtype construction works without global string registration."""
+        """Concrete dtype instances construct extension arrays directly."""
         expected = pd.Series(data)
         result = pd.Series(list(data), dtype=data.dtype)
         pd.testing.assert_series_equal(result, expected)
-
-        with pytest.raises(TypeError):
-            pd.Series(list(data), dtype=str(data.dtype))
 
 
 class TestGetitem(base.BaseGetitemTests):

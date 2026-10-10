@@ -453,28 +453,20 @@ fn seam_event(
 }
 
 fn insert_chart_event(events: &mut Vec<ChartEdgeEvent>, event: ChartEdgeEvent) -> Result<()> {
-    let mut insertion_index = events.len();
-    let mut equal_index = None;
-    for (index, previous) in events.iter().enumerate().rev() {
+    let mut index = events.len();
+    for (previous_index, previous) in events.iter_mut().enumerate().rev() {
         match event.parameter.try_cmp(&previous.parameter)? {
-            std::cmp::Ordering::Less => insertion_index = index,
+            std::cmp::Ordering::Less => index = previous_index,
             std::cmp::Ordering::Equal => {
-                equal_index = Some(index);
-                break;
+                if event.seam_longitude.is_some() {
+                    previous.seam_longitude = event.seam_longitude;
+                }
+                return Ok(());
             },
             std::cmp::Ordering::Greater => break,
         }
     }
-    if let Some(index) = equal_index {
-        if event.seam_longitude.is_some() {
-            events
-                .get_mut(index)
-                .expect("equal event position came from this vector")
-                .seam_longitude = event.seam_longitude;
-        }
-        return Ok(());
-    }
-    events.insert(insertion_index, event);
+    events.insert(index, event);
     Ok(())
 }
 
@@ -557,7 +549,7 @@ fn append_source_edge_events<M: ChartMetric>(
     if events.is_empty() {
         return Ok(());
     }
-    output.reserve_hint(events.len().saturating_add(1));
+    output.reserve_hint(events.len());
     let mut root_metric = RootMetricState::default();
     for event in events {
         let parameter = event.parameter.round()?;

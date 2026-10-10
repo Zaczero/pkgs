@@ -1,4 +1,4 @@
-"""Optional integrations stay import-cheap and never mutate framework globals."""
+"""Optional integrations stay import-cheap and avoid global accessors."""
 
 from __future__ import annotations
 
@@ -154,12 +154,7 @@ def test_pandas_and_polars_converters_are_inert_and_pyarrow_independent() -> Non
         assert not hasattr(pd.Series, 'geo')
         assert not hasattr(pl.Series, 'geo')
         assert not hasattr(pl.Expr, 'geo')
-        try:
-            pd.api.types.pandas_dtype('gometry.geometry')
-        except TypeError:
-            pass
-        else:
-            raise AssertionError('converter registered the gometry dtype name')
+        assert pd.api.types.pandas_dtype('gometry.geometry') == pandas_series.dtype
         """
     )
 

@@ -549,9 +549,9 @@ mod tests {
     use crate::crs::geodesic::with_geodesic_at;
     use crate::crs::operations::operations_info;
     use crate::crs::{
-        CrsObjectKind, ProjDirection, RUNTIME_STATE_TEST_LOCK, TransformPlan, WGS84_A,
-        apply_operation, clear_cache, configure_runtime, distance_rhumb_crs, factors, info,
-        non_deprecated, operation_info_at, reset_runtime_config, same, to_wkt_with_options,
+        ConfigUpdate, CrsObjectKind, ProjDirection, RUNTIME_STATE_TEST_LOCK, TransformPlan,
+        WGS84_A, apply_operation, clear_cache, configure_runtime, distance_rhumb_crs, factors,
+        info, non_deprecated, operation_info_at, reset_runtime_config, same, to_wkt_with_options,
         transform_coordinates,
     };
 
@@ -690,7 +690,7 @@ mod tests {
         assert_some_thread_cache_is_warm();
 
         let warm_generation = runtime_state_snapshot().unwrap().generation;
-        configure_runtime(None, None).unwrap();
+        configure_runtime(ConfigUpdate::Keep, ConfigUpdate::Keep).unwrap();
         assert_eq!(
             runtime_state_snapshot().unwrap().generation,
             warm_generation
@@ -707,7 +707,11 @@ mod tests {
         warm_representative_thread_caches();
         assert_some_thread_cache_is_warm();
 
-        configure_runtime(Some(vec!["/tmp/gometry-crs-old".to_owned()]), None).unwrap();
+        configure_runtime(
+            ConfigUpdate::Set(Some(vec!["/tmp/gometry-crs-old".to_owned()])),
+            ConfigUpdate::Keep,
+        )
+        .unwrap();
         assert_thread_caches_are_empty();
 
         reset_runtime_config().unwrap();
@@ -722,7 +726,7 @@ mod tests {
         let before = cache_info();
         assert!(before.total_entries > 0);
 
-        let config = configure_runtime(None, None).unwrap();
+        let config = configure_runtime(ConfigUpdate::Keep, ConfigUpdate::Keep).unwrap();
         let after = cache_info();
 
         assert_eq!(config.search_paths, None);
@@ -782,7 +786,11 @@ mod tests {
         });
 
         ready.wait();
-        configure_runtime(Some(vec!["/tmp/gometry-crs-live-new".to_owned()]), None).unwrap();
+        configure_runtime(
+            ConfigUpdate::Set(Some(vec!["/tmp/gometry-crs-live-new".to_owned()])),
+            ConfigUpdate::Keep,
+        )
+        .unwrap();
         configured.wait();
 
         clear_cache();
@@ -820,7 +828,11 @@ mod tests {
     fn held_runtime_state_survives_mutation_during_context_creation() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
-        configure_runtime(Some(vec!["/tmp/gometry-crs-old".to_owned()]), None).unwrap();
+        configure_runtime(
+            ConfigUpdate::Set(Some(vec!["/tmp/gometry-crs-old".to_owned()])),
+            ConfigUpdate::Keep,
+        )
+        .unwrap();
         let expected = runtime_state_snapshot().unwrap();
         let entered = Arc::new(Barrier::new(2));
         let resume = Arc::new(Barrier::new(2));
@@ -837,7 +849,11 @@ mod tests {
             operations_info("EPSG:4267", "EPSG:4326", &TransformOptions::default())
         });
         entered.wait();
-        configure_runtime(Some(vec!["/tmp/gometry-crs-new".to_owned()]), None).unwrap();
+        configure_runtime(
+            ConfigUpdate::Set(Some(vec!["/tmp/gometry-crs-new".to_owned()])),
+            ConfigUpdate::Keep,
+        )
+        .unwrap();
         resume.wait();
 
         worker
@@ -861,7 +877,11 @@ mod tests {
     fn held_runtime_state_survives_mutation_during_catalog_observation() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         reset_runtime_config().unwrap();
-        configure_runtime(Some(vec!["/tmp/gometry-crs-old".to_owned()]), None).unwrap();
+        configure_runtime(
+            ConfigUpdate::Set(Some(vec!["/tmp/gometry-crs-old".to_owned()])),
+            ConfigUpdate::Keep,
+        )
+        .unwrap();
         let expected = runtime_state_snapshot().unwrap();
         let entered = Arc::new(Barrier::new(2));
         let resume = Arc::new(Barrier::new(2));
@@ -886,7 +906,11 @@ mod tests {
             catalog_with_state(Some("EPSG"), &options, &worker_expected)
         });
         entered.wait();
-        configure_runtime(Some(vec!["/tmp/gometry-crs-new".to_owned()]), None).unwrap();
+        configure_runtime(
+            ConfigUpdate::Set(Some(vec!["/tmp/gometry-crs-new".to_owned()])),
+            ConfigUpdate::Keep,
+        )
+        .unwrap();
         resume.wait();
         worker
             .join()

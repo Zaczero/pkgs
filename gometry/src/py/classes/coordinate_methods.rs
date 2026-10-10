@@ -33,6 +33,7 @@ use crate::{
 )]
 pub struct PyCoordinates {
     pub(crate) view: coordinates::CoordinateView,
+    pub(crate) owner: Py<PyAny>,
     /// `None` renders each coordinate in its native axes; `Some` forces a
     /// rectangular coordinate-view layout.
     pub(crate) layout: Option<CoordinateAxes>,
@@ -121,8 +122,8 @@ impl PyCoordinatesIter {
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.source.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().source.heap_bytes())
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {

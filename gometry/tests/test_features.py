@@ -106,7 +106,7 @@ def test_feature_helpers_preserve_properties_round_trip() -> None:
     assert isinstance(features, gm.Features)
     geometries, properties, ids = features
     assert isinstance(geometries, gm.GeometryArray)
-    assert geometries.crs == 'OGC:CRS84'
+    assert geometries.crs == gm.CRS('OGC:CRS84')
     assert [g.to_wkt() for g in geometries] == [point.to_wkt(), box.to_wkt()]
     assert properties == ({'name': 'A'}, {'name': 'B'})
     assert ids == (7, None)

@@ -66,11 +66,11 @@ def test_crs84_encodes_via_wire_alias_and_non_alias_needs_drop() -> None:
     points = gm.GeometryArray([gm.Point(1, 2)], crs='OGC:CRS84')
     series = to_polars(points)
     decoded = from_polars(series)
-    assert decoded.crs == 'EPSG:4326'
+    assert decoded.crs == gm.CRS('EPSG:4326')
     assert canon(decoded) == canon(gm.GeometryArray([gm.Point(1, 2)], crs=4326))
     # Explicit alias restore at decode.
     restored = from_polars(series, crs='OGC:CRS84')
-    assert restored.crs == 'OGC:CRS84'
+    assert restored.crs == gm.CRS('OGC:CRS84')
     assert canon(restored) == canon(points)
 
     # A non-alias non-EPSG CRS still requires drop_crs acknowledgement.

@@ -24,7 +24,7 @@ import re
 import sys
 from dataclasses import dataclass
 from types import ModuleType
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pyo3stubs.ast_util import (
     _is_synthetic_doc,
@@ -39,7 +39,7 @@ from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, unused_allowlist_errors
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator, Mapping, Sequence
 
     from pyo3stubs.config import StubConfig
     from pyo3stubs.rust_scan import ConstructorDocSource
@@ -570,7 +570,9 @@ def _parameters(obj: object) -> list[inspect.Parameter] | None:
     ]
 
 
-def _stub_parameters(node: ast.FunctionDef) -> list[inspect.Parameter]:
+def _stub_parameters(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[inspect.Parameter]:
     """Build signature parameters from a stub's canonical (last) def."""
     args = node.args
     positional = [*args.posonlyargs, *args.args]
@@ -617,7 +619,10 @@ def _stub_parameters(node: ast.FunctionDef) -> list[inspect.Parameter]:
     return [param for param in parameters if param.name not in ('self', 'cls')]
 
 
-def _doc_location(path: str, node: ast.AST) -> DocLocation:
+def _doc_location(
+    path: str,
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+) -> DocLocation:
     line = node.lineno
     if (
         isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
@@ -630,7 +635,7 @@ def _doc_location(path: str, node: ast.AST) -> DocLocation:
     return DocLocation(path, line)
 
 
-def _runtime_location(obj: object, fallback: DocLocation) -> DocLocation:
+def _runtime_location(obj: Any, fallback: DocLocation) -> DocLocation:
     if isinstance(obj, property) and obj.fget is not None:
         obj = obj.fget
     try:
@@ -660,7 +665,7 @@ def _public_names(ctx: CheckContext, runtime: ModuleType) -> tuple[str, ...]:
 
 
 def _property_getter(
-    defs: list[ast.FunctionDef | ast.AsyncFunctionDef],
+    defs: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
 ) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in defs:
         if decorator_names(node) & {'property', 'getter'}:
@@ -810,7 +815,7 @@ def _class_subjects(
             )
             continue
         defs = stub_groups.get(member_name, [])
-        carrier = (
+        member_carrier: ast.FunctionDef | ast.AsyncFunctionDef | None = (
             _property_getter(defs)
             if defs
             else (
@@ -823,8 +828,8 @@ def _class_subjects(
                 else None
             )
         )
-        stub_property = carrier is not None and bool(
-            decorator_names(carrier) & {'property', 'getter'}
+        stub_property = member_carrier is not None and bool(
+            decorator_names(member_carrier) & {'property', 'getter'}
         )
         static = inspect.getattr_static(cls, member_name, None)
         property_like = (
@@ -843,8 +848,8 @@ def _class_subjects(
             source = descriptor_carriers[member_name][1]
         else:
             source = (
-                _doc_location(class_path, carrier)
-                if carrier is not None
+                _doc_location(class_path, member_carrier)
+                if member_carrier is not None
                 else _runtime_location(static, class_source)
             )
         if property_like:
@@ -870,7 +875,7 @@ def _class_subjects(
                     else (
                         (descriptor_carriers[member_name][2],)
                         if member_name in descriptor_carriers
-                        else ((carrier,) if carrier is not None else ())
+                        else ((member_carrier,) if member_carrier is not None else ())
                     )
                 ),
             )
@@ -891,13 +896,14 @@ def _class_subjects(
             seen.add(member_name)
             continue
         if member_name not in vars(cls) and defs:
-            stub_doc = ast.get_docstring(carrier) if carrier is not None else None
+            assert member_carrier is not None
+            stub_doc = ast.get_docstring(member_carrier)
             prose = stub_doc or _runtime_doc_for_stub(member_name, runtime_member)
             yield _subject(
                 f'{name}.{member_name}',
                 'callable',
                 prose,
-                _stub_parameters(carrier),
+                _stub_parameters(member_carrier),
                 source,
                 declarations=tuple(defs),
             )

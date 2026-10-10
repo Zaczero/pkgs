@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 #: PyO3 spells the receiver `$self` (or `$module`/`$cls`) in a text_signature;
 #: the Rust `signature` never lists it.
 _RECEIVERS = ('$self', '$module', '$cls')
+_RECEIVER_NAME = '_pyo3_receiver'
 
 Param = tuple[str, str | None]
 
@@ -71,18 +72,21 @@ def _rust_params(source: str) -> list[Param]:
 def _python_params(body: str) -> list[Param]:
     """``(token, default source)`` of a documented ``text_signature`` body."""
     for receiver in _RECEIVERS:
-        body = body.replace(receiver, 'self', 1)
+        body = body.replace(receiver, _RECEIVER_NAME, 1)
     node = ast.parse(f'def _{body}: ...').body[0]
     assert isinstance(node, ast.FunctionDef)
     args = node.args
+    positional_only = list(args.posonlyargs)
+    if positional_only and positional_only[0].arg == _RECEIVER_NAME:
+        positional_only.pop(0)
     params: list[Param] = []
-    positional = [*args.posonlyargs, *args.args]
+    positional = [*positional_only, *args.args]
     padding: list[ast.expr | None] = [None] * (len(positional) - len(args.defaults))
     for index, (arg, default) in enumerate(
         zip(positional, [*padding, *args.defaults], strict=True)
     ):
         params.append((arg.arg, None if default is None else ast.unparse(default)))
-        if index + 1 == len(args.posonlyargs):
+        if index + 1 == len(positional_only):
             params.append(('/', None))
     if args.vararg:
         params.append((f'*{args.vararg.arg}', None))
@@ -95,7 +99,7 @@ def _python_params(body: str) -> list[Param]:
         ))
     if args.kwarg:
         params.append((f'**{args.kwarg.arg}', None))
-    return [param for param in params if param[0] != 'self']
+    return [param for param in params if param[0] != _RECEIVER_NAME]
 
 
 def _defaults_agree(

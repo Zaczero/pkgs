@@ -14,5 +14,5 @@ pub(crate) use from::{from_wkb, from_wkt};
 pub(crate) use geojson::from_geojson;
 pub(crate) use pickle::{
     _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1, reduce_geometry,
-    reduce_geometry_array,
+    reduce_geometry_array, unpickle_coordinates_v1,
 };

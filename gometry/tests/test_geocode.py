@@ -109,7 +109,7 @@ def test_pluscode_rejects_out_of_range_bare_coordinates() -> None:
 def test_pluscode_polygon_short_codes_and_validity() -> None:
     # decoding.csv vectors: code -> (lng_lo, lat_lo, lng_hi, lat_hi).
     area = gm.pluscode_polygon('8FVC2222+22')
-    assert area.crs == 'OGC:CRS84'
+    assert area.crs == gm.CRS('OGC:CRS84')
     assert area.bounds == (8.0, 47.0, 8.000125, 47.000125)
     assert gm.pluscode_polygon('62G20000+').bounds == (-180.0, 0.0, -179.0, 1.0)
     assert gm.pluscode_polygon('8FVC2222+22GG').bounds == (
@@ -137,7 +137,7 @@ def test_pluscode_polygon_short_codes_and_validity() -> None:
     )
     bulk = gm.pluscode_polygon(['8FVC2222+22', '62G20000+'])
     assert isinstance(bulk, gm.GeometryArray)
-    assert bulk.crs == 'OGC:CRS84'
+    assert bulk.crs == gm.CRS('OGC:CRS84')
     assert bulk.bounds.tolist() == [
         [8.0, 47.0, 8.000125, 47.000125],
         [-180.0, 0.0, -179.0, 1.0],

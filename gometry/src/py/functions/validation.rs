@@ -519,15 +519,15 @@ impl PyValidationReport {
         self.issue.as_ref().and_then(|issue| issue.path.clone())
     }
 
-    /// ``sys.getsizeof`` support: the report plus the retained geometry
+    /// ``sys.getsizeof`` support: Python's allocation base plus the retained geometry
     /// coordinate payload and any validation issue strings.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    pub fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
+    pub fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     pub const fn __bool__(&self) -> bool {

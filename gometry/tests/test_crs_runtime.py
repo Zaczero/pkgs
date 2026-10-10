@@ -4,6 +4,7 @@ runtime config, cache info, and the PROJ authority metadata surface.
 
 from __future__ import annotations
 
+import inspect
 import math
 import shutil
 import subprocess
@@ -61,8 +62,15 @@ def _run_isolated_child(code: str, tmpdir: str) -> subprocess.CompletedProcess[s
 
 
 def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) -> None:
+    parameters = inspect.signature(gm.crs_configure).parameters
+    assert tuple(parameters) == ('search_paths', 'user_writable_directory')
+    assert parameters['search_paths'].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters['user_writable_directory'].kind is inspect.Parameter.KEYWORD_ONLY
+
     original = gm.crs_configure()
     assert original == {'search_paths': None, 'user_writable_directory': None}
+    with pytest.raises(TypeError):
+        gm.crs_configure(None)
     before = gm.CRS(4326).info
     engine = gm.crs_engine()
     search_paths = None
@@ -123,10 +131,10 @@ def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) ->
                 == engine['database_path'].split('&vfs=', 1)[0]
             )
         assert gm.CRS(4326).info == before
-        assert gm.Point(1, 2, crs=4326).to_crs(3857).crs == 'EPSG:3857'
+        assert gm.Point(1, 2, crs=4326).to_crs(3857).crs == gm.CRS('EPSG:3857')
         assert gm.crs_clear_cache() is None
         assert gm.CRS(4326).info == before
-        assert gm.Point(1, 2, crs=4326).to_crs(3857).crs == 'EPSG:3857'
+        assert gm.Point(1, 2, crs=4326).to_crs(3857).crs == gm.CRS('EPSG:3857')
 
         with pytest.raises(ValueError, match='search_paths entries'):
             gm.crs_configure(search_paths=[''])
@@ -191,6 +199,55 @@ def test_crs_configure_noop_preserves_generation_and_products(tmp_path: Path) ->
         assert after['total_entries'] == before['total_entries']
     finally:
         assert gm.crs_reset() == original
+
+
+def test_crs_configure_none_resets_one_field_and_saved_values_restore(
+    tmp_path: Path,
+) -> None:
+    original = gm.crs_configure()
+    first_paths = [str(tmp_path)]
+    first_writable = tmp_path / 'first'
+    second_paths = [str(tmp_path / 'second')]
+    second_writable = tmp_path / 'second-writable'
+
+    try:
+        first = gm.crs_configure(
+            search_paths=first_paths,
+            user_writable_directory=first_writable,
+        )
+        snapshot = gm.crs_configure()
+        gm.crs_configure(
+            search_paths=second_paths,
+            user_writable_directory=second_writable,
+        )
+
+        restored = gm.crs_configure(
+            search_paths=snapshot['search_paths'],
+            user_writable_directory=snapshot['user_writable_directory'],
+        )
+        assert restored == first
+
+        generation = gm.crs_cache_info()['generation']
+        cleared_paths = gm.crs_configure(search_paths=None)
+        assert cleared_paths == {
+            'search_paths': None,
+            'user_writable_directory': str(first_writable),
+        }
+        assert gm.crs_cache_info()['generation'] > generation
+
+        cleared_writable = gm.crs_configure(user_writable_directory=None)
+        assert cleared_writable == {
+            'search_paths': None,
+            'user_writable_directory': None,
+        }
+    finally:
+        assert (
+            gm.crs_configure(
+                search_paths=original['search_paths'],
+                user_writable_directory=original['user_writable_directory'],
+            )
+            == original
+        )
 
 
 def test_crs_runtime_leaves_no_proj_config_directory(tmp_path: Path) -> None:

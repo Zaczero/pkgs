@@ -171,7 +171,7 @@ def test_point_replace_preserves_typed_empty_axes() -> None:
     assert empty_z.to_wkt() == 'POINT Z EMPTY'
     assert empty_z.__replace__().to_wkt() == 'POINT Z EMPTY'
     assert empty_z.__replace__(crs=4326).to_wkt() == 'POINT Z EMPTY'
-    assert empty_z.__replace__(crs=4326).crs == 'EPSG:4326'
+    assert empty_z.__replace__(crs=4326).crs == gm.CRS('EPSG:4326')
 
     empty_m = gm.from_wkt('POINT M EMPTY')
     assert empty_m.__replace__().to_wkt() == 'POINT M EMPTY'

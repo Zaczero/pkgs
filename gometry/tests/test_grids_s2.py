@@ -107,9 +107,9 @@ def test_s2_point_cell_boundary_and_parent() -> None:
     assert cell.intersects(parent)
     assert {cell, geometry_cell, parent} == {cell, parent}
     assert hash(cell) == hash(geometry_cell)
-    assert cell.center.crs == 'OGC:CRS84'
+    assert cell.center.crs == gm.CRS('OGC:CRS84')
     assert boundary.geometry_type == 'Polygon'
-    assert boundary.crs == 'OGC:CRS84'
+    assert boundary.crs == gm.CRS('OGC:CRS84')
     assert (
         gm.CellArray([cell.token], type=gm.S2Cell).polygon[0].to_wkt()
         == boundary.to_wkt()
@@ -136,7 +136,7 @@ def test_s2_bounds_coverage_membership() -> None:
     assert int(coverage[0]) in coverage
     assert coverage[0].token in coverage
     assert gm.S2Cell(30.0, 52.0, level=12) not in coverage
-    assert coverage.polygon.crs == 'OGC:CRS84'
+    assert coverage.polygon.crs == gm.CRS('OGC:CRS84')
     np.testing.assert_array_equal(
         gm.contains(polygon, gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)),
         [True, False],

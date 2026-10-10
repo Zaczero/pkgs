@@ -20,6 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
+from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -34,14 +35,19 @@ import gometry as gm
 import gometry._types as sht
 import numpy as np
 import numpy.typing as npt
+import pyarrow as pa
+
+if TYPE_CHECKING:
+    import io
 
 POINT = gm.Point(1, 1)
 LINE = gm.LineString([(0, 0), (1, 1), (2, 0)])
+GEOGRAPHIC_POINT = gm.Point(0, 0, crs=4326)
 GEOGRAPHIC_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=4326)
 METER_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=3857)
 METER_POINT = gm.Point(1, 1, crs=3857)
 METER_LINES = gm.GeometryArray([METER_LINE])
-GEOGRAPHIC_POINT = gm.Point(0, 0, crs=4326)
+GEOGRAPHIC_LINES = gm.GeometryArray([GEOGRAPHIC_LINE])
 MEASURED_LINE = gm.LineString([(0, 0, 0, 0), (1, 1, 0, 10), (2, 0, 0, 20)])
 M_STATION_COLUMN = cast(
     'sht.FloatColumn',
@@ -57,7 +63,6 @@ POINTS = gm.GeometryArray([POINT, gm.Point(2, 2)])
 NULLABLE_POINTS = gm.GeometryArray([POINT, None])
 BATCH_POINTS: list[gm.Point | None] = [POINT, None, gm.Point(3, 4)]
 LINES = gm.GeometryArray([LINE])
-GEOGRAPHIC_LINES = gm.GeometryArray([GEOGRAPHIC_LINE])
 LINES2 = gm.GeometryArray([LINE, LINE])
 NULLABLE_LINES = gm.GeometryArray([LINE, None])
 MULTILINES = gm.GeometryArray([MULTILINE])
@@ -203,6 +208,22 @@ def _check_require_row_types(
         gm.require(foreign_rows),
         gm.GeometryArray[gm.Geometry | None],
     )
+
+
+def _check_geoparquet_binary_stream_types(
+    binary_stream: io.BytesIO,
+    arrow_file: pa.NativeFile,
+) -> None:
+    assert_type(
+        gm.from_geoparquet(binary_stream),
+        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+    )
+    assert_type(
+        gm.from_geoparquet(arrow_file),
+        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+    )
+    POINTS.to_geoparquet(binary_stream)
+    POINTS.to_geoparquet(arrow_file)
 
 
 def _check_cell_projection_row_types(
@@ -835,7 +856,6 @@ if TYPE_CHECKING:
     import geopandas as gpd
     import pandas as pd
     import polars as pl
-    import pyarrow as pa
 
     class _CrsAuthority:
         def to_authority(self) -> tuple[str, int]: ...
@@ -1894,6 +1914,14 @@ assert_type(gm.MultiPoint(POINTS.coords), gm.MultiPoint)
 
 # CRS kind vocabulary.
 assert_type(gm.CRS(4326).kind, sht.CrsKind)
+assert_type(hash(gm.CRS(4326)), int)
+assert_type(
+    POINT.coords.__reduce__(), tuple[Callable[..., gm.Coordinates], tuple[Any, ...]]
+)
+assert_type(
+    POINTS.__reduce_ex__(5),
+    tuple[Callable[..., gm.GeometryArray[gm.Geometry | None]], tuple[Any, ...]],
+)
 if TYPE_CHECKING:
     _kind_ok: sht.CrsCatalogKind = 'projected'
     _db_kind_ok: sht.CrsDatabaseKind = 'ellipsoid'

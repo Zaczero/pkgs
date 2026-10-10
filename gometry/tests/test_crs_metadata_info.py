@@ -264,11 +264,15 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert geographic_cf['geographic_crs_name'] == 'WGS 84'
     assert cast('str', geographic_cf['crs_wkt']).startswith('GEOGCRS["WGS 84"')
     assert gm.CRS(geographic_cf).definition == geographic_cf['crs_wkt']
-    assert gm.Point(21.0, 52.0, crs=geographic_cf).crs == geographic_cf['crs_wkt']
+    assert gm.Point(21.0, 52.0, crs=geographic_cf).crs == gm.CRS(
+        cast('str', geographic_cf['crs_wkt'])
+    )
     geographic_cf_without_wkt = dict(geographic_cf)
     del geographic_cf_without_wkt['crs_wkt']
     assert gm.CRS(geographic_cf_without_wkt).to_authority() == ('OGC', 'CRS84')
-    assert gm.Point(21.0, 52.0, crs=geographic_cf_without_wkt).crs == 'OGC:CRS84'
+    assert gm.Point(21.0, 52.0, crs=geographic_cf_without_wkt).crs == gm.CRS(
+        'OGC:CRS84'
+    )
     assert geographic['axes'] == [
         {
             'name': 'Geodetic latitude',
@@ -353,11 +357,11 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert gm.CRS(utm_cf_without_wkt).to_epsg() == 32634
     assert gm.CRS(utm_cf_without_wkt).definition.startswith('+proj=tmerc ')
     assert (
-        gm.Point(500000.0, 5750000.0, crs=utm_cf_without_wkt).crs
+        gm.Point(500000.0, 5750000.0, crs=utm_cf_without_wkt).crs.definition
         == gm.CRS(utm_cf_without_wkt).definition
     )
     assert (
-        gm.Point(500000.0, 5750000.0).set_crs(utm_cf_without_wkt).crs
+        gm.Point(500000.0, 5750000.0).set_crs(utm_cf_without_wkt).crs.definition
         == gm.CRS(utm_cf_without_wkt).definition
     )
     assert gm.crs_transform(
@@ -622,9 +626,11 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
     assert gm.CRS(CrsHolderObject()).definition == 'EPSG:4326'
     assert gm.CRS(SrsHolderObject()).definition == 'EPSG:4326'
     assert gm.CRS(NestedCrsHolderObject()).definition == 'EPSG:4326'
-    assert gm.Point(-1.0, 50.0, crs=('EPSG', '4326')).crs == 'EPSG:4326'
-    assert gm.Point(-1.0, 50.0, crs=WktCrsObject()).crs == wkt
-    assert gm.Point(-1.0, 50.0, crs=cast('Any', CrsHolderObject())).crs == 'EPSG:4326'
+    assert gm.Point(-1.0, 50.0, crs=('EPSG', '4326')).crs == gm.CRS('EPSG:4326')
+    assert gm.Point(-1.0, 50.0, crs=WktCrsObject()).crs == gm.CRS(wkt)
+    assert gm.Point(-1.0, 50.0, crs=cast('Any', CrsHolderObject())).crs == gm.CRS(
+        'EPSG:4326'
+    )
     assert gm.crs_transform(WktCrsObject(), 3857, -1.0, 50.0) == pytest.approx(
         tuple(gm.Point(-1.0, 50.0, crs=4326).to_crs(3857).coords.to_nested())
     )

@@ -126,7 +126,7 @@ use py::functions::{
     from_geojson, from_wkb, from_wkt, intersection, intersection_all, osm_shortlink_encode,
     osm_shortlink_location, overlay_operator, pluscode_encode, pluscode_polygon, pluscode_recover,
     pluscode_shorten, polygonize_all, require, symmetric_difference, symmetric_difference_all,
-    to_feature, to_feature_collection, union, union_all,
+    to_feature, to_feature_collection, union, union_all, unpickle_coordinates_v1,
 };
 mod grid;
 mod predicates;
@@ -268,7 +268,8 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         from_wkt, from_wkb, from_geojson, to_feature, to_feature_collection,
         from_polyline, require,
         // Pickle payload rebuilders (private; see the `__reduce__` impls).
-        _unpickle_geometry_v1, _unpickle_geometry_array_v1, _unpickle_packed_array_v1,
+         _unpickle_geometry_v1, _unpickle_geometry_array_v1, _unpickle_packed_array_v1,
+         unpickle_coordinates_v1,
         _unpickle_validation_report_v1,
         // Token vocabularies for the stub-parity gate (private).
         _token_vocabulary,

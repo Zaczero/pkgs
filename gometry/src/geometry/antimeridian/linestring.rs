@@ -138,15 +138,10 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
     };
     let cycle_len = cycle.len();
     let vertex = |offset: usize| {
-        let next = start
+        let shifted = start
             .checked_add(offset)
             .expect("one cycle offset fits the addressable coordinate length");
-        let index = if next >= cycle_len {
-            next.checked_sub(cycle_len)
-                .expect("one subtraction resolves the cycle offset")
-        } else {
-            next
-        };
+        let index = shifted.checked_sub(cycle_len).unwrap_or(shifted);
         *cycle
             .get(index)
             .expect("the cycle offset resolves to a source vertex")

@@ -277,9 +277,16 @@ storage; [`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepc
 geometries serialize durable input state and rebuild derived acceleration
 structures when loaded; loaded objects do not contain warm-cache snapshots. There is
 no `Coverage` object to pickle: cover factories return `CellArray` or `Groups`
-containers. [`Coordinates`][gometry.Coordinates] and iterator types are not
-picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an immutable parent view; it is
-reconstructed from its geometry when unpickled.
+containers. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retaining
+view, preserving its selected layout and flattened row indexes; iterator types
+are not picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an
+immutable parent view; it is reconstructed from its geometry when unpickled.
+
+With pickle protocol 5, packed `GeometryArray` payload columns and their offsets
+can be sent out of band when the pickler uses `buffer_callback`. Those buffers
+are read-only `PickleBuffer` values; the unpickler must receive the collected
+buffers. Pickle protocol 5 alone does not make ordinary process-pool transfers
+zero-copy or create shared memory.
 
 ### Stored-format compatibility
 

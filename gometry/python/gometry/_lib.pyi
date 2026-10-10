@@ -33,6 +33,7 @@ from collections.abc import (
 from os import PathLike
 from typing import (
     Any,
+    BinaryIO,
     ClassVar,
     Final,
     Generic,
@@ -117,6 +118,7 @@ from gometry._types import (
     PyArrowArray,
     PyArrowCapsule,
     PyArrowChunkedArray,
+    PyArrowNativeFile,
     PyArrowRecordBatch,
     PyArrowRecordBatchReader,
     PyArrowSchemaCapsule,
@@ -523,7 +525,6 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     or call `drop_missing()` first for an explicit dense-only path.
     """
 
-    __array_ufunc__: ClassVar[None]
     def __new__(cls, _nonconstructible: Never, /) -> Self:
         """Coordinates are returned by ``geom.coords`` and cannot be constructed."""
     @overload
@@ -585,12 +586,12 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus the logical Rust-side
-        coordinate heap retained by this view (ordinate payload and structural
-        row metadata for array-backed views). Shared backing buffers are
-        reported like NumPy views, not as the full parent allocation. Parent
-        geometry/array sidecars (prepared caches, coverage membership, …) are
-        not owned by the view and are not counted here.
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
+        Rust-side coordinate heap retained by this view (ordinate payload and
+        structural row metadata for array-backed views). Shared backing buffers
+        are estimated from the visible view, not the full parent allocation.
+        Parent geometry/array sidecars (prepared caches, coverage membership,
+        …) are not owned by the view and are not counted here.
 
         Raises
         ------
@@ -599,7 +600,10 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this coordinate view."""
-    def __reduce__(self) -> Never: ...
+    def __reduce__(self) -> tuple[Callable[..., Coordinates], tuple[Any, ...]]:
+        """Restore a Coordinates view from its owning geometry or array and
+        selected layout.
+        """
     def __copy__(self) -> Self: ...
     def __deepcopy__(self, memo: object) -> Self: ...
     @property
@@ -1036,9 +1040,10 @@ class Geometry:
     def __str__(self) -> str:
         """Return the geometry's WKT representation."""
     def __sizeof__(self) -> int:
-        """Retained native cost of this geometry for ``sys.getsizeof``.
+        """Python's allocation base plus the retained native cost of this geometry
+        for ``sys.getsizeof``.
 
-        Counts the Python-facing struct, the Arc-owned ``ShapeData`` block
+        Counts the Python object allocation base and the Arc-owned ``ShapeData`` block
         (including the ``Shape`` payload — coordinate columns **and**
         container allocations such as multipart ``Vec``s, polygon hole
         ``Arc``s, and nested collection members), any attached
@@ -6210,7 +6215,7 @@ class GeometryPartsIterator(Generic[_GeometryT_co]):
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -6354,7 +6359,7 @@ class GeometryArrayIterator(Generic[_GeometryT_co]):
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -6471,10 +6476,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'POINT (0.00898 0)'
         """
     def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        """Pickle support: packed point/line/polygon arrays round-trip their raw
-        little-endian f64 columns (plus CSR offsets for lineal storage);
-        mixed arrays round-trip per-row WKB. The frame (stored CRS definition,
-        epoch) travels alongside.
+        """Pickle durable array state; packed storage uses portable little-endian
+        columns and offsets, while mixed storage uses WKB rows.
+        """
+    def __reduce_ex__(
+        self, protocol: SupportsIndex, /
+    ) -> tuple[Callable[..., GeometryArray[Geometry | None]], tuple[Any, ...]]:
+        """Use protocol-5 out-of-band buffers for the encoded array payload when
+        the pickler provides a buffer callback. The buffers are read-only.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this geometry array."""
@@ -6908,14 +6917,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         iterator of Geometry or None
         """
     def __sizeof__(self) -> int:
-        """`sys.getsizeof` support: the wrapper plus this array's logical
+        """`sys.getsizeof` support: Python's allocation base plus this array's logical
         Rust-side heap — coordinate payload, CSR offsets, row maps, missing
         mask, cache owners and their already-materialized contents, spilled CRS
         frame text, and any already-materialized prepared-geometry / frame
         sidecars.
         Lazy cache slots that have not been populated do not inflate the total.
-        Shared backing buffers are accounted like NumPy views: the logical view
-        is reported, not the whole shared parent allocation.
+        Shared backing buffers use the logical view estimate, not the whole
+        shared parent allocation.
 
         Raises
         ------
@@ -7634,7 +7643,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
     def to_geoparquet(
         self,
-        path: str | PathLike[str],
+        path: str | PathLike[str] | BinaryIO | PyArrowNativeFile,
         *,
         attributes: PyArrowTable | Mapping[str, Any] | None = None,
         encoding: Literal['wkb', 'native'] = 'wkb',
@@ -7644,8 +7653,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        path : path-like
-            Output Parquet path.
+        path : str, path-like, or binary stream
+            Output Parquet path or caller-owned binary writable stream. Text
+            streams are not supported; the writer leaves streams open.
         attributes : pyarrow.Table or mapping, optional
             Per-row attribute columns written beside the geometry column
             (lengths must match).
@@ -11480,9 +11490,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus this group's logical CSR
-        payload. Sliced groups report the visible values window and rebased
-        logical offsets, not the whole shared backing allocation.
+        """``sys.getsizeof`` support: Python's allocation base plus this group's
+        logical CSR payload. Sliced groups report the visible values window and
+        rebased logical offsets, not the whole shared backing allocation.
 
         Raises
         ------
@@ -11613,7 +11623,7 @@ class GroupsIterator(Iterator[_GroupValuesT_co]):
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -11708,7 +11718,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         [0]
         """
     def __sizeof__(self) -> int:
-        """`sys.getsizeof` support: the wrapper plus the retained Rust-side
+        """`sys.getsizeof` support: Python's allocation base plus the retained Rust-side
         index payload — packed or boxed row geometry coordinates, the immutable
         STR tree, overflow STR runs, and frame metadata. Shared buffers are
         reported as this index's logical retained footprint.
@@ -12418,14 +12428,15 @@ class CRS:
     ``to_crs``. Accepts an authority string, EPSG code,
     authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 
-    Equality is structural — a ``CRS`` compares equal only to the same
-    stored definition (``crs == 4326`` and ``crs == 'EPSG:4326'``).
-    Operational equivalence, including axis-order-only differences, is the
-    explicit ``same_as(..., mode='ignore_axis_order')`` query. It is therefore
-    unhashable; key mappings by ``crs.definition`` instead.
+    Equality is structural between ``CRS`` instances: the stored normalized
+    definitions must match. Other operand types do not compare equal; use
+    ``CRS(value)`` when comparing stored identity with raw input. Operational
+    equivalence, including axis-order-only differences, is the explicit
+    ``same_as(..., mode='ignore_axis_order')`` query. Equal ``CRS`` values are
+    hashable and can be used as mapping keys.
     """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus owned Rust-side CRS text
+        """``sys.getsizeof`` support: Python's allocation base plus owned Rust-side CRS text
         retained by this object. This includes the stored CRS definition when it
         spills out of `SmolStr` inline storage and any heap strings/vectors in
         the lazily cached `CrsInfo`. Opaque PROJ process-global caches are not
@@ -12467,7 +12478,8 @@ class CRS:
         """
     def __eq__(self, other: object, /) -> bool:
         """Return self==value."""
-    __hash__: ClassVar[None]  # type: ignore[assignment]
+    def __hash__(self) -> int:
+        """Hash the stored normalized CRS definition."""
     @property
     def is_geographic(self) -> bool:
         """Whether this CRS is geographic (lon/lat on an ellipsoid).
@@ -13265,7 +13277,7 @@ class CellArrayIterator(Generic[_CellT_co]):
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -13303,10 +13315,10 @@ class CellArray(Sequence[_CellT_co]):
 
     __array_ufunc__: ClassVar[None]
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus this array's logical
+        """``sys.getsizeof`` support: Python's allocation base plus this array's logical
         ``uint64`` id payload, missing flags, and any row-selection map. Shared
-        backing buffers are reported like NumPy views, not as the full parent
-        allocation.
+        backing buffers are estimated from the selected view, not the full
+        parent allocation.
 
         Raises
         ------
@@ -14076,7 +14088,7 @@ class H3VertexArrayIterator:
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -14370,7 +14382,7 @@ class H3EdgeArrayIterator:
     def __length_hint__(self) -> int:
         """Remaining rows — lets ``list(iter)`` preallocate."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
+        """``sys.getsizeof`` support: Python's allocation base plus the logical
         payload it keeps alive while iterating.
 
         Raises
@@ -14826,7 +14838,7 @@ class H3Vertex:
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: H3 vertices are heap-free value ids."""
+        """``sys.getsizeof`` support for this heap-free vertex value."""
     def __new__(cls, value: H3Vertex | _IntScalarInput | str) -> Self:
         """One H3 vertex from an existing `H3Vertex`, a 64-bit id, or a token.
 
@@ -14926,7 +14938,7 @@ class H3Edge:
         int
         """
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: H3 edges are heap-free value ids."""
+        """``sys.getsizeof`` support for this heap-free edge value."""
     def __new__(cls, value: H3Edge | _IntScalarInput | str) -> Self:
         """One H3 directed edge from an existing `H3Edge`, a 64-bit id, or a token.
 
@@ -16134,7 +16146,7 @@ class ValidationReport:
     def __hash__(self) -> int:
         """Return hash(self)."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the report plus the retained geometry
+        """``sys.getsizeof`` support: Python's allocation base plus the retained geometry
         coordinate payload and any validation issue strings.
 
         Raises
@@ -21335,23 +21347,25 @@ def crs_engine() -> CrsEngineInfo:
 
 def crs_configure(
     *,
-    search_paths: str | PathLike[str] | Iterable[str | PathLike[str]] | None = None,
-    user_writable_directory: str | PathLike[str] | None = None,
+    search_paths: str | PathLike[str] | Iterable[str | PathLike[str]] | None = ...,
+    user_writable_directory: str | PathLike[str] | None = ...,
 ) -> CrsRuntimeConfig:
     """Configure local CRS engine paths.
 
-    Omitted arguments keep their current value, so a call without arguments
-    returns the current configuration unchanged. Use `crs_reset` to restore
-    the defaults.
+    Omitted arguments keep their current value, while explicit ``None`` restores
+    that field's default. A call without arguments returns the current
+    configuration unchanged; use `crs_reset` to restore both defaults.
 
     Parameters
     ----------
     search_paths : str, path, or sequence of these, optional
-        Directories PROJ searches for its database and grids. When a named grid
-        is absent from these directories, PROJ may also try the bare grid
-        filename in the current working directory.
+        Directories PROJ searches for its database and grids. ``None`` restores
+        the default search paths. When a named grid is absent from these
+        directories, PROJ may also try the bare grid filename in the current
+        working directory.
     user_writable_directory : str or path, optional
-        Directory PROJ includes in local grid lookup.
+        Directory PROJ includes in local grid lookup. ``None`` restores the
+        default writable directory.
 
     Notes
     -----

@@ -422,7 +422,7 @@ impl PySpatialIndex {
             )
     }
 
-    /// `sys.getsizeof` support: the wrapper plus the retained Rust-side
+    /// `sys.getsizeof` support: Python's allocation base plus the retained Rust-side
     /// index payload — packed or boxed row geometry coordinates, the immutable
     /// STR tree, overflow STR runs, and frame metadata. Shared buffers are
     /// reported as this index's logical retained footprint.
@@ -431,8 +431,8 @@ impl PySpatialIndex {
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    pub(crate) fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
+    pub(crate) fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     /// Return exact predicate-refined matches for a query geometry, array, or
