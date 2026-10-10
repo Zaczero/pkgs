@@ -315,8 +315,34 @@ impl ChartMetric for EllipsoidMetric<'_> {
         super::chart_edge::chart_edge_differential_bounds(edge, self.geodesic)
     }
 
-    fn chart_edge_pole_distance_upper_bound(&self, edge: &ChartEdge, target: Point) -> Option<f64> {
-        edge.parallel_pole_distance_upper_bound(self.geodesic, self.frame, target)
+    fn chart_edge_moving_correspondence_upper(
+        &self,
+        source: &ChartEdge,
+        target: &ChartEdge,
+        source_interval: [f64; 2],
+        target_interval: [f64; 2],
+        source_points: &[Point; 2],
+        target_points: &[Point; 2],
+        endpoint_distances: [f64; 2],
+    ) -> Option<f64> {
+        source.moving_correspondence_upper(
+            target,
+            source_interval,
+            target_interval,
+            source_points,
+            target_points,
+            endpoint_distances,
+            self.geodesic,
+        )
+    }
+
+    fn chart_edge_pole_distance_upper_bound(
+        &self,
+        edge: &ChartEdge,
+        source_interval: [f64; 2],
+        target: Point,
+    ) -> Option<f64> {
+        edge.pole_distance_upper_bound(self.geodesic, self.frame, source_interval, target)
     }
 
     fn point_edge_query(

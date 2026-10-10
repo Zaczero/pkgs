@@ -24,6 +24,8 @@ pub(crate) use chart_hausdorff::{ChartHausdorffWitness, counters as chart_hausdo
 pub(crate) use chart_hausdorff::{
     chart_directed_hausdorff_distance, ensure_geographic_hausdorff_linework,
 };
+#[cfg(test)]
+pub(crate) use chart_parts::counters as chart_parts_counters;
 pub(crate) use chart_parts::{
     ChartEdgePart, ChartParts, cached_chart_distance, cached_chart_dwithin,
     cached_chart_nearest_points, cached_chart_nearest_points_with_intent, point_chart_distance,

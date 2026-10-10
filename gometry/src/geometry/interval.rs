@@ -43,6 +43,12 @@ impl Interval {
 
     /// Enclose addition by stepping each rounded endpoint result outwards.
     pub(crate) fn add(self, other: Self) -> Self {
+        if self.is_exact_zero() {
+            return other;
+        }
+        if other.is_exact_zero() {
+            return self;
+        }
         Self {
             lower: (self.lower + other.lower).next_down(),
             upper: (self.upper + other.upper).next_up(),
@@ -51,6 +57,12 @@ impl Interval {
 
     /// Enclose subtraction using the smallest and largest endpoint differences.
     pub(crate) fn sub(self, other: Self) -> Self {
+        if other.is_exact_zero() {
+            return self;
+        }
+        if self.is_exact_zero() {
+            return other.neg();
+        }
         Self {
             lower: (self.lower - other.upper).next_down(),
             upper: (self.upper - other.lower).next_up(),
@@ -59,6 +71,11 @@ impl Interval {
 
     /// Enclose all endpoint products; indeterminate infinite products widen fully.
     pub(crate) fn mul(self, other: Self) -> Self {
+        if (self.is_exact_zero() && other.lower.is_finite() && other.upper.is_finite())
+            || (other.is_exact_zero() && self.lower.is_finite() && self.upper.is_finite())
+        {
+            return Self::exact(0.0);
+        }
         let products = [
             (self.lower, other.lower),
             (self.lower, other.upper),
@@ -96,6 +113,9 @@ impl Interval {
         if self.upper < 0.0 {
             return Self::from_bounds(f64::NAN, f64::NAN);
         }
+        if self.is_exact_zero() {
+            return Self::exact(0.0);
+        }
         Self {
             lower: self.lower.max(0.0).sqrt().next_down().max(0.0),
             upper: self.upper.sqrt().next_up(),
@@ -104,6 +124,9 @@ impl Interval {
 
     /// Enclose sign reversal by swapping and negating endpoints outwards.
     pub(crate) fn neg(self) -> Self {
+        if self.is_exact_zero() {
+            return Self::exact(0.0);
+        }
         Self {
             lower: (-self.upper).next_down(),
             upper: (-self.lower).next_up(),
@@ -130,5 +153,31 @@ impl Interval {
     /// Whether two interval enclosures may share a represented value.
     pub(crate) fn intersects(self, other: Self) -> bool {
         self.lower <= other.upper && other.lower <= self.upper
+    }
+
+    const fn is_exact_zero(self) -> bool {
+        self.lower.to_bits().trailing_zeros() >= 63 && self.upper.to_bits().trailing_zeros() >= 63
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_zero_arithmetic_preserves_exact_interval_identities() {
+        let zero = Interval::exact(0.0);
+        let value = Interval::from_bounds(2.0, 3.0);
+
+        assert_eq!(zero.add(value), value);
+        assert_eq!(value.add(zero), value);
+        let negative = zero.sub(value);
+        assert!(negative.lower() <= -3.0);
+        assert!(negative.upper() >= -2.0);
+        assert_eq!(value.sub(zero), value);
+        assert_eq!(zero.mul(value), zero);
+        assert_eq!(value.mul(zero), zero);
+        assert_eq!(zero.sqrt(), zero);
+        assert_eq!(zero.neg(), zero);
     }
 }
