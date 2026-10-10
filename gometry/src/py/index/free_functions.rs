@@ -26,10 +26,11 @@ use crate::py::numpy::int64_array;
 /// max_distance : float, optional
 ///     Ignore candidates farther than this from the query. Must be finite and
 ///     non-negative.
-/// return_distance : bool, default False
+/// return_distance : bool
 ///     If ``True``, return distances alongside handles — ``(indices,
 ///     distances)`` for a scalar query, ``(matches, distances)`` for an
-///     array query.
+///     array query. The distance-returning form requires
+///     ``return_distance=True``.
 #[doc = unit_parameter_doc!()]
 /// exclusive : bool, default False
 ///     If ``True``, skip candidates structurally equal to the query geometry
@@ -92,11 +93,13 @@ pub(crate) fn nearest(
 /// left, right : Geometry, GeometryArray, or iterable of geometry-like values or None
 ///     The two geometry collections to join. Missing rows produce no pairs;
 ///     their original row positions are preserved in every returned id.
-/// predicate : str, default 'intersects'
+/// predicate : str
 ///     Spatial predicate each returned pair must satisfy — one of
 ///     ``'intersects'``, ``'contains'``, ``'contains_properly'``,
 ///     ``'covers'``, ``'within'``, ``'covered_by'``, ``'equals'``,
 ///     ``'dwithin'``, ``'touches'``, ``'crosses'``, or ``'overlaps'``.
+///     Topological forms omit ``predicate`` to use ``'intersects'``;
+///     ``'dwithin'`` requires it explicitly.
 /// distance : float, optional
 ///     Required when ``predicate='dwithin'``: the maximum separation, in
 ///     CRS-natural units — geodesic meters on a geographic CRS, native

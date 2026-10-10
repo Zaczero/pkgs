@@ -1117,9 +1117,10 @@ vertex, or the envelope of a horizontal or vertical row, bound no cells.
 
 Parameters
 ----------
-output : {'polygons', 'edges'}, default 'polygons'
-    Return clipped Voronoi cells or the internal Voronoi edges. Edge output
-    excludes the clip polygon's exterior boundary.
+output : {'polygons', 'edges'}
+    Return clipped Voronoi cells or the internal Voronoi edges. The polygon
+    form omits ``output``; edge output requires ``output='edges'`` and excludes
+    the clip polygon's exterior boundary.
 tolerance : float, default 0.0
     Finite non-negative coordinate-space tolerance: native angular units for
     geographic CRSs, native linear units for projected CRSs, and raw coordinate

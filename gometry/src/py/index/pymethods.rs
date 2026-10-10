@@ -438,8 +438,8 @@ impl PySpatialIndex {
     /// Return exact predicate-refined matches for a query geometry, array, or
     /// iterable of geometry rows.
     ///
-    /// Candidates are refined with predicate (`'intersects'` by
-    /// default); distance is accepted only with `'dwithin'`. Use
+    /// Topological predicates use `'intersects'` when `predicate` is omitted;
+    /// `'dwithin'` requires an explicit predicate and distance. Use
     /// candidates for a bounding-box-only prefilter. A single geometry
     /// returns an int64 ndarray; arrays and iterables return Groups, with one
     /// id row per input row.
@@ -449,10 +449,11 @@ impl PySpatialIndex {
     /// geom : Geometry, GeometryArray, or iterable of Geometry or None
     ///     One query geometry or one query per sequence row. Missing rows
     ///     produce empty result groups and retain their logical positions.
-    /// predicate : str, default 'intersects'
+    /// predicate : str, default varies by call form
     ///     Spatial relation each match must satisfy, evaluated as
-    ///     ``predicate(query_geometry, indexed_geometry)`` (``'dwithin'``
-    ///     requires ``distance``).
+    ///     ``predicate(query_geometry, indexed_geometry)``. Topological forms
+    ///     omit ``predicate`` to use ``'intersects'``; ``'dwithin'`` forms
+    ///     require an explicit predicate and distance.
     /// distance : float, optional
     ///     ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
     ///     threshold is accepted; other values must be finite and
@@ -622,8 +623,10 @@ impl PySpatialIndex {
     /// ----------
     /// queries : Geometry, GeometryArray, or iterable of Geometry or None
     ///     Left-side geometries to join against the indexed rows.
-    /// predicate : str, default 'intersects'
-    ///     Spatial predicate each returned pair must satisfy.
+    /// predicate : str, default varies by call form
+    ///     Spatial predicate each returned pair must satisfy. Topological forms
+    ///     omit ``predicate`` to use ``'intersects'``; ``'dwithin'`` forms
+    ///     require an explicit predicate and distance.
     /// distance : float, optional
     ///     Required when ``predicate='dwithin'``: the maximum separation in
     ///     CRS-natural units. Finite non-negative values and positive infinity
@@ -671,7 +674,7 @@ impl PySpatialIndex {
     ///
     /// Parameters
     /// ----------
-    /// predicate : str, default 'intersects'
+    /// predicate : str
     ///     A symmetric relation: ``'intersects'``, ``'equals'``,
     ///     ``'dwithin'``, ``'touches'``, ``'crosses'``, or ``'overlaps'``.
     ///     Directional predicates (``'contains'``, ``'within'``, ...) are
@@ -886,9 +889,10 @@ impl PySpatialIndex {
     /// max_distance : float, optional
     ///     Ignore matches farther than this, in ``unit``. Must be finite and
     ///     non-negative.
-    /// return_distance : bool, default False
+    /// return_distance : bool
     ///     Return distances alongside handles — ``(indices, distances)`` for
-    ///     a scalar query, ``(matches, distances)`` for an array query.
+    ///     a scalar query, ``(matches, distances)`` for an array query. The
+    ///     distance-returning form requires ``return_distance=True``.
     #[doc = unit_parameter_doc!()]
     /// exclusive : bool, default False
     ///     Skip an indexed geometry equal to the query (self-matches in

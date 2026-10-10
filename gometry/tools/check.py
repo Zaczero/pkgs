@@ -46,6 +46,9 @@ GENERATE_STUBS = (
     'tools/stubs/stubconfig.py',
 )
 
+DOCS_BUILD = ('-m', 'properdocs', 'build', '--strict')
+DOCS_CHECK = ('tools/docs/check.py',)
+
 CHECKS: tuple[tuple[tuple[str, ...], bool], ...] = (
     (('ruff', 'check', '.'), False),
     (('ruff', 'format', '--check', '.'), False),
@@ -280,12 +283,27 @@ def main() -> int:
             require_runtime=runtime_required,
         ):
             failed.append(label)
+    if runtime_failure is not None:
+        skipped.extend((' '.join(DOCS_BUILD), ' '.join(DOCS_CHECK)))
+    elif not run(
+        DOCS_BUILD,
+        environment=environment,
+        require_runtime=True,
+    ):
+        failed.append(' '.join(DOCS_BUILD))
+        skipped.append(' '.join(DOCS_CHECK))
+    elif not run(
+        DOCS_CHECK,
+        environment=environment,
+        require_runtime=True,
+    ):
+        failed.append(' '.join(DOCS_CHECK))
     if failed:
         print('\nFailed quality checks:', file=sys.stderr)
         for label in failed:
             print(f'  {label}', file=sys.stderr)
     if skipped:
-        print('\nSkipped runtime-dependent quality checks:', file=sys.stderr)
+        print('\nSkipped dependent quality checks:', file=sys.stderr)
         for label in skipped:
             print(f'  {label}', file=sys.stderr)
     failure_count = len(failed) + (runtime_failure is not None)

@@ -431,9 +431,11 @@ pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> P
 ///     One geometry or linework values to node and polygonize together. Array
 ///     and iterable inputs may contain ``None`` rows; they are omitted from the
 ///     pooled linework.
-/// diagnostics : bool, default False
+/// diagnostics : bool
 ///     Return a `PolygonizeResult` containing the pooled polygons and
-///     source-row `Groups` for cut edges, dangles, and invalid rings.
+///     source-row `Groups` for cut edges, dangles, and invalid rings. The
+///     diagnostic result form requires ``diagnostics=True``; the polygon-only
+///     form omits the option.
 ///
 /// Returns
 /// -------

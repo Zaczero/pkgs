@@ -156,9 +156,9 @@ pub(crate) fn shortest_line(
 /// left, right : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Scalar and sequence operands broadcast pairwise; sequences must have
 ///     equal length and compatible CRS/epoch frames.
-/// path : {'geodesic', 'rhumb'}, default 'geodesic'
-///     Route for point operands. Rhumb distance requires a geographic CRS and
-///     uses meters.
+/// path : {'geodesic', 'rhumb'}, default varies by call form
+///     Route for point operands. Omit for geodesic distance; rhumb distance
+///     requires ``path='rhumb'`` and a geographic CRS and uses meters.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns

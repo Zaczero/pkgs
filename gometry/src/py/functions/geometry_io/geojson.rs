@@ -162,7 +162,7 @@ fn parse_geojson_concrete_row(
 ///     PyArrow Array/ChunkedArray. Feature and FeatureCollection inputs are
 ///     accepted. Missing column values become missing rows.
 ///
-/// features : bool, default False
+/// features : bool, default varies by call form
 ///     Preserve Feature properties and IDs in a ``Features`` result. Geometry-
 ///     only inputs are not valid when this is ``True``.
 ///
