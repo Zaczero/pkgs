@@ -1,12 +1,12 @@
 //! Outward binary64 intervals for geographic distance certificates.
 //!
-//! The π literals below are adjacent binary64 values bracketing the real
-//! constants. Each arithmetic method expands a correctly rounded IEEE-754
-//! operation by one representable value in both directions.
+//! The lower and upper binary64 values below bracket the real π constants.
+//! Each arithmetic method expands a correctly rounded IEEE-754 operation by
+//! one representable value in both directions.
 
-pub(crate) const PI_LOWER: f64 = 3.141_592_653_589_793;
+pub(crate) const PI_LOWER: f64 = std::f64::consts::PI;
 pub(crate) const PI_UPPER: f64 = 3.141_592_653_589_793_6;
-pub(crate) const HALF_PI_LOWER: f64 = 1.570_796_326_794_896_6;
+pub(crate) const HALF_PI_LOWER: f64 = std::f64::consts::FRAC_PI_2;
 pub(crate) const HALF_PI_UPPER: f64 = 1.570_796_326_794_896_8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,16 +111,16 @@ impl Interval {
     }
 
     /// Upper bound the absolute value over the interval.
-    pub(crate) fn abs_upper(self) -> f64 {
+    pub(crate) const fn abs_upper(self) -> f64 {
         self.lower.abs().max(self.upper.abs())
     }
 
-    pub(crate) fn max_abs_upper(self) -> f64 {
+    pub(crate) const fn max_abs_upper(self) -> f64 {
         self.abs_upper().next_up()
     }
 
     /// Enclose the pointwise maximum of the two represented intervals.
-    pub(crate) fn max(self, other: Self) -> Self {
+    pub(crate) const fn max(self, other: Self) -> Self {
         Self {
             lower: self.lower.max(other.lower),
             upper: self.upper.max(other.upper),

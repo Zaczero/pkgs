@@ -9,7 +9,7 @@ use super::chart_edge::ChartEdge;
 use super::ellipsoid_metric::inverse_distance_azimuths;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
-use crate::geometry::interval::Interval as CertifiedInterval;
+use crate::geometry::interval::{Interval as CertifiedInterval, PI_LOWER, PI_UPPER};
 use crate::geometry::{
     ChartEdgeDifferentialBounds, GeodesicNumericalPolicy, Point, PointEdgeMinimum, PointEdgeQuery,
     PointEdgeQueryResult,
@@ -306,7 +306,9 @@ pub(crate) fn point_edge_query(
         } else {
             f64::midpoint(interval.t0, interval.t1)
         };
-        if !(parameter > interval.t0 && parameter < interval.t1) {
+        let is_inside = parameter.partial_cmp(&interval.t0) == Some(Ordering::Greater)
+            && parameter.partial_cmp(&interval.t1) == Some(Ordering::Less);
+        if !is_inside {
             best.lower_bound = interval.lower_bound.min(best.distance);
             if threshold.is_some() {
                 return Ok(PointEdgeQueryResult::Unresolved {
@@ -708,13 +710,10 @@ pub(super) fn curvature_hessian_bound(
     // Mmin supplies the same meridional principal-curvature extremum as one of
     // the semiaxis terms, with its own outward scale enclosure.
     let maximum_principal_curvature = equatorial.max(polar).max(meridian_curvature);
-    let injectivity_radius_lower = CertifiedInterval::from_bounds(
-        crate::geometry::interval::PI_LOWER,
-        crate::geometry::interval::PI_UPPER,
-    )
-    .div(CertifiedInterval::exact(2.0).mul(maximum_principal_curvature))
-    .lower();
-    if !(distance_upper < injectivity_radius_lower) {
+    let injectivity_radius_lower = CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER)
+        .div(CertifiedInterval::exact(2.0).mul(maximum_principal_curvature))
+        .lower();
+    if distance_upper.partial_cmp(&injectivity_radius_lower) != Some(Ordering::Less) {
         return f64::INFINITY;
     }
     CertifiedInterval::exact(1.0)
@@ -968,18 +967,12 @@ mod tests {
             &geodesic,
             GeodesicNumericalPolicy::new(geodesic.a),
         );
-        let radians_per_degree = CertifiedInterval::from_bounds(
-            crate::geometry::interval::PI_LOWER,
-            crate::geometry::interval::PI_UPPER,
-        )
-        .div(CertifiedInterval::exact(180.0));
-        let attained_lower = CertifiedInterval::from_bounds(
-            crate::geometry::interval::PI_LOWER,
-            crate::geometry::interval::PI_UPPER,
-        )
-        .sub(CertifiedInterval::exact(latitude).mul(radians_per_degree))
-        .mul(CertifiedInterval::exact(geodesic.a))
-        .lower();
+        let radians_per_degree =
+            CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER).div(CertifiedInterval::exact(180.0));
+        let attained_lower = CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER)
+            .sub(CertifiedInterval::exact(latitude).mul(radians_per_degree))
+            .mul(CertifiedInterval::exact(geodesic.a))
+            .lower();
         assert!(
             lower <= attained_lower,
             "certified lower {lower} exceeds the independent spherical endpoint distance lower {attained_lower}"

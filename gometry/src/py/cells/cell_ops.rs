@@ -32,16 +32,20 @@ where
 
 /// Resolve the target depth for parent walks (explicit depth, or one coarser).
 fn parent_target_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<u8> {
-    match depth {
-        Some(target) => Ok(target),
-        None => cell
-            .depth()
-            .checked_sub(1)
-            .filter(|target| (G::MIN_DEPTH..=G::MAX_DEPTH).contains(target))
-            .ok_or_else(|| {
-                GeometryError::new_err(format!("a minimum-{} cell has no parent", G::DEPTH_NAME))
-            }),
-    }
+    depth.map_or_else(
+        || {
+            cell.depth()
+                .checked_sub(1)
+                .filter(|target| (G::MIN_DEPTH..=G::MAX_DEPTH).contains(target))
+                .ok_or_else(|| {
+                    GeometryError::new_err(format!(
+                        "a minimum-{} cell has no parent",
+                        G::DEPTH_NAME
+                    ))
+                })
+        },
+        Ok,
+    )
 }
 
 /// Resolve the target depth for children / descendant walks.

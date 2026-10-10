@@ -2057,21 +2057,21 @@ fn point_set_center_columns(
 pub(crate) fn point_set_center_summary(
     shape: &Shape,
     frame: crate::geographic::GeographicFrame,
-) -> CoreResult<Option<PointSetCenter>> {
+) -> Option<PointSetCenter> {
     debug_assert!(shape.point_set_only());
     if matches!(shape, Shape::Empty(..)) {
-        return Ok(None);
+        return None;
     }
     if let Shape::Point(point) = shape {
         let bounds = (point.x.is_finite() && point.y.is_finite())
             .then(|| Bounds::new_raw(point.x, point.y, point.x, point.y));
         if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
-            return Ok(Some(PointSetCenter::Ordinary((point.x, point.y))));
+            return Some(PointSetCenter::Ordinary((point.x, point.y)));
         }
-        return Ok(Some(PointSetCenter::Chart(bounds)));
+        return Some(PointSetCenter::Chart(bounds));
     }
     if let Shape::MultiPoint(seq) = shape {
-        return Ok(point_set_center_columns(seq.xs(), seq.ys(), frame));
+        return point_set_center_columns(seq.xs(), seq.ys(), frame);
     }
 
     let mut xs = Vec::new();
@@ -2084,9 +2084,9 @@ pub(crate) fn point_set_center_summary(
         CentroidAttempt::ExactAtRoot(_) => {
             drop(xs);
             drop(ys);
-            Ok((!centroid_is_empty(shape)).then_some(PointSetCenter::Chart(None)))
+            (!centroid_is_empty(shape)).then_some(PointSetCenter::Chart(None))
         },
-        CentroidAttempt::Ready(()) => Ok(point_set_center_columns(&xs, &ys, frame)),
+        CentroidAttempt::Ready(()) => point_set_center_columns(&xs, &ys, frame),
     }
 }
 

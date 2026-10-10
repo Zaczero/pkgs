@@ -9,6 +9,7 @@ use crate::error::Result;
 use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
+use crate::geometry::interval::Interval;
 use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
 use crate::geometry::source_support::{
     OccupiedToward, PointMembership, SourcePointLocation, cartesian_point_location_and_area,
@@ -1367,10 +1368,8 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn backend_floor(self) -> f64 {
-        crate::geometry::interval::Interval::exact(self.semi_major)
-            .mul(crate::geometry::interval::Interval::exact(
-                Self::BACKEND_RELATIVE,
-            ))
+        Interval::exact(self.semi_major)
+            .mul(Interval::exact(Self::BACKEND_RELATIVE))
             .upper()
     }
 
@@ -1383,13 +1382,9 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
-        crate::geometry::interval::Interval::exact(self.semi_major)
-            .mul(crate::geometry::interval::Interval::exact(
-                Self::BACKEND_RELATIVE,
-            ))
-            .mul(crate::geometry::interval::Interval::exact(
-                evaluations.max(1.0),
-            ))
+        Interval::exact(self.semi_major)
+            .mul(Interval::exact(Self::BACKEND_RELATIVE))
+            .mul(Interval::exact(evaluations.max(1.0)))
             .upper()
     }
 }

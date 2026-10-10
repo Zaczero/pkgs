@@ -919,7 +919,10 @@ fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
                     "outside"
                 },
                 crate::geometry::PointEdgeQueryResult::Unresolved { .. } => "unresolved",
-                other => panic!("{name}: unexpected threshold result {other:?}"),
+                other @ (crate::geometry::PointEdgeQueryResult::Minimum(_)
+                | crate::geometry::PointEdgeQueryResult::Excluded) => {
+                    panic!("{name}: unexpected threshold result {other:?}")
+                },
             };
             observations.push((name, start, end, query, limit, attained, classification));
         }
