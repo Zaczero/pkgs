@@ -303,8 +303,9 @@ impl PyCoordinates {
     ///
     /// Parameters
     /// ----------
-    /// index : bool, default False
-    ///     Add an ``'index'`` column with each coordinate's source row.
+    /// index : bool
+    ///     Add an ``'index'`` column with each coordinate's source row when
+    ///     ``True``; the ``False`` form omits that column.
     ///
     /// Returns
     /// -------

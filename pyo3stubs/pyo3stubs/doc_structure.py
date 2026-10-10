@@ -612,6 +612,7 @@ def _function_forms(
     declarations: tuple[ast.AST, ...],
     *,
     kind: str,
+    qualname: str,
 ) -> tuple[tuple[SignatureParameter, ...], ...]:
     functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
     for declaration in declarations:
@@ -628,9 +629,7 @@ def _function_forms(
         return ()
 
     overloads = [
-        function
-        for function in functions
-        if decorator_names(function) & {'overload'}
+        function for function in functions if decorator_names(function) & {'overload'}
     ]
     if overloads:
         functions = overloads
@@ -639,10 +638,10 @@ def _function_forms(
 
     result: list[tuple[SignatureParameter, ...]] = []
     for function in functions:
-        if (
-            _type_terminal_name(function.returns) in {'Never', 'NoReturn'}
-            or _has_required_never_input(function)
-        ):
+        if _type_terminal_name(function.returns) in {
+            'Never',
+            'NoReturn',
+        } or _has_required_never_input(function):
             continue
         args = function.args
         positional = [*args.posonlyargs, *args.args]
@@ -652,11 +651,13 @@ def _function_forms(
         receiver = None
         if kind == 'constructor':
             receiver = 'cls' if function.name == '__new__' else 'self'
-        elif '.' in function.name and not (
-            decorator_names(function) & {'staticmethod'}
+        elif (
+            '.' in qualname
+            and not (decorator_names(function) & {'staticmethod'})
+            and positional
+            and positional[0].arg in {'self', 'cls'}
         ):
-            if positional and positional[0].arg in {'self', 'cls'}:
-                receiver = positional[0].arg
+            receiver = positional[0].arg
         if receiver and positional and positional[0].arg == receiver:
             positional = positional[1:]
             defaults = defaults[1:]
@@ -665,37 +666,46 @@ def _function_forms(
         for index, (argument, default) in enumerate(
             zip(positional, defaults, strict=True)
         ):
-            parameters.append(SignatureParameter(
-                argument.arg,
-                (
-                    'positional-only'
-                    if index < max(0, len(args.posonlyargs) - int(receiver is not None))
-                    else 'positional or keyword'
-                ),
-                _expression_text(argument.annotation),
-                _expression_text(default),
-            ))
+            parameters.append(
+                SignatureParameter(
+                    argument.arg,
+                    (
+                        'positional-only'
+                        if index
+                        < max(0, len(args.posonlyargs) - int(receiver is not None))
+                        else 'positional or keyword'
+                    ),
+                    _expression_text(argument.annotation),
+                    _expression_text(default),
+                )
+            )
         if args.vararg is not None:
-            parameters.append(SignatureParameter(
-                args.vararg.arg,
-                'variadic positional',
-                _expression_text(args.vararg.annotation),
-                None,
-            ))
+            parameters.append(
+                SignatureParameter(
+                    args.vararg.arg,
+                    'variadic positional',
+                    _expression_text(args.vararg.annotation),
+                    None,
+                )
+            )
         for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
-            parameters.append(SignatureParameter(
-                argument.arg,
-                'keyword-only',
-                _expression_text(argument.annotation),
-                _expression_text(default),
-            ))
+            parameters.append(
+                SignatureParameter(
+                    argument.arg,
+                    'keyword-only',
+                    _expression_text(argument.annotation),
+                    _expression_text(default),
+                )
+            )
         if args.kwarg is not None:
-            parameters.append(SignatureParameter(
-                args.kwarg.arg,
-                'variadic keyword',
-                _expression_text(args.kwarg.annotation),
-                None,
-            ))
+            parameters.append(
+                SignatureParameter(
+                    args.kwarg.arg,
+                    'variadic keyword',
+                    _expression_text(args.kwarg.annotation),
+                    None,
+                )
+            )
         result.append(tuple(parameters))
     return tuple(result)
 
@@ -705,7 +715,11 @@ def _parameter_forms(
 ) -> tuple[tuple[SignatureParameter, ...], ...]:
     if subject.kind not in {'callable', 'constructor'}:
         return ()
-    forms = _function_forms(subject.declarations, kind=subject.kind)
+    forms = _function_forms(
+        subject.declarations,
+        kind=subject.kind,
+        qualname=subject.qualname,
+    )
     if forms or subject.parameters is None:
         return forms
 
@@ -743,9 +757,41 @@ def _same_default(left: str, right: str) -> bool:
     if left_text == right_text:
         return True
     try:
-        return ast.literal_eval(left_text) == ast.literal_eval(right_text)
+        left_expression = ast.parse(left_text, mode='eval').body
+        right_expression = ast.parse(right_text, mode='eval').body
     except (SyntaxError, ValueError):
         return False
+    if ast.dump(left_expression, include_attributes=False) == ast.dump(
+        right_expression,
+        include_attributes=False,
+    ):
+        return True
+    unparsed = object()
+    try:
+        left_value = ast.literal_eval(left_expression)
+    except (SyntaxError, ValueError):
+        left_value = unparsed
+    try:
+        right_value = ast.literal_eval(right_expression)
+    except (SyntaxError, ValueError):
+        right_value = unparsed
+    if (
+        left_value is not unparsed
+        and right_value is not unparsed
+        and type(left_value) is type(right_value)
+        and left_value == right_value
+    ):
+        return True
+
+    return (
+        isinstance(left_expression, ast.Name)
+        and isinstance(right_value, str)
+        and left_expression.id == right_value
+    ) or (
+        isinstance(right_expression, ast.Name)
+        and isinstance(left_value, str)
+        and right_expression.id == left_value
+    )
 
 
 def resolve_parameter_rows(
@@ -762,9 +808,9 @@ def resolve_parameter_rows(
             for name in entry.names:
                 entries.setdefault(name, []).append((entry, source))
 
-    ordered_names = list(dict.fromkeys(
-        parameter.name for form in forms for parameter in form
-    ))
+    ordered_names = list(
+        dict.fromkeys(parameter.name for form in forms for parameter in form)
+    )
     ordered_names.extend(name for name in entries if name not in ordered_names)
     errors: list[str] = []
     rows: list[ResolvedParameter] = []
@@ -774,22 +820,30 @@ def resolve_parameter_rows(
             next((parameter for parameter in form if parameter.name == name), None)
             for form in forms
         )
-        present = [parameter for parameter in occurrences if parameter is not None]
         states: list[ParameterOccurrence] = []
-        for parameter in present:
+        per_form: list[ParameterOccurrence | None] = []
+        for parameter in occurrences:
+            if parameter is None:
+                per_form.append(None)
+                continue
             status: Literal['required', 'defaulted', 'variadic'] = (
                 'variadic'
                 if parameter.kind.startswith('variadic')
                 else ('defaulted' if parameter.default is not None else 'required')
             )
-            states.append(ParameterOccurrence(
+            occurrence = ParameterOccurrence(
                 parameter.kind,
                 parameter.annotation,
                 parameter.default,
                 status,
-            ))
+            )
+            states.append(occurrence)
+            per_form.append(occurrence)
+        present = states
         if not present:
-            row_status: Literal['required', 'defaulted', 'variadic', 'varies'] = 'varies'
+            row_status: Literal['required', 'defaulted', 'variadic', 'varies'] = (
+                'varies'
+            )
             display_default = 'varies by call form'
         else:
             state_keys = {
@@ -816,14 +870,15 @@ def resolve_parameter_rows(
 
         claims = entries.get(name, [])
         locations = tuple(
-            f'{source.path}:{source.line + entry.line - 1}'
-            for entry, source in claims
+            f'{source.path}:{source.line + entry.line - 1}' for entry, source in claims
         )
-        type_claims = list(dict.fromkeys(
-            ' '.join(entry.type_text.split())
-            for entry, _source in claims
-            if entry.type_text.strip()
-        ))
+        type_claims = list(
+            dict.fromkeys(
+                ' '.join(entry.type_text.split())
+                for entry, _source in claims
+                if entry.type_text.strip()
+            )
+        )
         if len(type_claims) > 1:
             errors.append(
                 f'{qualname}.{name}: conflicting documented annotations '
@@ -882,13 +937,17 @@ def resolve_parameter_rows(
         if require_documentation and forms and present and not claims:
             errors.append(f'{qualname}: parameter {name!r} is not documented')
         if claims and not present:
-            errors.append(f'{qualname}: documented parameter {name!r} is not in any call form')
+            errors.append(
+                f'{qualname}: documented parameter {name!r} is not in any call form'
+            )
 
-        signature_annotations = list(dict.fromkeys(
-            parameter.annotation
-            for parameter in present
-            if parameter.annotation is not None
-        ))
+        signature_annotations = list(
+            dict.fromkeys(
+                parameter.annotation
+                for parameter in present
+                if parameter.annotation is not None
+            )
+        )
         annotation = (
             ' | '.join(signature_annotations)
             if signature_annotations
@@ -897,21 +956,18 @@ def resolve_parameter_rows(
         descriptions: list[str] = []
         for entry, _source in claims:
             text = entry.description.strip()
-            if text and not any(
-                text == existing
-                or text in existing
-                or existing in text
-                for existing in descriptions
-            ):
+            if text and text not in descriptions:
                 descriptions.append(text)
-        rows.append(ResolvedParameter(
-            name,
-            annotation,
-            '\n\n'.join(descriptions),
-            row_status,
-            display_default,
-            occurrences,
-        ))
+        rows.append(
+            ResolvedParameter(
+                name,
+                annotation,
+                '\n\n'.join(descriptions),
+                row_status,
+                display_default,
+                tuple(per_form),
+            )
+        )
 
     return ParameterResolution(tuple(rows), tuple(errors))
 

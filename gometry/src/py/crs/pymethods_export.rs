@@ -177,15 +177,16 @@ impl PyCrs {
     ///
     /// Parameters
     /// ----------
-    /// as_dict : bool, default False
-    ///     Return a Python mapping instead of JSON text.
+    /// as_dict : bool
+    ///     Return a Python mapping; the JSON-text form omits ``as_dict`` and
+    ///     the mapping form requires ``as_dict=True``.
     ///
     /// pretty : bool, optional
     ///     Indent JSON text (default ``False``). Only applies when
     ///     ``as_dict=False``.
     ///
-    /// indentation_width : int, default 2
-    ///     Spaces per indent level when ``pretty``. Only applies when
+    /// indentation_width : int
+    ///     Spaces per indent level for pretty JSON text; available only when
     ///     ``as_dict=False``.
     ///
     /// Returns

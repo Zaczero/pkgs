@@ -814,8 +814,9 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
 
         Parameters
         ----------
-        index : bool, default False
-            Add an ``'index'`` column with each coordinate's source row.
+        index : bool
+            Add an ``'index'`` column with each coordinate's source row when
+            ``True``; the ``False`` form omits that column.
 
         Returns
         -------
@@ -2310,10 +2311,11 @@ class Geometry:
             Ordered locations on the selected basis. Distance values follow the CRS;
             M values are stored route measures. A scalar applies to every array row.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis positions as fractions of the route length under
@@ -2664,10 +2666,11 @@ class Geometry:
             A point to project, or one point per line row. Missing query rows produce
             ``nan`` in the result column.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Return a CRS-aware distance, or the line's monotonic M ordinate. For
-            ``basis='m'``, nearest-point projection follows the same chart-edge metric:
-            ellipsoidal arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Return a CRS-aware distance, or the line's monotonic M ordinate. Distance
+            forms omit ``basis``; M stationing requires ``basis='m'``. M-based
+            projection follows the same chart-edge metric: ellipsoidal arclength on a
+            geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Return a distance-basis fraction in [0, 1] under the selected metric.
@@ -2901,10 +2904,11 @@ class Geometry:
             ``basis='m'``; ``normalized=True`` is invalid because count already supplies
             fractional positions.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis ``at`` values as fractions of the route length
@@ -3512,9 +3516,10 @@ class Geometry:
 
         Parameters
         ----------
-        output : {'polygons', 'edges'}, default 'polygons'
-            Return clipped Voronoi cells or the internal Voronoi edges. Edge output
-            excludes the clip polygon's exterior boundary.
+        output : {'polygons', 'edges'}
+            Return clipped Voronoi cells or the internal Voronoi edges. The polygon
+            form omits ``output``; edge output requires ``output='edges'`` and excludes
+            the clip polygon's exterior boundary.
         tolerance : float, default 0.0
             Finite non-negative coordinate-space tolerance: native angular units for
             geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -3955,7 +3960,7 @@ class Geometry:
         origin : tuple of float, default (0.0, 0.0)
             A grid node anchoring the lattice.
 
-        repair : bool, default False
+        repair : bool
             If ``True``, guarantee a valid result: snap, linework-repair, and re-
             snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
             snapped shell pinches splits into a ``MultiPolygon``). Geographic
@@ -4369,7 +4374,7 @@ class Point(Geometry):
         Z ordinate (adds a 3D dimension).
     m : float, optional
         M (measure) ordinate.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -4525,8 +4530,9 @@ class Point(Geometry):
         distance : float or sequence of float
             Finite, non-negative distance to travel in CRS-natural units, unless
             `unit` is set.
-        path : {'geodesic', 'rhumb'}, default 'geodesic'
-            Route model. Rhumb paths require a geographic CRS and use meters.
+        path : {'geodesic', 'rhumb'}
+            Route model. Geodesic forms omit ``path``; rhumb forms require
+            ``path='rhumb'`` and a geographic CRS.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -4603,7 +4609,7 @@ class Point(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -4908,11 +4914,11 @@ class MultiPoint(Geometry):
 
     Parameters
     ----------
-    coordinates : sequence of points or coordinate tuples, optional
+    coordinates : iterable of points or coordinate tuples, optional
         The member points; omitted builds an empty multipoint.
     x, y, z, m : sequence of float, optional
         Column form: parallel ordinate arrays, one entry per point.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -4965,7 +4971,7 @@ class MultiPoint(Geometry):
 
         Parameters
         ----------
-        coordinates : sequence, optional
+        coordinates : iterable of points or coordinate tuples, optional
             Member coordinate tuples ``(x, y[, z[, m]])``. Mutually exclusive with
             the ``x``/``y`` column form. Omit all inputs for an empty multipoint.
 
@@ -4979,7 +4985,7 @@ class MultiPoint(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5278,11 +5284,11 @@ class LineString(Geometry):
 
     Parameters
     ----------
-    coordinates : sequence of coordinate tuples, optional
+    coordinates : iterable of coordinate tuples, optional
         The vertices as ``(x, y[, z, m])`` tuples; omitted builds an empty line.
     x, y, z, m : sequence of float, optional
         Column form: parallel ordinate arrays, one entry per vertex.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5325,7 +5331,7 @@ class LineString(Geometry):
 
         Parameters
         ----------
-        coordinates : sequence, optional
+        coordinates : iterable of coordinate tuples, optional
             Ordered ``(x, y[, z[, m]])`` tuples, or an ``(N, 2..4)`` array.
             Mutually exclusive with the ``x``/``y`` column form. Omit all inputs
             for an empty linestring.
@@ -5340,7 +5346,7 @@ class LineString(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5432,9 +5438,9 @@ class MultiLineString(Geometry):
 
     Parameters
     ----------
-    lines : sequence of LineString or coordinate sequences, optional
+    lines : iterable of LineString or coordinate sequences, optional
         The member lines; omitted builds an empty multilinestring.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5450,14 +5456,14 @@ class MultiLineString(Geometry):
 
         Parameters
         ----------
-        lines : sequence, optional
+        lines : iterable of LineString or coordinate sequences, optional
             Each member is an ordered coordinate sequence (a line) or an
             already-built ``LineString``. Omit for an empty multilinestring.
 
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5625,13 +5631,13 @@ class Polygon(Geometry):
 
     Parameters
     ----------
-    shell : sequence of coordinate tuples, optional
+    shell : iterable of coordinate tuples, optional
         Exterior ring vertices; omitted builds ``POLYGON EMPTY``.
-    holes : sequence of rings, optional
+    holes : iterable of rings, optional
         Interior rings, each a coordinate sequence.
     x, y, z, m : sequence of float, optional
         Column form for the exterior ring: parallel ordinate arrays.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5677,11 +5683,11 @@ class Polygon(Geometry):
 
         Parameters
         ----------
-        shell : sequence, optional
+        shell : iterable of coordinate tuples, optional
             Exterior ring coordinates; closed automatically (needs ≥3 corners).
             Mutually exclusive with the ``x``/``y`` column form.
 
-        holes : sequence of sequence, optional
+        holes : iterable of rings, optional
             Interior ring (hole) coordinate sequences, each closed automatically.
 
         x, y : sequence of float, optional
@@ -5694,7 +5700,7 @@ class Polygon(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5796,9 +5802,9 @@ class MultiPolygon(Geometry):
 
     Parameters
     ----------
-    polygons : sequence of Polygon or (shell, holes) pairs, optional
+    polygons : iterable of Polygon or (shell, holes) pairs, optional
         The member polygons; omitted builds an empty multipolygon.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -5814,14 +5820,14 @@ class MultiPolygon(Geometry):
 
         Parameters
         ----------
-        polygons : sequence, optional
+        polygons : iterable of Polygon or (shell, holes) pairs, optional
             Each member is ``[shell]`` or ``[shell, *holes]`` of coordinate rings,
             or an already-built ``Polygon``. Omit for an empty multipolygon.
 
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5991,7 +5997,7 @@ class GeometryCollection(Geometry):
     ----------
     geometries : sequence of Geometry, optional
         The member geometries, of any types; omitted builds an empty collection.
-    crs : CRS, int, str, or None, optional
+    crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
     epoch : float or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
@@ -6013,7 +6019,7 @@ class GeometryCollection(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float, optional
+        epoch : float or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -6399,8 +6405,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         distance : float or sequence of float
             Finite, non-negative distance to travel in CRS-natural units, unless
             `unit` is set.
-        path : {'geodesic', 'rhumb'}, default 'geodesic'
-            Route model. Rhumb paths require a geographic CRS and use meters.
+        path : {'geodesic', 'rhumb'}
+            Route model. Geodesic forms omit ``path``; rhumb forms require
+            ``path='rhumb'`` and a geographic CRS.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -7917,9 +7924,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        *others : GeometryArray
-            Arrays to append, in order; each must share this array's CRS and
-            epoch. With no arguments the array itself is returned.
+        other, *others : GeometryArray
+            Arrays to append in order; each must share this array's CRS and
+            epoch. The zero-argument form omits both names and returns this array.
 
         Returns
         -------
@@ -8773,10 +8780,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             Ordered locations on the selected basis. Distance values follow the CRS;
             M values are stored route measures. A scalar applies to every array row.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis positions as fractions of the route length under
@@ -9278,10 +9286,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             A point to project, or one point per line row. Missing query rows produce
             ``nan`` in the result column.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Return a CRS-aware distance, or the line's monotonic M ordinate. For
-            ``basis='m'``, nearest-point projection follows the same chart-edge metric:
-            ellipsoidal arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Return a CRS-aware distance, or the line's monotonic M ordinate. Distance
+            forms omit ``basis``; M stationing requires ``basis='m'``. M-based
+            projection follows the same chart-edge metric: ellipsoidal arclength on a
+            geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Return a distance-basis fraction in [0, 1] under the selected metric.
@@ -9517,10 +9526,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
             ``normalized=True`` is invalid because count already supplies fractional
             positions.
 
-        basis : {'distance', 'm'}, default 'distance'
-            Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-            the M fraction selects the same arclength fraction on each edge: ellipsoidal
-            chart-edge arclength on a geographic CRS, planar length otherwise.
+        basis : {'distance', 'm'}
+            Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+            omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+            the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+            on a geographic CRS, planar length otherwise.
 
         normalized : bool, default False
             Interpret distance-basis ``at`` values as fractions of the route length
@@ -10163,9 +10173,10 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        output : {'polygons', 'edges'}, default 'polygons'
-            Return clipped Voronoi cells or the internal Voronoi edges. Edge output
-            excludes the clip polygon's exterior boundary.
+        output : {'polygons', 'edges'}
+            Return clipped Voronoi cells or the internal Voronoi edges. The polygon
+            form omits ``output``; edge output requires ``output='edges'`` and excludes
+            the clip polygon's exterior boundary.
         tolerance : float, default 0.0
             Finite non-negative coordinate-space tolerance: native angular units for
             geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -10914,7 +10925,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         origin : tuple of float, default (0.0, 0.0)
             A grid node anchoring the lattice.
 
-        repair : bool, default False
+        repair : bool
             If ``True``, guarantee a valid result: snap, linework-repair, and re-
             snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
             snapped shell pinches splits into a ``MultiPolygon``). Geographic
@@ -11810,8 +11821,8 @@ class SpatialIndex(Mapping[int, Geometry]):
     ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Return exact predicate-refined matches for a query geometry or array.
 
-        Candidates are refined with predicate (`'intersects'` by
-        default); distance is accepted only with `'dwithin'`. Use
+        Topological predicates use `'intersects'` when `predicate` is omitted;
+        `'dwithin'` requires an explicit predicate and distance. Use
         candidates for a bounding-box-only prefilter. A single geometry
         returns an int64 ndarray; a GeometryArray returns
         Groups — one id row per row, CSR-grouped.
@@ -11820,10 +11831,11 @@ class SpatialIndex(Mapping[int, Geometry]):
         ----------
         geom : Geometry or GeometryArray
             The query geometry, or one query per array element.
-        predicate : str, default 'intersects'
+        predicate : str
             Spatial relation each match must satisfy, evaluated as
-            ``predicate(query_geometry, indexed_geometry)`` (``'dwithin'``
-            requires ``distance``).
+            ``predicate(query_geometry, indexed_geometry)``. Topological forms
+            omit ``predicate`` to use ``'intersects'``; ``'dwithin'`` forms
+            require an explicit predicate and distance.
         distance : float, optional
             ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
             threshold is accepted; other values must be finite and
@@ -11902,8 +11914,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         ----------
         queries : Geometry, GeometryArray, or iterable of Geometry
             Left-side geometries to join against the indexed rows.
-        predicate : str, default 'intersects'
-            Spatial predicate each returned pair must satisfy.
+        predicate : str
+            Spatial predicate each returned pair must satisfy. Topological forms
+            omit ``predicate`` to use ``'intersects'``; ``'dwithin'`` forms
+            require an explicit predicate and distance.
         distance : float, optional
             Required when ``predicate='dwithin'``: the maximum separation in
             CRS-natural units. Finite non-negative values and positive infinity
@@ -11969,7 +11983,7 @@ class SpatialIndex(Mapping[int, Geometry]):
 
         Parameters
         ----------
-        predicate : str, default 'intersects'
+        predicate : str
             A symmetric relation: ``'intersects'``, ``'equals'``,
             ``'dwithin'``, ``'touches'``, ``'crosses'``, or ``'overlaps'``.
             Directional predicates (``'contains'``, ``'within'``, ...) are
@@ -12170,9 +12184,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         max_distance : float, optional
             Ignore matches farther than this, in ``unit``. Must be finite and
             non-negative.
-        return_distance : bool, default False
+        return_distance : bool
             Return distances alongside handles — ``(indices, distances)`` for
-            a scalar query, ``(matches, distances)`` for an array query.
+            a scalar query, ``(matches, distances)`` for an array query. The
+            distance-returning form requires ``return_distance=True``.
         unit : {'planar', 'meters'}, default None
             ``None`` (the default) follows the CRS: geographic shape area and length
             use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -12712,15 +12727,16 @@ class CRS:
 
         Parameters
         ----------
-        as_dict : bool, default False
-            Return a Python mapping instead of JSON text.
+        as_dict : bool
+            Return a Python mapping; the JSON-text form omits ``as_dict`` and
+            the mapping form requires ``as_dict=True``.
 
         pretty : bool, optional
             Indent JSON text (default ``False``). Only applies when
             ``as_dict=False``.
 
-        indentation_width : int, default 2
-            Spaces per indent level when ``pretty``. Only applies when
+        indentation_width : int
+            Spaces per indent level for pretty JSON text; available only when
             ``as_dict=False``.
 
         Returns
@@ -13150,10 +13166,10 @@ class CellArray(Sequence[_CellT_co]):
 
     Parameters
     ----------
-    values : numpy.ndarray, buffer, or iterable
+    values : iterable, numpy.ndarray, or buffer
         Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
         any grid are accepted when a concrete cell supplies the family.
-    type : type, optional
+    type : type
         Native cell class. Inferred from a concrete typed cell when present.
     """
 
@@ -13839,7 +13855,7 @@ class CellArray(Sequence[_CellT_co]):
             Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
             are accepted when the grid can be inferred. Iterables are consumed
             in input order.
-        type : type, optional, default None
+        type : type
             One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
             ``GeohashCell`` classes, required when the grid cannot be inferred.
 
@@ -18216,9 +18232,9 @@ def distance(
     left, right : Geometry or GeometryArray
         Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
         coordinate epoch.
-    path : {'geodesic', 'rhumb'}, default 'geodesic'
-        Route for point operands. Rhumb distance requires a geographic CRS and
-        uses meters.
+    path : {'geodesic', 'rhumb'}
+        Route for point operands. Geodesic forms omit ``path``; rhumb forms
+        require ``path='rhumb'`` and a geographic CRS.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -19053,10 +19069,11 @@ def nearest(
     max_distance : float, optional
         Ignore candidates farther than this from the query. Must be finite and
         non-negative.
-    return_distance : bool, default False
+    return_distance : bool
         If ``True``, return distances alongside handles — ``(indices,
         distances)`` for a scalar query, ``(matches, distances)`` for an
-        array query.
+        array query. The distance-returning form requires
+        ``return_distance=True``.
     unit : {'planar', 'meters'}, default None
         ``None`` (the default) follows the CRS: geographic shape area and length
         use ellipsoidal chart-edge measures while point distances use geodesics;
@@ -19131,11 +19148,13 @@ def join(
     left, right : Geometry, GeometryArray, or sequence of Geometry
         The two geometry collections to join. Missing rows produce no pairs;
         their original row positions are preserved in every returned id.
-    predicate : str, default 'intersects'
+    predicate : str
         Spatial predicate each returned pair must satisfy — one of
         ``'intersects'``, ``'contains'``, ``'contains_properly'``,
         ``'covers'``, ``'within'``, ``'covered_by'``, ``'equals'``,
         ``'dwithin'``, ``'touches'``, ``'crosses'``, or ``'overlaps'``.
+        Topological forms omit ``predicate`` to use ``'intersects'``;
+        ``'dwithin'`` requires it explicitly.
     distance : float, optional
         Required when ``predicate='dwithin'``: the maximum separation, in
         CRS-natural units — geodesic meters on a geographic CRS, native
@@ -19917,9 +19936,11 @@ def polygonize_all(
         One geometry or linework values to node and polygonize together. Array
         and iterable inputs may contain ``None`` rows; they are omitted from the
         pooled linework.
-    diagnostics : bool, default False
+    diagnostics : bool
         Return a `PolygonizeResult` containing the pooled polygons and
-        source-row `Groups` for cut edges, dangles, and invalid rings.
+        source-row `Groups` for cut edges, dangles, and invalid rings. The
+        diagnostic result form requires ``diagnostics=True``; the polygon-only
+        form omits the option.
 
     Returns
     -------

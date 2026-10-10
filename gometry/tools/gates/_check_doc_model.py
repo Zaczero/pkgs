@@ -1098,33 +1098,36 @@ def _source_facade_constructor_contracts(
     return contracts
 
 
-def _call_form_defaults(
+def _call_form_context_defaults(
     forms: tuple[CallForm, ...],
-) -> tuple[dict[str, str | None], list[str]]:
+) -> dict[str, str | None]:
     values: dict[str, str | None] = {}
     for parameters, _ in forms:
         for _, name, _, default in parameters:
             values.setdefault(name, None)
             if values[name] is None and default is not None:
                 values[name] = default
-    return values, []
+    return values
 
 
 def _call_form_parameter_rows(
     forms: tuple[CallForm, ...],
 ) -> dict[str, tuple[str, str | None]]:
-    values: dict[str, list[ParameterForm | None]] = {}
-    for parameters, _ in forms:
-        present = {
-            name: parameter for parameter in parameters for name in (parameter[1],)
-        }
-        for name in (*values.keys(), *present.keys()):
-            values.setdefault(name, [])
-        for name, occurrences in values.items():
-            occurrences.append(present.get(name))
+    names = tuple(
+        dict.fromkeys(
+            parameter[1] for parameters, _ in forms for parameter in parameters
+        )
+    )
 
     result: dict[str, tuple[str, str | None]] = {}
-    for name, occurrences in values.items():
+    for name in names:
+        occurrences = tuple(
+            next(
+                (parameter for parameter in parameters if parameter[1] == name),
+                None,
+            )
+            for parameters, _ in forms
+        )
         if any(occurrence is None for occurrence in occurrences):
             result[name] = ('varies', 'varies by call form')
             continue
@@ -1396,8 +1399,7 @@ def collect_errors() -> list[str]:
             if binding is not None:
                 errors.append(f'{path}: prohibited constructor was exposed')
             continue
-        expected_defaults, conflicts = _call_form_defaults(expected.forms)
-        errors.extend(f'{path}: {conflict}' for conflict in conflicts)
+        expected_defaults = _call_form_context_defaults(expected.forms)
         expected_rows = _call_form_parameter_rows(expected.forms)
         if class_obj is None:
             errors.append(f'{path}: constructor class is missing from the Griffe model')

@@ -75,10 +75,11 @@ GeometryArray[Point] or Groups[GeometryArray[Point]]
 
 ");
     post: concat!(r"
-basis : {'distance', 'm'}, default 'distance'
-    Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-    the M fraction selects the same arclength fraction on each edge: ellipsoidal
-    chart-edge arclength on a geographic CRS, planar length otherwise.
+basis : {'distance', 'm'}
+    Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+    omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+    the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+    on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Interpret distance-basis ``at`` values as fractions of the route length
@@ -134,10 +135,11 @@ start, end : float or sequence of float
     Ordered locations on the selected basis. Distance values follow the CRS;
     M values are stored route measures. A scalar applies to every array row.
 
-basis : {'distance', 'm'}, default 'distance'
-    Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-    the M fraction selects the same arclength fraction on each edge: ellipsoidal
-    chart-edge arclength on a geographic CRS, planar length otherwise.
+basis : {'distance', 'm'}
+    Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+    omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+    the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+    on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Interpret distance-basis positions as fractions of the route length under
@@ -278,10 +280,11 @@ point : Point or GeometryArray[Point | None]
     A point to project, or one point per line row. Missing query rows produce
     ``nan`` in the result column.
 
-basis : {'distance', 'm'}, default 'distance'
-    Return a CRS-aware distance, or the line's monotonic M ordinate. For
-    ``basis='m'``, nearest-point projection follows the same chart-edge metric:
-    ellipsoidal arclength on a geographic CRS, planar length otherwise.
+basis : {'distance', 'm'}
+    Return a CRS-aware distance, or the line's monotonic M ordinate. Distance
+    forms omit ``basis``; M stationing requires ``basis='m'``. M-based
+    projection follows the same chart-edge metric: ellipsoidal arclength on a
+    geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Return a distance-basis fraction in [0, 1] under the selected metric.
@@ -523,8 +526,9 @@ impl PyGeometryArray {
     /// distance : float or sequence of float
     ///     Finite, non-negative distance to travel in CRS-natural units, unless
     ///     `unit` is set.
-    /// path : {'geodesic', 'rhumb'}, default 'geodesic'
-    ///     Route model. Rhumb paths require a geographic CRS and use meters.
+    /// path : {'geodesic', 'rhumb'}
+    ///     Route model. Geodesic forms omit ``path``; rhumb forms require
+    ///     ``path='rhumb'`` and a geographic CRS.
     #[doc = unit_parameter_doc!()]
     ///     ``path='rhumb'`` uses meters and does not accept a unit override.
     ///

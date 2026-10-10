@@ -1639,52 +1639,65 @@ def test_griffe_preserves_public_constructor_forms_in_authored_order() -> None:
         assert binding not in class_obj.members.values(), path
 
 
-def test_constructor_parameter_tables_show_authored_defaults() -> None:
+def test_constructor_parameter_tables_report_each_row_applicability() -> None:
     pkg = _load_griffe_model()
-    expected = {
-        'Point': {
-            'x': 'None',
-            'y': 'None',
-            'z': 'None',
-            'm': 'None',
-            'crs': 'None',
-            'epoch': 'None',
-        },
-        'LineString': {
-            'coordinates': 'None',
-            'x': 'None',
-            'y': 'None',
-            'z': 'None',
-            'm': 'None',
-            'crs': 'None',
-            'epoch': 'None',
-        },
-        'Polygon': {
-            'shell': 'None',
-            'holes': 'None',
-            'x': 'None',
-            'y': 'None',
-            'z': 'None',
-            'm': 'None',
-            'crs': 'None',
-            'epoch': 'None',
-        },
-        'CellArray': {'values': 'required', 'type': 'None'},
-        'CRS': {'value': 'required'},
-    }
-
-    for name, expected_defaults in expected.items():
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    lib = pkg.members['_lib']
+    assert isinstance(lib, griffe.Module)
+    names = {'Point', 'LineString', 'Polygon', 'CellArray', 'CRS'}
+    contracts = model._stub_constructor_contracts(
+        lib,
+        model.annotation_aliases(pkg),
+        names,
+    )
+    for name in names:
         class_obj = pkg.members[name]
         assert isinstance(class_obj, griffe.Class)
+        rendered = _render_class_reference(class_obj)
         parser = _ClassReference()
-        parser.feed(_render_class_reference(class_obj))
-        rows = [row for row in parser.rows if row and row[0] in expected_defaults]
-        assert len(rows) == len(expected_defaults), name
-        assert {row[0]: row[-1] for row in rows} == expected_defaults, name
+        parser.feed(rendered)
+        expected_rows = model._call_form_parameter_rows(
+            contracts[f'gometry.{name}'].forms
+        )
+        expected_values = {
+            parameter: (
+                value
+                if status in {'defaulted', 'varies'}
+                else 'not applicable'
+                if status == 'variadic'
+                else 'required'
+            )
+            for parameter, (status, value) in expected_rows.items()
+        }
+        rows = [row for row in parser.rows if row and row[0] in expected_values]
+        assert len(rows) == len(expected_values), name
+        assert {row[0]: row[-1] for row in rows} == expected_values, name
         assert len(parser.disclosures) == 1, name
         assert (
             ''.join(parser.disclosures[0]['summary']).strip() == 'Accepted call forms'
         )
+
+    point_rows = model._call_form_parameter_rows(contracts['gometry.Point'].forms)
+    assert point_rows['x'] == ('varies', 'varies by call form')
+    assert point_rows['y'] == ('varies', 'varies by call form')
+    cell_rows = model._call_form_parameter_rows(contracts['gometry.CellArray'].forms)
+    assert cell_rows['type'] == ('varies', 'varies by call form')
+
+    point = pkg.members['Point']
+    assert isinstance(point, griffe.Class)
+    point_html = _render_class_reference(point)
+    universal_default = point_html.replace('varies by call form', 'None', 1)
+    mutated_parser = _ClassReference()
+    mutated_parser.feed(universal_default)
+    mutated_values = {
+        row[0]: row[-1] for row in mutated_parser.rows if row and row[0] in point_rows
+    }
+    assert mutated_values != {
+        name: value if status in {'defaulted', 'varies'} else 'required'
+        for name, (status, value) in point_rows.items()
+    }
 
 
 def test_constructor_default_projection_keeps_differing_accepted_forms() -> None:
@@ -1692,15 +1705,35 @@ def test_constructor_default_projection_keeps_differing_accepted_forms() -> None
         'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
     )
     forms = (
-        ((('keyword-only', 'value', 'int', None),), None),
-        ((('keyword-only', 'value', 'int', '1'),), None),
-        ((('keyword-only', 'value', 'int', '2'),), None),
+        (
+            (
+                ('keyword-only', 'value', 'int', None),
+                ('keyword-only', 'stable', 'bool', 'False'),
+            ),
+            None,
+        ),
+        (
+            (
+                ('keyword-only', 'value', 'int', '1'),
+                ('keyword-only', 'stable', 'bool', 'False'),
+                ('keyword-only', 'only_here', 'str', None),
+            ),
+            None,
+        ),
+        (
+            (
+                ('keyword-only', 'value', 'int', '2'),
+                ('keyword-only', 'stable', 'bool', 'False'),
+            ),
+            None,
+        ),
     )
 
-    defaults, conflicts = model._call_form_defaults(forms)
-
-    assert defaults == {'value': '1'}
-    assert conflicts == []
+    assert model._call_form_parameter_rows(forms) == {
+        'value': ('varies', 'varies by call form'),
+        'stable': ('defaulted', 'False'),
+        'only_here': ('varies', 'varies by call form'),
+    }
 
 
 def test_constructor_class_template_renders_the_source_ast_form_sequence() -> None:
