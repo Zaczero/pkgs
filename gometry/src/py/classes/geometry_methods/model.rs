@@ -105,8 +105,12 @@ geometry_leaf!(
 
 Parameters
 ----------
-x, y : float, optional
-    Point coordinates; both omitted builds ``POINT EMPTY``.
+x : Point, coordinate sequence, or float, optional
+    A Point to copy, one finite coordinate value, or the X coordinate.
+    Omit both coordinates for an empty point.
+y : float, optional
+    Finite Y coordinate when ``x`` is a scalar. Omit it when ``x`` is a
+    coordinate value or existing Point.
 z : float, optional
     Z ordinate (adds a 3D dimension).
 m : float, optional
