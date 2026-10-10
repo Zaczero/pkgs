@@ -66,9 +66,17 @@ class _Tables(HTMLParser):
             (frame.subject for frame in reversed(self.stack) if frame.subject),
             None,
         )
-        if self.definitions_page and tag == 'h2':
+        if (
+            self.definitions_page
+            and tag == 'span'
+            and 'reference-type-anchor' in classes
+        ):
             ident = attributes.get('id')
             self.definition = ident if ident and ident.startswith('gometry.') else None
+        if self.definitions_page and tag == 'h2':
+            ident = attributes.get('id')
+            if ident and ident.startswith('gometry.'):
+                self.definition = ident
         if (ident := attributes.get('id')) and ident.startswith('gometry.'):
             for frame in reversed(self.stack):
                 if frame.is_doc_object:
@@ -547,7 +555,7 @@ def _schema_errors(
         table
         for table in parser.tables
         if tuple(header.lower() for header in table['headers'])
-        == ('field', 'type', 'required', 'description')
+        == ('field', 'value shape', 'required', 'description')
     ]
     declarations = {declaration.path: declaration for declaration in graph.definitions}
     for declaration in graph.definitions:
@@ -579,11 +587,14 @@ def _typed_dict_field_errors(
     graph: Any,
     rows: list[tuple[str, ...]],
 ) -> list[str]:
-    from reference_types import _expression_source, _typed_dict_fields
+    from reference_types import _typed_dict_fields
+    from reference_types_page import _annotation_shape
 
     expected_fields = {
         name: (
-            _expression_key(_expression_source(annotation, module, graph)),
+            _expression_key(
+                _annotation_shape(annotation, module, graph, declarations)[0]
+            ),
             'yes' if required else 'no',
             ' '.join((description or '').split()),
         )
@@ -621,35 +632,29 @@ def _type_link_errors(
     links: list[_Link],
 ) -> list[str]:
     errors = []
-    targets = {
-        'Point': 'gometry.Point',
-        'GeohashCell': 'gometry.GeohashCell',
-        'FloatScalar': 'gometry._types.FloatScalar',
-        'ScalarFloatArray': 'gometry._types.ScalarFloatArray',
-        'GeoJsonFeature': 'gometry._types.GeoJsonFeature',
-    }
-    known = {declaration.path for declaration in graph.definitions}
-    targets = {
-        label: target
-        for label, target in targets.items()
-        if target.startswith('gometry.')
-        and (target in known or label in {'Point', 'GeohashCell'})
-    }
-    for label, target in targets.items():
-        candidates = [
-            link for link in links if link.label == label and link.contract_region
-        ]
-        matching = [link for link in candidates if _local_target(link.target) == target]
-        if not matching:
-            errors.append(f'{label}: no signature or type-table link reaches {target}')
-        wrong = [
-            (link.page.as_posix(), _local_target(link.target))
-            for link in candidates
-            if _local_target(link.target).startswith('gometry.')
-            and _local_target(link.target) != target
-        ]
-        if wrong:
-            errors.append(f'{label}: links target the wrong declarations: {wrong}')
+    type_page = [
+        link for link in links if link.page.as_posix().endswith('api/types/index.html')
+    ]
+    for declaration in graph.definitions:
+        owners = {
+            owner
+            for owner in graph.public_owners.get(declaration.path, ())
+            if owner.startswith('gometry.')
+        }
+        if not owners:
+            errors.append(
+                f'{declaration.path}: no canonical public API owner was derived'
+            )
+            continue
+        linked_owners = {
+            _local_target(link.target)
+            for link in type_page
+            if _local_target(link.target) in owners
+        }
+        if not linked_owners:
+            errors.append(
+                f'{declaration.path}: no type-page link reaches its public API owner'
+            )
     return errors
 
 
@@ -681,13 +686,6 @@ def _search_errors(
     targets = (
         ('Point', 'gometry.Point', 'point'),
         ('GeohashCell', 'gometry.GeohashCell', 'geohashcell'),
-        ('FloatScalar', 'gometry._types.FloatScalar', 'floatscalar'),
-        (
-            'ScalarFloatArray',
-            'gometry._types.ScalarFloatArray',
-            'scalarfloatarray',
-        ),
-        ('GeoJsonFeature', 'gometry._types.GeoJsonFeature', 'geojsonfeature'),
         ('GeoJSON literal option', 'gometry.ParseError.format', 'geojson'),
     )
     errors = []
@@ -720,6 +718,100 @@ def _search_errors(
         if not matching:
             errors.append(
                 f'{label}: search index has no entry for {target} containing {term!r}'
+            )
+    public_shapes = ('float scalar', 'geojson feature')
+    type_page_documents = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        location = document.get('location')
+        text = document.get('text')
+        if not isinstance(location, str) or not isinstance(text, str):
+            continue
+        actual_path, _ = _search_path(location)
+        if actual_path.rstrip('/') == 'api/types':
+            type_page_documents.append(text.casefold())
+    errors.extend(
+        f'api/types: search index has no public annotation entry for {term!r}'
+        for term in public_shapes
+        if not any(term in text for text in type_page_documents)
+    )
+    return errors
+
+
+_PRIVATE_TYPE_PATH = re.compile(r'\bgometry\._(?:lib|types)\.[A-Za-z_]\w*')
+
+
+class _Headings(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tag: str | None = None
+        self.parts: list[str] = []
+        self.values: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag in {'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}:
+            self.tag = tag
+            self.parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self.tag is not None:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == self.tag and self.tag is not None:
+            self.values.append(' '.join(''.join(self.parts).split()))
+            self.tag = None
+            self.parts = []
+
+
+def _private_type_exposure_errors(
+    site: Path,
+    pages: dict[Path, str],
+) -> list[str]:
+    errors = []
+    page_path = Path('api/types/index.html')
+    source = pages.get(site / page_path)
+    if source is None:
+        return ['api/types/index.html is missing']
+
+    headings = _Headings()
+    headings.feed(source)
+    headings.close()
+    errors.extend(
+        f'api/types heading exposes private type path {match.group(0)!r}'
+        for heading in headings.values
+        if (match := _PRIVATE_TYPE_PATH.search(heading))
+    )
+
+    search_path = site / 'search' / 'search_index.json'
+    if not search_path.is_file():
+        return errors
+    try:
+        payload = json.loads(search_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return errors
+    documents = payload.get('docs') if isinstance(payload, dict) else None
+    if not isinstance(documents, list):
+        return errors
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        location = document.get('location')
+        text = document.get('text')
+        if not isinstance(location, str) or not isinstance(text, str):
+            continue
+        actual_path, fragment = _search_path(location)
+        if actual_path.rstrip('/') != 'api/types':
+            continue
+        match = _PRIVATE_TYPE_PATH.search(text) or _PRIVATE_TYPE_PATH.search(fragment)
+        if match:
+            errors.append(
+                f'api/types search entry exposes private type path {match.group(0)!r}'
             )
     return errors
 
@@ -760,6 +852,7 @@ def collect_errors(
         links = _link_targets(pages)
         errors.extend(_type_link_errors(graph, links))
     errors.extend(_search_errors(site, canonical_pages))
+    errors.extend(_private_type_exposure_errors(site, pages))
 
     unresolved = re.compile(r'<span\b[^>]*title="(?P<target>gometry\.[^"]+)"[^>]*>')
     for path, source in pages.items():

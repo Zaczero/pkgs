@@ -690,7 +690,7 @@ def test_built_schema_audit_detects_nullability_and_requiredness_changes() -> No
     feature = declarations['gometry._types.GeoJsonFeature']
     source_fields = [
         ('type', "Literal['Feature']", 'yes', ''),
-        ('geometry', 'GeoJsonGeometry | None', 'yes', ''),
+        ('geometry', 'GeoJSON Geometry annotation shape | None', 'yes', ''),
         ('properties', 'Mapping[str, Any] | None', 'no', ''),
         ('id', 'str | int | float', 'no', ''),
     ]
@@ -707,7 +707,7 @@ def test_built_schema_audit_detects_nullability_and_requiredness_changes() -> No
 
     invalid_fields = [
         ('type', "Literal['Feature']", 'yes', ''),
-        ('geometry', 'GeoJsonGeometry', 'yes', ''),
+        ('geometry', 'GeoJSON Geometry annotation shape', 'yes', ''),
         ('properties', 'Mapping[str, Any] | None', 'yes', ''),
         ('id', 'str | int | float', 'no', ''),
     ]
@@ -726,41 +726,38 @@ def test_type_link_and_search_audits_reject_wrong_canonical_targets(
 ) -> None:
     contracts = load_tool('site_contracts')
     graph = SimpleNamespace(
-        definitions=tuple(
-            SimpleNamespace(path=path)
-            for path in (
-                'gometry._types.FloatScalar',
-                'gometry._types.ScalarFloatArray',
-                'gometry._types.GeoJsonFeature',
-            )
-        )
+        definitions=(
+            SimpleNamespace(path='gometry._types.FloatScalar'),
+            SimpleNamespace(path='gometry._lib.CoordinatesIterator'),
+        ),
+        public_owners={
+            'gometry._types.FloatScalar': ('gometry.buffer',),
+            'gometry._lib.CoordinatesIterator': ('gometry.Coordinates',),
+        },
     )
-    page = Path('api/geometry/index.html')
+    page = Path('api/types/index.html')
     good_links = [
         SimpleNamespace(
-            label=label,
-            target=f'../types/#{target}',
+            label=target.removeprefix('gometry.'),
+            target=f'../api/#{target}',
             contract_region=True,
             page=page,
         )
-        for label, target in (
-            ('Point', 'gometry.Point'),
-            ('GeohashCell', 'gometry.GeohashCell'),
-            ('FloatScalar', 'gometry._types.FloatScalar'),
-            ('ScalarFloatArray', 'gometry._types.ScalarFloatArray'),
-            ('GeoJsonFeature', 'gometry._types.GeoJsonFeature'),
+        for target in (
+            'gometry.buffer',
+            'gometry.Coordinates',
         )
     ]
     assert contracts._type_link_errors(graph, good_links) == []
     wrong_link = SimpleNamespace(
-        label='FloatScalar',
-        target='../types/#gometry._types.ScalarFloatArray',
+        label='buffer',
+        target='../api/#gometry.Coordinates',
         contract_region=True,
         page=page,
     )
     assert contracts._type_link_errors(
         graph,
-        [link for link in good_links if link.label != 'FloatScalar'] + [wrong_link],
+        [link for link in good_links if link.label != 'buffer'] + [wrong_link],
     )
 
     site = tmp_path / 'site'
@@ -769,17 +766,11 @@ def test_type_link_and_search_audits_reject_wrong_canonical_targets(
     anchors = {
         'gometry.Point': Path('api/geometry/geometry-types/index.html'),
         'gometry.GeohashCell': Path('api/grid/index.html'),
-        'gometry._types.FloatScalar': Path('api/types/index.html'),
-        'gometry._types.ScalarFloatArray': Path('api/types/index.html'),
-        'gometry._types.GeoJsonFeature': Path('api/types/index.html'),
         'gometry.ParseError.format': Path('api/errors/index.html'),
     }
     terms = (
         ('gometry.Point', 'point'),
         ('gometry.GeohashCell', 'geohashcell'),
-        ('gometry._types.FloatScalar', 'floatscalar'),
-        ('gometry._types.ScalarFloatArray', 'scalarfloatarray'),
-        ('gometry._types.GeoJsonFeature', 'geojsonfeature'),
         ('gometry.ParseError.format', 'geojson'),
     )
     documents = []
@@ -789,13 +780,68 @@ def test_type_link_and_search_audits_reject_wrong_canonical_targets(
             'location': f'/{page}#{target}',
             'text': f'Reference for {term}',
         })
+    documents.extend([
+        {
+            'location': '/api/types/#float-scalar-annotation-shape',
+            'text': 'Float scalar annotation shape',
+        },
+        {
+            'location': '/api/types/#geojson-feature-mapping',
+            'text': 'GeoJSON feature mapping',
+        },
+    ])
     search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
     assert contracts._search_errors(site, anchors) == []
 
-    documents[2]['location'] = '/api/types/#gometry._types.ScalarFloatArray'
-    documents[5]['text'] = 'other codec options'
+    documents[3]['text'] = 'other codec options'
     search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
     assert contracts._search_errors(site, anchors)
+
+
+def test_private_type_paths_are_rejected_from_type_headings_and_search(
+    tmp_path: Path,
+) -> None:
+    contracts = load_tool('site_contracts')
+    site = tmp_path / 'site'
+    page_path = site / 'api/types/index.html'
+    page_path.parent.mkdir(parents=True)
+    page = (
+        '<h1>Public annotation forms</h1>'
+        '<span id="gometry._lib.CoordinatesIterator" aria-hidden="true"></span>'
+        '<h2>Iteration results from Coordinates</h2>'
+    )
+    page_path.write_text(page, encoding='utf-8')
+    search = site / 'search/search_index.json'
+    search.parent.mkdir()
+    documents = [
+        {
+            'location': '/api/types/#iteration-results-from-coordinates',
+            'text': 'Iteration results from Coordinates',
+        }
+    ]
+    search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
+    pages = {page_path: page}
+    assert contracts._private_type_exposure_errors(site, pages) == []
+
+    page_path.write_text(
+        page.replace(
+            '<h2>Iteration results from Coordinates</h2>',
+            '<h2>gometry._lib.CoordinatesIterator</h2>',
+        ),
+        encoding='utf-8',
+    )
+    documents[0] = {
+        'location': '/api/types/#gometry._lib.CoordinatesIterator',
+        'text': 'gometry._lib.CoordinatesIterator',
+    }
+    search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
+    errors = contracts._private_type_exposure_errors(
+        site,
+        {page_path: page_path.read_text(encoding='utf-8')},
+    )
+    assert len(errors) == 2
+    assert any('heading exposes' in error for error in errors)
+    assert any('search entry exposes' in error for error in errors)
 
 
 def test_real_handler_renders_parameter_kinds_and_default_states(

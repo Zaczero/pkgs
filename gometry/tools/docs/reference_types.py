@@ -81,6 +81,7 @@ class TypeGraph:
     expansions: dict[str, TypeExpression]
     references: dict[str, tuple[str, ...]]
     public_targets: dict[str, str]
+    public_owners: dict[str, tuple[str, ...]]
 
 
 def build_public_type_graph(package_root: Path, runtime_module: Any) -> TypeGraph:
@@ -754,6 +755,7 @@ def build_type_graph(
     definitions: dict[str, _Declaration] = {}
     expansions: dict[str, TypeExpression] = {}
     references: dict[str, set[str]] = {}
+    public_owners: dict[str, set[str]] = {}
 
     def visit_expression(
         expression: ast.expr,
@@ -762,6 +764,7 @@ def build_type_graph(
         source_line: int,
         owner: str | None,
         chain: tuple[str, ...] = (),
+        public_owner: str | None = None,
     ) -> None:
         for target in _expression_references(expression, module):
             public_target = public_targets.get(target)
@@ -775,6 +778,8 @@ def build_type_graph(
                 continue
             if not target.startswith(f'{_PACKAGE}.'):
                 continue
+            if public_owner is not None:
+                public_owners.setdefault(target, set()).add(public_owner)
             declaration = declarations.get(target)
             if declaration is None:
                 raise _missing_reference(
@@ -814,6 +819,7 @@ def build_type_graph(
                         declaration.line,
                         owner,
                         (*chain, target),
+                        public_owner,
                     )
                 continue
 
@@ -829,16 +835,31 @@ def build_type_graph(
                     declaration.module.path,
                     getattr(child, 'lineno', declaration.line),
                     target,
+                    public_owner=public_owner,
                 )
 
     for expression, module, source_path, source_line, owner in roots:
-        visit_expression(expression, module, source_path, source_line, None, (owner,))
+        public_owner = (
+            owner if owner.startswith(f'{_PACKAGE}.') else f'{_PACKAGE}.{owner}'
+        )
+        if public_owner.endswith(('.__new__', '.__init__')):
+            public_owner = public_owner.rsplit('.', 1)[0]
+        visit_expression(
+            expression,
+            module,
+            source_path,
+            source_line,
+            None,
+            (owner,),
+            public_owner,
+        )
 
     return TypeGraph(
         tuple(definitions[path] for path in sorted(definitions)),
         expansions,
         {path: tuple(sorted(targets)) for path, targets in references.items()},
         public_targets,
+        {path: tuple(sorted(owners)) for path, owners in public_owners.items()},
     )
 
 

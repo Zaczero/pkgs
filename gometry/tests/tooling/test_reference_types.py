@@ -159,8 +159,10 @@ raise RuntimeError('type discovery executed the declaration module')
     assert 'gometry._types._Coordinate' not in paths
     assert 'gometry._types.Format' not in paths
     assert graph.expansions['gometry._types.Format']
-    assert 'Coordinate: TypeAlias = tuple[tuple[float, float], ...]' in rendered
-    assert '**Default:** <code>int</code>' in rendered
+    assert (
+        '**Annotation shape:** <code>tuple[tuple[float, float], ...]</code>' in rendered
+    )
+    assert '**Default element type:** <code>int</code>' in rendered
     assert '**Variance:** covariant' in rendered
     assert (
         'Metadata remains nullable while Record is a public result class.' in rendered
@@ -171,8 +173,12 @@ raise RuntimeError('type discovery executed the declaration module')
     assert '| `source` | <code>peer.Source</code> | no |  |' in rendered
     assert 'A recursive nullable feature reference.' in rendered
     assert 'gometry._types.GeoJsonFeature' in rendered
-    assert '[`Record`][gometry.Record]' in rendered
-    assert 'They are source references, not additional top-level exports.' in rendered
+    assert '[Record][gometry.Record]' in rendered
+    assert '[Base mapping][gometry.describe]' in rendered
+    assert '## `gometry._types.' not in rendered
+    assert '**Source:**' not in rendered
+    assert 'GeoJsonFeature: TypeAlias' not in rendered
+    assert 'descriptive labels are not additional import names.' in rendered
     assert 'gometry_optional_peer_for_reference_test' not in sys.modules
 
     original_types = types_path.read_text(encoding='utf-8')
@@ -348,13 +354,19 @@ def test_live_public_subjects_resolve_reachable_reference_definitions() -> None:
     } <= paths
     assert 'gometry._lib._FloatScalarInput' in graph.expansions
     assert 'gometry._types.ParseFormat' in graph.expansions
-    assert '## `gometry._types._ExtremeT`' in rendered
-    assert '## `gometry._types.ParseFormat`' not in rendered
-    assert '**Default:** <code>Point</code>' in rendered
+    assert '## Generic element type' in rendered
+    assert '## `gometry._types.' not in rendered
+    assert '**Default element type:** <code>Point</code>' in rendered
     assert 'gometry.Point' in graph.references['gometry._types._ExtremeT']
-    assert '[`Point`][gometry.Point]' in rendered
+    assert '[Point][gometry.Point]' in rendered
     assert (
         'gometry._types.GeoJsonGeometry'
         in graph.references['gometry._types.GeoJsonGeometryCollectionGeometry']
     )
     assert 'gometry._types._FloatScalarInput' not in rendered
+    assert graph.public_owners['gometry._types.FloatScalar']
+    assert all(
+        not owner.endswith(('.__new__', '.__init__'))
+        for owners in graph.public_owners.values()
+        for owner in owners
+    )
