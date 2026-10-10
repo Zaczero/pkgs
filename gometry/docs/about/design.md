@@ -62,7 +62,7 @@ free functions because neither operand owns the question: [`contains(a, b)`][gom
 An operation over a whole collection is a free function that takes the
 collection, the way Python's `sum(iterable)` is: [`gm.union_all(values)`][gometry.union_all],
 [`gm.intersection_all`][gometry.intersection_all], [`gm.polygonize_all(values)`][gometry.polygonize_all], and the
-[`gm.coverage_*`][gometry.coverage_union] family accept a `GeometryArray` or any iterable of geometries.
+[`gm.coverage_*`][gometry.coverage_union_all] family accept a `GeometryArray` or any iterable of geometries.
 An array method that shares a scalar method's name is therefore always its
 row-wise mirror: [`arr.polygonize()`][gometry.GeometryArray.polygonize] polygonizes
 each row, while `gm.polygonize_all(arr)` pools every row's linework into one graph.

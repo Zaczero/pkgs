@@ -320,7 +320,7 @@ def test_from_geoparquet_geoarrow_crs_mismatch_raises(parquet_path: str) -> None
             'geometry': {
                 'encoding': 'point',
                 'geometry_types': ['Point'],
-                'crs': gm.CRS(4326).to_projjson_dict(),
+                'crs': gm.CRS(4326).to_projjson(as_dict=True),
             }
         },
     }
@@ -754,7 +754,7 @@ def test_geoparquet_rejects_invalid_epoch(parquet_path: str, epoch: object) -> N
         {
             'encoding': 'WKB',
             'geometry_types': ['Point'],
-            'crs': gm.CRS(4326).to_projjson_dict(),
+            'crs': gm.CRS(4326).to_projjson(as_dict=True),
             'epoch': epoch,
         },
     )
@@ -1008,7 +1008,7 @@ def _write_field_wkb_geoparquet(
         if field_crs is None:
             raise ValueError('field_crs is required when field_extension is full')
         ext_meta: dict[str, object] = {
-            'crs': gm.CRS(field_crs).to_projjson_dict(),
+            'crs': gm.CRS(field_crs).to_projjson(as_dict=True),
             'crs_type': 'projjson',
         }
         if field_epoch is not None:
@@ -1033,7 +1033,7 @@ def _write_field_wkb_geoparquet(
     col_meta: dict[str, object] = {
         'encoding': 'WKB',
         'geometry_types': ['Point'],
-        'crs': gm.CRS(declared_crs).to_projjson_dict(),
+        'crs': gm.CRS(declared_crs).to_projjson(as_dict=True),
     }
     if declared_epoch is not None:
         col_meta['epoch'] = declared_epoch
@@ -2028,7 +2028,7 @@ def test_bbox_z_and_x_ordering_rejected() -> None:
                     'geometry': {
                         'encoding': 'WKB',
                         'geometry_types': [],
-                        'crs': gm.CRS(3857).to_projjson_dict(),
+                        'crs': gm.CRS(3857).to_projjson(as_dict=True),
                         'bbox': [10, 0, 0, 4],
                     }
                 }
@@ -2467,7 +2467,7 @@ def test_admit_preserves_raw_field_extension_frame() -> None:
     meta = {
         b'ARROW:extension:name': b'geoarrow.point',
         b'ARROW:extension:metadata': json.dumps({
-            'crs': gm.CRS(4326).to_projjson_dict(),
+            'crs': gm.CRS(4326).to_projjson(as_dict=True),
             'crs_type': 'projjson',
         }).encode(),
     }
@@ -2477,7 +2477,7 @@ def test_admit_preserves_raw_field_extension_frame() -> None:
     )
     assert layout.has_extension is True
     assert layout.embedded_crs is not None
-    assert json.loads(layout.embedded_crs) == gm.CRS(4326).to_projjson_dict()
+    assert json.loads(layout.embedded_crs) == gm.CRS(4326).to_projjson(as_dict=True)
     assert layout.embedded_epoch is None
 
     # Rewrap with matching geoparquet frame succeeds; mismatched raises.
@@ -2505,9 +2505,9 @@ def test_parse_geoparquet_column_frame_mapping_contract() -> None:
 
     # Finite epoch + -0 normalization; non-boolean numeric.
     crs, epoch = _parse_geoparquet_column_frame(
-        {'crs': gm.CRS(4326).to_projjson_dict(), 'epoch': -0.0}, 'geometry'
+        {'crs': gm.CRS(4326).to_projjson(as_dict=True), 'epoch': -0.0}, 'geometry'
     )
-    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
+    assert json.loads(crs) == gm.CRS(4326).to_projjson(as_dict=True)
     assert epoch == 0.0
     assert str(epoch) == '0.0'  # not -0.0
 
@@ -2520,9 +2520,9 @@ def test_parse_geoparquet_column_frame_mapping_contract() -> None:
 
     # PROJJSON-only identity; planar edges ok; spherical rejected with pinned text.
     crs, _ = _parse_geoparquet_column_frame(
-        {'crs': gm.CRS(4326).to_projjson_dict(), 'edges': 'planar'}, 'geometry'
+        {'crs': gm.CRS(4326).to_projjson(as_dict=True), 'edges': 'planar'}, 'geometry'
     )
-    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
+    assert json.loads(crs) == gm.CRS(4326).to_projjson(as_dict=True)
     with pytest.raises(
         gm.ParseError,
         match=r"edges 'spherical' are unsupported; only planar edges are accepted",

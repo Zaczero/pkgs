@@ -87,7 +87,7 @@ def _crs_projjson(crs: str | CRS) -> dict[str, Any]:
     in-memory CRS encoding, and the one GeoParquet 1.1 requires when columns
     land in a lakehouse.
     """
-    return CRS(crs).to_projjson_dict()
+    return CRS(crs).to_projjson(as_dict=True)
 
 
 def _geoarrow_parse_error(message: str) -> Exception:

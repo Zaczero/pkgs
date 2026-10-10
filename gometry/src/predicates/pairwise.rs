@@ -3,8 +3,8 @@ use pyo3::types::PyAny;
 
 use crate::geometry::storage::validity::union_many;
 use crate::{
-    Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, Py, PyGeometry,
-    PyResult, Python, classify_required, crs, exact_geometry_array,
+    Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, NavigationPath, Py,
+    PyGeometry, PyResult, Python, classify_required, crs, exact_geometry_array,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     metric_nearest_points_resolved, metric_shortest_line_resolved, nearest_point_columns_masked,
     pyfunction, resolve_metric, validate_dwithin_distance, validate_dwithin_distance_arg,
@@ -147,13 +147,18 @@ pub(crate) fn shortest_line(
 /// projected CRS, raw coordinate units when CRS-free. On a geographic CRS,
 /// point-to-point distances use ellipsoidal geodesics, and shape edges are
 /// straight in the CRS's longitude/latitude chart with short-way longitude
-/// across the antimeridian. Filled polygon interiors participate.
+/// across the antimeridian. Filled polygon interiors participate. For two
+/// points, ``path='rhumb'`` measures the constant-bearing route in meters on a
+/// geographic CRS.
 ///
 /// Parameters
 /// ----------
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
+/// path : {'geodesic', 'rhumb'}, default 'geodesic'
+///     Route for point operands. Rhumb distance requires a geographic CRS and
+///     uses meters.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -167,8 +172,13 @@ pub(crate) fn shortest_line(
 ///     If the CRS lacks linear axis units for a metric result.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// GeometryTypeError
+///     If ``path='rhumb'`` is used with non-point operands.
+/// CRSError
+///     If ``path='rhumb'`` is used without a geographic CRS.
 /// GeometryError
-///     If ``unit='meters'`` is requested for a CRS-free geometry.
+///     If ``unit='meters'`` is requested for a CRS-free geometry or a unit
+///     override is supplied with ``path='rhumb'``.
 ///
 /// See Also
 /// --------
@@ -187,14 +197,21 @@ pub(crate) fn shortest_line(
 /// >>> round(gm.distance(a, b))  # meters
 /// 6868
 #[pyfunction]
-#[pyo3(signature = (left, right, *, unit = None))]
+#[pyo3(
+    signature = (left, right, *, path = NavigationPath::Geodesic, unit = None),
+    text_signature = "(left, right, *, path='geodesic', unit=None)"
+)]
 pub(crate) fn distance(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
+    path: NavigationPath,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_distance(py, left, right, unit)
+    match path {
+        NavigationPath::Geodesic => crate::dispatch::dispatch_distance(py, left, right, unit),
+        NavigationPath::Rhumb => crate::measures::distance_rhumb(py, left, right, unit),
+    }
 }
 
 /// Compute the minimum 3D (Euclidean) distance between two geometries,
@@ -587,8 +604,9 @@ pub(crate) fn nearest_points(
 ///     infinity is accepted and matches every pair of admitted non-empty
 ///     operands.
 /// CRSError
-///     If geographic point-edge search reaches its 128-evaluation budget or
-///     binary64 parameter precision without proving the threshold result.
+///     If geographic point-edge search reaches its binary64-resolution-derived
+///     work allowance or 16,384-evaluation safety ceiling, or parameter
+///     precision ends without proving the threshold result.
 ///
 /// See Also
 /// --------

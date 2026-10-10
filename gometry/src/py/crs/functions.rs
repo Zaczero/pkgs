@@ -42,8 +42,8 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MinConfidence {
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
@@ -69,8 +69,8 @@ pub(crate) fn crs_to_cf(
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
@@ -100,8 +100,8 @@ pub(crate) fn crs_to_wkt(
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
@@ -121,17 +121,17 @@ pub(crate) fn crs_to_projjson(
     )?)
 }
 
-/// Serialize a CRS to a PROJJSON mapping.
+/// Serialize a CRS to a fresh PROJJSON mapping.
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
 /// dict
-pub(crate) fn crs_to_projjson_dict(
+pub(crate) fn crs_projjson_mapping(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyDict>> {
@@ -157,8 +157,8 @@ pub(crate) fn crs_to_projjson_dict(
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
@@ -214,8 +214,8 @@ pub(crate) fn crs_proj_version(value: i64) -> PyResult<crs::ProjStringVersion> {
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
@@ -237,8 +237,8 @@ pub(crate) fn crs_to_authority(
 ///
 /// Parameters
 /// ----------
-/// crs : str or int
-///     CRS as an EPSG code or authority/WKT string.
+/// crs : CRS-like
+///     Any supported CRS-like input.
 ///
 /// Returns
 /// -------
@@ -259,7 +259,7 @@ pub(crate) fn crs_min_confidence(value: MinConfidence) -> PyResult<crs::Confiden
 ///
 /// Parameters
 /// ----------
-/// left, right : str or int
+/// left, right : CRS-like
 ///     The two CRS to compare.
 ///
 /// Returns

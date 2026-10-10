@@ -545,9 +545,9 @@ mod tests {
         let exponent = ((bits >> 52) & 0x7FF) as i32;
         let fraction = bits & ((1_u64 << 52) - 1);
         let (significand, power) = if exponent == 0 {
-            (fraction as i128, -1074)
+            (i128::from(fraction), -1074)
         } else {
-            (((1_u64 << 52) | fraction) as i128, exponent - 1023 - 52)
+            (i128::from((1_u64 << 52) | fraction), exponent - 1023 - 52)
         };
         let (numerator, denominator) = if power >= 0 {
             (sign * (significand << power), 0)

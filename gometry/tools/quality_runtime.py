@@ -851,7 +851,12 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
         prefix='quality-build-', dir=scratch
     ) as temporary_build:
         wheel_dir = Path(temporary_build)
-        run([*command, '--out', str(wheel_dir)], cwd=root, env=build_env)
+        run(
+            [*command, '--out', str(wheel_dir)],
+            cwd=root,
+            env=build_env,
+            capture_output=False,
+        )
         wheels = sorted(wheel_dir.glob('gometry-*.whl'))
         if len(wheels) != 1:
             raise AssertionError(f'expected one quality DEV wheel, found {wheels!r}')

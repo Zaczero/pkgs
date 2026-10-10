@@ -1334,12 +1334,13 @@ mod tests {
     use super::*;
     use crate::array::BoundsSeed;
     use crate::crs::frame;
+    use crate::geometry::storage::validity::{count_valid_bytes, reset_count_valid_bytes};
     use crate::geometry::{
         CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel, SharedSlice,
     };
     use crate::py::index::{build_spatial_index, restore_spatial_index_v2, spatial_index};
 
-    fn public_point<'py>(py: Python<'py>, x: f64, y: f64) -> Bound<'py, PyAny> {
+    fn public_point(py: Python<'_>, x: f64, y: f64) -> Bound<'_, PyAny> {
         crate::Typed(PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(x, y))),
             Frame::None,
@@ -1358,7 +1359,7 @@ mod tests {
     }
 
     fn assert_no_compact_point_rank(logical_len: usize, operation: &str) -> usize {
-        let bytes = crate::geometry::storage::validity::count_valid_bytes();
+        let bytes = count_valid_bytes();
         assert_eq!(
             bytes, 0,
             "compact nullable point {operation} scanned {bytes} validity bytes at M={logical_len}"
@@ -1529,12 +1530,8 @@ mod tests {
                         .get_mut(handle / 8)
                         .expect("present handle is within the bitmap") |= 1 << (handle % 8);
                 }
-                let mask = crate::geometry::storage::ValidityMask::from_bitmap(
-                    SharedSlice::from_vec(bitmap),
-                    0,
-                    logical_len,
-                )
-                .expect("the fixture contains missing rows");
+                let mask = ValidityMask::from_bitmap(SharedSlice::from_vec(bitmap), 0, logical_len)
+                    .expect("the fixture contains missing rows");
                 let present = PyGeometryArray::packed_points(
                     CoordSeq::try_from_vecs(
                         vec![10.0, 20.0, 30.0],
@@ -1575,7 +1572,7 @@ mod tests {
                 assert_eq!(native_index.live_handles_sorted(), handles);
                 let index = Bound::new(py, native_index).expect("index binds");
                 let builtins = py.import("builtins").expect("builtins module");
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let listed = builtins
                     .getattr("list")
                     .unwrap()
@@ -1588,7 +1585,7 @@ mod tests {
                 );
                 assert_no_compact_point_rank(logical_len, "iteration");
 
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let source_size = sys
                     .call_method1("getsizeof", (&source,))
                     .expect("source size")
@@ -1622,7 +1619,7 @@ mod tests {
 
                 // The first public lookup is deliberately cold: it must not
                 // construct the source-wide compact validity rank directory.
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let first = index
                     .call_method1("__getitem__", (7_usize,))
                     .expect("cold public index lookup");
@@ -1632,38 +1629,38 @@ mod tests {
 
                 let mut validity_counts = Vec::new();
                 for ((handle, x, y), query) in rows.iter().zip(&queries) {
-                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    reset_count_valid_bytes();
                     let item = index
                         .call_method1("__getitem__", (*handle,))
                         .expect("public index lookup");
                     assert_no_compact_point_rank(logical_len, "lookup");
                     assert_eq!(item.getattr("x").unwrap().extract::<f64>().unwrap(), *x);
                     assert_eq!(item.getattr("y").unwrap().extract::<f64>().unwrap(), *y);
-                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+                    validity_counts.push(count_valid_bytes());
 
-                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    reset_count_valid_bytes();
                     let matched = index
                         .call_method1("query", (query,))
                         .expect("public exact query");
                     assert_eq!(public_ids(&matched), [i64::try_from(*handle).unwrap()]);
                     assert_no_compact_point_rank(logical_len, "query");
-                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+                    validity_counts.push(count_valid_bytes());
 
-                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    reset_count_valid_bytes();
                     let nearest = index
                         .call_method1("nearest", (query,))
                         .expect("public nearest");
                     assert_eq!(public_ids(&nearest), [i64::try_from(*handle).unwrap()]);
                     assert_no_compact_point_rank(logical_len, "nearest");
-                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+                    validity_counts.push(count_valid_bytes());
 
-                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    reset_count_valid_bytes();
                     let within = index
                         .call_method("query", (query,), Some(&dwithin))
                         .expect("public exact dwithin");
                     assert_eq!(public_ids(&within), [i64::try_from(*handle).unwrap()]);
                     assert_no_compact_point_rank(logical_len, "dwithin");
-                    validity_counts.push(crate::geometry::storage::validity::count_valid_bytes());
+                    validity_counts.push(count_valid_bytes());
                 }
 
                 let (looked_up, lookup_allocations) = crate::test_support::allocation_count(|| {
@@ -1704,7 +1701,7 @@ mod tests {
                     0,
                 ]);
 
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let (copied, copy_allocations) = crate::test_support::allocation_count(|| {
                     copy_module
                         .call_method1("copy", (&index,))
@@ -1712,7 +1709,7 @@ mod tests {
                 });
                 assert_no_compact_point_rank(logical_len, "copy");
                 allocation_counts.last_mut().unwrap()[4] = copy_allocations;
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 assert!(
                     copied
                         .call_method1("remove", (7_usize,))
@@ -1721,14 +1718,14 @@ mod tests {
                         .expect("remove returns bool")
                 );
                 assert_no_compact_point_rank(logical_len, "copy removal");
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 assert_eq!(
                     public_ids(&index.call_method1("query", (&queries[0],)).unwrap()),
                     [7]
                 );
                 assert_no_compact_point_rank(logical_len, "query after copy removal");
 
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let (payload, pickle_write_allocations) =
                     crate::test_support::allocation_count(|| {
                         let index = index.borrow();
@@ -1745,7 +1742,7 @@ mod tests {
                     });
                 assert_no_compact_point_rank(logical_len, "pickle payload");
                 allocation_counts.last_mut().unwrap()[5] = pickle_write_allocations;
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let (restored, pickle_restore_allocations) =
                     crate::test_support::allocation_count(|| {
                         restore_spatial_index_v2(
@@ -1772,7 +1769,7 @@ mod tests {
                     public_ids(&restored.call_method1("query", (&restored_high,)).unwrap()),
                     [i64::try_from(logical_len - 1).unwrap()]
                 );
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let restored_next = restored
                     .call_method1("insert", (&restored_high,))
                     .expect("restored index insert")
@@ -1780,7 +1777,7 @@ mod tests {
                     .expect("insert returns a handle");
                 assert_eq!(restored_next, logical_len);
                 assert_no_compact_point_rank(logical_len, "restored insertion");
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 assert_eq!(
                     public_ids(&restored.call_method1("query", (&restored_high,)).unwrap()),
                     [
@@ -1791,7 +1788,7 @@ mod tests {
                 assert_no_compact_point_rank(logical_len, "restored boxed query");
 
                 for handle in [7_usize, 63] {
-                    crate::geometry::storage::validity::reset_count_valid_bytes();
+                    reset_count_valid_bytes();
                     assert!(
                         index
                             .call_method1("remove", (handle,))
@@ -1801,13 +1798,13 @@ mod tests {
                     );
                     assert_no_compact_point_rank(logical_len, "remove");
                 }
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let last = index
                     .call_method1("__getitem__", (logical_len - 1,))
                     .expect("last sparse point remains addressable");
                 assert_eq!(last.getattr("x").unwrap().extract::<f64>().unwrap(), 30.0);
                 assert_no_compact_point_rank(logical_len, "lookup after removals");
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let last_nearest = index
                     .call_method1("nearest", (&queries[2],))
                     .expect("last point remains nearest");
@@ -1817,7 +1814,7 @@ mod tests {
                 assert_no_compact_point_rank(logical_len, "nearest after removals");
 
                 let inserted_point = public_point(py, 40.0, 4.0);
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let inserted = index
                     .call_method1("insert", (&inserted_point,))
                     .expect("boxed insertion")
@@ -1825,7 +1822,7 @@ mod tests {
                     .expect("insert returns a handle");
                 assert_eq!(inserted, logical_len);
                 assert_no_compact_point_rank(logical_len, "boxed insertion");
-                crate::geometry::storage::validity::reset_count_valid_bytes();
+                reset_count_valid_bytes();
                 let inserted_query = index
                     .call_method1("query", (&inserted_point,))
                     .expect("boxed query after packed rows");

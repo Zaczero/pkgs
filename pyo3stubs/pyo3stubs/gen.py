@@ -33,6 +33,7 @@ from pyo3stubs.ast_util import (
     _runtime_doc_for_stub,
     annotated_data_descriptors,
     decorator_names,
+    passive_class_member,
 )
 from pyo3stubs.context import CheckContext
 from pyo3stubs.rust_scan import constructor_doc_sources
@@ -300,12 +301,12 @@ class DocInjector(cst.CSTTransformer):
                 # Stub-only override of an inherited runtime member: it narrows
                 # types, so it documents itself — leave the group untouched.
                 return updated
-            obj = getattr(cls, name, None)
+            obj = passive_class_member(cls, name)
         else:
             indent = '    '
             constructor = None
             obj = getattr(self._runtime, name, None)
-        if obj is None:
+        if obj is None and constructor is None:
             return updated  # stub-only typing helper
         if not carrier:
             return _without_docstring(updated)

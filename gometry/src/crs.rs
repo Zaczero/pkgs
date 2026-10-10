@@ -59,32 +59,36 @@ use cache::{
     CRS_EXPORT_CACHE_CAPACITY, CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CRS_GEODESIC_CACHE,
     CRS_GEODESIC_CACHE_CAPACITY, CRS_IN_CORE_DESCRIPTOR_CACHE,
     CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY,
-    CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CRS_SEARCH_CACHE,
-    CRS_SEARCH_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedAuthorityObjects,
-    CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog, CachedCrsComparison,
-    CachedCrsExport, CachedCrsInfo, CachedCrsOperations, CachedCrsSearch, CachedGeodesicObject,
-    CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey, CrsExportKey, CrsExportKind,
-    NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation,
-    ensure_thread_caches_current, record_transform_engine, with_proj_diagnostic_pipeline_at,
-    with_proj_operation_at, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
+    CRS_NAME_MATCH_CACHE, CRS_NAME_MATCH_CACHE_CAPACITY, CRS_OPERATIONS_CACHE,
+    CRS_OPERATIONS_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY,
+    CachedAuthorityObjects, CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog,
+    CachedCrsComparison, CachedCrsExport, CachedCrsInfo, CachedCrsNameMatch, CachedCrsOperations,
+    CachedGeodesicObject, CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey,
+    CrsExportKey, CrsExportKind, NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY,
+    begin_transform_observation, ensure_thread_caches_current, record_transform_engine,
+    with_proj_diagnostic_pipeline_at, with_proj_operation_at, with_proj_pipeline_at,
+    with_proj_pipeline_indexed_at,
 };
 pub(crate) use cache::{cache_info, lru_insert, lru_promote, lru_resolve};
 pub(crate) use catalog::{
     CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT, ProjStringVersion,
-    authorities_with_state, catalog, celestial_bodies_with_state, codes, ellipsoids, geoid_models,
-    identify_with_state, non_deprecated, prime_meridians, proj_operations, same, search, to_2d,
-    to_3d, to_authority, to_cf, to_epsg, to_proj, to_projjson, to_projjson_with_options,
-    to_projjson_with_options_at, to_wkt_with_options, unit_info, units_with_state, utm_zones,
-    validate_search_limit,
+    authorities_with_state, catalog_name_matches_with_state, catalog_with_state,
+    celestial_bodies_with_state, codes, ellipsoids, geoid_models, identify_with_state,
+    non_deprecated, prime_meridians, proj_operations, same, to_2d, to_3d, to_authority, to_cf,
+    to_epsg, to_proj, to_projjson, to_projjson_with_options, to_projjson_with_options_at,
+    to_wkt_with_options, unit_info, units_with_state, utm_zones,
 };
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::{CrsError, preserve_resource_error};
 #[cfg(test)]
+pub(crate) use geodesic::point_edge_test_counters;
+#[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
     ChartEdge, DistanceMode, EllipsoidMetric, GeodesicBoxEnvelopeBound, GeodesicCalculation,
-    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel, PointEdgeScratch,
-    ResolvedMetric, chart_line_interpolate_coordseq_admitted, chart_line_length_columns,
+    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel,
+    POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch, ResolvedMetric,
+    chart_line_interpolate_coordseq_admitted, chart_line_length_columns,
     chart_line_locate_coordseq_admitted, chart_line_substring_coordseq_admitted, chart_shape_area,
     chart_shape_length, checked_geodesic_route, ellipsoid_shape_at, ensure_3d_metric,
     ensure_geographic_columns_in_frame, ensure_geographic_coordseq_in_frame,
@@ -132,8 +136,8 @@ use proj::{
     proj_error_message, take_proj_string_list,
 };
 #[cfg(test)]
-pub(crate) use rhumb::rhumb_distance_crs;
-pub(crate) use rhumb::{rhumb_bearing_crs_at, rhumb_destination_crs_at, rhumb_distance_crs_at};
+pub(crate) use rhumb::distance_rhumb_crs;
+pub(crate) use rhumb::{distance_rhumb_crs_at, rhumb_bearing_crs_at, rhumb_destination_crs_at};
 pub(crate) use runtime::{
     clear_cache, configure_runtime, coordinate_identity_crs, cstring, definition, normalize,
     normalize_pair, reset_runtime_config, runtime_state_snapshot,
@@ -147,8 +151,8 @@ pub(crate) use transformer::{TransformMetricScratch, TransformPlan};
 pub(crate) use types::{
     AreaOfInterest, AreaOfUse, AuthorityObjectInfo, AxisInfo, CacheBucketInfo, CacheInfo,
     CelestialBodyInfo, CfValue, CrsCatalogInfo, CrsCatalogOptions, CrsComparison,
-    CrsCoordinateOperationInfo, CrsInfo, CrsObjectKind, CrsProjJsonOptions, CrsProjOptions,
-    CrsSearchOptions, CrsWktOptions, DatumInfo, DomainInfo, EllipsoidCatalogInfo, EllipsoidInfo,
+    CrsCoordinateOperationInfo, CrsInfo, CrsNameMatchOptions, CrsObjectKind, CrsProjJsonOptions,
+    CrsProjOptions, CrsWktOptions, DatumInfo, DomainInfo, EllipsoidCatalogInfo, EllipsoidInfo,
     EngineInfo, GeodesicDirectInfo, GridDatabaseInfo, GridInfo, IdentifyCandidate, MethodInfo,
     OperationInfo, OperationParameterInfo, PrimeMeridianCatalogInfo, PrimeMeridianInfo,
     ProjDirection, ProjOperationCatalogInfo, ProjectionFactorColumns, ProjectionFactors,

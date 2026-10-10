@@ -2145,10 +2145,12 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
         *,
         cwd: Path,
         env: dict[str, str],
+        capture_output: bool,
     ) -> None:
         nonlocal builds
         assert cwd == root
         assert env['PYO3_PYTHON'] == str(Path(sys.executable).resolve())
+        assert not capture_output, 'quality builds must stream their output'
         output = Path(command[command.index('--out') + 1])
         package_members = {
             f'gometry/{path.relative_to(package).as_posix()}': path.read_bytes()
