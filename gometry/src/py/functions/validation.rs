@@ -37,10 +37,12 @@ use crate::{
 ///     operationally equivalent is relabelled to this requested spelling,
 ///     while a conflicting CRS raises ``CRSMismatchError``. When omitted or
 ///     ``None``, no target is required and an existing CRS is preserved.
-///     Accepted forms are an EPSG integer, authority/WKT/PROJ string,
-///     ``(authority, code)`` pair, PROJJSON/CF mapping, or an object exposing
-///     ``to_wkt()`` such as ``gometry.CRS`` or ``pyproj.CRS``. Coordinate
-///     epochs are preserved and revalidated against the resulting CRS.
+///     Accepted forms include authority/WKT/PROJ strings, non-boolean
+///     integer-like EPSG codes, ``(authority, code)`` pairs, PROJJSON/CF
+///     mappings, objects exposing ``to_authority()``, ``to_epsg()``,
+///     ``to_wkt()``, or ``to_json()``, and objects whose ``crs`` or ``srs``
+///     property contains another accepted form. Coordinate epochs are
+///     preserved and revalidated against the resulting CRS.
 /// axes : {'XY', 'XYZ', 'XYM', 'XYZM'}, optional
 ///     If given, require the geometry's coordinate axes to match exactly,
 ///     otherwise raise.

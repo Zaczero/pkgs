@@ -1367,7 +1367,11 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn backend_floor(self) -> f64 {
-        self.semi_major * Self::BACKEND_RELATIVE
+        crate::geometry::interval::Interval::exact(self.semi_major)
+            .mul(crate::geometry::interval::Interval::exact(
+                Self::BACKEND_RELATIVE,
+            ))
+            .upper()
     }
 
     pub(crate) fn minimum_gap(self) -> f64 {
@@ -1379,7 +1383,14 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
-        self.backend_floor() * evaluations.max(1.0)
+        crate::geometry::interval::Interval::exact(self.semi_major)
+            .mul(crate::geometry::interval::Interval::exact(
+                Self::BACKEND_RELATIVE,
+            ))
+            .mul(crate::geometry::interval::Interval::exact(
+                evaluations.max(1.0),
+            ))
+            .upper()
     }
 }
 
@@ -1442,6 +1453,66 @@ pub(crate) struct PointEdgeMinimum {
     pub(crate) budget_exhausted: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DwithinOutcome {
+    Within,
+    Outside,
+    Unresolved,
+}
+
+impl DwithinOutcome {
+    pub(crate) const fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Within, _) | (_, Self::Within) => Self::Within,
+            (Self::Unresolved, _) | (_, Self::Unresolved) => Self::Unresolved,
+            (Self::Outside, Self::Outside) => Self::Outside,
+        }
+    }
+
+    pub(crate) fn into_bool(self) -> Result<bool> {
+        match self {
+            Self::Within => Ok(true),
+            Self::Outside => Ok(false),
+            Self::Unresolved => Err(crate::crs::CrsError::message(
+                "geodesic dwithin did not converge within 128 point-edge evaluations",
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod dwithin_outcome_tests {
+    use super::DwithinOutcome;
+
+    #[test]
+    fn witnessed_within_dominates_an_earlier_unresolved_edge() {
+        assert_eq!(
+            DwithinOutcome::Unresolved.combine(DwithinOutcome::Within),
+            DwithinOutcome::Within
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Unresolved),
+            DwithinOutcome::Unresolved
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Outside),
+            DwithinOutcome::Outside
+        );
+    }
+
+    #[test]
+    fn unresolved_is_an_error_only_at_the_boolean_boundary() {
+        let error = DwithinOutcome::Unresolved
+            .into_bool()
+            .expect_err("a bool cannot encode an unresolved threshold");
+        assert!(
+            error
+                .to_string()
+                .contains("geodesic dwithin did not converge within 128 point-edge evaluations")
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferential {
     pub(crate) speed: f64,
@@ -1451,9 +1522,7 @@ pub(crate) struct ChartEdgeDifferential {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferentialBounds {
     pub(crate) speed: f64,
-    pub(crate) lipschitz_speed: f64,
-    pub(crate) acceleration: f64,
-    pub(crate) curvature: f64,
+    pub(crate) covariant_acceleration: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1472,7 +1541,10 @@ pub(crate) enum PointEdgeQueryResult {
     Outside {
         lower_bound: f64,
         evaluations: usize,
-        budget_exhausted: bool,
+    },
+    Unresolved {
+        lower_bound: f64,
+        evaluations: usize,
     },
 }
 
@@ -1526,7 +1598,11 @@ pub(crate) trait ChartMetric {
         source_speed: f64,
         source_azimuth: f64,
     ) -> Result<ChartPointDistanceSample>;
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64;
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64;
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
     fn chart_area_density(
         &self,

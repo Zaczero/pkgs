@@ -21,6 +21,32 @@ def _partition(cells: gm.GeometryArray, clip: gm.Geometry) -> None:
         assert gm.relate_pattern(left, right, 'F********')
 
 
+def test_voronoi_output_selects_cells_or_internal_edges_and_groups_rows() -> None:
+    sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
+    clip = gm.box(-1, -1, 3, 3)
+
+    default_cells = sites.voronoi(clip=clip)
+    polygon_cells = sites.voronoi(output='polygons', clip=clip)
+    edges = sites.voronoi(output='edges', clip=clip)
+
+    assert [cell.to_wkb() for cell in default_cells] == [
+        cell.to_wkb() for cell in polygon_cells
+    ]
+    assert len(polygon_cells) == 3
+    assert len(edges) == 3
+
+    rows = gm.GeometryArray([sites, None, sites])
+    grouped_edges = rows.voronoi(output='edges', clip=clip)
+    assert grouped_edges.offsets.tolist() == [0, 3, 3, 6]
+    assert [edge.to_wkb() for edge in grouped_edges[0]] == [
+        edge.to_wkb() for edge in edges
+    ]
+    assert grouped_edges[1].to_wkb() == []
+    assert [edge.to_wkb() for edge in grouped_edges[2]] == [
+        edge.to_wkb() for edge in edges
+    ]
+
+
 @pytest.mark.parametrize('carrier', ['multipart', 'collection'])
 @pytest.mark.parametrize('frontend', ['scalar', 'packed'])
 def test_cocircular_faces_share_one_vertex_for_every_site_order(
@@ -33,9 +59,13 @@ def test_cocircular_faces_share_one_vertex_for_every_site_order(
         if carrier == 'collection':
             source = gm.GeometryCollection([source])
         edges = (
-            source.voronoi_edges()
+            source.voronoi(
+                output='edges',
+            )
             if frontend == 'scalar'
-            else gm.GeometryArray([source]).voronoi_edges()[0]
+            else gm.GeometryArray([source]).voronoi(
+                output='edges',
+            )[0]
         )
         assert len(edges) == 4
         assert all((0.0, 0.0) in list(edge.coords) for edge in edges)
@@ -65,16 +95,18 @@ def test_shared_arrangement_preserves_clip_holes(
     if carrier == 'collection':
         source = gm.GeometryCollection([source])
     cells = (
-        source.voronoi_polygons(clip=clip)
+        source.voronoi(output='polygons', clip=clip)
         if frontend == 'scalar'
-        else gm.GeometryArray([source]).voronoi_polygons(clip=clip)[0]
+        else gm.GeometryArray([source]).voronoi(output='polygons', clip=clip)[0]
     )
     _partition(cells, clip)
 
 
 def test_reciprocal_sites_use_actual_nonrectangular_clip() -> None:
     clip = gm.Polygon([(0, 0), (3, 0), (3, 1.5), (1.5, 1.5), (1.5, 3), (0, 3), (0, 0)])
-    cells = gm.MultiPoint([(0, 0), (1e150, 0), (0, 1e-150)]).voronoi_polygons(clip=clip)
+    cells = gm.MultiPoint([(0, 0), (1e150, 0), (0, 1e-150)]).voronoi(
+        output='polygons', clip=clip
+    )
     _partition(cells, clip)
 
 
@@ -85,7 +117,7 @@ def test_convex_quad_clip_keeps_every_cell_valid_at_site_count(
     rng = random.Random(7)
     sites = [(rng.uniform(0, 1_000), rng.uniform(0, 1_000)) for _ in range(site_count)]
     clip = gm.Polygon([(50, 50), (950, 120), (900, 900), (120, 850), (50, 50)])
-    cells = gm.MultiPoint(sites).voronoi_polygons(clip=clip)
+    cells = gm.MultiPoint(sites).voronoi(output='polygons', clip=clip)
     assert cells
     assert all(cell.is_valid for cell in cells)
 
@@ -94,14 +126,14 @@ def test_tolerance_grid_never_overflows_at_finite_extremes() -> None:
     edges = gm.MultiPoint([
         (-sys.float_info.max, 0),
         (sys.float_info.max, 0),
-    ]).voronoi_edges(tolerance=1.0, clip='envelope')
+    ]).voronoi(output='edges', tolerance=1.0, clip='envelope')
     assert len(edges) == 0
 
 
 def test_voronoi_tolerance_keeps_strict_radius_boundary_sites() -> None:
     sites = gm.MultiPoint([(0.0, 0.0), (0.0, 1.0)])
-    without_tolerance = sites.voronoi_polygons(tolerance=0.0, clip='padded')
-    at_boundary = sites.voronoi_polygons(tolerance=1.0, clip='padded')
+    without_tolerance = sites.voronoi(output='polygons', tolerance=0.0, clip='padded')
+    at_boundary = sites.voronoi(output='polygons', tolerance=1.0, clip='padded')
 
     assert len(at_boundary) == 2
     assert [cell.to_wkb() for cell in at_boundary] == [
@@ -111,8 +143,8 @@ def test_voronoi_tolerance_keeps_strict_radius_boundary_sites() -> None:
 
 def test_voronoi_tolerance_uses_exact_distance_for_near_ulp_sites() -> None:
     sites = gm.MultiPoint([(0.0, 1.0), (0.0, 1.0e20)])
-    without_tolerance = sites.voronoi_polygons(tolerance=0.0, clip='padded')
-    snapped = sites.voronoi_polygons(tolerance=1.0e20, clip='padded')
+    without_tolerance = sites.voronoi(output='polygons', tolerance=0.0, clip='padded')
+    snapped = sites.voronoi(output='polygons', tolerance=1.0e20, clip='padded')
 
     assert len(without_tolerance) == 2
     assert len(snapped) == 0
@@ -120,8 +152,8 @@ def test_voronoi_tolerance_uses_exact_distance_for_near_ulp_sites() -> None:
 
 def test_voronoi_tolerance_preserves_4097_equal_x_sparse_y_sites() -> None:
     sites = gm.MultiPoint([(0.0, 2.0 * index) for index in range(4_097)])
-    without_tolerance = sites.voronoi_polygons(tolerance=0.0, clip='padded')
-    sparse_y = sites.voronoi_polygons(tolerance=1.0, clip='padded')
+    without_tolerance = sites.voronoi(output='polygons', tolerance=0.0, clip='padded')
+    sparse_y = sites.voronoi(output='polygons', tolerance=1.0, clip='padded')
 
     assert len(sparse_y) == 4_097
     assert [cell.to_wkb() for cell in sparse_y] == [
@@ -146,7 +178,7 @@ def test_uniform_scale_voronoi_partition_has_no_arrangement_gap(exponent: int) -
     side = 10.0**exponent
     sites = [(0, 0), (side, 0), (side, side), (0, side), (side / 2, side / 2)]
     envelope = gm.box(0, 0, side, side)
-    cells = gm.MultiPoint(sites).voronoi_polygons(clip='envelope')
+    cells = gm.MultiPoint(sites).voronoi(output='polygons', clip='envelope')
     merged = gm.union_all(cells)
     assert gm.covers(merged, envelope)
     assert gm.covers(envelope, merged)
@@ -188,7 +220,9 @@ def test_collinear_sites_split_the_frame_at_their_bisectors(
     # The cells are the strips between consecutive perpendicular bisectors
     # (x = 2; x = 0.5 and x = 3; the line 3x + 4y = 12.5), cut from the padded
     # frame of half the larger span.
-    cells = gm.from_wkt(sites).voronoi_polygons()
+    cells = gm.from_wkt(sites).voronoi(
+        output='polygons',
+    )
     assert cells.to_wkt() == expected
     frame = gm.union_all(cells)
     assert frame.area == sum(cell.area for cell in cells)
@@ -199,23 +233,35 @@ def test_collinear_sites_split_the_frame_at_their_bisectors(
 
 def test_collinear_sites_follow_the_envelope_and_polygon_clips() -> None:
     diagonal = gm.MultiPoint([(0, 0), (4, 2)])
-    assert diagonal.voronoi_polygons(clip='envelope').to_wkt() == [
+    assert diagonal.voronoi(output='polygons', clip='envelope').to_wkt() == [
         'POLYGON ((0 0, 2.5 0, 1.5 2, 0 2, 0 0))',
         'POLYGON ((1.5 2, 2.5 0, 4 0, 4 2, 1.5 2))',
     ]
     # A horizontal site row has a flat envelope, which bounds no area.
-    assert len(gm.MultiPoint([(0, 0), (4, 0)]).voronoi_polygons(clip='envelope')) == 0
+    assert (
+        len(gm.MultiPoint([(0, 0), (4, 0)]).voronoi(output='polygons', clip='envelope'))
+        == 0
+    )
     holed = gm.from_wkt(
         'POLYGON ((-2 -2, 6 -2, 6 2, -2 2, -2 -2), (1.5 -1, 2.5 -1, 2.5 1, 1.5 1, 1.5 -1))'
     )
-    cells = gm.MultiPoint([(0, 0), (4, 0)]).voronoi_polygons(clip=holed)
+    cells = gm.MultiPoint([(0, 0), (4, 0)]).voronoi(output='polygons', clip=holed)
     assert [cell.area for cell in cells] == [15.0, 15.0]
     assert gm.equals(gm.union_all(cells), holed)
 
 
 def test_a_lone_site_owns_the_whole_clip_polygon() -> None:
     clip = gm.box(0, 0, 3, 3)
-    assert gm.Point(1, 1).voronoi_polygons(clip=clip).to_wkt() == [clip.to_wkt()]
+    assert gm.Point(1, 1).voronoi(output='polygons', clip=clip).to_wkt() == [
+        clip.to_wkt()
+    ]
     # The padded and envelope frames of one point have no area.
-    assert len(gm.Point(1, 1).voronoi_polygons()) == 0
-    assert len(gm.Point(1, 1).voronoi_polygons(clip='envelope')) == 0
+    assert (
+        len(
+            gm.Point(1, 1).voronoi(
+                output='polygons',
+            )
+        )
+        == 0
+    )
+    assert len(gm.Point(1, 1).voronoi(output='polygons', clip='envelope')) == 0

@@ -41,7 +41,6 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         shared_paths,
         snap,
         union,
-        voronoi_polygons,
     )
     from shapely.geometry import Point
     from shapely.ops import (
@@ -52,6 +51,7 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         polygonize_full,
         split,
         substring,
+        voronoi_diagram,
     )
 
     left = gm.box(0, 0, 2, 2)
@@ -135,12 +135,12 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     assert sum(triangle.area for triangle in gometry_triangles) == pytest.approx(
         shapely_triangles.area
     )
-    gometry_voronoi = gm.MultiPoint([(0, 0), (1, 0), (0, 1), (1, 1)]).voronoi_polygons(
-        clip='envelope'
+    gometry_voronoi = gm.MultiPoint([(0, 0), (1, 0), (0, 1), (1, 1)]).voronoi(
+        output='polygons', clip='envelope'
     )
-    shapely_voronoi = voronoi_polygons(
+    shapely_voronoi = voronoi_diagram(
         from_wkt('MULTIPOINT ((0 0), (1 0), (0 1), (1 1))'),
-        extend_to=from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'),
+        envelope=from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'),
     )
     shapely_clipped_voronoi = [
         intersection(cell, from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'))
@@ -199,7 +199,7 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     ])
     gometry_polygonized = polygonize_input.polygonize()
     shapely_polygonized = list(polygonize(from_wkt(polygonize_input.to_wkt())))
-    gometry_full = gm.polygonize_full([polygonize_input])
+    gometry_full = gm.polygonize_all([polygonize_input], diagnostics=True)
     shapely_full = polygonize_full(from_wkt(polygonize_input.to_wkt()))
     assert len(gometry_polygonized) == len(shapely_polygonized)
     assert sum(polygon.area for polygon in gometry_polygonized) == pytest.approx(
@@ -376,7 +376,7 @@ def test_polygonize_full_diagnostics_match_shapely_polygonizer() -> None:
     for name, coordinates, expected_sizes in cases:
         gometry_lines = [gm.LineString(line) for line in coordinates]
         shapely_lines = [ShapelyLineString(line) for line in coordinates]
-        full = gm.polygonize_full(gometry_lines)
+        full = gm.polygonize_all(gometry_lines, diagnostics=True)
         expected_full = polygonize_full(shapely_lines)
 
         observed_sizes = tuple(len(group.geoms) for group in expected_full)
@@ -392,7 +392,7 @@ def test_polygonize_full_diagnostics_match_shapely_polygonizer() -> None:
         for actual, expected in zip(actual_diagnostics, expected_full[1:], strict=True):
             assert gometry_wkb(actual) == normalized_wkb(expected.geoms), name
 
-        non_full = gm.polygonize(gometry_lines)
+        non_full = gm.polygonize_all(gometry_lines)
         expected_non_full = polygonize(shapely_lines)
         assert gometry_wkb(non_full) == normalized_wkb(expected_non_full), name
         assert gometry_wkb(non_full) == gometry_wkb(full.polygons), name

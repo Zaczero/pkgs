@@ -78,7 +78,7 @@ pub(crate) use bounds_index::{
     bounds_envelope, global_geographic_candidate_envelope, index_envelopes, point_from_bounds,
 };
 pub(crate) use constructive::{
-    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edges_flatten,
+    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edge_lines_flatten,
     voronoi_flatten,
 };
 pub(crate) use extract::{
@@ -113,6 +113,7 @@ pub(crate) use nearest::{
 };
 pub(crate) use tokens::{
     _token_vocabulary, LineReferenceBasis, NavigationPath, SpatialCurve, TriangulationMethod,
+    VoronoiOutput,
 };
 pub(crate) use validate::{
     check_i32_min, note_array_row, parse_curve_bounds, parse_precision, parse_spatial_index_handle,

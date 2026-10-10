@@ -6,8 +6,12 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -32,6 +36,7 @@ def main() -> None:
     assert warm_lines[0].geometry_type == 'LineString'
     assert gm.equals_identical(warm_pts[0], points[0])
     assert gm.equals_identical(warm_lines[0], lines[0])
+    prepare_measurement()
     samples: list[float] = []
     last_pts = None
     last_lines = None

@@ -1056,6 +1056,9 @@ def test_set_coordinates_nullable_polygon_carries_measure_columns() -> None:
 
     assert out.is_missing.tolist() == [True, False, True, False]
     np.testing.assert_array_equal(
+        out.coords.x, [0.0, 1.5, 1.0, 0.0, 0.0, 2.0, 3.5, 3.0, 2.0, 2.0]
+    )
+    np.testing.assert_array_equal(
         out.coords.m, [10, 20, 30, 40, 10, 50, 60, 70, 80, 50]
     )
 

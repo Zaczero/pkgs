@@ -34,7 +34,8 @@ def test_an_empty_splitter_leaves_the_line_whole(splitter: str) -> None:
     line = gm.LineString([(0, 0), (2, 0)])
     assert gm.split(line, W(splitter)).to_wkt() == ['LINESTRING (0 0, 2 0)']
     rows = gm.split(gm.GeometryArray([line]), gm.GeometryArray([W(splitter)]))
-    assert rows.to_wkt() == ['LINESTRING (0 0, 2 0)']
+    assert rows.offsets.tolist() == [0, 1]
+    assert rows[0].to_wkt() == ['LINESTRING (0 0, 2 0)']
 
 
 def test_an_empty_point_encodes_to_an_empty_polyline() -> None:

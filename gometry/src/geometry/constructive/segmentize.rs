@@ -404,7 +404,7 @@ impl Route for Rhumb<'_> {
             .frame
             .to_geodesic_point(point_from_xy(segment.end))
             .expect("rhumb subdivision received admitted coordinates");
-        let length = crate::crs::rhumb_distance_crs_at(
+        let length = crate::crs::distance_rhumb_crs_at(
             self.crs, start.x, start.y, end.x, end.y, self.state,
         )?;
         let bearing =
@@ -478,7 +478,7 @@ impl Route for Rhumb<'_> {
             .frame
             .to_geodesic_point(point_from_xy(segment.end))
             .expect("rhumb verification received admitted coordinates");
-        crate::crs::rhumb_distance_crs_at(self.crs, start.x, start.y, end.x, end.y, self.state)
+        crate::crs::distance_rhumb_crs_at(self.crs, start.x, start.y, end.x, end.y, self.state)
     }
 }
 

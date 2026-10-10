@@ -484,7 +484,7 @@ zoom 8.
 !!! warning "`cov.to_polygon()` is not `coverage_*`"
     `to_polygon()` dissolves *grid cells* — an approximate outline of the
     source under the grid. The polygonal-coverage operators
-    ([`coverage_union`][gometry.coverage_union], [`coverage_simplify`][gometry.coverage_simplify],
+    ([`coverage_union_all`][gometry.coverage_union_all], [`coverage_simplify`][gometry.coverage_simplify],
     [`coverage_clean`][gometry.coverage_clean]) validate and repair an *arbitrary source polygon fabric*
     (parcels, admin boundaries) with edge-matched interfaces. DGGS cell arrays
     are a different domain: same-resolution H3/S2 tessellations do

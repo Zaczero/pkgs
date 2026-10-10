@@ -11,9 +11,13 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
 import numpy as np
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -34,6 +38,7 @@ def _median_union(n: int, *, warm: int = 3, reps: int = 7) -> float:
     last = None
     for _ in range(warm):
         last = gm.union(multi, other)
+    prepare_measurement()
     samples: list[float] = []
     for _ in range(reps):
         t0 = time.perf_counter()

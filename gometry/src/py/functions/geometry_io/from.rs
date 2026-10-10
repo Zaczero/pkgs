@@ -22,7 +22,7 @@ use crate::{
 ///     A single WKT/EWKT string, or any iterable of them for a
 ///     ``GeometryArray``.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
@@ -136,7 +136,7 @@ pub(crate) fn from_wkt(
 /// data : bytes or sequence of bytes
 ///     A WKB/EWKB buffer, or an iterable of them for a ``GeometryArray``.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
