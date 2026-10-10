@@ -100,6 +100,7 @@ def test_released_array_pickles_preserve_rows(kind: str, expected: list) -> None
 def test_released_groups_pickle_preserves_empty_groups() -> None:
     values = pickle.loads(bytes.fromhex(_V1_PICKLES['groups']))
     assert [row.tolist() for row in values] == [[7, 11], [], [13]]
+    assert values.is_missing.tolist() == [False, False, False]
 
 
 def test_released_crs_and_cell_pickles_preserve_identity() -> None:

@@ -371,8 +371,11 @@ first row is source row zero can share its offsets; a slice starting later
 returns rebased offsets. `Groups.counts` is materialized from adjacent offsets.
 Index hits use read-only `int64` value and offset arrays; geometry-valued ragged
 results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
-[`GeometryArray.parts`][gometry.GeometryArray.parts] returns one geometry group per source row, keeping
-empty and missing rows as empty groups, so `offsets` remains a source-row map.
+[`GeometryArray.parts`][gometry.GeometryArray.parts] and other ragged array
+operations return one group per source row. A missing source row is `None`;
+a present empty geometry is an empty group. `Groups.is_missing` identifies the
+missing rows while `offsets` continues to map each source row to its flat
+payload. `Groups.to_list()` preserves missing rows as `None`.
 Coordinate extraction is the flat numeric exception: `geom.coords` exposes one
 vertex stream; convert it with NumPy for a matrix and read `view.row_index` when
 source-row indexes are needed.
@@ -421,13 +424,13 @@ row for its coordinates. `len(geoms)` counts logical rows;
 contribute no vertices, but `geoms.is_missing` distinguishes a missing row from
 an empty geometry.
 
-One rule set everywhere: **predicates → `False`, measures → `NaN`, geometry results stay
-missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that cannot hold
+One rule set everywhere: **predicates → `False`, measures → `NaN`, row-aligned geometry results
+and ragged groups stay missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that cannot hold
 `None` keep their ndarray shape with **sentinels** — for example bounds use `NaN`,
 topological dimensions use `-1`, and some curve-key lanes use `0`. Those sentinels can
 collide with valid values, so **[`is_missing`][gometry.GeometryArray.is_missing] is authoritative**. Flattening and
-explode-style operations ([`parts`][gometry.GeometryArray.parts], triangulations, sampled points) skip missing
-rows entirely.
+explode-style operations ([`parts`][gometry.GeometryArray.parts], triangulations, sampled points) keep
+the missing source row as a `None` group; its flat payload has no placeholder geometry.
 
 Missing rows enter through any constructor or importer (`GeometryArray([g, None])`,
 `from_wkt`/`from_wkb` with `None` entries, RFC 7946 `"geometry": null` features, Arrow

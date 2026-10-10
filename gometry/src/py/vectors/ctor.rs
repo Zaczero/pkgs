@@ -7,6 +7,7 @@ use pyo3::Python;
 use crate::CsrBuilder;
 use crate::error::Result;
 use crate::geometry::TopologyDomain;
+use crate::geometry::storage::ValidityMask;
 use crate::py::vectors::{
     Arc, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray, PyOverflowError, PyResult,
     Shape, validate_csr_offsets,
@@ -19,6 +20,7 @@ impl Groups {
             values: GroupsValues::Int64(ids.into()),
             offsets: offsets.into(),
             rows: 0..row_count,
+            missing: None,
         })
     }
 
@@ -53,6 +55,7 @@ impl Groups {
             values: GroupsValues::Geometry(Arc::new(values)),
             offsets: offsets.into(),
             rows: 0..row_count,
+            missing: None,
         })
     }
 
@@ -63,25 +66,28 @@ impl Groups {
         coords: crate::geometry::CoordSeq,
         line_offsets: crate::geometry::CsrOffsetColumn,
         group_offsets: Vec<i64>,
+        missing: Option<ValidityMask>,
     ) -> PyResult<Self> {
         let values = PyGeometryArray::packed_lines(coords, line_offsets, frame)?;
-        Self::from_geometry_csr(values, group_offsets)
+        Ok(Self::from_geometry_csr(values, group_offsets)?.with_row_missing(missing))
     }
 
     /// Adopt a checked geometry CSR builder after its detached row walk.
     pub(crate) fn from_geometry_builder(
         frame: crate::Frame,
         builder: CsrBuilder<Shape>,
+        missing: Option<ValidityMask>,
     ) -> PyResult<Self> {
         let (shapes, offsets) = builder.finish();
         let values = PyGeometryArray::from_shapes(shapes, frame)?;
-        Self::from_geometry_csr(values, offsets)
+        Ok(Self::from_geometry_csr(values, offsets)?.with_row_missing(missing))
     }
 
     pub(crate) fn polygonize_full_parts(
         full: crate::geometry::PolygonizeFull,
         frame: crate::Frame,
-    ) -> crate::error::Result<(PyGeometryArray, Self, Self, Self)> {
+        missing: Option<ValidityMask>,
+    ) -> PyResult<(PyGeometryArray, Self, Self, Self)> {
         fn diagnostic_csr(
             rows: Vec<Vec<Shape>>,
         ) -> crate::error::Result<(Vec<Shape>, Vec<i64>, usize)> {
@@ -104,16 +110,18 @@ impl Groups {
         let dangles = diagnostic_csr(dangles)?;
         let invalid_rings = diagnostic_csr(invalid_rings)?;
         let adopt =
-            |(shapes, offsets, row_count): (Vec<Shape>, Vec<i64>, usize)| -> crate::error::Result<Self> {
-            Ok(Self {
-                values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
-                    shapes,
-                    frame.clone(),
-                )?)),
-                offsets: offsets.into(),
-                rows: 0..row_count,
-            })
-        };
+            |(shapes, offsets, row_count): (Vec<Shape>, Vec<i64>, usize)| -> PyResult<Self> {
+                Ok(Self {
+                    values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
+                        shapes,
+                        frame.clone(),
+                    )?)),
+                    offsets: offsets.into(),
+                    rows: 0..row_count,
+                    missing: None,
+                }
+                .with_row_missing(missing.clone()))
+            };
         Ok((
             PyGeometryArray::from_shapes(polygons, frame.clone())?,
             adopt(cuts)?,
@@ -128,6 +136,7 @@ impl Groups {
         frame: crate::Frame,
         builder: CsrBuilder<crate::Point>,
         ring_ends: Vec<usize>,
+        missing: Option<ValidityMask>,
     ) -> PyResult<Self> {
         let (vertices, offsets) = builder.finish();
         let values = if vertices.is_empty() {
@@ -135,14 +144,14 @@ impl Groups {
         } else {
             PyGeometryArray::packed_triangles_with_ring_ends(&vertices, &ring_ends, frame)?
         };
-        Self::from_geometry_csr(values, offsets)
+        Ok(Self::from_geometry_csr(values, offsets)?.with_row_missing(missing))
     }
 
     /// Element-wise self-intersection rows as one flat geometry column.
     pub fn from_self_intersection_rows(py: Python<'_>, array: &PyGeometryArray) -> PyResult<Self> {
         let domain = crate::geometry::topology_domain(&array.frame)?;
         let builder = py.detach(|| self_intersection_csr(array, domain))?;
-        Self::from_geometry_builder(array.frame.clone(), builder)
+        Self::from_geometry_builder(array.frame.clone(), builder, array.missing().cloned())
     }
 
     pub(super) fn from_cell_csr(values: PyCellArray, offsets: Vec<i64>) -> PyResult<Self> {
@@ -151,6 +160,7 @@ impl Groups {
             values: GroupsValues::Cells(Arc::new(values)),
             offsets: offsets.into(),
             rows: 0..row_count,
+            missing: None,
         })
     }
 
@@ -158,9 +168,10 @@ impl Groups {
         kind: GridKind,
         ids: Vec<u64>,
         offsets: Vec<i64>,
+        missing: Option<ValidityMask>,
     ) -> PyResult<Self> {
         let values = PyCellArray::from_ids(kind, ids);
-        Self::from_cell_csr(values, offsets)
+        Ok(Self::from_cell_csr(values, offsets)?.with_row_missing(missing))
     }
 }
 
@@ -206,7 +217,7 @@ mod self_intersection_csr_tests {
             invalid_rings: vec![Vec::new(), Vec::new(), Vec::new()],
         };
         let (polygons, cuts, dangles, invalid) =
-            Groups::polygonize_full_parts(full, Frame::None).unwrap();
+            Groups::polygonize_full_parts(full, Frame::None, None).unwrap();
         assert_eq!(polygons.len(), 0);
         assert_eq!(cuts.offsets.as_ref(), &[0, 0, 1, 1]);
         assert_eq!(dangles.offsets.as_ref(), &[0, 0, 0, 0]);

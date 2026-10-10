@@ -343,9 +343,8 @@ impl Shape {
         note_delaunay_output_reserve();
         let mut vertices = Vec::with_capacity(capacity);
         let mut triangles = triangulation.triangles().to_vec();
-        super::delaunay::exact_delaunay::canonicalize_triangles(&mut triangles, |site| {
-            super::delaunay::exact_delaunay::site_xy(&points, site)
-        });
+        let xy = |site| super::delaunay::exact_delaunay::site_xy(&points, site);
+        super::delaunay::exact_delaunay::canonicalize_triangles(&xy, &mut triangles);
         for triangle in triangles {
             vertices.extend_from_slice(&selected_triangle_points(&points, triangle, false));
         }

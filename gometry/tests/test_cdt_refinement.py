@@ -398,7 +398,9 @@ def test_constrained_array_mixed_missing_and_empty_rows_match_scalar() -> None:
     assert [triangle.to_wkt() for triangle in groups[1]] == [
         triangle.to_wkt() for triangle in xy.triangulate(method='constrained')
     ]
-    assert len(groups[2]) == len(groups[3]) == 0
+    assert len(groups[2]) == 0
+    assert groups[3] is None
+    assert groups.is_missing.tolist() == [False, False, False, True]
 
 
 def test_delaunay_duplicate_xy_uses_the_same_source_site_for_scalar_and_array() -> None:

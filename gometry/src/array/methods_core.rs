@@ -679,13 +679,13 @@ impl PyGeometryArray {
     /// Top-level parts grouped by source row.
     ///
     /// Simple geometries form one-element groups, multipart and collection
-    /// geometries expose their immediate members, and empty or missing rows
-    /// form empty groups.
+    /// geometries expose their immediate members, empty geometries form empty
+    /// groups, and missing source rows remain missing groups.
     ///
     /// Returns
     /// -------
     /// Groups
-    ///     One `GeometryArray` group per input row.
+    ///     One group per input row; missing rows yield `None`.
     #[getter]
     pub fn parts(&self, py: Python<'_>) -> PyResult<Groups> {
         self.flat_map_shapes_groups(py, |shape| {
