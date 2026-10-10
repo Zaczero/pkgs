@@ -1521,7 +1521,7 @@ pub(crate) fn map_selected_to_crs(
 mod tests {
     use super::*;
     use crate::PyGeometryArray;
-    use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::crs::frame::{Frame, GeometryTransformFrame, crs_arc_static};
     use crate::geographic::AngularFactor;
     use crate::geometry::storage::{RowSelection, StorageLayout};
     use crate::geometry::{LineSeq, Polygon, Ring, Shape, SharedSlice};
@@ -1606,10 +1606,10 @@ mod tests {
         let columns = source
             .packed_columns()
             .expect("packed line source resolves");
-        let source_frame = Frame::Crs(crate::crs::frame::crs_arc_static("EPSG:3857"));
-        let transform_frame = crate::crs::frame::GeometryTransformFrame::new(
+        let source_frame = Frame::Crs(crs_arc_static("EPSG:3857"));
+        let transform_frame = GeometryTransformFrame::new(
             &source_frame,
-            crate::crs::frame::crs_arc_static("EPSG:4326"),
+            crs_arc_static("EPSG:4326"),
             None,
             crate::crs::TransformOptions::default(),
         )

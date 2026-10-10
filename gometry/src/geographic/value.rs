@@ -519,10 +519,6 @@ impl PeriodicAxis {
 
     /// Wrap a finite longitude with the canonical remainder and signed-zero
     /// spelling. Ingress must already have rejected non-finite values.
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact zero and integer seam aliases are part of the coordinate contract"
-    )]
     pub(super) fn wrap_admitted(self, value: f64) -> CanonicalLongitude {
         debug_assert!(
             value.is_finite(),

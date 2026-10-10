@@ -11,8 +11,12 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -25,6 +29,7 @@ def _median_index0(n_runs: int, *, warm: int = 2, reps: int = 7) -> float:
     for _ in range(warm):
         for _ in range(1_000):
             _ = coords[0]
+    prepare_measurement()
     samples: list[float] = []
     last = None
     for _ in range(reps):

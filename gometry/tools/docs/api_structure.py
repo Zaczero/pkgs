@@ -148,8 +148,7 @@ PAGES: tuple[Page, ...] = (
         'Noding, splitting, snapping, polygonization, and validation boundaries.',
         (
             section(
-                'polygonize',
-                'polygonize_full',
+                'polygonize_all',
                 'require',
                 'shared_paths',
                 'snap',
@@ -168,7 +167,7 @@ PAGES: tuple[Page, ...] = (
                 'coverage_invalid_edges',
                 'coverage_is_valid',
                 'coverage_simplify',
-                'coverage_union',
+                'coverage_union_all',
             ),
         ),
         (('Validation & repair', '../../guide/validation.md'),),
@@ -176,13 +175,12 @@ PAGES: tuple[Page, ...] = (
     Page(
         'toplevel/geodesy-navigation',
         'Geodesy & navigation',
-        'Bearings, destinations, route interpolation, cross-track distance, and rhumb distance.',
+        'Bearings, destinations, route interpolation, and cross-track distance.',
         (
             section(
                 'bearing',
                 'cross_track_distance',
                 'point_between',
-                'rhumb_distance',
             ),
         ),
         (('CRS, units & measurement', '../../guide/crs.md'),),

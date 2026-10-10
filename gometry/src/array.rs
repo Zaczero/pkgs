@@ -30,7 +30,7 @@ use crate::{
     F64Param, Frame, FrameAdoption, FrameEdit, GeometryKind, GeometryTransformFrame, HeapSize,
     I64Param, InterpolatePlan, OriginSpec, OverlayOp, Point, PyCoordinates, PyCrs, PyGeometry,
     PyTypeError, PyValidationReport, PyValueError, RepairMethod, SVG_ARRAY_PREVIEW, Shape,
-    SimplifyMethod, SpatialCurve, TransformOptionArgs, Typed, VoronoiClipInput,
+    SimplifyMethod, SpatialCurve, TransformOptionArgs, Typed, VoronoiClipInput, VoronoiOutput,
     cdt_refinement_values, coerce_present_geometry_items, coordinate_epoch_option, coordinates,
     crs, crs_arc, crs_label, curves, exact_geometry, exact_geometry_array,
     expected_geometry_or_array, geometry, geometry_array_svg_grid_html_masked, io,

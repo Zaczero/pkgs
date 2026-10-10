@@ -55,6 +55,7 @@ mod area;
 pub(crate) mod exact_arith;
 pub(crate) mod expansion;
 mod geographic_area;
+pub(crate) mod interval;
 pub(crate) use access::{
     Component, CoordRun, Lineal, MetricSupportRun, PointSet, Polygonal, REDUCE_LANES,
     REDUCE_SIMD_MIN, ReduceSimd, RunIdentity, SharedShapeOwners, SupportRunKind, canonicalize_zero,
@@ -80,13 +81,14 @@ pub(crate) use types::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartEdgeDifferential,
     ChartEdgeDifferentialBounds, ChartMetric, ChartPointDistanceSample, CoordSeq, CoordSeqBuilder,
     CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
-    FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq, MAX_NESTING, MColumn, MOrdinate,
-    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointEdgeMinimum,
-    PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel, PolygonizeFull,
-    PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery, ShapeData,
-    ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey,
-    VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
+    DwithinOutcome, FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
+    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
+    PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
+    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
+    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
+    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
+    coerce_to_common_axes,
 };
 mod antimeridian;
 mod boundary;

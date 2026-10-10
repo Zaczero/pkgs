@@ -12,8 +12,12 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -36,6 +40,7 @@ def _median_info_pass(held: list[gm.CRS], *, warm: int = 2, reps: int = 7) -> fl
     for _ in range(warm):
         for crs in held:
             _ = crs.info
+    prepare_measurement()
     samples: list[float] = []
     last_info = None
     for _ in range(reps):

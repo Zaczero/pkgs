@@ -17,7 +17,7 @@ pub(crate) use geometry_io::{
 };
 pub(crate) use overlay::{
     OverlayOp, coverage_clean, coverage_invalid_edges, coverage_is_valid, coverage_simplify,
-    coverage_union, difference, intersection, intersection_all, overlay_operator, polygonize,
-    polygonize_full, symmetric_difference, symmetric_difference_all, union, union_all,
+    coverage_union_all, difference, intersection, intersection_all, overlay_operator,
+    polygonize_all, symmetric_difference, symmetric_difference_all, union, union_all,
 };
 pub(crate) use validation::{PyValidationReport, *};

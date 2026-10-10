@@ -112,9 +112,9 @@ def test_framed_voronoi_sites_and_explicit_clip_partition_the_same_rectangle(
     )
     sites = gm.MultiPoint(stored_sites)
     cells = (
-        sites.voronoi_polygons(clip=clip)
+        sites.voronoi(output='polygons', clip=clip)
         if frontend == 'scalar'
-        else gm.GeometryArray([sites]).voronoi_polygons(clip=clip)[0]
+        else gm.GeometryArray([sites]).voronoi(output='polygons', clip=clip)[0]
     )
     expected = _ring_area(clip)
     assert len(cells) == 5
@@ -142,9 +142,9 @@ def test_finite_extreme_voronoi_polygon_clip_retains_the_full_partition(
     clip = gm.box(-extent, -extent, extent, extent)
     source = gm.MultiPoint(sites)
     cells = (
-        source.voronoi_polygons(clip=clip)
+        source.voronoi(output='polygons', clip=clip)
         if frontend == 'scalar'
-        else gm.GeometryArray([source]).voronoi_polygons(clip=clip)[0]
+        else gm.GeometryArray([source]).voronoi(output='polygons', clip=clip)[0]
     )
     assert len(cells) == len(sites)
     expected = _ring_area(clip)
@@ -174,9 +174,9 @@ def test_finite_voronoi_clip_retains_every_analytic_hull_bisector(
     clip = gm.box(-half_extent, -half_extent, half_extent, half_extent)
     source = gm.MultiPoint(sites)
     result = (
-        source.voronoi_edges(clip=clip)
+        source.voronoi(output='edges', clip=clip)
         if frontend == 'scalar'
-        else gm.GeometryArray([source]).voronoi_edges(clip=clip)[0]
+        else gm.GeometryArray([source]).voronoi(output='edges', clip=clip)[0]
     )
     bisector_axis = 1 if swap_axes else 0
     midpoint = float(
@@ -222,7 +222,7 @@ def test_finite_voronoi_clip_retains_every_analytic_hull_bisector(
 
 def test_voronoi_ray_starting_on_clip_boundary_is_a_dropped_edge_not_an_error() -> None:
     sites = gm.MultiPoint([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)])
-    edges = sites.voronoi_edges(clip=gm.box(0.5, -1.0, 2.0, 2.0))
+    edges = sites.voronoi(output='edges', clip=gm.box(0.5, -1.0, 2.0, 2.0))
     assert len(edges) == 2
     assert all(len(set(edge.coords)) == 2 for edge in edges)
 

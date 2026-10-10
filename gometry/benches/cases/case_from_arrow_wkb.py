@@ -5,9 +5,13 @@ from __future__ import annotations
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
 import pyarrow as pa
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -23,6 +27,7 @@ def main() -> None:
     assert len(warm) == n
     assert gm.equals_identical(warm[0], points[0])
     assert warm[0].geometry_type == 'Point'
+    prepare_measurement()
     samples: list[float] = []
     last = None
     for _ in range(3):

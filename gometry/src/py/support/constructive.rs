@@ -113,10 +113,9 @@ pub(crate) fn owned_voronoi_boundary(
     )
 }
 
-/// Shared engine for every Voronoi spelling (`voronoi_polygons` /
-/// `voronoi_edges` × scalar / array): resolve `tolerance` and the clip
-/// boundary once against the subject frame, run the per-shape diagram
-/// `kernel`, and flatten the cells into one mixed array carrying that frame.
+/// Shared engine for both Voronoi outputs across scalar and array inputs:
+/// resolve `tolerance` and the clip boundary once against the subject frame,
+/// run the per-shape diagram kernel, and publish results in that frame.
 /// Run one Voronoi kernel over every input shape outside the interpreter
 /// lock, one budget for the whole call. The boundary and shapes are fully
 /// admitted Rust values by then; Python objects exist only after reattachment.
@@ -195,7 +194,7 @@ pub(crate) fn voronoi_flatten(
 
 /// Voronoi edges straight into packed line storage: the kernel hands back one
 /// XY column per input shape and the columns concatenate once.
-pub(crate) fn voronoi_edges_flatten(
+pub(crate) fn voronoi_edge_lines_flatten(
     py: Python<'_>,
     shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
     frame: Frame,
@@ -214,7 +213,7 @@ pub(crate) fn voronoi_edges_flatten(
         &frame,
         tolerance,
         clip,
-        "voronoi_edges",
+        "voronoi_edge_lines",
         Shape::voronoi_edge_column_budgeted,
         move |(coords, offsets), _, budget| {
             let Some(frame) = geographic_frame else {

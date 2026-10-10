@@ -39,6 +39,7 @@ from pyo3stubs.ast_util import (
     class_prohibits_construction,
     decorator_names,
     function_groups,
+    passive_class_member,
 )
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, loc, unused_allowlist_errors
@@ -247,11 +248,9 @@ def _collect_signature_coverage(ctx: CheckContext, errors: list[str]) -> None:
             for member in obj.__dict__:
                 if member.startswith('_'):
                     continue
-                static = inspect.getattr_static(obj, member)
-                if isinstance(static, (property, staticmethod, classmethod)):
-                    static = getattr(obj, member)
-                if not isinstance(static, property):
-                    probe(f'{name}.{member}', getattr(obj, member))
+                selected = passive_class_member(obj, member)
+                if selected is not None and not isinstance(selected, property):
+                    probe(f'{name}.{member}', selected)
         else:
             probe(name, obj)
 

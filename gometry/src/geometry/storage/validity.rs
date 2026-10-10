@@ -382,7 +382,7 @@ impl ValidityMask {
 
     #[expect(
         clippy::suspicious_operation_groupings,
-        reason = "the range endpoint is checked against the bitmap length"
+        reason = "the validity range is admitted by checking its local order and the backing logical length"
     )]
     pub(crate) fn present_in_range(&self, row_range: std::ops::Range<usize>) -> usize {
         assert!(
