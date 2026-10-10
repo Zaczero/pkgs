@@ -41,7 +41,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 | **GeoPandas** | `gometry[geopandas]` | [`from_geopandas`][gometry.from_geopandas] | [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] | from frame | vectorized WKB |
 | **Arrow C consumers** | *(none)* | — | consume gometry `__arrow_c_*__` | metadata | capsule path |
 | **lonboard** | `gometry[viz]` | — | [`explore`][gometry.explore], notebook `_repr_html_` | reprojects toward WGS84 | Arrow capsule route; preprocessing and widget construction may allocate |
-| **Shapely** | *(none)* | `__geo_interface__`, [`GeometryArray([...])`][gometry.GeometryArray] | `geom.__geo_interface__` | no (GeoJSON) | — |
+| **Shapely** | *(none)* | `__geo_interface__`, [`GeometryArray([...])`][gometry.GeometryArray] | [`geom.__geo_interface__`](text-formats.md#__geo_interface__), [`Features.__geo_interface__`](text-formats.md#features__geo_interface__) | no (GeoJSON) | — |
 | **pyproj** | *(none)* | [`CRS(pyproj_crs)`][gometry.CRS] (duck-typed) | [`crs.to_wkt()`][gometry.CRS.to_wkt] / [`to_authority()`][gometry.CRS.to_authority] | — | — |
 | **scipy / scikit-learn** | *(none)* | — | `np.asarray(geom.coords, dtype=np.float64)` → ndarray | project first | matrix copy |
 | **pickle / [multiprocessing](https://docs.python.org/3/library/multiprocessing.html)** | *(none)* | [`pickle.loads`](https://docs.python.org/3/library/pickle.html#pickle.loads) | [`pickle.dumps`](https://docs.python.org/3/library/pickle.html#pickle.dumps) | preserved (+ epoch) | — |

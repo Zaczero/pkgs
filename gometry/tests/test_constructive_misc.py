@@ -1137,7 +1137,11 @@ def test_sample_points_geographic_lines_use_retained_support_and_keep_row_seeds(
     ]
     nullable = gm.GeometryArray([line, None, line], crs=4326)
     nullable_groups = nullable.sample_points([2, 1, 3], seed=[11, 99, 12])
-    assert [len(group) for group in nullable_groups] == [2, 0, 3]
+    assert [None if group is None else len(group) for group in nullable_groups] == [
+        2,
+        None,
+        3,
+    ]
     for index, (count, seed) in ((0, (2, 11)), (2, (3, 12))):
         assert [(point.x, point.y) for point in nullable_groups[index]] == [
             (point.x, point.y) for point in line.sample_points(count, seed=seed)

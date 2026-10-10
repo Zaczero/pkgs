@@ -526,7 +526,7 @@ def test_array_voronoi_edge_lines_concat_preserves_missing_and_empty_groups() ->
     assert isinstance(edges, gm.Groups)
     assert len(edges) == 4
     assert edges.offsets.tolist() == [0, 1, 1, 1, 2]
-    assert len(edges[1]) == 0
+    assert edges[1] is None
     assert len(edges[2]) == 0
 
     def undirected(line: gm.Geometry) -> tuple[tuple[float, float], ...]:

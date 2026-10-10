@@ -254,15 +254,16 @@ print("first cell id:", cov[0].id)
 ```
 
 Cover functions also accept an iterable of geometries. They return one
-`Groups[CellArray]` row per input item; `None` and empty geometries produce
-empty groups.
+`Groups` row per input item. A `None` input produces a missing row, while a
+present empty geometry produces an empty `CellArray`.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 groups = gm.h3_cover([area, None], resolution=5)
-print("rows:", len(groups), "| missing row cells:", len(groups[1]))
+print("rows:", len(groups), "| missing:", groups.is_missing.tolist())
+print("missing row:", groups[1])
 
 ```
 

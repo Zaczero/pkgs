@@ -9,7 +9,8 @@
 
 use std::cmp::Ordering;
 
-use crate::geometry::exact_arith::ExactSign;
+use crate::geographic::{ChartPointSite, GeographicFrame};
+use crate::geometry::exact_arith::{ExactSign, retained_site_longitude, retained_site_orientation};
 use crate::geometry::tessellation::{
     EMPTY, RingOwner, Triangulation, exact, next_halfedge, overlapping_rings_error, prev_halfedge,
 };
@@ -293,7 +294,17 @@ pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
     for site in sites {
         points.push(site.point);
     }
-    let mut mesh = exact_delaunay::exact_delaunay(&points)?;
+    let xy = |site| exact_delaunay::site_xy(&points, site);
+    certified_delaunay_with_coordinates(&xy, points.len())
+}
+
+pub(in crate::geometry::tessellation) fn certified_delaunay_with_coordinates<
+    C: exact_delaunay::MeshCoordinates,
+>(
+    coordinates: &C,
+    site_count: usize,
+) -> Result<CertifiedDelaunay> {
+    let mut mesh = exact_delaunay::exact_delaunay_with(coordinates, site_count)?;
     if mesh.triangles.is_empty() {
         return Ok(CertifiedDelaunay::empty(mesh.hull));
     }
@@ -302,6 +313,148 @@ pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
         topology: mesh.into_topology(),
         cocircular_halfedges,
     })
+}
+
+/// Borrowed exact coordinates for one already admitted geographic point chart.
+/// Mesh ordinals index `sites`; source ordinals remain untouched in each site.
+pub(in crate::geometry::tessellation) struct RetainedPointCoordinates<'a> {
+    frame: GeographicFrame,
+    sites: &'a [ChartPointSite],
+}
+
+impl<'a> RetainedPointCoordinates<'a> {
+    pub(in crate::geometry::tessellation) const fn new(
+        frame: GeographicFrame,
+        sites: &'a [ChartPointSite],
+    ) -> Self {
+        Self { frame, sites }
+    }
+
+    fn site(&self, query: usize) -> ChartPointSite {
+        self.sites
+            .get(query)
+            .copied()
+            .expect("mesh site ordinals come from the admitted retained site rows")
+    }
+
+    fn exact_x(&self, query: usize) -> Result<exact::ExactDyadic> {
+        let site = self.site(query);
+        retained_site_longitude(self.frame.longitude(), site.longitude())
+    }
+
+    fn exact_y(&self, query: usize) -> exact::ExactDyadic {
+        exact::ExactDyadic::from_f64(self.site(query).source_y())
+    }
+
+    fn exact_xy(&self, query: usize) -> Result<[exact::ExactDyadic; 2]> {
+        Ok([self.exact_x(query)?, self.exact_y(query)])
+    }
+}
+
+impl exact_delaunay::MeshCoordinates for RetainedPointCoordinates<'_> {
+    type Query = usize;
+    type Key = (i64, u64, u64);
+
+    fn query(&self, site: usize) -> Self::Query {
+        site
+    }
+
+    fn key(&self, query: Self::Query) -> Self::Key {
+        let site = self.site(query);
+        let normalize = |value: f64| {
+            if value == 0.0 {
+                0.0_f64.to_bits()
+            } else {
+                value.to_bits()
+            }
+        };
+        (
+            site.longitude().periods(),
+            normalize(site.longitude().native().get()),
+            normalize(site.source_y()),
+        )
+    }
+
+    fn compare(&self, left: Self::Query, right: Self::Query) -> Ordering {
+        self.site(left).compare_chart_xy(self.site(right))
+    }
+
+    fn compare_x(&self, left: Self::Query, right: Self::Query) -> Ordering {
+        let left = self.site(left);
+        let right = self.site(right);
+        left.longitude()
+            .periods()
+            .cmp(&right.longitude().periods())
+            .then_with(|| {
+                left.longitude()
+                    .native()
+                    .get()
+                    .total_cmp(&right.longitude().native().get())
+            })
+    }
+
+    fn compare_y(&self, left: Self::Query, right: Self::Query) -> Ordering {
+        self.site(left)
+            .source_y()
+            .total_cmp(&self.site(right).source_y())
+    }
+
+    fn orient(&self, [a, b, c]: [Self::Query; 3]) -> Result<ExactSign> {
+        let a = self.site(a);
+        let b = self.site(b);
+        let c = self.site(c);
+        retained_site_orientation(self.frame.longitude(), &[
+            (a.longitude(), a.source_y()),
+            (b.longitude(), b.source_y()),
+            (c.longitude(), c.source_y()),
+        ])
+    }
+
+    fn incircle(&self, [a, b, c, d]: [Self::Query; 4]) -> Result<ExactSign> {
+        exact::incircle_dyadic_points(
+            self.exact_xy(a)?,
+            self.exact_xy(b)?,
+            self.exact_xy(c)?,
+            self.exact_xy(d)?,
+        )
+    }
+
+    fn compare_axis_spans(
+        &self,
+        [min_x, max_x]: [Self::Query; 2],
+        [min_y, max_y]: [Self::Query; 2],
+    ) -> Result<Ordering> {
+        let min_chart_x = self.exact_x(min_x)?;
+        let max_chart_x = self.exact_x(max_x)?;
+        let min_chart_y = self.exact_y(min_y);
+        let max_chart_y = self.exact_y(max_y);
+        let x = max_chart_x.try_subtract(min_chart_x)?.abs();
+        let y = max_chart_y.try_subtract(min_chart_y)?.abs();
+        Ok(x.cmp(&y))
+    }
+
+    fn locality_xy(&self, site: usize) -> XY {
+        let site = self.site(site);
+        // This is only a deterministic BRIO/Hilbert proposal. Exact identity,
+        // order, orientation and in-circle never consume these rounded values.
+        XY::new(site.longitude().native().get(), site.source_y())
+    }
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the retained exact producer is not wired to public output until the shared output seal is accepted"
+    )
+)]
+/// Build the exact primal mesh from retained chart sites without publishing it.
+pub(in crate::geometry::tessellation) fn certified_delaunay_for_retained_points(
+    frame: GeographicFrame,
+    sites: &[ChartPointSite],
+) -> Result<CertifiedDelaunay> {
+    let coordinates = RetainedPointCoordinates::new(frame, sites);
+    certified_delaunay_with_coordinates(&coordinates, sites.len())
 }
 
 pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {
@@ -318,30 +471,43 @@ pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> 
 /// cycle, and a wholly collinear input yields its collinear order instead.
 #[expect(
     clippy::indexing_slicing,
-    reason = "site IDs in order come from points, and the lower and upper last-two reads follow their length checks"
+    reason = "site IDs in order come from the provider, and lower/upper last-two reads follow length checks"
 )]
 #[expect(
     clippy::arithmetic_side_effects,
-    reason = "the lower and upper last-two reads follow len >= 2, so subtracting one or two cannot underflow"
+    reason = "lower and upper last-two reads follow len >= 2, so subtracting one or two cannot underflow"
 )]
-fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
-    let xy = |site: usize| points[site].xy();
-    let orient = |a: usize, b: usize, c: usize| exact::orient2d(xy(a), xy(b), xy(c));
-    let mut order = Vec::with_capacity(points.len());
-    order.extend(0..points.len());
-    order.sort_unstable_by(|&a, &b| {
-        geometric_cmp(xy(a).x, xy(b).x).then_with(|| geometric_cmp(xy(a).y, xy(b).y))
-    });
+fn hull_cycle<C: exact_delaunay::MeshCoordinates>(
+    coordinates: &C,
+    site_count: usize,
+    corners: bool,
+) -> Result<Vec<usize>> {
+    let mut order = Vec::with_capacity(site_count);
+    order.extend(0..site_count);
+    order
+        .sort_unstable_by(|&a, &b| coordinates.compare(coordinates.query(a), coordinates.query(b)));
     if !corners {
         let Some(&last) = order.last() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        if order.len() < 3
-            || order
-                .iter()
-                .all(|&site| orient(order[0], last, site) == ExactSign::Zero)
-        {
-            return collinear_order(points);
+        let mut all_collinear = order.len() < 3;
+        if !all_collinear {
+            let first = *order.first().expect("nonempty hull order");
+            all_collinear = true;
+            for &site in &order {
+                if coordinates.orient([
+                    coordinates.query(first),
+                    coordinates.query(last),
+                    coordinates.query(site),
+                ])? != ExactSign::Zero
+                {
+                    all_collinear = false;
+                    break;
+                }
+            }
+        }
+        if all_collinear {
+            return collinear_order(coordinates, order);
         }
     }
     let pops = |sign: ExactSign| {
@@ -351,18 +517,32 @@ fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
             sign == ExactSign::Negative
         }
     };
-    let mut lower: Vec<usize> = Vec::with_capacity(order.len());
+    let mut lower = Vec::with_capacity(order.len());
     for &site in &order {
-        while lower.len() >= 2 && pops(orient(lower[lower.len() - 2], lower[lower.len() - 1], site))
-        {
+        while lower.len() >= 2 {
+            let sign = coordinates.orient([
+                coordinates.query(lower[lower.len() - 2]),
+                coordinates.query(lower[lower.len() - 1]),
+                coordinates.query(site),
+            ])?;
+            if !pops(sign) {
+                break;
+            }
             lower.pop();
         }
         lower.push(site);
     }
-    let mut upper: Vec<usize> = Vec::with_capacity(order.len());
+    let mut upper = Vec::with_capacity(order.len());
     for &site in order.iter().rev() {
-        while upper.len() >= 2 && pops(orient(upper[upper.len() - 2], upper[upper.len() - 1], site))
-        {
+        while upper.len() >= 2 {
+            let sign = coordinates.orient([
+                coordinates.query(upper[upper.len() - 2]),
+                coordinates.query(upper[upper.len() - 1]),
+                coordinates.query(site),
+            ])?;
+            if !pops(sign) {
+                break;
+            }
             upper.pop();
         }
         upper.push(site);
@@ -379,68 +559,99 @@ fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
     {
         lower.rotate_left(start);
     }
-    lower
+    Ok(lower)
 }
 
+#[cfg(test)]
 pub(super) fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
-    hull_cycle(points, true)
+    let xy = |site: usize| points[site].xy();
+    exact_corner_hull_cycle_with(&xy, points.len()).expect("stored XY orientation is infallible")
 }
 
+#[cfg(test)]
 pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
-    hull_cycle(points, false)
+    let xy = |site: usize| points[site].xy();
+    exact_hull_cycle_with(&xy, points.len()).expect("stored XY hull arithmetic is infallible")
+}
+
+pub(in crate::geometry::tessellation) fn exact_corner_hull_cycle_with<
+    C: exact_delaunay::MeshCoordinates,
+>(
+    coordinates: &C,
+    site_count: usize,
+) -> Result<Vec<usize>> {
+    hull_cycle(coordinates, site_count, true)
+}
+
+pub(in crate::geometry::tessellation) fn exact_hull_cycle_with<
+    C: exact_delaunay::MeshCoordinates,
+>(
+    coordinates: &C,
+    site_count: usize,
+) -> Result<Vec<usize>> {
+    hull_cycle(coordinates, site_count, false)
 }
 
 /// Collinear sites in order along their longer extent.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "order contains only site IDs produced from 0..points.len()"
-)]
-fn collinear_order(points: &[Point]) -> Vec<usize> {
-    let mut order = Vec::with_capacity(points.len());
-    order.extend(0..points.len());
-    let (minx, maxx, miny, maxy) = points.iter().fold(
-        (
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-        ),
-        |(minx, maxx, miny, maxy), point| {
-            (
-                minx.min(point.x),
-                maxx.max(point.x),
-                miny.min(point.y),
-                maxy.max(point.y),
-            )
-        },
-    );
-    if maxx - minx >= maxy - miny {
+fn collinear_order<C: exact_delaunay::MeshCoordinates>(
+    coordinates: &C,
+    mut order: Vec<usize>,
+) -> Result<Vec<usize>> {
+    let Some(&first) = order.first() else {
+        return Ok(order);
+    };
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first, first, first, first);
+    for &site in order.iter().skip(1) {
+        let query = coordinates.query(site);
+        if coordinates
+            .compare_x(query, coordinates.query(min_x))
+            .is_lt()
+        {
+            min_x = site;
+        }
+        if coordinates
+            .compare_x(query, coordinates.query(max_x))
+            .is_gt()
+        {
+            max_x = site;
+        }
+        if coordinates
+            .compare_y(query, coordinates.query(min_y))
+            .is_lt()
+        {
+            min_y = site;
+        }
+        if coordinates
+            .compare_y(query, coordinates.query(max_y))
+            .is_gt()
+        {
+            max_y = site;
+        }
+    }
+    let x_is_longer = !coordinates
+        .compare_axis_spans([coordinates.query(min_x), coordinates.query(max_x)], [
+            coordinates.query(min_y),
+            coordinates.query(max_y),
+        ])?
+        .is_lt();
+    if x_is_longer {
         order.sort_unstable_by(|&left, &right| {
-            geometric_cmp(points[left].x, points[right].x)
-                .then_with(|| geometric_cmp(points[left].y, points[right].y))
+            coordinates
+                .compare_x(coordinates.query(left), coordinates.query(right))
+                .then_with(|| {
+                    coordinates.compare_y(coordinates.query(left), coordinates.query(right))
+                })
         });
     } else {
         order.sort_unstable_by(|&left, &right| {
-            geometric_cmp(points[left].y, points[right].y)
-                .then_with(|| geometric_cmp(points[left].x, points[right].x))
+            coordinates
+                .compare_y(coordinates.query(left), coordinates.query(right))
+                .then_with(|| {
+                    coordinates.compare_x(coordinates.query(left), coordinates.query(right))
+                })
         });
     }
-    order
-}
-
-/// Geometric coordinate order: values that compare equal, including mixed
-/// signed zeros, tie; otherwise IEEE total order. Hull seeds need this lex
-/// instead of raw `total_cmp`, which would treat `-0` as left of `+0`.
-#[expect(
-    clippy::float_cmp,
-    reason = "signed-zero identity must tie; total_cmp would order -0 left of +0 and change hull seeds"
-)]
-fn geometric_cmp(left: f64, right: f64) -> Ordering {
-    if left == right {
-        Ordering::Equal
-    } else {
-        left.total_cmp(&right)
-    }
+    Ok(order)
 }
 
 /// Twin slots for a flat triangle list by directed-edge lookup.

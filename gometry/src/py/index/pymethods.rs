@@ -448,7 +448,8 @@ impl PySpatialIndex {
     /// ----------
     /// geom : Geometry, GeometryArray, or iterable of Geometry or None
     ///     One query geometry or one query per sequence row. Missing rows
-    ///     produce empty result groups and retain their logical positions.
+    ///     produce missing result groups (`None`); present rows with no matches
+    ///     produce empty groups.
     /// predicate : str, default varies by call form
     ///     Spatial relation each match must satisfy, evaluated as
     ///     ``predicate(query_geometry, indexed_geometry)``. Topological forms
@@ -457,8 +458,8 @@ impl PySpatialIndex {
     /// distance : float, optional
     ///     ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
     ///     threshold is accepted; other values must be finite and
-    ///     non-negative. Missing or empty query rows produce empty result
-    ///     groups rather than being dropped.
+    ///     non-negative. Missing query rows remain missing result groups;
+    ///     present empty query rows produce empty result groups.
     #[doc = unit_parameter_doc!()]
     ///
     /// Returns
@@ -466,8 +467,9 @@ impl PySpatialIndex {
     /// int64 numpy.ndarray or Groups
     ///     Matching index handles (row ids). A scalar query returns a read-only
     ///     ``int64`` ndarray of handles; an array query returns ``Groups`` of
-    ///     handles, one group per query row. Each result is in ascending
-    ///     source-row order.
+    ///     handles, one row per query row. Missing queries yield ``None`` rows,
+    ///     while present queries with no matches yield empty groups. Each result
+    ///     is in ascending source-row order.
     ///
     /// Raises
     /// ------
@@ -519,7 +521,9 @@ impl PySpatialIndex {
                         unit,
                     )
                 })?;
-                return Groups::from_int64_csr(results.ids, results.offsets)?.into_py_any(py);
+                return Groups::from_int64_csr(results.ids, results.offsets)?
+                    .with_row_missing(array.missing().cloned())
+                    .into_py_any(py);
             }
             let plan =
                 PreparedIndexQuery::for_array(self, &array, Some(predicate), distance, unit)?;
@@ -529,6 +533,7 @@ impl PySpatialIndex {
                 // One frame check for the whole array; rows feed the
                 // shape-level core with no per-row wrapper. Matches append
                 // straight into the CSR values column (one pass).
+                let missing = array.missing().cloned();
                 let (ids, offsets) = py.detach(move || {
                     let row_count = array.len();
                     let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
@@ -551,12 +556,15 @@ impl PySpatialIndex {
                     }
                     Ok::<_, PyErr>(builder.finish())
                 })?;
-                return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
+                return Groups::from_int64_csr(ids, offsets)?
+                    .with_row_missing(missing)
+                    .into_py_any(py);
             }
             // dwithin array queries (the only distance-carrying lane left):
             // one frame check + one metric resolution; rows run the shared
             // candidate core and the pair kernel on stack handles — no
             // per-row PyGeometry staging.
+            let missing = array.missing().cloned();
             let (ids, offsets) = py.detach(move || {
                 let row_count = array.len();
                 let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
@@ -606,7 +614,9 @@ impl PySpatialIndex {
                 }
                 Ok::<_, PyErr>(builder.finish())
             })?;
-            return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
+            return Groups::from_int64_csr(ids, offsets)?
+                .with_row_missing(missing)
+                .into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
     }
@@ -746,7 +756,8 @@ impl PySpatialIndex {
     /// ----------
     /// geom : Geometry, GeometryArray, or iterable of Geometry or None
     ///     One query geometry or one query per sequence row. Missing rows
-    ///     produce empty groups and retain their logical positions.
+    ///     produce ``None`` groups; present rows with no candidates produce
+    ///     empty groups.
     /// distance : float, optional
     ///     Expand the query envelope by this much, in ``unit``. Finite
     ///     non-negative expansions and positive infinity are accepted;
@@ -792,7 +803,9 @@ impl PySpatialIndex {
             {
                 let results =
                     self.point_rows_matches(array, &points, array.missing(), None, distance, unit)?;
-                return Groups::from_int64_csr(results.ids, results.offsets)?.into_py_any(py);
+                return Groups::from_int64_csr(results.ids, results.offsets)?
+                    .with_row_missing(array.missing().cloned())
+                    .into_py_any(py);
             }
             // One frame check + one metric resolution for the whole array;
             // rows answer from their window bounds and append into one CSR
@@ -811,7 +824,8 @@ impl PySpatialIndex {
             let row_count = array.len();
             let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
             if envelope_only {
-                // Missing and empty rows carry no bounds and get an empty group.
+                // Missing and empty rows carry no bounds; the Groups validity
+                // mask distinguishes them after both append empty CSR windows.
                 let mut append = |bounds: Option<crate::Bounds>| -> PyResult<()> {
                     if let Some(bounds) = bounds {
                         self.envelope_candidates_append(bounds, builder.values_mut());
@@ -828,7 +842,9 @@ impl PySpatialIndex {
                 };
                 if visited {
                     let (ids, offsets) = builder.finish();
-                    return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
+                    return Groups::from_int64_csr(ids, offsets)?
+                        .with_row_missing(array.missing().cloned())
+                        .into_py_any(py);
                 }
             }
             let (predicate, distance, metric) = plan.candidate_parts();
@@ -872,7 +888,9 @@ impl PySpatialIndex {
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
             }
             let (ids, offsets) = builder.finish();
-            return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
+            return Groups::from_int64_csr(ids, offsets)?
+                .with_row_missing(array.missing().cloned())
+                .into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
     }
@@ -883,7 +901,7 @@ impl PySpatialIndex {
     /// ----------
     /// geom : Geometry, GeometryArray, or iterable of Geometry or None
     ///     One query geometry or one query per sequence row. Missing rows
-    ///     produce empty groups and retain their logical positions.
+    ///     produce ``None`` groups and retain their logical positions.
     /// k : int, default 1
     ///     How many nearest neighbors to return; ``0`` returns no neighbors.
     /// max_distance : float, optional
@@ -954,6 +972,7 @@ impl PySpatialIndex {
         }
         if let Some(array) = exact_geometry_array(&geom) {
             let array = array.clone();
+            let missing = array.missing().cloned();
             // One frame check and metric resolution for the whole array;
             // every storage's rows drive `nearest_core` on stack handles —
             // no per-row `PyGeometry` materialization anywhere.
@@ -1060,7 +1079,7 @@ impl PySpatialIndex {
                 let (ids, offsets) = builder.finish();
                 Ok::<_, pyo3::PyErr>((ids, offsets, distances))
             })?;
-            return format_nearest_rows(py, ids, offsets, distances, return_distance);
+            return format_nearest_rows(py, ids, offsets, distances, return_distance, missing);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
     }

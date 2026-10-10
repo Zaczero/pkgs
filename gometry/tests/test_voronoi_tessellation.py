@@ -41,7 +41,8 @@ def test_voronoi_output_selects_cells_or_internal_edges_and_groups_rows() -> Non
     assert [edge.to_wkb() for edge in grouped_edges[0]] == [
         edge.to_wkb() for edge in edges
     ]
-    assert grouped_edges[1].to_wkb() == []
+    assert grouped_edges[1] is None
+    assert grouped_edges.is_missing.tolist() == [False, True, False]
     assert [edge.to_wkb() for edge in grouped_edges[2]] == [
         edge.to_wkb() for edge in edges
     ]

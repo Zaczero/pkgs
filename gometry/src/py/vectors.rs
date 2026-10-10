@@ -24,10 +24,13 @@ use pyo3::{IntoPyObjectExt as _, ffi};
 use crate::array::PyGeometryArray;
 use crate::boundary::coordinates::measure_storage_payload_bytes;
 use crate::geometry::Shape;
+use crate::geometry::storage::ValidityMask;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
-use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int64_array};
+use crate::py::numpy::{
+    ImmutableI64Owner, bool_array, frozen_i64_owner, frozen_i64_view, int64_array,
+};
 use crate::py::row::{
     RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice, slice_row_indices,
 };
@@ -156,10 +159,14 @@ pub struct Groups {
     /// zero-copy).
     offsets: Arc<[i64]>,
     rows: Range<usize>,
+    /// Source-row validity, independent of output counts. Dense producers
+    /// allocate no bitmap; missing rows have empty CSR windows.
+    missing: Option<ValidityMask>,
 }
 
 enum GroupsContainsNeedle {
     NoMatch,
+    Missing,
     Int64(Vec<i64>),
     Geometry(PyGeometryArray),
     Cells(PyCellArray),
@@ -173,6 +180,23 @@ impl ImmutableI64Owner for Groups {}
 mod ctor;
 
 impl Groups {
+    pub(crate) fn with_row_missing(mut self, missing: Option<ValidityMask>) -> Self {
+        if let Some(mask) = &missing {
+            debug_assert_eq!(
+                mask.len(),
+                self.rows.len(),
+                "Groups missing mask length must match its row count"
+            );
+            debug_assert!(
+                (0..self.rows.len())
+                    .all(|row| !mask.is_missing(row) || self.row_values_window(row).is_empty()),
+                "missing Groups rows must not contain values"
+            );
+        }
+        self.missing = missing;
+        self
+    }
+
     fn visible_offsets(&self) -> &[i64] {
         self.offsets
             .get(self.rows.start..=self.rows.end)
@@ -193,6 +217,12 @@ impl Groups {
         // Callers admit `row` against this visible row range before rebasing it.
         let offset = self.rows.start.wrapping_add(row);
         Self::row_values_window_at(&self.offsets, offset)
+    }
+
+    fn row_is_missing(&self, row: usize) -> bool {
+        self.missing
+            .as_ref()
+            .is_some_and(|missing| missing.is_missing(self.rows.start.wrapping_add(row)))
     }
 
     fn int64_row_slice(&self, row: usize) -> &[i64] {
@@ -225,6 +255,7 @@ impl Groups {
             values: self.values.clone(),
             offsets: Arc::clone(&self.offsets),
             rows,
+            missing: self.missing.clone(),
         }
     }
 
@@ -263,6 +294,10 @@ impl Groups {
 
     fn logical_payload_pyint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
         let rows = self.values_window();
+        let missing_bytes = self
+            .missing
+            .as_ref()
+            .map_or(0, |_| self.rows.len().div_ceil(8));
         let value_width = match &self.values {
             GroupsValues::Int64(_) => std::mem::size_of::<i64>(),
             GroupsValues::Cells(_) => std::mem::size_of::<u64>(),
@@ -270,7 +305,7 @@ impl Groups {
                 let bytes =
                     measure_storage_payload_bytes(py, values.storage(), values.missing(), rows)?;
                 return Ok(bytes
-                    .add_native_bytes(py, self.logical_offsets_bytes())?
+                    .add_native_bytes(py, self.logical_offsets_bytes().wrapping_add(missing_bytes))?
                     .into_pyint(py));
             },
         };
@@ -279,7 +314,9 @@ impl Groups {
         let value_bytes = rows.len().wrapping_mul(value_width);
         Ok(PyInt::new(
             py,
-            value_bytes.wrapping_add(self.logical_offsets_bytes()),
+            value_bytes
+                .wrapping_add(self.logical_offsets_bytes())
+                .wrapping_add(missing_bytes),
         ))
     }
 
@@ -300,6 +337,11 @@ impl Groups {
         values_bytes
             .saturating_add(crate::heap_size::ARC_CONTROL_BYTES)
             .saturating_add(self.logical_offsets_bytes())
+            .saturating_add(
+                self.missing
+                    .as_ref()
+                    .map_or(0, |_| self.rows.len().div_ceil(8)),
+            )
     }
 
     fn row_pyobject(
@@ -308,6 +350,9 @@ impl Groups {
         slf: Bound<'_, Self>,
         row: usize,
     ) -> PyResult<Py<PyAny>> {
+        if self.row_is_missing(row) {
+            return Ok(py.None());
+        }
         match &self.values {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| this.int64_row_slice(row)),
             GroupsValues::Geometry(_) => self.geometry_row_view(row)?.into_py_any(py),
@@ -317,8 +362,10 @@ impl Groups {
 
     fn groups_equal(&self, other: &Self) -> PyResult<bool> {
         if self.rows.len() != other.rows.len()
-            || (0..self.rows.len())
-                .any(|row| self.row_values_window(row).len() != other.row_values_window(row).len())
+            || (0..self.rows.len()).any(|row| {
+                self.row_is_missing(row) != other.row_is_missing(row)
+                    || self.row_values_window(row).len() != other.row_values_window(row).len()
+            })
         {
             return Ok(false);
         }
@@ -403,6 +450,9 @@ impl Groups {
     }
 
     fn row_matches(&self, row: usize, item: &Bound<'_, PyAny>) -> PyResult<bool> {
+        if self.row_is_missing(row) {
+            return Ok(item.is_none());
+        }
         match &self.values {
             GroupsValues::Int64(_) => Ok(Self::parse_int64_row_item(item)?
                 .is_some_and(|expected| self.int64_row_matches(row, &expected))),
@@ -422,6 +472,9 @@ impl Groups {
     }
 
     fn admit_contains_needle(&self, item: &Bound<'_, PyAny>) -> PyResult<GroupsContainsNeedle> {
+        if item.is_none() {
+            return Ok(GroupsContainsNeedle::Missing);
+        }
         match &self.values {
             GroupsValues::Int64(_) => Ok(Self::parse_int64_row_item(item)?
                 .map_or(GroupsContainsNeedle::NoMatch, GroupsContainsNeedle::Int64)),
@@ -443,6 +496,9 @@ impl Groups {
     fn contains_needle(&self, needle: GroupsContainsNeedle) -> PyResult<bool> {
         match needle {
             GroupsContainsNeedle::NoMatch => Ok(false),
+            GroupsContainsNeedle::Missing => {
+                Ok((0..self.rows.len()).any(|row| self.row_is_missing(row)))
+            },
             GroupsContainsNeedle::Int64(expected) => {
                 Ok((0..self.rows.len()).any(|row| self.int64_row_matches(row, &expected)))
             },
@@ -518,10 +574,11 @@ impl Groups {
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
 
-    /// Logical CSR payload in bytes: the selected flat values payload plus the
-    /// ``len(self) + 1`` int64 offsets column. For geometry-valued groups this
-    /// uses the values ``GeometryArray.nbytes`` and excludes geometry
-    /// structural offsets, matching NumPy's payload-only convention.
+    /// Logical CSR payload in bytes: the selected flat values payload, the
+    /// ``len(self) + 1`` int64 offsets column, and a row-validity bitmap when
+    /// any group is missing. For geometry-valued groups this uses the values
+    /// ``GeometryArray.nbytes`` and excludes geometry structural offsets,
+    /// matching NumPy's payload-only convention.
     ///
     /// Returns
     /// -------
@@ -656,7 +713,9 @@ impl Groups {
         int64_array(slf.py(), offsets)
     }
 
-    /// Per-group element counts (`offsets[i + 1] - offsets[i]`).
+    /// Per-group element counts (`offsets[i + 1] - offsets[i]`). Missing
+    /// groups have count zero; `.is_missing` distinguishes them from present
+    /// groups with no values.
     ///
     /// Returns
     /// -------
@@ -677,6 +736,23 @@ impl Groups {
             counts.push(end.wrapping_sub(*start));
         }
         int64_array(slf.py(), counts)
+    }
+
+    /// Missing source groups, distinct from present groups with no outputs.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A read-only boolean mask in group order.
+    #[getter]
+    fn is_missing(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let this = slf.borrow();
+        bool_array(
+            slf.py(),
+            (0..this.rows.len())
+                .map(|row| this.row_is_missing(row))
+                .collect(),
+        )
     }
 
     /// Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
@@ -777,11 +853,12 @@ impl Groups {
     /// Select groups by integer or slice.
     ///
     /// An ``int`` returns one group's values (for example an ``int64``
-    /// ndarray of matched ids). A ``slice`` returns a rebased ``Groups``.
+    /// ndarray of matched ids), or ``None`` for a missing source group. A
+    /// ``slice`` returns a ``Groups`` view or selection preserving validity.
     ///
     /// Returns
     /// -------
-    /// numpy.ndarray or Groups
+    /// Group values, None, or Groups
     fn __getitem__(slf: Bound<'_, Self>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let parsed = {
             let this = slf.borrow();
@@ -805,6 +882,10 @@ impl Groups {
                 } else {
                     let rows = slice_row_indices(start, step, count);
                     let offsets = this.visible_offsets();
+                    let missing = ValidityMask::from_missing_iter(
+                        count,
+                        rows.clone().map(|row| this.row_is_missing(row)),
+                    );
                     match &this.values {
                         GroupsValues::Int64(values) => {
                             let value_count = rows.clone().try_fold(0_usize, |total, row| {
@@ -830,6 +911,7 @@ impl Groups {
                                 values: GroupsValues::Int64(ids.into()),
                                 offsets: offsets.into(),
                                 rows: 0..count,
+                                missing,
                             }
                         },
                         GroupsValues::Geometry(values) => {
@@ -861,7 +943,7 @@ impl Groups {
                             }
                             let (shapes, offsets) = builder.finish();
                             let flat = PyGeometryArray::from_shapes(shapes, values.frame.clone())?;
-                            Self::from_geometry_csr(flat, offsets)?
+                            Self::from_geometry_csr(flat, offsets)?.with_row_missing(missing)
                         },
                         GroupsValues::Cells(values) => {
                             let kind = values.kind();
@@ -874,7 +956,7 @@ impl Groups {
                                     .map_err(PyErr::from)?;
                             }
                             let (ids, offsets) = builder.finish();
-                            Self::from_cell_flat(kind, ids, offsets)?
+                            Self::from_cell_flat(kind, ids, offsets, missing)?
                         },
                     }
                 };
@@ -934,7 +1016,11 @@ impl Groups {
         let start = clamp(start);
         let stop = stop.map_or(row_len, clamp);
         if start < stop {
-            if matches!(&self.values, GroupsValues::Int64(_)) {
+            if value.is_none() {
+                if let Some(row) = (start..stop).find(|&row| self.row_is_missing(row)) {
+                    return Ok(row);
+                }
+            } else if matches!(&self.values, GroupsValues::Int64(_)) {
                 if let Some(expected) = Self::parse_int64_row_item(value)? {
                     for row in start..stop {
                         if self.int64_row_matches(row, &expected) {
@@ -968,6 +1054,11 @@ impl Groups {
     /// -------
     /// int
     fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
+        if value.is_none() {
+            return Ok((0..self.rows.len())
+                .filter(|&row| self.row_is_missing(row))
+                .count());
+        }
         if matches!(&self.values, GroupsValues::Int64(_)) {
             let Some(expected) = Self::parse_int64_row_item(value)? else {
                 return Ok(0);
@@ -1017,17 +1108,35 @@ impl Groups {
     fn __repr__(&self) -> PyResult<String> {
         match &self.values {
             GroupsValues::Int64(_) => preview(
-                (0..self.rows.len()).map(|row| Ok(format!("{:?}", self.int64_row_slice(row)))),
+                (0..self.rows.len()).map(|row| {
+                    Ok(if self.row_is_missing(row) {
+                        "None".to_owned()
+                    } else {
+                        format!("{:?}", self.int64_row_slice(row))
+                    })
+                }),
                 self.rows.len(),
                 "Groups",
             ),
             GroupsValues::Geometry(_) => preview(
-                (0..self.rows.len()).map(|row| self.geometry_row_view(row)?.__repr__()),
+                (0..self.rows.len()).map(|row| {
+                    if self.row_is_missing(row) {
+                        Ok("None".to_owned())
+                    } else {
+                        self.geometry_row_view(row)?.__repr__()
+                    }
+                }),
                 self.rows.len(),
                 "Groups",
             ),
             GroupsValues::Cells(_) => preview(
-                (0..self.rows.len()).map(|row| Ok(self.cell_row_view(row).__repr__())),
+                (0..self.rows.len()).map(|row| {
+                    Ok(if self.row_is_missing(row) {
+                        "None".to_owned()
+                    } else {
+                        self.cell_row_view(row).__repr__()
+                    })
+                }),
                 self.rows.len(),
                 "Groups",
             ),
@@ -1038,8 +1147,8 @@ impl Groups {
     ///
     /// Returns
     /// -------
-    /// list of list
-    ///     Materialized rows of the grouped values.
+    /// list
+    ///     Materialized rows of the grouped values; missing rows are ``None``.
     ///
     /// Examples
     /// --------
@@ -1050,6 +1159,10 @@ impl Groups {
     fn to_list(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let mut rows = Vec::with_capacity(self.rows.len());
         for row in 0..self.rows.len() {
+            if self.row_is_missing(row) {
+                rows.push(py.None());
+                continue;
+            }
             let value = match &self.values {
                 GroupsValues::Int64(_) => {
                     let source = self.int64_row_slice(row);
@@ -1090,13 +1203,18 @@ impl Groups {
         for &offset in source_offsets {
             rebased.push(offset.wrapping_sub(base));
         }
+        let missing = self.missing.as_ref().map(|_| {
+            (0..self.rows.len())
+                .map(|row| self.row_is_missing(row))
+                .collect::<Vec<_>>()
+        });
         match &self.values {
             GroupsValues::Int64(values) => {
                 let copied = values
                     .get(start..end)
                     .expect("Groups offsets are bounded by their int64 values")
                     .to_vec();
-                let args = (copied, rebased).into_py_any(py)?;
+                let args = (copied, rebased, missing).into_py_any(py)?;
                 Ok((
                     module
                         .getattr(pyo3::intern!(py, "_unpickle_int64_groups_v1"))?
@@ -1110,7 +1228,7 @@ impl Groups {
                 } else {
                     values.gather_logical_row_range(start..end)?
                 };
-                let args = (Py::new(py, windowed)?, rebased).into_py_any(py)?;
+                let args = (Py::new(py, windowed)?, rebased, missing).into_py_any(py)?;
                 Ok((
                     module
                         .getattr(pyo3::intern!(py, "_unpickle_geometry_groups_v1"))?
@@ -1124,7 +1242,7 @@ impl Groups {
                 } else {
                     values.logical_row_range(start..end)
                 };
-                let args = (Py::new(py, windowed)?, rebased).into_py_any(py)?;
+                let args = (Py::new(py, windowed)?, rebased, missing).into_py_any(py)?;
                 Ok((
                     module
                         .getattr(pyo3::intern!(py, "_unpickle_cell_groups_v1"))?
@@ -1141,13 +1259,16 @@ impl Groups {
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
+#[pyo3(signature = (ids, offsets, missing = None))]
 pub(crate) fn _unpickle_int64_groups_v1(
     ids: &Bound<'_, PyAny>,
     offsets: &Bound<'_, PyAny>,
+    missing: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Groups> {
     let ids = crate::collect_i64_sequence(ids, "Groups pickle ids")?;
     let offsets = crate::collect_i64_sequence(offsets, "Groups pickle offsets")?;
-    Groups::from_int64_values_csr(ids, offsets)
+    let groups = Groups::from_int64_values_csr(ids, offsets)?;
+    restore_group_missing(groups, missing)
 }
 
 #[expect(
@@ -1155,14 +1276,16 @@ pub(crate) fn _unpickle_int64_groups_v1(
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
+#[pyo3(signature = (values, offsets, missing = None))]
 pub(crate) fn _unpickle_geometry_groups_v1(
     values: Py<PyGeometryArray>,
     offsets: &Bound<'_, PyAny>,
+    missing: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Groups> {
     let offsets = crate::collect_i64_sequence(offsets, "geometry Groups pickle offsets")?;
     Python::attach(|py| {
         let array = values.bind(py).borrow().clone();
-        Groups::from_geometry_csr(array, offsets)
+        restore_group_missing(Groups::from_geometry_csr(array, offsets)?, missing)
     })
 }
 
@@ -1171,15 +1294,29 @@ pub(crate) fn _unpickle_geometry_groups_v1(
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
+#[pyo3(signature = (values, offsets, missing = None))]
 pub(crate) fn _unpickle_cell_groups_v1(
     values: Py<PyCellArray>,
     offsets: &Bound<'_, PyAny>,
+    missing: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Groups> {
     let offsets = crate::collect_i64_sequence(offsets, "cell Groups pickle offsets")?;
     Python::attach(|py| {
         let array = values.bind(py).borrow().clone();
-        Groups::from_cell_csr(array, offsets)
+        restore_group_missing(Groups::from_cell_csr(array, offsets)?, missing)
     })
+}
+
+fn restore_group_missing(groups: Groups, missing: Option<&Bound<'_, PyAny>>) -> PyResult<Groups> {
+    let Some(missing) = missing else {
+        return Ok(groups);
+    };
+    if missing.is_none() {
+        return Ok(groups);
+    }
+    let len = groups.rows.len();
+    let mask = crate::collect_bool_mask(missing, len)?;
+    Ok(groups.with_row_missing(ValidityMask::from_vec(len, mask)))
 }
 
 /// Internal zero-copy buffer holder for `f64` coordinate columns (Arrow

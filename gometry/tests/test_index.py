@@ -15,8 +15,8 @@ from gometry import _lib
 from tests._support import floats, ids, pair_rows
 
 
-def match_rows(matches: gm.Groups) -> list[list[int]]:
-    return [row.tolist() for row in matches]
+def match_rows(matches: gm.Groups) -> list[list[int] | None]:
+    return [None if row is None else row.tolist() for row in matches]
 
 
 def test_sparse_index_releases_historical_search_structure() -> None:
@@ -60,26 +60,26 @@ def test_index_queries_and_joins_normalize_nullable_iterable_rows() -> None:
     queries = iter([gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)])
     index = gm.SpatialIndex(values)
 
-    assert index.query(queries).to_list() == [[0], [], [2]]
+    assert index.query(queries).to_list() == [[0], None, [2]]
     assert index.candidates([
         gm.Point(0.5, 0.5),
         None,
         gm.Point(4.5, 4.5),
     ]).to_list() == [
         [0],
-        [],
+        None,
         [2],
     ]
     assert index.nearest([gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)]).to_list() == [
         [0],
-        [],
+        None,
         [2],
     ]
     assert gm.nearest(
         values, [gm.Point(0.5, 0.5), None, gm.Point(4.5, 4.5)]
     ).to_list() == [
         [0],
-        [],
+        None,
         [2],
     ]
     assert pair_rows(gm.join([gm.Point(0.5, 0.5), None], values)) == [(0, 0)]
@@ -665,7 +665,7 @@ def test_index_dwithin_positive_infinity_matches_all_non_empty_rows(
         ],
         crs=crs,
     )
-    expected_groups = [expected, expected, [], []]
+    expected_groups = [expected, expected, [], None]
     assert (
         match_rows(
             index.query(queries, predicate='dwithin', distance=math.inf, unit=unit)
@@ -676,7 +676,7 @@ def test_index_dwithin_positive_infinity_matches_all_non_empty_rows(
         expected,
         expected,
         [],
-        [],
+        None,
     ]
 
     left, right = index.self_join(predicate='dwithin', distance=math.inf, unit=unit)
@@ -1156,7 +1156,7 @@ def test_spatial_index_compact_nullable_rows_keep_logical_handles_through_mutati
     assert ids(index.query(gm.Point(0.0, 0.0))) == [1]
     assert ids(index.candidates(gm.box(-1.0, -1.0, 1.0, 1.0))) == [1]
     assert ids(index.nearest(gm.Point(2.0, 2.0))) == [3]
-    assert ids(index.query(values[[3, 0, 3]])) == [[3], [], [3]]
+    assert ids(index.query(values[[3, 0, 3]])) == [[3], None, [3]]
     assert index[1].to_wkt() == 'POINT (0 0)'
 
     window = values[1:4]
@@ -1639,14 +1639,16 @@ def test_candidates_accepts_geometry_arrays() -> None:
 _UNIT_BOXES = gm.GeometryArray([gm.box(2 * i, 0, 2 * i + 1, 1) for i in range(4)])
 
 
-def _query_rows(layout: str) -> tuple[gm.GeometryArray, list[list[int]]]:
+def _query_rows(
+    layout: str,
+) -> tuple[gm.GeometryArray, list[list[int] | None]]:
     # An empty row makes the array's storage mixed, so only 'mixed' has one.
     if layout == 'lines':
         return gm.GeometryArray([
             gm.LineString([(0.5, 0.5), (4.5, 0.5)]),
             None,
             gm.LineString([(6.5, 2), (6.5, 3)]),
-        ]), [[0, 1, 2], [], []]
+        ]), [[0, 1, 2], None, []]
     if layout == 'mixed':
         return gm.GeometryArray([
             gm.Point(2.5, 0.5),
@@ -1654,10 +1656,10 @@ def _query_rows(layout: str) -> tuple[gm.GeometryArray, list[list[int]]]:
             gm.LineString([(1.5, -1), (1.5, 2)]),
             None,
             gm.from_wkt('POLYGON EMPTY'),
-        ]), [[1], [0], [], [], []]
+        ]), [[1], [0], [], None, []]
     if layout == 'points':
         points = gm.GeometryArray([gm.Point(0.5, 0.5), None, gm.Point(6, 1)])
-        return points, [[0], [], [3]]
+        return points, [[0], None, [3]]
     if layout == 'dense':
         return gm.GeometryArray([
             gm.box(0.5, 0.5, 2.5, 0.8),
@@ -1670,7 +1672,7 @@ def _query_rows(layout: str) -> tuple[gm.GeometryArray, list[list[int]]]:
         gm.box(10, 10, 11, 11),
         gm.box(4.5, 0, 6.5, 1),
     ])
-    expected = [[0, 1], [], [], [2, 3]]
+    expected = [[0, 1], None, [], [2, 3]]
     if layout == 'reversed':
         return queries[::-1], expected[::-1]
     if layout == 'indexed':
@@ -1871,7 +1873,10 @@ def test_empty_index_answers_every_method_gracefully() -> None:
     assert ids(idx.query(geographic_probe)) == []
     assert ids(idx.candidates(geographic_probe)) == []
     assert ids(idx.nearest(geographic_probe)) == []
-    assert match_rows(idx.query(gm.GeometryArray([geographic_probe, None]))) == [[], []]
+    assert match_rows(idx.query(gm.GeometryArray([geographic_probe, None]))) == [
+        [],
+        None,
+    ]
 
 
 def test_unframed_empty_index_validates_geographic_query_coordinates() -> None:

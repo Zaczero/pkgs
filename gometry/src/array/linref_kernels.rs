@@ -196,16 +196,17 @@ pub(crate) fn line_interpolate_points_rows(
             Ok(builder) => builder,
             Err((row, error)) => return Err(note_array_row(error.into(), row)),
         };
-        return Groups::from_geometry_builder(frame, builder);
+        return Groups::from_geometry_builder(frame, builder, array.missing().cloned());
     }
     let array = array.clone();
     let frame = array.frame.clone();
+    let missing = array.missing().cloned();
     let result = py.detach(move || interpolate_mixed_row_groups(&array, &plan, &model));
     let builder = match result {
         Ok(builder) => builder,
         Err((row, error)) => return Err(note_array_row(error.into(), row)),
     };
-    Groups::from_geometry_builder(frame, builder)
+    Groups::from_geometry_builder(frame, builder, missing)
 }
 
 fn interpolate_mixed_row_groups(

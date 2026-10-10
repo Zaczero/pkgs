@@ -1654,10 +1654,11 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Groups of CellArray
     ///     One row of neighbors per input cell, in input order. Neighbor
     ///     counts vary, so the result is a Groups, not a rectangular
-    ///     CellArray.
+    ///     CellArray. Missing input rows yield ``None`` groups.
     #[getter]
     pub(crate) fn neighbors(&self, py: Python<'_>) -> PyResult<Groups> {
         let kind = self.kind();
+        let (missing, _) = self.missing_mask_and_present_count();
         let cells = self.clone();
         let (ids, offsets) = py.detach(move || {
             dispatch_cell_grid!(&cells, G, {
@@ -1677,7 +1678,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 Ok::<_, PyErr>(builder.finish())
             })
         })?;
-        Groups::from_cell_flat(kind, ids, offsets)
+        Groups::from_cell_flat(kind, ids, offsets, missing)
     }
 
     /// Return the child cells of every cell at a finer depth, as ragged rows.
@@ -1691,7 +1692,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Returns
     /// -------
     /// Groups of CellArray
-    ///     One row of children per input cell, in input order.
+    ///     One row of children per input cell, in input order. Missing input
+    ///     rows yield ``None`` groups.
 ///
     /// Examples
     /// --------
@@ -1710,6 +1712,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Groups> {
         let kind = self.kind();
+        let (missing, _) = self.missing_mask_and_present_count();
         let cells = self.clone();
         let depth = dispatch_cell_grid!(self, G, {
             match cells.logical_cells::<G>().next() {
@@ -1759,7 +1762,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 Ok::<_, PyErr>(builder.finish())
             })
         })?;
-        Groups::from_cell_flat(kind, ids, offsets)
+        Groups::from_cell_flat(kind, ids, offsets, missing)
     }
 
     /// Compact this cell set to the coarsest exact covering, returned in the
