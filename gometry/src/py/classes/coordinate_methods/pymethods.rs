@@ -2,6 +2,7 @@ use pyo3::PyErr;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError, PyValueError};
 use pyo3::types::PyInt;
 
+use crate::boundary::reserve::py_iter_or_none;
 use crate::geometry::storage;
 use crate::geometry::storage::PackedStorage;
 use crate::py::classes::coordinate_methods::{
@@ -495,7 +496,7 @@ impl PyCoordinates {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
             return Ok(py_bool(py, self.coordinates_equal(py, &other_coords)?));
         }
-        let Some(items) = crate::boundary::reserve::py_iter_or_none(other)? else {
+        let Some(items) = py_iter_or_none(other)? else {
             return Ok(py.NotImplemented());
         };
         Ok(py_bool(py, self.coordinates_equal_iter(items)?))

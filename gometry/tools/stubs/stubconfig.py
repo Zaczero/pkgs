@@ -165,6 +165,10 @@ TEXT_SIGNATURE_DEFAULT_ALIASES = {
         value='padded',
         reason='The default clip wrapper is presented as the public padded mode.',
     ),
+    'VoronoiOutput::Polygons': TextSignatureDefault(
+        value='polygons',
+        reason='The VoronoiOutput variant is exposed as its public token.',
+    ),
     'Wgs84DefaultCrs::Default': TextSignatureDefault(
         value='OGC:CRS84',
         reason='The omitted CRS resolves to the public WGS84 longitude/latitude label.',

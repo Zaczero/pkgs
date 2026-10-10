@@ -537,10 +537,6 @@ impl ChartEdge {
         upper_product(upper_product(n_max, cosine_upper), longitude_rate)
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact minimizer endpoint parameters preserve input coordinates and ordinates"
-    )]
     pub(super) fn witness(
         self,
         start: Point,
@@ -559,6 +555,10 @@ impl ChartEdge {
         )
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact minimizer endpoint parameters preserve input coordinates and ordinates"
+    )]
     fn witness_with_work(
         self,
         start: Point,

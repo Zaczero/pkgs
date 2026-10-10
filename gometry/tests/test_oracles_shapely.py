@@ -4,10 +4,14 @@ from collections.abc import Iterable
 from typing import Any, cast
 
 import gometry as gm
-import h3
 import numpy as np
 import pytest
-import shapely
+
+from tests._support import h3_oracle
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely is an optional oracle dependency'
+)
 
 
 def test_predicates_and_overlay_match_shapely_oracle() -> None:
@@ -41,7 +45,6 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         shared_paths,
         snap,
         union,
-        voronoi_polygons,
     )
     from shapely.geometry import Point
     from shapely.ops import (
@@ -52,6 +55,7 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
         polygonize_full,
         split,
         substring,
+        voronoi_diagram,
     )
 
     left = gm.box(0, 0, 2, 2)
@@ -135,12 +139,12 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     assert sum(triangle.area for triangle in gometry_triangles) == pytest.approx(
         shapely_triangles.area
     )
-    gometry_voronoi = gm.MultiPoint([(0, 0), (1, 0), (0, 1), (1, 1)]).voronoi_polygons(
-        clip='envelope'
+    gometry_voronoi = gm.MultiPoint([(0, 0), (1, 0), (0, 1), (1, 1)]).voronoi(
+        output='polygons', clip='envelope'
     )
-    shapely_voronoi = voronoi_polygons(
+    shapely_voronoi = voronoi_diagram(
         from_wkt('MULTIPOINT ((0 0), (1 0), (0 1), (1 1))'),
-        extend_to=from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'),
+        envelope=from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'),
     )
     shapely_clipped_voronoi = [
         intersection(cell, from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'))
@@ -566,6 +570,7 @@ def test_polygon_intersection_absorbs_retained_boundary_lines() -> None:
 
 
 def test_h3_edges_match_h3py_oracle() -> None:
+    h3 = h3_oracle()
     origin = h3.latlng_to_cell(52.5, 13.4, 7)
     cell = gm.H3Cell(origin)
     for destination in h3.grid_ring(origin, 1):

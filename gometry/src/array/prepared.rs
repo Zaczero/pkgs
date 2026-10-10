@@ -86,7 +86,7 @@ impl RowProductChunk {
             .fold(self.heap_bytes_base(), usize::saturating_add)
     }
 
-    fn heap_bytes_base(&self) -> usize {
+    const fn heap_bytes_base(&self) -> usize {
         crate::heap_size::ARC_CONTROL_BYTES
             .saturating_add(std::mem::size_of::<Self>())
             .saturating_add(

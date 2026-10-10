@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import importlib
+
 import gometry as gm
 import numpy as np
-import pandas as pd
 import pytest
-from gometry._from_pandas import from_pandas
-from gometry._pandas import (
-    GeometryDtype,
-    GeometryExtensionArray,
-    to_pandas,
-)
 
 from tests._support import canon
+
+pd = pytest.importorskip('pandas', reason='pandas is an optional interop dependency')
+from_pandas = importlib.import_module('gometry._from_pandas').from_pandas
+_pandas = importlib.import_module('gometry._pandas')
+GeometryDtype = _pandas.GeometryDtype
+GeometryExtensionArray = _pandas.GeometryExtensionArray
+to_pandas = _pandas.to_pandas
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 use std::sync::OnceLock;
 
 use crate::HeapSize;
-use crate::crs::{ChartEdge, PointEdgeScratch};
+use crate::crs::{ChartEdge, POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch};
 use crate::error::Result;
 use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{
@@ -508,14 +508,14 @@ where
             scratch,
         )? {
             PointEdgeQueryResult::Within { evaluations } => {
-                debug_assert!(evaluations <= 128);
+                debug_assert!(evaluations <= POINT_EDGE_EVALUATION_SAFETY_CEILING);
                 Ok(Some(()))
             },
             PointEdgeQueryResult::Outside {
                 lower_bound,
                 evaluations,
             } => {
-                debug_assert!(evaluations <= 128);
+                debug_assert!(evaluations <= POINT_EDGE_EVALUATION_SAFETY_CEILING);
                 debug_assert!(lower_bound > limit);
                 Ok(None)
             },
@@ -523,7 +523,7 @@ where
                 lower_bound,
                 evaluations,
             } => {
-                debug_assert!(evaluations <= 128);
+                debug_assert!(evaluations <= POINT_EDGE_EVALUATION_SAFETY_CEILING);
                 debug_assert!(lower_bound <= limit);
                 outcome = outcome.combine(DwithinOutcome::Unresolved);
                 Ok(None)

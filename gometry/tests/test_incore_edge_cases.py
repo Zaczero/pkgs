@@ -6,9 +6,11 @@ import math
 
 import gometry as gm
 import numpy as np
-import pyproj
 import pytest
 
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 oracle wheel is unavailable for this interpreter'
+)
 ABS_TOL_M = 1e-06
 ABS_TOL_DEG = 1e-06
 ROUND_TRIP_TOL_M = 1e-06

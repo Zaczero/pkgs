@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use super::chart_parts::{ChartParts, point_chart_minimum};
+use super::chart_parts::{ChartEdgePart, ChartParts, point_chart_minimum};
 use super::chart_scratch::ChartScratch;
 use crate::crs::{ChartEdge, PointEdgeScratch};
 use crate::error::Result;
@@ -94,7 +94,7 @@ where
     }
 
     let mut previous_endpoint: Option<(XY, ChartEdgeDifferential, TargetEvaluation)> = None;
-    for source_edge in &source.edges {
+    for (source_index, source_edge) in source.edges.iter().enumerate() {
         let edge = source_edge.edge;
         let derivative_bounds = metric.chart_edge_differential_bounds(&edge);
         let left_differential = metric.chart_edge_differential(&edge, 0.0);
@@ -136,13 +136,18 @@ where
         update_maximum(&mut best, &left);
         update_maximum(&mut best, &right);
 
-        let initial = source_interval(0.0, 1.0, &left, &right, &edge, derivative_bounds, metric);
-        if initial.upper
-            <= completion_limit(
-                metric,
-                best.as_ref().map_or(0.0, |witness| witness.distance),
-            )
+        let limit = completion_limit(
+            metric,
+            best.as_ref().map_or(0.0, |witness| witness.distance),
+        );
+        if parallel_witness_upper(source_edge, target.edges.get(source_index), metric)
+            .is_some_and(|upper| upper <= limit)
         {
+            continue;
+        }
+
+        let initial = source_interval(0.0, 1.0, &left, &right, &edge, derivative_bounds, metric);
+        if initial.upper <= limit {
             continue;
         }
         scratch.outer.clear();
@@ -213,6 +218,39 @@ where
     })
 }
 
+fn parallel_witness_upper<M>(
+    source: &ChartEdgePart,
+    target: Option<&ChartEdgePart>,
+    metric: &M,
+) -> Option<f64>
+where
+    M: GeodesicMetric + ChartMetric,
+{
+    let target = target?;
+    if !(source.edge.is_parallel() && target.edge.is_parallel()) {
+        return None;
+    }
+    let target_start = if source.start.x.to_bits() == target.start.x.to_bits()
+        && source.end.x.to_bits() == target.end.x.to_bits()
+    {
+        target.start
+    } else if source.start.x.to_bits() == target.end.x.to_bits()
+        && source.end.x.to_bits() == target.start.x.to_bits()
+    {
+        target.end
+    } else {
+        return None;
+    };
+
+    // Rotating both endpoints by the same longitude is an ellipsoid isometry.
+    // Matching parallel edges therefore provide a constant-distance witness
+    // throughout the source edge, avoiding fixed-witness curvature refinement.
+    Some(outward_upper(
+        metric,
+        metric.segment_length(source.start, target_start),
+    ))
+}
+
 fn source_target_evaluation<M>(
     source: Point,
     source_differential: Option<ChartEdgeDifferential>,
@@ -246,7 +284,6 @@ where
         };
         (candidate.second, candidate.lower_bound)
     };
-
     let differential = source_differential.unwrap_or(ChartEdgeDifferential {
         speed: 0.0,
         azimuth: 0.0,

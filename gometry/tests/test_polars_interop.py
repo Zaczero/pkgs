@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import gometry as gm
-import polars as pl
 import pytest
 from gometry._polars import from_polars, to_polars
 
 from tests._support import canon
+
+pl = pytest.importorskip(
+    'polars',
+    reason='polars-runtime-32==1.43.2 has no CPython 3.14t wheel',
+)
 
 
 @pytest.fixture

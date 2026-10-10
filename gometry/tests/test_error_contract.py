@@ -174,6 +174,6 @@ def test_metric_token_error_keeps_its_parameter() -> None:
 
 def test_voronoi_clip_typo_uses_canonical_suggestion() -> None:
     with pytest.raises(ValueError, match="did you mean 'envelope'\\?"):
-        gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)]).voronoi_polygons(
-            clip='envlope'
+        gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)]).voronoi(
+            output='polygons', clip='envlope'
         )

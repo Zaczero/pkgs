@@ -176,10 +176,11 @@ Distance `unit=` follows the CRS metric rules in [CRS, units & measurement](crs.
 The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate math.
 `dwithin` accepts a positive-infinite threshold and matches only admitted
 non-empty geometries. On a geographic CRS, `dwithin` raises `CRSError` if the
-128-evaluation search cannot prove whether a present pair is within the radius;
-it does not report an unresolved pair as `False`. Successful array results keep
-one boolean per input pair, and missing rows and present empty geometries remain
-in their positions as `False`.
+binary64-resolution-derived search allowance or 16,384-evaluation safety
+ceiling cannot prove whether a present pair is within the radius; it does not
+report an unresolved pair as `False`. Successful array results keep one boolean
+per input pair, and missing rows and present empty geometries remain in their
+positions as `False`.
 
 ## Nearest neighbors
 
