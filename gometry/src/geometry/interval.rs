@@ -4,16 +4,8 @@
 //! Each arithmetic method expands a correctly rounded IEEE-754 operation by
 //! one representable value in both directions.
 
-#[expect(
-    clippy::approx_constant,
-    reason = "the lower adjacent binary64 value must bracket real pi outwards"
-)]
 pub(crate) const PI_LOWER: f64 = std::f64::consts::PI;
 pub(crate) const PI_UPPER: f64 = 3.141_592_653_589_793_6;
-#[expect(
-    clippy::approx_constant,
-    reason = "the lower adjacent binary64 value must bracket real pi/2 outwards"
-)]
 pub(crate) const HALF_PI_LOWER: f64 = std::f64::consts::FRAC_PI_2;
 pub(crate) const HALF_PI_UPPER: f64 = 1.570_796_326_794_896_8;
 

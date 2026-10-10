@@ -1506,8 +1506,8 @@ mod tests {
 
         let longitude_scale =
             frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
-        let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
-            * frame.latitude_orientation_sign();
+        let latitude_scale =
+            frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
         let no_metric = None::<&crate::geometry::SourceArcMetricAccess<'_, '_>>;
         let Shape::LineString(safe_line) = line(&[-20.0, 0.0, 20.0], &[0.0, 1.0, 0.0]) else {
             unreachable!();
@@ -2747,8 +2747,8 @@ mod tests {
 
         let longitude_scale =
             frame.longitude().to_degrees(1.0) * frame.longitude_orientation_sign();
-        let latitude_scale = frame.latitude_unit().native_to_degrees(1.0, frame.pole())
-            * frame.latitude_orientation_sign();
+        let latitude_scale =
+            frame.latitude_unit().native_to_degrees(1.0) * frame.latitude_orientation_sign();
         let chart_bottom = super::chart_latitude(50.0, frame, latitude_scale).unwrap();
         let chart_top = super::chart_latitude(-80.0, frame, latitude_scale).unwrap();
         let lower_latitude = super::chart_latitude(0.0, frame, latitude_scale).unwrap();
