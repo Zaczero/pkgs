@@ -1,17 +1,17 @@
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::ptr;
+use std::sync::Arc;
 
 use serde_json::Number;
 
-use crate::geometry::SharedSlice;
-#[cfg(test)]
-use crate::geometry::storage;
+use crate::geometry::{SharedSlice, storage};
 use crate::py::arrow_c::{
     ARROW_FLAG_NULLABLE, ArrayPrivate, ArrowArray, ArrowSchema, CoordSeq, CoordinateAxes,
     GeometryEncoding, GeometryError, NativeArrowExportError, NativeArrowExportResult, PyResult,
     SchemaNode, SchemaPrivate, release_array, release_schema,
 };
+use crate::py::geoarrow::CRS_DEFINITION_METADATA_KEY;
 
 impl SchemaNode {
     pub(crate) fn materialize_schema(&self) -> NativeArrowExportResult<GometryArrowSchema> {
@@ -161,6 +161,8 @@ pub(crate) enum OwnedBufferSlot {
     Null,
     F64(SharedSlice<f64>),
     I32(crate::geometry::SharedSlice<i32>),
+    U64(SharedSlice<u64>),
+    U64Arc(Arc<[u64]>),
     U8(crate::geometry::SharedSlice<u8>),
 }
 
@@ -170,6 +172,8 @@ impl OwnedBufferSlot {
             Self::Null => ptr::null(),
             Self::F64(values) => values.as_ptr().cast(),
             Self::I32(values) => values.as_ptr().cast(),
+            Self::U64(values) => values.as_ptr().cast(),
+            Self::U64Arc(values) => values.as_ptr().cast(),
             Self::U8(values) => values.as_ptr().cast(),
         }
     }
@@ -217,7 +221,7 @@ impl Drop for GometryArrowArray {
 
 fn checked_i64(value: usize, what: &str) -> PyResult<i64> {
     i64::try_from(value)
-        .map_err(|_| GeometryError::new_err(format!("Arrow geometry export {what} exceeds i64")))
+        .map_err(|_| GeometryError::new_err(format!("Arrow export {what} exceeds i64")))
 }
 
 /// Ensure logical `offset`/`length` cannot address past owned primitive or
@@ -230,7 +234,7 @@ fn ensure_owned_buffer_window(
 ) -> PyResult<()> {
     let end = offset
         .checked_add(length)
-        .ok_or_else(|| GeometryError::new_err("Arrow geometry export offset+length overflows"))?;
+        .ok_or_else(|| GeometryError::new_err("Arrow array export offset+length overflows"))?;
     for slot in buffers {
         match slot {
             OwnedBufferSlot::Null | OwnedBufferSlot::U8(_) => {},
@@ -238,6 +242,20 @@ fn ensure_owned_buffer_window(
                 if end > values.len() {
                     return Err(GeometryError::new_err(
                         "Arrow geometry export window exceeds owned f64 column",
+                    ));
+                }
+            },
+            OwnedBufferSlot::U64(values) => {
+                if end > values.len() {
+                    return Err(GeometryError::new_err(
+                        "Arrow cell export window exceeds owned uint64 column",
+                    ));
+                }
+            },
+            OwnedBufferSlot::U64Arc(values) => {
+                if end > values.len() {
+                    return Err(GeometryError::new_err(
+                        "Arrow cell export window exceeds owned uint64 column",
                     ));
                 }
             },
@@ -251,7 +269,7 @@ fn ensure_owned_buffer_window(
                 };
                 if !in_range {
                     return Err(GeometryError::new_err(
-                        "Arrow geometry export window exceeds owned offsets column",
+                        "Arrow array export window exceeds owned offsets column",
                     ));
                 }
             },
@@ -333,18 +351,17 @@ fn make_array_with_offset(
 ///
 /// Accepts only [`GometryArrowArray`] so a foreign shell cannot enter. Mask
 /// length is checked in release builds (not debug-only).
-#[cfg(test)]
 pub(crate) fn apply_top_level_validity(
     array: &mut GometryArrowArray,
     mask: &storage::ValidityMask,
 ) -> PyResult<()> {
     let array = array.as_mut();
     let logical_len = usize::try_from(array.length).map_err(|_| {
-        GeometryError::new_err("Arrow geometry export length is negative or too large")
+        GeometryError::new_err("Arrow array export length is negative or too large")
     })?;
     if mask.len() != logical_len {
         return Err(GeometryError::new_err(
-            "missing mask length must match logical Arrow array length",
+            "validity mask length must match logical Arrow array length",
         ));
     }
     let null_count = mask.missing_count();
@@ -353,7 +370,7 @@ pub(crate) fn apply_top_level_validity(
     }
     if array.n_buffers < 1 {
         return Err(GeometryError::new_err(
-            "Arrow geometry export has no top-level validity buffer slot",
+            "Arrow array export has no top-level validity buffer slot",
         ));
     }
     // Arrow C Data Interface: for a non-zero array.offset, validity bit for
@@ -362,11 +379,11 @@ pub(crate) fn apply_top_level_validity(
     // via offset/length — the logical missing mask must be placed at that
     // offset, not at bit 0.
     let offset = usize::try_from(array.offset).map_err(|_| {
-        GeometryError::new_err("Arrow geometry export offset is negative or too large")
+        GeometryError::new_err("Arrow array export offset is negative or too large")
     })?;
-    let total_bits = offset.checked_add(mask.len()).ok_or_else(|| {
-        GeometryError::new_err("Arrow geometry export validity span exceeds usize")
-    })?;
+    let total_bits = offset
+        .checked_add(mask.len())
+        .ok_or_else(|| GeometryError::new_err("Arrow array export validity span exceeds usize"))?;
     let (owned, mask_offset) = mask.arrow_bitmap();
     let owned_bits = owned.len().saturating_mul(8);
     let validity = if mask_offset == offset && owned_bits >= total_bits {
@@ -376,7 +393,9 @@ pub(crate) fn apply_top_level_validity(
         for row in 0..mask.len() {
             if mask.is_valid(row) {
                 let bit = offset.wrapping_add(row);
-                validity[bit / 8] |= 1 << (bit % 8);
+                *validity
+                    .get_mut(bit / 8)
+                    .expect("validity bit lies within its reserved bitmap") |= 1 << (bit % 8);
             }
         }
         crate::geometry::SharedSlice::from_vec(validity)
@@ -384,7 +403,7 @@ pub(crate) fn apply_top_level_validity(
     let private = array.private_data.cast::<ArrayPrivate>();
     if private.is_null() {
         return Err(GeometryError::new_err(
-            "Arrow geometry export is missing private buffer ownership",
+            "Arrow array export is missing private buffer ownership",
         ));
     }
     // SAFETY: `GometryArrowArray` always carries an `ArrayPrivate` box whose
@@ -394,13 +413,13 @@ pub(crate) fn apply_top_level_validity(
         let private = &mut *private;
         if !private.replace_first_buffer(OwnedBufferSlot::U8(validity)) {
             return Err(GeometryError::new_err(
-                "Arrow geometry export has no top-level validity buffer slot",
+                "Arrow array export has no top-level validity buffer slot",
             ));
         }
         array.buffers = private.buffers.as_ptr();
     }
     array.null_count = i64::try_from(null_count)
-        .map_err(|_| GeometryError::new_err("Arrow geometry export null count exceeds i64"))?;
+        .map_err(|_| GeometryError::new_err("Arrow array export null count exceeds i64"))?;
     Ok(())
 }
 
@@ -490,6 +509,76 @@ pub(crate) fn primitive_f64_array_windowed(
         [OwnedBufferSlot::Null, OwnedBufferSlot::F64(values)],
         Vec::new(),
     )
+}
+
+pub(crate) fn primitive_u64_array_windowed(
+    values: SharedSlice<u64>,
+    start: usize,
+    len: usize,
+) -> PyResult<GometryArrowArray> {
+    make_array_with_offset(
+        len,
+        start,
+        [OwnedBufferSlot::Null, OwnedBufferSlot::U64(values)],
+        Vec::new(),
+    )
+}
+
+pub(crate) fn primitive_u64_arc_array_windowed(
+    values: Arc<[u64]>,
+    start: usize,
+    len: usize,
+) -> PyResult<GometryArrowArray> {
+    make_array_with_offset(
+        len,
+        start,
+        [OwnedBufferSlot::Null, OwnedBufferSlot::U64Arc(values)],
+        Vec::new(),
+    )
+}
+
+pub(crate) fn utf8_array(
+    offsets: SharedSlice<i32>,
+    values: SharedSlice<u8>,
+) -> PyResult<GometryArrowArray> {
+    let length = offsets.len().checked_sub(1).ok_or_else(|| {
+        GeometryError::new_err("Arrow UTF-8 offsets must contain at least one entry")
+    })?;
+    let final_offset = offsets.last().copied();
+    if final_offset.and_then(|offset| usize::try_from(offset).ok()) != Some(values.len()) {
+        return Err(GeometryError::new_err(
+            "Arrow UTF-8 offsets do not match the owned values buffer",
+        ));
+    }
+    make_array(
+        length,
+        [
+            OwnedBufferSlot::Null,
+            OwnedBufferSlot::I32(offsets),
+            OwnedBufferSlot::U8(values),
+        ],
+        Vec::new(),
+    )
+}
+
+pub(crate) const fn primitive_u64_schema(nullable: bool) -> SchemaNode {
+    SchemaNode {
+        format: "L",
+        name: "",
+        metadata: None,
+        nullable,
+        children: Vec::new(),
+    }
+}
+
+pub(crate) const fn utf8_schema() -> SchemaNode {
+    SchemaNode {
+        format: "u",
+        name: "",
+        metadata: None,
+        nullable: true,
+        children: Vec::new(),
+    }
 }
 
 pub(crate) fn coordinate_schema(axes: CoordinateAxes, nullable: bool) -> SchemaNode {
@@ -619,6 +708,8 @@ pub(crate) fn extension_schema(
 const ZMIJ_F64_DISPLAY: usize = 24;
 const CRS_PREFIX: &str = "{\"crs\":";
 const CRS_TYPE_FIELD: &str = ",\"crs_type\":\"projjson\"";
+const CRS_DEFINITION_FIELD_PREFIX: &str = ",\"";
+const CRS_DEFINITION_FIELD_SUFFIX: &str = "\":";
 const EPOCH_FIELD: &str = ",\"epoch\":";
 const EPOCH_ONLY_PREFIX: &str = "{\"epoch\":";
 const OBJECT_END: &str = "}";
@@ -631,30 +722,60 @@ pub(crate) fn extension_metadata_json(
         return Ok(None);
     }
     let projjson = crs.map(crate::crs::to_projjson).transpose()?;
+    let crs_definition = crs.map(|crs| {
+        serde_json::to_string(crs).expect("a CRS definition string is JSON-serializable")
+    });
     let epoch = epoch
         .map(|epoch| {
             Number::from_f64(epoch)
                 .ok_or_else(|| NativeArrowExportError::geometry("coordinate epoch must be finite"))
         })
         .transpose()?;
-    Ok(Some(assemble_extension_metadata(projjson, epoch)))
+    Ok(Some(assemble_extension_metadata(
+        projjson,
+        crs_definition,
+        epoch,
+    )))
 }
 
 /// Wrap trusted PROJJSON bytes in the GeoArrow envelope. Does not parse or
-/// rebuild a `serde_json::Value` tree.
-fn assemble_extension_metadata(projjson: Option<String>, epoch: Option<Number>) -> String {
+/// rebuild a `serde_json::Value` tree. The namespaced definition records the
+/// producer's CRS label beside GeoArrow's standardized PROJJSON value.
+fn assemble_extension_metadata(
+    projjson: Option<String>,
+    crs_definition: Option<String>,
+    epoch: Option<Number>,
+) -> String {
     debug_assert!(
         projjson.is_some() || epoch.is_some(),
         "absent CRS and epoch is returned as None before assembly"
     );
+    let crs_definition_field_len = CRS_DEFINITION_FIELD_PREFIX
+        .len()
+        .wrapping_add(CRS_DEFINITION_METADATA_KEY.len())
+        .wrapping_add(CRS_DEFINITION_FIELD_SUFFIX.len());
     let extra = match (projjson.is_some(), epoch.is_some()) {
         (true, false) => CRS_PREFIX
             .len()
             .wrapping_add(CRS_TYPE_FIELD.len())
+            .wrapping_add(crs_definition_field_len)
+            .wrapping_add(
+                crs_definition
+                    .as_deref()
+                    .expect("a CRS definition accompanies PROJJSON")
+                    .len(),
+            )
             .wrapping_add(OBJECT_END.len()),
         (true, true) => CRS_PREFIX
             .len()
             .wrapping_add(CRS_TYPE_FIELD.len())
+            .wrapping_add(crs_definition_field_len)
+            .wrapping_add(
+                crs_definition
+                    .as_deref()
+                    .expect("a CRS definition accompanies PROJJSON")
+                    .len(),
+            )
             .wrapping_add(EPOCH_FIELD.len())
             .wrapping_add(ZMIJ_F64_DISPLAY)
             .wrapping_add(OBJECT_END.len()),
@@ -670,6 +791,14 @@ fn assemble_extension_metadata(projjson: Option<String>, epoch: Option<Number>) 
         out.push_str(CRS_PREFIX);
         out.push_str(&projjson);
         out.push_str(CRS_TYPE_FIELD);
+        out.push_str(CRS_DEFINITION_FIELD_PREFIX);
+        out.push_str(CRS_DEFINITION_METADATA_KEY);
+        out.push_str(CRS_DEFINITION_FIELD_SUFFIX);
+        out.push_str(
+            crs_definition
+                .as_deref()
+                .expect("a CRS definition accompanies PROJJSON"),
+        );
         if let Some(epoch) = epoch {
             out.push_str(EPOCH_FIELD);
             write!(out, "{epoch}").expect("writing into a reserved String cannot fail");
@@ -804,15 +933,21 @@ mod owner_export_tests {
     #[test]
     fn assemble_extension_metadata_embeds_projjson_bytes() {
         let projjson = "{\"type\":\"GeographicCRS\",\"name\":\"fixture\"}".to_owned();
-        let text = assemble_extension_metadata(Some(projjson.clone()), None);
+        let definition = serde_json::to_string("EPSG:4326").unwrap();
+        let text = assemble_extension_metadata(Some(projjson.clone()), Some(definition), None);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["crs_type"], "projjson");
         assert_eq!(
             value["crs"],
             serde_json::from_str::<serde_json::Value>(&projjson).unwrap()
         );
+        assert_eq!(value["gometry:crs_definition"], "EPSG:4326");
         assert!(text.contains(&projjson), "PROJJSON bytes must be retained");
-        let with_epoch = assemble_extension_metadata(Some(projjson), Number::from_f64(2010.5));
+        let with_epoch = assemble_extension_metadata(
+            Some(projjson),
+            Some(serde_json::to_string("EPSG:4326").unwrap()),
+            Number::from_f64(2010.5),
+        );
         let value: serde_json::Value = serde_json::from_str(&with_epoch).unwrap();
         assert_eq!(value["epoch"].as_f64(), Some(2010.5));
         assert_eq!(value["crs_type"], "projjson");
@@ -830,7 +965,7 @@ mod owner_export_tests {
             let number = Number::from_f64(epoch).expect("finite epoch");
             let reserved = number.clone();
             let (text, allocations) = crate::test_support::allocation_count(|| {
-                assemble_extension_metadata(None, Some(reserved))
+                assemble_extension_metadata(None, None, Some(reserved))
             });
             assert_eq!(allocations, 1, "epoch {epoch:?} allocated {allocations}");
             let token = text
@@ -844,7 +979,7 @@ mod owner_export_tests {
             );
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();
             assert!(value["epoch"].is_number(), "{text}");
-            let repeated = assemble_extension_metadata(None, Some(number));
+            let repeated = assemble_extension_metadata(None, None, Some(number));
             assert_eq!(repeated, text);
         }
     }
@@ -862,6 +997,7 @@ mod owner_export_tests {
             value["crs"],
             serde_json::from_str::<serde_json::Value>(&projjson).unwrap()
         );
+        assert_eq!(value["gometry:crs_definition"], "EPSG:4326");
         assert_eq!(value["epoch"].as_f64(), Some(2010.0));
         assert!(
             text.contains(&projjson),

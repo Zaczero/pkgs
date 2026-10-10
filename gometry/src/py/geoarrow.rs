@@ -17,6 +17,8 @@ pub(crate) enum GeometryEncoding {
     Wkb,
 }
 
+pub(crate) const CRS_DEFINITION_METADATA_KEY: &str = "gometry:crs_definition";
+
 impl GeometryEncoding {
     pub(crate) const fn extension_name(self) -> &'static str {
         match self {

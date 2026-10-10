@@ -5,8 +5,10 @@ description: Arrow C Data Interface and GeoArrow interchange in gometry — depe
 # Arrow & storage
 
 [`Geometry`][gometry.Geometry] and [`GeometryArray`][gometry.GeometryArray] export Arrow C Data Interface capsules in
-[GeoArrow](https://geoarrow.org/) layouts. GeoParquet files and lonboard maps
-build on those same capsules.
+[GeoArrow](https://geoarrow.org/) layouts. [`CellArray`][gometry.CellArray],
+[`H3EdgeArray`][gometry.H3EdgeArray], and [`H3VertexArray`][gometry.H3VertexArray]
+export their cell identities as primitive Arrow columns. GeoParquet files and
+lonboard maps build on the geometry capsules.
 
 ## Arrow PyCapsules without pyarrow
 
@@ -17,6 +19,13 @@ optional dependency:
 - `__arrow_c_array__` → a `(schema_capsule, array_capsule)` tuple named
   `arrow_schema` and `arrow_array`
 - `__arrow_c_stream__` → a capsule named `arrow_array_stream`
+
+Cell identity arrays also implement `__arrow_c_array__`. H3, S2, tile, H3 edge,
+and H3 vertex IDs use `uint64`; geohash cells use UTF-8 tokens. `CellArray`
+missing rows are Arrow nulls. These primitive columns do not carry the grid
+kind: pass the known cell type to [`CellArray`][gometry.CellArray] when importing
+IDs, or construct an [`H3EdgeArray`][gometry.H3EdgeArray] or
+[`H3VertexArray`][gometry.H3VertexArray] from its IDs.
 
 A consumer that implements the Arrow C Data Interface can import the GeoArrow
 buffers straight from these capsules **without pyarrow installed**. Whether a
@@ -42,6 +51,33 @@ print('array:', 'arrow_array' in repr(array_capsule))
 ```bash
 uv add "gometry[arrow]"
 ```
+
+## Cell IDs and geohash tokens
+
+Install `gometry[arrow]` to use PyArrow with the cell-array protocol. Numeric
+cell arrays become `uint64` columns; geohash cells become UTF-8 token columns.
+Missing `CellArray` entries remain Arrow nulls.
+
+```python exec="on" source="block" result="text"
+import pyarrow as pa
+
+import gometry as gm
+
+cell = gm.H3Cell(13.4, 52.5, resolution=7)
+cells = gm.CellArray([cell, None])
+ids = pa.array(cells)
+restored = gm.CellArray(ids.to_pylist(), type=gm.H3Cell)
+tokens = pa.array(gm.CellArray([gm.GeohashCell('u33d')]))
+
+print("ID column:", ids.type, ids.to_pylist())
+print("restored grid:", restored.grid)
+print("geohash tokens:", tokens.type, tokens.to_pylist())
+```
+
+Contiguous numeric arrays and slices retain their ID buffers through the Arrow
+capsules. Gathered selections own a compact ID buffer, and geohash export
+encodes token bytes. Arrow schema requests must match the exported primitive
+type.
 
 ## Round-trip
 
@@ -108,12 +144,24 @@ BinaryView padding, coordinate finiteness, and GeoArrow encoding/storage pairs.
 Malformed owned data raises a domain error. Resource budgets and untrusted-input
 limits are documented in [Security & untrusted input](../about/security.md).
 
-## CRS as PROJJSON, epoch as a gometry extension
+## CRS as PROJJSON, epoch and exact identity as gometry extensions
 
 The GeoArrow extension metadata writes the CRS as **PROJJSON** — GeoArrow's
 recommended encoding, and the one [GeoParquet](https://geoparquet.org/) 1.1
-requires when columns land in a lakehouse. It reads back both PROJJSON objects and
-plain authority strings from other producers.
+requires when columns land in a lakehouse. Gometry also writes
+`gometry:crs_definition`, a namespaced string containing the exact CRS
+definition stored by the producer. Its readers restore that exact identity only
+after verifying that it describes the standard PROJJSON CRS. External
+standard-only metadata continues to use the CRS decoded from PROJJSON or an
+authority string.
+
+This extra identity field matters because a standardized CRS can remain
+spatially equivalent while its stored representation changes. For example, an
+`EPSG:4326` geometry may be represented by a PROJJSON object after an
+interchange round trip; gometry's exact CRS equality distinguishes those
+definitions. Third-party transformations that discard `gometry:crs_definition`
+retain the standard CRS meaning but cannot preserve the producer's exact
+definition spelling.
 
 The **coordinate epoch** is **not** part of the GeoArrow extension-types
 standard; gometry stores it as an additional JSON member in the same extension
@@ -153,11 +201,12 @@ allocate; it does not promise a GeoJSON fallback.
 Install `gometry[arrow]` for [`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] /
 [`gm.from_geoparquet`][gometry.from_geoparquet]. Write a `GeometryArray` to a
 [GeoParquet](https://geoparquet.org/) file and read it back — CRS metadata is
-embedded as **PROJJSON** in the column header, geometry is written with **WKB**
-encoding (the GeoParquet 1.1 default), and gometry's missing rows travel as Arrow
-validity bits instead of sentinel geometries. GeoParquet builds on pyarrow (the
-`arrow` extra provides it); for an in-memory handoff without a file, use
-`to_arrow`.
+embedded as **PROJJSON** in the column header, with the namespaced
+`gometry:crs_definition` value preserving gometry's exact stored CRS identity.
+Geometry is written with **WKB** encoding (the GeoParquet 1.1 default), and
+gometry's missing rows travel as Arrow validity bits instead of sentinel
+geometries. GeoParquet builds on pyarrow (the `arrow` extra provides it); for an
+in-memory handoff without a file, use `to_arrow`.
 
 The GeoParquet reader and writer also accept binary streams, including
 `io.BytesIO` and `pyarrow.NativeFile`. Readers require a seekable binary source;

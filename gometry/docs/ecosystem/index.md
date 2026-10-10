@@ -33,7 +33,7 @@ GeoArrow, GeoParquet, WKB/WKT/GeoJSON, and [pickle](https://docs.python.org/3/li
 | Partner | Install | → gometry | gometry → | CRS carried | Copy/ownership note |
 | --- | --- | --- | --- | --- | --- |
 | **NumPy** | *(required)* | coordinate buffers → constructors / factories | ndarray returns, [`geom.coords`][gometry.Geometry.coords] → matrix / row-index views | n/a | matrix export copies; per-axis columns may borrow |
-| **Arrow / GeoArrow** | *(native capsules)* | consume `__arrow_c_array__`/`__arrow_c_stream__` | export `__arrow_c_*__` capsules | PROJJSON | native packed layouts |
+| **Arrow / GeoArrow** | *(native capsules)* | consume `__arrow_c_array__`/`__arrow_c_stream__` | export GeoArrow geometry and cell ID/token columns | PROJJSON | packed geometry or primitive cell values |
 | **pyarrow** | `gometry[arrow]` | [`from_arrow`][gometry.from_arrow] | [`to_arrow`][gometry.Geometry.to_arrow] | PROJJSON | native layouts |
 | **GeoParquet** | `gometry[arrow]` | [`from_geoparquet`][gometry.from_geoparquet] | [`arr.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] | PROJJSON header | via pyarrow |
 | **pandas** | `gometry[pandas]` | [`from_pandas`][gometry.from_pandas] | [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] | registered `gometry.geometry` dtype | native extension storage |

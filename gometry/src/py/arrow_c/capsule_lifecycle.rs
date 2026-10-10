@@ -4,10 +4,10 @@ use crate::py::arrow::ArrowEncoding;
 use crate::py::arrow_c::{
     ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray,
     GometryArrowSchema, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult,
-    PyTuple, Python, StreamPrivate, array_capsule_destructor, array_capsule_name, c_char, ffi,
-    release_array, release_schema, release_stream, schema_capsule_destructor, schema_capsule_name,
-    stream_capsule_destructor, stream_capsule_name, stream_get_last_error, stream_get_next,
-    stream_get_schema,
+    PyTuple, Python, SchemaNode, StreamPrivate, array_capsule_destructor, array_capsule_name,
+    c_char, ffi, release_array, release_schema, release_stream, schema_capsule_destructor,
+    schema_capsule_name, stream_capsule_destructor, stream_capsule_name, stream_get_last_error,
+    stream_get_next, stream_get_schema,
 };
 use crate::py::{arrow, arrow_c};
 
@@ -235,6 +235,25 @@ pub(crate) fn array_to_array_capsules(
     let export = arrow_c::materialize_export_plan(plan)?;
     let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     array_capsules(py, export)
+}
+
+pub(crate) fn array_capsules_with_schema(
+    py: Python<'_>,
+    schema_node: SchemaNode,
+    array: GometryArrowArray,
+    requested_schema: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    if let Some(requested_schema) = requested_schema.filter(|schema| !schema.is_none()) {
+        let _ = arrow::reject_requested_schema(Some(requested_schema), &schema_node)?;
+    }
+    let schema = schema_node
+        .materialize_schema()
+        .map_err(|error| error.into_py_err(py))?;
+    array_capsules(py, ExportedArray {
+        schema,
+        schema_node,
+        array,
+    })
 }
 
 pub(crate) fn geometry_to_stream_capsule(

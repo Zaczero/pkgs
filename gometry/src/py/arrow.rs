@@ -120,7 +120,7 @@ pub(crate) fn reject_requested_schema(
         return default_schema
             .matches_requested_schema(requested_schema)?
             .ok_or_else(|| {
-                PyTypeError::new_err("requested_schema does not match the default GeoArrow schema")
+                PyTypeError::new_err("requested_schema does not match the default Arrow schema")
             });
     }
     Ok(false)

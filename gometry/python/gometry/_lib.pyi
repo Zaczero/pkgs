@@ -13530,6 +13530,33 @@ class CellArray(Sequence[_CellT_co]):
     """
 
     __array_ufunc__: ClassVar[None]
+    def __arrow_c_array__(
+        self, requested_schema: PyArrowSchemaCapsule | None = None, /
+    ) -> tuple[PyArrowCapsule, PyArrowCapsule]:
+        """Export cell identities through the Arrow C Data Interface.
+
+        H3, S2, and tile arrays use nullable ``uint64`` IDs. Geohash arrays use
+        nullable UTF-8 tokens. Numeric columns do not retain grid kind; restore
+        it with ``CellArray(..., type=...)`` when importing raw IDs.
+
+        Parameters
+        ----------
+        requested_schema : capsule or None, default None
+            A matching Arrow C schema capsule. A different schema is rejected.
+
+        Returns
+        -------
+        tuple of capsule
+            The Arrow schema and array capsules. Their owners retain exported
+            buffers until the consumer releases the array.
+
+        Raises
+        ------
+        TypeError
+            If ``requested_schema`` does not match the exported value type.
+        OverflowError
+            If the encoded geohash tokens exceed Arrow UTF-8's 32-bit offset range.
+        """
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: Python's allocation base plus this array's logical
         ``uint64`` id payload, missing flags, and any row-selection map. Shared
@@ -14331,6 +14358,30 @@ class H3VertexArray(Sequence[H3Vertex]):
     """
 
     __array_ufunc__: ClassVar[None]
+    def __arrow_c_array__(
+        self, requested_schema: PyArrowSchemaCapsule | None = None, /
+    ) -> tuple[PyArrowCapsule, PyArrowCapsule]:
+        """Export the H3 index IDs as an Arrow ``uint64`` column.
+
+        The exported values contain no null slots. Slices retain their
+        source buffer; gathered selections own their materialized IDs.
+
+        Parameters
+        ----------
+        requested_schema : capsule or None, default None
+            A matching Arrow C schema capsule. A different schema is rejected.
+
+        Returns
+        -------
+        tuple of capsule
+            The Arrow schema and array capsules. Their owners retain the ID
+            buffer until the consumer releases the array.
+
+        Raises
+        ------
+        TypeError
+            If ``requested_schema`` does not match the exported ``uint64`` type.
+        """
     def __new__(
         cls,
         values: _IdArray | Iterable[H3Vertex | _IntScalarInput | str],
@@ -14625,6 +14676,30 @@ class H3EdgeArray(Sequence[H3Edge]):
     """
 
     __array_ufunc__: ClassVar[None]
+    def __arrow_c_array__(
+        self, requested_schema: PyArrowSchemaCapsule | None = None, /
+    ) -> tuple[PyArrowCapsule, PyArrowCapsule]:
+        """Export the H3 index IDs as an Arrow ``uint64`` column.
+
+        The exported values contain no null slots. Slices retain their
+        source buffer; gathered selections own their materialized IDs.
+
+        Parameters
+        ----------
+        requested_schema : capsule or None, default None
+            A matching Arrow C schema capsule. A different schema is rejected.
+
+        Returns
+        -------
+        tuple of capsule
+            The Arrow schema and array capsules. Their owners retain the ID
+            buffer until the consumer releases the array.
+
+        Raises
+        ------
+        TypeError
+            If ``requested_schema`` does not match the exported ``uint64`` type.
+        """
     def __new__(
         cls,
         values: _IdArray | Iterable[H3Edge | _IntScalarInput | str],
@@ -20978,7 +21053,7 @@ def from_wkb(
 def _parse_geoarrow_extension_metadata(
     metadata: bytes,
 ) -> tuple[str | None, float | None]:
-    """Private Python entry: parse GeoArrow extension metadata bytes → (crs, epoch)."""
+    """Private Python entry: parse GeoArrow extension metadata bytes → (stored CRS label, epoch)."""
 
 @final
 class _GeoParquetColumnFrame:

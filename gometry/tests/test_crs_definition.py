@@ -302,3 +302,130 @@ def test_authored_definition_crosses_pickle_arrow_geoparquet_and_pandas(
     restored = gm.from_pandas(values.to_pandas())
     assert restored.crs.definition == authored.definition
     _assert_same_axis_meaning(authored, restored.crs)
+
+
+@pytest.mark.parametrize(
+    'crs_input',
+    [
+        pytest.param(4326, id='authority'),
+        pytest.param(gm.CRS(4326).to_wkt(), id='wkt'),
+        pytest.param(_mixed_geographic('lat-lon', 'east-north'), id='projjson'),
+    ],
+)
+def test_arrow_encodings_capsules_and_ipc_preserve_exact_crs_definition(
+    crs_input: object,
+) -> None:
+    pa = pytest.importorskip('pyarrow')
+    expected_crs = gm.CRS(crs_input)
+    values = gm.GeometryArray(
+        [
+            gm.Point(100.0, 0.5, crs=expected_crs),
+            None,
+        ],
+        crs=expected_crs,
+    )
+
+    for encoding in ('auto', 'wkb'):
+        arrow = values.to_arrow(encoding=encoding)
+        metadata = json.loads(arrow.type.__arrow_ext_serialize__())
+        assert metadata['gometry:crs_definition'] == expected_crs.definition
+
+        restored = gm.from_arrow(arrow)
+        assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+        assert restored.crs is not None
+        assert restored.crs.definition == expected_crs.definition
+        assert restored.is_missing.tolist() == [False, True]
+
+        table = pa.table({'geometry': arrow})
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, table.schema) as writer:
+            writer.write_table(table)
+        ipc_geometry = pa.ipc.open_stream(pa.BufferReader(sink.getvalue())).read_all()[
+            'geometry'
+        ]
+        ipc_restored = gm.from_arrow(ipc_geometry)
+        assert ipc_restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+        assert ipc_restored.crs is not None
+        assert ipc_restored.crs.definition == expected_crs.definition
+
+    array_restored = gm.from_arrow(pa.array(values))
+    assert array_restored.crs is not None
+    assert array_restored.crs.definition == expected_crs.definition
+
+    class StreamOnly:
+        def __arrow_c_stream__(self, requested_schema: Any | None = None) -> Any:
+            return values.__arrow_c_stream__(requested_schema)
+
+    stream_restored = gm.from_arrow(StreamOnly())
+    assert stream_restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert stream_restored.crs is not None
+    assert stream_restored.crs.definition == expected_crs.definition
+
+
+def test_arrow_epoch_roundtrip_preserves_exact_crs_definition() -> None:
+    pa = pytest.importorskip('pyarrow')
+    authored = gm.CRS(4326)
+    values = gm.points([1.0, 2.0], [3.0, 4.0], crs=authored, epoch=2020.0)
+
+    for encoding in ('auto', 'wkb'):
+        arrow = values.to_arrow(encoding=encoding)
+        restored = gm.from_arrow(arrow)
+        assert restored.crs is not None
+        assert restored.crs.definition == authored.definition
+        assert restored.epoch == 2020.0
+
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, pa.schema([('geometry', arrow.type)])) as writer:
+            writer.write_batch(pa.record_batch([arrow], names=['geometry']))
+        ipc_geometry = pa.ipc.open_stream(pa.BufferReader(sink.getvalue())).read_all()[
+            'geometry'
+        ]
+        ipc_restored = gm.from_arrow(ipc_geometry)
+        assert ipc_restored.crs is not None
+        assert ipc_restored.crs.definition == authored.definition
+        assert ipc_restored.epoch == 2020.0
+
+
+@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+def test_geoparquet_roundtrip_preserves_exact_crs_definition_and_epoch(
+    encoding: str,
+    tmp_path: Any,
+) -> None:
+    pytest.importorskip('pyarrow')
+    authored = gm.CRS(4326)
+    values = gm.GeometryArray(
+        [
+            gm.Point(1.0, 2.0, crs=authored),
+            None,
+        ],
+        crs=authored,
+    ).with_epoch(2020.0)
+    path = tmp_path / f'{encoding}.parquet'
+
+    values.to_geoparquet(path, encoding=encoding)
+    restored, _ = gm.from_geoparquet(path)
+
+    assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert restored.crs is not None
+    assert restored.crs.definition == authored.definition
+    assert restored.epoch == values.epoch
+    assert restored.is_missing.tolist() == [False, True]
+
+
+def test_geoparquet_rejects_private_crs_definition_that_conflicts_with_projjson(
+    tmp_path: Any,
+) -> None:
+    pytest.importorskip('pyarrow')
+    pq = pytest.importorskip('pyarrow.parquet')
+    values = gm.points([1.0], [2.0], crs=4326)
+    path = tmp_path / 'conflicting-crs.parquet'
+    values.to_geoparquet(path)
+    table = pq.read_table(path)
+    metadata = json.loads(table.schema.metadata[b'geo'])
+    metadata['columns']['geometry']['gometry:crs_definition'] = 'EPSG:3857'
+    schema_metadata = dict(table.schema.metadata)
+    schema_metadata[b'geo'] = json.dumps(metadata).encode()
+    pq.write_table(table.replace_schema_metadata(schema_metadata), path)
+
+    with pytest.raises(gm.ParseError, match='gometry:crs_definition conflicts'):
+        gm.from_geoparquet(path)

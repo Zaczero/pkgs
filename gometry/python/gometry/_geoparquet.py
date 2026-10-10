@@ -180,7 +180,7 @@ def _remove_id_from_member_of_ensembles(json_dict: dict[str, Any]) -> None:
 def _build_geo_metadata(
     arr: GeometryArray[Geometry | None], encoding: str
 ) -> dict[str, Any]:
-    from gometry._arrow import _crs_projjson
+    from gometry._arrow import _CRS_DEFINITION_KEY, _crs_projjson
 
     column_meta: dict[str, Any] = {
         'encoding': encoding,
@@ -190,6 +190,7 @@ def _build_geo_metadata(
         crs_dict = _crs_projjson(arr.crs)
         _remove_id_from_member_of_ensembles(crs_dict)
         column_meta['crs'] = crs_dict
+        column_meta[_CRS_DEFINITION_KEY] = arr.crs.definition
     else:
         column_meta['crs'] = None
 
@@ -561,6 +562,7 @@ def _validate_column_metadata(
             f'column {column_name!r} orientation must be counterclockwise'
         )
 
+    from gometry._arrow import _CRS_DEFINITION_KEY
     from gometry._lib import _parse_geoparquet_column_frame
 
     # Resolve CRS before bbox validation: absent CRS defaults to CRS84, and
@@ -569,7 +571,7 @@ def _validate_column_metadata(
     # decoded mapping (no JSON dump → parse round trip).
     frame_payload = {
         key: column_metadata[key]
-        for key in ('crs', 'epoch', 'edges')
+        for key in ('crs', 'epoch', 'edges', _CRS_DEFINITION_KEY)
         if key in column_metadata
     }
     frame = _parse_geoparquet_column_frame(frame_payload, column_name)

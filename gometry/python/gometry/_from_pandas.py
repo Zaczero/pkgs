@@ -19,13 +19,16 @@ def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:
     A Series backed by ``GeometryExtensionArray`` shares its native storage
     without copying. An ordinary object-dtype Series imports Geometry objects,
     WKB buffers, GeoJSON mappings, and ``__geo_interface__`` rows; pandas
-    missing values become missing geometry rows.
+    missing values become missing geometry rows. A Series backed by
+    ``pd.ArrowDtype`` imports its GeoArrow extension column through
+    :func:`gometry.from_arrow`, preserving Arrow chunks and geometry metadata.
 
     Parameters
     ----------
     series : pandas.Series
-        A geometry Series. Use ``from_geopandas`` for a GeoSeries so its CRS is
-        retained.
+        A geometry Series backed by gometry storage, GeoArrow ``ArrowDtype``, or
+        geometry-like object rows. Use ``from_geopandas`` for a GeoSeries so its
+        CRS is retained.
 
     Returns
     -------
@@ -36,7 +39,8 @@ def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:
     ModuleNotFoundError
         If pandas is not installed.
     TypeError
-        If a row is not a supported geometry representation.
+        If a row is not a supported geometry representation, or an Arrow-backed
+        Series does not contain a supported GeoArrow geometry column.
     """
     from gometry._pandas import GeometryExtensionArray, pd
 
@@ -53,6 +57,10 @@ def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:
         raise TypeError(
             'from_pandas does not preserve GeoSeries CRS metadata; use from_geopandas'
         )
+    if isinstance(series.dtype, pd.ArrowDtype):
+        from gometry import from_arrow
+
+        return from_arrow(data.__arrow_array__())
     missing = series.isna().tolist()
     return GeometryArray(
         None if is_missing else value

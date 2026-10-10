@@ -460,6 +460,42 @@ def test_pandas_nullable_packed_roundtrip_preserves_payload_rows(
     assert restored.epoch == values.epoch
 
 
+def test_from_pandas_imports_geoarrow_backed_arrow_dtype() -> None:
+    pa = pytest.importorskip('pyarrow')
+    authored = gm.CRS(4326)
+    values = gm.GeometryArray(
+        [
+            gm.Point(1.0, 2.0, z=3.0, m=4.0, crs=authored),
+            None,
+            gm.Point(5.0, 6.0, z=7.0, m=8.0, crs=authored),
+        ],
+        crs=authored,
+    ).with_epoch(2020.0)
+    arrow = values.to_arrow()
+    chunks = pa.chunked_array([arrow.slice(0, 1), arrow.slice(1)])
+    series = pd.Series(chunks, dtype=pd.ArrowDtype(chunks.type))
+
+    assert isinstance(series.dtype, pd.ArrowDtype)
+    assert not isinstance(series.array, GeometryExtensionArray)
+    restored = from_pandas(series)
+
+    assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert restored.crs is not None
+    assert restored.crs.definition == authored.definition
+    assert restored.epoch == values.epoch
+    assert restored.is_missing.tolist() == [False, True, False]
+    assert restored.has_z.tolist() == values.has_z.tolist()
+    assert restored.has_m.tolist() == values.has_m.tolist()
+
+
+def test_from_pandas_keeps_unrelated_arrow_dtypes_out_of_geometry_import() -> None:
+    pa = pytest.importorskip('pyarrow')
+    series = pd.Series(pa.array(['not a geometry']))
+
+    with pytest.raises(TypeError):
+        from_pandas(series)
+
+
 def test_empty_selection_take_and_all_missing_mutation_preserve_frame() -> None:
     arr = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).with_epoch(2020.0)
     series = to_pandas(arr)
