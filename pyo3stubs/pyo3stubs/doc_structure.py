@@ -39,7 +39,7 @@ from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, unused_allowlist_errors
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator, Mapping, Sequence
 
     from pyo3stubs.config import StubConfig
     from pyo3stubs.rust_scan import ConstructorDocSource
@@ -142,6 +142,46 @@ class DocSubject:
     parameters: tuple[inspect.Parameter, ...] | None
     source: DocLocation
     declarations: tuple[ast.AST, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SignatureParameter:
+    """One parameter occurrence in an exact declared call form."""
+
+    name: str
+    kind: str
+    annotation: str | None
+    default: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterOccurrence:
+    """One parameter's status in one call form; ``None`` means absent."""
+
+    kind: str
+    annotation: str | None
+    default: str | None
+    status: Literal['required', 'defaulted', 'variadic']
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedParameter:
+    """One prose row reconciled with every exact call-form occurrence."""
+
+    name: str
+    annotation: str | None
+    description: str
+    status: Literal['required', 'defaulted', 'variadic', 'varies']
+    default: str | None
+    occurrences: tuple[ParameterOccurrence | None, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterResolution:
+    """Merged parameter rows plus source-located conflicts and mismatches."""
+
+    rows: tuple[ResolvedParameter, ...]
+    errors: tuple[str, ...]
 
 
 def _rust_constructor_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
@@ -533,6 +573,349 @@ def return_entries(doc: ParsedDoc) -> tuple[DocEntry, ...]:
     )
 
 
+def _expression_text(expression: ast.expr | None) -> str | None:
+    return ast.unparse(expression) if expression is not None else None
+
+
+def _type_terminal_name(expression: ast.expr | None) -> str | None:
+    if isinstance(expression, ast.Name):
+        return expression.id
+    if isinstance(expression, ast.Attribute):
+        return expression.attr
+    if isinstance(expression, ast.Subscript):
+        return _type_terminal_name(expression.value)
+    return None
+
+
+def _has_required_never_input(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    args = function.args
+    positional = [*args.posonlyargs, *args.args]
+    defaults: list[ast.expr | None] = [None] * (
+        len(positional) - len(args.defaults)
+    ) + list(args.defaults)
+    if any(
+        default is None
+        and _type_terminal_name(argument.annotation) in {'Never', 'NoReturn'}
+        for argument, default in zip(positional, defaults, strict=True)
+    ):
+        return True
+    return any(
+        default is None
+        and _type_terminal_name(argument.annotation) in {'Never', 'NoReturn'}
+        for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+    )
+
+
+def _function_forms(
+    declarations: tuple[ast.AST, ...],
+    *,
+    kind: str,
+) -> tuple[tuple[SignatureParameter, ...], ...]:
+    functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for declaration in declarations:
+        if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.append(declaration)
+        elif isinstance(declaration, ast.ClassDef) and kind == 'constructor':
+            functions.extend(
+                node
+                for node in declaration.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in {'__new__', '__init__'}
+            )
+    if not functions:
+        return ()
+
+    overloads = [
+        function
+        for function in functions
+        if decorator_names(function) & {'overload'}
+    ]
+    if overloads:
+        functions = overloads
+    elif len(functions) > 1:
+        functions = functions[-1:]
+
+    result: list[tuple[SignatureParameter, ...]] = []
+    for function in functions:
+        if (
+            _type_terminal_name(function.returns) in {'Never', 'NoReturn'}
+            or _has_required_never_input(function)
+        ):
+            continue
+        args = function.args
+        positional = [*args.posonlyargs, *args.args]
+        defaults: list[ast.expr | None] = [None] * (
+            len(positional) - len(args.defaults)
+        ) + list(args.defaults)
+        receiver = None
+        if kind == 'constructor':
+            receiver = 'cls' if function.name == '__new__' else 'self'
+        elif '.' in function.name and not (
+            decorator_names(function) & {'staticmethod'}
+        ):
+            if positional and positional[0].arg in {'self', 'cls'}:
+                receiver = positional[0].arg
+        if receiver and positional and positional[0].arg == receiver:
+            positional = positional[1:]
+            defaults = defaults[1:]
+
+        parameters: list[SignatureParameter] = []
+        for index, (argument, default) in enumerate(
+            zip(positional, defaults, strict=True)
+        ):
+            parameters.append(SignatureParameter(
+                argument.arg,
+                (
+                    'positional-only'
+                    if index < max(0, len(args.posonlyargs) - int(receiver is not None))
+                    else 'positional or keyword'
+                ),
+                _expression_text(argument.annotation),
+                _expression_text(default),
+            ))
+        if args.vararg is not None:
+            parameters.append(SignatureParameter(
+                args.vararg.arg,
+                'variadic positional',
+                _expression_text(args.vararg.annotation),
+                None,
+            ))
+        for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+            parameters.append(SignatureParameter(
+                argument.arg,
+                'keyword-only',
+                _expression_text(argument.annotation),
+                _expression_text(default),
+            ))
+        if args.kwarg is not None:
+            parameters.append(SignatureParameter(
+                args.kwarg.arg,
+                'variadic keyword',
+                _expression_text(args.kwarg.annotation),
+                None,
+            ))
+        result.append(tuple(parameters))
+    return tuple(result)
+
+
+def _parameter_forms(
+    subject: DocSubject,
+) -> tuple[tuple[SignatureParameter, ...], ...]:
+    if subject.kind not in {'callable', 'constructor'}:
+        return ()
+    forms = _function_forms(subject.declarations, kind=subject.kind)
+    if forms or subject.parameters is None:
+        return forms
+
+    kind_names = {
+        inspect.Parameter.POSITIONAL_ONLY: 'positional-only',
+        inspect.Parameter.POSITIONAL_OR_KEYWORD: 'positional or keyword',
+        inspect.Parameter.VAR_POSITIONAL: 'variadic positional',
+        inspect.Parameter.KEYWORD_ONLY: 'keyword-only',
+        inspect.Parameter.VAR_KEYWORD: 'variadic keyword',
+    }
+    return (
+        tuple(
+            SignatureParameter(
+                parameter.name,
+                kind_names[parameter.kind],
+                (
+                    str(parameter.annotation)
+                    if parameter.annotation is not inspect.Parameter.empty
+                    else None
+                ),
+                (
+                    None
+                    if parameter.default is inspect.Parameter.empty
+                    else repr(parameter.default)
+                ),
+            )
+            for parameter in subject.parameters
+        ),
+    )
+
+
+def _same_default(left: str, right: str) -> bool:
+    left_text = left.rstrip('.').strip('`')
+    right_text = right.rstrip('.').strip('`')
+    if left_text == right_text:
+        return True
+    try:
+        return ast.literal_eval(left_text) == ast.literal_eval(right_text)
+    except (SyntaxError, ValueError):
+        return False
+
+
+def resolve_parameter_rows(
+    qualname: str,
+    carriers: Sequence[tuple[str, DocLocation]],
+    forms: Sequence[Sequence[SignatureParameter]],
+    *,
+    require_documentation: bool = True,
+) -> ParameterResolution:
+    """Resolve one documented row per parameter against exact call-form states."""
+    entries: dict[str, list[tuple[DocEntry, DocLocation]]] = {}
+    for prose, source in carriers:
+        for entry in parameter_entries(parse_doc(prose)):
+            for name in entry.names:
+                entries.setdefault(name, []).append((entry, source))
+
+    ordered_names = list(dict.fromkeys(
+        parameter.name for form in forms for parameter in form
+    ))
+    ordered_names.extend(name for name in entries if name not in ordered_names)
+    errors: list[str] = []
+    rows: list[ResolvedParameter] = []
+
+    for name in ordered_names:
+        occurrences = tuple(
+            next((parameter for parameter in form if parameter.name == name), None)
+            for form in forms
+        )
+        present = [parameter for parameter in occurrences if parameter is not None]
+        states: list[ParameterOccurrence] = []
+        for parameter in present:
+            status: Literal['required', 'defaulted', 'variadic'] = (
+                'variadic'
+                if parameter.kind.startswith('variadic')
+                else ('defaulted' if parameter.default is not None else 'required')
+            )
+            states.append(ParameterOccurrence(
+                parameter.kind,
+                parameter.annotation,
+                parameter.default,
+                status,
+            ))
+        if not present:
+            row_status: Literal['required', 'defaulted', 'variadic', 'varies'] = 'varies'
+            display_default = 'varies by call form'
+        else:
+            state_keys = {
+                (
+                    occurrence.status,
+                    occurrence.kind if occurrence.status == 'variadic' else None,
+                    occurrence.default,
+                )
+                for occurrence in states
+            }
+            varies = len(present) != len(occurrences) or len(state_keys) != 1
+            if varies:
+                row_status = 'varies'
+                display_default = 'varies by call form'
+            else:
+                row_status = states[0].status
+                display_default = (
+                    states[0].default
+                    if row_status == 'defaulted'
+                    else 'not applicable'
+                    if row_status == 'variadic'
+                    else None
+                )
+
+        claims = entries.get(name, [])
+        locations = tuple(
+            f'{source.path}:{source.line + entry.line - 1}'
+            for entry, source in claims
+        )
+        type_claims = list(dict.fromkeys(
+            ' '.join(entry.type_text.split())
+            for entry, _source in claims
+            if entry.type_text.strip()
+        ))
+        if len(type_claims) > 1:
+            errors.append(
+                f'{qualname}.{name}: conflicting documented annotations '
+                f'{type_claims!r} at {locations!r}'
+            )
+        documented_defaults: list[tuple[str, str]] = []
+        for entry, source in claims:
+            if entry.default_text is None:
+                continue
+            if not any(
+                _same_default(entry.default_text, previous)
+                for previous, _location in documented_defaults
+            ):
+                documented_defaults.append((
+                    entry.default_text,
+                    f'{source.path}:{source.line + entry.line - 1}',
+                ))
+        if len(documented_defaults) > 1:
+            errors.append(
+                f'{qualname}.{name}: conflicting documented defaults '
+                f'{documented_defaults!r}'
+            )
+
+        if documented_defaults:
+            stated, location = documented_defaults[0]
+            if row_status == 'required':
+                errors.append(
+                    f'{qualname}.{name}: documented default {stated} but the '
+                    'signature has no default'
+                )
+            elif row_status == 'variadic':
+                errors.append(
+                    f'{qualname}.{name}: variadic parameter has a documented default '
+                    f'{stated} at {location}'
+                )
+            elif row_status == 'varies' and stated != 'varies by call form':
+                errors.append(
+                    f'{qualname}.{name}: documented default {stated} at {location} '
+                    'but applicability varies by call form'
+                )
+            elif row_status == 'defaulted' and not _same_default(
+                stated,
+                display_default or '',
+            ):
+                try:
+                    expected_default: object = ast.literal_eval(
+                        (display_default or '').rstrip('.').strip('`')
+                    )
+                except (SyntaxError, ValueError):
+                    expected_default = display_default
+                errors.append(
+                    f'{qualname}.{name}: documented default {stated} '
+                    f'!= runtime {expected_default!r}'
+                )
+
+        if require_documentation and forms and present and not claims:
+            errors.append(f'{qualname}: parameter {name!r} is not documented')
+        if claims and not present:
+            errors.append(f'{qualname}: documented parameter {name!r} is not in any call form')
+
+        signature_annotations = list(dict.fromkeys(
+            parameter.annotation
+            for parameter in present
+            if parameter.annotation is not None
+        ))
+        annotation = (
+            ' | '.join(signature_annotations)
+            if signature_annotations
+            else (type_claims[0] if type_claims else None)
+        )
+        descriptions: list[str] = []
+        for entry, _source in claims:
+            text = entry.description.strip()
+            if text and not any(
+                text == existing
+                or text in existing
+                or existing in text
+                for existing in descriptions
+            ):
+                descriptions.append(text)
+        rows.append(ResolvedParameter(
+            name,
+            annotation,
+            '\n\n'.join(descriptions),
+            row_status,
+            display_default,
+            occurrences,
+        ))
+
+    return ParameterResolution(tuple(rows), tuple(errors))
+
+
 def duplicate_section_errors(doc: str | ParsedDoc, qualname: str) -> list[str]:
     parsed = parse_doc(doc) if isinstance(doc, str) else doc
     seen: set[str] = set()
@@ -542,16 +925,6 @@ def duplicate_section_errors(doc: str | ParsedDoc, qualname: str) -> list[str]:
             errors.append(f'{qualname}: duplicate {section.name!r} section')
         seen.add(section.name)
     return errors
-
-
-def _defaults_match(documented: str, runtime: object) -> bool:
-    text = documented.rstrip('.').strip('`')
-    if text in (repr(runtime), str(runtime)):
-        return True
-    try:
-        return bool(ast.literal_eval(text) == runtime)
-    except (SyntaxError, ValueError):
-        return False
 
 
 def _parameters(obj: object) -> list[inspect.Parameter] | None:
@@ -1031,36 +1404,15 @@ def iter_doc_subjects(
 def check_doc_subject(subject: DocSubject) -> list[str]:
     """Check one carrier's selected signature against the shared parsed prose."""
     parsed = parse_doc(subject.prose)
-    documented = parameter_entries(parsed)
     errors: list[str] = []
-    if subject.parameters is not None:
-        parameter_names = {param.name for param in subject.parameters}
-        for param in subject.parameters:
-            entries = [entry for entry in documented if param.name in entry.names]
-            if not entries:
-                errors.append(
-                    f'{subject.qualname}: parameter {param.name!r} is not documented'
-                )
-                continue
-            for entry in entries:
-                stated = entry.default_text
-                if stated is None or param.default is ...:
-                    continue
-                if param.default is inspect.Parameter.empty:
-                    errors.append(
-                        f'{subject.qualname}.{param.name}: documented default '
-                        f'{stated} but the signature has no default'
-                    )
-                elif not _defaults_match(stated, param.default):
-                    errors.append(
-                        f'{subject.qualname}.{param.name}: documented default '
-                        f'{stated} != runtime {param.default!r}'
-                    )
-        documented_names = {name for entry in documented for name in entry.names}
-        errors.extend(
-            f'{subject.qualname}: documented parameter {name!r} is not in the signature'
-            for name in sorted(documented_names - parameter_names)
+    forms = _parameter_forms(subject)
+    if forms:
+        resolution = resolve_parameter_rows(
+            subject.qualname,
+            ((subject.prose or '', subject.source),),
+            forms,
         )
+        errors.extend(resolution.errors)
     if subject.kind in {'callable', 'property', 'constructor'} and not return_entries(
         parsed
     ):
