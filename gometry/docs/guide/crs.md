@@ -468,15 +468,17 @@ does not. `line_locate` uses the attained parameter's ellipsoidal chart-edge
 arclength and adds the prefix before that edge.
 
 Point-to-chart-edge `dwithin` returns `True` only after an attained sample is at
-or below the supplied radius, and returns `False` only when a certified lower
-bound is strictly above it. If the 128-evaluation budget or binary64 parameter
-precision ends while those bounds straddle the radius, `dwithin` raises
-`CRSError` rather than reporting `False`. It does not add a contact tolerance or
-widen the radius by pruning slack. A positive infinite radius returns `True` for
-admitted non-empty operands without forcing an unrepresentable distance result.
-Vectorized results retain one boolean per input pair: missing rows and present
-empty geometries remain in place as `False`; a nonconvergent present pair raises
-instead of receiving a boolean.
+or below the supplied radius, and returns `False` only when its search certifies
+the threshold result. Its evaluation allowance is derived from binary64
+parameter-refinement depth and the number of live intervals, with a
+16,384-evaluation safety ceiling per point-edge query. If that allowance, the
+safety ceiling, or binary64 parameter precision ends while the bounds straddle
+the radius, `dwithin` raises `CRSError` rather than reporting `False`. It does
+not add a contact tolerance or widen the radius by pruning slack. A positive
+infinite radius returns `True` for admitted non-empty operands without forcing
+an unrepresentable distance result. Vectorized results retain one boolean per
+input pair: missing rows and present empty geometries remain in place as
+`False`; a nonconvergent present pair raises instead of receiving a boolean.
 
 Geographic Hausdorff measures the continuous linework supports of the stored
 chart edges: the source ranges over each straight longitude/latitude edge, and
