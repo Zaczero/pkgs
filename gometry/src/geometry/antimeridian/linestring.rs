@@ -1,4 +1,4 @@
-use crate::geographic::GeographicFrame;
+use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::ordinates::{SourceArcRequest, source_arc_ordinates};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
@@ -79,19 +79,23 @@ pub(crate) fn segment_coords_with_metric<M: ChartMetric>(
         piece.push(start);
         split_transit(&mut piece, &mut pieces, start, end, frame, metric_access)?;
     }
-    if pieces.is_empty() {
+    let Some(last) = coords.last().copied() else {
         return Ok(pieces);
-    }
-    let last = *coords.last().expect("segmented chains have coordinates");
-    let first_piece_start = pieces[0][0];
+    };
+    let Some(first_piece) = pieces.first_mut() else {
+        return Ok(pieces);
+    };
+    let first_piece_start = *first_piece
+        .first()
+        .expect("seam pieces have an opening coordinate");
     if same_point(last, first_piece_start) {
         // A ring: the trailing run continues the leading piece.
-        piece.append(&mut pieces[0]);
-        pieces[0] = piece;
-    } else {
-        piece.push(last);
-        pieces.push(piece);
+        piece.append(first_piece);
+        *first_piece = piece;
+        return Ok(pieces);
     }
+    piece.push(last);
+    pieces.push(piece);
     Ok(pieces)
 }
 
@@ -119,7 +123,9 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
     metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
 ) -> crate::error::Result<SeamRing> {
     let coords = dedup_consecutive(points.to_vec());
-    let cycle = &coords[..coords.len().saturating_sub(1)];
+    let Some((_, cycle)) = coords.split_last() else {
+        return Ok(SeamRing::Whole(points.to_vec()));
+    };
     let Some(start) = cycle.iter().position(|&point| !on_seam(point)) else {
         // Preserve the source seam runs. A ring that spells both seam aliases
         // without intermediate longitudes collapses to this support.
@@ -130,16 +136,33 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
             SeamRing::Pieces(pieces)
         });
     };
-    let vertex = |offset: usize| cycle[(start + offset) % cycle.len()];
+    let cycle_len = cycle.len();
+    let vertex = |offset: usize| {
+        let index = start
+            .checked_add(offset)
+            .expect("one cycle offset fits the addressable coordinate length")
+            % cycle_len;
+        *cycle
+            .get(index)
+            .expect("the cycle offset resolves to a source vertex")
+    };
     let mut whole = Vec::with_capacity(coords.len());
     whole.push(vertex(0));
     let mut pieces: Vec<Vec<Point>> = Vec::new();
     let mut piece = vec![vertex(0)];
     let mut transits = false;
     let mut offset = 1;
-    while offset <= cycle.len() {
+    while offset <= cycle_len {
         let current = vertex(offset);
         if !on_seam(current) {
+            let current = if is_chart_pole(current, frame)
+                && let Some(&previous) = piece.last()
+                && on_seam(previous)
+            {
+                spelled(current, previous.x)
+            } else {
+                current
+            };
             let previous = *piece.last().expect("a piece holds its opening vertex");
             let cut = pieces.len();
             split_transit(
@@ -153,19 +176,36 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
             transits |= pieces.len() != cut;
             piece.push(current);
             whole.push(current);
-            offset += 1;
+            offset = offset
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
             continue;
         }
         let run = offset;
+        let first = vertex(run);
+        let previous_offset = run
+            .checked_sub(1)
+            .expect("a seam run follows its off-seam opening vertex");
+        let previous = vertex(previous_offset);
+        let mut last = first;
         while on_seam(vertex(offset)) {
-            offset += 1;
+            last = vertex(offset);
+            offset = offset
+                .checked_add(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
         }
-        let (first, last) = (vertex(run), vertex(offset - 1));
-        let entry = seam_side(vertex(run - 1), first);
-        let exit = seam_side(vertex(offset), last);
+        let next = vertex(offset);
+        let entry = seam_side(previous, first);
+        // At a pole, longitude does not select a side of the chart cut.
+        let next_is_pole = is_chart_pole(next, frame);
+        let exit = if next_is_pole {
+            entry
+        } else {
+            seam_side(next, last)
+        };
         transits |= entry != exit;
         whole.extend((run..offset).map(|index| spelled(vertex(index), entry)));
-        if entry == exit && first.y == last.y {
+        if entry == exit && (first.y == last.y || next_is_pole) {
             piece.extend((run..offset).map(|index| spelled(vertex(index), entry)));
         } else {
             piece.push(spelled(first, entry));
@@ -176,12 +216,14 @@ pub(crate) fn split_ring_at_seam_with_metric<M: ChartMetric>(
         // `whole` runs from the first off-seam vertex back to it.
         whole.pop();
         whole.rotate_right(start);
-        whole.push(whole[0]);
+        whole.push(*whole.first().expect("a closed ring has an opening vertex"));
         return Ok(SeamRing::Whole(whole));
     }
     // The trailing piece ends at the ring's start, where the leading piece
     // begins.
-    let leading = &mut pieces[0];
+    let leading = pieces
+        .first_mut()
+        .expect("a seam transit creates an opening piece");
     piece.extend(leading.drain(1..));
     *leading = piece;
     Ok(SeamRing::Pieces(pieces))
@@ -197,6 +239,11 @@ pub(crate) fn ring_follows_seam(points: &[Point]) -> bool {
 /// A seam vertex other than a pole, where every longitude is the same point.
 fn on_seam(point: Point) -> bool {
     point.x.abs() == 180.0 && point.y.abs() != 90.0
+}
+
+fn is_chart_pole(point: Point, frame: GeographicFrame) -> bool {
+    point.y == frame.chart_pole_latitude(ChartPole::North)
+        || point.y == frame.chart_pole_latitude(ChartPole::South)
 }
 
 /// The chart side a seam vertex takes beside an off-seam neighbour: the one
