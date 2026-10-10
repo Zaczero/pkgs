@@ -721,8 +721,8 @@ _URUGUAY_CLIP = (
 
 
 def test_dissolve_keeps_sliver_faces_without_representable_interior() -> None:
-    argentina = gm.from_wkt(_ARGENTINA_CLIP).set_crs(4326)
-    uruguay = gm.from_wkt(_URUGUAY_CLIP).set_crs(4326)
+    argentina = gm.from_wkt(_ARGENTINA_CLIP).with_crs(4326)
+    uruguay = gm.from_wkt(_URUGUAY_CLIP).with_crs(4326)
     # A disjoint seam member needs membership probes for faces it does not bound.
     seam = _thin_seam_polygon(179.0, -179.0, 1.0)
 

@@ -12,16 +12,22 @@ import pytest
 
 
 def test_ecosystem_parity_ops() -> None:
-    assert gm.Point(1, 2).set_z(5.0).to_wkt() == 'POINT Z (1 2 5)'
-    assert gm.Point(1, 2).set_m(3.0).to_wkt() == 'POINT M (1 2 3)'
+    assert gm.Point(1, 2).with_coordinates(z=5.0).to_wkt() == 'POINT Z (1 2 5)'
+    assert gm.Point(1, 2).with_coordinates(m=3.0).to_wkt() == 'POINT M (1 2 3)'
     assert gm.Point(1, 2).force_3d().to_wkt() == 'POINT Z (1 2 0)'
     assert gm.Point(1, 2).force_3d(7.0).to_wkt() == 'POINT Z (1 2 7)'
     assert gm.from_wkt('POINT Z (1 2 9)').force_3d().to_wkt() == 'POINT Z (1 2 9)'
-    assert gm.from_wkt('POINT Z (1 2 9)').set_z(4.0).to_wkt() == 'POINT Z (1 2 4)'
-    assert gm.from_wkt('POINT ZM (1 2 9 7)').set_z(None).to_wkt() == 'POINT M (1 2 7)'
+    assert (
+        gm.from_wkt('POINT Z (1 2 9)').with_coordinates(z=4.0).to_wkt()
+        == 'POINT Z (1 2 4)'
+    )
+    assert (
+        gm.from_wkt('POINT ZM (1 2 9 7)').with_coordinates(z=None).to_wkt()
+        == 'POINT M (1 2 7)'
+    )
     assert gm.from_wkt('POINT ZM (1 2 9 7)').force_2d().to_wkt() == 'POINT (1 2)'
     assert gm.from_wkt('POINT ZM (1 2 9 7)').force_2d().to_wkt() == 'POINT (1 2)'
-    assert gm.GeometryArray([gm.Point(1, 2)]).set_z(0.0)[0].has_z
+    assert gm.GeometryArray([gm.Point(1, 2)]).with_coordinates(z=0.0)[0].has_z
     mixed_z = gm.GeometryArray([gm.from_wkt('POINT Z (1 2 9)'), gm.Point(3, 4)])
     assert mixed_z.force_3d(0.0).to_wkt() == ['POINT Z (1 2 9)', 'POINT Z (3 4 0)']
     assert gm.GeometryArray([
@@ -435,7 +441,7 @@ def test_buffer_side_builds_one_sided_strips() -> None:
     assert strip.geometry_type == 'Polygon'
     assert strip.is_valid
     array = gm.GeometryArray([line], crs=32634)
-    assert gm.equals(array.buffer(1.0, side='left')[0], left.set_crs(32634))
+    assert gm.equals(array.buffer(1.0, side='left')[0], left.with_crs(32634))
     assert gm.equals(cast('gm.Geometry', line.buffer(1.0, side='right')), right)
     geodesic = gm.LineString([(13.0, 52.0), (13.01, 52.0)], crs=4326)
     sided = geodesic.buffer(100.0, side='left')
@@ -810,7 +816,7 @@ def test_subdivide_bounds_complexity_and_covers_input() -> None:
 
 
 def test_subdivide_parts_preserves_coordinate_epoch() -> None:
-    polygon = gm.box(0, 0, 10, 10, crs=3857).set_epoch(2020.0)
+    polygon = gm.box(0, 0, 10, 10, crs=3857).with_epoch(2020.0)
     parts = polygon.subdivide(max_vertices=8)
     assert parts.epoch == 2020.0
     assert all(part.epoch == 2020.0 for part in parts)

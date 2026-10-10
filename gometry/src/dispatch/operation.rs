@@ -185,8 +185,6 @@ define_operation! {
     Scale => { name: "scale", resolver: MetricResolver::None },
     Skew => { name: "skew", resolver: MetricResolver::None },
     Snap => { name: "snap", resolver: MetricResolver::GeographicCarry },
-    SetM => { name: "set_m", resolver: MetricResolver::None },
-    SetZ => { name: "set_z", resolver: MetricResolver::None },
     Simplify => { name: "simplify", resolver: MetricResolver::None },
     Smooth => { name: "smooth", resolver: MetricResolver::GeographicCarry },
     SnapToGrid => { name: "snap_to_grid", resolver: MetricResolver::None },

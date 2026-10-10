@@ -202,8 +202,8 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
     assert not gm.equals_exact(xyzm, gm.Point(1, 2, z=3, m=5, crs=4326))
     assert list(xyzm.coords.select('XYZM')) == [(1.0, 2.0, 3.0, 4.0)]
     assert xyzm.quantize(0).coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
-    assert xyzm.set_z(None).set_m(None).coordinate_axes == 'XY'
-    assert xyzm.set_z(None).set_m(None).coords.to_nested() == [1.0, 2.0]
+    assert xyzm.with_coordinates(z=None, m=None).coordinate_axes == 'XY'
+    assert xyzm.with_coordinates(z=None, m=None).coords.to_nested() == [1.0, 2.0]
     assert xyz.to_wkt() == 'POINT Z (1 2 3)'
     assert xyz.force_2d().to_wkt() == 'POINT (1 2)'
     assert xym.to_wkt() == 'POINT M (1 2 4)'
@@ -397,7 +397,7 @@ def test_polygon_mixed_shell_hole_axes_rejected_at_construction() -> None:
     """D21/G2: Polygon(xy_shell, xyz_hole) rejects at construction (writer parity).
 
     Writers refuse mixed ring axes rather than invent Z/M; construction matches.
-    Promote with force_3d/set_m (or build homogeneous rings) first.
+    Promote with force_3d/with_coordinates(m=...) (or build homogeneous rings) first.
     """
     shell = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 0.0)]
     hole = [(1.0, 1.0, 1.0), (2.0, 1.0, 1.0), (1.0, 2.0, 1.0), (1.0, 1.0, 1.0)]

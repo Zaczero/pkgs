@@ -52,7 +52,7 @@ def test_format_readers_normalize_nullable_polars_columns() -> None:
 def test_to_polars_rejects_epoch_loss_without_flag(
     points: gm.GeometryArray,
 ) -> None:
-    epoch_points = points.set_epoch(2020.0)
+    epoch_points = points.with_epoch(2020.0)
     with pytest.raises(ValueError, match='drop_epoch=True'):
         epoch_points.to_polars()
     restored = from_polars(epoch_points.to_polars(drop_epoch=True))

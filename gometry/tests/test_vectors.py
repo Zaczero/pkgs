@@ -46,7 +46,7 @@ def test_geographic_point_bounds_follow_aliases_masks_and_retagged_caches() -> N
                 selected.bounds, expected[: len(selected)], equal_nan=True
             )
             assert selected.total_bounds == (90.0, 3.0, 90.0, 3.0)
-    retagged = rows.set_crs(3857, overwrite=True)
+    retagged = rows.with_crs(3857, overwrite=True)
     np.testing.assert_allclose(
         retagged.bounds,
         [[450.0, 3.0, 450.0, 3.0], [np.nan] * 4, [-270.0, 3.0, -270.0, 3.0]],

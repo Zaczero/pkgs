@@ -1092,7 +1092,7 @@ def test_from_geojson_text_fast_path_errors_match_python_path() -> None:
         )
     with pytest.raises(
         gm.CRSError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.from_geojson(missing_geometry, crs=None, epoch=2020.0, features=True)
     with pytest.raises(gm.CRSError, match='WGS84'):
@@ -1383,7 +1383,7 @@ def test_v1_api_convenience_and_ewkb_helpers() -> None:
         gm.CRSMismatchError, match='dwithin requires matching CRS metadata'
     ):
         gm.dwithin(gm.Point(0, 0, crs=3857), gm.Point(0, 0, crs=32634), 1.0)
-    assert gm.distance(point.set_crs(None), gm.Point(22.0, 52.0)) == 1.0
+    assert gm.distance(point.with_crs(None), gm.Point(22.0, 52.0)) == 1.0
     assert gm.require(point, crs=4326, axes='XY').to_wkt() == point.to_wkt()
     with pytest.raises(ValueError, match='unknown axes'):
         gm.require(point, axes=cast('Any', '2D'))
@@ -1443,8 +1443,8 @@ def test_multi_geometries_and_collections_roundtrip_through_public_io() -> None:
     assert multipolygon.geometry_type == 'MultiPolygon'
     assert collection.geometry_type == 'GeometryCollection'
     assert multipolygon.bounds == (0.0, 0.0, 4.0, 4.0)
-    assert multipolygon.set_crs(None).area == 5
-    assert multiline.set_crs(None).length == pytest.approx(math.sqrt(2) + 1)
+    assert multipolygon.with_crs(None).area == 5
+    assert multiline.with_crs(None).length == pytest.approx(math.sqrt(2) + 1)
     assert multipolygon.area > 0
     assert multiline.length > 0
     assert gm.contains(multipoint, gm.Point(2, 2, crs=4326))

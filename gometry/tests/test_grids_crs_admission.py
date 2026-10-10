@@ -121,7 +121,7 @@ def test_a3_h3_shared_vertex_overlap_covers_multiple_cells():
     cell = cov[0]
     poly = cell.polygon
     if poly.crs is None:
-        poly = poly.set_crs(4326)
+        poly = poly.with_crs(4326)
     vertex = next(iter(poly.exterior.coords))
     vpt = gm.Point(vertex[0], vertex[1], crs=4326)
     tokens = [
@@ -143,7 +143,7 @@ def test_a4_h3_bounding_cell_seam_line():
     assert cell is not None
     poly = cell.polygon
     if poly.crs is None:
-        poly = poly.set_crs(4326)
+        poly = poly.with_crs(4326)
     assert gm.covers(poly, gm.Point(179.9, 0.0, crs=4326))
     assert gm.covers(poly, gm.Point(-179.9, 0.0, crs=4326))
 
@@ -878,9 +878,9 @@ def test_grid_cover_normalizes_geographic_aliases_and_keeps_projected_chord(
     """Geographic labels agree; a projected source keeps its executor-produced chord."""
     source = gm.LineString([(179.0, -10.0), (-179.0, 10.0)], crs=4326)
     geographic_variants = [
-        source.set_crs(None),
+        source.with_crs(None),
         source,
-        source.set_crs('OGC:CRS84', overwrite=True),
+        source.with_crs('OGC:CRS84', overwrite=True),
     ]
     cover = getattr(gm, f'{name}_cover')
     geographic_results = [

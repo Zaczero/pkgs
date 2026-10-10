@@ -59,7 +59,7 @@ impl std::fmt::Display for FrameError {
             } => write!(
                 formatter,
                 "{operation} requires matching CRS metadata: both operands must share one CRS, \
-                 or both be CRS-free; got {} and {}; use set_crs(...) or to_crs(...) \
+                 or both be CRS-free; got {} and {}; use with_crs(...) or to_crs(...) \
                  to align them",
                 crs_label(left.as_ref().map(Crs::as_str)),
                 crs_label(right.as_ref().map(Crs::as_str)),
@@ -109,7 +109,7 @@ impl std::fmt::Display for FrameError {
             ),
             Self::EpochRequiresCrs => write!(
                 formatter,
-                "a coordinate epoch requires a CRS; attach one with crs= (or set_crs(...)) \
+                "a coordinate epoch requires a CRS; attach one with crs= (or with_crs(...)) \
                  before tagging an epoch"
             ),
             Self::EpochRequiresAdmittedCrs { crs } => write!(
@@ -159,7 +159,7 @@ pub(crate) struct FrameAdoption {
 /// A metadata-only frame mutation at the Python setter boundary.
 ///
 /// Centralizes the silent-retag guards and `epoch => crs` invariant for
-/// `Geometry.set_crs`/`set_epoch` and their array counterparts.
+/// `Geometry.with_crs`/`with_epoch` and their array counterparts.
 #[derive(Clone, Debug)]
 pub(crate) enum FrameEdit {
     SetCrs { crs: Option<Crs>, overwrite: bool },
@@ -376,7 +376,7 @@ impl GeometryTransformFrame {
     }
 }
 
-/// `set_crs` declares what coordinates already mean — silently re-tagging one
+/// `with_crs` declares what coordinates already mean — silently re-tagging one
 /// declared CRS as another is almost always a reprojection mistake. Attaching
 /// (``None`` -> crs), clearing (crs -> ``None``), and identical re-tags stay
 /// free; a genuine relabel requires ``overwrite=True``.
@@ -388,7 +388,7 @@ fn guard_crs_retag(existing: Option<&str>, new: Option<&str>, overwrite: bool) -
         && existing != new
     {
         return Err(CrsError::message(format!(
-            "set_crs would re-tag CRS {existing:?} as {new:?} without moving coordinates; \
+            "with_crs would re-tag CRS {existing:?} as {new:?} without moving coordinates; \
              use to_crs to reproject, or pass overwrite=True to relabel deliberately"
         )));
     }
@@ -408,7 +408,7 @@ fn guard_epoch_retag(existing: Option<f64>, new: Option<f64>, overwrite: bool) -
         && !epochs_equal(existing, new)
     {
         return Err(CrsError::message(format!(
-            "set_epoch would change the coordinate epoch from {existing} to {new} without \
+            "with_epoch would change the coordinate epoch from {existing} to {new} without \
              reprojecting; use to_crs to transform between epochs, or pass overwrite=True to \
              relabel deliberately"
         )));

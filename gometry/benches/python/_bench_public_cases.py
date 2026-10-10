@@ -217,7 +217,7 @@ def _compare_from_arrow(
         if g is None:
             continue
         checked += 1
-        ga = g.set_crs(None) if getattr(g, 'crs', None) is not None else g
+        ga = g.with_crs(None) if getattr(g, 'crs', None) is not None else g
         if not bool(shapely.equals(_as_shapely(ga), _as_shapely(s))):
             raise OracleMismatch(f'from_arrow geometry mismatch row={i}')
     if checked != 90_000:
@@ -604,7 +604,7 @@ def _compare_from_geojson(
     # unequal shapes; when exact OGC equals fails on presentation noise, accept
     # only a tiny Hausdorff distance (never bounds-as-equality).
     for i, (g, s) in enumerate(zip(left, right, strict=True)):  # type: ignore[arg-type]
-        g_xy = g.set_crs(None) if getattr(g, 'crs', None) is not None else g
+        g_xy = g.with_crs(None) if getattr(g, 'crs', None) is not None else g
         if bool(shapely.equals(_as_shapely(g_xy), _as_shapely(s))):
             continue
         try:

@@ -361,7 +361,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
         == gm.CRS(utm_cf_without_wkt).definition
     )
     assert (
-        gm.Point(500000.0, 5750000.0).set_crs(utm_cf_without_wkt).crs.definition
+        gm.Point(500000.0, 5750000.0).with_crs(utm_cf_without_wkt).crs.definition
         == gm.CRS(utm_cf_without_wkt).definition
     )
     assert gm.crs_transform(

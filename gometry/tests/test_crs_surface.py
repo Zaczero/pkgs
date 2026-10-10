@@ -13,7 +13,7 @@ def test_crs_assignment_rejects_unknown_authority_metadata() -> None:
     with pytest.raises(ValueError, match='could not resolve CRS'):
         gm.Point(1, 2, crs=999999)
     with pytest.raises(ValueError, match='could not resolve CRS'):
-        gm.Point(1, 2).set_crs('EPSG:999999')
+        gm.Point(1, 2).with_crs('EPSG:999999')
     with pytest.raises(ValueError, match='Invalid PROJ string syntax'):
         gm.CRS('not-a-crs')
 
@@ -146,7 +146,7 @@ def test_estimate_local_crs_is_extent_aware_and_fail_closed() -> None:
     with pytest.raises(gm.CRSError, match='CRS-tagged'):
         gm.Point(0.0, 0.0).estimate_local_crs()
     with pytest.raises(gm.CRSError, match='empty'):
-        gm.Point().set_crs(4326).estimate_local_crs()
+        gm.Point().with_crs(4326).estimate_local_crs()
 
 
 def test_geometry_array_estimate_local_crs_skips_missing_rows() -> None:
@@ -234,7 +234,7 @@ def test_crs_input_forms_are_accepted_across_representative_params() -> None:
         else:
             assert definition == 'EPSG:4326'
         assert gm.Point(0, 0, crs=form).crs.definition == definition
-        assert gm.Point(0, 0).set_crs(form).crs.definition == definition
+        assert gm.Point(0, 0).with_crs(form).crs.definition == definition
         assert gm.points([0.0], [0.0], crs=form).crs.definition == definition
         assert (
             gm.require(gm.Point(0, 0, crs=4326), crs=form).crs.definition == definition

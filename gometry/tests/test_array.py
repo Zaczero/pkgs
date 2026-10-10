@@ -105,13 +105,13 @@ def test_geometry_array_numpy_protocol_accepts_object_dtype_spellings(
         np.asarray(array, dtype='int64')
 
 
-def test_array_set_crs_strips_and_relabels_the_whole_frame() -> None:
+def test_array_with_crs_strips_and_relabels_the_whole_frame() -> None:
     pts = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326)
-    plain = (pts).set_crs(None)
+    plain = (pts).with_crs(None)
     assert plain.crs is None and plain[0].crs is None
     with pytest.raises(ValueError, match='overwrite=True'):
-        pts.set_crs(('EPSG', 3857))
-    relabelled = pts.set_crs(('EPSG', 3857), overwrite=True)
+        pts.with_crs(('EPSG', 3857))
+    relabelled = pts.with_crs(('EPSG', 3857), overwrite=True)
     assert relabelled.crs == gm.CRS('EPSG:3857')
     assert [p.crs for p in relabelled] == [gm.CRS('EPSG:3857')] * 2
     assert relabelled.to_arrow().type.extension_name == 'geoarrow.point'
@@ -836,8 +836,8 @@ def test_total_bounds_is_memoized_and_refreshes_on_frame_retag() -> None:
     assert miny == pytest.approx(40.0)
     assert maxy == pytest.approx(50.0)
 
-    # set_crs retags storage: cache must not inherit a stale geographic fold.
-    plain = seam.set_crs(None, overwrite=True)
+    # with_crs retags storage: cache must not inherit a stale geographic fold.
+    plain = seam.with_crs(None, overwrite=True)
     plain_bounds = plain.total_bounds
     fresh_plain = gm.GeometryArray([
         gm.Polygon([(170, 40), (-170, 40), (-170, 50), (170, 50), (170, 40)])

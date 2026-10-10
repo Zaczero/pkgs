@@ -425,25 +425,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn force_3d_unary_packed(&self, py: Python<'_>, z: f64) -> PyResult<Self> {
-        self.set_z_unary_packed(py, Some(z), false)
-    }
-
-    pub(crate) fn set_z_unary_packed(
-        &self,
-        py: Python<'_>,
-        value: Option<f64>,
-        overwrite: bool,
-    ) -> PyResult<Self> {
-        self.set_z_impl(py, value, overwrite)
-    }
-
-    pub(crate) fn set_m_unary_packed(
-        &self,
-        py: Python<'_>,
-        value: Option<f64>,
-        overwrite: bool,
-    ) -> PyResult<Self> {
-        self.set_m_impl(py, value, overwrite)
+        self.replace_z_impl(py, Some(z), false)
     }
 
     pub(crate) fn quantize_unary_packed(&self, _py: Python<'_>, precision: i32) -> PyResult<Self> {

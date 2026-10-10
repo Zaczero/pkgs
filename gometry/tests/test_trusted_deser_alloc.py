@@ -165,7 +165,7 @@ def test_geometry_pickle_roundtrip():
     assert str(out_arr.crs) == str(arr.crs)
 
     # Epoch round-trip when present (no over-rejection).
-    g_epoch = gm.Point(1, 2, crs=4326).set_epoch(2010.0)
+    g_epoch = gm.Point(1, 2, crs=4326).with_epoch(2010.0)
     out_e = pickle.loads(pickle.dumps(g_epoch))
     assert out_e.epoch == g_epoch.epoch
     assert str(out_e.crs) == str(g_epoch.crs)

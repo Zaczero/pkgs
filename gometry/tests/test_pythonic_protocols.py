@@ -633,7 +633,7 @@ def test_geometry_groups_range_and_strided_views_preserve_value_semantics() -> N
     ]
     assert strided.nbytes == strided.values.nbytes + strided.offsets.nbytes
 
-    framed = _lib._unpickle_geometry_groups_v1(values.set_crs(4326), [0, 2, 3, 6, 8])
+    framed = _lib._unpickle_geometry_groups_v1(values.with_crs(4326), [0, 2, 3, 6, 8])
     assert groups != framed
     assert groups[0] not in framed
 
@@ -789,7 +789,7 @@ def test_pickle_round_trips_across_protocols(protocol: int) -> None:
     values = [
         gm.Point(1, 2, z=3, m=4, crs=4326),
         gm.from_wkt('SRID=3857;LINESTRING (0 0, 1 1)'),
-        gm.points([0.0, 1.0], [0.0, 1.0]).set_crs(4326),
+        gm.points([0.0, 1.0], [0.0, 1.0]).with_crs(4326),
         gm.GeometryArray([gm.Point(0, 0), gm.box(0, 0, 1, 1)]),
         gm.CRS(4326),
         coverage[0],

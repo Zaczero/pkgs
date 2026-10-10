@@ -159,7 +159,7 @@ def test_packed_geographic_boundary_rechecks_admission_after_frame_retag() -> No
     warm = rows.boundary()
     assert '-180' not in warm[64].to_wkt()
 
-    retagged = rows.set_crs(4326, overwrite=True)
+    retagged = rows.with_crs(4326, overwrite=True)
     boundary = retagged.boundary()
     assert '-180' in boundary[64].to_wkt()
     assert '-180' not in boundary[0].to_wkt()

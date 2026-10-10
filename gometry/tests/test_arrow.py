@@ -149,7 +149,7 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
     assert (line).to_wkt() == 'LINESTRING ZM (0 0 10 20, 1 1 11 21)'
     assert gm.from_wkt((line).to_wkt()).coords.to_nested() == line.coords.to_nested()
     assert line.topological_dimension == 1
-    assert (line).set_crs(None).length == pytest.approx(2**0.5)
+    assert (line).with_crs(None).length == pytest.approx(2**0.5)
     assert list(line.coords.select('XYZM')) == [
         (0.0, 0.0, 10.0, 20.0),
         (1.0, 1.0, 11.0, 21.0),
@@ -159,15 +159,17 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
         (1.0, 1.0, 11.0, 21.0),
     ]
     assert [
-        point.coords.to_nested() for point in ((values).set_z(None)).set_m(None)
+        point.coords.to_nested() for point in values.with_coordinates(z=None, m=None)
     ] == [[0.0, 2.0], [1.0, 3.0]]
-    assert ((line).set_z(None)).set_m(None).coords.to_nested() == [
+    assert line.with_coordinates(z=None, m=None).coords.to_nested() == [
         (0.0, 0.0),
         (1.0, 1.0),
     ]
     assert gm.require(values, crs=4326, axes='XYZM').crs == gm.CRS('EPSG:4326')
     assert (
-        gm.require(values.set_z(None).set_m(None), axes='XY').common_coordinate_axes
+        gm.require(
+            values.with_coordinates(z=None, m=None), axes='XY'
+        ).common_coordinate_axes
         == 'XY'
     )
     values_arrow = values.to_arrow()
@@ -549,7 +551,7 @@ def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
 def test_nullable_arrow_c_import_keeps_compact_native_payload(
     rows: list[object], extension_name: str, present_payload_count: int
 ) -> None:
-    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    values = gm.GeometryArray(rows, crs=4326).with_epoch(2020.0)
     source = values.to_arrow()
 
     class CapsuleOnly:

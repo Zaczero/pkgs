@@ -955,7 +955,7 @@ fn check_2d_byte_stride_corners(
 }
 
 /// Like [`coordinate_column_values`], but stop after `expected + 1` items when
-/// the length is known from the receiver (D11: `set_coordinates`, …).
+/// the length is known from the receiver (D11: `with_coordinates`, …).
 pub(crate) fn coordinate_column_values_exact(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
