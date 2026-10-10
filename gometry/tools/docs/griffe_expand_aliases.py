@@ -604,7 +604,11 @@ def _named_tuple_constructor(
     type_variables: set[str],
 ) -> RenderableConstructor | UnsupportedConstructor:
     source = _class_source(class_obj)
-    allowed_bases = {'typing.NamedTuple', 'typing_extensions.NamedTuple', 'typing.Generic'}
+    allowed_bases = {
+        'typing.NamedTuple',
+        'typing_extensions.NamedTuple',
+        'typing.Generic',
+    }
     if any(
         _named_tuple_base_path(class_obj, base) not in allowed_bases
         for base in class_obj.bases
@@ -1347,7 +1351,8 @@ def _resolved_parameter_sections(
         parameter.description = row.description
         parameter.annotation = (
             _copy_expression(binding_parameter.annotation)
-            if binding_parameter is not None and binding_parameter.annotation is not None
+            if binding_parameter is not None
+            and binding_parameter.annotation is not None
             else row.annotation
         )
         if row.status == 'defaulted':
@@ -1379,12 +1384,6 @@ def _prepare_constructor_docstrings(
     class_obj: griffe.Class,
     binding: griffe.Function,
 ) -> None:
-    from pyo3stubs.doc_structure import (
-        DocLocation,
-        SignatureParameter,
-        resolve_parameter_rows,
-    )
-
     from pyo3stubs.doc_structure import (
         DocLocation,
         SignatureParameter,

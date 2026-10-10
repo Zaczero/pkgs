@@ -10,13 +10,16 @@ Drives the real shipped helpers in ``tools/docs/``:
 from __future__ import annotations
 
 import ast
+import copy
 import html
+import inspect
 import re
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
+import gometry as gm
 import griffe
 import pytest
 from jinja2 import (
@@ -1019,6 +1022,303 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
         path == 'gometry.GeometryArray' or path.endswith('.GeometryArray')
         for path in found
     ), found
+
+
+def test_class_materialization_preserves_source_relationships_and_copy_isolation(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    (package / '__init__.pyi').write_text(
+        'from ._types import Record\n',
+        encoding='utf-8',
+    )
+    (package / '_types.pyi').write_text(
+        """\
+from typing import overload
+
+class Base: ...
+
+class Record(Base):
+    @overload
+    def choose(self, value: int) -> int: ...
+    @overload
+    def choose(self, value: str) -> str: ...
+""",
+        encoding='utf-8',
+    )
+    loader = griffe.GriffeLoader(search_paths=[str(tmp_path)], allow_inspection=False)
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    expand = _expand()
+    alias = pkg.members['Record']
+    assert isinstance(alias, griffe.Alias)
+    source = alias.target
+    assert isinstance(source, griffe.Class)
+    expand._promote_overloads(pkg, set())
+    source_method = source.members['choose']
+    assert isinstance(source_method, griffe.Function)
+    assert source_method.overloads
+
+    expand._materialize_class_aliases(pkg)
+
+    materialized = pkg.members['Record']
+    assert isinstance(materialized, griffe.Class)
+    assert materialized is not source
+    assert materialized.bases == source.bases
+    assert materialized.members['choose'] is not source_method
+    assert alias.path in materialized.aliases
+    copied_method = materialized.members['choose']
+    assert isinstance(copied_method, griffe.Function)
+    assert copied_method.overloads is not source_method.overloads
+    copied_method.overloads[0].parameters['value'].annotation = griffe.ExprName('bytes')
+    assert str(source_method.overloads[0].parameters['value'].annotation) == 'int'
+
+
+def test_class_provenance_accepts_native_and_facade_owners_and_rejects_wrong_owner() -> (
+    None
+):
+    pkg = _load_griffe_model()
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    inventory = model.load_public_symbols(
+        model.STUB,
+        GOMETRY_ROOT / 'python/gometry/__init__.py',
+    )
+    point = pkg.members['Point']
+    features = pkg.members['Features']
+    assert isinstance(point, griffe.Class)
+    assert isinstance(features, griffe.Class)
+    assert model._class_provenance_error('Point', point, inventory) is None
+    assert model._class_provenance_error('Features', features, inventory) is None
+
+    wrong_owner = copy.copy(features)
+    point_source = point.extra['gometry']['class_source']
+    wrong_owner.extra = {
+        **features.extra,
+        'gometry': {
+            **features.extra['gometry'],
+            'class_source': type(point_source)(
+                'gometry._types.Features',
+                point_source.path,
+                point_source.line,
+            ),
+        },
+    }
+    error = model._class_provenance_error('Features', wrong_owner, inventory)
+    assert error is not None
+    assert 'does not match' in error
+    assert 'gometry._types.Features' in error
+
+
+def test_exported_namedtuple_forms_match_runtime_and_construct() -> None:
+    pkg = _load_griffe_model()
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    expand = _expand()
+    inventory = model.load_public_symbols(
+        model.STUB,
+        GOMETRY_ROOT / 'python/gometry/__init__.py',
+    )
+    native_classes = model._stub_class_nodes(
+        ast.parse(model.STUB.read_text(encoding='utf-8'))
+    )
+    source_classes = dict(native_classes)
+    source_classes.update({
+        name: facade.declaration.node for name, facade in inventory.classes.items()
+    })
+    namedtuple_classes = {
+        name: node
+        for name, node in source_classes.items()
+        if name in gm.__all__
+        and any(model._stub_base_name(base) == 'NamedTuple' for base in node.bases)
+    }
+    assert set(namedtuple_classes) == {'Extremes', 'PolygonizeResult'}
+
+    classifications = {}
+    for name in gm.__all__:
+        runtime_class = getattr(gm, name, None)
+        node = source_classes.get(name)
+        if not isinstance(runtime_class, type):
+            continue
+        assert node is not None, f'{name}: public class has no source declaration'
+        if model._stub_constructor_declarations(
+            node, '__new__'
+        ) or model._stub_constructor_declarations(node, '__init__'):
+            continue
+        class_obj = pkg.members.get(name)
+        assert isinstance(class_obj, griffe.Class), name
+        outcome = expand.constructor_outcome(class_obj)
+        if name in namedtuple_classes:
+            assert isinstance(outcome, expand.RenderableConstructor), name
+            classification = 'NamedTuple fields'
+        elif isinstance(outcome, expand.UnavailableConstructor):
+            classification = f'unavailable: {outcome.reason}'
+        elif isinstance(outcome, expand.RenderableConstructor):
+            classification = f'inherited: {outcome.source.qualname}'
+        else:
+            pytest.fail(f'{name}: missing constructor classification')
+        classifications[name] = classification
+
+    expected_unavailable = {
+        'AccuracyWarning',
+        'CRSError',
+        'CRSMismatchError',
+        'Cell',
+        'GeometryError',
+        'GeometryTypeError',
+        'InvalidGeometryError',
+        'ParseError',
+        'TransformError',
+    }
+    assert set(classifications) == expected_unavailable | set(namedtuple_classes), (
+        classifications
+    )
+    assert classifications['Cell'].startswith('unavailable:')
+    assert all(
+        classifications[name].startswith('unavailable:')
+        for name in expected_unavailable - {'Cell'}
+    ), classifications
+    assert {
+        name
+        for name, classification in classifications.items()
+        if classification == 'NamedTuple fields'
+    } == set(namedtuple_classes), classifications
+    for name, node in namedtuple_classes.items():
+        runtime_class = getattr(gm, name)
+        runtime_parameters = tuple(inspect.signature(runtime_class).parameters.values())
+        class_obj = pkg.members[name]
+        outcome = expand.constructor_outcome(class_obj)
+        assert isinstance(outcome, expand.RenderableConstructor)
+        forms = expand.ordered_call_forms(outcome)
+        assert len(forms) == 1, name
+        form = forms[0]
+        source_fields = [
+            member
+            for member in node.body
+            if isinstance(member, ast.AnnAssign)
+            and isinstance(member.target, ast.Name)
+            and not member.target.id.startswith('_')
+            and not (
+                isinstance(member.annotation, ast.Subscript)
+                and model._stub_base_name(member.annotation.value) == 'ClassVar'
+            )
+        ]
+        assert len(runtime_parameters) == len(source_fields), name
+        assert [parameter.name for parameter in runtime_parameters] == [
+            member.target.id for member in source_fields
+        ], name
+        assert [parameter.name for parameter in form.parameters] == [
+            parameter.name for parameter in runtime_parameters
+        ], name
+        for parameter, source_field, form_parameter in zip(
+            runtime_parameters,
+            source_fields,
+            form.parameters,
+            strict=True,
+        ):
+            expected_default = model._expression_text(source_field.value)
+            runtime_default = (
+                None
+                if parameter.default is inspect.Parameter.empty
+                else str(parameter.default)
+            )
+            assert runtime_default == expected_default, (name, parameter.name)
+            assert form_parameter.kind is griffe.ParameterKind.positional_or_keyword
+            assert (
+                None if form_parameter.default is None else str(form_parameter.default)
+            ) == expected_default, (name, parameter.name)
+
+    extremes = gm.Extremes(1, 2, 3, 4)
+    assert isinstance(extremes, gm.Extremes)
+    assert tuple(extremes) == (1, 2, 3, 4)
+    result_fields = tuple(object() for _ in gm.PolygonizeResult._fields)
+    result = gm.PolygonizeResult(*result_fields)
+    assert isinstance(result, gm.PolygonizeResult)
+    assert tuple(result) == result_fields
+
+
+def test_generic_namedtuple_constructor_keeps_field_default_and_type_context(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / 'gometry'
+    package.mkdir()
+    source_path = package / '__init__.pyi'
+    source_path.write_text(
+        """\
+from typing import Generic, NamedTuple, TypeVar
+
+ItemT = TypeVar('ItemT', default=int)
+
+class Record(NamedTuple, Generic[ItemT]):
+    required: str
+    value: ItemT = 7
+""",
+        encoding='utf-8',
+    )
+    expand = _expand()
+    loader = griffe.GriffeLoader(
+        search_paths=[str(tmp_path)],
+        extensions=griffe.Extensions(
+            expand.PromoteStubOverloads(),
+            expand.ExpandTokenAliases(),
+        ),
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    record = pkg.members['Record']
+    assert isinstance(record, griffe.Class)
+    outcome = expand.constructor_outcome(record)
+    assert isinstance(outcome, expand.RenderableConstructor)
+    forms = expand.ordered_call_forms(outcome)
+    assert len(forms) == 1
+    assert tuple(
+        (parameter.name, parameter.kind.value, str(parameter.default))
+        for parameter in forms[0].parameters
+    ) == (
+        ('required', 'positional or keyword', 'None'),
+        ('value', 'positional or keyword', '7'),
+    )
+    assert str(forms[0].returns) == 'Record[ItemT]'
+    assert outcome.source.path == str(source_path)
+
+    model = load_tool(
+        'check_doc_model', GOMETRY_ROOT / 'tools/gates/_check_doc_model.py'
+    )
+    source_node = next(
+        node
+        for node in ast.parse(source_path.read_text(encoding='utf-8')).body
+        if isinstance(node, ast.ClassDef) and node.name == 'Record'
+    )
+    expected = model._source_namedtuple_form(source_node, pkg, {})
+    actual = model._griffe_call_form(forms[0])
+    assert actual == expected
+
+    reordered = copy.deepcopy(source_node)
+    field_positions = [
+        index
+        for index, node in enumerate(reordered.body)
+        if isinstance(node, ast.AnnAssign)
+    ]
+    first, second = field_positions
+    reordered.body[first], reordered.body[second] = (
+        reordered.body[second],
+        reordered.body[first],
+    )
+    assert actual != model._source_namedtuple_form(reordered, pkg, {})
+
+    without_default = copy.deepcopy(source_node)
+    next(
+        node
+        for node in without_default.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == 'value'
+    ).value = None
+    assert actual != model._source_namedtuple_form(without_default, pkg, {})
 
 
 def test_griffe_presents_cell_descriptors_as_nullable_geometry_properties() -> None:

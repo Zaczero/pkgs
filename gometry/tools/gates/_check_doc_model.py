@@ -893,11 +893,14 @@ def _namedtuple_call_form(
             tuple(
                 _public_annotation(ast.unparse(argument))
                 for argument in (
-                    base.slice.elts if isinstance(base.slice, ast.Tuple) else (base.slice,)
+                    base.slice.elts
+                    if isinstance(base.slice, ast.Tuple)
+                    else (base.slice,)
                 )
             )
             for base in class_node.bases
-            if isinstance(base, ast.Subscript) and _stub_base_name(base.value) == 'Generic'
+            if isinstance(base, ast.Subscript)
+            and _stub_base_name(base.value) == 'Generic'
         ),
         (),
     )
@@ -979,11 +982,16 @@ def _source_constructor_contracts(
 def _source_class_call_result(class_node: ast.ClassDef) -> str:
     parameters = []
     for base in class_node.bases:
-        if not isinstance(base, ast.Subscript) or _stub_base_name(base.value) != 'Generic':
+        if (
+            not isinstance(base, ast.Subscript)
+            or _stub_base_name(base.value) != 'Generic'
+        ):
             continue
         values = base.slice.elts if isinstance(base.slice, ast.Tuple) else (base.slice,)
         parameters.extend(_public_annotation(ast.unparse(value)) for value in values)
-    return f'{class_node.name}[{", ".join(parameters)}]' if parameters else class_node.name
+    return (
+        f'{class_node.name}[{", ".join(parameters)}]' if parameters else class_node.name
+    )
 
 
 def _source_namedtuple_form(
@@ -1007,7 +1015,7 @@ def _source_namedtuple_form(
             'positional or keyword',
             member.target.id,
             _stub_annotation(member.annotation, module, aliases),
-            _expression_text(member.value),
+            ast.unparse(member.value) if member.value is not None else None,
         ))
     return tuple(parameters), _source_class_call_result(class_node)
 
@@ -1107,11 +1115,13 @@ def _call_form_parameter_rows(
 ) -> dict[str, tuple[str, str | None]]:
     values: dict[str, list[ParameterForm | None]] = {}
     for parameters, _ in forms:
-        present = {name: parameter for parameter in parameters for name in (parameter[1],)}
+        present = {
+            name: parameter for parameter in parameters for name in (parameter[1],)
+        }
         for name in (*values.keys(), *present.keys()):
             values.setdefault(name, [])
-        for name in values:
-            values[name].append(present.get(name))
+        for name, occurrences in values.items():
+            occurrences.append(present.get(name))
 
     result: dict[str, tuple[str, str | None]] = {}
     for name, occurrences in values.items():
@@ -1135,7 +1145,11 @@ def _call_form_parameter_rows(
         status, _kind, default = next(iter(states))
         result[name] = (
             status,
-            default if status == 'defaulted' else 'not applicable' if status == 'variadic' else None,
+            default
+            if status == 'defaulted'
+            else 'not applicable'
+            if status == 'variadic'
+            else None,
         )
     return result
 
@@ -1406,13 +1420,9 @@ def collect_errors() -> list[str]:
         if parameter_resolution is None:
             errors.append(f'{path}: constructor parameter rows were not resolved')
         else:
-            errors.extend(
-                f'{path}: {error}'
-                for error in parameter_resolution.errors
-            )
+            errors.extend(f'{path}: {error}' for error in parameter_resolution.errors)
             actual_rows = {
-                row.name: (row.status, row.default)
-                for row in parameter_resolution.rows
+                row.name: (row.status, row.default) for row in parameter_resolution.rows
             }
             if actual_rows != expected_rows:
                 errors.append(
@@ -1448,14 +1458,11 @@ def collect_errors() -> list[str]:
             source_declaration = source.extra.get('gometry', {}).get(
                 'declaration_source'
             )
-            if (
-                facade is not None
-                and (
-                    source_declaration is None
-                    or not _source_paths_match(
-                        source_declaration.path,
-                        facade.imported.source_path,
-                    )
+            if facade is not None and (
+                source_declaration is None
+                or not _source_paths_match(
+                    source_declaration.path,
+                    facade.imported.source_path,
                 )
             ):
                 errors.append(
