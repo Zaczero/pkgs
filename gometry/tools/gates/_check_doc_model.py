@@ -58,7 +58,7 @@ _PUBLIC_TYPEVAR_NAMES = {
     '_GeometryT': 'GeometryT',
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
-    '_GroupValuesT_co': 'GroupValuesT_co',
+    '_GroupMissingT_co': 'GroupMissingT_co',
     '_GroupRowT_co': 'GroupRowT_co',
 }
 

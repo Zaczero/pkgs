@@ -1093,7 +1093,7 @@ def test_shared_subject_return_check_resolves_generic_classes_and_descriptors(
         '''\
 from typing import Generic, Self, TypeVar
 
-_GroupValuesT_co = TypeVar('_GroupValuesT_co', covariant=True)
+GroupPayload = TypeVar('GroupPayload')
 U = TypeVar('U')
 V = TypeVar('V')
 W = TypeVar('W')
@@ -1128,9 +1128,9 @@ class CellArray:
         The projected geometry values.
     """
 
-class Groups(Generic[_GroupValuesT_co]):
+class Groups(Generic[GroupPayload]):
     @property
-    def values(self) -> _GroupValuesT_co:
+    def values(self) -> GroupPayload:
         """The flat backing column.
 
         Returns

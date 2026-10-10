@@ -157,12 +157,6 @@ _DefaultT = TypeVar('_DefaultT')
 _GeometryT_co = TypeVar(
     '_GeometryT_co', bound=Geometry | None, covariant=True, default=Geometry
 )
-# Flat payload type; source-row validity is represented by `_GroupRowT_co`.
-_GroupValuesT_co = TypeVar(
-    '_GroupValuesT_co',
-    bound=np.ndarray[Any, Any] | GeometryArray[Any] | CellArray[Any],
-    covariant=True,
-)
 # One row of a `Groups` sequence may be a flat payload or a missing source row.
 _GroupRowT_co = TypeVar(
     '_GroupRowT_co',
@@ -11611,22 +11605,6 @@ class Groups(Sequence[_GroupRowT_co], Generic[_GroupRowT_co]):
     def __getitem__(self, index: SupportsIndex, /) -> _GroupRowT_co: ...
     @overload
     def __getitem__(self, index: slice, /) -> Self: ...
-    @overload
-    @overload
-    def to_pairs(
-        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
-    ) -> tuple[
-        np.ndarray[tuple[int], np.dtype[np.int64]],
-        np.ndarray[tuple[int], np.dtype[np.int64]],
-    ]: ...
-    @overload
-    def to_pairs(
-        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
-    ) -> tuple[
-        np.ndarray[tuple[int], np.dtype[np.int64]],
-        np.ndarray[tuple[int], np.dtype[np.int64]],
-    ]: ...
-    @overload
     def to_pairs(
         self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]] | None],
     ) -> tuple[
@@ -19290,13 +19268,6 @@ def split(
 def split(
     geom: GeometryArray[Geometry | None],
     splitter: Geometry | GeometryArray[Geometry | None],
-    *,
-    tolerance: float = 0.0,
-) -> Groups[GeometryArray[LineString] | None]: ...
-@overload
-def split(
-    geom: GeometryArray[Geometry],
-    splitter: GeometryArray[Geometry | None],
     *,
     tolerance: float = 0.0,
 ) -> Groups[GeometryArray[LineString] | None]:

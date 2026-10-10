@@ -351,7 +351,8 @@ def test_parts_and_rings_collections_keep_groups_and_flat_values() -> None:
         'POINT EMPTY',
     ]
     assert parts[3].to_wkt() == []
-    assert parts[4].to_wkt() == []
+    assert parts[4] is None
+    assert parts.is_missing.tolist() == [False, False, False, False, True]
 
     rings = (
         gm

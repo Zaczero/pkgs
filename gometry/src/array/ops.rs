@@ -16,7 +16,7 @@ use crate::array::{
 };
 use crate::geometry::storage;
 use crate::geometry::storage::builder::concat_packed_line_columns;
-use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
+use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
 use crate::py::support;
 use crate::py::vectors::Groups;
 
@@ -797,7 +797,7 @@ impl PyGeometryArray {
         }
         if let Some(splitters) = exact_geometry_array(splitter) {
             crate::broadcast::validate_paired_arrays(self, splitters, "split")?;
-            let missing = crate::geometry::storage::ValidityMask::from_missing_iter(
+            let missing = ValidityMask::from_missing_iter(
                 self.len(),
                 (0..self.len())
                     .map(|row| self.is_row_missing(row) || splitters.is_row_missing(row)),

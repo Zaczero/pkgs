@@ -32,7 +32,7 @@ _PRIVATE_TYPEVAR_RENAMES = {
     '_GeometryT': 'GeometryT',
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
-    '_GroupValuesT_co': 'GroupValuesT_co',
+    '_GroupMissingT_co': 'GroupMissingT_co',
     '_GroupRowT_co': 'GroupRowT_co',
 }
 _SEE_ALSO_ENTRY = re.compile(
@@ -1099,8 +1099,9 @@ def expand_annotation(
             return griffe.ExprBinOp(
                 griffe.ExprBinOp(ndarray, '|', geometry_array), '|', cell_array
             )
-        if expr.name in _PRIVATE_TYPEVAR_RENAMES:
-            return griffe.ExprName(_PRIVATE_TYPEVAR_RENAMES[expr.name])
+        private_typevar = expr.name.rsplit('.', maxsplit=1)[-1]
+        if private_typevar in _PRIVATE_TYPEVAR_RENAMES:
+            return griffe.ExprName(_PRIVATE_TYPEVAR_RENAMES[private_typevar])
         if expr.name == '_CellArrayIterator':
             return griffe.ExprName('Iterator')
         if expr.name in {'_NumericCell', '_Cell'}:

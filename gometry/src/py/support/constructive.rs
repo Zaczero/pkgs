@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::geometry::Shape;
+use crate::geometry::storage::ValidityMask;
 use crate::geometry::storage::builder::concat_packed_line_columns;
 use crate::py::errors;
 use crate::py::support::{
@@ -237,7 +238,7 @@ pub(crate) fn py_polygonize_full(
     full: PolygonizeFull,
     crs: Option<&Crs>,
     epoch: Option<f64>,
-    missing: Option<crate::geometry::storage::ValidityMask>,
+    missing: Option<ValidityMask>,
 ) -> PyResult<Py<PyAny>> {
     let frame = match Frame::new(crs.cloned(), epoch) {
         Ok(frame) => frame,

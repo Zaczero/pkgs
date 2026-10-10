@@ -591,9 +591,24 @@ def test_polygonize_full_diagnostics_keep_source_rows_after_missing_input() -> N
     )
 
     assert len(result.polygons) == 2
-    assert [len(row) for row in result.cut_edges] == [0, 1, 0, 0]
-    assert [len(row) for row in result.dangles] == [0, 0, 1, 0]
-    assert [len(row) for row in result.invalid_rings] == [0, 0, 0, 1]
+    assert [None if row is None else len(row) for row in result.cut_edges] == [
+        None,
+        1,
+        0,
+        0,
+    ]
+    assert [None if row is None else len(row) for row in result.dangles] == [
+        None,
+        0,
+        1,
+        0,
+    ]
+    assert [None if row is None else len(row) for row in result.invalid_rings] == [
+        None,
+        0,
+        0,
+        1,
+    ]
 
     cut = list(result.cut_edges[1][0].coords)
     assert tuple(sorted((tuple(cut[0]), tuple(cut[-1])))) == ((1.0, 0.0), (2.0, 0.0))

@@ -9,6 +9,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 pub(crate) use crate::geometry::OverlayOp;
+use crate::geometry::storage::ValidityMask;
 use crate::{
     CoordinateAxes, Frame, GeometryErrorKind, GeometryKind, PyGeometry, PyGeometryArray, Shape,
     SimplifyMethod, Typed, exact_geometry, exact_geometry_array, geometry,
@@ -27,11 +28,7 @@ fn pooled_shapes(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
 
 fn pooled_shapes_with_rows(
     values: &Bound<'_, PyAny>,
-) -> PyResult<(
-    Frame,
-    Vec<Shape>,
-    Option<crate::geometry::storage::ValidityMask>,
-)> {
+) -> PyResult<(Frame, Vec<Shape>, Option<ValidityMask>)> {
     let array = if let Some(array) = exact_geometry_array(values) {
         array.clone()
     } else if exact_geometry(values).is_some() {

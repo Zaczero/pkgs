@@ -267,7 +267,9 @@ def test_ordinary_geographic_single_cut_subdivide_carries_source_arclength_zm() 
 
     groups = gm.GeometryArray([polygon, None, polygon]).subdivide(max_vertices=8)
     assert len(groups) == 3
-    assert [len(groups[index]) for index in range(3)] == [2, 0, 2]
+    assert [
+        None if groups[index] is None else len(groups[index]) for index in range(3)
+    ] == [2, None, 2]
     for index in (0, 2):
         assert all(part.coordinate_axes == 'XYZM' for part in groups[index])
         coordinates = np.asarray(groups[index].coords, dtype=np.float64).tolist()
@@ -457,7 +459,9 @@ def test_ordinary_geographic_nullable_polygonize_array_uses_source_arclength() -
     groups = gm.GeometryArray([linework, None, linework]).polygonize()
 
     assert len(groups) == 3
-    assert [len(groups[index]) for index in range(3)] == [2, 0, 2]
+    assert [
+        None if groups[index] is None else len(groups[index]) for index in range(3)
+    ] == [2, None, 2]
     expected_z, _ = _source_zm_at_latitude(-5.0)
     for index in (0, 2):
         polygons = groups[index]
