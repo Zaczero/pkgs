@@ -587,8 +587,9 @@ pub(crate) fn nearest_points(
 ///     infinity is accepted and matches every pair of admitted non-empty
 ///     operands.
 /// CRSError
-///     If geographic point-edge search reaches its 128-evaluation budget or
-///     binary64 parameter precision without proving the threshold result.
+///     If geographic point-edge search reaches its binary64-resolution-derived
+///     work allowance or 16,384-evaluation safety ceiling, or parameter
+///     precision ends without proving the threshold result.
 ///
 /// See Also
 /// --------
