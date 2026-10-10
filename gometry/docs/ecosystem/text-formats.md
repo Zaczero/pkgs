@@ -1,5 +1,5 @@
 ---
-description: gometry text and binary IO — WKB/EWKB for databases, WKT/EWKT, GeoJSON Z/M rules, __geo_interface__, pickle, and CRS/epoch round-trip behavior.
+description: gometry text and binary IO — WKB/EWKB for databases, WKT/EWKT, GeoJSON Z/M rules, Features.__geo_interface__, pickle, and CRS/epoch round-trip behavior.
 ---
 
 # Text & binary formats
@@ -249,9 +249,17 @@ When constructing [`Features`][gometry.Features] directly, omitted or explicit
 `properties=None` records `None` for every row; pass `properties={}` when
 independently editable empty mappings are wanted.
 
-The inverse is [`gm.to_feature_collection`][gometry.to_feature_collection] — give it
-geometries plus keyword-only `properties` (and optional `ids`) and it assembles a
-`FeatureCollection` mapping whose geometry members are JSON-ready. The mapping is
+### `Features.__geo_interface__`
+
+`features.__geo_interface__` returns a fresh `FeatureCollection` with the
+record's geometries, properties, and IDs. Missing geometries and properties
+remain `null`, and rows without an ID omit `id`; encoding uses the same WGS 84,
+epoch, and M constraints as
+[`gm.to_feature_collection`][gometry.to_feature_collection].
+
+[`gm.to_feature_collection`][gometry.to_feature_collection] assembles a
+`FeatureCollection` from separate geometry and metadata columns, with keyword-only
+`properties` (and optional `ids`). Its geometry members are JSON-ready. The mapping is
 suitable for `json.dumps` **only when every property value is JSON-serializable**
 (strings, numbers, bools, `None`, and nested lists/dicts of those) — arbitrary
 Python objects in `properties` raise `TypeError` at dump time. `to_geojson` honors
@@ -269,7 +277,9 @@ scalar IDs never broadcast, avoiding accidental duplicate identifiers.
 
 Pickle applies to durable public value and container types: [`Geometry`][gometry.Geometry],
 `GeometryArray` (packed point, line, and polygon columns round-trip as raw
-coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups], `CRS`, [`H3Cell`][gometry.H3Cell], and [`S2Cell`][gometry.S2Cell].
+coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
+[`Features`][gometry.Features], `CRS`, [`H3Cell`][gometry.H3Cell], and
+[`S2Cell`][gometry.S2Cell].
 Their CRS, epoch, and Z/M metadata remain intact through pickle. The same value
 protocol supports [`multiprocessing`](https://docs.python.org/3/library/multiprocessing.html),
 [`concurrent.futures`](https://docs.python.org/3/library/concurrent.futures.html), joblib, and cache
@@ -281,6 +291,12 @@ containers. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retain
 view, preserving its selected layout and flattened row indexes; iterator types
 are not picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an
 immutable parent view; it is reconstructed from its geometry when unpickled.
+
+`copy.copy(features)` returns a new record sharing its geometry, property, and ID
+columns, so edits to a shared property dictionary are visible through either
+record. `copy.deepcopy(features)` recursively copies property mappings and their
+values. On Python 3.13 and newer, `copy.replace(features, ...)` preserves each
+omitted column by identity and validates supplied columns.
 
 With pickle protocol 5, packed `GeometryArray` payload columns and their offsets
 can be sent out of band when the pickler uses `buffer_callback`. Those buffers

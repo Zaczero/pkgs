@@ -93,6 +93,6 @@ def test_earcut_missing_and_empty_groups() -> None:
     poly = gm.Polygon([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)])
     groups = gm.GeometryArray([poly, None]).triangulate(method='earcut')
     assert len(groups[0]) > 0
-    assert len(groups[1]) == 0
+    assert groups[1] is None
     empty = gm.from_wkt('POLYGON EMPTY').triangulate(method='earcut')
     assert len(empty) == 0

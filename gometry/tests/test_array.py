@@ -341,7 +341,9 @@ def test_array_parts_preserve_source_row_grouping() -> None:
     assert groups.counts.tolist() == [2, 1, 0, 0]
     assert groups[0].to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
     assert groups[1].to_wkt() == ['POINT (2 2)']
-    assert len(groups[2]) == len(groups[3]) == 0
+    assert groups[2].to_wkt() == []
+    assert groups[3] is None
+    assert groups.is_missing.tolist() == [False, False, False, True]
     assert groups.offsets.tolist() == [0, 2, 3, 3, 3]
 
 
@@ -361,9 +363,15 @@ def test_groups_counts_dtype_values_and_readonly() -> None:
     assert counts.shape == (len(groups),)
     assert counts.tolist() == [3, 1, 0, 0, 2]
     assert not counts.flags.writeable
-    # counts[i] equals len(groups[i]) for every row.
+    # Missing rows have zero values but remain distinguishable from empty rows.
     for i, count in enumerate(counts.tolist()):
-        assert len(groups[i]) == count
+        row = groups[i]
+        if row is None:
+            assert groups.is_missing[i]
+            assert count == 0
+        else:
+            assert not groups.is_missing[i]
+            assert len(row) == count
     # Cell hierarchy Groups share the same contract.
     cells = gm.CellArray(
         [gm.H3Cell(0.0, 0.0, resolution=5), gm.H3Cell(10.0, 10.0, resolution=5)],

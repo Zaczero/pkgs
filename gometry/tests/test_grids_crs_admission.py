@@ -353,10 +353,12 @@ def test_grid_cover_uses_the_paired_geographic_source_circle_for_scalar_and_arra
         max_cells=None,
     )
 
-    assert [len(row) for row in actual] == [len(actual[0]), 0, len(actual[0])]
+    assert actual.is_missing.tolist() == [False, True, False]
+    assert [len(actual[row]) for row in (0, 2)] == [len(actual[0]), len(actual[0])]
+    assert actual[1] is None
     assert len(actual[0]) > 1
     assert _cell_keys(actual[0]) == _cell_keys(expected[0])
-    assert len(expected[1]) == 0
+    assert expected[1] is None
     assert _cell_keys(actual[2]) == _cell_keys(expected[2])
 
 
@@ -942,7 +944,7 @@ def test_grid_cover_normalizes_geographic_aliases_and_keeps_projected_chord(
         ('tile', {'zoom': 3}),
     ],
 )
-def test_grid_cover_array_empty_and_missing_rows_are_empty_groups(name, kwargs):
+def test_grid_cover_array_distinguishes_empty_and_missing_groups(name, kwargs):
     """Present empty and missing rows preserve source-row association."""
     source = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326).to_crs(3857)
     array = gm.GeometryArray([
@@ -952,7 +954,9 @@ def test_grid_cover_array_empty_and_missing_rows_are_empty_groups(name, kwargs):
     ])
     cover = getattr(gm, f'{name}_cover')
     groups = cover(array, cell_rule='overlap', max_cells=None, **kwargs)
-    assert [len(group) for group in groups] == [len(groups[0]), 0, 0]
+    assert groups.is_missing.tolist() == [False, False, True]
+    assert [len(groups[row]) for row in (0, 1)] == [len(groups[0]), 0]
+    assert groups[2] is None
     assert len(groups[0]) > 0
 
 

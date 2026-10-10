@@ -1118,7 +1118,7 @@ def test_s2_within_keeps_scalar_empty_rejection_and_array_rows() -> None:
     assert isinstance(groups, gm.Groups)
     assert len(groups) == 2
     assert len(groups[0]) == 0
-    assert len(groups[1]) == 0
+    assert groups[1] is None
 
 
 def test_s2_bowtie_cover_keeps_both_filled_lobes() -> None:

@@ -998,7 +998,7 @@ Returns
 -------
 Groups
     One ``GeometryArray`` of distinct self-intersection points per
-    element; missing rows yield an empty group.
+    element; missing rows yield ``None`` groups.
 
 ";
     tail: r"Examples

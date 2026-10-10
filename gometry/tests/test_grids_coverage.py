@@ -150,9 +150,9 @@ def test_array_covers_return_groups() -> None:
     for groups in cases:
         assert isinstance(groups, gm.Groups)
         assert len(groups) == 2
-        assert all(isinstance(row, gm.CellArray) for row in groups)
+        assert isinstance(groups[0], gm.CellArray)
         assert len(groups[0]) > 0
-        assert len(groups[1]) == 0
+        assert groups[1] is None
 
 
 @pytest.mark.parametrize(
@@ -180,7 +180,7 @@ def test_cover_accepts_geometry_iterables_and_keeps_missing_groups(
     assert isinstance(groups, gm.Groups)
     assert len(groups) == 4
     assert list(groups[0]) == list(cover(first, **options))
-    assert len(groups[1]) == 0
+    assert groups[1] is None
     assert len(groups[2]) == 0
     assert list(groups[3]) == list(cover(second, **options))
 
@@ -203,9 +203,9 @@ def test_interleaved_missing_cover_rows_keep_logical_alignment() -> None:
         groups = cover(values, max_cells=None, **depth)
         assert len(groups) == 4
         assert list(groups[0]) == list(cover(first, max_cells=None, **depth))
-        assert len(groups[1]) == 0
+        assert groups[1] is None
         assert list(groups[2]) == list(cover(second, max_cells=None, **depth))
-        assert len(groups[3]) == 0
+        assert groups[3] is None
 
 
 @pytest.mark.parametrize(
@@ -240,7 +240,7 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
         )
         assert len(groups) == 2
         assert list(groups[0]) == list(cells)
-        assert len(groups[1]) == 0
+        assert groups[1] is None
 
 
 @pytest.mark.parametrize(

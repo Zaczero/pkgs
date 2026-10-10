@@ -104,10 +104,13 @@ def test_packed_gathered_nullable_interpolation_keeps_logical_rows() -> None:
 
     groups = selected.line_interpolate(count=2)
 
-    assert [[(point.x, point.y) for point in group] for group in groups] == [
+    assert [
+        None if group is None else [(point.x, point.y) for point in group]
+        for group in groups
+    ] == [
         [(20.0, 0.0), (24.0, 0.0)],
         [(0.0, 0.0), (10.0, 0.0)],
-        [],
+        None,
         [(20.0, 0.0), (24.0, 0.0)],
     ]
 
