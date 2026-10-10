@@ -39,9 +39,10 @@ def test_scalar_factories_are_removed() -> None:
         assert not hasattr(gm, name)
 
 
-def test_points_scalar_args_direct_to_point() -> None:
-    with pytest.raises(gm.GeometryError, match='use Point\\(x, y\\)'):
-        gm.points(1, 2)
+def test_points_all_scalar_call_is_a_one_row_array() -> None:
+    points = gm.points(1, 2)
+    assert isinstance(points, gm.GeometryArray)
+    assert points.to_wkt() == ['POINT (1 2)']
 
 
 def test_geometry_base_is_not_constructible() -> None:
@@ -265,7 +266,7 @@ def test_empty_collection_constructors_wkb_round_trip() -> None:
 
 
 def test_empty_constructor_argument_errors() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError, match='coordinate must be a float or an iterable'):
         gm.Point(1)
     with pytest.raises(ValueError):
         gm.Point(z=3)
