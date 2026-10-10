@@ -9578,13 +9578,26 @@ pub(super) fn q_port_assigned_point(
     port_id: QPortId,
     budget: &mut impl Work,
 ) -> Result<ExactChartPoint> {
+    q_port_assigned_point_if_representable(topology, nearest, coordinates, port_id, budget)?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q assigned port has no chart spelling".into()).into()
+        })
+}
+
+fn q_port_assigned_point_if_representable(
+    topology: &ExactGeographicTopology,
+    nearest: &QCoordinates,
+    coordinates: &QCoordinates,
+    port_id: QPortId,
+    budget: &mut impl Work,
+) -> Result<Option<ExactChartPoint>> {
     let q = &topology.q;
     let port = q
         .ports
         .get(port_id.0 as usize)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q assigned port is unknown".into()))?;
     if port.cut {
-        return Ok(port.point.clone());
+        return Ok(Some(port.point.clone()));
     }
     let nearest_xy = nearest.xy(port.node)?;
     let node_index = port.node.0 as usize;
@@ -9607,7 +9620,7 @@ pub(super) fn q_port_assigned_point(
         .get(port_id.0 as usize)
         .copied()
         .flatten();
-    assigned_port_point(
+    let assigned = assigned_port_point(
         topology.sources.frame,
         q,
         port_id,
@@ -9620,10 +9633,8 @@ pub(super) fn q_port_assigned_point(
             budget,
         )?,
         budget,
-    )?
-    .ok_or_else(|| {
-        GeometryErrorKind::Invalid("Q assigned port has no chart spelling".into()).into()
-    })
+    )?;
+    Ok(assigned)
 }
 
 fn source_port_for_exact_point(
@@ -9886,7 +9897,27 @@ fn build_q_publication_chords(
                 PublishedEndpoint::Source { port, fixed, .. } => {
                     let point = match fixed {
                         Some(point) => point.clone(),
-                        None => q_port_assigned_point(topology, nearest, nearest, *port, budget)?,
+                        None => {
+                            if let Some(point) = q_port_assigned_point_if_representable(
+                                topology, nearest, nearest, *port, budget,
+                            )? {
+                                point
+                            } else {
+                                // Keep the exact source port for search setup when its nearest
+                                // rounded site collapses an interior point onto the seam.
+                                topology
+                                    .q
+                                    .ports
+                                    .get(port.0 as usize)
+                                    .ok_or_else(|| {
+                                        GeometryErrorKind::Invalid(
+                                            "Q publication source port is unknown".into(),
+                                        )
+                                    })?
+                                    .point
+                                    .clone()
+                            }
+                        },
                     };
                     let q_port = topology.q.ports.get(port.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q publication source port is unknown".into())
