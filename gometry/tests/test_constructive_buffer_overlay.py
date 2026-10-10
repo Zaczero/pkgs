@@ -8,7 +8,10 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-import shapely
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+)
 
 
 def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:

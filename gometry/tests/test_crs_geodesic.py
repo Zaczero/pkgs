@@ -9,14 +9,20 @@ from typing import cast
 
 import gometry as gm
 import pytest
-import shapely
-from pyproj import Geod
 
 from tests._support import (
     chart_parallel_length,
     chart_rectangle_perimeter,
     chart_zone_area,
 )
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+)
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
+Geod = pyproj.Geod
 
 GEOD = Geod(ellps='WGS84')
 LONG_PARALLEL_WEST = -0.463_147_336_714_631_5

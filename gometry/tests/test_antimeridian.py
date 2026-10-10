@@ -6,12 +6,16 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
 
 from tests._support import (
     EAST_DEGREE_SOUTH_LATITUDE_CRS,
     WEST_RADIAN_SOUTH_GRAD_CRS,
 )
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
+Geod = pyproj.Geod
 
 
 def test_split_antimeridian_lines_and_seam_latitudes() -> None:

@@ -6,9 +6,12 @@ from typing import Any, cast
 import gometry as gm
 import numpy as np
 import pytest
-import shapely
 
 from tests._support import h3_oracle
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+)
 
 
 def test_predicates_and_overlay_match_shapely_oracle() -> None:

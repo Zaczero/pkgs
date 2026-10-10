@@ -8,10 +8,16 @@ import operator
 import gometry as gm
 import numpy as np
 import pytest
-import shapely
-from pyproj import Geod
 
 from tests._support import GOMETRY_ROOT, load_tool
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+)
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
+Geod = pyproj.Geod
 
 _CHART_EDGE_REFERENCE = load_tool(
     '_bench_chart_edge_reference',

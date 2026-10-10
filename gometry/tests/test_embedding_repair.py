@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 import gometry as gm
-import shapely
+import pytest
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
+)
 
 _COUNTRIES = (
     Path(__file__).resolve().parents[1] / 'fixtures' / 'osm_countries_0_1.geojson'

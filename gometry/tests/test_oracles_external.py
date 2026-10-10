@@ -2,16 +2,23 @@ import math
 from typing import Any, cast
 
 import gometry as gm
-import pyproj
 import pytest
-import s2sphere
-import shapely
 
 from tests._support import (
     chart_parallel_length,
     chart_rectangle_perimeter,
     chart_zone_area,
     h3_oracle,
+)
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
+s2sphere = pytest.importorskip(
+    's2sphere', reason='s2sphere==0.2.5 optional oracle wheel is unavailable here'
+)
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 optional oracle wheel is unavailable here'
 )
 
 

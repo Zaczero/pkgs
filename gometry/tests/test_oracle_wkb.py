@@ -11,7 +11,10 @@ import struct
 
 import gometry as gm
 import pytest
-import shapely
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 oracle wheel is unavailable for this interpreter'
+)
 
 
 def _sample_geometries() -> list[tuple[str, gm.Geometry]]:
