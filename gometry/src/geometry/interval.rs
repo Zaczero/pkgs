@@ -111,16 +111,16 @@ impl Interval {
     }
 
     /// Upper bound the absolute value over the interval.
-    pub(crate) fn abs_upper(self) -> f64 {
+    pub(crate) const fn abs_upper(self) -> f64 {
         self.lower.abs().max(self.upper.abs())
     }
 
-    pub(crate) fn max_abs_upper(self) -> f64 {
+    pub(crate) const fn max_abs_upper(self) -> f64 {
         self.abs_upper().next_up()
     }
 
     /// Enclose the pointwise maximum of the two represented intervals.
-    pub(crate) fn max(self, other: Self) -> Self {
+    pub(crate) const fn max(self, other: Self) -> Self {
         Self {
             lower: self.lower.max(other.lower),
             upper: self.upper.max(other.upper),
