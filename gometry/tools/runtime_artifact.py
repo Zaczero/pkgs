@@ -869,8 +869,8 @@ def verify_runtime(
     return verify_admitted_runtime(admission)
 
 
-def check_runtime_resolution(admission: RuntimeAdmission) -> None:
-    """Require the interpreter's current import path to select the admitted facade."""
+def check_import_resolution(expected_facade: Path) -> None:
+    """Require the interpreter's current import path to select this facade."""
     if _resident_gometry_modules():
         raise AssertionError('Gometry was imported before benchmark runtime admission')
     try:
@@ -880,11 +880,17 @@ def check_runtime_resolution(admission: RuntimeAdmission) -> None:
             f'cannot resolve admitted Gometry facade: {error}'
         ) from error
     origin = spec.origin if spec is not None else None
-    if not isinstance(origin, str) or Path(origin).resolve() != admission.facade_path:
+    expected_facade = expected_facade.resolve()
+    if not isinstance(origin, str) or Path(origin).resolve() != expected_facade:
         raise AssertionError(
             'Python import path does not select the admitted Gometry facade: '
-            f'{origin!r} != {str(admission.facade_path)!r}'
+            f'{origin!r} != {str(expected_facade)!r}'
         )
+
+
+def check_runtime_resolution(admission: RuntimeAdmission) -> None:
+    """Require the interpreter's current import path to select the admitted facade."""
+    check_import_resolution(admission.facade_path)
 
 
 def verify_runtime_completion(
