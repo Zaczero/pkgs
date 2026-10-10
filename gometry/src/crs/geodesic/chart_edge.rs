@@ -412,9 +412,8 @@ impl ChartEdge {
             .expect("the target witness was admitted before chart distance");
         let source_start = self.geodetic_position(source_interval[0]).ok()?;
         let source_end = self.geodetic_position(source_interval[1]).ok()?;
-        // Distance to a pole depends only on absolute latitude and is
-        // monotone; affine latitude reaches its largest absolute value at an
-        // interval endpoint, for parallel and oblique chart edges alike.
+        // Distance to the fixed pole is monotone in signed latitude, so its
+        // maximum over an affine interval occurs at an endpoint.
         let start_distance = super::ellipsoid_metric::inverse_distance(
             geodesic,
             target.x,
@@ -500,13 +499,11 @@ impl ChartEdge {
         } else {
             self.longitude_delta.abs().next_up()
         };
+        let east_speed = self.east_speed_upper(n_max, longitude_rate);
         let speed = if self.is_parallel() {
-            self.parallel_speed_upper(n_max, longitude_rate)
+            east_speed
         } else {
-            upper_hypot(
-                upper_product(n_max, longitude_rate),
-                upper_product(m_max, latitude_rate),
-            )
+            upper_hypot(east_speed, upper_product(m_max, latitude_rate))
         };
         let east_north_acceleration = upper_hypot(
             upper_product(latitude_rate, longitude_rate),
@@ -559,7 +556,9 @@ impl ChartEdge {
             return None;
         }
 
-        let bounds = ellipsoid_metric_bounds(geodesic)?;
+        let Some(bounds) = ellipsoid_metric_bounds(geodesic) else {
+            return None;
+        };
         let longitude_axis = self.frame.longitude();
         let longitude_sheet = longitude_sheet_shift(self, target);
 
@@ -583,11 +582,19 @@ impl ChartEdge {
             .mul(longitude_scale)
             .max_abs_upper()
             .max(longitude_right.mul(longitude_scale).max_abs_upper());
+        let source_parallel_radius_upper =
+            chart_parallel_radius_upper(self, source_interval, bounds.prime_vertical_max)
+                .unwrap_or(bounds.prime_vertical_max);
+        let target_parallel_radius_upper =
+            chart_parallel_radius_upper(target, target_interval, bounds.prime_vertical_max)
+                .unwrap_or(bounds.prime_vertical_max);
+        let path_parallel_radius_upper =
+            source_parallel_radius_upper.min(target_parallel_radius_upper);
 
         let distance_path = CertifiedInterval::exact(bounds.meridian_max)
             .mul(CertifiedInterval::exact(latitude_difference))
             .add(
-                CertifiedInterval::exact(bounds.prime_vertical_max)
+                CertifiedInterval::exact(path_parallel_radius_upper)
                     .mul(CertifiedInterval::exact(longitude_difference)),
             );
         if !distance_path.upper().is_finite() {
@@ -695,7 +702,10 @@ impl ChartEdge {
             .mul(longitude_scale)
             .max_abs_upper();
 
-        let longitude_motion = CertifiedInterval::exact(bounds.prime_vertical_max)
+        let source_longitude_motion = CertifiedInterval::exact(target_parallel_radius_upper)
+            .mul(CertifiedInterval::exact(relative_longitude_rate))
+            .upper();
+        let target_longitude_motion = CertifiedInterval::exact(source_parallel_radius_upper)
             .mul(CertifiedInterval::exact(relative_longitude_rate))
             .upper();
         let common_metric_deformation = CertifiedInterval::exact(bounds.meridian_derivative_max)
@@ -716,14 +726,14 @@ impl ChartEdge {
             .mul(CertifiedInterval::exact(target_latitude_rate))
             .mul(CertifiedInterval::exact(deformation))
             .mul(distance_path);
-        let source_variation = CertifiedInterval::exact(longitude_motion)
-            .mul(CertifiedInterval::exact(longitude_motion))
+        let source_variation = CertifiedInterval::exact(source_longitude_motion)
+            .mul(CertifiedInterval::exact(source_longitude_motion))
             .add(source_meridional.mul(source_meridional))
             .sqrt()
             .add(source_common_motion)
             .upper();
-        let target_variation = CertifiedInterval::exact(longitude_motion)
-            .mul(CertifiedInterval::exact(longitude_motion))
+        let target_variation = CertifiedInterval::exact(target_longitude_motion)
+            .mul(CertifiedInterval::exact(target_longitude_motion))
             .add(target_meridional.mul(target_meridional))
             .sqrt()
             .add(target_common_motion)
@@ -764,28 +774,10 @@ impl ChartEdge {
         upper.is_finite().then_some(upper)
     }
 
-    fn parallel_speed_upper(self, n_max: f64, longitude_rate: f64) -> f64 {
-        let geodetic_latitude = self
-            .frame
-            .to_geodesic_latitude(self.start_latitude)
-            .expect("chart-edge latitude was admitted");
-        let radians_per_degree =
-            CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER).div(CertifiedInterval::exact(180.0));
-        let latitude_magnitude_lower = geodetic_latitude.abs().next_down().max(0.0);
-        let latitude_radians_lower = CertifiedInterval::exact(latitude_magnitude_lower)
-            .mul(radians_per_degree)
-            .lower()
-            .max(0.0);
-        // For a parallel, |cos φ| = sin(π/2 - |φ|) <= π/2 - |φ|.
-        // The adjacent constants enclose π and π/2; each arithmetic result
-        // expands outward, so this remains useful at native-unit pole values
-        // without relying on libm's trigonometric error.
-        let colatitude_upper = CertifiedInterval::from_bounds(HALF_PI_LOWER, HALF_PI_UPPER)
-            .sub(CertifiedInterval::exact(latitude_radians_lower))
-            .upper()
-            .max(0.0);
-        let cosine_upper = 1.0_f64.min(colatitude_upper).next_up();
-        upper_product(upper_product(n_max, cosine_upper), longitude_rate)
+    fn east_speed_upper(self, n_max: f64, longitude_rate: f64) -> f64 {
+        let parallel_radius =
+            chart_parallel_radius_upper(&self, [0.0, 1.0], n_max).unwrap_or(n_max);
+        upper_product(parallel_radius, longitude_rate)
     }
 
     pub(super) fn witness(
@@ -1610,6 +1602,43 @@ fn affine_latitude(edge: &ChartEdge, parameter: f64) -> Option<CertifiedInterval
     value.add_product(edge.end_latitude, parameter);
     value.subtract_product(edge.start_latitude, parameter);
     exact_sum_interval(&value)
+}
+
+fn chart_parallel_radius_upper(
+    edge: &ChartEdge,
+    parameter_interval: [f64; 2],
+    prime_vertical_max: f64,
+) -> Option<f64> {
+    let latitude_scale = CertifiedInterval::exact(
+        edge.frame.latitude_radians_per_unit() * edge.frame.latitude_orientation_sign(),
+    );
+    let left = affine_latitude(edge, parameter_interval[0])?.mul(latitude_scale);
+    let right = affine_latitude(edge, parameter_interval[1])?.mul(latitude_scale);
+    let latitude_range = CertifiedInterval::from_bounds(
+        left.lower().min(right.lower()),
+        left.upper().max(right.upper()),
+    );
+    let latitude_magnitude_lower = if latitude_range.contains_zero() {
+        0.0
+    } else {
+        latitude_range
+            .lower()
+            .abs()
+            .min(latitude_range.upper().abs())
+            .next_down()
+            .max(0.0)
+    };
+    // Across this affine latitude range, the largest parallel radius is at its
+    // smallest absolute latitude; cos(phi) is bounded by its colatitude.
+    let colatitude_upper = CertifiedInterval::from_bounds(HALF_PI_LOWER, HALF_PI_UPPER)
+        .sub(CertifiedInterval::exact(latitude_magnitude_lower))
+        .upper()
+        .max(0.0);
+    let cosine_upper = 1.0_f64.min(colatitude_upper).next_up();
+    let radius_upper = CertifiedInterval::exact(prime_vertical_max)
+        .mul(CertifiedInterval::exact(cosine_upper))
+        .upper();
+    radius_upper.is_finite().then_some(radius_upper)
 }
 
 fn relative_latitude(

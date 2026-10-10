@@ -82,30 +82,6 @@ fn public_hausdorff_work(
     })
 }
 
-fn directed_chart_hausdorff_work(source: &Shape, target: &Shape) -> PublicHausdorffWork {
-    chart_hausdorff_counters::reset();
-    chart_parts_counters::reset();
-    point_edge_test_counters::reset();
-    chart_hausdorff_counters::set_source_evaluation_limit(50_000);
-    point_edge_test_counters::set_sample_limit(2_000_000);
-    let distance = with_ellipsoid_metric("EPSG:4326", &[], |metric| {
-        Ok::<_, crate::error::Error>(directed_chart_hausdorff(source, target, metric).distance)
-    })
-    .expect("directed chart Hausdorff");
-    let work = PublicHausdorffWork {
-        distance,
-        source_evaluations: chart_hausdorff_counters::source_evaluations(),
-        moving_evaluations: chart_hausdorff_counters::moving_correspondence_evaluations(),
-        moving_endpoint_minima: chart_hausdorff_counters::moving_endpoint_minima(),
-        target_candidates: chart_parts_counters::target_edge_candidates(),
-        point_edge_samples: point_edge_test_counters::samples(),
-    };
-    point_edge_test_counters::reset();
-    chart_hausdorff_counters::reset();
-    chart_parts_counters::reset();
-    work
-}
-
 fn disconnected_bvh_target() -> Shape {
     Shape::geometry_collection(
         (0..65)
@@ -1207,6 +1183,26 @@ fn public_hausdorff_maps_a_short_source_onto_the_target_edge_interior() {
 }
 
 #[test]
+fn public_near_pole_hausdorff_has_bounded_symmetric_work() {
+    let source = line(vec![p(170.0, 89.9), p(190.0, 89.91)]);
+    let target = line(vec![p(170.000_001, 89.900_01), p(190.000_001, 89.910_01)]);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 64, 10_000);
+    // Independent pyproj Geod oracle: target minima bracketed by scans of 257
+    // and 1,025 points; source maxima by 129 and 513 samples plus local solves.
+    let expected = 1.116_939_781_867_640;
+
+    assert!(work.source_evaluations <= 64, "{work:?}");
+    assert!(work.moving_evaluations <= 128, "{work:?}");
+    assert!(work.moving_endpoint_minima <= 64, "{work:?}");
+    assert!(work.target_candidates <= 64, "{work:?}");
+    assert!(work.point_edge_samples <= 10_000, "{work:?}");
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{work:?} vs independent oracle {expected}"
+    );
+}
+
+#[test]
 fn public_hausdorff_refreshes_resegmented_target_parameters() {
     let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
     let target = Shape::geometry_collection(vec![
@@ -1293,13 +1289,13 @@ fn public_hausdorff_keeps_the_fixed_witness_fallback_without_target_edges() {
 fn assert_public_hausdorff_work_scaling(
     name: &str,
     growing_span: bool,
+    latitude_origin: f64,
     latitude_slope: f64,
     vertex_counts: &[usize],
 ) {
     let mut rows = Vec::with_capacity(vertex_counts.len());
     for &vertex_count in vertex_counts {
         let mut source_points = Vec::with_capacity(vertex_count);
-        let mut target_points = Vec::with_capacity(vertex_count);
         let edge_count = u32::try_from(vertex_count)
             .expect("test vertex count fits u32")
             .checked_sub(1)
@@ -1311,15 +1307,31 @@ fn assert_public_hausdorff_work_scaling(
             } else {
                 10.0 + 20.0 * index / f64::from(edge_count)
             };
-            let latitude = 60.0 + latitude_slope * (longitude - 10.0);
+            let latitude = latitude_origin + latitude_slope * (longitude - 10.0);
             source_points.push(p(longitude, latitude));
-            target_points.push(p(longitude + 1.0e-6, latitude + 0.01));
         }
+        let first = *source_points
+            .first()
+            .expect("work-scaling support has at least two vertices");
+        let last = *source_points
+            .last()
+            .expect("work-scaling support has at least two vertices");
         let source = line(source_points);
-        let target = line(target_points);
-        let work = directed_chart_hausdorff_work(&source, &target);
+        let target = line(vec![
+            p(first.x + 1.0e-6, first.y + 0.01),
+            p(last.x + 1.0e-6, last.y + 0.01),
+        ]);
+        let work = public_hausdorff_work("EPSG:4326", source, target, 50_000, 2_000_000);
+        assert!(
+            work.source_evaluations <= 50_000,
+            "{name} {vertex_count}: {work:?}"
+        );
+        assert!(
+            work.point_edge_samples <= 2_000_000,
+            "{name} {vertex_count}: {work:?}"
+        );
         eprintln!(
-            "hausdorff-directed-scaling {name} vertices={vertex_count} source={} moving={} endpoint-minima={} point-edge={} bvh={}",
+            "hausdorff-public-symmetric-scaling {name} vertices={vertex_count} source={} moving={} endpoint-minima={} point-edge={} bvh={}",
             work.source_evaluations,
             work.moving_evaluations,
             work.moving_endpoint_minima,
@@ -1351,54 +1363,37 @@ fn assert_public_hausdorff_work_scaling(
             let exponent = ((large_work.max(1) as f64) / (small_work.max(1) as f64)).ln()
                 / ((*large_vertices as f64) / (*small_vertices as f64)).ln();
             eprintln!(
-                "hausdorff-scaling-exponent {name} {counter} {small_vertices}->{large_vertices}: {exponent:.3}"
+                "hausdorff-public-symmetric-scaling-exponent {name} {counter} {small_vertices}->{large_vertices}: {exponent:.3}"
             );
             assert!(
-                exponent <= 1.65,
-                "{name} {counter} work exponent {exponent:.3} exceeds 1.65"
+                exponent <= 1.4,
+                "{name} {counter} work exponent {exponent:.3} exceeds 1.4"
             );
         }
     }
 }
 
 #[test]
-fn directed_fixed_span_flat_hausdorff_work_scales_by_vertex_count() {
-    assert_public_hausdorff_work_scaling("fixed-span flat", false, 0.0, &[8, 64, 512]);
+fn public_fixed_span_flat_hausdorff_work_scales_by_vertex_count() {
+    assert_public_hausdorff_work_scaling("fixed-span flat", false, 60.0, 0.0, &[8, 64, 512]);
 }
 
 #[test]
-fn directed_fixed_span_oblique_8_hausdorff_work() {
-    assert_public_hausdorff_work_scaling("fixed-span oblique", false, 0.02, &[8]);
+fn public_fixed_span_oblique_hausdorff_work_scales_by_vertex_count() {
+    // Densify one oblique support against a fixed two-vertex support. For ordered
+    // inputs, n log n gives exponents 1.333 and 1.195; 1.4 leaves modest headroom.
+    assert_public_hausdorff_work_scaling("fixed-span oblique", false, 10.0, 0.02, &[8, 64, 512]);
 }
 
 #[test]
-fn directed_fixed_span_oblique_64_hausdorff_work() {
-    assert_public_hausdorff_work_scaling("fixed-span oblique", false, 0.02, &[64]);
+fn public_growing_span_flat_hausdorff_work_scales_by_vertex_count() {
+    assert_public_hausdorff_work_scaling("growing-span flat", true, 60.0, 0.0, &[8, 64, 512]);
 }
 
 #[test]
-fn directed_fixed_span_oblique_512_hausdorff_work() {
-    assert_public_hausdorff_work_scaling("fixed-span oblique", false, 0.02, &[512]);
-}
-
-#[test]
-fn directed_growing_span_flat_hausdorff_work_scales_by_vertex_count() {
-    assert_public_hausdorff_work_scaling("growing-span flat", true, 0.0, &[8, 64, 512]);
-}
-
-#[test]
-fn directed_growing_span_oblique_8_hausdorff_work() {
-    assert_public_hausdorff_work_scaling("growing-span oblique", true, 0.02, &[8]);
-}
-
-#[test]
-fn directed_growing_span_oblique_64_hausdorff_work() {
-    assert_public_hausdorff_work_scaling("growing-span oblique", true, 0.02, &[64]);
-}
-
-#[test]
-fn directed_growing_span_oblique_512_hausdorff_work() {
-    assert_public_hausdorff_work_scaling("growing-span oblique", true, 0.02, &[512]);
+fn public_growing_span_oblique_hausdorff_work_scales_by_vertex_count() {
+    // This series uses locally ordered edges whose total support grows with n.
+    assert_public_hausdorff_work_scaling("growing-span oblique", true, 10.0, 0.02, &[8, 64, 512]);
 }
 
 #[test]

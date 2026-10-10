@@ -4,10 +4,12 @@ best-UTM selection, runtime config, cache info, and PROJ authority metadata.
 
 import json
 import math
+from collections.abc import Callable
 from itertools import pairwise
 from typing import cast
 
 import gometry as gm
+import numpy as np
 import pytest
 
 from tests._support import (
@@ -48,6 +50,123 @@ def _six_hundred_kilometer_parallel() -> gm.Polygon:
         ],
         crs=4326,
     )
+
+
+def _golden_extremum(
+    function: Callable[[float], float],
+    lower: float,
+    upper: float,
+    *,
+    maximum: bool = False,
+) -> tuple[float, float]:
+    ratio = (math.sqrt(5.0) - 1.0) / 2.0
+    left = upper - ratio * (upper - lower)
+    right = lower + ratio * (upper - lower)
+    evaluate = (lambda value: -function(value)) if maximum else function
+    left_value = evaluate(left)
+    right_value = evaluate(right)
+    for _ in range(72):
+        if left_value <= right_value:
+            upper, right, right_value = right, left, left_value
+            left = upper - ratio * (upper - lower)
+            left_value = evaluate(left)
+        else:
+            lower, left, left_value = left, right, right_value
+            right = lower + ratio * (upper - lower)
+            right_value = evaluate(right)
+    parameter, value = (
+        (left, left_value) if left_value <= right_value else (right, right_value)
+    )
+    return parameter, -value if maximum else value
+
+
+def _near_pole_directed_reference(
+    source: tuple[tuple[float, float], tuple[float, float]],
+    target: tuple[tuple[float, float], tuple[float, float]],
+    source_samples: int,
+    target_samples: int,
+) -> float:
+    target_parameters = np.linspace(0.0, 1.0, target_samples + 1)
+    target_longitudes = target[0][0] + (target[1][0] - target[0][0]) * target_parameters
+    target_latitudes = target[0][1] + (target[1][1] - target[0][1]) * target_parameters
+
+    def interpolate(
+        edge: tuple[tuple[float, float], tuple[float, float]],
+        parameter: float,
+    ) -> tuple[float, float]:
+        return (
+            edge[0][0] + (edge[1][0] - edge[0][0]) * parameter,
+            edge[0][1] + (edge[1][1] - edge[0][1]) * parameter,
+        )
+
+    def nearest_target(point: tuple[float, float]) -> tuple[float, float]:
+        _, _, grid_distances = GEOD.inv(
+            np.full(target_samples + 1, point[0]),
+            np.full(target_samples + 1, point[1]),
+            target_longitudes,
+            target_latitudes,
+        )
+        minima = [
+            index
+            for index in range(target_samples + 1)
+            if grid_distances[index]
+            <= (grid_distances[index - 1] if index else math.inf)
+            and grid_distances[index]
+            <= (grid_distances[index + 1] if index < target_samples else math.inf)
+        ]
+
+        def distance(parameter: float) -> float:
+            longitude, latitude = interpolate(target, parameter)
+            return GEOD.inv(point[0], point[1], longitude, latitude)[2]
+
+        candidates = [
+            (0.0, float(grid_distances[0])),
+            (1.0, float(grid_distances[-1])),
+        ]
+        for index in minima:
+            lo = max(0, index - 1) / target_samples
+            hi = min(target_samples, index + 1) / target_samples
+            if lo < hi:
+                candidates.append(_golden_extremum(distance, lo, hi))
+        return min(candidates, key=lambda candidate: candidate[1])
+
+    parameters = np.linspace(0.0, 1.0, source_samples + 1)
+    distances = [
+        nearest_target(interpolate(source, float(parameter)))[1]
+        for parameter in parameters
+    ]
+    candidates = [(0.0, distances[0]), (1.0, distances[-1])]
+
+    def distance(parameter: float) -> float:
+        return nearest_target(interpolate(source, parameter))[1]
+
+    if distances[0] >= distances[1]:
+        candidates.append(
+            _golden_extremum(distance, 0.0, 1.0 / source_samples, maximum=True)
+        )
+    for index in range(1, source_samples):
+        if (
+            distances[index] >= distances[index - 1]
+            and distances[index] >= distances[index + 1]
+        ):
+            candidates.append(
+                _golden_extremum(
+                    distance,
+                    (index - 1) / source_samples,
+                    (index + 1) / source_samples,
+                    maximum=True,
+                )
+            )
+    if distances[-1] >= distances[-2]:
+        candidates.append(
+            _golden_extremum(
+                distance,
+                (source_samples - 1) / source_samples,
+                1.0,
+                maximum=True,
+            )
+        )
+    return max(candidates, key=lambda candidate: candidate[1])[1]
 
 
 def _projected_chart_outline(
@@ -397,6 +516,31 @@ def test_parallel_copy_hausdorff_tracks_native_frame_perturbations(
         assert abs(actual - expected) <= 0.010000_001, (
             f'{frame_name} {name}: {actual} vs {expected}'
         )
+
+
+def test_geographic_hausdorff_handles_near_pole_offset_edges() -> None:
+    source_coordinates = [(170.0, 89.9), (190.0, 89.91)]
+    target_coordinates = [(170.000_001, 89.900_01), (190.000_001, 89.910_01)]
+    source = gm.LineString(source_coordinates, crs=4326)
+    target = gm.LineString(target_coordinates, crs=4326)
+
+    coarse = max(
+        _near_pole_directed_reference(source_coordinates, target_coordinates, 128, 256),
+        _near_pole_directed_reference(target_coordinates, source_coordinates, 128, 256),
+    )
+    fine = max(
+        _near_pole_directed_reference(
+            source_coordinates, target_coordinates, 512, 1024
+        ),
+        _near_pole_directed_reference(
+            target_coordinates, source_coordinates, 512, 1024
+        ),
+    )
+    assert abs(fine - coarse) <= 1.0e-8
+
+    actual = gm.hausdorff_distance(source, target)
+
+    assert abs(actual - fine) <= 0.01, f'{actual} vs independent Karney oracle {fine}'
 
 
 def test_geographic_hausdorff_keeps_endpoint_candidate_distances() -> None:

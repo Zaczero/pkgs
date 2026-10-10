@@ -332,7 +332,7 @@ fn source_interval<M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeS
         left_value,
         right_value,
     } = seed;
-    let mut upper = source_interval_upper(
+    let fixed_upper = source_interval_upper(
         CertifiedInterval::exact(right)
             .sub(CertifiedInterval::exact(left))
             .upper(),
@@ -341,6 +341,7 @@ fn source_interval<M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeS
         derivative_bounds,
         metric,
     );
+    let mut upper = fixed_upper;
 
     let left_edge_index = left_value
         .target_edge
