@@ -20,7 +20,7 @@ from _gatelib import prepend_tools_import_paths
 from runtime_artifact import require_runtime
 
 prepend_tools_import_paths()
-require_runtime(_ROOT)
+require_runtime(_ROOT, prepare_if_stale=False)
 
 import gometry as gm
 import mkdocs_gen_files

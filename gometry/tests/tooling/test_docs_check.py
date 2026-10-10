@@ -13,6 +13,7 @@ import ast
 import copy
 import html
 import inspect
+import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
@@ -504,6 +505,299 @@ def test_rendered_property_signature_is_not_parsed_as_a_call() -> None:
     assert signature.form is None
 
 
+def test_built_form_audit_detects_missing_reordered_and_changed_forms() -> None:
+    check = _check()
+    contracts = load_tool('site_contracts')
+    first = (
+        (
+            ('positional-only', 'value', 'int', None),
+            ('keyword-only', 'mode', 'str', "'fast'"),
+        ),
+        'str',
+    )
+    second = (
+        (
+            ('keyword-only', 'value', 'int', '2'),
+            ('keyword-only', 'mode', 'str', "'safe'"),
+        ),
+        'bytes',
+    )
+
+    def page(*signatures: str) -> str:
+        return (
+            '<div class="doc doc-object doc-function">'
+            '<h3 id="gometry.Widget.build">build</h3>'
+            + ''.join(
+                f'<div class="doc-signature highlight"><pre>{signature}</pre></div>'
+                for signature in signatures
+            )
+            + '</div>'
+        )
+
+    expected = SimpleNamespace(call_forms={'gometry.Widget.build': (first, second)})
+    valid = page(
+        "build(value: int, /, *, mode: str = 'fast') -> str",
+        "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+    )
+    assert (
+        contracts._call_form_errors(
+            expected,
+            check.rendered_call_forms(valid),
+        )
+        == []
+    )
+
+    mutations = (
+        page("build(value: int, *, mode: str = 'fast') -> str"),
+        page(
+            "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+            "build(value: int, /, *, mode: str = 'fast') -> str",
+        ),
+        page(
+            "build(value: int, /, *, mode: str = 'slow') -> str",
+            "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+        ),
+        page(
+            "build(value: int, /, *, mode: str = 'fast') -> bytes",
+            "build(*, value: int = 2, mode: str = 'safe') -> bytes",
+        ),
+        page(
+            "build(value: int, /, *, mode: str = 'fast') -> str",
+            "build(value: int, /, *, mode: str = 'fast') -> str",
+        ),
+    )
+    for mutated in mutations:
+        assert contracts._call_form_errors(
+            expected,
+            check.rendered_call_forms(mutated),
+        )
+
+
+def test_source_form_oracle_matches_real_constructor_and_function_output() -> None:
+    check = _check()
+    site_contracts = load_tool('site_contracts')
+    model = load_tool(
+        'check_doc_model',
+        GOMETRY_ROOT / 'tools/gates/_check_doc_model.py',
+    )
+    contracts = model.source_documentation_contracts()
+    assert {
+        'gometry.explore',
+        'gometry.from_geopandas',
+        'gometry.from_geoparquet',
+        'gometry.from_pandas',
+        'gometry.from_polars',
+    } <= contracts.call_forms.keys()
+    assert 'gometry.GeometryCollection.__getitem__' in contracts.call_forms
+    assert 'gometry.GeometryCollection.boundary' not in contracts.call_forms
+
+    pkg = _load_griffe_model()
+    point = pkg.members['Point']
+    from_wkb = pkg.members['from_wkb']
+    getitem = pkg.members['GeometryArray'].members['__getitem__']
+    to_numpy = pkg.members['GeometryArray'].members['to_numpy']
+    assert isinstance(point, griffe.Class)
+    assert isinstance(from_wkb, griffe.Function)
+    assert isinstance(getitem, griffe.Function)
+    assert isinstance(to_numpy, griffe.Function)
+
+    rendered_class = _render_class_reference(point)
+    rendered_function = _render_function_reference(from_wkb)
+    rendered_method = _render_function_reference(getitem)
+    rendered_array = _render_function_reference(to_numpy)
+    rendered = check.rendered_call_forms(
+        rendered_class + rendered_function + rendered_method + rendered_array
+    )
+    paths = {
+        'gometry.Point',
+        'gometry.from_wkb',
+        'gometry.GeometryArray.__getitem__',
+        'gometry.GeometryArray.to_numpy',
+    }
+    expected = SimpleNamespace(
+        call_forms={path: contracts.call_forms[path] for path in paths}
+    )
+    actual = {path: rendered[path] for path in paths}
+    assert site_contracts._call_form_errors(expected, actual) == []
+
+    row_contract = SimpleNamespace(
+        constructor_rows={'gometry.Point': contracts.constructor_rows['gometry.Point']}
+    )
+    tables = site_contracts._table_rows({
+        Path('api/geometry/geometry-types/index.html'): rendered_class,
+    })
+    assert site_contracts._parameter_row_errors(row_contract, tables) == []
+
+
+def test_built_parameter_table_audit_checks_type_default_and_presence() -> None:
+    contracts = load_tool('site_contracts')
+    expected = SimpleNamespace(
+        constructor_rows={
+            'gometry.Widget': {
+                'value': ('varies', 'varies by call form', 'int'),
+                'count': ('defaulted', '3', 'int'),
+            }
+        }
+    )
+
+    def page(
+        value_default: str = 'varies by call form', value_type: str = 'int'
+    ) -> str:
+        return f"""\
+<div class="doc doc-object doc-class">
+  <h2 id="gometry.Widget">Widget</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th>Description</th><th>Default</th></tr></thead>
+    <tbody>
+      <tr class="doc-section-item"><td>value</td><td>{value_type}</td><td>Value.</td><td>{value_default}</td></tr>
+      <tr class="doc-section-item"><td>count</td><td>int</td><td>Count.</td><td>3</td></tr>
+    </tbody>
+  </table>
+</div>
+"""
+
+    valid = {Path('api/widget/index.html'): page()}
+    assert (
+        contracts._parameter_row_errors(
+            expected,
+            contracts._table_rows(valid),
+        )
+        == []
+    )
+
+    wrong_default = {Path('api/widget/index.html'): page(value_default='None')}
+    wrong_type = {Path('api/widget/index.html'): page(value_type='float')}
+    missing = {
+        Path('api/widget/index.html'): page().replace(
+            '<tr class="doc-section-item"><td>value</td><td>int</td><td>Value.</td>'
+            '<td>varies by call form</td></tr>',
+            '',
+        )
+    }
+    assert contracts._parameter_row_errors(
+        expected,
+        contracts._table_rows(wrong_default),
+    )
+    assert contracts._parameter_row_errors(expected, contracts._table_rows(wrong_type))
+    assert contracts._parameter_row_errors(expected, contracts._table_rows(missing))
+
+
+def test_built_schema_audit_detects_nullability_and_requiredness_changes() -> None:
+    contracts = load_tool('site_contracts')
+    reference_types = load_tool('reference_types')
+    graph = reference_types.build_public_type_graph(GOMETRY_ROOT / 'python/gometry', gm)
+    declarations = {item.path: item for item in graph.definitions}
+    feature = declarations['gometry._types.GeoJsonFeature']
+    source_fields = [
+        ('type', "Literal['Feature']", 'yes', ''),
+        ('geometry', 'GeoJsonGeometry | None', 'yes', ''),
+        ('properties', 'Mapping[str, Any] | None', 'no', ''),
+        ('id', 'str | int | float', 'no', ''),
+    ]
+
+    assert (
+        contracts._typed_dict_field_errors(
+            feature,
+            declarations,
+            graph,
+            source_fields,
+        )
+        == []
+    )
+
+    invalid_fields = [
+        ('type', "Literal['Feature']", 'yes', ''),
+        ('geometry', 'GeoJsonGeometry', 'yes', ''),
+        ('properties', 'Mapping[str, Any] | None', 'yes', ''),
+        ('id', 'str | int | float', 'no', ''),
+    ]
+    errors = contracts._typed_dict_field_errors(
+        feature,
+        declarations,
+        graph,
+        invalid_fields,
+    )
+    assert len(errors) == 1
+    assert 'gometry._types.GeoJsonFeature' in errors[0]
+
+
+def test_type_link_and_search_audits_reject_wrong_canonical_targets(
+    tmp_path: Path,
+) -> None:
+    contracts = load_tool('site_contracts')
+    graph = SimpleNamespace(
+        definitions=tuple(
+            SimpleNamespace(path=path)
+            for path in (
+                'gometry._types.FloatScalar',
+                'gometry._types.ScalarFloatArray',
+                'gometry._types.GeoJsonFeature',
+            )
+        )
+    )
+    page = Path('api/geometry/index.html')
+    good_links = [
+        SimpleNamespace(
+            label=label,
+            target=f'../types/#{target}',
+            contract_region=True,
+            page=page,
+        )
+        for label, target in (
+            ('Point', 'gometry.Point'),
+            ('GeohashCell', 'gometry.GeohashCell'),
+            ('FloatScalar', 'gometry._types.FloatScalar'),
+            ('ScalarFloatArray', 'gometry._types.ScalarFloatArray'),
+            ('GeoJsonFeature', 'gometry._types.GeoJsonFeature'),
+        )
+    ]
+    assert contracts._type_link_errors(graph, good_links) == []
+    wrong_link = SimpleNamespace(
+        label='FloatScalar',
+        target='../types/#gometry._types.ScalarFloatArray',
+        contract_region=True,
+        page=page,
+    )
+    assert contracts._type_link_errors(
+        graph,
+        [link for link in good_links if link.label != 'FloatScalar'] + [wrong_link],
+    )
+
+    site = tmp_path / 'site'
+    search = site / 'search' / 'search_index.json'
+    search.parent.mkdir(parents=True)
+    anchors = {
+        'gometry.Point': Path('api/geometry/geometry-types/index.html'),
+        'gometry.GeohashCell': Path('api/grid/index.html'),
+        'gometry._types.FloatScalar': Path('api/types/index.html'),
+        'gometry._types.ScalarFloatArray': Path('api/types/index.html'),
+        'gometry._types.GeoJsonFeature': Path('api/types/index.html'),
+        'gometry.ParseError.format': Path('api/errors/index.html'),
+    }
+    terms = (
+        ('gometry.Point', 'point'),
+        ('gometry.GeohashCell', 'geohashcell'),
+        ('gometry._types.FloatScalar', 'floatscalar'),
+        ('gometry._types.ScalarFloatArray', 'scalarfloatarray'),
+        ('gometry._types.GeoJsonFeature', 'geojsonfeature'),
+        ('gometry.ParseError.format', 'geojson'),
+    )
+    documents = []
+    for target, term in terms:
+        page = anchors[target].as_posix().removesuffix('index.html')
+        documents.append({
+            'location': f'/{page}#{target}',
+            'text': f'Reference for {term}',
+        })
+    search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
+    assert contracts._search_errors(site, anchors) == []
+
+    documents[2]['location'] = '/api/types/#gometry._types.ScalarFloatArray'
+    documents[5]['text'] = 'other codec options'
+    search.write_text(json.dumps({'docs': documents}), encoding='utf-8')
+    assert contracts._search_errors(site, anchors)
+
+
 def test_real_handler_renders_parameter_kinds_and_default_states(
     tmp_path: Path,
 ) -> None:
@@ -516,6 +810,9 @@ def empty() -> None: ...
 
 class Methods:
     def method(self, value: int, /) -> str: ...
+
+    @staticmethod
+    def static_self(self: str) -> str: ...
 """
     package = tmp_path / 'gometry'
     package.mkdir()
@@ -575,6 +872,17 @@ class Methods:
     ]
     assert method_form.form == check.RenderedCallForm(
         (('positional-only', 'value', 'int', None),),
+        'str',
+    )
+
+    static_method = module.members['Methods'].members['static_self']
+    assert isinstance(static_method, griffe.Function)
+    rendered_static_method = _render_function_reference(static_method)
+    static_form = check.rendered_call_forms(rendered_static_method)[
+        'gometry.Methods.static_self'
+    ][0]
+    assert static_form.form == check.RenderedCallForm(
+        (('positional or keyword', 'self', 'str', None),),
         'str',
     )
 
