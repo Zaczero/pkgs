@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -1388,6 +1388,47 @@ if TYPE_CHECKING:
     reveal_type(gm.frechet_distance([LINE, None], LINE))
     reveal_type(gm.nearest_points(BATCH_POINTS, POINT))
     reveal_type(gm.shortest_line(BATCH_POINTS, POINT))
+
+    def _reveal_iterable_metrics() -> None:
+        # Object dtype erases item types; these casts retain the known rows.
+        point_array = cast(
+            'Iterable[gm.Point]',
+            np.asarray([POINT, gm.Point(2, 2)], dtype=object),
+        )
+        nullable_point_array = cast(
+            'Iterable[gm.Point | None]',
+            np.asarray([POINT, None], dtype=object),
+        )
+        line_rows: list[gm.LineString] = [LINE]
+        nullable_line_rows: list[gm.LineString | None] = [LINE, None]
+        line_array = cast('Iterable[gm.LineString]', np.asarray([LINE], dtype=object))
+        nullable_line_array = cast(
+            'Iterable[gm.LineString | None]',
+            np.asarray([LINE, None], dtype=object),
+        )
+
+        reveal_type(np.asarray([POINT, None], dtype=object))
+        reveal_type(gm.shortest_line(_point_rows, POINT))
+        reveal_type(gm.shortest_line(_nullable_point_rows, POINT))
+        reveal_type(gm.shortest_line(point_array, POINT))
+        reveal_type(gm.shortest_line(nullable_point_array, POINT))
+        reveal_type(gm.hausdorff_distance(_point_rows, POINT))
+        reveal_type(gm.hausdorff_distance(_nullable_point_rows, POINT))
+        reveal_type(gm.hausdorff_distance(point_array, POINT))
+        reveal_type(gm.hausdorff_distance(nullable_point_array, POINT))
+        reveal_type(gm.frechet_distance(line_rows, LINE))
+        reveal_type(gm.frechet_distance(nullable_line_rows, LINE))
+        reveal_type(gm.frechet_distance(line_array, LINE))
+        reveal_type(gm.frechet_distance(nullable_line_array, LINE))
+        assert_type(
+            gm.shortest_line(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.LineString | None],
+        )
+        assert_type(
+            gm.frechet_distance(nullable_line_rows, LINE),
+            npt.NDArray[np.float64],
+        )
+
     reveal_type(gm.shared_paths([LINE, None], LINE))
     reveal_type(gm.area(BATCH_POINTS))
     reveal_type(gm.length(BATCH_POINTS))

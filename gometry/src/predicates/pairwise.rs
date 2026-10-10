@@ -79,7 +79,9 @@ pub(crate) fn shortest_line(
 ) -> PyResult<Py<PyAny>> {
     Python::attach(|py| {
         let operation = crate::dispatch::MetricOp::ShortestLine;
-        let admission = crate::dispatch::admit_binary(left, right, operation.name())?;
+        let left = crate::normalize_geometry_batch(py, left)?;
+        let right = crate::normalize_geometry_batch(py, right)?;
+        let admission = crate::dispatch::admit_binary(&left, &right, operation.name())?;
         let model = resolve_metric(admission.frame.crs_str(), unit, operation)?;
         match (admission.left, admission.right) {
             (GeometryInput::One(geometry), GeometryInput::Many(array)) => {
