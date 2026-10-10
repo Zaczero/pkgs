@@ -12,7 +12,10 @@ from gometry._lib import (
     from_wkb,
 )
 from gometry._optional import missing_optional_dependency
-from gometry._types import CrsInput  # noqa: TC001 - required by annotations
+from gometry._types import (  # noqa: TC001 - required by annotations
+    CrsInput,
+    _EpochInput,
+)
 
 _POLARS_INSTALL = "install the 'gometry[polars]' extra"
 
@@ -100,7 +103,7 @@ def from_polars(
     series: pl.Series,
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]:
     """Decode a WKB/EWKB polars Series into a ``GeometryArray``.
 
@@ -111,7 +114,7 @@ def from_polars(
     crs : str, int, or CRS input, optional
         Restore CRS metadata when the binary values do not embed an EPSG SRID.
         If EWKB does carry an SRID, this value must agree with it.
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Restore coordinate epoch metadata. The CRS must admit geometry epochs
         under gometry's frame policy.
 

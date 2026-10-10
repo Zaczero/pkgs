@@ -102,7 +102,7 @@ impl PyGeometry {
     ///
     /// Parameters
     /// ----------
-    /// epoch : float or None
+    /// epoch : numeric scalar, 0-D numeric array, or None
     ///     Decimal year, or ``None`` to clear.
     ///
     /// overwrite : bool, default False
@@ -143,7 +143,7 @@ impl PyGeometry {
     /// crs : CRS-like or None, optional
     ///     Replace or clear the CRS label.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Replace or clear the coordinate epoch.
     ///
     /// Returns
@@ -185,7 +185,7 @@ impl PyGeometry {
     /// area_of_interest : sequence of float, optional
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.
     ///
-    /// epoch : float, optional
+    /// epoch : numeric scalar or 0-D numeric array, optional
     ///     Output coordinate epoch (decimal year) to tag on the result. Omitted
     ///     keeps the source epoch when the CRS is unchanged or the target admits
     ///     geometry epochs; otherwise the output has no epoch.

@@ -28,7 +28,7 @@ use crate::{
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) to attach as frame metadata.
 ///
 /// Returns
@@ -147,7 +147,7 @@ pub(crate) fn from_wkt(
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) to attach as frame metadata.
 ///
 /// Returns

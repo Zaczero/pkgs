@@ -21,7 +21,7 @@ impl PyCrs {
     /// area_of_interest : sequence of float, optional
     ///     ``(west, south, east, north)`` area of interest.
     ///
-    /// source_epoch, target_epoch : float, optional
+    /// source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
     ///     Coordinate epochs for dynamic CRS.
     ///
     /// authority : str, optional
@@ -132,7 +132,7 @@ impl PyCrs {
     /// area_of_interest : sequence of float, optional
     ///     ``(west, south, east, north)`` area of interest.
     ///
-    /// source_epoch, target_epoch : float, optional
+    /// source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
     ///     Coordinate epochs for dynamic CRS.
     ///
     /// authority : str, optional

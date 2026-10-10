@@ -1004,6 +1004,13 @@ Geometry frames admit epochs for CRSs based on a dynamic datum or the WGS 84
 ensemble (EPSG:6326), including derived CRSs such as EPSG:3857. Dynamic members
 of another ensemble do not by themselves make that ensemble epoch-capable.
 
+Epoch inputs accept finite values Python can convert with `float()`, including
+`Decimal`, `Fraction`, objects implementing `SupportsFloat` or `SupportsIndex`,
+NumPy numeric scalars, and zero-dimensional numeric arrays. Gometry converts
+them to binary64; the stored and returned epoch is a `float`. Dates and
+datetimes are rejected because this numeric interface does not define calendar
+or time-zone conversion.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 

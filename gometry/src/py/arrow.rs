@@ -804,7 +804,7 @@ pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 ///     explicit value is retained as the result's CRS. Passing ``None`` does
 ///     not strip compatible embedded metadata.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) to attach as frame metadata. A supplied
 ///     epoch must be finite and have a compatible embedded or explicit CRS; an
 ///     embedded epoch is preserved when this argument is omitted.

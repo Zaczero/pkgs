@@ -137,6 +137,7 @@ from gometry._types import (
     VoronoiClip,
     WktAxisRule,
     WktVersion,
+    _EpochInput,
 )
 
 # Kind-preserving transforms (reproject, affine, clean) return the same geometry
@@ -1523,7 +1524,7 @@ class Geometry:
             required).
         """
     def __replace__(
-        self, *, crs: CrsInput | None = ..., epoch: float | None = ...
+        self, *, crs: CrsInput | None = ..., epoch: _EpochInput | None = ...
     ) -> Self:
         """Return a copy with the given CRS/epoch metadata replaced.
 
@@ -1535,14 +1536,14 @@ class Geometry:
         crs : CRS-like or None, optional
             Replace or clear the CRS label.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Replace or clear the coordinate epoch.
 
         Returns
         -------
         Geometry
         """
-    def with_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
+    def with_epoch(self, epoch: _EpochInput | None, *, overwrite: bool = False) -> Self:
         """Declare (or clear) the coordinate epoch without moving coordinates.
         The epoch is the decimal year the coordinate set was observed
         (e.g. ``2020.0``). It supplies metadata to operations that use
@@ -1553,7 +1554,7 @@ class Geometry:
 
         Parameters
         ----------
-        epoch : float or None
+        epoch : numeric scalar, 0-D numeric array, or None
             Decimal year, or ``None`` to clear.
 
         overwrite : bool, default False
@@ -1621,7 +1622,7 @@ class Geometry:
         crs: CrsInput,
         *,
         area_of_interest: CrsAreaInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
         authority: str | None = None,
         accuracy: float | None = None,
         allow_ballpark: bool | None = None,
@@ -1641,7 +1642,7 @@ class Geometry:
         area_of_interest : sequence of float, optional
             Bounding ``(west, south, east, north)`` to pick the best transform.
 
-        epoch : float, optional
+        epoch : numeric scalar or 0-D numeric array, optional
             Output coordinate epoch (decimal year) to tag on the result. Omitted
             keeps the source epoch when the CRS is unchanged or the target admits
             geometry epochs; otherwise the output has no epoch.
@@ -4333,7 +4334,7 @@ class Point(Geometry):
         M (measure) ordinate.
     crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
-    epoch : float or None, optional
+    epoch : numeric scalar, 0-D numeric array, or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
 
@@ -4533,7 +4534,7 @@ class Point(Geometry):
         z: None = None,
         m: None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -4544,7 +4545,7 @@ class Point(Geometry):
         z: _FloatScalarInput | None = None,
         m: _FloatScalarInput | None = None,
         crs: CrsInput | None = None,
-        epoch: _FloatScalarInput | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -4555,7 +4556,7 @@ class Point(Geometry):
         z: _FloatScalarInput | None = None,
         m: _FloatScalarInput | None = None,
         crs: CrsInput | None = None,
-        epoch: _FloatScalarInput | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self:
         """Create a ``Point`` geometry — ``XY``, ``XYZ``, ``XYM``, or ``XYZM``.
 
@@ -4581,7 +4582,7 @@ class Point(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -4683,7 +4684,7 @@ class Point(Geometry):
         z: float | None = ...,
         m: float | None = ...,
         crs: CrsInput | None = ...,
-        epoch: float | None = ...,
+        epoch: _EpochInput | None = ...,
     ) -> Self:
         """Return a copy with the given ordinates and metadata replaced.
 
@@ -4702,7 +4703,7 @@ class Point(Geometry):
         crs : CRS-like or None, optional
             Replace or clear the CRS label.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Replace or clear the coordinate epoch.
 
         Returns
@@ -4894,7 +4895,7 @@ class MultiPoint(Geometry):
         Column form: parallel ordinate arrays, one entry per point.
     crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
-    epoch : float or None, optional
+    epoch : numeric scalar, 0-D numeric array, or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     @overload
@@ -4907,7 +4908,7 @@ class MultiPoint(Geometry):
         z: None = None,
         m: None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -4917,7 +4918,7 @@ class MultiPoint(Geometry):
         z: None = None,
         m: None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -4927,7 +4928,7 @@ class MultiPoint(Geometry):
         z: FloatColumn | None = None,
         m: FloatColumn | None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -4939,7 +4940,7 @@ class MultiPoint(Geometry):
         z: FloatColumn | None = None,
         m: FloatColumn | None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self:
         """Create a ``MultiPoint`` geometry from a coordinate sequence.
 
@@ -4959,7 +4960,7 @@ class MultiPoint(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5264,7 +5265,7 @@ class LineString(Geometry):
         Column form: parallel ordinate arrays, one entry per vertex.
     crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
-    epoch : float or None, optional
+    epoch : numeric scalar, 0-D numeric array, or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     @overload
@@ -5277,7 +5278,7 @@ class LineString(Geometry):
         z: None = None,
         m: None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -5287,7 +5288,7 @@ class LineString(Geometry):
         z: FloatColumn | None = None,
         m: FloatColumn | None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -5299,7 +5300,7 @@ class LineString(Geometry):
         z: FloatColumn | None = None,
         m: FloatColumn | None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self:
         """Create a LineString from an ordered coordinate sequence.
 
@@ -5320,7 +5321,7 @@ class LineString(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5416,7 +5417,7 @@ class MultiLineString(Geometry):
         The member lines; omitted builds an empty multilinestring.
     crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
-    epoch : float or None, optional
+    epoch : numeric scalar, 0-D numeric array, or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     def __new__(
@@ -5424,7 +5425,7 @@ class MultiLineString(Geometry):
         lines: Iterable[LineString | Iterable[Iterable[float]]] | None = None,
         *,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self:
         """Create a ``MultiLineString`` from a sequence of line coordinate sequences.
 
@@ -5437,7 +5438,7 @@ class MultiLineString(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5613,7 +5614,7 @@ class Polygon(Geometry):
         Column form for the exterior ring: parallel ordinate arrays.
     crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
-    epoch : float or None, optional
+    epoch : numeric scalar, 0-D numeric array, or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     @overload
@@ -5627,7 +5628,7 @@ class Polygon(Geometry):
         z: None = None,
         m: None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -5638,7 +5639,7 @@ class Polygon(Geometry):
         z: FloatColumn | None = None,
         m: FloatColumn | None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -5651,7 +5652,7 @@ class Polygon(Geometry):
         z: FloatColumn | None = None,
         m: FloatColumn | None = None,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self:
         """Create a ``Polygon`` from an exterior ring and optional holes.
 
@@ -5674,7 +5675,7 @@ class Polygon(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5780,7 +5781,7 @@ class MultiPolygon(Geometry):
         The member polygons; omitted builds an empty multipolygon.
     crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
-    epoch : float or None, optional
+    epoch : numeric scalar, 0-D numeric array, or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     def __new__(
@@ -5788,7 +5789,7 @@ class MultiPolygon(Geometry):
         polygons: Iterable[Polygon | _CoordinatesInput | _RingsInput] | None = None,
         *,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self:
         """Create a ``MultiPolygon`` from a sequence of polygons.
 
@@ -5801,7 +5802,7 @@ class MultiPolygon(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -5973,7 +5974,7 @@ class GeometryCollection(Geometry):
         The member geometries, of any types; omitted builds an empty collection.
     crs : CRS-like, optional
         Coordinate reference system, attached as metadata (never transforms coordinates).
-    epoch : float or None, optional
+    epoch : numeric scalar, 0-D numeric array, or None, optional
         Coordinate epoch metadata; the CRS frame must admit geometry epochs.
     """
     def __new__(
@@ -5981,7 +5982,7 @@ class GeometryCollection(Geometry):
         geometries: Iterable[Geometry] | None = None,
         *,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self:
         """Create a ``GeometryCollection`` from a sequence of geometries.
 
@@ -5993,7 +5994,7 @@ class GeometryCollection(Geometry):
         crs : CRS-like, optional
             Any supported CRS input. Declares the frame; does not transform coordinates.
 
-        epoch : float or None, optional
+        epoch : numeric scalar, 0-D numeric array, or None, optional
             Coordinate epoch (decimal year) for time-dependent frames.
 
         Returns
@@ -6956,7 +6957,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         values: Iterable[None],
         *,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> GeometryArray[Geometry | None]: ...
     @overload
     def __new__(
@@ -6964,7 +6965,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         values: Iterable[_GeometryT_co],
         *,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> Self: ...
     @overload
     def __new__(
@@ -6974,7 +6975,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ],
         *,
         crs: CrsInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
     ) -> GeometryArray[Geometry | _GeometryT_co]:
         """Construct an immutable array from geometry-like rows.
 
@@ -6993,7 +6994,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         crs : CrsInput or None, optional, default None
             Shared CRS label. CRS-free rows adopt it; existing CRS values must
             be equivalent to it.
-        epoch : float or None, optional, default None
+        epoch : numeric scalar, 0-D numeric array, or None, optional, default None
             Shared coordinate epoch for a CRS that admits geometry epochs.
             Existing epochs must agree with it.
 
@@ -7678,14 +7679,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         >>> gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])]).to_polyline()
         ['??_ibE_ibE']
         """
-    def with_epoch(self, epoch: float | None, *, overwrite: bool = False) -> Self:
+    def with_epoch(self, epoch: _EpochInput | None, *, overwrite: bool = False) -> Self:
         """Declare (or clear) the array's coordinate epoch (see
         `Geometry.with_epoch`). The CRS frame must admit an epoch. ``None``
         clears it; changing a present epoch needs ``overwrite=True``.
 
         Parameters
         ----------
-        epoch : float or None
+        epoch : numeric scalar, 0-D numeric array, or None
             Decimal year, or ``None`` to clear.
 
         overwrite : bool, default False
@@ -7746,7 +7747,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         crs: CrsInput,
         *,
         area_of_interest: CrsAreaInput | None = None,
-        epoch: float | None = None,
+        epoch: _EpochInput | None = None,
         authority: str | None = None,
         accuracy: float | None = None,
         allow_ballpark: bool | None = None,
@@ -7766,7 +7767,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         area_of_interest : sequence of float, optional
             Bounding ``(west, south, east, north)`` to pick the best transform.
 
-        epoch : float, optional
+        epoch : numeric scalar or 0-D numeric array, optional
             Output coordinate epoch (decimal year) to tag on the result. Omitted
             keeps the source epoch when the CRS is unchanged or the target admits
             geometry epochs; otherwise the output has no epoch.
@@ -12971,8 +12972,8 @@ class CRS:
         | tuple[float, float, float, float]
         | None = None,
         area_of_interest: CrsAreaInput | None = None,
-        source_epoch: float | None = None,
-        target_epoch: float | None = None,
+        source_epoch: _EpochInput | None = None,
+        target_epoch: _EpochInput | None = None,
         authority: str | None = None,
         accuracy: float | None = None,
         allow_ballpark: bool | None = None,
@@ -12994,7 +12995,7 @@ class CRS:
         area_of_interest : sequence of float, optional
             ``(west, south, east, north)`` area of interest.
 
-        source_epoch, target_epoch : float, optional
+        source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
             Coordinate epochs for dynamic CRS.
 
         authority : str, optional
@@ -13042,8 +13043,8 @@ class CRS:
         target: CrsInput,
         *,
         area_of_interest: CrsAreaInput | None = None,
-        source_epoch: float | None = None,
-        target_epoch: float | None = None,
+        source_epoch: _EpochInput | None = None,
+        target_epoch: _EpochInput | None = None,
         authority: str | None = None,
         accuracy: float | None = None,
         allow_ballpark: bool | None = None,
@@ -13060,7 +13061,7 @@ class CRS:
         area_of_interest : sequence of float, optional
             ``(west, south, east, north)`` area of interest.
 
-        source_epoch, target_epoch : float, optional
+        source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
             Coordinate epochs for dynamic CRS.
 
         authority : str, optional
@@ -16122,7 +16123,7 @@ def box(
     crs: CrsInput | None = None,
     wrap: None = None,
     ccw: bool = True,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Polygon: ...
 @overload
 def box(
@@ -16134,7 +16135,7 @@ def box(
     crs: CrsInput,
     wrap: BoxWrap,
     ccw: bool = True,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Polygon | MultiPolygon:
     """Create a rectangular ``Polygon`` from bounds ``(minx, miny, maxx, maxy)``.
 
@@ -16167,7 +16168,7 @@ def box(
     ccw : bool, default True
         If ``True`` the ring is counter-clockwise; ``False`` makes it clockwise.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -16205,7 +16206,7 @@ def points(
     z: FloatInput | None = None,
     m: FloatInput | None = None,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Point]: ...
 @overload
 def points(
@@ -16215,7 +16216,7 @@ def points(
     z: FloatInput | None = None,
     m: FloatInput | None = None,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Point]:
     """Create a ``GeometryArray`` of points from parallel coordinate columns.
 
@@ -16237,7 +16238,7 @@ def points(
         CRS label (EPSG code, authority string, or WKT); attached as metadata,
         coordinates are not transformed.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -16279,7 +16280,7 @@ def boxes(
     crs: CrsInput | None = None,
     wrap: None = None,
     ccw: bool = True,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon]: ...
 @overload
 def boxes(
@@ -16291,7 +16292,7 @@ def boxes(
     crs: CrsInput,
     wrap: BoxWrap,
     ccw: bool = True,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon | MultiPolygon]: ...
 @overload
 def boxes(
@@ -16303,7 +16304,7 @@ def boxes(
     crs: CrsInput | None = None,
     wrap: BoxWrap | None = None,
     ccw: bool = True,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon | MultiPolygon]:
     """Create a ``GeometryArray`` of rectangular polygons from bound columns.
 
@@ -16324,7 +16325,7 @@ def boxes(
     ccw : bool, default True
         If ``True`` each ring is counter-clockwise; ``False`` makes it clockwise.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -16354,7 +16355,7 @@ def line_strings(
     values: Iterable[LineString | _CoordinatesInput],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[LineString]:
     """Create a ``GeometryArray`` of linestrings from coordinate rows or Linestrings.
 
@@ -16367,7 +16368,7 @@ def line_strings(
     crs : CRS-like, optional
         CRS applied to every linestring.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -16400,7 +16401,7 @@ def polygons(
     values: Iterable[Polygon | _CoordinatesInput | _RingsInput],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Polygon]:
     """Create a ``GeometryArray`` of polygons from raw coordinates or Polygons.
 
@@ -16413,7 +16414,7 @@ def polygons(
     crs : CRS-like, optional
         CRS applied to every polygon.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -16446,7 +16447,7 @@ def multi_points(
     values: Iterable[MultiPoint | Iterable[Point | _Coordinate] | _CoordinatesInput],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[MultiPoint]:
     """Create a ``GeometryArray`` of multipoints from per-row inputs.
 
@@ -16459,7 +16460,7 @@ def multi_points(
     crs : CRS-like, optional
         CRS applied to every multipoint.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -16492,7 +16493,7 @@ def multi_line_strings(
     values: Iterable[MultiLineString | Iterable[LineString | _CoordinatesInput]],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[MultiLineString]:
     """Create a ``GeometryArray`` of multilinestrings from per-row inputs.
 
@@ -16505,7 +16506,7 @@ def multi_line_strings(
     crs : CRS-like, optional
         CRS applied to every multilinestring.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -16540,7 +16541,7 @@ def multi_polygons(
     ],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[MultiPolygon]:
     """Create a ``GeometryArray`` of multipolygons from per-row inputs.
 
@@ -16553,7 +16554,7 @@ def multi_polygons(
     crs : CRS-like, optional
         CRS applied to every multipolygon.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) for time-dependent frames.
 
     Returns
@@ -17260,7 +17261,7 @@ def from_polyline(
     *,
     precision: int = 5,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Point | LineString: ...
 @overload
 def from_polyline(
@@ -17268,7 +17269,7 @@ def from_polyline(
     *,
     precision: int = 5,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Point | LineString | None]: ...
 @overload
 def from_polyline(
@@ -17276,7 +17277,7 @@ def from_polyline(
     *,
     precision: int = 5,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Point | LineString]: ...
 @overload
 def from_polyline(
@@ -17284,7 +17285,7 @@ def from_polyline(
     *,
     precision: int = 5,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Point | LineString | None]:
     """Decode polyline text into ``LineString``/``Point`` geometries.
 
@@ -17307,7 +17308,7 @@ def from_polyline(
     crs : CRS-like or None, default 'OGC:CRS84'
         Frame for the decoded longitude/latitude coordinates. Only WGS84
         longitude/latitude CRS are valid; pass ``None`` for CRS-free output.
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) to attach as frame metadata.
 
     Returns
@@ -20379,28 +20380,28 @@ def symmetric_difference_all(
 
 @overload
 def from_wkt(
-    data: str, *, crs: CrsInput | None = None, epoch: float | None = None
+    data: str, *, crs: CrsInput | None = None, epoch: _EpochInput | None = None
 ) -> Geometry: ...
 @overload
 def from_wkt(
     data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_wkt(
     data: Iterable[str],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry]: ...
 @overload
 def from_wkt(
     data: Iterable[str | None],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]:
     """Parse a geometry (or array) from Well-Known Text.
 
@@ -20420,7 +20421,7 @@ def from_wkt(
         CRS for SRID-less input. An embedded SRID that *contradicts* an
         explicit ``crs`` raises rather than silently winning.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) to attach as frame metadata.
 
     Returns
@@ -20458,53 +20459,53 @@ def from_wkb(
     data: PandasSeries | PolarsSeries | PyArrowArray | PyArrowChunkedArray,
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_wkb(
     data: npt.NDArray[np.uint8] | npt.NDArray[np.int8],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Geometry: ...
 @overload
 def from_wkb(
     data: npt.NDArray[np.object_],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_wkb(
     data: npt.NDArray[np.bytes_],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry]: ...
 @overload
 def from_wkb(
-    data: Buffer, *, crs: CrsInput | None = None, epoch: float | None = None
+    data: Buffer, *, crs: CrsInput | None = None, epoch: _EpochInput | None = None
 ) -> Geometry: ...
 @overload
 def from_wkb(
     data: Iterable[Buffer],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry]: ...
 @overload
 def from_wkb(
     data: Iterable[Buffer | None],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_wkb(
     data: Buffer | Iterable[Buffer | None],
     *,
     crs: CrsInput | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Geometry | GeometryArray[Geometry | None]:
     """Parse a geometry (or array) from Well-Known Binary.
 
@@ -20524,7 +20525,7 @@ def from_wkb(
         CRS for SRID-less input. An embedded SRID that *contradicts* an
         explicit ``crs`` raises rather than silently winning.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) to attach as frame metadata.
 
     Returns
@@ -20748,12 +20749,12 @@ def _from_geoparquet_arrow(
     layout: _GeoParquetPhysicalLayout,
     *,
     crs: str | None = None,
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]:
     """Decode a PyArrow column with one already-admitted physical layout."""
 
 def from_arrow(
-    data: _ArrowInput, *, crs: CrsInput | None = None, epoch: float | None = None
+    data: _ArrowInput, *, crs: CrsInput | None = None, epoch: _EpochInput | None = None
 ) -> GeometryArray[Geometry | None]:
     """Build geometries from an Arrow array, table, record batch, reader, or
     Arrow-C provider. Protocol callbacks and PyArrow object inspection remain
@@ -20776,7 +20777,7 @@ def from_arrow(
         explicit value is retained as the result's CRS. Passing ``None`` does
         not strip compatible embedded metadata.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) to attach as frame metadata. A supplied
         epoch must be finite and have a compatible embedded or explicit CRS; an
         embedded epoch is preserved when this argument is omitted.
@@ -20966,7 +20967,7 @@ def from_geojson(
     *,
     features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
@@ -20974,7 +20975,7 @@ def from_geojson(
     *,
     features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Geometry: ...
 @overload
 def from_geojson(
@@ -20982,7 +20983,7 @@ def from_geojson(
     *,
     features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Geometry | GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
@@ -20994,7 +20995,7 @@ def from_geojson(
     *,
     features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
@@ -21007,7 +21008,7 @@ def from_geojson(
     *,
     features: Literal[False] = False,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Geometry | GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
@@ -21020,7 +21021,7 @@ def from_geojson(
     *,
     features: Literal[True],
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Features: ...
 @overload
 def from_geojson(
@@ -21033,7 +21034,7 @@ def from_geojson(
     *,
     features: bool,
     crs: CrsInput | None = 'OGC:CRS84',
-    epoch: float | None = None,
+    epoch: _EpochInput | None = None,
 ) -> Geometry | GeometryArray[Geometry | None] | Features:
     """Parse GeoJSON geometry, rows, or feature metadata.
 
@@ -21070,7 +21071,7 @@ def from_geojson(
         top-level ``crs`` member (pre-RFC 7946) is ignored when it agrees with
         ``crs=`` and raises on conflict or unsupported declarations.
 
-    epoch : float, optional
+    epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epoch (decimal year) to attach as frame metadata.
 
     Returns
@@ -21601,8 +21602,8 @@ def crs_roundtrip(
     iterations: _IntScalar = 1,
     direction: TransformDirection = 'forward',
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -21621,8 +21622,8 @@ def crs_roundtrip(
     iterations: int = 1,
     direction: TransformDirection = 'forward',
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -21641,8 +21642,8 @@ def crs_roundtrip(
     iterations: int = 1,
     direction: TransformDirection = 'forward',
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -21661,8 +21662,8 @@ def crs_roundtrip(
     iterations: int = 1,
     direction: TransformDirection = 'forward',
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -21681,8 +21682,8 @@ def crs_roundtrip(
     iterations: int = 1,
     direction: TransformDirection = 'forward',
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -21701,8 +21702,8 @@ def crs_roundtrip(
     iterations: int = 1,
     direction: TransformDirection = 'forward',
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -21721,8 +21722,8 @@ def crs_roundtrip(
     iterations: int = 1,
     direction: TransformDirection = 'forward',
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -21747,7 +21748,7 @@ def crs_roundtrip(
         Area of interest guiding operation selection, as
         ``(west, south, east, north)`` in DEGREES, an area mapping, or an
         AreaOfInterest-like object.
-    source_epoch, target_epoch : float, optional
+    source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epochs for dynamic CRS.
     authority : str, optional
         Restrict candidate coordinate operations to this authority
@@ -22073,8 +22074,8 @@ def crs_transform(
     *,
     t: _FloatScalarInput | None = None,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22091,8 +22092,8 @@ def crs_transform(
     *,
     t: _FloatScalarInput | None = None,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22109,8 +22110,8 @@ def crs_transform(
     *,
     t: FloatInput | None = None,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22127,8 +22128,8 @@ def crs_transform(
     *,
     t: FloatInput | None = None,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22145,8 +22146,8 @@ def crs_transform(
     *,
     t: FloatInput | None = None,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22163,8 +22164,8 @@ def crs_transform(
     *,
     t: _FloatColumn1D,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22181,8 +22182,8 @@ def crs_transform(
     *,
     t: FloatInput | None = None,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22208,7 +22209,7 @@ def crs_transform(
         Area of interest guiding operation selection, as
         ``(west, south, east, north)`` in DEGREES, an area mapping, or an
         AreaOfInterest-like object.
-    source_epoch, target_epoch : float, optional
+    source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epochs for dynamic CRS.
     authority : str, optional
         Restrict candidate coordinate operations to this authority
@@ -22273,8 +22274,8 @@ def crs_transform_bounds(
     *,
     densify: int = 21,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22289,8 +22290,8 @@ def crs_transform_bounds(
     *,
     densify: int = 21,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22305,8 +22306,8 @@ def crs_transform_bounds(
     *,
     densify: int = 21,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22325,8 +22326,8 @@ def crs_transform_bounds(
     *,
     densify: int = 21,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22341,8 +22342,8 @@ def crs_transform_bounds(
     *,
     densify: int = 21,
     area_of_interest: CrsAreaInput | None = None,
-    source_epoch: float | None = None,
-    target_epoch: float | None = None,
+    source_epoch: _EpochInput | None = None,
+    target_epoch: _EpochInput | None = None,
     authority: str | None = None,
     accuracy: float | None = None,
     allow_ballpark: bool | None = None,
@@ -22374,7 +22375,7 @@ def crs_transform_bounds(
         Area of interest guiding operation selection, as
         ``(west, south, east, north)`` in DEGREES, an area mapping, or an
         AreaOfInterest-like object.
-    source_epoch, target_epoch : float, optional
+    source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
         Coordinate epochs for dynamic CRS.
     authority : str, optional
         Restrict candidate coordinate operations to this authority

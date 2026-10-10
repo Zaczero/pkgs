@@ -179,7 +179,7 @@ pub(crate) fn crs_operations<'py>(
 ///     Area of interest guiding operation selection, as
 ///     ``(west, south, east, north)`` in DEGREES, an area mapping, or an
 ///     AreaOfInterest-like object.
-/// source_epoch, target_epoch : float, optional
+/// source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epochs for dynamic CRS.
 /// authority : str, optional
 ///     Restrict candidate coordinate operations to this authority
@@ -494,7 +494,7 @@ pub(crate) fn coordinates_to_py(
 ///     Area of interest guiding operation selection, as
 ///     ``(west, south, east, north)`` in DEGREES, an area mapping, or an
 ///     AreaOfInterest-like object.
-/// source_epoch, target_epoch : float, optional
+/// source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epochs for dynamic CRS.
 /// authority : str, optional
 ///     Restrict candidate coordinate operations to this authority
@@ -823,7 +823,7 @@ fn classify_bounds_shape(
 ///     Area of interest guiding operation selection, as
 ///     ``(west, south, east, north)`` in DEGREES, an area mapping, or an
 ///     AreaOfInterest-like object.
-/// source_epoch, target_epoch : float, optional
+/// source_epoch, target_epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epochs for dynamic CRS.
 /// authority : str, optional
 ///     Restrict candidate coordinate operations to this authority

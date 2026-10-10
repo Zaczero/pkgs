@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import UTC, date, datetime
+
     import gometry as gm
 
 
@@ -43,6 +45,8 @@ if TYPE_CHECKING:
 
     # Argument types: strings are not distances.
     POINT.buffer('1.0')  # type: ignore[arg-type]
+    gm.Point(0.0, 0.0, crs=4326, epoch=date(2020, 1, 1))  # type: ignore[call-overload]
+    POINT.with_epoch(datetime(2020, 1, 1, tzinfo=UTC))  # type: ignore[arg-type]
 
     # Unknown keyword arguments are rejected.
     POINT.buffer(1.0, wrong_kw=2)  # type: ignore[call-arg]
