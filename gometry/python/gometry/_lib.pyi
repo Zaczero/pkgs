@@ -11396,15 +11396,15 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         """Not constructed directly — the error points at the producers."""
     @property
     def values(self) -> _GroupValuesT_co:
-        """The logical flat payload window (int64 ndarray, `GeometryArray`, or
-        `CellArray`), with values in group order. A contiguous source window
-        can share backing; gathered values may be materialized.
+        """The logical flat payload window in group order, preserving its payload
+        type (int64 ndarray, `GeometryArray`, or `CellArray`). A contiguous
+        source window can share backing; gathered values may be materialized.
 
         Returns
         -------
-        numpy.ndarray or GeometryArray or CellArray
-            The selected flat values window. Numeric values are read-only int64;
-            geometry and cell values retain their immutable array types.
+        GroupValuesT_co
+            The selected flat payload window. Numeric values are read-only
+            int64; geometry and cell values retain their immutable array types.
         """
     @property
     def offsets(self) -> npt.NDArray[np.int64]:

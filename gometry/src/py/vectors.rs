@@ -543,15 +543,15 @@ impl Groups {
         python_sizeof(std::mem::size_of::<Self>(), self.logical_heap_bytes())
     }
 
-    /// The logical flat payload window (int64 ndarray, `GeometryArray`, or
-    /// `CellArray`), with values in group order. A contiguous source window
-    /// can share backing; gathered values may be materialized.
+    /// The logical flat payload window in group order, preserving its payload
+    /// type (int64 ndarray, `GeometryArray`, or `CellArray`). A contiguous
+    /// source window can share backing; gathered values may be materialized.
     ///
     /// Returns
     /// -------
-    /// numpy.ndarray or GeometryArray or CellArray
-    ///     The selected flat values window. Numeric values are read-only int64;
-    ///     geometry and cell values retain their immutable array types.
+    /// GroupValuesT_co
+    ///     The selected flat payload window. Numeric values are read-only
+    ///     int64; geometry and cell values retain their immutable array types.
     #[getter]
     fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {
