@@ -204,7 +204,12 @@ impl Shape {
                     split,
                 )?))
             },
-            _ => self.split_antimeridian(),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => self.split_antimeridian(),
         }
     }
 }
@@ -573,7 +578,7 @@ fn split_polygon<M: ChartMetric>(
 ) -> Result<Vec<Polygon>> {
     let preferred = match preferred {
         PoleClosure::Auto => pole_closure_for_ring(&polygon.shell),
-        closure => closure,
+        closure @ PoleClosure::Chart(_) => closure,
     };
     let polygons = split_polygon_inner(polygon, preferred, metric_access)?;
     reject_fabricated_pole_ordinates(source, &polygons)?;
@@ -614,7 +619,7 @@ fn split_polygon_inner_in_mode<M: ChartMetric>(
             SeamRing::Whole(spelled) if !ring_follows_seam(&points) => {
                 stationary_holes.push(Ring::try_from_closed(CoordSeq::try_from_points(&spelled)?)?);
             },
-            _ => crossing_holes.push(hole.clone()),
+            SeamRing::Pieces(_) | SeamRing::Whole(_) => crossing_holes.push(hole.clone()),
         }
     }
     if !crossing_holes.is_empty() {
@@ -803,7 +808,11 @@ fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {
         Shape::Polygon(polygon) => Ok(vec![polygon]),
         Shape::MultiPolygon(polygons) => Ok(polygons.iter().cloned().collect()),
         Shape::Empty(..) => Ok(Vec::new()),
-        _ => Err(GeometryErrorKind::antimeridian_split_failed(
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_) => Err(GeometryErrorKind::antimeridian_split_failed(
             "subtracting crossing holes produced non-areal output",
         )),
     }
@@ -820,11 +829,13 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
     }
     // A single non-CCW result encloses both poles: represent it as the world
     // rectangle with the ring as a hole.
-    if shells.len() == 1 && !ring_is_ccw(&shells[0]) {
+    if let [shell] = shells.as_slice()
+        && !ring_is_ccw(shell)
+    {
         // The fabricated world rectangle carries the ring's axes so shell and
         // hole stay axis-consistent (a measured/3D pole wrap is rejected
         // downstream; the placeholder ordinate is never observed).
-        let like = shells[0].first().copied().unwrap_or(Point::new(0.0, 0.0)?);
+        let like = shell.first().copied().unwrap_or(Point::new(0.0, 0.0)?);
         let corner = |lon: f64, lat: f64| -> Result<Point> {
             Point::new_axes(lon, lat, ZOrdinate(like.z()), MOrdinate(like.m()))
         };
@@ -835,7 +846,7 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
             corner(180.0, 90.0)?,
             corner(-180.0, 90.0)?,
         ];
-        let hole = close_ring(shells.remove(0));
+        let hole = close_ring(shells.pop().expect("the shell slice contains one ring"));
         return Ok(vec![Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_points(&world)?)?,
             vec![Ring::try_from_closed(CoordSeq::try_from_points(&hole)?)?],
@@ -859,14 +870,14 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
     for hole in kept_holes {
         let hole_shape = Shape::LineString(hole.as_line());
         let mut owner = None;
-        for (index, candidate) in candidate_shapes.iter().enumerate() {
+        for (candidate, assigned) in candidate_shapes.iter().zip(&mut assigned_holes) {
             if candidate.contains(&hole_shape)? {
-                owner = Some(index);
+                owner = Some(assigned);
                 break;
             }
         }
         match owner {
-            Some(index) => assigned_holes[index].push((*hole).clone()),
+            Some(assigned) => assigned.push((*hole).clone()),
             None => {
                 return Err(GeometryErrorKind::antimeridian_split_failed(
                     "a hole does not lie inside any split part",
@@ -939,7 +950,7 @@ fn extend_over_poles(
     let mut left_end: Option<(usize, f64)> = None;
     let mut right_end: Option<(usize, f64)> = None;
     for (index, segment) in segments.iter().enumerate() {
-        let start = segment[0];
+        let start = *segment.first().expect("segments are non-empty");
         let end = *segment.last().expect("segments are non-empty");
         if start.x == -180.0 && left_start.is_none_or(|latitude| start.y < latitude) {
             left_start = Some(start.y);
@@ -962,17 +973,23 @@ fn extend_over_poles(
         {
             // Forced north from the west side: cap and reverse.
             over_north = true;
-            let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, -180.0, north_pole)?);
-            segments[index].push(pole_vertex(like, 180.0, north_pole)?);
-            segments[index].reverse();
+            let segment = segments
+                .get_mut(index)
+                .expect("the pole endpoint came from this segment");
+            let like = *segment.last().expect("segments are non-empty");
+            segment.push(pole_vertex(like, -180.0, north_pole)?);
+            segment.push(pole_vertex(like, 180.0, north_pole)?);
+            segment.reverse();
         } else if closure == PoleClosure::Chart(ChartPole::South)
             || left_start.is_none_or(|start| latitude < start)
         {
             over_south = true;
-            let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, -180.0, south_pole)?);
-            segments[index].push(pole_vertex(like, 180.0, south_pole)?);
+            let segment = segments
+                .get_mut(index)
+                .expect("the pole endpoint came from this segment");
+            let like = *segment.last().expect("segments are non-empty");
+            segment.push(pole_vertex(like, -180.0, south_pole)?);
+            segment.push(pole_vertex(like, 180.0, south_pole)?);
         }
     }
     if let Some((index, latitude)) = right_end {
@@ -981,17 +998,23 @@ fn extend_over_poles(
         {
             // Forced south from the east side: cap and reverse.
             over_south = true;
-            let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, 180.0, south_pole)?);
-            segments[index].push(pole_vertex(like, -180.0, south_pole)?);
-            segments[index].reverse();
+            let segment = segments
+                .get_mut(index)
+                .expect("the pole endpoint came from this segment");
+            let like = *segment.last().expect("segments are non-empty");
+            segment.push(pole_vertex(like, 180.0, south_pole)?);
+            segment.push(pole_vertex(like, -180.0, south_pole)?);
+            segment.reverse();
         } else if closure == PoleClosure::Chart(ChartPole::North)
             || right_start.is_none_or(|start| latitude > start)
         {
             over_north = true;
-            let like = *segments[index].last().expect("segments are non-empty");
-            segments[index].push(pole_vertex(like, 180.0, north_pole)?);
-            segments[index].push(pole_vertex(like, -180.0, north_pole)?);
+            let segment = segments
+                .get_mut(index)
+                .expect("the pole endpoint came from this segment");
+            let like = *segment.last().expect("segments are non-empty");
+            segment.push(pole_vertex(like, 180.0, north_pole)?);
+            segment.push(pole_vertex(like, -180.0, north_pole)?);
         }
     }
     let capped = over_north || over_south;
@@ -1008,7 +1031,7 @@ fn extend_over_poles(
 }
 
 fn is_self_closing(segment: &[Point]) -> bool {
-    let start = segment[0];
+    let start = *segment.first().expect("segments are non-empty");
     let end = *segment.last().expect("segments are non-empty");
     let is_right = end.x == 180.0;
     start.x == end.x && ((is_right && start.y > end.y) || (!is_right && start.y < end.y))
@@ -1021,12 +1044,12 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
     let mut rings = Vec::new();
     while let Some(mut segment) = segments.pop() {
         let end = *segment.last().expect("segments are non-empty");
-        let start = segment[0];
+        let start = *segment.first().expect("segments are non-empty");
         let is_right = end.x == 180.0;
         let mut best: Option<(usize, f64)> = None;
         let self_candidate = is_self_closing(&segment).then_some(start.y);
         for (index, candidate) in segments.iter().enumerate() {
-            let candidate_start = candidate[0];
+            let candidate_start = *candidate.first().expect("segments are non-empty");
             let candidate_end = *candidate.last().expect("segments are non-empty");
             if candidate_start.x != end.x {
                 continue;
@@ -1074,7 +1097,7 @@ fn build_rings(mut segments: Vec<Vec<Point>>) -> Vec<Vec<Point>> {
         }
         // Self-closing: drop fully degenerate single-point rings (an input
         // corner exactly on the seam).
-        if !segment.iter().all(|point| same_point(*point, segment[0])) {
+        if !segment.iter().all(|point| same_point(*point, start)) {
             rings.push(segment);
         }
     }

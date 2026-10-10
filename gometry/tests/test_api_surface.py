@@ -43,7 +43,6 @@ FLAT_FAMILY_EXPORTS = {
     's2_bounding_cell',
     's2_cells',
     's2_cover',
-    's2_cover_adaptive',
     's2_difference',
     's2_intersection',
     's2_union',
@@ -472,7 +471,6 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'gm.point_between': str(inspect.signature(gm.point_between)),
         'gm.h3_cover': str(inspect.signature(gm.h3_cover)),
         'gm.s2_cover': str(inspect.signature(gm.s2_cover)),
-        'gm.s2_cover_adaptive': str(inspect.signature(gm.s2_cover_adaptive)),
         'gm.hausdorff_distance': str(inspect.signature(gm.hausdorff_distance)),
         'GeometryArray': str(inspect.signature(gm.GeometryArray)),
         'Point': str(inspect.signature(gm.Point)),
@@ -507,13 +505,9 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         == "(left, right, distance, *, normalized=False, path='geodesic', unit=None)"
     )
     assert "cell_rule='overlap'" in signatures['gm.h3_cover']
-    assert (
-        signatures['gm.s2_cover']
-        == "(geom, level, *, cell_rule='overlap', max_cells=1000000)"
-    )
-    assert signatures['gm.s2_cover_adaptive'] == (
-        '(geom, *, target_cells=8, min_level=0, max_level=30, level_mod=1, '
-        "cell_rule='overlap', max_cells=1000000)"
+    assert signatures['gm.s2_cover'] == (
+        '(geom, level=None, *, target_cells=8, min_level=None, max_level=None, '
+        "level_mod=1, cell_rule='overlap', max_cells=1000000)"
     )
     assert (
         signatures['gm.hausdorff_distance']
@@ -775,7 +769,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
     assert callable(gm.h3_cover)
     assert callable(gm.s2_cells)
     assert callable(gm.s2_cover)
-    assert callable(gm.s2_cover_adaptive)
+    assert callable(gm.s2_cover)
     assert not hasattr(gm, 'get_coordinates')
     assert not hasattr(gm, 'geodesic')
     assert not hasattr(gm, 'Planar')

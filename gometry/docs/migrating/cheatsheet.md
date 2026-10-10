@@ -226,7 +226,7 @@ for coordinate exports without changing the geometry.
 |---|---|---|
 | `CellId.from_lat_lng(...).parent(level)` | [`gm.S2Cell(point, level=...)`][gometry.S2Cell] | |
 | `Cell(cell_id)` boundary | [`cell.polygon`][gometry.Cell.polygon] / [`cells.polygon`][gometry.CellArray.polygon] | |
-| `RegionCoverer().get_covering(region)` | [`gm.s2_cover_adaptive(geom, ...)`][gometry.s2_cover_adaptive] | `target_cells` guides refinement; `max_cells` is the hard output cap. |
+| `RegionCoverer().get_covering(region)` | [`gm.s2_cover(geom, ...)`][gometry.s2_cover] | `target_cells` guides refinement; `max_cells` is the hard output cap. |
 | `RegionCoverer(min_level=L, max_level=L).get_covering(region)` | [`gm.s2_cover(geom, level=L, max_cells=...)`][gometry.s2_cover] | The requested level is never coarsened. |
 | `CellUnion` set ops | [`gm.s2_union(a, b)`][gometry.s2_union] / [`gm.s2_intersection(a, b)`][gometry.s2_intersection] / [`gm.s2_difference(a, b)`][gometry.s2_difference] | |
 | `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | |

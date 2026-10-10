@@ -62,11 +62,15 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
         return pieces;
     }
     let last = *coords.last().expect("segmented chains have coordinates");
-    let first_piece_start = pieces[0][0];
+    let first_piece_start = *pieces
+        .first()
+        .and_then(|first| first.first())
+        .expect("segmented pieces are non-empty");
     if same_point(last, first_piece_start) {
         // A ring: the trailing run continues the leading piece.
-        piece.append(&mut pieces[0]);
-        pieces[0] = piece;
+        let first_piece = pieces.first_mut().expect("split pieces are non-empty");
+        piece.append(first_piece);
+        *first_piece = piece;
     } else {
         piece.push(last);
         pieces.push(piece);
@@ -93,9 +97,15 @@ pub(crate) enum SeamRing {
 /// returns to its entry latitude on the side it entered from only touches the
 /// seam.
 pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
-    let coords = dedup_consecutive(points.to_vec());
-    let cycle = &coords[..coords.len().saturating_sub(1)];
-    let Some(start) = cycle.iter().position(|&point| !on_seam(point)) else {
+    let mut coords = dedup_consecutive(points.to_vec());
+    let coordinate_count = coords.len();
+    let cycle_len = coordinate_count.saturating_sub(1);
+    let Some(start) = coords
+        .get(..cycle_len)
+        .expect("the cycle ends before the coordinate sequence")
+        .iter()
+        .position(|&point| !on_seam(point))
+    else {
         // Preserve the source seam runs. A ring that spells both seam aliases
         // without intermediate longitudes collapses to this support.
         let pieces = segment_coords(points);
@@ -105,8 +115,19 @@ pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
             SeamRing::Pieces(pieces)
         };
     };
-    let vertex = |offset: usize| cycle[(start + offset) % cycle.len()];
-    let mut whole = Vec::with_capacity(coords.len());
+    let cycle = coords
+        .get_mut(..cycle_len)
+        .expect("the cycle ends before the coordinate sequence");
+    cycle.rotate_left(start);
+    let vertex = |offset: usize| {
+        let point = if offset == cycle.len() {
+            cycle.first()
+        } else {
+            cycle.get(offset)
+        };
+        *point.expect("the cycle offset is bounded by its length")
+    };
+    let mut whole = Vec::with_capacity(coordinate_count);
     whole.push(vertex(0));
     let mut pieces: Vec<Vec<Point>> = Vec::new();
     let mut piece = vec![vertex(0)];
@@ -121,15 +142,15 @@ pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
             transits |= pieces.len() != cut;
             piece.push(current);
             whole.push(current);
-            offset += 1;
+            offset = offset.wrapping_add(1);
             continue;
         }
         let run = offset;
         while on_seam(vertex(offset)) {
-            offset += 1;
+            offset = offset.wrapping_add(1);
         }
-        let (first, last) = (vertex(run), vertex(offset - 1));
-        let entry = seam_side(vertex(run - 1), first);
+        let (first, last) = (vertex(run), vertex(offset.wrapping_sub(1)));
+        let entry = seam_side(vertex(run.wrapping_sub(1)), first);
         let exit = seam_side(vertex(offset), last);
         transits |= entry != exit;
         whole.extend((run..offset).map(|index| spelled(vertex(index), entry)));
@@ -144,12 +165,12 @@ pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
         // `whole` runs from the first off-seam vertex back to it.
         whole.pop();
         whole.rotate_right(start);
-        whole.push(whole[0]);
+        whole.push(*whole.first().expect("the cycle has a non-seam vertex"));
         return SeamRing::Whole(whole);
     }
     // The trailing piece ends at the ring's start, where the leading piece
     // begins.
-    let leading = &mut pieces[0];
+    let leading = pieces.first_mut().expect("a transit creates seam pieces");
     piece.extend(leading.drain(1..));
     *leading = piece;
     SeamRing::Pieces(pieces)

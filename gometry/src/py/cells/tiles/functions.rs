@@ -11,17 +11,19 @@ use crate::py::cells::{
 };
 use crate::py::errors::InvalidGeometryError;
 
-/// Build tiles from parallel lon/lat columns.
+/// Build tiles from points, coordinate rows, or parallel lon/lat columns.
 ///
 /// Parameters
 /// ----------
-/// values : GeometryArray of Point, float, or sequence of float
-///     Point geometries or WGS84 longitudes. Projected point arrays are
-///     reprojected in one native batch.
+/// values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+///     Point geometries (``None`` makes a missing cell), a coordinate matrix
+///     with at least two columns, or WGS84 longitudes. Iterable points must
+///     share one CRS and epoch; projected point inputs are reprojected to
+///     WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 ///
 /// lat : float or sequence of float, optional
-///     WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-///     broadcast numpy-style; at least one coordinate column must be sequence of float.
+///     WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+///     columns broadcast numpy-style; at least one must be a sequence.
 ///     Latitudes outside the square Web Mercator tile grid (±85.051129°) raise
 ///     ``InvalidGeometryError`` (no silent clamp).
 ///
@@ -168,7 +170,7 @@ grid_free_functions! {
         cell_type: Tile,
         label: "tile",
         cell_doc: "Tile",
-        item_doc: "Tile, int, str, or iterable of those",
+        item_doc: "Tile, int, str, or iterable of those with missing values skipped",
         contract_doc: "",
         parse_error_doc: "If an id or token is not a valid tile cell.",
         parse_cell: tile_arg,

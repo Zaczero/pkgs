@@ -198,7 +198,7 @@ def test_match_cells_coverages_reports_and_features() -> None:
     match coverage[0]:
         case gm.H3Cell(cell_id):
             assert cell_id == int(coverage[0])
-    s2 = gm.s2_cover_adaptive(gm.box(0, 0, 1, 1, crs=4326), target_cells=4)
+    s2 = gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), target_cells=4)
     match s2[0]:
         case gm.S2Cell(cell_id):
             assert cell_id == int(s2[0])
@@ -402,7 +402,7 @@ def test_all_declared_native_sequences_are_registered_and_matchable() -> None:
     cell = gm.H3Cell(13.4, 52.5, resolution=7)
     coverages = (
         gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=3),
-        gm.s2_cover_adaptive(gm.box(0, 0, 1, 1, crs=4326), target_cells=8),
+        gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), target_cells=8),
         gm.geohash_cover(gm.box(0, 0, 1, 1, crs=4326), precision=3),
         gm.tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=5),
     )
@@ -452,7 +452,7 @@ def test_sequence_index_count_windows_across_native_views() -> None:
 
     for coverage in (
         gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=3),
-        gm.s2_cover_adaptive(gm.box(0, 0, 1, 1, crs=4326), target_cells=8),
+        gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), target_cells=8),
         gm.geohash_cover(gm.box(0, 0, 1, 1, crs=4326), precision=3),
         gm.tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=5),
     ):
@@ -716,7 +716,7 @@ def test_multipart_and_coverage_support_slicing() -> None:
     box = gm.box(0, 0, 4, 4, crs=4326)
     for cov in (
         gm.h3_cover(box, resolution=3),
-        gm.s2_cover_adaptive(box, target_cells=8),
+        gm.s2_cover(box, target_cells=8),
         gm.geohash_cover(box, precision=3),
         gm.tile_cover(box, zoom=5),
     ):
@@ -735,7 +735,7 @@ def test_cells_sort_by_id_and_reject_foreign_comparisons() -> None:
     assert h3_cells.count(None) == 0
     with pytest.raises(ValueError, match='None is not in array'):
         h3_cells.index(None)
-    s2_cells = gm.s2_cover_adaptive(gm.box(0, 0, 2, 2, crs=4326), target_cells=8)
+    s2_cells = gm.s2_cover(gm.box(0, 0, 2, 2, crs=4326), target_cells=8)
     assert sorted(s2_cells) == sorted(s2_cells, key=int)
     # FURB192 would rewrite the right-hand side to min() as well, which is
     # the one thing this line cannot say: that the two agree.
@@ -790,7 +790,7 @@ def test_pickle_round_trips_across_protocols(protocol: int) -> None:
         gm.GeometryArray([gm.Point(0, 0), gm.box(0, 0, 1, 1)]),
         gm.CRS(4326),
         coverage[0],
-        gm.s2_cover_adaptive(gm.box(0, 0, 1, 1, crs=4326), target_cells=4)[0],
+        gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), target_cells=4)[0],
         gm.from_features({
             'type': 'Feature',
             'geometry': {'type': 'Point', 'coordinates': [1, 2]},

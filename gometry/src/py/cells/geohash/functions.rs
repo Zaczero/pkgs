@@ -11,17 +11,19 @@ use crate::py::cells::{
 };
 use crate::py::errors::GeometryError;
 
-/// Build geohash cells from parallel lon/lat columns.
+/// Build geohash cells from points, coordinate rows, or parallel lon/lat columns.
 ///
 /// Parameters
 /// ----------
-/// values : GeometryArray of Point, float, or sequence of float
-///     Point geometries or WGS84 longitudes. Projected point arrays are
-///     reprojected in one native batch.
+/// values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+///     Point geometries (``None`` makes a missing cell), a coordinate matrix
+///     with at least two columns, or WGS84 longitudes. Iterable points must
+///     share one CRS and epoch; projected point inputs are reprojected to
+///     WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 ///
 /// lat : float or sequence of float, optional
-///     WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-///     broadcast numpy-style; at least one coordinate column must be sequence of float.
+///     WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+///     columns broadcast numpy-style; at least one must be a sequence.
 ///
 /// precision : int or sequence of int
 ///     Geohash precision (1-12 characters; finer at higher values). A scalar
@@ -141,7 +143,7 @@ grid_free_functions! {
         cell_type: Geohash,
         label: "geohash",
         cell_doc: "GeohashCell",
-        item_doc: "GeohashCell, str, or iterable of those",
+        item_doc: "GeohashCell, str, or iterable of those with missing values skipped",
         contract_doc: "",
         parse_error_doc: "If a cell or token is not a valid geohash cell.",
         parse_cell: geohash_cell_arg,
