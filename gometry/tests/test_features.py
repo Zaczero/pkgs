@@ -548,6 +548,52 @@ def test_features_replace_shares_omitted_fields_and_copies_changed_properties() 
         )
 
 
+def test_features_geo_interface_preserves_rows_and_round_trips_metadata() -> None:
+    geometries = gm.GeometryArray([
+        gm.Point(1, 2, crs=4326),
+        None,
+        gm.Point(3, 4, crs=4326),
+    ])
+    source_properties = [{'score': 7}, None, {'name': 'last'}]
+    features = gm.Features(geometries, source_properties, ['alpha', None, 23])
+
+    expected = {
+        'type': 'FeatureCollection',
+        'features': [
+            {
+                'type': 'Feature',
+                'id': 'alpha',
+                'properties': {'score': 7},
+                'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+            },
+            {'type': 'Feature', 'properties': None, 'geometry': None},
+            {
+                'type': 'Feature',
+                'id': 23,
+                'properties': {'name': 'last'},
+                'geometry': {'type': 'Point', 'coordinates': [3.0, 4.0]},
+            },
+        ],
+    }
+    collection = features.__geo_interface__
+    assert collection == expected
+    assert collection is not features.__geo_interface__
+    assert collection['features'] is not features.__geo_interface__['features']
+    assert collection['features'][0]['properties'] is not features.properties[0]
+    collection['features'][0]['properties']['score'] = 99
+    assert features.properties[0] == {'score': 7}
+
+    json_collection = json.loads(
+        json.dumps(features, default=lambda value: value.__geo_interface__)
+    )
+    assert json_collection == expected
+
+    restored = gm.from_geojson(features, features=True)
+    assert restored.properties == tuple(source_properties)
+    assert restored.ids == ('alpha', None, 23)
+    assert restored.geometries.is_missing.tolist() == [False, True, False]
+
+
 def test_features_record_validates_alignment_and_has_bounded_repr() -> None:
     geometries = gm.GeometryArray([gm.Point(i, i) for i in range(10)])
     features = gm.Features(geometries, [{'row': 0}] * 10, [None] * 10)

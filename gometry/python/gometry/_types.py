@@ -604,7 +604,8 @@ class Features:
     Unpack as ``geometries, properties, ids = features``. Each metadata entry
     corresponds to the geometry at the same row; use ``len(features.geometries)``
     for the feature count. The outer columns are fixed, while property
-    dictionaries remain editable.
+    dictionaries remain editable. ``__geo_interface__`` exposes the aligned
+    record as a GeoJSON FeatureCollection.
     """
 
     __slots__ = ('geometries', 'ids', 'properties')
@@ -832,6 +833,13 @@ class Features:
             self.properties if properties is ... else validated.properties,
             self.ids if ids is ... else validated.ids,
         )
+
+    @property
+    def __geo_interface__(self) -> GeoJsonFeatureCollection:
+        """Return a fresh GeoJSON FeatureCollection with this record's metadata."""
+        from gometry._lib import to_feature_collection
+
+        return to_feature_collection(self)
 
     def __reduce__(
         self,

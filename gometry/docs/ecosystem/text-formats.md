@@ -1,5 +1,5 @@
 ---
-description: gometry text and binary IO — WKB/EWKB for databases, WKT/EWKT, GeoJSON Z/M rules, __geo_interface__, pickle, and CRS/epoch round-trip behavior.
+description: gometry text and binary IO — WKB/EWKB for databases, WKT/EWKT, GeoJSON Z/M rules, Features.__geo_interface__, pickle, and CRS/epoch round-trip behavior.
 ---
 
 # Text & binary formats
@@ -249,9 +249,17 @@ When constructing [`Features`][gometry.Features] directly, omitted or explicit
 `properties=None` records `None` for every row; pass `properties={}` when
 independently editable empty mappings are wanted.
 
-The inverse is [`gm.to_feature_collection`][gometry.to_feature_collection] — give it
-geometries plus keyword-only `properties` (and optional `ids`) and it assembles a
-`FeatureCollection` mapping whose geometry members are JSON-ready. The mapping is
+### `Features.__geo_interface__`
+
+`features.__geo_interface__` returns a fresh `FeatureCollection` with the
+record's geometries, properties, and IDs. Missing geometries and properties
+remain `null`, and rows without an ID omit `id`; encoding uses the same WGS 84,
+epoch, and M constraints as
+[`gm.to_feature_collection`][gometry.to_feature_collection].
+
+[`gm.to_feature_collection`][gometry.to_feature_collection] assembles a
+`FeatureCollection` from separate geometry and metadata columns, with keyword-only
+`properties` (and optional `ids`). Its geometry members are JSON-ready. The mapping is
 suitable for `json.dumps` **only when every property value is JSON-serializable**
 (strings, numbers, bools, `None`, and nested lists/dicts of those) — arbitrary
 Python objects in `properties` raise `TypeError` at dump time. `to_geojson` honors

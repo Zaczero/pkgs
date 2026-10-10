@@ -1050,6 +1050,8 @@ if TYPE_CHECKING:
     assert_type(features.__replace__(geometries=POINTS), gm.Features)
     assert_type(features.__replace__(properties=None), gm.Features)
     assert_type(features.__replace__(ids=None), gm.Features)
+    reveal_type(features.__geo_interface__)
+    assert_type(features.__geo_interface__, sht.GeoJsonFeatureCollection)
     with TemporaryDirectory() as _temporary:
         parquet_path = Path(_temporary) / 'points.parquet'
         assert_type(POINTS.to_geoparquet(parquet_path, encoding='native'), None)
