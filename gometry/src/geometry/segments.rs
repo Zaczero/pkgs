@@ -1750,7 +1750,9 @@ fn checked_normal_product(left: f64, right: f64) -> Option<f64> {
     }
     let product = left * right;
     if is_zero_bits(product) {
-        return Some(0.0);
+        // A zero product is exact only when an operand was zero; two nonzero
+        // factors whose product underflows to zero are not an exact zero.
+        return (is_zero_bits(left) || is_zero_bits(right)).then_some(0.0);
     }
     is_normal_bits(product).then_some(product)
 }
