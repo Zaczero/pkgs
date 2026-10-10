@@ -1,6 +1,7 @@
 use pyo3::IntoPyObjectExt as _;
 
 use crate::NonNegative;
+use crate::geometry::storage::ValidityMask;
 use crate::py::index::{
     AABB, BinaryHeap, Ordering, Py, PyAny, PyResult, Python, float64_array, int64_array,
 };
@@ -189,8 +190,9 @@ pub(crate) fn format_nearest_rows(
     offsets: Vec<i64>,
     distances: Vec<f64>,
     return_distance: bool,
+    missing: Option<ValidityMask>,
 ) -> PyResult<Py<PyAny>> {
-    let matches = Groups::from_int64_csr(ids, offsets)?;
+    let matches = Groups::from_int64_csr(ids, offsets)?.with_row_missing(missing);
     if return_distance {
         let distances = float64_array(py, distances)?;
         return (matches, distances).into_py_any(py);

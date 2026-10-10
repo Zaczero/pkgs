@@ -1705,6 +1705,34 @@ def test_griffe_presents_cell_token_descriptor_as_nullable_string_lists() -> Non
     assert '_CellTokenProjection' not in str(attribute.annotation)
 
 
+def test_griffe_presents_groups_descriptors_as_public_properties() -> None:
+    pkg = _load_griffe_model()
+    geometry_array = pkg.members['GeometryArray']
+    groups = pkg.members['Groups']
+    assert isinstance(geometry_array, griffe.Class)
+    assert isinstance(groups, griffe.Class)
+
+    parts = geometry_array.members['parts']
+    assert isinstance(parts, griffe.Attribute)
+    assert parts.canonical_path == 'gometry.GeometryArray.parts'
+    assert str(parts.annotation) == 'Groups[GeometryArray[Geometry] | None]'
+    assert {'property', 'readonly'} <= parts.labels
+    assert parts.docstring is not None
+    assert parts.docstring.value.strip()
+    assert '_GeometryArrayPartsProjection' not in str(parts.annotation)
+
+    values = groups.members['values']
+    assert isinstance(values, griffe.Attribute)
+    assert values.canonical_path == 'gometry.Groups.values'
+    assert str(values.annotation) == (
+        'np.ndarray[(Any, Any)] | GeometryArray[Any] | CellArray[Any]'
+    )
+    assert {'property', 'readonly'} <= values.labels
+    assert values.docstring is not None
+    assert values.docstring.value.strip()
+    assert '_GroupsValuesProjection' not in str(values.annotation)
+
+
 def _public_python_function_aliases(
     pkg: griffe.Module,
 ) -> dict[str, tuple[griffe.Alias, griffe.Function]]:

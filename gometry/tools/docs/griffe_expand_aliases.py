@@ -33,6 +33,7 @@ _PRIVATE_TYPEVAR_RENAMES = {
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
     '_GroupValuesT_co': 'GroupValuesT_co',
+    '_GroupRowT_co': 'GroupRowT_co',
 }
 _SEE_ALSO_ENTRY = re.compile(
     r'(?:^|(?<=\. ))(?P<ticks>`?)'
@@ -1068,6 +1069,36 @@ def expand_annotation(
                     ),
                 ),
             )
+        if expr.name == '_GeometryArrayPartsProjection':
+            members = griffe.ExprSubscript(
+                griffe.ExprName('GeometryArray'), griffe.ExprName('Geometry')
+            )
+            return griffe.ExprSubscript(
+                griffe.ExprName('Groups'),
+                griffe.ExprBinOp(members, '|', griffe.ExprName('None')),
+            )
+        if expr.name == '_CellGroupsProjection':
+            cells = griffe.ExprSubscript(
+                griffe.ExprName('CellArray'), griffe.ExprName('Cell')
+            )
+            return griffe.ExprSubscript(
+                griffe.ExprName('Groups'),
+                griffe.ExprBinOp(cells, '|', griffe.ExprName('None')),
+            )
+        if expr.name == '_GroupsValuesProjection':
+            ndarray = griffe.ExprSubscript(
+                griffe.ExprName('np.ndarray'),
+                griffe.ExprTuple([griffe.ExprName('Any'), griffe.ExprName('Any')]),
+            )
+            geometry_array = griffe.ExprSubscript(
+                griffe.ExprName('GeometryArray'), griffe.ExprName('Any')
+            )
+            cell_array = griffe.ExprSubscript(
+                griffe.ExprName('CellArray'), griffe.ExprName('Any')
+            )
+            return griffe.ExprBinOp(
+                griffe.ExprBinOp(ndarray, '|', geometry_array), '|', cell_array
+            )
         if expr.name in _PRIVATE_TYPEVAR_RENAMES:
             return griffe.ExprName(_PRIVATE_TYPEVAR_RENAMES[expr.name])
         if expr.name == '_CellArrayIterator':
@@ -1141,8 +1172,15 @@ def _walk_annotations(obj: Any, aliases: dict[str, Any], seen: set[int]) -> None
             isinstance(obj.annotation, griffe.ExprName)
             and obj.annotation.name == '_CellTokenProjection'
         )
+        is_group_projection = isinstance(
+            obj.annotation, griffe.ExprName
+        ) and obj.annotation.name in {
+            '_CellGroupsProjection',
+            '_GeometryArrayPartsProjection',
+            '_GroupsValuesProjection',
+        }
         obj.annotation = expand_annotation(obj.annotation, aliases)
-        if is_cell_projection:
+        if is_cell_projection or is_group_projection:
             obj.labels.discard('instance-attribute')
             obj.labels.update({'property', 'readonly'})
     for member in getattr(obj, 'members', {}).values():

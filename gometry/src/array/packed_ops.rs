@@ -383,9 +383,9 @@ impl PyGeometryArray {
 
     /// Map each row's shape to a `Vec<Shape>` and collect into a per-row
     /// [`Groups`](crate::py::vectors::Groups): each input row's outputs form one
-    /// ragged group — missing rows yield empty groups — so which outputs came
-    /// from which input is preserved. One detached pass builds the flat values
-    /// and the per-row `offsets` together.
+    /// ragged group. Missing rows have empty CSR windows and remain distinguishable
+    /// through the Groups validity mask. One detached pass builds flat values and
+    /// per-row offsets together.
     pub(crate) fn flat_map_shapes_groups(
         &self,
         py: Python<'_>,
@@ -421,7 +421,7 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        Groups::from_geometry_builder(frame, builder)
+        Groups::from_geometry_builder(frame, builder, self.missing().cloned())
     }
 
     /// Budgeted group flattening for operations that synthesize a variable
@@ -463,7 +463,7 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        Groups::from_geometry_builder(frame, builder)
+        Groups::from_geometry_builder(frame, builder, self.missing().cloned())
     }
 
     /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`]: the
@@ -542,7 +542,7 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>((builder, ring_ends))
             })
             .map_err(rows_err)?;
-        Groups::from_point_builder(frame, builder.0, builder.1)
+        Groups::from_point_builder(frame, builder.0, builder.1, self.missing().cloned())
     }
 
     pub(crate) fn boundary_unary_packed(&self) -> Option<PyResult<Self>> {

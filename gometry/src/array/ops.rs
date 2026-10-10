@@ -598,7 +598,7 @@ impl PyGeometryArray {
             Err((error, None)) => return Err(error.into()),
             Err((error, Some(row))) => return Err(note_array_row(error.into(), row)),
         };
-        Groups::from_geometry_builder(self.frame.clone(), builder)
+        Groups::from_geometry_builder(self.frame.clone(), builder, self.missing().cloned())
     }
 
     pub(crate) fn voronoi_cells_impl(
@@ -709,7 +709,13 @@ impl PyGeometryArray {
             .map_err(rows_err)?;
         let (columns, group_offsets) = packed;
         let (coords, line_offsets) = py.detach(move || concat_packed_line_columns(columns))?;
-        Groups::from_packed_line_groups(frame, coords, line_offsets, group_offsets)
+        Groups::from_packed_line_groups(
+            frame,
+            coords,
+            line_offsets,
+            group_offsets,
+            self.missing().cloned(),
+        )
     }
 
     pub(crate) fn voronoi_impl(
@@ -791,6 +797,11 @@ impl PyGeometryArray {
         }
         if let Some(splitters) = exact_geometry_array(splitter) {
             crate::broadcast::validate_paired_arrays(self, splitters, "split")?;
+            let missing = crate::geometry::storage::ValidityMask::from_missing_iter(
+                self.len(),
+                (0..self.len())
+                    .map(|row| self.is_row_missing(row) || splitters.is_row_missing(row)),
+            );
             let lines = self.clone();
             let cutters = splitters.clone();
             let builder = py
@@ -827,7 +838,7 @@ impl PyGeometryArray {
                     Ok::<_, (usize, Error)>(builder)
                 })
                 .map_err(rows_err)?;
-            return Groups::from_geometry_builder(self.frame.clone(), builder);
+            return Groups::from_geometry_builder(self.frame.clone(), builder, missing);
         }
         Err(expected_geometry_or_array())
     }
