@@ -76,7 +76,7 @@ def test_ingress_rejects_non_finite_epoch() -> None:
 def test_from_arrow_applies_crs_and_rejects_embedded_conflict() -> None:
     bare = gm.points([1.0, 2.0], [3.0, 4.0])
     recovered = gm.from_arrow(bare.to_arrow(), crs=4326)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs == gm.CRS('EPSG:4326')
     tagged = gm.points([1.0], [2.0], crs=3857).to_arrow()
     with pytest.raises(gm.CRSMismatchError, match='conflicts with the embedded'):
         gm.from_arrow(tagged, crs=4326)
@@ -84,33 +84,47 @@ def test_from_arrow_applies_crs_and_rejects_embedded_conflict() -> None:
 
 def test_from_wkb_crs_is_a_fallback_not_an_override() -> None:
     plain = gm.Point(1, 2).to_wkb()
-    assert gm.from_wkb(plain, crs=4326).crs == 'EPSG:4326'
+    assert gm.from_wkb(plain, crs=4326).crs == gm.CRS('EPSG:4326')
     assert gm.from_wkb(plain).crs is None
     ewkb = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
-    assert gm.from_wkb(ewkb, crs=4326).crs == 'EPSG:4326'
-    assert gm.from_wkb(ewkb).crs == 'EPSG:4326'
+    assert gm.from_wkb(ewkb, crs=4326).crs == gm.CRS('EPSG:4326')
+    assert gm.from_wkb(ewkb).crs == gm.CRS('EPSG:4326')
     with pytest.raises(ValueError, match='conflicts with the embedded EWKB SRID'):
         gm.from_wkb(ewkb, crs=3857)
     with pytest.raises(ValueError, match='conflicts with the embedded EWKT SRID'):
         gm.from_wkt('SRID=4326;POINT (1 2)', crs=3857)
 
 
+def test_from_wkb_distinguishes_byte_buffers_from_object_row_arrays() -> None:
+    point = gm.Point(1, 2)
+    payload = point.to_wkb()
+    unsigned_bytes = np.frombuffer(payload, dtype=np.uint8)
+    signed_bytes = np.frombuffer(payload, dtype=np.int8)
+    object_rows = np.array([payload, None], dtype=object)
+    fixed_bytes_rows = np.array([payload], dtype=np.bytes_)
+
+    assert gm.from_wkb(unsigned_bytes) == point
+    assert gm.from_wkb(signed_bytes) == point
+    assert gm.from_wkb(object_rows).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(fixed_bytes_rows).to_wkt() == ['POINT (1 2)']
+
+
 def test_batch_wkt_wkb_plain_rows_share_explicit_frame() -> None:
     wkts = ['POINT (1 2)', 'POINT (3 4)']
     from_wkt = gm.from_wkt(wkts, crs=4326, epoch=2020.0)
     assert isinstance(from_wkt, gm.GeometryArray)
-    assert from_wkt.crs == 'EPSG:4326'
+    assert from_wkt.crs == gm.CRS('EPSG:4326')
     assert from_wkt.epoch == 2020.0
     assert from_wkt.to_wkt(drop_epoch=True) == wkts
-    assert [row.crs for row in from_wkt] == ['EPSG:4326', 'EPSG:4326']
+    assert [row.crs for row in from_wkt] == [gm.CRS('EPSG:4326')] * 2
     assert [row.epoch for row in from_wkt] == [2020.0, 2020.0]
     wkbs = [gm.Point(1, 2).to_wkb(), gm.Point(3, 4).to_wkb()]
     from_wkb = gm.from_wkb(wkbs, crs=4326, epoch=2020.0)
     assert isinstance(from_wkb, gm.GeometryArray)
-    assert from_wkb.crs == 'EPSG:4326'
+    assert from_wkb.crs == gm.CRS('EPSG:4326')
     assert from_wkb.epoch == 2020.0
     assert from_wkb.to_wkt(drop_epoch=True) == wkts
-    assert [row.crs for row in from_wkb] == ['EPSG:4326', 'EPSG:4326']
+    assert [row.crs for row in from_wkb] == [gm.CRS('EPSG:4326')] * 2
     assert [row.epoch for row in from_wkb] == [2020.0, 2020.0]
 
 
@@ -118,7 +132,7 @@ def test_batch_wkt_wkb_embedded_srid_still_reconciles_and_conflicts() -> None:
     ewkts = ['SRID=4326;POINT (1 2)', 'SRID=4326;POINT (3 4)']
     ewkt_array = gm.from_wkt(ewkts, crs=4326, epoch=2020.0)
     assert isinstance(ewkt_array, gm.GeometryArray)
-    assert ewkt_array.crs == 'EPSG:4326'
+    assert ewkt_array.crs == gm.CRS('EPSG:4326')
     assert ewkt_array.epoch == 2020.0
     assert ewkt_array.to_wkt(drop_epoch=True) == ['POINT (1 2)', 'POINT (3 4)']
     ewkbs = [
@@ -127,7 +141,7 @@ def test_batch_wkt_wkb_embedded_srid_still_reconciles_and_conflicts() -> None:
     ]
     ewkb_array = gm.from_wkb(ewkbs, crs=4326, epoch=2020.0)
     assert isinstance(ewkb_array, gm.GeometryArray)
-    assert ewkb_array.crs == 'EPSG:4326'
+    assert ewkb_array.crs == gm.CRS('EPSG:4326')
     assert ewkb_array.epoch == 2020.0
     assert ewkb_array.to_wkt(drop_epoch=True) == ['POINT (1 2)', 'POINT (3 4)']
     with pytest.raises(
@@ -249,7 +263,7 @@ def test_geojson_legacy_wgs84_crs_member_is_ignored() -> None:
         }
         point = gm.from_geojson(payload)
         assert point.to_wkt() == 'POINT (1 2)'
-        assert point.crs == 'OGC:CRS84'
+        assert point.crs == gm.CRS('OGC:CRS84')
         assert gm.from_geojson(json.dumps(payload)).to_wkt() == 'POINT (1 2)'
 
 
@@ -266,11 +280,12 @@ def test_geojson_legacy_crs_member_conflicts_with_crs() -> None:
 def test_geojson_reader_rejects_non_wgs84_crs() -> None:
     with pytest.raises(gm.CRSError, match='WGS84'):
         gm.from_geojson({'type': 'Point', 'coordinates': [1, 2]}, crs=3857)
-    assert (
-        gm.from_geojson({'type': 'Point', 'coordinates': [1, 2]}, crs=4326).crs
-        == 'EPSG:4326'
+    assert gm.from_geojson(
+        {'type': 'Point', 'coordinates': [1, 2]}, crs=4326
+    ).crs == gm.CRS('EPSG:4326')
+    assert gm.from_geojson({'type': 'Point', 'coordinates': [1, 2]}).crs == gm.CRS(
+        'OGC:CRS84'
     )
-    assert gm.from_geojson({'type': 'Point', 'coordinates': [1, 2]}).crs == 'OGC:CRS84'
 
 
 def test_foreign_decoders_reject_already_decoded_geometries() -> None:
@@ -333,7 +348,7 @@ def test_m05_mixed_within_sequence_axes_rejected_uniform_constraint() -> None:
     }
     for frontend in (feature, json.dumps(feature), json.dumps(feature).encode()):
         with pytest.raises(gm.ParseError, match=match):
-            gm.from_features(frontend)
+            gm.from_geojson(frontend, features=True)
         with pytest.raises(gm.ParseError, match=match):
             gm.from_geojson(frontend)
 
@@ -419,15 +434,15 @@ def test_ewkt_roundtrip_preserves_crs() -> None:
     ewkt = point.to_wkt(include_srid=True)
     assert ewkt.startswith('SRID=4326;')
     recovered = gm.from_wkt(ewkt)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs == gm.CRS('EPSG:4326')
     assert gm.equals_exact(recovered, point)
     # PostGIS wire alias: CRS84 encodes as SRID 4326 (identity loss on bare decode).
     crs84 = gm.Point(0, 0, crs='OGC:CRS84')
     ewkt84 = crs84.to_wkt(include_srid=True)
     assert ewkt84.startswith('SRID=4326;')
-    assert gm.from_wkt(ewkt84).crs == 'EPSG:4326'
+    assert gm.from_wkt(ewkt84).crs == gm.CRS('EPSG:4326')
     restored = gm.from_wkt(ewkt84, crs='OGC:CRS84')
-    assert restored.crs == 'OGC:CRS84'
+    assert restored.crs == gm.CRS('OGC:CRS84')
     assert gm.equals(restored, crs84)
 
 
@@ -435,12 +450,12 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
     polygon = gm.from_wkt('POLYGON ((0 0, 2 0, 2 1, 0 0))', crs=4326)
     wkb = polygon.to_wkb(include_srid=True)
     recovered = gm.from_wkb(wkb)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs == gm.CRS('EPSG:4326')
     assert recovered.to_wkt() == 'POLYGON ((0 0, 2 0, 2 1, 0 0))'
     assert gm.from_geojson(polygon.to_geojson()).to_wkt() == polygon.to_wkt()
     parsed = gm.from_wkt(['POINT Z (1 2 3)', 'LINESTRING Z (0 0 1, 1 1 2)'], crs=4979)
     assert isinstance(parsed, gm.GeometryArray)
-    assert parsed.crs == 'EPSG:4979'
+    assert parsed.crs == gm.CRS('EPSG:4979')
     assert parsed.to_wkt() == [
         'POINT Z (1 2 3)',
         'LINESTRING Z (0 0 1, 1 1 2)',
@@ -451,7 +466,7 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
     geojson_texts = parsed.force_2d().to_geojson()
     geojson_recovered = gm.from_geojson(geojson_texts, crs=4326)
     assert isinstance(geojson_recovered, gm.GeometryArray)
-    assert geojson_recovered.crs == 'EPSG:4326'
+    assert geojson_recovered.crs == gm.CRS('EPSG:4326')
     assert geojson_recovered.to_wkt() == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
     geojson_mapping_recovered = gm.from_geojson(
         [
@@ -469,7 +484,7 @@ def test_wkt_wkb_and_geojson_roundtrip() -> None:
     )
     assert isinstance(geojson_mapping_recovered, gm.GeometryArray)
     assert isinstance(mixed_geojson_recovered, gm.GeometryArray)
-    assert geojson_mapping_recovered.crs == 'EPSG:4326'
+    assert geojson_mapping_recovered.crs == gm.CRS('EPSG:4326')
     assert geojson_mapping_recovered.to_wkt() == [
         'POINT (1 2)',
         'LINESTRING (0 0, 1 1)',
@@ -581,13 +596,13 @@ def test_geojson_feature_and_feature_collection_inputs() -> None:
         [GeoInterfaceObject(), {'type': 'Point', 'coordinates': [3, 4]}], crs=4326
     )
     assert isinstance(geo_interface_array, gm.GeometryArray)
-    assert geo_interface_array.crs == 'EPSG:4326'
+    assert geo_interface_array.crs == gm.CRS('EPSG:4326')
     assert geo_interface_array.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
     with pytest.raises(TypeError, match='array element 1'):
         gm.from_geojson([GeoInterfaceObject(), gm.Point(3, 4)], crs=4326)
     parsed = gm.from_geojson(collection)
     assert isinstance(parsed, gm.GeometryArray)
-    assert parsed.crs == 'OGC:CRS84'
+    assert parsed.crs == gm.CRS('OGC:CRS84')
     assert parsed.to_wkt() == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
     with pytest.raises(ValueError, match='Feature requires geometry'):
         gm.from_geojson({'type': 'Feature'})
@@ -605,7 +620,7 @@ def test_from_geojson_accepts_bytes_bytearray_and_iterables() -> None:
     ]
     parsed = gm.from_geojson(rows, crs=4326)
     assert isinstance(parsed, gm.GeometryArray)
-    assert parsed.crs == 'EPSG:4326'
+    assert parsed.crs == gm.CRS('EPSG:4326')
     assert parsed.to_wkt() == ['POINT (1 2)', 'LINESTRING (0 0, 1 1)']
     parsed_bytearray = gm.from_geojson([bytearray(row) for row in rows], crs=4326)
     assert isinstance(parsed_bytearray, gm.GeometryArray)
@@ -685,8 +700,8 @@ def test_geojson_duplicate_key_last_wins_all_frontends() -> None:
             gm.from_geojson(v)
 
 
-def test_m03_from_features_rejects_dual_defining_members() -> None:
-    """m03: from_features shares from_geojson's RFC §7.1 defining-member check.
+def test_m03_from_geojson_rejects_dual_defining_members() -> None:
+    """m03: from_geojson shares from_geojson's RFC §7.1 defining-member check.
 
     EXACT repro: a Feature carrying both defining ``coordinates`` and
     ``geometry`` must be REJECTED on dict/str/bytes — not accepted by ignoring
@@ -706,7 +721,7 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
             gm.ParseError,
             match=r'coordinates.*geometries|RFC 7946',
         ) as raised:
-            gm.from_features(frontend)
+            gm.from_geojson(frontend, features=True)
         assert type(raised.value) is gm.ParseError
         # Parity with from_geojson.
         with pytest.raises(gm.ParseError, match=r'coordinates|RFC 7946'):
@@ -723,7 +738,7 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
         json.dumps(collection).encode(),
     ):
         with pytest.raises(gm.ParseError, match=r'coordinates|RFC 7946'):
-            gm.from_features(frontend)
+            gm.from_geojson(frontend, features=True)
 
     # Positive: a valid Feature still parses on all frontends.
     valid = {
@@ -732,7 +747,7 @@ def test_m03_from_features_rejects_dual_defining_members() -> None:
         'properties': {'k': 1},
     }
     for frontend in (valid, json.dumps(valid), json.dumps(valid).encode()):
-        feats = gm.from_features(frontend)
+        feats = gm.from_geojson(frontend, features=True)
         assert feats.geometries.to_wkt() == ['POINT (1 2)']
         assert feats.properties == ({'k': 1},)
 
@@ -892,9 +907,9 @@ def test_geometry_array_and_geometry_item_coercion_accept_wkb_and_geo_interface(
     assert isinstance(from_wkb, gm.GeometryArray)
     assert array.to_wkt() == from_wkb.to_wkt()
     framed = gm.GeometryArray(wkbs, crs=4326, epoch=2020.0)
-    assert framed.crs == 'EPSG:4326'
+    assert framed.crs == gm.CRS('EPSG:4326')
     assert framed.epoch == 2020.0
-    assert [row.crs for row in framed] == ['EPSG:4326', 'EPSG:4326']
+    assert [row.crs for row in framed] == [gm.CRS('EPSG:4326')] * 2
     assert [row.epoch for row in framed] == [2020.0, 2020.0]
     with pytest.raises(gm.ParseError, match='invalid WKB') as parse_error:
         gm.GeometryArray([wkbs[0], b'\x01\xff\xff\xff\xff'])
@@ -951,7 +966,7 @@ def test_geometry_array_and_geometry_item_coercion_accept_wkb_and_geo_interface(
     reconciled = gm.GeometryArray(ewkbs)
     expected = gm.from_wkb(ewkbs)
     assert isinstance(expected, gm.GeometryArray)
-    assert reconciled.crs == expected.crs == 'EPSG:4326'
+    assert reconciled.crs == expected.crs == gm.CRS('EPSG:4326')
     assert reconciled.to_wkt() == expected.to_wkt()
     with pytest.raises(gm.CRSMismatchError, match='requires one shared CRS'):
         gm.GeometryArray([
@@ -975,17 +990,17 @@ def test_geometry_array_accepts_direct_geojson_mapping_rows() -> None:
         'LINESTRING (0 0, 1 1)',
         None,
     ]
-    assert array.crs == 'EPSG:4326'
+    assert array.crs == gm.CRS('EPSG:4326')
     assert array.epoch == 2020.0
     assert array.is_missing.tolist() == [False, False, True]
-    assert array[0].crs == 'EPSG:4326'
+    assert array[0].crs == gm.CRS('EPSG:4326')
     assert array[1].epoch == 2020.0
 
     with pytest.raises(gm.ParseError, match='invalid GeoJSON'):
         gm.GeometryArray([{'type': 'Point', 'coordinates': [1]}])
 
 
-def test_from_features_text_fast_path_preserves_geojson_payloads() -> None:
+def test_from_geojson_text_fast_path_preserves_geojson_payloads() -> None:
     payload = {
         'type': 'FeatureCollection',
         'features': [
@@ -1015,7 +1030,7 @@ def test_from_features_text_fast_path_preserves_geojson_payloads() -> None:
             },
         ],
     }
-    parsed = gm.from_features(json.dumps(payload))
+    parsed = gm.from_geojson(json.dumps(payload), features=True)
     assert parsed.geometries.to_wkt() == [
         'POINT (1 2)',
         'LINESTRING (0 0, 1 1)',
@@ -1028,56 +1043,62 @@ def test_from_features_text_fast_path_preserves_geojson_payloads() -> None:
     )
     assert parsed.ids == ('point-a', 42, None)
     assert (
-        gm.from_features(json.dumps(payload).encode()).properties == parsed.properties
+        gm.from_geojson(json.dumps(payload).encode(), features=True).properties
+        == parsed.properties
     )
-    assert gm.from_features(bytearray(json.dumps(payload), 'utf-8')).ids == parsed.ids
+    assert (
+        gm.from_geojson(bytearray(json.dumps(payload), 'utf-8'), features=True).ids
+        == parsed.ids
+    )
 
-    single = gm.from_features(json.dumps(payload['features'][0]))
+    single = gm.from_geojson(json.dumps(payload['features'][0]), features=True)
     assert single.geometries.to_wkt() == ['POINT (1 2)']
     assert single.properties == (payload['features'][0]['properties'],)
     assert single.ids == ('point-a',)
 
-    empty = gm.from_features('{"type":"FeatureCollection","features":[]}')
+    empty = gm.from_geojson('{"type":"FeatureCollection","features":[]}', features=True)
     assert len(empty.geometries) == 0
     assert empty.properties == ()
     assert empty.ids == ()
 
 
-def test_from_features_text_fast_path_errors_match_python_path() -> None:
+def test_from_geojson_text_fast_path_errors_match_python_path() -> None:
     missing_geometry = '{"type":"Feature","properties":{}}'
     with pytest.raises(
         gm.ParseError, match='each feature must have a geometry'
     ) as missing:
-        gm.from_features(missing_geometry)
+        gm.from_geojson(missing_geometry, features=True)
     assert missing.value.format == 'geojson'
 
     with pytest.raises(gm.ParseError, match='Feature, FeatureCollection') as bad_kind:
-        gm.from_features('{"type":"Nonsense"}')
+        gm.from_geojson('{"type":"Nonsense"}', features=True)
     assert bad_kind.value.format == 'geojson'
 
     with pytest.raises(
         gm.ParseError, match='feature collection features must be iterable'
     ):
-        gm.from_features('{"type":"FeatureCollection","features":123}')
+        gm.from_geojson('{"type":"FeatureCollection","features":123}', features=True)
     with pytest.raises(gm.ParseError, match='properties must be a mapping'):
-        gm.from_features(
+        gm.from_geojson(
             '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
-            '"properties":3}'
+            '"properties":3}',
+            features=True,
         )
     with pytest.raises(gm.ParseError, match='feature id'):
-        gm.from_features(
+        gm.from_geojson(
             '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
-            '"id":true}'
+            '"id":true}',
+            features=True,
         )
     with pytest.raises(
         gm.CRSError,
         match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
-        gm.from_features(missing_geometry, crs=None, epoch=2020.0)
+        gm.from_geojson(missing_geometry, crs=None, epoch=2020.0, features=True)
     with pytest.raises(gm.CRSError, match='WGS84'):
-        gm.from_features(missing_geometry, crs='EPSG:3857')
+        gm.from_geojson(missing_geometry, crs='EPSG:3857', features=True)
     with pytest.raises(gm.GeometryError, match='coordinate epoch must be a finite'):
-        gm.from_features(missing_geometry, epoch=math.inf)
+        gm.from_geojson(missing_geometry, epoch=math.inf, features=True)
 
 
 @pytest.mark.parametrize(
@@ -1088,9 +1109,9 @@ def test_from_features_text_fast_path_errors_match_python_path() -> None:
         '[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2],"c\\u0072s":{"type":"name","properties":{"name":"EPSG:4326"}}}}]',
     ],
 )
-def test_from_features_single_pass_captures_escaped_legacy_crs(payload: str) -> None:
+def test_from_geojson_single_pass_captures_escaped_legacy_crs(payload: str) -> None:
     with pytest.raises(gm.ParseError, match='conflicts with crs=None'):
-        gm.from_features(payload, crs=None)
+        gm.from_geojson(payload, crs=None, features=True)
 
     # Backslashes in ordinary feature side data no longer trigger a second
     # whole-document parse; they remain ordinary JSON strings.
@@ -1098,7 +1119,9 @@ def test_from_features_single_pass_captures_escaped_legacy_crs(payload: str) -> 
         '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
         '"properties":{"path":"C:\\\\tiles\\\\a"}}'
     )
-    assert gm.from_features(clean).properties == ({'path': 'C:\\tiles\\a'},)
+    assert gm.from_geojson(clean, features=True).properties == (
+        {'path': 'C:\\tiles\\a'},
+    )
 
 
 def test_require_parses_wkt_wkb_and_geojson() -> None:
@@ -1125,7 +1148,7 @@ def test_require_validates_arrays_and_general_iterables_atomically() -> None:
     points = gm.points([0, 1], [2, 3])
     required = gm.require(points, crs=4326, axes='XY')
     assert isinstance(required, gm.GeometryArray)
-    assert required.crs == 'EPSG:4326'
+    assert required.crs == gm.CRS('EPSG:4326')
     assert required.to_wkt() == ['POINT (0 2)', 'POINT (1 3)']
 
     values = (
@@ -1242,7 +1265,7 @@ def test_validate_boundary_helper_parses_and_enforces_storage_contracts() -> Non
     }
     point = gm.require(feature, crs=4326, axes='XY')
     assert point.to_wkt() == 'POINT (1 2)'
-    assert point.crs == 'EPSG:4326'
+    assert point.crs == gm.CRS('EPSG:4326')
     with pytest.raises(ValueError, match='expected CRS "EPSG:3857"'):
         gm.require(point, crs=3857)
     with pytest.raises(ValueError, match='expected axes'):
@@ -1364,10 +1387,10 @@ def test_v1_api_convenience_and_ewkb_helpers() -> None:
     assert gm.require(point, crs=4326, axes='XY').to_wkt() == point.to_wkt()
     with pytest.raises(ValueError, match='unknown axes'):
         gm.require(point, axes=cast('Any', '2D'))
-    assert gm.from_wkb(point.to_wkb(include_srid=True)).crs == 'EPSG:4326'
+    assert gm.from_wkb(point.to_wkb(include_srid=True)).crs == gm.CRS('EPSG:4326')
     assert gm.from_wkb(point.to_wkb(include_srid=True)).to_wkt() == point.to_wkt()
-    assert assigned.crs == 'EPSG:4326'
-    assert assigned[0].crs == 'EPSG:4326'
+    assert assigned.crs == gm.CRS('EPSG:4326')
+    assert assigned[0].crs == gm.CRS('EPSG:4326')
     assert (
         gm.require(assigned, crs=4326).to_arrow().type.extension_name
         == 'geoarrow.point'
@@ -1440,7 +1463,9 @@ def test_multi_geometries_and_collections_roundtrip_through_public_io() -> None:
     for geometry in (multipoint, multiline, multipolygon, collection):
         assert gm.from_wkt(geometry.to_wkt()).to_wkt() == geometry.to_wkt()
         assert gm.from_wkb(geometry.to_wkb()).to_wkt() == geometry.to_wkt()
-        assert gm.from_wkb(geometry.to_wkb(include_srid=True)).crs == 'EPSG:4326'
+        assert gm.from_wkb(geometry.to_wkb(include_srid=True)).crs == gm.CRS(
+            'EPSG:4326'
+        )
         assert (
             gm.from_geojson(geometry.to_geojson(), crs=4326).to_wkt()
             == geometry.to_wkt()
@@ -1454,7 +1479,7 @@ def test_wkb_parser_is_strict_and_accepts_big_endian_input() -> None:
     )
     assert gm.from_wkb(big_endian_point).to_wkt() == 'POINT (1 2)'
     recovered = gm.from_wkb(big_endian_ewkb_point)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs == gm.CRS('EPSG:4326')
     assert recovered.to_wkt() == 'POINT (1 2)'
     with pytest.raises(ValueError, match='trailing bytes after WKB geometry'):
         gm.from_wkb(gm.Point(1, 2).to_wkb() + b'extra')
@@ -1464,7 +1489,7 @@ def test_wkb_parser_is_strict_and_accepts_big_endian_input() -> None:
     # A member-only SRID under an SRID-less container ESTABLISHES the frame
     # (PostGIS payloads may stamp members only); sibling disagreement rejects.
     adopted = gm.from_wkb(nested_srid)
-    assert adopted.crs == 'EPSG:4326'
+    assert adopted.crs == gm.CRS('EPSG:4326')
     conflicting_members = (
         struct.pack('<BII', 1, 7, 2)
         + struct.pack('<BII', 1, 536870913, 4326)
@@ -1586,7 +1611,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     canonical = '_p~iF~ps|U_ulLnnqC_mqNvxq`@'
     line = gm.from_polyline(canonical)
     assert line.to_wkt() == 'LINESTRING (-120.2 38.5, -120.95 40.7, -126.453 43.252)'
-    assert line.crs == 'OGC:CRS84'
+    assert line.crs == gm.CRS('OGC:CRS84')
     assert line.geometry_type == 'LineString'
     assert line.to_polyline() == canonical
     assert line.to_polyline() == canonical
@@ -1597,7 +1622,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     singleton = gm.from_polyline('_p~iF~ps|U')
     assert singleton.geometry_type == 'Point'
     assert singleton.to_wkt() == 'POINT (-120.2 38.5)'
-    assert singleton.crs == 'OGC:CRS84'
+    assert singleton.crs == gm.CRS('OGC:CRS84')
     assert singleton.to_polyline() == '_p~iF~ps|U'
     half = gm.LineString([(-5e-06, 5e-06), (0, 0)])
     assert list(gm.from_polyline(half.to_polyline()).coords) == [
@@ -1619,7 +1644,7 @@ def test_polyline_codec_round_trips_google_vectors() -> None:
     restored_route = gm.from_polyline(
         framed_route.to_polyline(drop_epoch=True), epoch=2020.0
     )
-    assert restored_route.crs == 'OGC:CRS84'
+    assert restored_route.crs == gm.CRS('OGC:CRS84')
     assert restored_route.epoch == 2020.0
     assert gm.equals(restored_route, framed_route)
     bare_route = gm.from_polyline(framed_route.to_polyline(drop_epoch=True), crs=None)

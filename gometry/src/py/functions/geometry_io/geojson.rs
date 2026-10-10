@@ -59,7 +59,8 @@ fn decode_geojson_value(
     )?
     else {
         return Err(io::IoError::geojson(
-            "GeoJSON Feature geometry is null; use from_features or a FeatureCollection for missing rows",
+            "GeoJSON Feature geometry is null; use from_geojson(..., features=True) \
+             to retain its feature row, or decode its FeatureCollection",
         ));
     };
     Ok(DecodedGeoJson::Scalar(shape, frame))
@@ -139,12 +140,12 @@ fn parse_geojson_concrete_row(
     }
 }
 
-/// Parse `geojson` from a string or mapping.
+/// Parse GeoJSON geometry, rows, or feature metadata.
 ///
-/// A geometry or ``Feature`` decodes to a ``Geometry`` (Feature properties
-/// are dropped — see `from_features` to keep them); a ``FeatureCollection``
-/// is a feature set, so it decodes to a ``GeometryArray`` with one geometry
-/// per feature.
+/// A geometry or ``Feature`` decodes to a ``Geometry`` by default; a
+/// ``FeatureCollection`` decodes to a ``GeometryArray`` with one geometry per
+/// feature. Set ``features=True`` to retain feature properties and IDs in a
+/// ``Features`` result.
 ///
 /// Coordinate sequences are **axis-uniform**: every position in one sequence
 /// (LineString, MultiPoint member list, ring, …) must share the same axes
@@ -156,10 +157,16 @@ fn parse_geojson_concrete_row(
 ///
 /// Parameters
 /// ----------
-/// data : str or mapping
-///     A `geojson` string or mapping (Feature/FeatureCollection ok).
+/// data : str, mapping, row iterable, or dataframe/Arrow column
+///     A GeoJSON string, mapping, row iterable, or pandas/Polars Series or
+///     PyArrow Array/ChunkedArray. Feature and FeatureCollection inputs are
+///     accepted. Missing column values become missing rows.
 ///
-/// crs : str or int, default 'OGC:CRS84'
+/// features : bool, default varies by call form
+///     Preserve Feature properties and IDs in a ``Features`` result. Geometry-
+///     only inputs are not valid when this is ``True``.
+///
+/// crs : CRS-like, default 'OGC:CRS84'
 ///     CRS to attach. `geojson` coordinates are WGS84 by specification, so
 ///     the default declares OGC:CRS84 (lon/lat, matching GeoParquet);
 ///     pass ``None`` for a CRS-free geometry or ``crs=4326`` for EPSG:4326.
@@ -176,6 +183,9 @@ fn parse_geojson_concrete_row(
 /// Geometry or GeometryArray
 ///     The decoded geometry, or one geometry per feature for a
 ///     ``FeatureCollection``.
+/// Features
+///     When ``features=True``, one geometry and its aligned properties and ID
+///     per input feature.
 ///
 /// Raises
 /// ------
@@ -199,11 +209,14 @@ fn parse_geojson_concrete_row(
 /// with ``to_geojson``). Integer tokens and Python ``int`` values are admitted
 /// only when exactly representable as ``float``; non-exact integers raise
 /// rather than silently rounding. Text and mapping inputs share this rule.
+/// Dataframe and Arrow columns are converted to their native Python row values
+/// before the same decoder runs.
 ///
 /// See Also
 /// --------
 /// Geometry.to_geojson : Serialize a geometry to GeoJSON.
-/// from_features : Keep per-feature properties and ids.
+/// Features : The aligned feature properties and IDs returned by
+///     ``features=True``.
 ///
 /// Examples
 /// --------
@@ -212,24 +225,30 @@ fn parse_geojson_concrete_row(
 /// 'POINT (1 2)'
 #[pyfunction]
 #[pyo3(
-    signature = (data, *, crs = Wgs84DefaultCrs::Default, epoch = None),
-    text_signature = "(data, *, crs='OGC:CRS84', epoch=None)"
+    signature = (data, *, features = false, crs = Wgs84DefaultCrs::Default, epoch = None),
+    text_signature = "(data, *, features=False, crs='OGC:CRS84', epoch=None)"
 )]
 pub(crate) fn from_geojson(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
+    features: bool,
     crs: Wgs84DefaultCrs,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
+    let column = support::normalize_format_column(data)?;
+    let data = column.as_ref().map_or(data, |column| column.as_any());
+    let crs = crs.into_crs();
+    require_geojson_crs(crs.as_ref().map(Crs::as_str))?;
+    let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
+    guard_epoch_frame(parsed_epoch, crs.as_ref())?;
+    if features {
+        return parse_features_input(py, data, crs, parsed_epoch);
+    }
     if exact_geometry(data).is_some() || exact_geometry_array(data).is_some() {
         return Err(PyTypeError::new_err(
             "from_geojson expects foreign GeoJSON data; a Geometry or GeometryArray is already decoded",
         ));
     }
-    let crs = crs.into_crs();
-    require_geojson_crs(crs.as_ref().map(Crs::as_str))?;
-    let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
-    guard_epoch_frame(parsed_epoch, crs.as_ref())?;
     if let Ok(text) = data.cast::<PyString>() {
         let text: PyBackedStr = text.extract()?;
         let crs_for_parse = crs;
@@ -326,96 +345,23 @@ pub(crate) fn from_geojson(
     decoded_geojson_into_py(py, decoded)
 }
 
-/// Parse GeoJSON features into geometries plus parallel properties and ids.
-///
-/// Accepts a ``FeatureCollection``/``Feature`` mapping, JSON text of one
-/// (``str`` or UTF-8 bytes/buffer), or an iterable of ``Feature`` mappings.
-/// Unlike `from_geojson`, per-feature ``properties`` and ``id`` values are
-/// preserved. Missing ``properties`` normalize to ``{}``; an explicit JSON
-/// null remains ``None``.
-///
-/// Parameters
-/// ----------
-/// features : str, bytes, mapping, or iterable of mapping
-///     A ``FeatureCollection``/``Feature`` mapping, JSON text of one, or an
-///     iterable of ``Feature`` mappings.
-/// crs : str or int, default 'OGC:CRS84'
-///     CRS to attach. GeoJSON coordinates are WGS84 by specification, so the
-///     default declares OGC:CRS84 (lon/lat); pass ``None`` for CRS-free
-///     geometries or ``crs=4326`` for EPSG:4326.
-/// epoch : float, optional
-///     Coordinate epoch (decimal year) to attach as frame metadata.
-///
-/// Returns
-/// -------
-/// Features
-///     A ``Features`` record with one row per
-///     feature. Null geometries are represented by missing array rows.
-///
-/// Raises
-/// ------
-/// ParseError
-///     If the input is not a Feature/FeatureCollection/iterable, a feature is
-///     malformed, a geometry cannot be parsed, or a legacy ``crs`` member is
-///     unsupported or conflicts with ``crs``, a position is outside the WGS84
-///     domain, or a ring fails structural admission
-///     (``format`` is ``"geojson"``).
-/// CRSError
-///     If ``crs`` is not recognized or is outside the WGS84 family, or
-///     ``epoch`` is set with ``crs=None``.
-/// GeometryError
-///     If ``epoch`` is not a finite decimal year.
-///
-/// Notes
-/// -----
-/// Text input is decoded in Rust. Coordinate numbers follow the same admission
-/// as ``from_geojson``: correctly-rounded binary64 floats, and integers only
-/// when exactly representable as ``float`` (non-exact integers raise). Feature
-/// properties and IDs must contain JSON-compatible values; Python mapping
-/// inputs retain property key order and exact integer values.
-///
-/// See Also
-/// --------
-/// from_geojson : Decode geometry while dropping feature side data.
-/// to_feature_collection : Encode geometry and aligned side data.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> feats = gm.from_features([{
-/// ...     'type': 'Feature',
-/// ...     'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
-/// ...     'properties': {'a': 1},
-/// ... }])
-/// >>> feats.geometries.to_wkt()
-/// ['POINT (1 2)']
-#[pyfunction]
-#[pyo3(
-    signature = (features, *, crs = Wgs84DefaultCrs::Default, epoch = None),
-    text_signature = "(features, *, crs='OGC:CRS84', epoch=None)"
-)]
-pub(crate) fn from_features(
+fn parse_features_input(
     py: Python<'_>,
-    features: &Bound<'_, PyAny>,
-    crs: Wgs84DefaultCrs,
-    epoch: Option<&Bound<'_, PyAny>>,
+    data: &Bound<'_, PyAny>,
+    crs: Option<Crs>,
+    epoch: Option<f64>,
 ) -> PyResult<Py<PyAny>> {
-    let crs = crs.into_crs();
-    require_geojson_crs(crs.as_ref().map(Crs::as_str))?;
-    let epoch = coordinate_epoch_option("epoch", epoch)?;
-    guard_epoch_frame(epoch, crs.as_ref())?;
-    if let Ok(text) = features.cast::<PyString>() {
+    if let Ok(text) = data.cast::<PyString>() {
         return parse_features_text(py, text.extract()?, crs, epoch);
     }
-    if is_py_bytes_or_bytearray(features)? {
-        // Same one-byte buffer path as from_geojson / from_wkb: signed and
-        // unsigned itemsize-1 exporters (bytes/bytearray/memoryview/array.array
-        // 'B'|'b'). Do not re-fork an unsigned-only PyBuffer::<u8> lane.
-        let bytes = copy_one_byte_buffer(features)?;
+    if is_py_bytes_or_bytearray(data)? {
+        let bytes = copy_one_byte_buffer(data)?;
         return parse_features_bytes(py, bytes, crs, epoch);
     }
-
-    build_python_features(py, features, crs, epoch)
+    if let Some(interface) = data.getattr_opt(pyo3::intern!(py, "__geo_interface__"))? {
+        return build_python_features(py, &interface, crs, epoch);
+    }
+    build_python_features(py, data, crs, epoch)
 }
 
 #[derive(Clone, Copy)]

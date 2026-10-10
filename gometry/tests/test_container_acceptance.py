@@ -21,7 +21,7 @@ def test_float_lanes_accept_iterators_and_buffers() -> None:
     )
     box = gm.box(0, 0, 2, 2)
     np.testing.assert_array_equal(
-        gm.contains_xy(box, iter([0.5, 9.0]), iter([0.5, 9.0])), [True, False]
+        gm.contains(box, x=iter([0.5, 9.0]), y=iter([0.5, 9.0])), [True, False]
     )
     out = gm.crs_transform(4326, 4326, iter([1.0]), iter([2.0]))
     assert out[:, 0].tolist() == [1.0]
@@ -67,7 +67,7 @@ def test_wkb_accepts_any_buffer_exporter() -> None:
 def test_mappings_accepted_everywhere_dicts_are() -> None:
     geojson = types.MappingProxyType({'type': 'Point', 'coordinates': [1.0, 2.0]})
     assert gm.from_geojson(geojson, crs=None) == gm.Point(1, 2)
-    projjson = types.MappingProxyType(gm.CRS(4326).to_projjson_dict())
+    projjson = types.MappingProxyType(gm.CRS(4326).to_projjson(as_dict=True))
     assert gm.CRS(projjson).same_as(gm.CRS(4326), mode='exact')
     assert gm.CRS(types.MappingProxyType(gm.CRS(32633).to_cf())).to_epsg() == 32633
     assert gm.Point(0, 0, crs=projjson).crs.to_epsg() == 4326
@@ -78,8 +78,8 @@ def test_mappings_accepted_everywhere_dicts_are() -> None:
         'north': 51.0,
     })
     moved = gm.Point(10, 50, crs=4326).to_crs(3857, area_of_interest=area)
-    assert moved.crs == 'EPSG:3857'
-    assert gm.from_geojson(geojson).crs == 'OGC:CRS84'
+    assert moved.crs == gm.CRS('EPSG:3857')
+    assert gm.from_geojson(geojson).crs == gm.CRS('OGC:CRS84')
 
 
 def test_transform_bounds_accepts_any_float_sequence() -> None:
@@ -88,4 +88,4 @@ def test_transform_bounds_accepts_any_float_sequence() -> None:
 
 
 def test_crs_accepts_authority_list_pair() -> None:
-    assert gm.Point(0, 0, crs=['EPSG', 4326]).crs == 'EPSG:4326'
+    assert gm.Point(0, 0, crs=['EPSG', 4326]).crs == gm.CRS('EPSG:4326')

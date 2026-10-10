@@ -1,4 +1,4 @@
-"""Prepared XY predicate oracles across the cell-preclassification gate."""
+"""Coordinate-predicate oracles across the cell-preclassification gate."""
 
 from __future__ import annotations
 
@@ -35,19 +35,22 @@ def _shapes_and_probes():
     )
 
 
-@pytest.mark.parametrize('predicate', ['contains_xy', 'intersects_xy'])
+@pytest.mark.parametrize('predicate', ['contains', 'intersects'])
 @pytest.mark.parametrize('name, geometry, probe', _shapes_and_probes())
-def test_prepared_xy_interior_matches_scalar_oracle(predicate, name, geometry, probe):
+def test_prepared_coordinate_interior_matches_scalar_oracle(
+    predicate, name, geometry, probe
+):
     """A certified interior cell must preserve the exact scalar verdict."""
     del name
     x, y = probe
-    scalar = bool(getattr(gm, predicate[:-3])(geometry, gm.Point(x, y)))
+    operation = getattr(gm, predicate)
+    scalar = bool(operation(geometry, gm.Point(x, y)))
     assert scalar is True
 
     for count in (9_999, 10_000):
         xs = np.full(count, x)
         ys = np.full(count, y)
-        result = getattr(gm, predicate)(geometry, xs, ys)
+        result = operation(geometry, x=xs, y=ys)
         np.testing.assert_array_equal(result, np.full(count, True))
 
 
@@ -56,7 +59,7 @@ def test_tall_edge_batch_masks_match_scalar_probes() -> None:
     vertices = [(i * 0.1, 0.0 if i % 2 == 0 else 1000.0) for i in range(34)]
     polygon = gm.Polygon([*vertices, vertices[0]])
     xs, ys = np.meshgrid(np.linspace(0, 3.3, 4), np.linspace(0, 1000, 4))
-    batch = gm.contains_xy(polygon, xs.ravel(), ys.ravel())
+    batch = gm.contains(polygon, x=xs.ravel(), y=ys.ravel())
     scalar = [
         gm.contains(polygon, gm.Point(float(x), float(y)))
         for x, y in zip(xs.ravel(), ys.ravel(), strict=True)

@@ -10,9 +10,10 @@ use crate::geometry::tessellation::{
     weight_scale,
 };
 use crate::geometry::{
-    AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
-    GeometryErrorKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring, Segment, Shape,
-    ShapeCountQuery, SourceArcContext, VoronoiBoundary, axis_extent, line_segments,
+    AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, CsrOffsetColumn, Dimension,
+    ExpansionBudget, GeometryErrorKind, MultiMember, MultiPolygon, Point, PointKey, Polygon,
+    Polygonal, PolygonizeFull, Ring, Segment, Shape, ShapeCountQuery, SourceArcContext,
+    TopologyDomain, VoronoiBoundary, axis_extent, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -88,6 +89,173 @@ impl<'budget> BudgetedPackedTriangleSink<'budget> {
 
     pub(super) fn into_vertices(self) -> Vec<Point> {
         self.vertices
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GeographicSampleSegment {
+    start: Point,
+    end: Point,
+    longitude: crate::geographic::RetainedChartDisplacement,
+    delta_x: f64,
+    delta_y: f64,
+    raw_compatible: bool,
+}
+
+impl GeographicSampleSegment {
+    fn sample(self, along: f64, frame: crate::geographic::GeographicFrame) -> Result<Point> {
+        let x = if self.raw_compatible {
+            (1.0 - along) * self.start.x + along * self.end.x
+        } else {
+            let start = self.longitude.endpoints()[0].get();
+            frame
+                .longitude()
+                .canonicalize(start + self.delta_x * along)
+                .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?
+                .get()
+        };
+        Point::new(x, (1.0 - along) * self.start.y + along * self.end.y)
+    }
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "raw interpolation requires equal deltas; signed zero remains compatible"
+)]
+fn raw_delta_matches_retained(raw_delta: f64, retained_delta: f64) -> bool {
+    raw_delta == retained_delta
+}
+
+fn geographic_sample_segments(
+    shape: &Shape,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Vec<GeographicSampleSegment>> {
+    let mut segments = Vec::with_capacity(ShapeCountQuery::default().segments(shape)?);
+    shape.try_for_each_segment_chain(|chain| -> Result<()> {
+        let mut points = chain.iter_coords();
+        let Some(mut start) = points.next() else {
+            return Ok(());
+        };
+        for end in points {
+            let connection = frame
+                .longitude()
+                .chart_connection(start.x, end.x)
+                .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+            let longitude = connection.retained();
+            let raw_delta = end.x - start.x;
+            let retained_delta = longitude.delta_native(frame.longitude());
+            let raw_compatible = raw_delta_matches_retained(raw_delta, retained_delta);
+            segments.push(GeographicSampleSegment {
+                start,
+                end,
+                longitude,
+                delta_x: if raw_compatible {
+                    raw_delta
+                } else {
+                    retained_delta
+                },
+                delta_y: end.y - start.y,
+                raw_compatible,
+            });
+            start = end;
+        }
+        Ok(())
+    })?;
+    Ok(segments)
+}
+
+fn geographic_sample_requires_preparation(
+    shape: &Shape,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<bool> {
+    let axis = frame.longitude();
+    let mut raw_compatible = true;
+    shape.try_for_each_segment_chain(|chain| -> Result<()> {
+        let mut points = chain.iter_coords();
+        let Some(mut start) = points.next() else {
+            return Ok(());
+        };
+        for end in points {
+            let connection = axis
+                .chart_connection(start.x, end.x)
+                .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+            if connection.step.is_circle()
+                || !raw_delta_matches_retained(
+                    end.x - start.x,
+                    connection.retained().delta_native(axis),
+                )
+            {
+                raw_compatible = false;
+                return Ok(());
+            }
+            start = end;
+        }
+        Ok(())
+    })?;
+    Ok(!raw_compatible || crate::geometry::crosses_antimeridian_in_frame(shape, frame))
+}
+
+fn prepare_geographic_sample_leaf(
+    shape: &Shape,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Shape> {
+    if geographic_sample_requires_preparation(shape, frame)? {
+        shape.force_2d()?.split_antimeridian_in_frame(frame)
+    } else {
+        Ok(shape.clone())
+    }
+}
+
+fn geographic_areal_sample_support(
+    shape: &Shape,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Shape> {
+    match shape {
+        Shape::Polygon(_) => prepare_geographic_sample_leaf(shape, frame),
+        Shape::MultiPolygon(polygons) => {
+            let mut members = Vec::with_capacity(polygons.member_count());
+            for member in polygons.members_with_values() {
+                match member {
+                    MultiMember::Empty => members.push(MultiMember::Empty),
+                    MultiMember::Value(polygon) => {
+                        let polygon = Shape::Polygon(polygon.clone());
+                        match prepare_geographic_sample_leaf(&polygon, frame)?.force_2d()? {
+                            Shape::Polygon(polygon) => members.push(MultiMember::Value(polygon)),
+                            Shape::MultiPolygon(split) => {
+                                members.extend(split.members_with_values().map(
+                                    |member| match member {
+                                        MultiMember::Empty => MultiMember::Empty,
+                                        MultiMember::Value(polygon) => {
+                                            MultiMember::Value(polygon.clone())
+                                        },
+                                    },
+                                ));
+                            },
+                            Shape::Point(_)
+                            | Shape::MultiPoint(_)
+                            | Shape::LineString(_)
+                            | Shape::MultiLineString(_)
+                            | Shape::GeometryCollection(_)
+                            | Shape::Empty(..) => {
+                                unreachable!("splitting areal support preserves surface dimension")
+                            },
+                        }
+                    },
+                }
+            }
+            Ok(Shape::MultiPolygon(MultiPolygon::try_new(
+                CoordinateAxes::XY,
+                members,
+            )?))
+        },
+        Shape::GeometryCollection(collection) => Ok(Shape::GeometryCollection(
+            collection.try_map_members(|member| geographic_areal_sample_support(member, frame))?,
+        )),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => Ok(shape.clone()),
     }
 }
 
@@ -326,7 +494,7 @@ impl Shape {
         }
     }
 
-    /// `count` planar-uniform random points on the geometry, deterministic
+    /// `count` coordinate-uniform random points on this XY support, deterministic
     /// from `seed` (a splitmix64 stream). The sample space is the
     /// geometry's highest-dimension support — uniform over area (areal
     /// input: triangulate, area-weighted pick, square-root barycentric
@@ -334,13 +502,53 @@ impl Shape {
     /// across point atoms (equal weight) — with the centroid rule's
     /// degenerate fallback: zero-area input samples its linework, zero
     /// length its vertices. Output points are XY (new locations have no
-    /// meaningful Z/M); CRS rides at the surface layer. An empty geometry
-    /// samples nothing.
+    /// meaningful Z/M); CRS rides at the surface layer. Geographic entry
+    /// points prepare retained support before calling this coordinate sampler.
+    /// An empty geometry samples nothing.
     pub fn sample_points(&self, count: usize, seed: u64) -> Result<Vec<Point>> {
         ExpansionBudget::check("sample_points", "count", count)?;
         if count == 0 {
             return Ok(Vec::new());
         }
+        self.sample_points_from_support(self, count, seed, None)
+    }
+
+    pub(crate) fn sample_points_in_domain(
+        &self,
+        count: usize,
+        seed: u64,
+        domain: TopologyDomain,
+    ) -> Result<Vec<Point>> {
+        ExpansionBudget::check("sample_points", "count", count)?;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let TopologyDomain::Geographic(frame) = domain else {
+            return self.sample_points_from_support(self, count, seed, None);
+        };
+        if self.topological_dimension() < Dimension::Curve {
+            return self.sample_points_from_support(self, count, seed, None);
+        }
+        crate::geographic::ScalarGeographicView::try_new(frame, self)
+            .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))?;
+        if !geographic_sample_requires_preparation(self, frame)? {
+            return self.sample_points_from_support(self, count, seed, None);
+        }
+        let area_support = geographic_areal_sample_support(self, frame)?;
+        let segments = geographic_sample_segments(self, frame)?;
+        area_support.sample_points_from_support(self, count, seed, Some((&segments, &frame)))
+    }
+
+    fn sample_points_from_support(
+        &self,
+        point_source: &Self,
+        count: usize,
+        seed: u64,
+        geographic_segments: Option<(
+            &[GeographicSampleSegment],
+            &crate::geographic::GeographicFrame,
+        )>,
+    ) -> Result<Vec<Point>> {
         if self.topological_dimension() >= Dimension::Surface {
             let mut triangles: Vec<[Point; 3]> = Vec::new();
             collect_sample_triangles(self, &mut triangles)?;
@@ -384,39 +592,60 @@ impl Shape {
             }
         }
         if self.topological_dimension() >= Dimension::Curve {
-            let segment_count = ShapeCountQuery::default().segments(self)?;
-            let mut segments: Vec<Segment> = Vec::with_capacity(segment_count);
-            self.for_each_segment_chain(|chain| {
-                segments.extend(line_segments(chain));
-            });
-            let scale = weight_scale(
-                segments
-                    .iter()
-                    .flat_map(|segment| [segment.start, segment.end])
-                    .flat_map(|point| [point.x.abs(), point.y.abs()])
-                    .fold(0.0_f64, f64::max),
-            );
-            let placed = sample_weighted(
-                count,
-                seed,
-                &segments,
-                |segment| {
-                    let dx = (segment.end.x - segment.start.x) * scale;
-                    let dy = (segment.end.y - segment.start.y) * scale;
-                    (dx * dx + dy * dy).sqrt()
-                },
-                |segment, state| {
-                    let along = uniform_f64(state);
-                    let x = (1.0 - along) * segment.start.x + along * segment.end.x;
-                    let y = (1.0 - along) * segment.start.y + along * segment.end.y;
-                    Point::new(x, y)
-                },
-            )?;
+            let placed = if let Some((segments, frame)) = geographic_segments {
+                let scale = weight_scale(
+                    segments
+                        .iter()
+                        .flat_map(|segment| [segment.start, segment.end])
+                        .flat_map(|point| [point.x.abs(), point.y.abs()])
+                        .fold(0.0_f64, f64::max),
+                );
+                sample_weighted(
+                    count,
+                    seed,
+                    segments,
+                    |segment| {
+                        let dx = segment.delta_x * scale;
+                        let dy = segment.delta_y * scale;
+                        (dx * dx + dy * dy).sqrt()
+                    },
+                    |segment, state| segment.sample(uniform_f64(state), *frame),
+                )?
+            } else {
+                let segment_count = ShapeCountQuery::default().segments(self)?;
+                let mut segments: Vec<Segment> = Vec::with_capacity(segment_count);
+                self.for_each_segment_chain(|chain| {
+                    segments.extend(line_segments(chain));
+                });
+                let scale = weight_scale(
+                    segments
+                        .iter()
+                        .flat_map(|segment| [segment.start, segment.end])
+                        .flat_map(|point| [point.x.abs(), point.y.abs()])
+                        .fold(0.0_f64, f64::max),
+                );
+                sample_weighted(
+                    count,
+                    seed,
+                    &segments,
+                    |segment| {
+                        let dx = (segment.end.x - segment.start.x) * scale;
+                        let dy = (segment.end.y - segment.start.y) * scale;
+                        (dx * dx + dy * dy).sqrt()
+                    },
+                    |segment, state| {
+                        let along = uniform_f64(state);
+                        let x = (1.0 - along) * segment.start.x + along * segment.end.x;
+                        let y = (1.0 - along) * segment.start.y + along * segment.end.y;
+                        Point::new(x, y)
+                    },
+                )?
+            };
             if let Some(points) = placed {
                 return Ok(points);
             }
         }
-        let atoms = self.points_vec()?;
+        let atoms = point_source.points_vec()?;
         Ok(sample_weighted(
             count,
             seed,
@@ -428,17 +657,17 @@ impl Shape {
     }
 
     #[cfg(test)]
-    pub(crate) fn voronoi_polygons(
+    pub(crate) fn voronoi_cells(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
     ) -> Result<Vec<Self>> {
-        let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
-        self.voronoi_polygons_budgeted(tolerance, boundary, &mut budget)
+        let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
+        self.voronoi_cells_budgeted(tolerance, boundary, &mut budget)
     }
 
     #[cfg(test)]
-    pub(crate) fn voronoi_polygons_budgeted(
+    pub(crate) fn voronoi_cells_budgeted(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
@@ -507,11 +736,11 @@ impl Shape {
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<(CoordSeq, CsrOffsetColumn)> {
-        self.voronoi_edges_raw(tolerance, boundary, budget)?
+        self.voronoi_edge_lines_raw(tolerance, boundary, budget)?
             .into_line_column()
     }
 
-    fn voronoi_edges_raw(
+    fn voronoi_edge_lines_raw(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
@@ -740,4 +969,179 @@ pub(super) fn canonical_voronoi_sites(mut points: Vec<Point>, tolerance: f64) ->
         site.id = id;
     }
     Ok(survivors)
+}
+
+#[cfg(test)]
+mod geographic_sample_tests {
+    use super::geographic_sample_segments;
+    use crate::geographic::GeographicFrame;
+    use crate::geometry::{
+        CoordSeq, CoordinateAxes, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point,
+        Polygon, Ring, Shape, TopologyDomain, row_sample_seed,
+    };
+
+    fn line_seq(points: &[(f64, f64)]) -> LineSeq {
+        let points = points
+            .iter()
+            .map(|&(x, y)| Point::new(x, y).unwrap())
+            .collect::<Vec<_>>();
+        LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap()
+    }
+
+    fn line(points: &[(f64, f64)]) -> Shape {
+        Shape::LineString(line_seq(points))
+    }
+
+    fn polygon(points: &[(f64, f64)]) -> Polygon {
+        let (xs, ys): (Vec<_>, Vec<_>) = points.iter().copied().unzip();
+        Polygon::new(
+            Ring::closed_coordseq(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap()).unwrap(),
+            Vec::new(),
+        )
+    }
+
+    fn xy_bits(points: &[Point]) -> Vec<(u64, u64)> {
+        points
+            .iter()
+            .map(|point| (point.x.to_bits(), point.y.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn retained_line_midpoint_is_the_antimeridian() {
+        let frame = GeographicFrame::crs84();
+        let source = line(&[(170.0, 0.0), (-170.0, 0.0)]);
+        let segments = geographic_sample_segments(&source, frame).unwrap();
+
+        assert_eq!(segments.len(), 1);
+        let midpoint = segments[0].sample(0.5, frame).unwrap();
+        assert_eq!(midpoint.x.abs(), 180.0);
+        assert_eq!(midpoint.y, 0.0);
+    }
+
+    #[test]
+    fn periodic_alias_edges_sample_only_their_quotient_vertices() {
+        let frame = GeographicFrame::crs84();
+        for (coordinates, aliases) in [
+            ([(-180.0, 0.0), (180.0, 0.0)], [-180.0, 180.0]),
+            ([(0.0, 0.0), (720.0, 0.0)], [0.0, 720.0]),
+        ] {
+            let source = line(&coordinates);
+            let points = source
+                .sample_points_in_domain(32, 5, TopologyDomain::Geographic(frame))
+                .unwrap();
+            assert_eq!(points.len(), 32);
+            assert!(
+                points
+                    .iter()
+                    .all(|point| { point.y == 0.0 && aliases.contains(&point.x) }),
+                "input={coordinates:?}, samples={points:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_geographic_sample_count_skips_support_admission() {
+        let invalid = line(&[(0.0, 100.0), (1.0, 101.0)]);
+        let domain = TopologyDomain::Geographic(GeographicFrame::crs84());
+
+        assert!(
+            invalid
+                .sample_points_in_domain(0, 1, domain)
+                .unwrap()
+                .is_empty()
+        );
+        invalid.sample_points_in_domain(1, 1, domain).unwrap_err();
+    }
+
+    #[test]
+    fn retained_line_weight_and_seeded_draw_use_the_twenty_degree_edge() {
+        let frame = GeographicFrame::crs84();
+        let lines = Shape::MultiLineString(
+            MultiLineString::try_new(CoordinateAxes::XY, vec![
+                MultiMember::Value(line_seq(&[(170.0, 0.0), (-170.0, 0.0)])),
+                MultiMember::Value(line_seq(&[(0.0, 0.0), (100.0, 0.0)])),
+            ])
+            .unwrap(),
+        );
+        let segments = geographic_sample_segments(&lines, frame).unwrap();
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].delta_x, 20.0);
+        assert_eq!(segments[1].delta_x, 100.0);
+        assert_eq!(segments[1].delta_x / segments[0].delta_x, 5.0);
+
+        let sample = lines
+            .sample_points_in_domain(1, row_sample_seed(1, 0), TopologyDomain::Geographic(frame))
+            .unwrap();
+        assert_eq!(sample.len(), 1);
+        assert!((sample[0].x - 94.356_423_086_485_44).abs() <= 1.0e-12);
+        assert_eq!(sample[0].y, 0.0);
+    }
+
+    #[test]
+    fn duplicate_crossing_polygons_keep_their_area_weight_multiplicity() {
+        let frame = GeographicFrame::crs84();
+        let crossing = polygon(&[
+            (170.0, 0.0),
+            (-170.0, 0.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+            (170.0, 0.0),
+        ]);
+        let ordinary = polygon(&[
+            (0.0, 0.0),
+            (20.0, 0.0),
+            (20.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let source = Shape::MultiPolygon(
+            MultiPolygon::try_new(CoordinateAxes::XY, vec![
+                MultiMember::Value(crossing.clone()),
+                MultiMember::Value(crossing),
+                MultiMember::Value(ordinary),
+            ])
+            .unwrap(),
+        );
+        let sample = source
+            .sample_points_in_domain(1, 1, TopologyDomain::Geographic(frame))
+            .unwrap();
+
+        assert_eq!(sample.len(), 1);
+        assert!(sample[0].x.abs() > 170.0, "sample was {sample:?}");
+        assert!((0.0..=10.0).contains(&sample[0].y));
+    }
+
+    #[test]
+    fn raw_compatible_geographic_and_cartesian_samples_keep_the_base_bits() {
+        let ordinary_geographic = [
+            line(&[(190.0, 10.0), (200.0, 20.0)]),
+            Shape::Polygon(polygon(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ])),
+        ];
+        let frame = GeographicFrame::crs84();
+        for source in ordinary_geographic {
+            let base = source.sample_points(5, 7).unwrap();
+            let geographic = source
+                .sample_points_in_domain(5, 7, TopologyDomain::Geographic(frame))
+                .unwrap();
+            assert_eq!(xy_bits(&geographic), xy_bits(&base));
+        }
+
+        let cartesian = line(&[(0.0, 0.0), (1.0, 1.0)]);
+        assert_eq!(
+            xy_bits(
+                &cartesian
+                    .sample_points_in_domain(5, 7, TopologyDomain::Cartesian)
+                    .unwrap()
+            ),
+            xy_bits(&cartesian.sample_points(5, 7).unwrap())
+        );
+    }
 }

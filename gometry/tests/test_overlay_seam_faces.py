@@ -433,8 +433,8 @@ def test_ordinary_geographic_polygonize_and_full_use_source_arclength_before_axe
     linework = _noded_geographic_linework(crs)
     expected_z, _ = _source_zm_at_latitude(-5.0)
 
-    polygons = gm.polygonize(linework)
-    full = gm.polygonize_full(linework)
+    polygons = gm.polygonize_all(linework)
+    full = gm.polygonize_all(linework, diagnostics=True)
 
     assert len(polygons) == 2
     assert len(full.polygons) == 2

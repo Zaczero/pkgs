@@ -1,4 +1,4 @@
-//! The uniform-column packers behind `from_shapes`/`pack_or_mixed`:
+//! The uniform-column packers behind `PyGeometryArray::from_shapes`:
 //! one shared `CoordSeq` (+CSR offsets) when every row is the same
 //! primitive kind with uniform axes, else `None` -> `Mixed`.
 
@@ -186,8 +186,7 @@ impl PyGeometryArray {
     /// The shared point column when every shape is a `Point` of uniform axes,
     /// else `None`. Mixed-axis points stay `Mixed` — packing them into one
     /// `CoordSeq` would lie about per-row Z/M presence. The single packability
-    /// rule behind [`from_shapes`](Self::from_shapes) and
-    /// [`pack_or_mixed`](Self::pack_or_mixed).
+    /// rule behind [`from_shapes`](Self::from_shapes).
     pub(crate) fn uniform_point_column<'a>(
         shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
     ) -> Result<Option<CoordSeq>> {

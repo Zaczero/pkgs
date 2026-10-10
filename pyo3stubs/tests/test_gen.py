@@ -189,6 +189,36 @@ class C:
     ]
 
 
+def test_doc_injector_reads_static_and_class_method_declarations():
+    stub = """\
+class C:
+    @staticmethod
+    def parse(value: str) -> C: ...
+
+    @classmethod
+    def from_value(cls, value: str) -> C: ...
+"""
+
+    class C:
+        @staticmethod
+        def parse(value: str) -> C:
+            """Static method prose."""
+            raise NotImplementedError
+
+        @classmethod
+        def from_value(cls, value: str) -> C:
+            """Class method prose."""
+            raise NotImplementedError
+
+    runtime = types.ModuleType('m')
+    runtime.C = C  # type: ignore[attr-defined]
+
+    rendered = _inject(stub, runtime)
+
+    assert 'Static method prose.' in rendered
+    assert 'Class method prose.' in rendered
+
+
 @pytest.mark.parametrize(
     ('stub_body', 'label'),
     [
@@ -279,7 +309,7 @@ Widget"""
     assert constructor_sources.by_class['Widget'].prose == expected_doc
     assert constructor_sources.by_class['Widget'].reason is None
 
-    stub = 'class Widget:\n    def __new__(cls, size: int) -> Widget: ...\n'
+    stub = 'class Widget:\n    def __new__(cls, size: int = 3) -> Widget: ...\n'
 
     class Widget:
         """Class prose."""

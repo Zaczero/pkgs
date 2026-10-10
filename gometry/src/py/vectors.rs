@@ -531,16 +531,16 @@ impl Groups {
         self.logical_payload_pyint(py)
     }
 
-    /// ``sys.getsizeof`` support: the wrapper plus this group's logical CSR
-    /// payload. Sliced groups report the visible values window and rebased
-    /// logical offsets, not the whole shared backing allocation.
+    /// ``sys.getsizeof`` support: Python's allocation base plus this group's
+    /// logical CSR payload. Sliced groups report the visible values window and
+    /// rebased logical offsets, not the whole shared backing allocation.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.logical_heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().logical_heap_bytes())
     }
 
     /// The logical flat payload window (int64 ndarray, `GeometryArray`, or
@@ -549,10 +549,9 @@ impl Groups {
     ///
     /// Returns
     /// -------
-    /// array-like
-    ///     The selected flat values window selected by the producer: a read-only
-    ///     int64 ndarray, `GeometryArray`, or `CellArray`. Its concrete type
-    ///     matches the `Groups` type parameter.
+    /// Group values
+    ///     The selected flat payload window. Numeric values are read-only int64;
+    ///     geometry and cell payloads retain their immutable array types.
     #[getter]
     fn values(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         match &slf.borrow().values {

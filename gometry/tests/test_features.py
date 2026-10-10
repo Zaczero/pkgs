@@ -102,18 +102,18 @@ def test_feature_helpers_preserve_properties_round_trip() -> None:
     for encode in encoders:
         with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
             encode()
-    features = gm.from_features(json.dumps(fc))
+    features = gm.from_geojson(json.dumps(fc), features=True)
     assert isinstance(features, gm.Features)
     geometries, properties, ids = features
     assert isinstance(geometries, gm.GeometryArray)
-    assert geometries.crs == 'OGC:CRS84'
+    assert geometries.crs == gm.CRS('OGC:CRS84')
     assert [g.to_wkt() for g in geometries] == [point.to_wkt(), box.to_wkt()]
     assert properties == ({'name': 'A'}, {'name': 'B'})
     assert ids == (7, None)
-    assert gm.from_features(feature).properties == ({'name': 'A'},)
-    assert gm.from_features([feature, feature]).ids == (7, 7)
-    assert gm.from_features(fc).geometries[0].to_wkt() == point.to_wkt()
-    assert gm.from_features(fc, crs=None).geometries.crs is None
+    assert gm.from_geojson(feature, features=True).properties == ({'name': 'A'},)
+    assert gm.from_geojson([feature, feature], features=True).ids == (7, 7)
+    assert gm.from_geojson(fc, features=True).geometries[0].to_wkt() == point.to_wkt()
+    assert gm.from_geojson(fc, crs=None, features=True).geometries.crs is None
     with pytest.raises(ValueError, match='does not match'):
         gm.to_feature_collection([point], properties=[{}, {}])
     with pytest.raises(gm.GeometryError, match='feature id'):
@@ -121,29 +121,35 @@ def test_feature_helpers_preserve_properties_round_trip() -> None:
     with pytest.raises(gm.GeometryError, match='feature id'):
         gm.to_feature(point, id=math.inf)
     with pytest.raises(ValueError, match='must have a geometry'):
-        gm.from_features([{'type': 'Feature', 'properties': {}}])
+        gm.from_geojson([{'type': 'Feature', 'properties': {}}], features=True)
     with pytest.raises(ValueError, match='Feature, FeatureCollection'):
-        gm.from_features({'type': 'Nonsense'})
+        gm.from_geojson({'type': 'Nonsense'}, features=True)
     with pytest.raises(gm.ParseError, match='Feature, FeatureCollection'):
-        gm.from_features(123)
+        gm.from_geojson(123, features=True)
     with pytest.raises(gm.ParseError, match='mapping'):
-        gm.from_features([123])
+        gm.from_geojson([123], features=True)
     with pytest.raises(gm.ParseError, match='features must be iterable'):
-        gm.from_features({'type': 'FeatureCollection', 'features': 123})
+        gm.from_geojson({'type': 'FeatureCollection', 'features': 123}, features=True)
     with pytest.raises(gm.ParseError, match='type "Feature"'):
-        gm.from_features([{'type': 'Point', 'coordinates': [1, 2]}])
+        gm.from_geojson([{'type': 'Point', 'coordinates': [1, 2]}], features=True)
     with pytest.raises(gm.ParseError, match='properties must be a mapping'):
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-            'properties': 3,
-        })
+        gm.from_geojson(
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+                'properties': 3,
+            },
+            features=True,
+        )
     with pytest.raises(gm.ParseError, match='feature id'):
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-            'id': object(),
-        })
+        gm.from_geojson(
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+                'id': object(),
+            },
+            features=True,
+        )
 
 
 def test_feature_null_geometry_mapping_matches_text_missing_rows() -> None:
@@ -152,8 +158,8 @@ def test_feature_null_geometry_mapping_matches_text_missing_rows() -> None:
         properties=[{'name': 'point'}, {'name': 'missing'}],
         ids=['a', 'b'],
     )
-    mapping = gm.from_features(fc)
-    text = gm.from_features(json.dumps(fc))
+    mapping = gm.from_geojson(fc, features=True)
+    text = gm.from_geojson(json.dumps(fc), features=True)
     geojson = gm.from_geojson(fc)
     assert (
         mapping.properties
@@ -165,7 +171,7 @@ def test_feature_null_geometry_mapping_matches_text_missing_rows() -> None:
     assert text.geometries.is_missing.tolist() == [False, True]
     assert geojson.is_missing.tolist() == [False, True]
     # Scalar null Feature is rejected uniformly (mapping and text); bulk nulls
-    # go through from_features / FeatureCollection only.
+    # go through from_geojson / FeatureCollection only.
     null_feature = {'type': 'Feature', 'properties': {}, 'geometry': None}
     with pytest.raises(gm.ParseError, match='null'):
         gm.from_geojson(null_feature)
@@ -187,14 +193,58 @@ def test_feature_null_geometry_mapping_matches_text_missing_rows() -> None:
     }
     arr = gm.from_geojson(collection)
     assert arr.is_missing.tolist() == [True, False]
-    single = gm.from_features(fc['features'][1])
+    single = gm.from_geojson(fc['features'][1], features=True)
     assert single.geometries.is_missing.tolist() == [True]
     with pytest.raises(ValueError, match='must have a geometry'):
-        gm.from_features([{'type': 'Feature', 'properties': {}}])
+        gm.from_geojson([{'type': 'Feature', 'properties': {}}], features=True)
 
 
-def test_from_features_native_object_lane_preserves_python_fidelity() -> None:
-    assert gm.from_features.__module__ == 'gometry._lib'
+def test_from_geojson_features_accepts_geo_interface_feature_provider() -> None:
+    class FeatureProvider:
+        @property
+        def __geo_interface__(self) -> dict[str, object]:
+            return {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [9, 10]},
+                'properties': {'name': 'provider'},
+                'id': 'provider-1',
+            }
+
+    result = gm.from_geojson(FeatureProvider(), features=True)
+
+    assert result.geometries.to_wkt() == ['POINT (9 10)']
+    assert result.properties == ({'name': 'provider'},)
+    assert result.ids == ('provider-1',)
+
+
+def test_from_geojson_features_accepts_pandas_feature_columns() -> None:
+    pd = pytest.importorskip('pandas')
+    series = pd.Series(
+        [
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+                'properties': {'name': 'A'},
+                'id': 7,
+            },
+            {
+                'type': 'Feature',
+                'geometry': None,
+                'properties': {'name': 'missing'},
+            },
+        ],
+        dtype=object,
+    )
+
+    result = gm.from_geojson(series, features=True)
+
+    assert result.geometries.to_wkt() == ['POINT (1 2)', None]
+    assert result.properties == ({'name': 'A'}, {'name': 'missing'})
+    assert result.ids == (7, None)
+
+
+def test_from_geojson_native_object_lane_preserves_python_fidelity() -> None:
+    assert gm.from_geojson.__module__ == 'gometry._lib'
     huge = 1 << 100
     identifier = _FeatureId(17)
     properties = types.MappingProxyType({
@@ -215,7 +265,7 @@ def test_from_features_native_object_lane_preserves_python_fidelity() -> None:
         'features': (feature,),
     })
 
-    result = gm.from_features(collection, epoch=2020.5)
+    result = gm.from_geojson(collection, epoch=2020.5, features=True)
     assert isinstance(result, gm.Features)
     assert result.geometries.epoch == 2020.5
     assert [str(value) for value in result.geometries] == ['POINT (1 2)']
@@ -224,20 +274,23 @@ def test_from_features_native_object_lane_preserves_python_fidelity() -> None:
     assert result.ids[0] is identifier
 
 
-def test_from_features_rejects_non_json_python_property_values() -> None:
+def test_from_geojson_rejects_non_json_python_property_values() -> None:
     with pytest.raises(
         gm.ParseError,
         match='unsupported JSON value type object',
     ) as exc_info:
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-            'properties': {'marker': object()},
-        })
+        gm.from_geojson(
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+                'properties': {'marker': object()},
+            },
+            features=True,
+        )
     assert exc_info.value.format == 'geojson'
 
 
-def test_from_features_validates_the_copied_properties_snapshot_once() -> None:
+def test_from_geojson_validates_the_copied_properties_snapshot_once() -> None:
     numbers = [17, 23]
 
     class OneShotProperties:
@@ -254,18 +307,21 @@ def test_from_features_validates_the_copied_properties_snapshot_once() -> None:
             return {'name': 'example', 'numbers': numbers}[key]
 
     properties = OneShotProperties()
-    result = gm.from_features({
-        'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-        'properties': properties,
-    })
+    result = gm.from_geojson(
+        {
+            'type': 'Feature',
+            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+            'properties': properties,
+        },
+        features=True,
+    )
 
     assert properties.keys_calls == 1
     assert result.properties[0] == {'name': 'example', 'numbers': numbers}
     assert result.properties[0]['numbers'] is numbers
 
 
-def test_from_features_rejects_invalid_values_from_the_copied_snapshot() -> None:
+def test_from_geojson_rejects_invalid_values_from_the_copied_snapshot() -> None:
     invalid_value = object()
 
     class ChangingProperties:
@@ -291,13 +347,13 @@ def test_from_features_rejects_invalid_values_from_the_copied_snapshot() -> None
         gm.ParseError,
         match='unsupported JSON value type object',
     ) as exc_info:
-        gm.from_features(feature)
+        gm.from_geojson(feature, features=True)
 
     assert exc_info.value.format == 'geojson'
     assert properties.keys_calls == 1
 
 
-def test_from_features_mapping_side_data_is_snapshotted() -> None:
+def test_from_geojson_mapping_side_data_is_snapshotted() -> None:
     nested: list[str] = []
     properties = {'nested': nested}
     feature = {
@@ -306,7 +362,7 @@ def test_from_features_mapping_side_data_is_snapshotted() -> None:
         'properties': properties,
     }
 
-    result = gm.from_features(feature)
+    result = gm.from_geojson(feature, features=True)
     properties['after'] = 'not captured'
 
     assert result.properties[0] is not properties
@@ -314,7 +370,7 @@ def test_from_features_mapping_side_data_is_snapshotted() -> None:
     assert result.properties[0]['nested'] is nested
 
 
-def test_from_features_text_and_mapping_keep_distinct_side_data_order() -> None:
+def test_from_geojson_text_and_mapping_keep_distinct_side_data_order() -> None:
     large_id = 2**100 + 1
     text = (
         '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
@@ -322,36 +378,39 @@ def test_from_features_text_and_mapping_keep_distinct_side_data_order() -> None:
         f'"id":{large_id}'
         '}'
     )
-    text_result = gm.from_features(text)
+    text_result = gm.from_geojson(text, features=True)
     assert list(text_result.properties[0]) == ['a', 'nested', 'z']
     assert text_result.properties[0]['z'] == 3
     assert list(text_result.properties[0]['nested']) == ['a', 'b']
     assert text_result.properties[0]['nested']['b'] == 4
     assert text_result.ids == (large_id,)
 
-    mapping_result = gm.from_features({
-        'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-        'properties': {'z': 3, 'a': 2, 'nested': {'b': 4, 'a': 2}},
-        'id': large_id,
-    })
+    mapping_result = gm.from_geojson(
+        {
+            'type': 'Feature',
+            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+            'properties': {'z': 3, 'a': 2, 'nested': {'b': 4, 'a': 2}},
+            'id': large_id,
+        },
+        features=True,
+    )
     assert list(mapping_result.properties[0]) == ['z', 'a', 'nested']
     assert list(mapping_result.properties[0]['nested']) == ['b', 'a']
     assert mapping_result.ids[0] == large_id
 
 
-def test_from_features_text_wide_properties_keep_sorted_keys() -> None:
+def test_from_geojson_text_wide_properties_keep_sorted_keys() -> None:
     properties = ','.join(f'"key_{index:04d}":{index}' for index in range(255, -1, -1))
     text = (
         '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},'
         '"properties":{' + properties + '}}'
     )
-    result = gm.from_features(text)
+    result = gm.from_geojson(text, features=True)
     assert list(result.properties[0]) == [f'key_{index:04d}' for index in range(256)]
     assert result.properties[0]['key_0255'] == 255
 
 
-def test_from_features_native_generator_and_json_sequence_match() -> None:
+def test_from_geojson_native_generator_and_json_sequence_match() -> None:
     rows = [
         {
             'type': 'Feature',
@@ -365,15 +424,15 @@ def test_from_features_native_generator_and_json_sequence_match() -> None:
             'properties': None,
         },
     ]
-    generated = gm.from_features(row for row in rows)
-    text = gm.from_features(json.dumps(rows))
+    generated = gm.from_geojson((row for row in rows), features=True)
+    text = gm.from_geojson(json.dumps(rows), features=True)
     assert generated.geometries.to_wkt() == text.geometries.to_wkt()
     assert generated.geometries.is_missing.tolist() == [False, True]
     assert generated.properties == text.properties == ({'row': 0}, None)
     assert generated.ids == text.ids == ('a', None)
 
 
-def test_from_features_stops_generator_at_first_malformed_row() -> None:
+def test_from_geojson_stops_generator_at_first_malformed_row() -> None:
     consumed_after_failure = False
 
     def rows():
@@ -389,10 +448,10 @@ def test_from_features_stops_generator_at_first_malformed_row() -> None:
             'properties': {},
         }
         consumed_after_failure = True
-        raise AssertionError('from_features consumed a row after malformed geometry')
+        raise AssertionError('from_geojson consumed a row after malformed geometry')
 
     with pytest.raises(gm.ParseError):
-        gm.from_features(rows())
+        gm.from_geojson(rows(), features=True)
     assert not consumed_after_failure
 
 
@@ -468,7 +527,7 @@ def test_features_defaults_and_mapping_broadcast_are_independent() -> None:
     assert explicit_none.properties == (None, None)
     exported = gm.to_feature_collection(empty)
     assert [feature['properties'] for feature in exported['features']] == [None, None]
-    restored = gm.from_features(exported)
+    restored = gm.from_geojson(exported, features=True)
     assert restored.properties == (None, None)
 
     explicit = gm.Features(geometries, {})
@@ -667,14 +726,14 @@ def test_feature_collection_accepts_one_geometry_or_null_geometry() -> None:
 
 def test_feature_properties_missing_and_explicit_null_are_distinct() -> None:
     base = {'type': 'Feature', 'geometry': {'type': 'Point', 'coordinates': [1, 2]}}
-    parsed = gm.from_features([base, {**base, 'properties': None}])
+    parsed = gm.from_geojson([base, {**base, 'properties': None}], features=True)
     assert parsed.properties == ({}, None)
     encoded = gm.to_feature_collection(parsed.geometries, properties=parsed.properties)
     assert encoded['features'][0]['properties'] == {}
     assert encoded['features'][1]['properties'] is None
 
 
-def test_from_features_noncontiguous_utf8_memoryview() -> None:
+def test_from_geojson_noncontiguous_utf8_memoryview() -> None:
     encoded = (
         b'{"type":"Feature","geometry":{"type":"Point",'
         b'"coordinates":[3,4]},"properties":{"name":"p"},"id":9}'
@@ -682,13 +741,13 @@ def test_from_features_noncontiguous_utf8_memoryview() -> None:
     storage = bytearray(len(encoded) * 2)
     storage[::2] = encoded
     view = memoryview(storage)[::2]
-    result = gm.from_features(view)
+    result = gm.from_geojson(view, features=True)
     assert result.geometries.to_wkt() == ['POINT (3 4)']
     assert result.properties == ({'name': 'p'},)
     assert result.ids == (9,)
 
 
-def test_from_features_accepts_signed_one_byte_buffers() -> None:
+def test_from_geojson_accepts_signed_one_byte_buffers() -> None:
     """D16: signed itemsize-1 buffers parse like from_geojson (not BufferError)."""
     import array
 
@@ -697,9 +756,9 @@ def test_from_features_accepts_signed_one_byte_buffers() -> None:
         b'"properties":{"k":1},"id":7}'
     )
     signed = array.array('b', payload)
-    # Exact repro: from_geojson already accepted signed; from_features must too.
+    # Exact repro: from_geojson already accepted signed; from_geojson must too.
     assert gm.from_geojson(signed).to_wkt() == 'POINT (1 2)'
-    feats = gm.from_features(signed)
+    feats = gm.from_geojson(signed, features=True)
     assert feats.geometries.to_wkt() == ['POINT (1 2)']
     assert feats.properties == ({'k': 1},)
     assert feats.ids == (7,)
@@ -711,13 +770,13 @@ def test_from_features_accepts_signed_one_byte_buffers() -> None:
         bytearray(payload),
         memoryview(payload),
     ):
-        other = gm.from_features(data)
+        other = gm.from_geojson(data, features=True)
         assert other.geometries.to_wkt() == ['POINT (1 2)']
         assert other.properties == feats.properties
         assert other.ids == feats.ids
 
 
-def test_from_features_text_and_object_reconcile_embedded_geometry_crs() -> None:
+def test_from_geojson_text_and_object_reconcile_embedded_geometry_crs() -> None:
     feature = {
         'type': 'Feature',
         'geometry': {
@@ -731,11 +790,11 @@ def test_from_features_text_and_object_reconcile_embedded_geometry_crs() -> None
     escaped_key = encoded.replace('"crs"', '"c\\u0072s"')
     for value in (feature, encoded, encoded.encode(), escaped_key):
         with pytest.raises(gm.ParseError, match='conflicts with crs=EPSG:4326'):
-            gm.from_features(value, crs=4326)
+            gm.from_geojson(value, crs=4326, features=True)
 
 
 @pytest.mark.parametrize('container_kind', ['Feature', 'FeatureCollection'])
-def test_from_features_reconciles_feature_envelope_legacy_crs(
+def test_from_geojson_reconciles_feature_envelope_legacy_crs(
     container_kind: str,
 ) -> None:
     feature = {
@@ -756,11 +815,13 @@ def test_from_features_reconciles_feature_envelope_legacy_crs(
     escaped_key = encoded.replace('"crs"', '"c\\u0072s"')
     for input_value in (value, encoded, encoded.encode(), escaped_key):
         with pytest.raises(gm.ParseError, match='conflicts with crs=EPSG:4326'):
-            gm.from_features(input_value, crs=4326)
+            gm.from_geojson(input_value, crs=4326, features=True)
 
     agreeing = dict(value)
     agreeing['crs'] = {'type': 'name', 'properties': {'name': 'EPSG:4326'}}
-    assert gm.from_features(agreeing, crs=4326).geometries.to_wkt() == ['POINT (1 2)']
+    assert gm.from_geojson(agreeing, crs=4326, features=True).geometries.to_wkt() == [
+        'POINT (1 2)'
+    ]
 
 
 @pytest.mark.parametrize(
@@ -776,7 +837,7 @@ def test_from_features_reconciles_feature_envelope_legacy_crs(
     ],
 )
 @pytest.mark.parametrize('as_text', [False, True], ids=['object', 'text'])
-def test_from_features_native_lanes_cover_every_geometry_kind(
+def test_from_geojson_native_lanes_cover_every_geometry_kind(
     geometry: gm.Geometry,
     as_text: bool,
 ) -> None:
@@ -785,7 +846,7 @@ def test_from_features_native_lanes_cover_every_geometry_kind(
         'geometry': geometry.__geo_interface__,
         'properties': {},
     }
-    result = gm.from_features(json.dumps(feature) if as_text else feature)
+    result = gm.from_geojson(json.dumps(feature) if as_text else feature, features=True)
     assert result.geometries[0].to_wkt() == geometry.to_wkt()
 
 
@@ -807,7 +868,7 @@ def test_to_feature_collection_accepts_features_without_restatement() -> None:
             },
         ],
     }
-    features = gm.from_features(source)
+    features = gm.from_geojson(source, features=True)
 
     assert gm.to_feature_collection(features) == source
     with pytest.raises(TypeError, match='must be omitted when values is a Features'):

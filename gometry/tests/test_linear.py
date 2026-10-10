@@ -9,7 +9,11 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 oracle wheel is unavailable for this interpreter'
+)
+Geod = pyproj.Geod
 
 
 def test_line_interpolate_and_locate_point_are_rust_backed_and_preserve_axes() -> None:
@@ -111,11 +115,11 @@ def test_nearest_points_are_rust_backed_and_preserve_crs() -> None:
     left, right = gm.nearest_points(line, point, unit='planar')
     assert left.to_wkt() == 'POINT (1 0)'
     assert right.to_wkt() == 'POINT (1 3)'
-    assert left.crs == 'EPSG:4326'
-    assert right.crs == 'EPSG:4326'
+    assert left.crs == gm.CRS('EPSG:4326')
+    assert right.crs == gm.CRS('EPSG:4326')
     geo_left, geo_right = gm.nearest_points(line, point)
-    assert geo_left.crs == 'EPSG:4326'
-    assert geo_right.crs == 'EPSG:4326'
+    assert geo_left.crs == gm.CRS('EPSG:4326')
+    assert geo_right.crs == gm.CRS('EPSG:4326')
     assert geo_left.y == 0.0
     assert 0.0 <= geo_left.x <= 4.0
     geod = Geod(ellps='WGS84')
@@ -214,8 +218,8 @@ def test_split_lines_by_points_is_rust_backed_and_preserves_crs_and_measures() -
         'LINESTRING ZM (1 0 2 12, 3 0 6 16)',
         'LINESTRING ZM (3 0 6 16, 4 0 8 18)',
     ]
-    assert pieces.crs == 'EPSG:4326'
-    assert all(piece.crs == 'EPSG:4326' for piece in pieces)
+    assert pieces.crs == gm.CRS('EPSG:4326')
+    assert all(piece.crs == gm.CRS('EPSG:4326') for piece in pieces)
     assert [piece.to_wkt() for piece in top_level] == [
         'LINESTRING ZM (0 0 0 10, 2 0 4 14)',
         'LINESTRING ZM (2 0 4 14, 4 0 8 18)',
@@ -226,16 +230,20 @@ def test_split_lines_by_points_is_rust_backed_and_preserves_crs_and_measures() -
         'LINESTRING (0 1, 1 1)',
         'LINESTRING (1 1, 2 1)',
     ]
-    assert all(piece.crs == 'EPSG:3857' for piece in multiline_pieces)
-    assert [piece.to_wkt() for piece in array_pieces] == [
+    assert all(piece.crs == gm.CRS('EPSG:3857') for piece in multiline_pieces)
+    assert array_pieces.offsets.tolist() == [0, 2]
+    assert [piece.to_wkt() for piece in array_pieces[0]] == [
         piece.to_wkt() for piece in top_level
     ]
     assert [piece.to_wkt() for piece in scalar_array_splitter_pieces] == [
         piece.to_wkt() for piece in pieces
     ]
-    assert [piece.to_wkt() for piece in pairwise_array_pieces] == [
+    assert pairwise_array_pieces.offsets.tolist() == [0, 2, 4]
+    assert [piece.to_wkt() for piece in pairwise_array_pieces[0]] == [
         'LINESTRING ZM (0 0 0 10, 2 0 4 14)',
         'LINESTRING ZM (2 0 4 14, 4 0 8 18)',
+    ]
+    assert [piece.to_wkt() for piece in pairwise_array_pieces[1]] == [
         'LINESTRING (0 0, 3 0)',
         'LINESTRING (3 0, 6 0)',
     ]
@@ -406,7 +414,7 @@ def test_measured_lrs_and_distance_3d_have_free_and_array_forms() -> None:
         'gm.GeometryArray', lines.line_interpolate(5.0, basis='m')
     )
     assert len(array_interpolated) == 2
-    assert array_interpolated.crs == 'EPSG:4326'
+    assert array_interpolated.crs == gm.CRS('EPSG:4326')
     sub = cast('gm.LineString', line.line_substring(2.0, 4.0, basis='m'))
     assert sub.to_wkt() == 'LINESTRING M (2 0 2, 4 0 4)'
     subs = cast('gm.GeometryArray', lines.line_substring(2.0, 4.0, basis='m'))
@@ -422,6 +430,25 @@ def test_measured_lrs_and_distance_3d_have_free_and_array_forms() -> None:
     )
     with pytest.raises(ValueError, match='matching CRS'):
         gm.distance_3d(gm.from_wkt('POINT Z (0 0 0)', crs=4326), b)
+
+
+def test_scalar_m_interpolation_accepts_a_station_column() -> None:
+    line = gm.from_wkt('LINESTRING ZM (0 0 10 0, 10 0 20 100)')
+
+    points = line.line_interpolate([25.0, 75.0], basis='m')
+
+    assert isinstance(points, gm.GeometryArray)
+    assert points.to_wkt() == [
+        'POINT ZM (2.5 0 12.5 25)',
+        'POINT ZM (7.5 0 17.5 75)',
+    ]
+    assert line.line_interpolate(np.array([25.0, 75.0]), basis='m').to_wkt() == (
+        points.to_wkt()
+    )
+
+    non_monotonic = gm.from_wkt('LINESTRING M (0 0 0, 1 0 2, 2 0 1)')
+    with pytest.raises(gm.InvalidGeometryError, match='monotonic'):
+        non_monotonic.line_interpolate([0.5, 1.5], basis='m')
 
 
 def test_distance_3d_generalized_over_linework() -> None:
@@ -470,17 +497,17 @@ def test_distance_3d_indexed_xyzm_line_uses_z_and_ignores_m() -> None:
     assert gm.distance_3d(probe, line) == 5.0
 
 
-def test_distance_3d_array_degrades_missing_z_rows() -> None:
-    """Array rows without Z on every vertex degrade to nan; scalar still raises."""
+def test_distance_3d_array_rejects_missing_z_rows() -> None:
+    """A present array row without Z raises at its original row position."""
     mixed = gm.GeometryArray([
         gm.from_wkt('POINT Z (0 0 0)'),
         gm.from_wkt('POINT (0 0)'),
     ])
     target = gm.from_wkt('POINT Z (1 1 1)')
-    assert gm.distance_3d(mixed, target)[0] == pytest.approx(3**0.5)
-    assert math.isnan(gm.distance_3d(mixed, target)[1])
-    with pytest.raises(ValueError, match='requires a Z ordinate'):
-        gm.distance_3d(mixed[1], target)
+
+    with pytest.raises(gm.InvalidGeometryError, match='requires a Z ordinate') as error:
+        gm.distance_3d(mixed, target)
+    assert error.value.__notes__ == ['while processing array element 1']
 
 
 def test_distance_3d_scalar_broadcast_uses_prepared_fixed_operand() -> None:

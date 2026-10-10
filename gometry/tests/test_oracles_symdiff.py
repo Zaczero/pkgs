@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING
 
 import gometry as gm
 import pytest
-import shapely
-
-shapely_from_wkt = shapely.from_wkt
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 oracle wheel is unavailable for this interpreter'
+)
+shapely_from_wkt = shapely.from_wkt
 
 
 @dataclass(frozen=True)

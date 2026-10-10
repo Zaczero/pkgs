@@ -13,6 +13,7 @@ import tarfile
 import tempfile
 import textwrap
 import venv
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
@@ -59,6 +60,11 @@ from artifact_content import (
     wheel_python_members,
     wheel_target_compatible,
 )
+from quality_runtime import (
+    quality_receipt_path,
+    read_quality_receipt,
+    validate_quality_producer_inputs,
+)
 from runtime_artifact import (
     SMOKE_EXPECTED_ARCHITECTURE_ENV,
     SMOKE_EXPECTED_HOST_ARCH_ENV,
@@ -86,7 +92,7 @@ from source_artifact import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 CIBUILDWHEEL_VERSION = '4.1.0'
 RUNNER_RECEIPT_SCHEMA = 4
 RELEASE_MANIFEST_SCHEMA = 4
@@ -1070,6 +1076,39 @@ def _portable_interpreter(interpreter: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def installed_wheel_runtime_receipt(
+    *,
+    identifier: str | None,
+    profile: str,
+    source: Mapping[str, Any],
+    build: Mapping[str, Any],
+    wheel: Mapping[str, Any],
+    prepared_inputs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Project an admitted installed-wheel record for runtime verification."""
+    required_wheel_fields = (
+        'filename',
+        'sha256',
+        'extension_member',
+        'extension_sha256',
+    )
+    if not all(isinstance(wheel.get(name), str) for name in required_wheel_fields):
+        raise AssertionError('installed wheel has an incomplete runtime identity')
+    if not isinstance(build, Mapping) or not isinstance(source, Mapping):
+        raise TypeError('installed wheel source or build identity is malformed')
+    projected = {
+        'identifier': identifier,
+        'profile': profile,
+        'source': dict(source),
+        'build': dict(build),
+        'wheel': {name: wheel[name] for name in required_wheel_fields},
+        'python_members': source.get('python_members'),
+    }
+    if prepared_inputs is not None:
+        projected['prepared_inputs'] = dict(prepared_inputs)
+    return projected
+
+
 def smoke_installed(
     *,
     expected_source_manifest: Path | None = None,
@@ -1120,20 +1159,14 @@ def smoke_installed(
             raise AssertionError(
                 'installed smoke wheel differs from repaired-wheel hook'
             )
-        runtime_receipt = {
-            'identifier': identifier,
-            'profile': RELEASE_PROFILE,
-            'source': source_identity(source_manifest),
-            'build': item['build'],
-            'wheel': {
-                'filename': item['filename'],
-                'sha256': item['sha256'],
-                'extension_member': item['extension_member'],
-                'extension_sha256': item['extension_sha256'],
-            },
-            'python_members': source_manifest['python_members'],
-            'prepared_inputs': source_manifest['prepared_inputs']['files'],
-        }
+        runtime_receipt = installed_wheel_runtime_receipt(
+            identifier=identifier,
+            profile=RELEASE_PROFILE,
+            source=source_identity(source_manifest),
+            build=item['build'],
+            wheel=item,
+            prepared_inputs=source_manifest['prepared_inputs']['files'],
+        )
         facade, extension, runtime_record = verify_runtime(
             ROOT,
             expected_wheel=wheel.resolve(),
@@ -2345,18 +2378,84 @@ def validate_release_manifest(
     return manifest
 
 
+def _quality_benchmark_root(receipt_path: Path) -> Path | None:
+    if len(receipt_path.parts) < 4 or receipt_path.parts[-3:] != (
+        'target',
+        'quality-runtime',
+        'receipt.json',
+    ):
+        return None
+    return receipt_path.parents[2]
+
+
+def _quality_benchmark_subject(
+    root: Path,
+    quality_receipt: Mapping[str, Any],
+    receipt_digest: str,
+) -> dict[str, Any]:
+    wheel = quality_receipt['wheel']
+    source = quality_receipt['source']
+    wheel_item = {
+        'filename': wheel['filename'],
+        'sha256': wheel['sha256'],
+        'extension_member': wheel['extension_member'],
+        'extension_sha256': wheel['extension_sha256'],
+    }
+    return {
+        'kind': 'quality',
+        'path': str(quality_receipt_path(root).resolve()),
+        'receipt_sha256': receipt_digest,
+        'source': {
+            'commit': None,
+            'version': source['version'],
+            'source_inputs_sha256': source['source_inputs_sha256'],
+            'native_source_inputs_sha256': source['native_source_inputs_sha256'],
+            'python_members': dict(source['python_members']),
+        },
+        'profile': quality_receipt['profile'],
+        'build': quality_receipt['build'],
+        'wheel': wheel_item,
+        'wheels': [wheel_item],
+        'package_root': quality_receipt['package_root'],
+        'python_members': dict(quality_receipt['python_members']),
+        'prepared_inputs': quality_receipt['prepared_inputs']['files'],
+        'runtime_receipt': dict(quality_receipt),
+    }
+
+
 def validate_benchmark_receipt(receipt_path: Path) -> dict[str, Any]:
-    """Validate an existing release or runner receipt before benchmark dispatch."""
+    """Validate an existing quality, release, or runner subject for benchmarking."""
     receipt_path = receipt_path.resolve()
     if receipt_path.is_dir():
         if (receipt_path / RELEASE_MANIFEST_NAME).is_file():
             receipt_path = receipt_path / RELEASE_MANIFEST_NAME
         elif (receipt_path / RUNNER_RECEIPT_NAME).is_file():
             receipt_path = receipt_path / RUNNER_RECEIPT_NAME
+        elif (
+            receipt_path.name == 'quality-runtime'
+            and receipt_path.parent.name == 'target'
+            and (receipt_path / 'receipt.json').is_file()
+        ):
+            receipt_path = receipt_path / 'receipt.json'
         else:
             raise AssertionError(
                 f'benchmark receipt directory has no canonical receipt: {receipt_path}'
             )
+    quality_root = _quality_benchmark_root(receipt_path)
+    if quality_root is not None:
+        root = quality_root
+        canonical_path = quality_receipt_path(root).resolve()
+        if receipt_path != canonical_path:
+            raise AssertionError(
+                'quality benchmark receipt must be at its canonical path'
+            )
+        quality_receipt = read_quality_receipt(root)
+        validate_quality_producer_inputs(root, quality_receipt)
+        return _quality_benchmark_subject(
+            root,
+            quality_receipt,
+            sha256_file(canonical_path),
+        )
     if receipt_path.name == RELEASE_MANIFEST_NAME:
         receipt = validate_release_manifest(receipt_path, receipt_path.parent)
         return {
@@ -2396,6 +2495,13 @@ def read_benchmark_receipt(
         or sha256_file(receipt_path) != expected_receipt_sha256
     ):
         raise AssertionError('validated benchmark receipt changed before dispatch')
+    quality_root = _quality_benchmark_root(receipt_path)
+    if quality_root is not None:
+        return _quality_benchmark_subject(
+            quality_root,
+            read_quality_receipt(quality_root),
+            expected_receipt_sha256,
+        )
     receipt = _load_json(receipt_path)
     if receipt_path.name == RELEASE_MANIFEST_NAME:
         if (
@@ -2441,10 +2547,13 @@ def match_benchmark_receipt(
     receipt: Mapping[str, Any],
     extension: Mapping[str, Any],
     distribution: Mapping[str, Any] | None,
+    *,
+    runtime_binding: Mapping[str, Any],
+    verify_archive: bool = True,
 ) -> dict[str, Any]:
-    """Bind a validated receipt's source evidence to the loaded extension bytes."""
+    """Bind admitted facade, distribution, extension, and wheel facts to a subject."""
     source = receipt.get('source')
-    if not isinstance(source, dict):
+    if not isinstance(source, Mapping):
         raise TypeError('benchmark receipt has no source identity')
     if 'commit' not in source:
         raise AssertionError('benchmark receipt source identity has no commit field')
@@ -2466,7 +2575,7 @@ def match_benchmark_receipt(
         or not isinstance(build_info, dict)
     ):
         raise AssertionError('loaded benchmark extension identity is malformed')
-    if not isinstance(distribution, dict):
+    if not isinstance(distribution, Mapping):
         raise TypeError('loaded gometry distribution identity is missing')
     if str(distribution.get('name', '')).lower() != 'gometry' or distribution.get(
         'version'
@@ -2482,26 +2591,134 @@ def match_benchmark_receipt(
         raise AssertionError(
             'benchmark receipt source/native identity differs from extension'
         )
-    wheel_items = receipt.get('wheels')
+
+    if not isinstance(runtime_binding, Mapping):
+        raise TypeError('benchmark runtime binding is missing')
+    subject_path = receipt.get('path')
+    subject_digest = receipt.get('receipt_sha256')
+    if (
+        not isinstance(subject_path, str)
+        or runtime_binding.get('path') != subject_path
+        or runtime_binding.get('sha256') != subject_digest
+    ):
+        raise AssertionError('benchmark runtime binding names another receipt')
+    facade = runtime_binding.get('facade')
+    runtime_extension = runtime_binding.get('extension')
+    binding_wheel = runtime_binding.get('wheel')
+    binding_distribution = runtime_binding.get('distribution')
+    python_members = runtime_binding.get('python_members')
+    if (
+        not isinstance(facade, Mapping)
+        or not isinstance(runtime_extension, Mapping)
+        or not isinstance(binding_wheel, Mapping)
+        or not isinstance(binding_distribution, Mapping)
+        or not isinstance(python_members, Mapping)
+    ):
+        raise TypeError('benchmark runtime binding is malformed')
+    if (
+        runtime_extension.get('path') != extension_path
+        or runtime_extension.get('sha256') != extension_sha256
+        or binding_distribution != distribution
+    ):
+        raise AssertionError('benchmark runtime files differ from loaded identity')
+    if (
+        not isinstance(facade.get('path'), str)
+        or not isinstance(facade.get('sha256'), str)
+        or facade.get('sha256') != python_members.get('gometry/__init__.py')
+    ):
+        raise AssertionError('benchmark facade differs from admitted Python members')
+    try:
+        Path(str(facade['path'])).resolve().relative_to(
+            Path(str(distribution['location'])).resolve()
+        )
+    except (KeyError, ValueError) as error:
+        raise AssertionError(
+            'benchmark facade is outside the owning gometry distribution'
+        ) from error
+
+    if receipt.get('kind') == 'quality':
+        raw_receipt = receipt.get('runtime_receipt')
+        if not isinstance(raw_receipt, Mapping):
+            raise AssertionError('quality benchmark subject lost its runtime receipt')
+        raw_wheel = raw_receipt.get('wheel')
+        root = _quality_benchmark_root(Path(subject_path))
+        if not isinstance(raw_wheel, Mapping) or root is None:
+            raise AssertionError('quality benchmark subject has malformed wheel paths')
+        expected_wheel_path = (root.parent / str(raw_wheel.get('path'))).resolve()
+        expected_python_members = source.get('python_members')
+        expected_profile = raw_receipt.get('build', {}).get('profile')
+        wheel_items = receipt.get('wheels')
+    else:
+        expected_wheel_path = (
+            Path(subject_path).resolve().parent / str(binding_wheel.get('filename'))
+        ).resolve()
+        expected_python_members = source.get('python_members')
+        expected_profile = RELEASE_PROFILE
+        wheel_items = receipt.get('wheels')
+    if runtime_binding.get('profile') != expected_profile:
+        raise AssertionError('benchmark runtime profile differs from receipt')
     if not isinstance(wheel_items, list):
         raise TypeError('benchmark receipt has no wheel records')
-    member_name = Path(extension_path).name
     matches = [
         item
         for item in wheel_items
-        if isinstance(item, dict)
-        and isinstance(item.get('filename'), str)
-        and item.get('extension_sha256') == extension_sha256
-        and isinstance(item.get('extension_member'), str)
-        and Path(item['extension_member']).name == member_name
-        and isinstance(item.get('sha256'), str)
-        and HEX_DIGEST.fullmatch(item['sha256']) is not None
+        if isinstance(item, Mapping)
+        and item.get('filename') == binding_wheel.get('filename')
+        and item.get('sha256') == binding_wheel.get('archive', {}).get('sha256')
+        and item.get('extension_member') == binding_wheel.get('extension_member')
+        and item.get('extension_sha256') == binding_wheel.get('extension_sha256')
     ]
     if len(matches) != 1:
         raise AssertionError(
-            'benchmark receipt does not uniquely bind the loaded extension archive/member'
+            'benchmark receipt does not uniquely bind the admitted wheel archive/member'
         )
     item = matches[0]
+    wheel_path = binding_wheel.get('path')
+    archive_identity = binding_wheel.get('archive')
+    if (
+        not isinstance(wheel_path, str)
+        or Path(wheel_path).resolve() != expected_wheel_path
+        or not isinstance(archive_identity, Mapping)
+        or archive_identity.get('sha256') != item.get('sha256')
+    ):
+        raise AssertionError('benchmark wheel archive differs from selected receipt')
+    if verify_archive and (
+        not expected_wheel_path.is_file()
+        or sha256_file(expected_wheel_path) != archive_identity.get('sha256')
+    ):
+        raise AssertionError(
+            'benchmark wheel archive bytes differ from selected receipt'
+        )
+    expected_member = item.get('extension_member')
+    if expected_member != binding_wheel.get('extension_member'):
+        raise AssertionError('benchmark wheel member differs from selected receipt')
+    profile = expected_profile
+    if receipt.get('kind') == 'quality':
+        if python_members != raw_receipt.get('python_members'):
+            raise AssertionError('quality Python overlay differs from its receipt')
+    elif dict(python_members) != dict(expected_python_members):
+        raise AssertionError('admitted Python members differ from release wheel')
+    if verify_archive:
+        wheel_inspection = inspect_wheel(
+            expected_wheel_path,
+            release=profile != 'dev',
+            expected_python_members=(
+                expected_python_members if receipt.get('kind') != 'quality' else None
+            ),
+        )
+        extension_members = wheel_inspection['extension_members']
+        if (
+            set(extension_members) != {expected_member}
+            or _sha256_bytes(next(iter(extension_members.values()))) != extension_sha256
+        ):
+            raise AssertionError('admitted extension bytes differ from wheel member')
+    if (
+        Path(extension_path).resolve()
+        != Path(str(distribution['location'])).resolve() / expected_member
+    ):
+        raise AssertionError(
+            'loaded extension is not owned by the selected distribution'
+        )
     return {
         'source_commit': commit,
         'receipt_path': receipt['path'],
@@ -2595,7 +2812,7 @@ assert loaded_optional == [], loaded_optional
 point = gm.Point(21.0, 52.0, crs=4326)
 other = gm.Point(22.0, 52.0, crs=4326)
 projected = point.to_crs(3857)
-assert projected.crs == 'EPSG:3857'
+assert projected.crs == gm.CRS('EPSG:3857')
 assert point.buffer(1000.0).area > 0
 assert gm.distance(point, other) > 0
 info = gm.CRS(4326).info
@@ -2605,8 +2822,8 @@ transformed = gm.crs_transform(4326, 3857, 21.0, 52.0)
 assert np.all(np.isfinite(transformed))
 
 wkb = point.to_wkb(include_srid=True)
-assert gm.from_wkb(wkb).crs == 'EPSG:4326'
-assert gm.from_wkt(point.to_wkt(), crs=4326).crs == 'EPSG:4326'
+assert gm.from_wkb(wkb).crs == gm.CRS('EPSG:4326')
+assert gm.from_wkt(point.to_wkt(), crs=4326).crs == gm.CRS('EPSG:4326')
 geojson = json.loads(point.to_geojson())
 assert gm.from_geojson(geojson).to_wkt() == point.to_wkt()
 
@@ -2626,7 +2843,7 @@ missing = gm.GeometryArray([point, None])
 assert missing.is_missing.tolist() == [False, True]
 assert missing[1] is None
 
-mask = gm.contains_xy(gm.box(20, 51, 22, 53), [21.0, 30.0], [52.0, 52.0])
+mask = gm.contains(gm.box(20, 51, 22, 53), x=[21.0, 30.0], y=[52.0, 52.0])
 assert isinstance(mask, np.ndarray)
 assert mask.flags.writeable is False
 np.testing.assert_array_equal(mask, [True, False])

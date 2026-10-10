@@ -145,10 +145,12 @@ impl PyGeometry {
     /// Coordinates
     ///     Flat, indexable view of vertex coordinates (X/Y and active Z/M).
     #[getter]
-    pub fn coords(&self) -> PyCoordinates {
-        PyCoordinates::new(coordinates::CoordinateView::from_shape(Arc::clone(
-            &self.shape,
-        )))
+    pub fn coords(slf: &Bound<'_, Self>) -> PyCoordinates {
+        let geometry = slf.borrow();
+        PyCoordinates::new(
+            coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape)),
+            slf.clone().unbind().into_any(),
+        )
     }
     /// Total number of coordinates in this geometry.
     ///
@@ -233,13 +235,19 @@ impl PyGeometry {
     /// >>> import gometry as gm
     /// >>> gm.LineString([(0, 0), (1, 1)]).map_coordinates(lambda m: m + 1).to_wkt()
     /// 'LINESTRING (1 1, 2 2)'
-    pub fn map_coordinates(&self, py: Python<'_>, func: &Bound<'_, PyAny>) -> PyResult<Typed> {
-        let coords = PyCoordinates::new(coordinates::CoordinateView::from_shape(Arc::clone(
-            &self.shape,
-        )));
+    pub fn map_coordinates(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        func: &Bound<'_, PyAny>,
+    ) -> PyResult<Typed> {
+        let geometry = slf.borrow();
+        let coords = PyCoordinates::new(
+            coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape)),
+            slf.clone().unbind().into_any(),
+        );
         let replacement = map_coordinates_callback(py, coords, func)?;
-        let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
-        Ok(self.typed_shape(shape))
+        let shape = replace_shape_coordinates(geometry.shape.shape(), &replacement)?;
+        Ok(geometry.typed_shape(shape))
     }
     /// Whether the geometry is empty (no points, rings, or parts).
     ///

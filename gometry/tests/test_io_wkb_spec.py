@@ -6,9 +6,10 @@ import pickle
 import struct
 
 import gometry as gm
-import pyarrow as pa
 import pytest
 from gometry import _lib
+
+pa = pytest.importorskip('pyarrow', reason='pyarrow is an optional Arrow dependency')
 
 
 def _iso_dim(type_code: int) -> int:
@@ -131,12 +132,12 @@ def test_nested_ewkb_srid_accepts_matching_and_rejects_conflict() -> None:
     # GEOMETRYCOLLECTION SRID=4326 containing POINT SRID=4326 — accepted.
     matching = _ewkb(7, 4326, struct.pack('<I', 1) + _ewkb(1, 4326, point_body))
     recovered = gm.from_wkb(matching)
-    assert recovered.crs == 'EPSG:4326'
+    assert recovered.crs == gm.CRS('EPSG:4326')
     assert recovered.to_wkt() == 'GEOMETRYCOLLECTION (POINT (1 2))'
 
     # A nested member with no SRID under an SRID parent is also accepted.
     inherit = _ewkb(7, 4326, struct.pack('<I', 1) + _ewkb(1, None, point_body))
-    assert gm.from_wkb(inherit).crs == 'EPSG:4326'
+    assert gm.from_wkb(inherit).crs == gm.CRS('EPSG:4326')
 
     # Conflicting nested SRID — rejected, naming both codes and the path.
     conflict = _ewkb(7, 4326, struct.pack('<I', 1) + _ewkb(1, 3857, point_body))
@@ -165,12 +166,12 @@ def test_nested_ewkb_srid_zero_is_unknown_before_reconcile() -> None:
         '010700002000000000010000000101000020e6100000000000000000f03f0000000000000040'
     )
     g = gm.from_wkb(outer0_child4326)
-    assert g.crs == 'EPSG:4326'
+    assert g.crs == gm.CRS('EPSG:4326')
     assert g.to_wkt() == 'GEOMETRYCOLLECTION (POINT (1 2))'
 
     outer4326_child0 = _ewkb(7, 4326, struct.pack('<I', 1) + _ewkb(1, 0, point_body))
     g2 = gm.from_wkb(outer4326_child0)
-    assert g2.crs == 'EPSG:4326'
+    assert g2.crs == gm.CRS('EPSG:4326')
     assert g2.to_wkt() == 'GEOMETRYCOLLECTION (POINT (1 2))'
 
     # Sibling stamps: first member SRID 0 (unknown), second establishes 4326.
@@ -182,7 +183,7 @@ def test_nested_ewkb_srid_zero_is_unknown_before_reconcile() -> None:
         + _ewkb(1, 4326, struct.pack('<dd', 3.0, 4.0)),
     )
     g3 = gm.from_wkb(sibling)
-    assert g3.crs == 'EPSG:4326'
+    assert g3.crs == gm.CRS('EPSG:4326')
     assert g3.to_wkt() == 'GEOMETRYCOLLECTION (POINT (1 2), POINT (3 4))'
 
     # Genuine nested conflict still errors (typed ParseError, never panic).
@@ -290,7 +291,7 @@ def test_ewkt_prefix_is_case_insensitive_and_whitespace_tolerant() -> None:
         '\t sRiD=4326; POINT (1 2)',
     ):
         parsed = gm.from_wkt(text)
-        assert parsed.crs == 'EPSG:4326', text
+        assert parsed.crs == gm.CRS('EPSG:4326'), text
         assert parsed.to_wkt() == 'POINT (1 2)', text
 
     # A bare WKT body (no prefix) still parses, unaffected by the trim.

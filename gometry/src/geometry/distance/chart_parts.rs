@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 use std::sync::OnceLock;
 
 use crate::HeapSize;
-use crate::crs::{ChartEdge, PointEdgeScratch};
+use crate::crs::{ChartEdge, POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch};
 use crate::error::Result;
 use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{
@@ -10,8 +10,8 @@ use crate::geographic::{
 };
 use crate::geometry::overlay::overlay_all_geographic_from_with_metric;
 use crate::geometry::{
-    ChartBox, ChartEdgeBvh, ChartMetric, Coordinates as _, FrameDependentCaches, GeodesicMetric,
-    GeographicMetricKey, GeographicPrepared, OverlayOp, Point, PointEdgeQuery,
+    ChartBox, ChartEdgeBvh, ChartMetric, Coordinates as _, DwithinOutcome, FrameDependentCaches,
+    GeodesicMetric, GeographicMetricKey, GeographicPrepared, OverlayOp, Point, PointEdgeQuery,
     PointEdgeQueryResult, PreparedPlan, RunIdentity, Shape, Strictness,
     graph_intersects_data_geographic,
 };
@@ -296,6 +296,9 @@ where
         match metric.point_edge_query(point, &part.edge, envelope_lower, query, scratch)? {
             PointEdgeQueryResult::Minimum(minimum) => {
                 lower_bound = lower_bound.min(minimum.lower_bound);
+                if minimum.distance >= cutoff {
+                    return Ok(None);
+                }
                 let candidate = ChartPairCandidate {
                     distance: minimum.distance,
                     lower_bound: minimum.lower_bound,
@@ -311,7 +314,9 @@ where
                 }
             },
             PointEdgeQueryResult::Excluded => {},
-            PointEdgeQueryResult::Within { .. } | PointEdgeQueryResult::Outside { .. } => {
+            PointEdgeQueryResult::Within { .. }
+            | PointEdgeQueryResult::Outside { .. }
+            | PointEdgeQueryResult::Unresolved { .. } => {
                 unreachable!("minimum chart-edge queries return minima or exclusions")
             },
         }
@@ -484,11 +489,12 @@ pub(crate) fn point_chart_dwithin<M>(
     limit: f64,
     scratch: &mut PointEdgeScratch,
     stack: &mut Vec<(u32, f64)>,
-) -> Result<bool>
+) -> Result<DwithinOutcome>
 where
     M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
 {
     let mut best = limit;
+    let mut outcome = DwithinOutcome::Outside;
     let mut visit_edge = |edge_index: usize, envelope_lower: f64, _best: &mut f64| {
         let part = target
             .edges
@@ -502,16 +508,24 @@ where
             scratch,
         )? {
             PointEdgeQueryResult::Within { evaluations } => {
-                debug_assert!(evaluations <= 128);
+                debug_assert!(evaluations <= POINT_EDGE_EVALUATION_SAFETY_CEILING);
                 Ok(Some(()))
             },
             PointEdgeQueryResult::Outside {
                 lower_bound,
                 evaluations,
-                budget_exhausted,
             } => {
-                debug_assert!(evaluations <= 128);
-                debug_assert!(budget_exhausted || lower_bound > limit);
+                debug_assert!(evaluations <= POINT_EDGE_EVALUATION_SAFETY_CEILING);
+                debug_assert!(lower_bound > limit);
+                Ok(None)
+            },
+            PointEdgeQueryResult::Unresolved {
+                lower_bound,
+                evaluations,
+            } => {
+                debug_assert!(evaluations <= POINT_EDGE_EVALUATION_SAFETY_CEILING);
+                debug_assert!(lower_bound <= limit);
+                outcome = outcome.combine(DwithinOutcome::Unresolved);
                 Ok(None)
             },
             PointEdgeQueryResult::Excluded => Ok(None),
@@ -533,13 +547,13 @@ where
             )?
             .is_some()
         {
-            return Ok(true);
+            return Ok(DwithinOutcome::Within);
         }
     } else if !target.edges.is_empty() {
         let bound = metric.point_envelope_bound(point);
         for (edge_index, part) in target.edges.iter().enumerate() {
             if visit_edge(edge_index, bound(part.bounds), &mut best)?.is_some() {
-                return Ok(true);
+                return Ok(DwithinOutcome::Within);
             }
         }
     }
@@ -548,10 +562,10 @@ where
             continue;
         }
         if metric.segment_length(point, target) <= limit {
-            return Ok(true);
+            return Ok(DwithinOutcome::Within);
         }
     }
-    Ok(false)
+    Ok(outcome)
 }
 
 fn reverse_chart_step(step: ChartStep) -> ChartStep {
@@ -638,17 +652,24 @@ pub(crate) fn chart_dwithin_with_parts<M>(
 where
     M: GeodesicMetric + ChartMetric<PointEdgeScratch = PointEdgeScratch>,
 {
+    let mut outcome = DwithinOutcome::Outside;
     for &point in &left.vertices {
-        if point_chart_dwithin(point, right, metric, limit, scratch, stack)? {
+        outcome = outcome.combine(point_chart_dwithin(
+            point, right, metric, limit, scratch, stack,
+        )?);
+        if outcome == DwithinOutcome::Within {
             return Ok(true);
         }
     }
     for &point in &right.vertices {
-        if point_chart_dwithin(point, left, metric, limit, scratch, stack)? {
+        outcome = outcome.combine(point_chart_dwithin(
+            point, left, metric, limit, scratch, stack,
+        )?);
+        if outcome == DwithinOutcome::Within {
             return Ok(true);
         }
     }
-    Ok(false)
+    outcome.into_bool()
 }
 
 pub(crate) fn chart_nearest_points_with_parts<M>(

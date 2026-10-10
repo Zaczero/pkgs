@@ -305,7 +305,7 @@ def _precondition_prepared_hit_rate() -> None:
     import gometry as gm
 
     data = prepared_polygon_and_probes()
-    mask = gm.contains_xy(data['gm_poly'], data['xs'], data['ys'])
+    mask = gm.contains(data['gm_poly'], x=data['xs'], y=data['ys'])
     rate = float(np.asarray(mask).mean())
     if not (0.40 <= rate <= 0.60):
         raise OracleMismatch(
@@ -823,7 +823,7 @@ def build_points() -> PublicCase:
     )
 
 
-def build_contains_xy() -> PublicCase:
+def build_coordinate_contains() -> PublicCase:
     data = prepared_polygon_and_probes()
     polygon = data['gm_poly']
     sh_poly = data['sh_poly']
@@ -832,7 +832,7 @@ def build_contains_xy() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.contains_xy(polygon, xs, ys)
+        return gm.contains(polygon, x=xs, y=ys)
 
     def competitor_call():
         import shapely
@@ -840,7 +840,7 @@ def build_contains_xy() -> PublicCase:
         return shapely.contains_xy(sh_poly, xs, ys)
 
     _reg(
-        'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
+        'gometry.contains/coordinate_100k_probes_1316_vertex_polygon',
         gometry_call,
     )
     _reg(
@@ -1143,7 +1143,7 @@ def build_coverage_union() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.coverage_union(d['gm'])
+        return gm.coverage_union_all(d['gm'])
 
     def competitor_call():
         import shapely
@@ -1158,8 +1158,8 @@ def build_coverage_union() -> PublicCase:
         if not bool(np.all(shapely.coverage_is_valid(d['sh']))):
             raise OracleMismatch('parcels not coverage-valid on shapely')
 
-    _reg('gometry.coverage_union/10k_edge_matched_parcels', gometry_call)
-    _reg('shapely.coverage_union/10k_edge_matched_parcels', competitor_call)
+    _reg('gometry.coverage_union_all/10k_edge_matched_parcels', gometry_call)
+    _reg('shapely.coverage_union_all/10k_edge_matched_parcels', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
@@ -1874,7 +1874,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.coords.matrix_and_index/100k_vertices': build_coords_matrix_and_index,
     'gometry.points/10k_numpy_xy': build_points,
     'gometry.from_wkt.batch/10k_realistic_mixed_wkt': build_from_wkt,
-    'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon': build_contains_xy,
+    'gometry.contains/coordinate_100k_probes_1316_vertex_polygon': build_coordinate_contains,
     'gometry.intersects/12k_irregular_polygon_point_array': build_intersects_polygon_points,
     'gometry.dwithin/pairwise_10k_50pct_matches': build_dwithin,
     'gometry.area/10k_projected_buildings': build_area,
@@ -1885,7 +1885,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.intersection/pairwise_1k_irregular_polygons': build_intersection,
     'gometry.intersects/pairwise_1k_irregular_polygons': build_intersects_pairs,
     'gometry.union_all/1024_service_areas': build_union_all,
-    'gometry.coverage_union/10k_edge_matched_parcels': build_coverage_union,
+    'gometry.coverage_union_all/10k_edge_matched_parcels': build_coverage_union,
     'gometry.is_valid/10k_mixed_polygons_20pct_invalid': build_is_valid,
     'gometry.repair.linework/1k_invalid_polygons': build_repair,
     'gometry.clip_by_rect/10k_realistic_linework_categories': build_clip_by_rect,

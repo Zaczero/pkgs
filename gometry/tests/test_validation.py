@@ -63,7 +63,7 @@ def test_collapsed_line_is_invalid_and_repairs_to_its_first_coordinate() -> None
     )
     repaired = collapsed.repair()
     assert repaired.to_wkt() == 'POINT ZM (3 4 8 9)'
-    assert repaired.crs == 'EPSG:3857'
+    assert repaired.crs == gm.CRS('EPSG:3857')
     assert repaired.is_valid
 
     values = gm.GeometryArray([
@@ -226,14 +226,14 @@ def test_validation_reports_and_repairs_self_intersecting_polygons() -> None:
     assert planar_repaired.area == pytest.approx(2)
     geographic_bowtie = gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)], crs=4326)
     geographic_repaired = geographic_bowtie.repair()
-    assert geographic_repaired.crs == 'EPSG:4326'
+    assert geographic_repaired.crs == gm.CRS('EPSG:4326')
     assert geographic_repaired.validate().valid
 
 
 def test_repair_accepts_geometry_directly_and_preserves_crs() -> None:
     bowtie = gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)], crs=3857)
     repaired = bowtie.repair()
-    assert repaired.crs == 'EPSG:3857'
+    assert repaired.crs == gm.CRS('EPSG:3857')
     assert repaired.geometry_type == 'MultiPolygon'
     assert repaired.validate().valid
     assert repaired.area == pytest.approx(2)
@@ -249,7 +249,7 @@ def test_rejects_non_finite_coordinates() -> None:
 def test_quantize_preserves_crs_and_rounds_coordinates() -> None:
     point = gm.Point(1.23456, 2.34567, crs=4326).quantize(3)
     values = gm.points([1.23456, 9.87654], [2.34567, 8.76543], crs=4326).quantize(2)
-    assert point.crs == 'EPSG:4326'
+    assert point.crs == gm.CRS('EPSG:4326')
     assert point.coords.to_nested() == [1.235, 2.346]
     assert values[0].coords.to_nested() == [1.23, 2.35]
     assert [geometry.coords.to_nested() for geometry in values] == [
@@ -332,7 +332,7 @@ def test_is_valid_is_uniform_across_scalar_and_array() -> None:
     np.testing.assert_array_equal([bool(report) for report in reports], [True, False])
     assert reports[1].reason
     repaired = bowtie.repair()
-    assert repaired.is_valid and repaired.crs == 'EPSG:4326'
+    assert repaired.is_valid and repaired.crs == gm.CRS('EPSG:4326')
 
 
 @pytest.mark.parametrize('crs', [4326, 'OGC:CRS84'], ids=['epsg4326', 'crs84'])
@@ -654,7 +654,9 @@ def test_repair_is_deterministic() -> None:
     ])
     assert len({bowtie.repair().to_wkt() for _ in range(20)}) == 1
     assert len({bowtie.repair(method='structure').to_wkt() for _ in range(20)}) == 1
-    assert len({'|'.join(gm.polygonize(list(lines)).to_wkt()) for _ in range(20)}) == 1
+    assert (
+        len({'|'.join(gm.polygonize_all(list(lines)).to_wkt()) for _ in range(20)}) == 1
+    )
 
 
 def test_repair_methods_union_distinct_polygon_members() -> None:
@@ -736,12 +738,13 @@ def test_polygonize_assembles_one_universe_across_array_rows() -> None:
         gm.LineString([(1, 0), (1, 1)]),
         gm.LineString([(1, 1), (0, 0)]),
     ])
-    # The free polygonize pools ALL rows' edges into one planar graph, so a ring
+    # The free `polygonize_all` pools ALL rows' edges into one planar graph, so a ring
     # closes from edges spread across rows.
-    polygons = gm.polygonize(lines)
-    assert gm.polygonize(lines[0]) == lines[0].polygonize()
+    polygons = gm.polygonize_all(lines)
+    assert gm.polygonize_all(lines[0]) == lines[0].polygonize()
     assert (
-        gm.polygonize_full(lines[0]).polygons == gm.polygonize_full([lines[0]]).polygons
+        gm.polygonize_all(lines[0], diagnostics=True).polygons
+        == gm.polygonize_all([lines[0]], diagnostics=True).polygons
     )
     assert len(polygons) == 1
     assert polygons[0].area == pytest.approx(0.5)
@@ -750,8 +753,10 @@ def test_polygonize_assembles_one_universe_across_array_rows() -> None:
     per_row = lines.polygonize()
     assert isinstance(per_row, gm.Groups)
     assert [len(per_row[i]) for i in range(len(per_row))] == [0, 0, 0]
-    # The free full variant uses the same explicit pooled ownership.
-    full_polygons, cuts, dangles, invalid = gm.polygonize_full(lines)
+    # Diagnostics preserve the pooled polygons and add source-row linework.
+    result = gm.polygonize_all(lines, diagnostics=True)
+    full_polygons, cuts, dangles, invalid = result
+    assert result.polygons == polygons
     assert len(full_polygons) == 1
     assert [sum(len(row) for row in groups) for groups in (cuts, dangles, invalid)] == [
         0,
@@ -761,8 +766,8 @@ def test_polygonize_assembles_one_universe_across_array_rows() -> None:
     assert not hasattr(lines, 'polygonize_full')
 
     masked = gm.GeometryArray([lines[0], None, lines[1], lines[2]])
-    assert gm.polygonize(masked) == polygons
-    assert gm.polygonize_full(masked).polygons == full_polygons
+    assert gm.polygonize_all(masked) == polygons
+    assert gm.polygonize_all(masked, diagnostics=True).polygons == full_polygons
 
 
 def test_polygonize_auto_nodes_crossing_linework() -> None:
@@ -785,7 +790,7 @@ def test_polygonize_full_groups_noded_diagnostics_by_source_row() -> None:
     square = gm.LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
     crossing = gm.LineString([(-1, 1), (3, 1)])
 
-    result = gm.polygonize_full(gm.GeometryArray([square, crossing]))
+    result = gm.polygonize_all(gm.GeometryArray([square, crossing]), diagnostics=True)
 
     assert len(result.dangles) == 2
     assert len(result.dangles[0]) == 0
@@ -807,7 +812,9 @@ def test_polygonize_full_diagnostic_rows_scope_conflicting_z_and_empty_rows() ->
     missing = None
     second = gm.from_wkt('LINESTRING Z (0 0 99, -1 0 100)')
 
-    result = gm.polygonize_full(gm.GeometryArray([first, missing, second]))
+    result = gm.polygonize_all(
+        gm.GeometryArray([first, missing, second]), diagnostics=True
+    )
 
     assert len(result.dangles) == 3
     assert len(result.dangles[0]) == 1
@@ -829,7 +836,9 @@ def test_polygonize_full_diagnostic_rows_scope_mixed_axes() -> None:
     z_line = gm.from_wkt('LINESTRING Z (0 0 1, 1 0 2)')
     m_line = gm.from_wkt('LINESTRING M (0 0 10, -1 0 20)')
 
-    result = gm.polygonize_full(gm.GeometryArray([z_line, None, m_line]))
+    result = gm.polygonize_all(
+        gm.GeometryArray([z_line, None, m_line]), diagnostics=True
+    )
 
     assert len(result.dangles) == 3
     assert result.dangles[0][0].coordinate_axes == 'XYZ'
@@ -863,7 +872,7 @@ def test_pickle_and_copy_round_trip_all_data_types() -> None:
     packed = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326, epoch=2020.5)
     restored_packed = pickle.loads(pickle.dumps(packed))
     assert list(restored_packed) == list(packed)
-    assert (restored_packed.crs, restored_packed.epoch) == ('EPSG:4326', 2020.5)
+    assert (restored_packed.crs, restored_packed.epoch) == (gm.CRS('EPSG:4326'), 2020.5)
     assert restored_packed.to_arrow().type.extension_name == 'geoarrow.point'
     lines = gm.GeometryArray(
         [
@@ -874,7 +883,7 @@ def test_pickle_and_copy_round_trip_all_data_types() -> None:
     )
     restored_lines = pickle.loads(pickle.dumps(lines))
     assert list(restored_lines) == list(lines)
-    assert restored_lines.crs == 'EPSG:4326'
+    assert restored_lines.crs == gm.CRS('EPSG:4326')
     assert restored_lines.to_arrow().type.extension_name == 'geoarrow.linestring'
     polygons = gm.GeometryArray(
         [
@@ -888,7 +897,10 @@ def test_pickle_and_copy_round_trip_all_data_types() -> None:
     )
     restored_polygons = pickle.loads(pickle.dumps(polygons))
     assert [str(item) for item in restored_polygons] == [str(item) for item in polygons]
-    assert (restored_polygons.crs, restored_polygons.epoch) == ('EPSG:4326', 2020.5)
+    assert (restored_polygons.crs, restored_polygons.epoch) == (
+        gm.CRS('EPSG:4326'),
+        2020.5,
+    )
     assert restored_polygons.to_arrow().type.extension_name == 'geoarrow.polygon'
     mixed = gm.GeometryArray([gm.box(0, 0, 1, 1, crs=4326), gm.Point(2, 3, crs=4326)])
     assert list(pickle.loads(pickle.dumps(mixed))) == list(mixed)
@@ -928,7 +940,7 @@ def test_self_intersections_reports_every_nonsimple_node() -> None:
     assert [(p.x, p.y) for p in pinched.self_intersections()] == [(1.0, 1.0)]
     ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 0)], crs=4326)
     assert len(ring.self_intersections()) == 0
-    assert ring.self_intersections().crs == 'EPSG:4326'
+    assert ring.self_intersections().crs == gm.CRS('EPSG:4326')
     assert len(gm.Point(1, 1).self_intersections()) == 0
     assert len(gm.from_wkt('LINESTRING EMPTY').self_intersections()) == 0
     battery = [

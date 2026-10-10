@@ -15,13 +15,17 @@ and are not reproduced here.
 ## Producing a run
 
 ```bash title="template: replace <run> with the directory printed by the first command"
-uv run python benches/drivers/bench.py --profile release
+uv run python benches/drivers/bench.py --profile release --gometry-receipt <release-or-runner-receipt>
 uv run python benches/drivers/bench.py --publish target/bench/results/<run>/run.json
 ```
 
 Measurement writes raw artifacts and a run manifest under `target/` and never
-touches tracked files. Publication validates that one run — complete, release
-profile, oracle passed, every block measured the recorded build — and rewrites
+touches tracked files. Smoke runs default to this worktree's
+`target/quality-runtime/receipt.json`; release runs must select an existing
+release manifest or runner receipt. The driver never prepares a missing runtime.
+DEV quality receipts are diagnostic subjects and cannot publish release results.
+Publication validates that one run — complete, release profile, oracle passed,
+every block measured the recorded build — and rewrites
 `benches/results/current/summary.md`, the table above. Git versions the table;
 the raw evidence stays with the run.
 
@@ -44,11 +48,25 @@ the margin, `similar` requires it to sit inside, and anything else is
 counts, missingness, types, axes, coordinates, and topology, so a wrong answer
 cannot be published as a fast one.
 
-Runs record the exact interpreter, extension digest, build profile, dependency
-lock, and native-library identity for both implementations, along with the
-host's CPU, governor, cache topology, and memory policy. A host fact the
-kernel does not expose stays recorded as unavailable rather than becoming a
-claim about some other machine.
+Each measured process admits its selected receipt before importing Gometry.
+The driver checks the process's ready record before allowing its first timed
+operation; an import-path fallback, a different worktree facade, or an extension
+whose bytes do not match the receipt's wheel member is rejected. The process
+identity binds its interpreter and ABI, build profile, Python package members
+and distribution owner, native extension, wheel archive, and receipt digest.
+A null producer commit leaves source attribution unknown but still requires
+those exact byte bindings. Per-invocation process IDs identify the observation;
+they are not treated as stable producer identity.
+
+The operation timers begin after admission and setup. `bench_ab.py --perf`
+attaches user-mode counters to the case's main thread for one interval per
+invocation, from permission until the case reports measurement-done. Existing
+case repetitions stay within that interval; split event groups use separate
+invocations. Counter records are diagnostic, never release latency. An
+unavailable event remains explicitly marked unavailable with a null value.
+Runs also record the host's CPU, governor, cache topology, and memory policy. A
+host fact the kernel does not expose stays recorded as unavailable rather than
+becoming a claim about some other machine.
 
 ## See Also
 

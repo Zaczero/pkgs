@@ -18,7 +18,14 @@ def _subject(
     prose: str,
     parameters: tuple[inspect.Parameter, ...] = (),
     *,
-    kind: Literal['callable', 'property', 'constructor', 'class'] = 'callable',
+    kind: Literal[
+        'callable',
+        'property',
+        'constructor',
+        'class',
+        'attribute',
+        'schema',
+    ] = 'callable',
 ):
     return coverage.DocSubject(
         qualname,
@@ -27,6 +34,17 @@ def _subject(
         parameters,
         DocLocation('src/test.rs', 1),
     )
+
+
+@pytest.mark.parametrize('kind', ['attribute', 'schema'])
+def test_typed_fields_do_not_receive_operation_raises_policy(kind: str) -> None:
+    subject = _subject(
+        'GeometryArray.buffer',
+        'A typed field whose name happens to match an operation.',
+        kind=kind,
+    )
+
+    assert coverage.check_subject_raises(subject) == []
 
 
 def test_empty_raises_description_is_reported_from_parsed_entries() -> None:
@@ -119,7 +137,8 @@ def test_required_exception_missing_from_raises_is_reported() -> None:
     )
 
     assert coverage.check_subject_raises(subject) == [
-        'intersects: Raises must document CRSMismatchError (fallible-family contract)'
+        'intersects: Raises must document CRSMismatchError (fallible-family contract)',
+        'intersects: Raises must document InvalidGeometryError (fallible-family contract)',
     ]
 
 

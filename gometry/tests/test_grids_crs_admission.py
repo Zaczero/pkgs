@@ -65,7 +65,7 @@ def test_a2_s2_bbox_antimeridian_not_full_equator():
     for cover, budget in (
         (gm.s2_cover, {'level': 8, 'max_cells': None}),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -74,7 +74,7 @@ def test_a2_s2_bbox_antimeridian_not_full_equator():
             },
         ),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -298,7 +298,7 @@ def _dynamic_grid_source() -> tuple[gm.Geometry, gm.Geometry]:
         (gm.h3_cover, {'resolution': 7}),
         (gm.s2_cover, {'level': 12}),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {'min_level': 12, 'max_level': 12, 'target_cells': 8},
         ),
         (gm.geohash_cover, {'precision': 8}),

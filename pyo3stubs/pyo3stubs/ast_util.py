@@ -55,6 +55,32 @@ def _runtime_doc_for_stub(name: str, obj: object) -> str | None:
     return doc
 
 
+def passive_class_member(cls: type, name: str) -> object | None:
+    """Select a class member without invoking an arbitrary descriptor.
+
+    Plain functions are already unbound declarations. Standard staticmethod
+    and classmethod wrappers are unwrapped to their functions; known native
+    callable descriptors and properties remain raw. User-defined descriptors
+    are not bound or inspected as callables.
+    """
+    member = inspect.getattr_static(cls, name, None)
+    if isinstance(member, (staticmethod, classmethod)):
+        member = member.__func__
+    if isinstance(
+        member,
+        (
+            types.FunctionType,
+            types.BuiltinFunctionType,
+            types.MethodDescriptorType,
+            types.WrapperDescriptorType,
+            types.ClassMethodDescriptorType,
+            property,
+        ),
+    ):
+        return member
+    return None
+
+
 def decorator_names(
     node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
 ) -> set[str]:

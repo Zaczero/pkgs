@@ -7,8 +7,12 @@ from pathlib import Path
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -18,7 +22,7 @@ TEXT = (
 
 
 def parse(text: str = TEXT) -> object:
-    features = gm.from_features(text)
+    features = gm.from_geojson(text, features=True)
     assert len(features.geometries) == len(features.properties) == len(features.ids)
     return features
 
@@ -26,6 +30,7 @@ def parse(text: str = TEXT) -> object:
 def main() -> None:
     features = parse()
     count = len(features.geometries)
+    prepare_measurement()
     started = time.perf_counter()
     for _ in range(12):
         parse()

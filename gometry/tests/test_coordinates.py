@@ -203,6 +203,29 @@ def test_coordinates_equality_tracks_selected_layouts() -> None:
     assert padded != xy
 
 
+def test_coordinates_equality_uses_python_float_equality_for_signed_zero() -> None:
+    positive = gm.points([0.0, 1.0], [0.0, 2.0]).coords
+    negative = gm.points([-0.0, 1.0], [0.0, 2.0]).coords
+
+    assert positive == [(0.0, 0.0), (1.0, 2.0)]
+    assert negative == positive
+    assert positive == negative
+    assert negative == [(0.0, 0.0), (1.0, 2.0)]
+
+
+def test_coordinates_support_numeric_numpy_ufuncs() -> None:
+    coords = gm.LineString([(0.0, 1.0), (2.0, 3.0)]).coords
+
+    np.testing.assert_array_equal(np.isfinite(coords), [[True, True], [True, True]])
+    np.testing.assert_array_equal(np.add(coords, 1.0), [[1.0, 2.0], [3.0, 4.0]])
+    np.testing.assert_array_equal(np.add.reduce(coords, axis=0), [2.0, 4.0])
+
+    matrix = np.asarray(coords)
+    assert matrix.flags.writeable is False
+    with pytest.raises(ValueError, match='read-only'):
+        np.add(coords, 1.0, out=matrix)
+
+
 def test_coordinates_equality_propagates_type_errors_after_iterator_admission() -> None:
     coords = gm.Point(1.0, 2.0).coords
     iteration_error = TypeError('coordinates provider failed after one row')
@@ -296,7 +319,7 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
     assert parts.offsets.tolist() == [0, 1, 2]
     assert [row.to_wkt() for row in parts[0]] == ['POINT (9 9)']
     assert [row.to_wkt() for row in parts[1]] == [values[1].to_wkt()]
-    assert [ring.crs for ring in rings] == ['EPSG:4326', 'EPSG:4326']
+    assert [ring.crs for ring in rings] == [gm.CRS('EPSG:4326')] * 2
     assert [ring.to_wkt() for ring in list(rings)] == [
         'LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)',
         'LINESTRING (1 1, 3 1, 3 3, 1 3, 1 1)',
@@ -1097,6 +1120,79 @@ def test_with_coordinates_nullable_polygon_error_uses_logical_row() -> None:
     assert error.value.__notes__ == ['while processing array element 3']
 
 
+@pytest.mark.parametrize(
+    ('selection', 'expected_row'),
+    [
+        pytest.param('identity', 3, id='identity-row-3'),
+        pytest.param('gather', 2, id='gather-row-2'),
+        pytest.param('reverse', 0, id='reverse-row-0'),
+    ],
+)
+@pytest.mark.parametrize(
+    ('ring_end', 'ordinate'),
+    [
+        pytest.param(3, 0, id='shell-x'),
+        pytest.param(7, 0, id='hole-x'),
+        pytest.param(3, 2, id='shell-m'),
+        pytest.param(7, 2, id='hole-m'),
+    ],
+)
+@pytest.mark.parametrize(
+    'operation',
+    ['with_coordinates', 'map_coordinates'],
+    ids=['replacement', 'callback'],
+)
+def test_with_coordinates_mixed_nullable_present_empty_replacement_reports_gathered_row(
+    selection: str, expected_row: int, ring_end: int, ordinate: int, operation: str
+) -> None:
+    polygon = gm.from_wkt(
+        'POLYGON M ((0 0 11, 4 0 12, 4 4 13, 0 0 11), (1 1 21, 2 1 22, 2 2 23, 1 1 21))'
+    )
+    source = gm.GeometryArray([
+        None,
+        gm.from_wkt('POLYGON M EMPTY'),
+        None,
+        polygon,
+        polygon,
+    ])
+    match selection:
+        case 'identity':
+            selected = source
+        case 'gather':
+            selected = source[[0, 1, 4, 3]]
+        case 'reverse':
+            selected = source[::-1]
+
+    opened = np.asarray(selected.coords).copy()
+    opened[ring_end, ordinate] += 0.5
+
+    def replace() -> gm.GeometryArray:
+        if operation == 'with_coordinates':
+            return selected.with_coordinates(opened)
+        return selected.map_coordinates(lambda _coordinates: opened.copy())
+
+    with pytest.raises(gm.InvalidGeometryError) as error:
+        replace()
+
+    assert str(error.value) == 'polygon ring must be closed'
+    assert error.value.__notes__ == [f'while processing array element {expected_row}']
+
+
+def test_mixed_coordinate_replacement_length_error_has_no_row_note() -> None:
+    polygon = gm.from_wkt(
+        'POLYGON M ((0 0 11, 4 0 12, 4 4 13, 0 0 11), (1 1 21, 2 1 22, 2 2 23, 1 1 21))'
+    )
+    array = gm.GeometryArray([None, gm.from_wkt('POLYGON M EMPTY'), polygon])
+    coordinates = np.asarray(array.coords)
+
+    with pytest.raises(
+        gm.InvalidGeometryError, match='coordinates must have length'
+    ) as error:
+        array.with_coordinates(coordinates[:-1])
+
+    assert not getattr(error.value, '__notes__', [])
+
+
 def test_with_coordinates_nullable_polygon_carries_measure_columns() -> None:
     first = gm.from_wkt('POLYGON M ((0 0 10, 1 0 20, 1 1 30, 0 1 40, 0 0 10))')
     second = gm.from_wkt('POLYGON M ((2 2 50, 3 2 60, 3 3 70, 2 3 80, 2 2 50))')
@@ -1110,6 +1206,9 @@ def test_with_coordinates_nullable_polygon_carries_measure_columns() -> None:
     out = array.with_coordinates(x=xs, y=ys)
 
     assert out.is_missing.tolist() == [True, False, True, False]
+    np.testing.assert_array_equal(
+        out.coords.x, [0.0, 1.5, 1.0, 0.0, 0.0, 2.0, 3.5, 3.0, 2.0, 2.0]
+    )
     np.testing.assert_array_equal(
         out.coords.m, [10, 20, 30, 40, 10, 50, 60, 70, 80, 50]
     )

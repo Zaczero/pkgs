@@ -1,6 +1,7 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
+use crate::array::StreamingShapes;
 use crate::crs::frame::Frame;
 use crate::geometry::storage::{ArrayRows, ValidityMask};
 use crate::geometry::{Bounds, Shape};
@@ -137,7 +138,7 @@ impl BulkElement for Shape {
     }
 
     fn bulk_into_py(values: Vec<Self>, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>> {
-        Ok(PyGeometryArray::from_shapes(values, frame.clone())?
+        Ok(shape_results_array(values, frame, None)?
             .into_pyobject(py)?
             .unbind()
             .into())
@@ -153,10 +154,79 @@ impl BulkElement for Shape {
         frame: &Frame,
         missing: Option<&ValidityMask>,
     ) -> PyResult<Py<PyAny>> {
-        Ok(PyGeometryArray::from_shapes(values, frame.clone())?
-            .with_missing_mask(missing.cloned())?
+        Ok(shape_results_array(values, frame, missing)?
             .into_pyobject(py)?
             .unbind()
             .into())
+    }
+}
+
+fn shape_results_array(
+    values: Vec<Shape>,
+    frame: &Frame,
+    missing: Option<&ValidityMask>,
+) -> crate::error::Result<PyGeometryArray> {
+    let mut rows = StreamingShapes::with_capacity(0, values.len());
+    rows.try_extend_shapes(values, missing)?;
+    rows.finish(frame.clone())
+}
+
+#[cfg(test)]
+mod shape_streaming_tests {
+    use super::{BulkElement, shape_results_array};
+    use crate::array::LogicalRow;
+    use crate::crs::frame::Frame;
+    use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
+    use crate::geometry::{CoordinateAxes, GeometryKind, Shape};
+
+    #[test]
+    fn measured_nullable_lines_stay_packed_after_bulk_publication() {
+        let first = crate::io::parse_wkt("LINESTRING M (0 0 10, 1 0 20, 2 0 30)")
+            .expect("first measured line");
+        let second = crate::io::parse_wkt("LINESTRING M (3 0 40, 4 0 50, 5 0 60)")
+            .expect("second measured line");
+        let missing = ValidityMask::from_vec(3, vec![false, true, false]).expect("mask");
+        let array = shape_results_array(
+            vec![first, <Shape as BulkElement>::missing_value(), second],
+            &Frame::None,
+            Some(&missing),
+        )
+        .expect("shape rows publish");
+
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords, offsets, ..
+        }) = array.storage()
+        else {
+            panic!("homogeneous measured lines stay packed");
+        };
+        assert_eq!(coords.ms(), Some(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0][..]));
+        assert_eq!(offsets.as_slice(), &[0, 3, 3, 6]);
+        assert!(array.is_row_missing(1));
+    }
+
+    #[test]
+    fn bulk_publication_keeps_present_typed_empty_when_mixed() {
+        let empty = Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XY);
+        let missing = ValidityMask::from_vec(2, vec![false, true]).expect("mask");
+        let array = shape_results_array(
+            vec![empty.clone(), <Shape as BulkElement>::missing_value()],
+            &Frame::None,
+            Some(&missing),
+        )
+        .expect("empty polygon remains present");
+
+        assert!(matches!(array.storage(), GeometryArrayStorage::Mixed(_)));
+        let Some(LogicalRow::Present { row, .. }) = array.logical_row(0) else {
+            panic!("typed empty polygon remains present");
+        };
+        assert_eq!(
+            row.with_shape(Clone::clone)
+                .expect("typed empty polygon row"),
+            empty
+        );
+        assert!(matches!(
+            array.logical_row(1),
+            Some(LogicalRow::Missing { .. })
+        ));
     }
 }

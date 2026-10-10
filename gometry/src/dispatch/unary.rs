@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use crate::array::{ArrayRow, ArrayRowOperation};
+use crate::array::{ArrayRow, ArrayRowOperation, StreamingShapes};
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_input, expected_geometry_or_array,
     rows_err,
@@ -245,6 +245,95 @@ fn execute_unary_rows<T: BulkElement>(
     })
 }
 
+fn execute_unary_shape_rows(
+    py: Python<'_>,
+    array: PyGeometryArray,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    mode: UnaryRowMode,
+    kernel: impl Fn(
+        &PreparedPlan,
+        &CachelessRowContext<'_>,
+        &mut ArrayRowOperation<'_>,
+    ) -> Result<Shape>
+    + Send
+    + Sync,
+) -> std::result::Result<StreamingShapes, (usize, crate::error::Error)> {
+    py.detach(move || {
+        let mut rows = array.row_operation();
+        let mut output = StreamingShapes::with_capacity(0, array.len());
+        for row in rows.rows_with_missing(Shape::empty_point) {
+            let (logical, result) = match row {
+                ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
+                ArrayRow::Present(present) => {
+                    let row_index = present.logical();
+                    let shape_row = present.row();
+                    let ctx = CachelessRowContext {
+                        frame: &array.frame,
+                        domain,
+                        metric,
+                        lane: Lane::Array(row_index),
+                    };
+                    let data = match mode {
+                        UnaryRowMode::ShapeOnly => crate::array::PreparedRow::transient(shape_row),
+                        UnaryRowMode::Prepared => rows.prepared_at(row_index, shape_row),
+                    };
+                    let result = match data {
+                        Ok(data) => {
+                            kernel(&data, &ctx, &mut rows).and_then(|shape| output.try_push(shape))
+                        },
+                        Err(error) => Err(error),
+                    };
+                    (row_index, result)
+                },
+            };
+            result.map_err(|error| (logical, error))?;
+        }
+        Ok(output)
+    })
+}
+
+fn run_unary_shape_rows(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    resolver: super::metric::MetricResolver,
+    mode: UnaryRowMode,
+    kernel: impl Fn(
+        &PreparedPlan,
+        &CachelessRowContext<'_>,
+        &mut ArrayRowOperation<'_>,
+    ) -> Result<Shape>
+    + Send
+    + Sync,
+) -> PyResult<PyGeometryArray> {
+    let frame = array.frame.clone();
+    let rows = match resolver {
+        MetricResolver::None => {
+            let domain = crate::geometry::topology_domain(&frame)?;
+            execute_unary_shape_rows(py, array.clone(), domain, MetricCtx::None, mode, kernel)
+                .map_err(rows_err)?
+        },
+        resolver @ (MetricResolver::Antimeridian
+        | MetricResolver::Metric { .. }
+        | MetricResolver::Metric3d { .. }
+        | MetricResolver::GeographicCarry) => {
+            let mut metric_scratch = MetricScratch::default();
+            let result = match resolver.resolve_topology_ctx(&frame, &mut metric_scratch) {
+                Ok((domain, metric)) => {
+                    execute_unary_shape_rows(py, array.clone(), domain, metric, mode, kernel)
+                },
+                Err(error) => {
+                    drop(metric_scratch);
+                    return Err(error);
+                },
+            };
+            drop(metric_scratch);
+            result.map_err(rows_err)?
+        },
+    };
+    rows.finish(frame).map_err(PyErr::from)
+}
+
 /// The per-row unary lane shared by every array return type: resolve the
 /// metric once, run the kernel over each row inside one ``py.detach``.
 fn run_unary_rows<T: BulkElement>(
@@ -317,27 +406,26 @@ pub(crate) fn unary_array_shapes(
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return result;
     }
-    let (shapes, frame) = run_unary_rows(
+    run_unary_shape_rows(
         py,
         array,
         resolver,
         unary_row_mode(op),
         move |data, ctx, _rows| kernel(data, ctx),
-    )?;
-    Ok(PyGeometryArray::from_shapes(shapes, frame)?.with_missing_mask(array.missing().cloned())?)
+    )
 }
 
-pub(crate) fn unary_scalar_linref_shape(
+fn execute_scalar_linref<R: Send>(
     py: Python<'_>,
     geometry: &PyGeometry,
     op: Operation,
     resolver: super::metric::MetricResolver,
-    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
-) -> PyResult<Typed> {
-    let frame = geometry.frame.clone();
+    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<R> + Send,
+) -> PyResult<R> {
+    let frame = &geometry.frame;
     let mut scratch = MetricScratch::default();
     let result = {
-        let metric = match resolver.resolve_ctx(&frame, &mut scratch) {
+        let metric = match resolver.resolve_ctx(frame, &mut scratch) {
             Ok(metric) => metric,
             Err(error) => {
                 drop(scratch);
@@ -363,8 +451,40 @@ pub(crate) fn unary_scalar_linref_shape(
         py.detach(move || kernel(&plan, &row))
     };
     drop(scratch);
-    let shape = result?;
+    Ok(result?)
+}
+
+pub(crate) fn unary_scalar_linref_shape(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    op: Operation,
+    resolver: super::metric::MetricResolver,
+    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
+) -> PyResult<Typed> {
+    let frame = geometry.frame.clone();
+    let shape = execute_scalar_linref(py, geometry, op, resolver, kernel)?;
     Ok(Typed(PyGeometry::with_frame(shape, frame)))
+}
+
+/// Evaluate several stations on one scalar geometry while sharing its
+/// prepared plan and metric context. Each station remains on the scalar lane,
+/// so invalid M support keeps the same error behavior as one scalar call.
+pub(crate) fn unary_scalar_linref_column(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    op: Operation,
+    resolver: super::metric::MetricResolver,
+    stations: Vec<f64>,
+    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>, f64) -> Result<Shape> + Send,
+) -> PyResult<PyGeometryArray> {
+    let frame = geometry.frame.clone();
+    let shapes = execute_scalar_linref(py, geometry, op, resolver, move |plan, row| {
+        stations
+            .into_iter()
+            .map(|station| kernel(plan, row, station))
+            .collect::<Result<Vec<_>>>()
+    })?;
+    Ok(PyGeometryArray::from_shapes(shapes, frame)?)
 }
 
 pub(crate) fn unary_array_linref_shapes(
@@ -389,46 +509,48 @@ pub(crate) fn unary_array_linref_with_model(
     model: &crate::crs::MetricModel,
     kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
-    let output_frame = array.frame.clone();
-    let output_missing = array.missing().cloned();
+    let frame = array.frame.clone();
     let array = array.clone();
     let result = py.detach(move || {
         let mut rows = array.row_operation();
+        let mut output = StreamingShapes::with_capacity(0, array.len());
         let mut resolved = None;
-        rows.rows_with_missing(Shape::empty_point)
-            .map(|row| {
-                let ArrayRow::Present(present) = row else {
-                    return Ok(Shape::empty_point());
-                };
-                let row_index = present.logical();
-                let shape = present.row();
-                let data = crate::array::PreparedRow::transient(shape)?;
-                let cache = rows.frame_cache(row_index);
-                if let crate::crs::MetricModel::Geodesic { frame, .. } = model {
-                    crate::geometry::GeographicPrepared::try_new(&data, &cache, *frame)?;
-                }
-                if resolved.is_none() {
-                    resolved = Some(crate::crs::ResolvedMetric::from_model(model)?);
-                }
-                let row = LinearReferenceRow {
-                    lane: Lane::Array(row_index),
-                    metric: resolved
-                        .as_ref()
-                        .expect("a present linear-reference row resolves its metric"),
-                    cache: &cache,
-                };
-                kernel(&data, &row)
-            })
-            .collect_rows()
+        for row in rows.rows_with_missing(Shape::empty_point) {
+            let (logical, result) = match row {
+                ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
+                ArrayRow::Present(present) => {
+                    let row_index = present.logical();
+                    let shape = present.row();
+                    let result = crate::array::PreparedRow::transient(shape)
+                        .and_then(|data| {
+                            let cache = rows.frame_cache(row_index);
+                            if let crate::crs::MetricModel::Geodesic { frame, .. } = model {
+                                crate::geometry::GeographicPrepared::try_new(
+                                    &data, &cache, *frame,
+                                )?;
+                            }
+                            if resolved.is_none() {
+                                resolved = Some(crate::crs::ResolvedMetric::from_model(model)?);
+                            }
+                            let row = LinearReferenceRow {
+                                lane: Lane::Array(row_index),
+                                metric: resolved
+                                    .as_ref()
+                                    .expect("a present linear-reference row resolves its metric"),
+                                cache: &cache,
+                            };
+                            kernel(&data, &row)
+                        })
+                        .and_then(|shape| output.try_push(shape));
+                    (row_index, result)
+                },
+            };
+            result.map_err(|error| (logical, error))?;
+        }
+        Ok(output)
     });
-    let shapes = match result {
-        Ok(shapes) => shapes,
-        Err(error) => {
-            drop(output_missing);
-            return Err(rows_err(error));
-        },
-    };
-    Ok(PyGeometryArray::from_shapes(shapes, output_frame)?.with_missing_mask(output_missing)?)
+    let output = result.map_err(rows_err)?;
+    output.finish(frame).map_err(PyErr::from)
 }
 
 /// Geometry-returning array lane for constructive operations whose generated
@@ -468,40 +590,43 @@ pub(crate) fn unary_array_shapes_budgeted(
             return Err(error);
         },
     };
-    let missing = array.missing().cloned();
     let array = array.clone();
     let result = {
         py.detach(move || {
             let mut rows = array.row_operation();
-            rows.rows_with_missing(Shape::empty_point)
-                .map(|row| {
-                    let ArrayRow::Present(present) = row else {
-                        return Ok(Shape::empty_point());
-                    };
-                    let row = present.logical();
-                    let shape_row = present.row();
-                    let ctx = CachelessRowContext {
-                        frame: &frame,
-                        domain,
-                        metric,
-                        lane: Lane::Array(row),
-                    };
-                    let data = rows.prepared_at(row, shape_row)?;
-                    let mut budget = crate::geometry::ExpansionBudget::new(op.name(), parameter);
-                    kernel(&data, &ctx, &mut budget)
-                })
-                .collect_rows()
+            let mut output = StreamingShapes::with_capacity(0, array.len());
+            for row in rows.rows_with_missing(Shape::empty_point) {
+                let (logical, result) = match row {
+                    ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
+                    ArrayRow::Present(present) => {
+                        let row = present.logical();
+                        let shape_row = present.row();
+                        let ctx = CachelessRowContext {
+                            frame: &frame,
+                            domain,
+                            metric,
+                            lane: Lane::Array(row),
+                        };
+                        let result = match rows.prepared_at(row, shape_row) {
+                            Ok(data) => {
+                                let mut budget =
+                                    crate::geometry::ExpansionBudget::new(op.name(), parameter);
+                                kernel(&data, &ctx, &mut budget)
+                                    .and_then(|shape| output.try_push(shape))
+                            },
+                            Err(error) => Err(error),
+                        };
+                        (row, result)
+                    },
+                };
+                result.map_err(|error| (logical, error))?;
+            }
+            Ok(output)
         })
     };
     drop(metric_scratch);
-    let shapes = match result {
-        Ok(shapes) => shapes,
-        Err(error) => {
-            drop(missing);
-            return Err(rows_err(error));
-        },
-    };
-    Ok(PyGeometryArray::from_shapes(shapes, output_frame)?.with_missing_mask(missing)?)
+    let output = result.map_err(rows_err)?;
+    output.finish(output_frame).map_err(PyErr::from)
 }
 
 /// Unified unary scalar/array dispatch: classify once, resolve metric once,
@@ -526,5 +651,200 @@ pub(crate) fn dispatch_unary<R: BulkElement>(
             R::into_py(result, py, &frame)
         },
         Many(array) => unary_array(py, array, op, unit, packed, kernel),
+    }
+}
+
+#[cfg(test)]
+mod shape_streaming_tests {
+    use super::*;
+    use crate::array::LogicalRow;
+    use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
+
+    fn nullable_measured_lines() -> PyGeometryArray {
+        let present = PyGeometryArray::from_shapes(
+            vec![
+                crate::io::parse_wkt("LINESTRING M (0 0 10, 1 0 20, 2 0 30)")
+                    .expect("first measured line"),
+                crate::io::parse_wkt("LINESTRING M (3 0 40, 4 0 50, 5 0 60)")
+                    .expect("second measured line"),
+            ],
+            Frame::None,
+        )
+        .expect("homogeneous lines pack");
+        PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(3, vec![false, true, false]).expect("mask"),
+        )
+        .expect("nullable lines admit")
+    }
+
+    #[test]
+    fn unary_shape_stream_keeps_nullable_measured_lines_packed() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let array = nullable_measured_lines();
+            let output =
+                unary_array_shapes(py, &array, Operation::Translate, None, None, |plan, _| {
+                    Ok(plan.shape().clone())
+                })
+                .expect("unary shape stream");
+
+            let GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords, offsets, ..
+            }) = output.storage()
+            else {
+                panic!("homogeneous nullable lines stay packed");
+            };
+            assert_eq!(coords.ms(), Some(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0][..]));
+            assert_eq!(offsets.as_slice(), &[0, 3, 3, 6]);
+            assert!(output.is_row_missing(1));
+        });
+    }
+
+    #[test]
+    fn unary_linref_stream_keeps_nullable_measured_lines_packed() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let array = nullable_measured_lines();
+            let output = unary_array_linref_with_model(
+                py,
+                &array,
+                &crate::crs::MetricModel::COORDINATE,
+                |plan, _| Ok(plan.shape().clone()),
+            )
+            .expect("linear-reference shape stream");
+
+            let GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords, offsets, ..
+            }) = output.storage()
+            else {
+                panic!("homogeneous nullable linear-reference lines stay packed");
+            };
+            assert_eq!(coords.ms(), Some(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0][..]));
+            assert_eq!(offsets.as_slice(), &[0, 3, 3, 6]);
+            assert!(output.is_row_missing(1));
+        });
+    }
+
+    #[test]
+    fn budgeted_shape_stream_keeps_nullable_points_packed() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let present = PyGeometryArray::from_shapes(
+                vec![
+                    Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0)),
+                    Shape::Point(crate::geometry::Point::new_raw_xy(3.0, 4.0)),
+                ],
+                Frame::None,
+            )
+            .expect("homogeneous points pack");
+            let array = PyGeometryArray::scatter_present_rows(
+                &present,
+                ValidityMask::from_vec(3, vec![false, true, false]).expect("mask"),
+            )
+            .expect("nullable points admit");
+            let output = unary_array_shapes_budgeted(
+                py,
+                &array,
+                Operation::Translate,
+                None,
+                "test expansion",
+                |plan, _, _| Ok(plan.shape().clone()),
+            )
+            .expect("budgeted shape stream");
+
+            let GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) =
+                output.storage()
+            else {
+                panic!("homogeneous nullable points stay packed");
+            };
+            assert_eq!(coords.xs(), [1.0, 3.0]);
+            assert_eq!(coords.ys(), [2.0, 4.0]);
+            assert!(output.is_row_missing(1));
+        });
+    }
+
+    #[test]
+    fn unary_shape_stream_preserves_present_typed_empty_results() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let present = PyGeometryArray::from_shapes(
+                vec![
+                    Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0)),
+                    Shape::Point(crate::geometry::Point::new_raw_xy(3.0, 4.0)),
+                ],
+                Frame::None,
+            )
+            .expect("homogeneous points pack");
+            let array = PyGeometryArray::scatter_present_rows(
+                &present,
+                ValidityMask::from_vec(3, vec![false, true, false]).expect("mask"),
+            )
+            .expect("nullable points admit");
+            let empty = Shape::typed_empty(
+                crate::geometry::GeometryKind::Polygon,
+                crate::geometry::CoordinateAxes::XY,
+            );
+            let output =
+                unary_array_shapes(py, &array, Operation::Translate, None, None, |_, _| {
+                    Ok(empty.clone())
+                })
+                .expect("typed-empty shape stream");
+
+            assert!(matches!(output.storage(), GeometryArrayStorage::Mixed(_)));
+            let Some(LogicalRow::Present { row, .. }) = output.logical_row(0) else {
+                panic!("present empty polygon remains present");
+            };
+            assert_eq!(row.with_shape(Clone::clone).unwrap(), empty);
+            assert!(matches!(
+                output.logical_row(1),
+                Some(LogicalRow::Missing { .. })
+            ));
+        });
+    }
+
+    #[test]
+    fn unary_shape_stream_reports_first_error_with_logical_row() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let present = PyGeometryArray::from_shapes(
+                vec![
+                    Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0)),
+                    crate::io::parse_wkt("LINESTRING (0 0, 1 1)").expect("first line"),
+                    crate::io::parse_wkt("LINESTRING (2 2, 3 3)").expect("second line"),
+                ],
+                Frame::None,
+            )
+            .expect("mixed geometries admit");
+            let array = PyGeometryArray::scatter_present_rows(
+                &present,
+                ValidityMask::from_vec(4, vec![false, true, false, false]).expect("mask"),
+            )
+            .expect("nullable mixed geometries admit");
+            let error =
+                unary_array_shapes(py, &array, Operation::Translate, None, None, |plan, _| {
+                    match plan.shape() {
+                        Shape::LineString(_) => Err(crate::geometry::GeometryErrorKind::message(
+                            "row kernel failure",
+                        )),
+                        Shape::Point(_)
+                        | Shape::MultiPoint(_)
+                        | Shape::MultiLineString(_)
+                        | Shape::Polygon(_)
+                        | Shape::MultiPolygon(_)
+                        | Shape::GeometryCollection(_)
+                        | Shape::Empty(..) => Ok(plan.shape().clone()),
+                    }
+                })
+                .expect_err("the first row error is propagated");
+            let notes = error
+                .value(py)
+                .getattr("__notes__")
+                .expect("row error note")
+                .extract::<Vec<String>>()
+                .expect("row error notes are strings");
+
+            assert_eq!(notes, ["while processing array element 2"]);
+        });
     }
 }

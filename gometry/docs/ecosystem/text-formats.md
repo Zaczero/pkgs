@@ -177,7 +177,8 @@ except gm.InvalidGeometryError as e:
 gometry geometries implement the `__geo_interface__` protocol, so they interoperate
 with any library that speaks it. [`gm.from_geojson`][gometry.from_geojson] is the
 inverse — it ingests anything exposing that protocol (or a raw GeoJSON-like
-mapping), including a GeoJSON `Feature`.
+mapping), including a GeoJSON `Feature`. By default it returns the geometry and
+drops feature side data; pass `features=True` to retain properties and IDs.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -187,8 +188,12 @@ mapping = p.__geo_interface__
 print("mapping:", mapping)
 
 back = gm.from_geojson(mapping, crs=4326)
-feat = gm.from_geojson({"type": "Feature", "properties": {}, "geometry": mapping}, crs=4326)
-print("round-trip:", back.to_wkt(), "| from Feature:", feat.to_wkt())
+feature = gm.from_geojson(
+    {"type": "Feature", "properties": {"name": "site"}, "geometry": mapping},
+    crs=4326,
+    features=True,
+)
+print("round-trip:", back.to_wkt(), "| Feature:", feature.geometries[0].to_wkt())
 ```
 
 [`gm.from_geojson`][gometry.from_geojson] is the one entry point for everything
@@ -197,9 +202,10 @@ exposing `__geo_interface__`. GeoJSON is WGS 84 lon/lat by specification
 ([RFC 7946](https://www.rfc-editor.org/info/rfc7946) / OGC:CRS84), so decoded
 geometry declares `OGC:CRS84` by default (matching GeoParquet); pass
 `crs=4326` for EPSG:4326, `crs=None` to opt out, or `crs=4979` for a
-WGS84-family 3D frame. A `FeatureCollection` is a feature *set* and decodes to a
-[`GeometryArray`][gometry.GeometryArray], one geometry per feature (use
-[`gm.from_features`][gometry.from_features] to keep properties and ids).
+WGS84-family 3D frame. A `FeatureCollection` is a feature *set*: by default it
+decodes to a [`GeometryArray`][gometry.GeometryArray], one geometry per feature.
+Set `features=True` on the same reader to return [`Features`][gometry.Features]
+with the aligned properties and IDs.
 
 !!! note "Uniform axes per coordinate sequence"
     RFC 7946 makes the third ordinate optional per *position*, but a gometry
@@ -225,13 +231,13 @@ fc = {
     ],
 }
 print(gm.from_geojson(fc))
-features = gm.from_features(fc)
+features = gm.from_geojson(fc, features=True)
 geoms, props, ids = features
 print(features.properties, ids, len(features.geometries))
 ```
 
-`from_features` returns a [`Features`][gometry.Features] container with three parallel fields.
-Destructure it as `geoms, props, ids = gm.from_features(...)`. It has no
+`features=True` returns a [`Features`][gometry.Features] container with three
+parallel fields. Destructure it as `geoms, props, ids = gm.from_geojson(..., features=True)`. It has no
 `len()`, so a three-field count cannot be misread as a feature count;
 `len(features.geometries)` is the row count.
 
@@ -271,9 +277,16 @@ storage; [`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepc
 geometries serialize durable input state and rebuild derived acceleration
 structures when loaded; loaded objects do not contain warm-cache snapshots. There is
 no `Coverage` object to pickle: cover factories return `CellArray` or `Groups`
-containers. [`Coordinates`][gometry.Coordinates] and iterator types are not
-picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an immutable parent view; it is
-reconstructed from its geometry when unpickled.
+containers. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retaining
+view, preserving its selected layout and flattened row indexes; iterator types
+are not picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an
+immutable parent view; it is reconstructed from its geometry when unpickled.
+
+With pickle protocol 5, packed `GeometryArray` payload columns and their offsets
+can be sent out of band when the pickler uses `buffer_callback`. Those buffers
+are read-only `PickleBuffer` values; the unpickler must receive the collected
+buffers. Pickle protocol 5 alone does not make ordinary process-pool transfers
+zero-copy or create shared memory.
 
 ### Stored-format compatibility
 

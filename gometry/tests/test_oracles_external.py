@@ -2,16 +2,21 @@ import math
 from typing import Any, cast
 
 import gometry as gm
-import h3
-import pyproj
 import pytest
-import s2sphere
-import shapely
 
 from tests._support import (
     chart_parallel_length,
     chart_rectangle_perimeter,
     chart_zone_area,
+    h3_oracle,
+)
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+s2sphere = pytest.importorskip(
+    's2sphere', reason='s2sphere is an optional oracle dependency'
+)
+shapely = pytest.importorskip(
+    'shapely', reason='shapely is an optional oracle dependency'
 )
 
 
@@ -32,6 +37,7 @@ def test_overlay_restores_zm_and_force_2d_flattens() -> None:
 
 
 def test_h3_cells_hierarchy_and_compaction_match_h3_py_oracle() -> None:
+    h3 = h3_oracle()
     cell = gm.H3Cell(21.0, 52.0, resolution=7)
     coverage = gm.h3_cover(
         gm.box(20.99, 51.99, 21.01, 52.01, crs=4326), resolution=8, cell_rule='center'
@@ -231,14 +237,14 @@ def test_geometry_to_crs_transforms_xyz_with_proj_oracle() -> None:
     expected_xs, expected_ys, expected_zs = transformer.transform(xs, ys, zs)
     point = gm.Point(xs[0], ys[0], z=zs[0], m=7.0, crs=4979).to_crs(4978)
     line = gm.LineString(list(zip(xs, ys, strict=True)), z=zs, crs=4979).to_crs(4978)
-    assert point.crs == 'EPSG:4978'
+    assert point.crs == gm.CRS('EPSG:4978')
     assert list(point.coords[0]) == pytest.approx([
         expected_xs[0],
         expected_ys[0],
         expected_zs[0],
         7.0,
     ])
-    assert line.crs == 'EPSG:4978'
+    assert line.crs == gm.CRS('EPSG:4978')
     assert line.coordinate_axes == 'XYZ'
     assert list(line.coords) == pytest.approx(
         list(zip(expected_xs, expected_ys, expected_zs, strict=True))

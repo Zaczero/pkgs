@@ -22,7 +22,11 @@ from fractions import Fraction
 
 import gometry as gm
 import pytest
-from pyproj import Geod
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 oracle wheel is unavailable for this interpreter'
+)
+Geod = pyproj.Geod
 
 
 def _endpoints(line: gm.Geometry) -> list[tuple[float, float]]:
@@ -331,9 +335,9 @@ class TestEmptyContract:
         empty = gm.from_wkt('POLYGON EMPTY', crs=3857)
         point = gm.Point(1, 1, crs=3857)
         a, b = gm.nearest_points(empty, point)
-        assert a.crs == 'EPSG:3857'
-        assert b.crs == 'EPSG:3857'
-        assert gm.shortest_line(empty, point).crs == 'EPSG:3857'
+        assert a.crs == gm.CRS('EPSG:3857')
+        assert b.crs == gm.CRS('EPSG:3857')
+        assert gm.shortest_line(empty, point).crs == gm.CRS('EPSG:3857')
 
 
 class TestSurfaceConsistency:

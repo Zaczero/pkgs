@@ -24,7 +24,7 @@ import re
 import sys
 from dataclasses import dataclass
 from types import ModuleType
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pyo3stubs.ast_util import (
     _is_synthetic_doc,
@@ -33,12 +33,13 @@ from pyo3stubs.ast_util import (
     class_prohibits_construction,
     decorator_names,
     function_groups,
+    passive_class_member,
 )
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, unused_allowlist_errors
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator, Mapping, Sequence
 
     from pyo3stubs.config import StubConfig
     from pyo3stubs.rust_scan import ConstructorDocSource
@@ -46,14 +47,10 @@ if TYPE_CHECKING:
 _NUMPYDOC_SECTION = re.compile(r'^([A-Za-z][A-Za-z ]*)\n-+\n', re.MULTILINE)
 _GOOGLE_SECTION = re.compile(r'^([A-Za-z][A-Za-z ]*):[ \t]*$', re.MULTILINE)
 _DEFAULT_MARKER = re.compile(
-    r'\bdefaults?(?:\s+to\b|\s*=\s*|\s+)',
+    r'\bdefaults?(?:\s+to\b|\s*[:=]\s*|\s+)',
     re.IGNORECASE,
 )
 _ENTRY_NAMES = re.compile(r'[*\w]+(?:\s*,\s*[*\w]+)*')
-_GOOGLE_ENTRY = re.compile(
-    r'(?P<names>[*\w]+(?:\s*,\s*[*\w]+)*)'
-    r'(?:\s+\((?P<type>[^)]*)\))?\s*:\s*(?P<description>.*)'
-)
 _SECTION_ALIASES = {'Args': 'Parameters', 'Arguments': 'Parameters'}
 _PARAMETER_SECTIONS = frozenset({
     'Parameters',
@@ -61,7 +58,8 @@ _PARAMETER_SECTIONS = frozenset({
     'Keyword Arguments',
 })
 _NAMED_TYPE_SECTIONS = _PARAMETER_SECTIONS | {'Attributes'}
-_RETURN_SECTIONS = frozenset({'Returns', 'Yields', 'Receives'})
+_TYPED_VALUE_SECTIONS = frozenset({'Returns', 'Yields', 'Receives'})
+_OUTPUT_SECTIONS = frozenset({'Returns', 'Yields'})
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,14 +97,91 @@ class DocLocation:
 
 
 @dataclass(frozen=True, slots=True)
+class DocMemberSource:
+    """One effective Python source declaration for a public class member."""
+
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign
+    kind: Literal['callable', 'property', 'attribute', 'schema']
+    prose: str | None
+    source: DocLocation
+
+
+@dataclass(frozen=True, slots=True)
+class DocInitializationSource:
+    """The one class-call documentation carrier selected from Python source."""
+
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    prose: str | None
+    source: DocLocation
+
+
+@dataclass(frozen=True, slots=True)
+class DocClassSource:
+    """A facade class declaration, one init carrier, and effective members."""
+
+    node: ast.ClassDef
+    source: DocLocation
+    members: Mapping[str, DocMemberSource]
+    initialization: DocInitializationSource | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DocSubject:
     """One public doc carrier and the binding signature it describes."""
 
     qualname: str
-    kind: Literal['callable', 'property', 'constructor', 'class']
+    kind: Literal[
+        'callable',
+        'property',
+        'constructor',
+        'class',
+        'attribute',
+        'schema',
+    ]
     prose: str | None
     parameters: tuple[inspect.Parameter, ...] | None
     source: DocLocation
+    declarations: tuple[ast.AST, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SignatureParameter:
+    """One parameter occurrence in an exact declared call form."""
+
+    name: str
+    kind: str
+    annotation: str | None
+    default: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterOccurrence:
+    """One parameter's status in one call form; ``None`` means absent."""
+
+    kind: str
+    annotation: str | None
+    default: str | None
+    status: Literal['required', 'defaulted', 'variadic']
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedParameter:
+    """One prose row reconciled with every exact call-form occurrence."""
+
+    name: str
+    annotation: str | None
+    description: str
+    status: Literal['required', 'defaulted', 'variadic', 'varies']
+    default: str | None
+    occurrences: tuple[ParameterOccurrence | None, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterResolution:
+    """Merged parameter rows plus source-located conflicts and mismatches."""
+
+    rows: tuple[ResolvedParameter, ...]
+    errors: tuple[str, ...]
 
 
 def _rust_constructor_sources(cfg: StubConfig) -> dict[str, ConstructorDocSource]:
@@ -239,12 +314,13 @@ def _entry_indent(line: str) -> int:
     return len(line) - len(line.lstrip(' \t'))
 
 
-def _split_google_return_header(line: str) -> tuple[str, str]:
-    """Split a Google return header at its top-level type/description colon."""
-    depth = 0
+def _top_level_separator(text: str, separator: str) -> int | None:
+    """Find a separator outside balanced brackets and quoted literals."""
+    closing: list[str] = []
     quote: str | None = None
     escaped = False
-    for index, char in enumerate(line):
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    for index, char in enumerate(text):
         if quote is not None:
             if escaped:
                 escaped = False
@@ -255,31 +331,109 @@ def _split_google_return_header(line: str) -> tuple[str, str]:
             continue
         if char in {'"', "'"}:
             quote = char
-        elif char in '[({':
-            depth += 1
-        elif char in '])}':
-            depth = max(0, depth - 1)
-        elif char == ':' and depth == 0:
-            return line[:index].strip(), line[index + 1 :].strip()
-    return line.strip(), ''
+        elif char in pairs:
+            closing.append(pairs[char])
+        elif char in ')]}':
+            if not closing or char != closing.pop():
+                return None
+        elif char == separator and not closing:
+            return index
+    return None
+
+
+def _matching_delimiter(text: str, start: int) -> int | None:
+    """Index the matching close for one opening delimiter, respecting quotes."""
+    pairs = {'(': ')', '[': ']', '{': '}'}
+    first = text[start]
+    if first not in pairs:
+        return None
+    closing = [pairs[first]]
+    quote: str | None = None
+    escaped = False
+    for index in range(start + 1, len(text)):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char in pairs:
+            closing.append(pairs[char])
+        elif char in ')]}':
+            if not closing or char != closing.pop():
+                return None
+            if not closing:
+                return index
+    return None
+
+
+def _split_google_return_header(line: str) -> tuple[str, str]:
+    """Split a Google value header at its top-level type/description colon."""
+    separator = _top_level_separator(line, ':')
+    if separator is None:
+        return line.strip(), ''
+    return line[:separator].strip(), line[separator + 1 :].strip()
+
+
+def _google_entry_header(line: str) -> tuple[str, str, str] | None:
+    """Parse a Google name, balanced optional type wrapper, and description."""
+    separator = _top_level_separator(line, ':')
+    if separator is None:
+        return None
+    left = line[:separator].strip()
+    description = line[separator + 1 :].strip()
+    wrapper = left.find('(')
+    if wrapper < 0:
+        names = left
+        type_text = ''
+    else:
+        if not left[:wrapper].endswith((' ', '\t')):
+            return None
+        names = left[:wrapper].strip()
+        close = _matching_delimiter(left, wrapper)
+        if close != len(left) - 1:
+            return None
+        type_text = left[wrapper + 1 : close].strip()
+    if not _entry_names(names):
+        return None
+    return names, type_text, description
+
+
+def _has_indented_description(
+    lines: list[str],
+    index: int,
+    base_indent: int,
+) -> bool:
+    for line in lines[index + 1 :]:
+        if line.strip():
+            return _entry_indent(line) > base_indent
+    return False
 
 
 def _is_entry_header(
     line: str,
     section: DocSection,
     style: Literal['numpy', 'google'],
+    *,
+    has_indented_description: bool = False,
 ) -> bool:
     if not line.strip():
         return False
-    if style == 'google' and section.name in _RETURN_SECTIONS:
+    if style == 'google' and section.name in _TYPED_VALUE_SECTIONS:
         type_text, _description = _split_google_return_header(line.strip())
         return bool(type_text)
     if style == 'google':
-        match = _GOOGLE_ENTRY.match(line.strip())
-        return match is not None
+        return _google_entry_header(line.strip()) is not None
     if section.name in _NAMED_TYPE_SECTIONS:
         names, separator, type_text = line.partition(':')
-        return bool(separator and type_text.strip() and _entry_names(names))
+        if separator:
+            return bool(type_text.strip() and _entry_names(names))
+        return has_indented_description and bool(_entry_names(line))
     return True
 
 
@@ -294,24 +448,23 @@ def _parse_entry(
     names: tuple[str, ...] = ()
     type_text = ''
     default_text = None
-    if style == 'google' and section.name in _RETURN_SECTIONS:
+    if style == 'google' and section.name in _TYPED_VALUE_SECTIONS:
         type_text, inline_description = _split_google_return_header(line.strip())
     elif style == 'google':
-        match = _GOOGLE_ENTRY.match(line.strip())
-        if match is None:
+        parsed = _google_entry_header(line.strip())
+        if parsed is None:
             return DocEntry((), '', '', None, line_number)
-        left = match.group('names')
-        inline_description = match.group('description').strip()
+        left, google_type, inline_description = parsed
         if section.name in _NAMED_TYPE_SECTIONS:
             names = _entry_names(left)
-            type_text = match.group('type') or ''
+            type_text = google_type
         else:
-            names = _entry_names(left)
+            names = _entry_names(left) if not google_type else ()
     elif section.name in _NAMED_TYPE_SECTIONS:
         left, _, type_text = line.partition(':')
         names = _entry_names(left)
         type_text = type_text.strip()
-    elif section.name in _RETURN_SECTIONS:
+    elif section.name in _TYPED_VALUE_SECTIONS:
         left, separator, right = line.partition(':')
         if separator and _entry_names(left):
             names = _entry_names(left)
@@ -352,11 +505,21 @@ def _entries(
     if not nonempty_indents:
         return ()
     base_indent = min(nonempty_indents) if style == 'google' else 0
-    starts = [
-        index
-        for index, line in enumerate(lines)
-        if _entry_indent(line) == base_indent and _is_entry_header(line, section, style)
-    ]
+    starts = []
+    for index, line in enumerate(lines):
+        if _entry_indent(line) != base_indent:
+            continue
+        if _is_entry_header(
+            line,
+            section,
+            style,
+            has_indented_description=_has_indented_description(
+                lines,
+                index,
+                base_indent,
+            ),
+        ):
+            starts.append(index)
     entries: list[DocEntry] = []
     body_offset = 1 if style == 'google' else 2
     for position, index in enumerate(starts):
@@ -405,9 +568,409 @@ def return_entries(doc: ParsedDoc) -> tuple[DocEntry, ...]:
     return tuple(
         entry
         for section in doc.sections
-        if section.name in _RETURN_SECTIONS
+        if section.name in _OUTPUT_SECTIONS
         for entry in _entries(section, doc.style)
     )
+
+
+def _expression_text(expression: ast.expr | None) -> str | None:
+    return ast.unparse(expression) if expression is not None else None
+
+
+def _type_terminal_name(expression: ast.expr | None) -> str | None:
+    if isinstance(expression, ast.Name):
+        return expression.id
+    if isinstance(expression, ast.Attribute):
+        return expression.attr
+    if isinstance(expression, ast.Subscript):
+        return _type_terminal_name(expression.value)
+    return None
+
+
+def _has_required_never_input(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    args = function.args
+    positional = [*args.posonlyargs, *args.args]
+    defaults: list[ast.expr | None] = [None] * (
+        len(positional) - len(args.defaults)
+    ) + list(args.defaults)
+    if any(
+        default is None
+        and _type_terminal_name(argument.annotation) in {'Never', 'NoReturn'}
+        for argument, default in zip(positional, defaults, strict=True)
+    ):
+        return True
+    return any(
+        default is None
+        and _type_terminal_name(argument.annotation) in {'Never', 'NoReturn'}
+        for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+    )
+
+
+def _function_forms(
+    declarations: tuple[ast.AST, ...],
+    *,
+    kind: str,
+    qualname: str,
+) -> tuple[tuple[SignatureParameter, ...], ...]:
+    functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
+    for declaration in declarations:
+        if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions.append(declaration)
+        elif isinstance(declaration, ast.ClassDef) and kind == 'constructor':
+            functions.extend(
+                node
+                for node in declaration.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name in {'__new__', '__init__'}
+            )
+    if not functions:
+        return ()
+
+    overloads = [
+        function for function in functions if decorator_names(function) & {'overload'}
+    ]
+    if overloads:
+        functions = overloads
+    elif len(functions) > 1:
+        functions = functions[-1:]
+
+    result: list[tuple[SignatureParameter, ...]] = []
+    for function in functions:
+        if _type_terminal_name(function.returns) in {
+            'Never',
+            'NoReturn',
+        } or _has_required_never_input(function):
+            continue
+        args = function.args
+        positional = [*args.posonlyargs, *args.args]
+        defaults: list[ast.expr | None] = [None] * (
+            len(positional) - len(args.defaults)
+        ) + list(args.defaults)
+        receiver = None
+        if kind == 'constructor':
+            receiver = 'cls' if function.name == '__new__' else 'self'
+        elif (
+            '.' in qualname
+            and not (decorator_names(function) & {'staticmethod'})
+            and positional
+            and positional[0].arg in {'self', 'cls'}
+        ):
+            receiver = positional[0].arg
+        if receiver and positional and positional[0].arg == receiver:
+            positional = positional[1:]
+            defaults = defaults[1:]
+
+        parameters: list[SignatureParameter] = []
+        for index, (argument, default) in enumerate(
+            zip(positional, defaults, strict=True)
+        ):
+            parameters.append(
+                SignatureParameter(
+                    argument.arg,
+                    (
+                        'positional-only'
+                        if index
+                        < max(0, len(args.posonlyargs) - int(receiver is not None))
+                        else 'positional or keyword'
+                    ),
+                    _expression_text(argument.annotation),
+                    _expression_text(default),
+                )
+            )
+        if args.vararg is not None:
+            parameters.append(
+                SignatureParameter(
+                    args.vararg.arg,
+                    'variadic positional',
+                    _expression_text(args.vararg.annotation),
+                    None,
+                )
+            )
+        for argument, default in zip(args.kwonlyargs, args.kw_defaults, strict=True):
+            parameters.append(
+                SignatureParameter(
+                    argument.arg,
+                    'keyword-only',
+                    _expression_text(argument.annotation),
+                    _expression_text(default),
+                )
+            )
+        if args.kwarg is not None:
+            parameters.append(
+                SignatureParameter(
+                    args.kwarg.arg,
+                    'variadic keyword',
+                    _expression_text(args.kwarg.annotation),
+                    None,
+                )
+            )
+        result.append(tuple(parameters))
+    return tuple(result)
+
+
+def _parameter_forms(
+    subject: DocSubject,
+) -> tuple[tuple[SignatureParameter, ...], ...]:
+    if subject.kind not in {'callable', 'constructor'}:
+        return ()
+    forms = _function_forms(
+        subject.declarations,
+        kind=subject.kind,
+        qualname=subject.qualname,
+    )
+    if forms or subject.parameters is None:
+        return forms
+
+    kind_names = {
+        inspect.Parameter.POSITIONAL_ONLY: 'positional-only',
+        inspect.Parameter.POSITIONAL_OR_KEYWORD: 'positional or keyword',
+        inspect.Parameter.VAR_POSITIONAL: 'variadic positional',
+        inspect.Parameter.KEYWORD_ONLY: 'keyword-only',
+        inspect.Parameter.VAR_KEYWORD: 'variadic keyword',
+    }
+    return (
+        tuple(
+            SignatureParameter(
+                parameter.name,
+                kind_names[parameter.kind],
+                (
+                    str(parameter.annotation)
+                    if parameter.annotation is not inspect.Parameter.empty
+                    else None
+                ),
+                (
+                    None
+                    if parameter.default is inspect.Parameter.empty
+                    else repr(parameter.default)
+                ),
+            )
+            for parameter in subject.parameters
+        ),
+    )
+
+
+def _same_default(left: str, right: str) -> bool:
+    left_text = left.rstrip('.').strip('`')
+    right_text = right.rstrip('.').strip('`')
+    if left_text == right_text:
+        return True
+    try:
+        left_expression = ast.parse(left_text, mode='eval').body
+        right_expression = ast.parse(right_text, mode='eval').body
+    except (SyntaxError, ValueError):
+        return False
+    if ast.dump(left_expression, include_attributes=False) == ast.dump(
+        right_expression,
+        include_attributes=False,
+    ):
+        return True
+    unparsed = object()
+    try:
+        left_value = ast.literal_eval(left_expression)
+    except (SyntaxError, ValueError):
+        left_value = unparsed
+    try:
+        right_value = ast.literal_eval(right_expression)
+    except (SyntaxError, ValueError):
+        right_value = unparsed
+    if (
+        left_value is not unparsed
+        and right_value is not unparsed
+        and type(left_value) is type(right_value)
+        and left_value == right_value
+    ):
+        return True
+
+    return (
+        isinstance(left_expression, ast.Name)
+        and isinstance(right_value, str)
+        and left_expression.id == right_value
+    ) or (
+        isinstance(right_expression, ast.Name)
+        and isinstance(left_value, str)
+        and right_expression.id == left_value
+    )
+
+
+def resolve_parameter_rows(
+    qualname: str,
+    carriers: Sequence[tuple[str, DocLocation]],
+    forms: Sequence[Sequence[SignatureParameter]],
+    *,
+    require_documentation: bool = True,
+) -> ParameterResolution:
+    """Resolve one documented row per parameter against exact call-form states."""
+    entries: dict[str, list[tuple[DocEntry, DocLocation]]] = {}
+    for prose, source in carriers:
+        for entry in parameter_entries(parse_doc(prose)):
+            for name in entry.names:
+                entries.setdefault(name, []).append((entry, source))
+
+    ordered_names = list(
+        dict.fromkeys(parameter.name for form in forms for parameter in form)
+    )
+    ordered_names.extend(name for name in entries if name not in ordered_names)
+    errors: list[str] = []
+    rows: list[ResolvedParameter] = []
+
+    for name in ordered_names:
+        occurrences = tuple(
+            next((parameter for parameter in form if parameter.name == name), None)
+            for form in forms
+        )
+        states: list[ParameterOccurrence] = []
+        per_form: list[ParameterOccurrence | None] = []
+        for parameter in occurrences:
+            if parameter is None:
+                per_form.append(None)
+                continue
+            status: Literal['required', 'defaulted', 'variadic'] = (
+                'variadic'
+                if parameter.kind.startswith('variadic')
+                else ('defaulted' if parameter.default is not None else 'required')
+            )
+            occurrence = ParameterOccurrence(
+                parameter.kind,
+                parameter.annotation,
+                parameter.default,
+                status,
+            )
+            states.append(occurrence)
+            per_form.append(occurrence)
+        present = states
+        display_default: str | None
+        if not present:
+            row_status: Literal['required', 'defaulted', 'variadic', 'varies'] = (
+                'varies'
+            )
+            display_default = 'varies by call form'
+        else:
+            state_keys = {
+                (
+                    occurrence.status,
+                    occurrence.kind if occurrence.status == 'variadic' else None,
+                    occurrence.default,
+                )
+                for occurrence in states
+            }
+            varies = len(present) != len(occurrences) or len(state_keys) != 1
+            if varies:
+                row_status = 'varies'
+                display_default = 'varies by call form'
+            else:
+                row_status = states[0].status
+                display_default = (
+                    states[0].default
+                    if row_status == 'defaulted'
+                    else 'not applicable'
+                    if row_status == 'variadic'
+                    else None
+                )
+
+        claims = entries.get(name, [])
+        locations = tuple(
+            f'{source.path}:{source.line + entry.line - 1}' for entry, source in claims
+        )
+        type_claims = list(
+            dict.fromkeys(
+                ' '.join(entry.type_text.split())
+                for entry, _source in claims
+                if entry.type_text.strip()
+            )
+        )
+        if len(type_claims) > 1:
+            errors.append(
+                f'{qualname}.{name}: conflicting documented annotations '
+                f'{type_claims!r} at {locations!r}'
+            )
+        documented_defaults: list[tuple[str, str]] = []
+        for entry, source in claims:
+            if entry.default_text is None:
+                continue
+            if not any(
+                _same_default(entry.default_text, previous)
+                for previous, _location in documented_defaults
+            ):
+                documented_defaults.append((
+                    entry.default_text,
+                    f'{source.path}:{source.line + entry.line - 1}',
+                ))
+        if len(documented_defaults) > 1:
+            errors.append(
+                f'{qualname}.{name}: conflicting documented defaults '
+                f'{documented_defaults!r}'
+            )
+
+        if documented_defaults:
+            stated, location = documented_defaults[0]
+            if row_status == 'required':
+                errors.append(
+                    f'{qualname}.{name}: documented default {stated} but the '
+                    'signature has no default'
+                )
+            elif row_status == 'variadic':
+                errors.append(
+                    f'{qualname}.{name}: variadic parameter has a documented default '
+                    f'{stated} at {location}'
+                )
+            elif row_status == 'varies' and stated != 'varies by call form':
+                errors.append(
+                    f'{qualname}.{name}: documented default {stated} at {location} '
+                    'but applicability varies by call form'
+                )
+            elif row_status == 'defaulted' and not _same_default(
+                stated,
+                display_default or '',
+            ):
+                try:
+                    expected_default: object = ast.literal_eval(
+                        (display_default or '').rstrip('.').strip('`')
+                    )
+                except (SyntaxError, ValueError):
+                    expected_default = display_default
+                errors.append(
+                    f'{qualname}.{name}: documented default {stated} '
+                    f'!= runtime {expected_default!r}'
+                )
+
+        if require_documentation and forms and present and not claims:
+            errors.append(f'{qualname}: parameter {name!r} is not documented')
+        if claims and not present:
+            errors.append(
+                f'{qualname}: documented parameter {name!r} is not in any call form'
+            )
+
+        signature_annotations = list(
+            dict.fromkeys(
+                parameter.annotation
+                for parameter in present
+                if parameter.annotation is not None
+            )
+        )
+        annotation = (
+            ' | '.join(signature_annotations)
+            if signature_annotations
+            else (type_claims[0] if type_claims else None)
+        )
+        descriptions: list[str] = []
+        for entry, _source in claims:
+            text = entry.description.strip()
+            if text and text not in descriptions:
+                descriptions.append(text)
+        rows.append(
+            ResolvedParameter(
+                name,
+                annotation,
+                '\n\n'.join(descriptions),
+                row_status,
+                display_default,
+                tuple(per_form),
+            )
+        )
+
+    return ParameterResolution(tuple(rows), tuple(errors))
 
 
 def duplicate_section_errors(doc: str | ParsedDoc, qualname: str) -> list[str]:
@@ -419,16 +982,6 @@ def duplicate_section_errors(doc: str | ParsedDoc, qualname: str) -> list[str]:
             errors.append(f'{qualname}: duplicate {section.name!r} section')
         seen.add(section.name)
     return errors
-
-
-def _defaults_match(documented: str, runtime: object) -> bool:
-    text = documented.rstrip('.').strip('`')
-    if text in (repr(runtime), str(runtime)):
-        return True
-    try:
-        return bool(ast.literal_eval(text) == runtime)
-    except (SyntaxError, ValueError):
-        return False
 
 
 def _parameters(obj: object) -> list[inspect.Parameter] | None:
@@ -447,7 +1000,9 @@ def _parameters(obj: object) -> list[inspect.Parameter] | None:
     ]
 
 
-def _stub_parameters(node: ast.FunctionDef) -> list[inspect.Parameter]:
+def _stub_parameters(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[inspect.Parameter]:
     """Build signature parameters from a stub's canonical (last) def."""
     args = node.args
     positional = [*args.posonlyargs, *args.args]
@@ -494,7 +1049,10 @@ def _stub_parameters(node: ast.FunctionDef) -> list[inspect.Parameter]:
     return [param for param in parameters if param.name not in ('self', 'cls')]
 
 
-def _doc_location(path: str, node: ast.AST) -> DocLocation:
+def _doc_location(
+    path: str,
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+) -> DocLocation:
     line = node.lineno
     if (
         isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
@@ -507,7 +1065,7 @@ def _doc_location(path: str, node: ast.AST) -> DocLocation:
     return DocLocation(path, line)
 
 
-def _runtime_location(obj: object, fallback: DocLocation) -> DocLocation:
+def _runtime_location(obj: Any, fallback: DocLocation) -> DocLocation:
     if isinstance(obj, property) and obj.fget is not None:
         obj = obj.fget
     try:
@@ -536,7 +1094,9 @@ def _public_names(ctx: CheckContext, runtime: ModuleType) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name for name in names if _is_public(name)))
 
 
-def _property_getter(defs: list[ast.FunctionDef]) -> ast.FunctionDef:
+def _property_getter(
+    defs: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+) -> ast.FunctionDef | ast.AsyncFunctionDef:
     for node in defs:
         if decorator_names(node) & {'property', 'getter'}:
             return node
@@ -545,10 +1105,18 @@ def _property_getter(defs: list[ast.FunctionDef]) -> ast.FunctionDef:
 
 def _subject(
     qualname: str,
-    kind: Literal['callable', 'property', 'constructor', 'class'],
+    kind: Literal[
+        'callable',
+        'property',
+        'constructor',
+        'class',
+        'attribute',
+        'schema',
+    ],
     prose: str | None,
     parameters: list[inspect.Parameter] | None,
     source: DocLocation,
+    declarations: tuple[ast.AST, ...] = (),
 ) -> DocSubject:
     return DocSubject(
         qualname,
@@ -556,6 +1124,7 @@ def _subject(
         prose,
         tuple(parameters) if parameters is not None else None,
         source,
+        declarations,
     )
 
 
@@ -565,14 +1134,25 @@ def _class_subjects(
     cls: type,
     class_node: ast.ClassDef | None,
     constructor_sources: Mapping[str, ConstructorDocSource],
+    source_class: DocClassSource | None,
 ) -> Iterator[DocSubject]:
-    class_path = str(ctx.cfg.stub_path)
-    class_source = (
-        _doc_location(class_path, class_node)
-        if class_node is not None
-        else _runtime_location(cls, DocLocation(class_path, 1))
+    class_path = (
+        source_class.source.path if source_class is not None else str(ctx.cfg.stub_path)
     )
-    class_doc = _runtime_doc_for_stub(name, cls)
+    class_source = (
+        source_class.source
+        if source_class is not None
+        else (
+            _doc_location(class_path, class_node)
+            if class_node is not None
+            else _runtime_location(cls, DocLocation(class_path, 1))
+        )
+    )
+    class_doc = (
+        ast.get_docstring(source_class.node)
+        if source_class is not None
+        else _runtime_doc_for_stub(name, cls)
+    )
     groups = function_groups(class_node.body) if class_node is not None else {}
     new_defs = groups.get('__new__', [])
     prohibited_stub_constructor = (
@@ -580,7 +1160,8 @@ def _class_subjects(
     )
     constructible_stub = bool(new_defs) and not prohibited_stub_constructor
     source_constructor = constructor_sources.get(name)
-    descriptor_carriers: dict[str, tuple[object, DocLocation]] = {}
+    source_members = source_class.members if source_class is not None else {}
+    descriptor_carriers: dict[str, tuple[object, DocLocation, ast.AnnAssign]] = {}
     if class_node is not None:
         for (
             member_name,
@@ -595,15 +1176,24 @@ def _class_subjects(
             descriptor_carriers[member_name] = (
                 descriptor,
                 DocLocation(class_path, source_line),
+                statement,
             )
 
     if not prohibited_stub_constructor and (
-        source_constructor is not None or constructible_stub
+        source_constructor is not None
+        or constructible_stub
+        or (source_class is not None and source_class.initialization is not None)
     ):
         carrier = new_defs[-1] if new_defs else None
+        constructor_declarations: tuple[ast.AST, ...] = tuple(new_defs)
         if source_constructor is not None:
             prose = source_constructor.prose
             source = DocLocation(source_constructor.path, source_constructor.line)
+        elif source_class is not None and source_class.initialization is not None:
+            initialization = source_class.initialization
+            prose = initialization.prose
+            source = initialization.source
+            constructor_declarations = (initialization.node,)
         else:
             runtime_new = inspect.getattr_static(cls, '__new__', None)
             prose = _runtime_doc_for_stub('__new__', runtime_new)
@@ -619,9 +1209,17 @@ def _class_subjects(
             prose,
             _parameters(cls),
             source,
+            declarations=constructor_declarations,
         )
 
-    yield _subject(name, 'class', class_doc, None, class_source)
+    yield _subject(
+        name,
+        'class',
+        class_doc,
+        None,
+        class_source,
+        declarations=(class_node,) if class_node is not None else (),
+    )
     if class_node is None:
         return
 
@@ -629,19 +1227,44 @@ def _class_subjects(
     runtime_names = tuple(
         member_name for member_name in vars(cls) if _is_public(member_name)
     )
-    member_names = tuple(dict.fromkeys((*stub_groups, *runtime_names)))
+    member_names = tuple(dict.fromkeys((*stub_groups, *runtime_names, *source_members)))
     seen: set[str] = set()
     for member_name in member_names:
         if not _is_public(member_name) or member_name in {'__new__', '__init__'}:
             continue
+        source_member = source_members.get(member_name)
+        if source_member is not None and source_member.kind in {'attribute', 'schema'}:
+            seen.add(member_name)
+            yield _subject(
+                f'{name}.{member_name}',
+                source_member.kind,
+                source_member.prose,
+                None,
+                source_member.source,
+                declarations=(source_member.node,),
+            )
+            continue
         defs = stub_groups.get(member_name, [])
-        carrier = _property_getter(defs) if defs else None
-        stub_property = carrier is not None and bool(
-            decorator_names(carrier) & {'property', 'getter'}
+        member_carrier: ast.FunctionDef | ast.AsyncFunctionDef | None = (
+            _property_getter(defs)
+            if defs
+            else (
+                source_member.node
+                if source_member is not None
+                and isinstance(
+                    source_member.node,
+                    (ast.FunctionDef, ast.AsyncFunctionDef),
+                )
+                else None
+            )
+        )
+        stub_property = member_carrier is not None and bool(
+            decorator_names(member_carrier) & {'property', 'getter'}
         )
         static = inspect.getattr_static(cls, member_name, None)
         property_like = (
-            stub_property
+            (source_member is not None and source_member.kind == 'property')
+            or stub_property
             or isinstance(static, property)
             or (
                 static is not None
@@ -649,20 +1272,26 @@ def _class_subjects(
                 and not callable(static)
             )
         )
-        if member_name in descriptor_carriers:
+        if source_member is not None:
+            source = source_member.source
+        elif member_name in descriptor_carriers:
             source = descriptor_carriers[member_name][1]
         else:
             source = (
-                _doc_location(class_path, carrier)
-                if carrier is not None
+                _doc_location(class_path, member_carrier)
+                if member_carrier is not None
                 else _runtime_location(static, class_source)
             )
         if property_like:
             seen.add(member_name)
             prose = (
-                _runtime_doc_for_stub(member_name, static)
-                if static is not None
-                else None
+                source_member.prose
+                if source_member is not None
+                else (
+                    _runtime_doc_for_stub(member_name, static)
+                    if static is not None
+                    else None
+                )
             )
             yield _subject(
                 f'{name}.{member_name}',
@@ -670,21 +1299,43 @@ def _class_subjects(
                 prose,
                 None,
                 source,
+                declarations=(
+                    (source_member.node,)
+                    if source_member is not None
+                    else (
+                        (descriptor_carriers[member_name][2],)
+                        if member_name in descriptor_carriers
+                        else ((member_carrier,) if member_carrier is not None else ())
+                    )
+                ),
             )
             continue
 
-        runtime_member = getattr(cls, member_name, None)
-        if runtime_member is None and not defs:
+        runtime_member = passive_class_member(cls, member_name)
+        if runtime_member is None and not defs and source_member is None:
+            continue
+        if source_member is not None:
+            yield _subject(
+                f'{name}.{member_name}',
+                'callable',
+                source_member.prose,
+                _parameters(runtime_member) if runtime_member is not None else None,
+                source_member.source,
+                declarations=(source_member.node,),
+            )
+            seen.add(member_name)
             continue
         if member_name not in vars(cls) and defs:
-            stub_doc = ast.get_docstring(carrier) if carrier is not None else None
+            assert member_carrier is not None
+            stub_doc = ast.get_docstring(member_carrier)
             prose = stub_doc or _runtime_doc_for_stub(member_name, runtime_member)
             yield _subject(
                 f'{name}.{member_name}',
                 'callable',
                 prose,
-                _stub_parameters(carrier),
+                _stub_parameters(member_carrier),
                 source,
+                declarations=tuple(defs),
             )
             continue
         yield _subject(
@@ -693,10 +1344,11 @@ def _class_subjects(
             _runtime_doc_for_stub(member_name, runtime_member),
             _parameters(runtime_member),
             source,
+            declarations=tuple(defs),
         )
         seen.add(member_name)
 
-    for member_name, (descriptor, source) in descriptor_carriers.items():
+    for member_name, (descriptor, source, declaration) in descriptor_carriers.items():
         if not _is_public(member_name) or member_name in seen:
             continue
         yield _subject(
@@ -705,6 +1357,7 @@ def _class_subjects(
             _runtime_doc_for_stub(member_name, descriptor),
             None,
             source,
+            declarations=(declaration,),
         )
 
 
@@ -713,13 +1366,13 @@ def iter_doc_subjects(
     *,
     runtime_module: ModuleType | None = None,
     constructor_sources: Mapping[str, ConstructorDocSource] | None = None,
+    source_classes: Mapping[str, DocClassSource] | None = None,
 ) -> Iterator[DocSubject]:
     """Enumerate documented public subjects from the stub and runtime surface.
 
     Runtime ``__all__`` adds facade names; stub declarations supply carrier
-    locations and overload ownership. Configured surfaces expose Python class
-    re-exports; only stub-declared classes add member subjects. Static class
-    lookup classifies their properties without invoking getters.
+    locations and overload ownership. Source class declarations fill the same
+    subjects for facade re-exports absent from the native stub.
     """
     if constructor_sources is None:
         constructor_sources = (
@@ -749,12 +1402,19 @@ def iter_doc_subjects(
             if obj is None:
                 continue
             if isinstance(obj, type):
+                source_class = (
+                    source_classes.get(name)
+                    if source_classes is not None and name not in ctx.stub_classes
+                    else None
+                )
                 subjects = _class_subjects(
                     ctx,
                     name,
                     obj,
-                    ctx.stub_classes.get(name),
+                    ctx.stub_classes.get(name)
+                    or (source_class.node if source_class is not None else None),
                     constructor_sources,
+                    source_class,
                 )
                 for subject in subjects:
                     key = (subject.qualname, subject.kind)
@@ -776,6 +1436,7 @@ def iter_doc_subjects(
                 _runtime_doc_for_stub(name, obj),
                 _parameters(obj),
                 source,
+                declarations=tuple(defs),
             )
             key = (subject.qualname, subject.kind)
             if key not in seen_subjects:
@@ -783,12 +1444,19 @@ def iter_doc_subjects(
                 yield subject
 
     for name, cls in classes:
+        source_class = (
+            source_classes.get(name)
+            if source_classes is not None and name not in ctx.stub_classes
+            else None
+        )
         for subject in _class_subjects(
             ctx,
             name,
             cls,
-            ctx.stub_classes.get(name),
+            ctx.stub_classes.get(name)
+            or (source_class.node if source_class is not None else None),
             constructor_sources,
+            source_class,
         ):
             key = (subject.qualname, subject.kind)
             if key not in seen_subjects:
@@ -799,37 +1467,18 @@ def iter_doc_subjects(
 def check_doc_subject(subject: DocSubject) -> list[str]:
     """Check one carrier's selected signature against the shared parsed prose."""
     parsed = parse_doc(subject.prose)
-    documented = parameter_entries(parsed)
     errors: list[str] = []
-    if subject.parameters is not None:
-        parameter_names = {param.name for param in subject.parameters}
-        for param in subject.parameters:
-            entries = [entry for entry in documented if param.name in entry.names]
-            if not entries:
-                errors.append(
-                    f'{subject.qualname}: parameter {param.name!r} is not documented'
-                )
-                continue
-            for entry in entries:
-                stated = entry.default_text
-                if stated is None or param.default is ...:
-                    continue
-                if param.default is inspect.Parameter.empty:
-                    errors.append(
-                        f'{subject.qualname}.{param.name}: documented default '
-                        f'{stated} but the signature has no default'
-                    )
-                elif not _defaults_match(stated, param.default):
-                    errors.append(
-                        f'{subject.qualname}.{param.name}: documented default '
-                        f'{stated} != runtime {param.default!r}'
-                    )
-        documented_names = {name for entry in documented for name in entry.names}
-        errors.extend(
-            f'{subject.qualname}: documented parameter {name!r} is not in the signature'
-            for name in sorted(documented_names - parameter_names)
+    forms = _parameter_forms(subject)
+    if forms:
+        resolution = resolve_parameter_rows(
+            subject.qualname,
+            ((subject.prose or '', subject.source),),
+            forms,
         )
-    if subject.kind != 'class' and not return_entries(parsed):
+        errors.extend(resolution.errors)
+    if subject.kind in {'callable', 'property', 'constructor'} and not return_entries(
+        parsed
+    ):
         errors.append(
             f'{subject.qualname}: no Returns section — document what it gives back'
         )

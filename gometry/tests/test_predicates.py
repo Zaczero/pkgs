@@ -50,39 +50,45 @@ def test_polygon_planar_measurements_and_predicates() -> None:
     assert gm.equals(polygon, gm.box(-1, -1, 1, 1))
     assert gm.touches(polygon, boundary)
     assert gm.touches(polygon, boundary)
-    assert not gm.contains_xy(polygon, 1, 0)
-    assert gm.intersects_xy(polygon, 1, 0)
-    assert gm.contains_xy(polygon, 0, 0)
+    assert not gm.contains(polygon, x=1, y=0)
+    assert gm.intersects(polygon, x=1, y=0)
+    assert gm.contains(polygon, x=0, y=0)
     np.testing.assert_array_equal(
-        gm.contains_xy(polygon, [0, 1, 2], [0, 0, 0]), [True, False, False]
+        gm.contains(polygon, x=[0, 1, 2], y=[0, 0, 0]), [True, False, False]
     )
-    np.testing.assert_array_equal(gm.contains_xy(polygon, 0, [0, 2]), [True, False])
-    np.testing.assert_array_equal(gm.contains_xy(polygon, [0, 2], 0), [True, False])
+    np.testing.assert_array_equal(gm.contains(polygon, x=0, y=[0, 2]), [True, False])
+    np.testing.assert_array_equal(gm.contains(polygon, x=[0, 2], y=0), [True, False])
     np.testing.assert_array_equal(
-        gm.intersects_xy(polygon, [0, 1, 2], [0, 0, 0]), [True, True, False]
+        gm.intersects(polygon, x=[0, 1, 2], y=[0, 0, 0]), [True, True, False]
     )
-    np.testing.assert_array_equal(gm.intersects_xy(polygon, 0, [0, 2]), [True, False])
+    np.testing.assert_array_equal(gm.intersects(polygon, x=0, y=[0, 2]), [True, False])
     with pytest.raises(ValueError, match='x and y must have the same length'):
-        gm.contains_xy(polygon, [0, 1], [0])
+        gm.contains(polygon, x=[0, 1], y=[0])
+    with pytest.raises(
+        TypeError, match='geometry and coordinate inputs cannot be mixed'
+    ):
+        gm.contains(polygon, point, x=0, y=0)
+    with pytest.raises(TypeError, match='provide either right or both x and y'):
+        gm.intersects(polygon, x=0)
 
     boxes = gm.GeometryArray([gm.box(0, 0, 2, 2), None, gm.box(10, 10, 12, 12)])
     np.testing.assert_array_equal(
-        gm.contains_xy(boxes, [1.0, 1.0, 11.0], [1.0, 1.0, 11.0]),
+        gm.contains(boxes, x=[1.0, 1.0, 11.0], y=[1.0, 1.0, 11.0]),
         [True, False, True],
     )
     np.testing.assert_array_equal(
-        gm.intersects_xy(boxes, 0.0, [1.0, 1.0, 11.0]),
+        gm.intersects(boxes, x=0.0, y=[1.0, 1.0, 11.0]),
         [True, False, False],
     )
     with pytest.raises(gm.InvalidGeometryError, match='GeometryArray and x'):
-        gm.contains_xy(boxes, [1.0, 2.0], 1.0)
+        gm.contains(boxes, x=[1.0, 2.0], y=1.0)
 
     crossing = gm.Polygon(
         [(170, -10), (-170, -10), (-170, 10), (170, 10), (170, -10)],
         crs=4326,
     )
     np.testing.assert_array_equal(
-        gm.contains_xy(gm.GeometryArray([crossing, crossing]), [178.0, 0.0], 0.0),
+        gm.contains(gm.GeometryArray([crossing, crossing]), x=[178.0, 0.0], y=0.0),
         [True, False],
     )
     multipolygon = gm.MultiPolygon([
@@ -93,36 +99,50 @@ def test_polygon_planar_measurements_and_predicates() -> None:
     ])
     collection = gm.GeometryCollection([gm.Point(5, 5), polygon])
     np.testing.assert_array_equal(
-        gm.contains_xy(multipolygon, [0.5, 1.5, 3.0], [0.5, 1.5, 1.0]),
+        gm.contains(multipolygon, x=[0.5, 1.5, 3.0], y=[0.5, 1.5, 1.0]),
         [True, False, False],
     )
     np.testing.assert_array_equal(
-        gm.intersects_xy(multipolygon, [0.5, 1.5, 3.0], [0.5, 1.5, 1.0]),
+        gm.intersects(multipolygon, x=[0.5, 1.5, 3.0], y=[0.5, 1.5, 1.0]),
         [True, False, True],
     )
     np.testing.assert_array_equal(
-        gm.contains_xy(collection, [0, 5, 2], [0, 5, 2]), [True, True, False]
+        gm.contains(collection, x=[0, 5, 2], y=[0, 5, 2]), [True, True, False]
+    )
+    native_rows = iter([polygon, None, polygon])
+    point_rows = np.array(
+        [gm.Point(0, 0), gm.Point(0, 0), gm.Point(2, 0)], dtype=object
+    )
+    np.testing.assert_array_equal(
+        gm.contains(native_rows, point_rows), [True, False, False]
+    )
+    np.testing.assert_array_equal(
+        gm.intersects([polygon, None, polygon], point_rows), [True, False, False]
+    )
+    np.testing.assert_array_equal(
+        gm.intersects(polygon, [gm.Point(0, 0), None, gm.Point(2, 0)]),
+        [True, False, False],
     )
     square = gm.Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)])
-    assert gm.contains_xy(square, 2.0, 2.0)
-    assert not gm.contains_xy(square, 2.0, 0.0)
-    assert gm.contains_xy(square, 2.0, 1e-12)
-    assert not gm.contains_xy(square, 2.0, -1e-12)
+    assert gm.contains(square, x=2.0, y=2.0)
+    assert not gm.contains(square, x=2.0, y=0.0)
+    assert gm.contains(square, x=2.0, y=1e-12)
+    assert not gm.contains(square, x=2.0, y=-1e-12)
     holed = gm.Polygon(
         [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
         [[(3, 3), (7, 3), (7, 7), (3, 7), (3, 3)]],
     )
-    assert gm.contains_xy(holed, 1.0, 1.0)
-    assert not gm.contains_xy(holed, 5.0, 5.0)
-    assert not gm.contains_xy(holed, 3.0, 5.0)
-    assert not gm.contains_xy(gm.LineString([(0, 0), (1, 0)]), 0, 0)
-    assert gm.intersects_xy(gm.LineString([(0, 0), (1, 0)]), 0, 0)
-    assert gm.contains_xy(gm.LineString([(0, 0), (1, 0)]), 0.5, 0)
+    assert gm.contains(holed, x=1.0, y=1.0)
+    assert not gm.contains(holed, x=5.0, y=5.0)
+    assert not gm.contains(holed, x=3.0, y=5.0)
+    assert not gm.contains(gm.LineString([(0, 0), (1, 0)]), x=0, y=0)
+    assert gm.intersects(gm.LineString([(0, 0), (1, 0)]), x=0, y=0)
+    assert gm.contains(gm.LineString([(0, 0), (1, 0)]), x=0.5, y=0)
     multiline = gm.MultiLineString([[(0, 0), (1, 0)], [(1, 0), (2, 0)]])
-    assert not gm.contains_xy(multiline, 0, 0)
-    assert gm.contains_xy(multiline, 1, 0)
-    assert gm.contains_xy(multiline, 0.5, 0)
-    assert gm.intersects_xy(multiline, 2, 0)
+    assert not gm.contains(multiline, x=0, y=0)
+    assert gm.contains(multiline, x=1, y=0)
+    assert gm.contains(multiline, x=0.5, y=0)
+    assert gm.intersects(multiline, x=2, y=0)
     assert not gm.contains(polygon, outside)
     with pytest.raises(
         gm.CRSMismatchError, match='contains requires matching CRS metadata'
@@ -648,7 +668,7 @@ def test_topology_does_not_treat_near_collinear_points_as_collinear() -> None:
     offset = math.ulp(1.0) / 4
     base = gm.LineString([(0, 0), (1, 0)])
     near = gm.LineString([(0.5, offset), (0.5, 1)])
-    assert not gm.contains_xy(base, 0.5, offset)
+    assert not gm.contains(base, x=0.5, y=offset)
     assert not gm.intersects(base, near)
 
 
@@ -656,8 +676,8 @@ def test_polygon_hole_excludes_points() -> None:
     polygon = gm.Polygon(
         [(0, 0), (4, 0), (4, 4), (0, 4)], holes=[[(1, 1), (3, 1), (3, 3), (1, 3)]]
     )
-    assert gm.contains_xy(polygon, 0.5, 0.5)
-    assert not gm.contains_xy(polygon, 2, 2)
+    assert gm.contains(polygon, x=0.5, y=0.5)
+    assert not gm.contains(polygon, x=2, y=2)
 
 
 def test_128_ray_multipolygon_fan_needs_every_sector_to_contain_its_center() -> None:
@@ -847,12 +867,16 @@ def test_contains_properly_excludes_boundary_contact() -> None:
 def test_xy_predicates_are_vectorized_on_every_surface() -> None:
     square = gm.box(0, 0, 10, 10)
     xs, ys = ([5.0, 0.0, 20.0], [5.0, 5.0, 20.0])
-    assert gm.contains_xy(square, 5, 5) is True
-    np.testing.assert_array_equal(gm.contains_xy(square, xs, ys), [True, False, False])
-    np.testing.assert_array_equal(gm.intersects_xy(square, xs, ys), [True, True, False])
-    assert gm.intersects_xy(square, 0, 5) is True
-    np.testing.assert_array_equal(gm.contains_xy(square, xs, ys), [True, False, False])
-    np.testing.assert_array_equal(gm.intersects_xy(square, xs, ys), [True, True, False])
+    assert gm.contains(square, x=5, y=5) is True
+    np.testing.assert_array_equal(gm.contains(square, x=xs, y=ys), [True, False, False])
+    np.testing.assert_array_equal(
+        gm.intersects(square, x=xs, y=ys), [True, True, False]
+    )
+    assert gm.intersects(square, x=0, y=5) is True
+    np.testing.assert_array_equal(gm.contains(square, x=xs, y=ys), [True, False, False])
+    np.testing.assert_array_equal(
+        gm.intersects(square, x=xs, y=ys), [True, True, False]
+    )
 
 
 def test_dispatch_strategy_seams_cannot_change_results() -> None:
@@ -1135,7 +1159,7 @@ def test_contains_properly_on_one_dimensional_containers() -> None:
 def test_closed_lines_have_no_boundary() -> None:
     ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 0)])
     assert gm.contains(ring, gm.Point(0, 0))
-    assert gm.contains_xy(ring, 0, 0) is True
+    assert gm.contains(ring, x=0, y=0) is True
     assert gm.relate(ring, gm.Point(0, 0)) == '0F1FFFFF2'
     rays = gm.from_wkt(
         'MULTILINESTRING ((0 0, 1 0), (0 0, -1 0), (0 0, 0 1), (0 0, 0 -1))'
@@ -1238,10 +1262,10 @@ def test_equals_exact_line_chunk_tail_and_active_ordinates() -> None:
 
 def test_xy_predicates_accept_empty_iterables() -> None:
     poly = gm.box(0, 0, 1, 1)
-    np.testing.assert_array_equal(gm.contains_xy(poly, [], []), [])
-    np.testing.assert_array_equal(gm.intersects_xy(poly, [], []), [])
+    np.testing.assert_array_equal(gm.contains(poly, x=[], y=[]), [])
+    np.testing.assert_array_equal(gm.intersects(poly, x=[], y=[]), [])
     with pytest.raises(ValueError, match='same length'):
-        gm.contains_xy(poly, 0.0, [])
+        gm.contains(poly, x=0.0, y=[])
 
 
 def test_relate_class_predicates_project_the_relation_matrix() -> None:
@@ -1418,9 +1442,9 @@ def test_point_in_polygon_is_exact_at_extreme_finite_coordinates():
             assert not gm.intersects(triangle, gm.Point(0.0, 0.5)), (scale, ring)
             # Below the diagonal, above the bottom edge: interior.
             assert gm.contains(triangle, gm.Point(5e307 * s, 0.0)), (scale, ring)
-            # contains_xy rides the same kernel.
-            assert not gm.contains_xy(triangle, 0.0, 0.5)
-            assert gm.contains_xy(triangle, 5e307 * s, 0.0)
+            # Raw coordinate keywords use the same point-predicate kernel.
+            assert not gm.contains(triangle, x=0.0, y=0.5)
+            assert gm.contains(triangle, x=5e307 * s, y=0.0)
 
 
 def test_is_simple_dense_and_nullable_agree():

@@ -453,7 +453,7 @@ def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> N
         metadata={
             b'ARROW:extension:name': b'geoarrow.point',
             b'ARROW:extension:metadata': _json.dumps({
-                'crs': gm.CRS('OGC:CRS84').to_projjson_dict()
+                'crs': gm.CRS('OGC:CRS84').to_projjson(as_dict=True)
             }).encode(),
         },
     )

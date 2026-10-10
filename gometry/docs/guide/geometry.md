@@ -494,12 +494,15 @@ the next part's nearest point.
 | location nearest a point | [`line_locate(point)`][gometry.Geometry.line_locate] | `line_locate(point, basis='m')` |
 | portion between two locations | [`line_substring(start, end)`][gometry.Geometry.line_substring] | `line_substring(start, end, basis='m')` |
 
-`line_interpolate` also accepts a sequence of locations or `count=` for evenly
-spaced samples. A scalar line produces a [`GeometryArray`][gometry.GeometryArray] for those plural
-forms; an array receiver returns row-aligned points or [`Groups`][gometry.Groups] when each row
-has its own sample count. `normalized` and `unit` belong only to the distance
-basis, so a measured route never silently mixes two coordinate systems. On the
-distance basis, `unit` selects the route metric even when `normalized=True`:
+On the distance basis, `line_interpolate` accepts a sequence of locations or
+`count=` for evenly spaced samples. With `basis='m'`, a scalar line accepts one
+stored measure for a `Point` or a measure sequence for a `GeometryArray[Point]`;
+an array receiver accepts one measure per line row. An array receiver returns
+row-aligned points for one location per row or [`Groups`][gometry.Groups] when
+each row has its own sample count. `normalized` and `unit` belong only to the
+distance basis, so a measured route never silently mixes two coordinate
+systems. On the distance basis, `unit` selects the route metric even when
+`normalized=True`:
 fractions are measured along that selected route, so changing `unit` can change
 the resulting position. `count=` also uses fractions of the selected metric and
 accepts `unit=`, but rejects `normalized=True` because the count already defines
@@ -518,7 +521,7 @@ print('samples:', [point.to_wkt() for point in samples])
 
 **M linear referencing** locates positions by the M ordinate rather than by
 fractional or absolute length. `line_interpolate(m, basis='m')` returns the
-point at a given measure, `line_locate(geom, basis='m')` returns the measure
+point at a given measure, `line_locate(point, basis='m')` returns the measure
 nearest a point, and `line_substring(start_m, end_m, basis='m')` cuts the
 section between two measures. They require every vertex to carry a monotonic,
 non-decreasing M. The extent accessors mirror the Z family:

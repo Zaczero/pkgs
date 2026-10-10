@@ -3,8 +3,8 @@ use pyo3::types::PyAny;
 
 use crate::geometry::storage::validity::union_many;
 use crate::{
-    Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, Py, PyGeometry,
-    PyResult, Python, classify_required, crs, exact_geometry_array,
+    Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, NavigationPath, Py,
+    PyGeometry, PyResult, Python, classify_required, crs, exact_geometry_array,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     metric_nearest_points_resolved, metric_shortest_line_resolved, nearest_point_columns_masked,
     pyfunction, resolve_metric, validate_dwithin_distance, validate_dwithin_distance_arg,
@@ -36,9 +36,9 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -147,13 +147,18 @@ pub(crate) fn shortest_line(
 /// projected CRS, raw coordinate units when CRS-free. On a geographic CRS,
 /// point-to-point distances use ellipsoidal geodesics, and shape edges are
 /// straight in the CRS's longitude/latitude chart with short-way longitude
-/// across the antimeridian. Filled polygon interiors participate.
+/// across the antimeridian. Filled polygon interiors participate. For two
+/// points, ``path='rhumb'`` measures the constant-bearing route in meters on a
+/// geographic CRS.
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
+/// path : {'geodesic', 'rhumb'}, default varies by call form
+///     Route for point operands. Omit for geodesic distance; rhumb distance
+///     requires ``path='rhumb'`` and a geographic CRS and uses meters.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -167,8 +172,13 @@ pub(crate) fn shortest_line(
 ///     If the CRS lacks linear axis units for a metric result.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// GeometryTypeError
+///     If ``path='rhumb'`` is used with non-point operands.
+/// CRSError
+///     If ``path='rhumb'`` is used without a geographic CRS.
 /// GeometryError
-///     If ``unit='meters'`` is requested for a CRS-free geometry.
+///     If ``unit='meters'`` is requested for a CRS-free geometry or a unit
+///     override is supplied with ``path='rhumb'``.
 ///
 /// See Also
 /// --------
@@ -187,14 +197,21 @@ pub(crate) fn shortest_line(
 /// >>> round(gm.distance(a, b))  # meters
 /// 6868
 #[pyfunction]
-#[pyo3(signature = (left, right, *, unit = None))]
+#[pyo3(
+    signature = (left, right, *, path = NavigationPath::Geodesic, unit = None),
+    text_signature = "(left, right, *, path='geodesic', unit=None)"
+)]
 pub(crate) fn distance(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
+    path: NavigationPath,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_distance(py, left, right, unit)
+    match path {
+        NavigationPath::Geodesic => crate::dispatch::dispatch_distance(py, left, right, unit),
+        NavigationPath::Rhumb => crate::measures::distance_rhumb(py, left, right, unit),
+    }
 }
 
 /// Compute the minimum 3D (Euclidean) distance between two geometries,
@@ -212,9 +229,9 @@ pub(crate) fn distance(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -272,9 +289,9 @@ pub(crate) fn distance_3d(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 /// max_error : float, optional
 ///     Positive finite scalar absolute error bound in final result units.
 ///     Planar results default to a certified relative error of at most
@@ -338,8 +355,8 @@ pub(crate) fn hausdorff_distance(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     The two linestrings.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     The line operands; scalar and sequence inputs broadcast pairwise.
 /// densify : float, optional
 ///     Subdivide every segment into pieces no longer than this
 ///     fraction of its length (in ``(0, 1]``) before measuring,
@@ -408,9 +425,10 @@ pub(crate) fn frechet_distance(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch. Unpack order is point on ``left``, then on ``right``.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames. Unpack order is point on
+///     ``left``, then on ``right``.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -448,9 +466,11 @@ pub(crate) fn nearest_points(
     right: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
     let admission = crate::dispatch::admit_binary(
-        left,
-        right,
+        &left,
+        &right,
         crate::dispatch::MetricOp::NearestPoints.name(),
     )?;
     let model = resolve_metric(
@@ -558,9 +578,9 @@ pub(crate) fn nearest_points(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 /// distance : float or sequence of float
 ///     CRS-aware distance threshold: geodesic meters on a geographic CRS,
 ///     native linear units on a projected CRS, raw coordinate units when
@@ -586,6 +606,10 @@ pub(crate) fn nearest_points(
 ///     ``unit='meters'`` is requested for a CRS-free geometry. Positive
 ///     infinity is accepted and matches every pair of admitted non-empty
 ///     operands.
+/// CRSError
+///     If geographic point-edge search reaches its binary64-resolution-derived
+///     work allowance or 16,384-evaluation safety ceiling, or parameter
+///     precision ends without proving the threshold result.
 ///
 /// See Also
 /// --------
@@ -610,8 +634,10 @@ pub(crate) fn dwithin(
     distance: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let left_array = exact_geometry_array(left);
-    let right_array = exact_geometry_array(right);
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let left_array = exact_geometry_array(&left);
+    let right_array = exact_geometry_array(&right);
     // The per-element distance lane needs an array operand (its result is one
     // bool per row); the broadcast length comes from that operand.
     let Some(len) = (match (left_array, right_array) {
@@ -620,15 +646,15 @@ pub(crate) fn dwithin(
     }) else {
         // Two scalars: a single bool, so the distance must be scalar too.
         let distance = validate_dwithin_distance_arg(distance)?;
-        let left_input = classify_required(left)?;
-        let right_input = classify_required(right)?;
+        let left_input = classify_required(&left)?;
+        let right_input = classify_required(&right)?;
         let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
         return crate::dispatch::dispatch_dwithin_admitted(py, &admission, distance, unit);
     };
     let distance = crate::F64Param::parse_raw(distance, "distance", len)?;
     distance.try_validate(|value| validate_dwithin_distance(value).map(|_| ()))?;
-    let left_input = classify_required(left)?;
-    let right_input = classify_required(right)?;
+    let left_input = classify_required(&left)?;
+    let right_input = classify_required(&right)?;
     let admission = crate::dispatch::admit_binary_inputs(left_input, right_input, "dwithin")?;
     let Some(scalar) = distance.as_scalar() else {
         // `dwithin` is symmetric, so route the ARRAY operand as the primary and

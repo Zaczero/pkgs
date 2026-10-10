@@ -6,8 +6,12 @@ use crate::py::classes::coordinate_methods::{
 };
 
 impl PyCoordinates {
-    pub const fn new(view: coordinates::CoordinateView) -> Self {
-        Self { view, layout: None }
+    pub const fn new(view: coordinates::CoordinateView, owner: Py<PyAny>) -> Self {
+        Self {
+            view,
+            owner,
+            layout: None,
+        }
     }
 
     pub(crate) fn coordinates_equal(&self, py: Python<'_>, other: &Self) -> PyResult<bool> {

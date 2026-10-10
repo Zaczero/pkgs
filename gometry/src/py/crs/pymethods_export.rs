@@ -1,7 +1,9 @@
+use pyo3::IntoPyObject as _;
+
 use crate::py::crs::{
-    Bound, MinConfidence, Py, PyCrs, PyDict, PyResult, Python, crs, crs_arc, crs_to_authority,
-    crs_to_cf, crs_to_epsg, crs_to_proj, crs_to_projjson, crs_to_projjson_dict, crs_to_wkt,
-    pymethods,
+    Bound, GeometryError, MinConfidence, Py, PyAny, PyCrs, PyDict, PyResult, Python, crs, crs_arc,
+    crs_projjson_mapping, crs_to_authority, crs_to_cf, crs_to_epsg, crs_to_proj, crs_to_projjson,
+    crs_to_wkt, pymethods,
 };
 #[pymethods]
 impl PyCrs {
@@ -72,7 +74,7 @@ impl PyCrs {
     ///     WKT dialect (default ``"WKT2_2019"``).
     ///
     /// pretty : bool, optional
-    ///     Indent the output (default ``False``).
+    ///     Indent the WKT output (default ``False``).
     ///
     /// output_axis : str, default "auto"
     ///     Axis-output policy (``"auto"``, ``"yes"``, ``"no"``).
@@ -171,52 +173,58 @@ impl PyCrs {
         )
     }
 
-    /// Serialize this CRS to a PROJJSON string.
+    /// Export this CRS as PROJJSON text or a fresh Python mapping.
     ///
     /// Parameters
     /// ----------
-    /// pretty : bool, optional
-    ///     Indent the output (default ``False``).
+    /// as_dict : bool
+    ///     Return a Python mapping; the JSON-text form omits ``as_dict`` and
+    ///     the mapping form requires ``as_dict=True``.
     ///
-    /// indentation_width : int, default 2
-    ///     Spaces per indent level when ``pretty``.
+    /// pretty : bool, optional
+    ///     Indent JSON text (default ``False``). Only applies when
+    ///     ``as_dict=False``.
+    ///
+    /// indentation_width : int
+    ///     Spaces per indent level for pretty JSON text; available only when
+    ///     ``as_dict=False``.
     ///
     /// Returns
     /// -------
-    /// str
+    /// str or dict[str, object]
     ///
     /// Raises
     /// ------
     /// CRSError
     ///     If export fails or a formatting option is invalid.
+    /// GeometryError
+    ///     If formatting is requested with ``as_dict=True``.
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> 'GeographicCRS' in gm.CRS(4326).to_projjson()
-    /// True
-    #[pyo3(signature = (*, pretty = false, indentation_width = 2))]
+    /// >>> gm.CRS(4326).to_projjson(as_dict=True)['type']
+    /// 'GeographicCRS'
+    #[pyo3(signature = (*, as_dict = false, pretty = false, indentation_width = 2))]
     fn to_projjson(
         slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        as_dict: bool,
         pretty: bool,
         #[pyo3(from_py_with = crate::strict_i128)] indentation_width: i128,
-    ) -> PyResult<String> {
-        crs_to_projjson(slf.as_any(), pretty, indentation_width)
-    }
-
-    /// Serialize this CRS to a PROJJSON ``dict``.
-    ///
-    /// Returns
-    /// -------
-    /// dict[str, object]
-    ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> gm.CRS(4326).to_projjson_dict()['type']
-    /// 'GeographicCRS'
-    fn to_projjson_dict(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        crs_to_projjson_dict(py, slf.as_any())
+    ) -> PyResult<Py<PyAny>> {
+        if as_dict {
+            if pretty || indentation_width != 2 {
+                return Err(GeometryError::new_err(
+                    "pretty and nondefault indentation_width cannot be used with as_dict=True",
+                ));
+            }
+            return Ok(crs_projjson_mapping(py, slf.as_any())?.into_any());
+        }
+        Ok(crs_to_projjson(slf.as_any(), pretty, indentation_width)?
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
     }
 
     /// CF (Climate and Forecast) grid-mapping attributes as a dict.

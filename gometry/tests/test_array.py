@@ -22,7 +22,9 @@ def assert_optional_float_array(actual: object, expected: list[float | None]) ->
 def test_packed_point_array_values_and_auto_packing() -> None:
     packed = gm.points([0, 1, 2], [10, 11, 12], z=[5, 6, 7], crs=4326)
     assert len(packed) == 3
-    assert (packed[1]).to_wkt() == 'POINT Z (1 11 6)' and packed[1].crs == 'EPSG:4326'
+    assert (packed[1]).to_wkt() == 'POINT Z (1 11 6)' and packed[1].crs == gm.CRS(
+        'EPSG:4326'
+    )
     assert [(g).to_wkt() for g in packed[::2]] == [
         'POINT Z (0 10 5)',
         'POINT Z (2 12 7)',
@@ -110,8 +112,8 @@ def test_array_with_crs_strips_and_relabels_the_whole_frame() -> None:
     with pytest.raises(ValueError, match='overwrite=True'):
         pts.with_crs(('EPSG', 3857))
     relabelled = pts.with_crs(('EPSG', 3857), overwrite=True)
-    assert relabelled.crs == 'EPSG:3857'
-    assert [p.crs for p in relabelled] == ['EPSG:3857', 'EPSG:3857']
+    assert relabelled.crs == gm.CRS('EPSG:3857')
+    assert [p.crs for p in relabelled] == [gm.CRS('EPSG:3857')] * 2
     assert relabelled.to_arrow().type.extension_name == 'geoarrow.point'
 
 
@@ -389,9 +391,9 @@ def test_mixed_axis_geometry_collection_delaunay_triangles_does_not_panic() -> N
 
 
 def test_require_crs_reports_frames_without_debug_formatting() -> None:
-    assert gm.require(gm.GeometryArray([]), crs=4326).crs == 'EPSG:4326'
+    assert gm.require(gm.GeometryArray([]), crs=4326).crs == gm.CRS('EPSG:4326')
     tagged = gm.GeometryArray([], crs=('EPSG', 4326))
-    assert gm.require(tagged, crs=gm.CRS(4326)).crs == 'EPSG:4326'
+    assert gm.require(tagged, crs=gm.CRS(4326)).crs == gm.CRS('EPSG:4326')
     with pytest.raises(ValueError, match='expected CRS "EPSG:3857", got "EPSG:4326"'):
         gm.require(gm.Point(0, 0, crs=4326), crs=3857)
 
@@ -413,14 +415,14 @@ def test_geometry_array_selection_take_filter_concat_is_valid() -> None:
     np.testing.assert_array_equal(array.is_valid, [True, True, True])
     taken = array[[2, 0, -1]]
     assert [g.geometry_type for g in taken] == ['Polygon', 'Point', 'Polygon']
-    assert taken.crs == 'EPSG:4326'
+    assert taken.crs == gm.CRS('EPSG:4326')
     kept = array[[True, False, True]]
     assert [g.geometry_type for g in kept] == ['Point', 'Polygon']
     with pytest.raises(ValueError, match='mask length'):
         array[[True]]
     more = gm.GeometryArray([gm.Point(5, 5)], crs=4326)
     joined = array.concat(more)
-    assert len(joined) == 4 and joined.crs == 'EPSG:4326'
+    assert len(joined) == 4 and joined.crs == gm.CRS('EPSG:4326')
     with pytest.raises(ValueError, match='shared CRS'):
         array.concat(gm.GeometryArray([gm.Point(9, 9)]))
     with pytest.raises(IndexError, match='out of range'):

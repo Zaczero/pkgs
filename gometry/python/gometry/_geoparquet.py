@@ -9,7 +9,7 @@ import numbers
 import os  # noqa: TC003 - required by runtime get_type_hints
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 from gometry._lib import (
     CRS,
@@ -291,7 +291,7 @@ def _attributes_table(pa: Any, attributes: Any, row_count: int) -> Any | None:
 
 def to_geoparquet(
     values: Geometry | GeometryArray[Geometry | None],
-    path: str | os.PathLike[str],
+    path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
     attributes: pa.Table | Mapping[str, Any] | None = None,
     encoding: Literal['wkb', 'native'] = 'wkb',
@@ -304,8 +304,9 @@ def to_geoparquet(
     values : Geometry or GeometryArray
         Geometry rows. A scalar is stored as a single-row table.
         Serialization describes the receiver CRS (use ``with_crs`` first).
-    path : path-like
-        Output Parquet path.
+    path : str, path-like, or binary stream
+        Output Parquet path or caller-owned binary writable stream. Text
+        streams are not supported; the writer leaves streams open.
     attributes : pyarrow.Table or mapping, optional
         Aligned non-geometry columns to preserve beside the geometry column.
     encoding : {'wkb', 'native'}, default 'wkb'
@@ -939,7 +940,7 @@ def _attribute_result(table: Any) -> Any:
 
 
 def from_geoparquet(
-    path: str | os.PathLike[str],
+    path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
     geometry: str | None = None,
     columns: Iterable[str] | None = None,
@@ -952,8 +953,9 @@ def from_geoparquet(
 
     Parameters
     ----------
-    path : path-like
-        GeoParquet file to read.
+    path : str, path-like, or binary stream
+        GeoParquet file or caller-owned binary seekable stream. Text streams
+        are not supported; the reader leaves streams open.
     geometry : str, optional
         Geometry column to decode; the primary column is used by default.
     columns : iterable of str, optional

@@ -31,7 +31,9 @@ _PANDAS_INSTALL = "install the 'gometry[pandas]' extra"
 _ARROW_INSTALL = "install the 'gometry[arrow]' extra"
 
 BoolArray: TypeAlias = npt.NDArray[np.bool_]
-IndexArray: TypeAlias = npt.NDArray[np.integer[Any]]
+IndexArray: TypeAlias = np.ndarray[
+    tuple[int], np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]]
+]
 ObjectArray: TypeAlias = npt.NDArray[np.object_]
 
 
@@ -67,6 +69,7 @@ _ExtensionArray = _pd.api.extensions.ExtensionArray
 # mypy cannot model these runtime-selected pandas extension bases. This module
 # is imported only by pandas adapter calls, so pandas remains optional to the
 # top-level package.
+@_pd.api.extensions.register_extension_dtype
 class GeometryDtype(_ExtensionDtype):  # type: ignore[valid-type, misc]
     """pandas extension dtype for gometry geometries."""
 
@@ -355,7 +358,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         allow_fill: bool = False,
         fill_value: object = None,
     ) -> GeometryExtensionArray:
-        indices_arr = np.asarray(indices, dtype=np.intp)
+        indices_arr: IndexArray = np.asarray(indices, dtype=np.intp)
         if not allow_fill:
             length = len(self)
             if length == 0 and len(indices_arr):
@@ -386,7 +389,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         # One native indexed take + mask merge (batch FFI). Fill slots are
         # logically absent: gather with a safe stand-in index, then OR-merge
         # fill positions into the missing mask — never rebox/reingest rows.
-        safe_indices = np.where(fill_positions, 0, indices_arr)
+        safe_indices: IndexArray = np.where(fill_positions, 0, indices_arr)
         if len(self) == 0:
             n = len(indices_arr)
             rebuilt = GeometryArray(

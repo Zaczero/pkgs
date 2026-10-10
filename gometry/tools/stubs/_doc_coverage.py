@@ -19,6 +19,7 @@ from _gatelib import prepend_rust_source_import_paths
 from runtime_artifact import require_runtime
 
 prepend_rust_source_import_paths()
+from public_inventory import load_public_symbols
 from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import (
@@ -67,15 +68,13 @@ RAISES_VALUEERROR_EXEMPT: dict[str, str] = {
     'MultiLineString.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'MultiPoint.index': 'Sequence index lookup uses the list.index missing-value convention.',
     'MultiPolygon.index': 'Sequence index lookup uses the list.index missing-value convention.',
-    'H3VertexArray.index': 'list.index convention: a missing element is a plain ValueError',
-    'H3EdgeArray.index': 'list.index convention: a missing element is a plain ValueError',
 }
 _MIRRORED_RAISES = frozenset({
     'coverage_is_valid',
     'coverage_invalid_edges',
     'coverage_simplify',
     'coverage_clean',
-    'coverage_union',
+    'coverage_union_all',
     'union_all',
     'intersection_all',
     'symmetric_difference_all',
@@ -118,8 +117,7 @@ _POLICY_GATED = (
     'envelope',
     'polylabel',
     'maximum_inscribed_circle',
-    'voronoi_polygons',
-    'voronoi_edges',
+    'voronoi',
     'minimum_rotated_rectangle',
 )
 _METRIC_CRS_AWARE: dict[str, frozenset[str]] = {
@@ -149,8 +147,8 @@ _OP_EXTRAS: dict[str, frozenset[str]] = {
     'clip_by_rect': frozenset({'GeometryError'}),
     'to_wkt': frozenset({'CRSError', 'GeometryError'}),
     'to_wkb': frozenset({'CRSError'}),
-    'contains_xy': frozenset({'InvalidGeometryError'}),
-    'intersects_xy': frozenset({'InvalidGeometryError'}),
+    'contains': frozenset({'InvalidGeometryError'}),
+    'intersects': frozenset({'InvalidGeometryError'}),
     'require': frozenset({'InvalidGeometryError', 'CRSMismatchError'}),
     'dwithin': frozenset({'GeometryError'}),
     'relate_pattern': frozenset({'GeometryError'}),
@@ -187,8 +185,6 @@ def required_raises(
         if name in _POLICY_GATED:
             required.add('InvalidGeometryError')
         extras = set(_OP_EXTRAS.get(name, frozenset()))
-        if name == 'to_wkt' and owner == 'CRS':
-            extras.discard('GeometryError')
         required |= extras
         metric = set(_METRIC_CRS_AWARE.get(name, frozenset()))
         # Properties ``area``/``length`` have no ``unit=`` (Rule 4 free fn owns
@@ -215,17 +211,17 @@ def required_raises(
     # Polygonal-coverage free duals + GeometryArray methods. Free forms take
     # mixed iterables and therefore require CRSMismatchError; array methods
     # share one frame. GeometryTypeError is the wrong-kind floor except for
-    # coverage_union (empty/invalid-coverage content only). InvalidGeometryError
+    # coverage_union_all (empty/invalid-coverage content only). InvalidGeometryError
     # is content: simplify/union require a valid coverage; clean can fail when
     # snap-repair cannot converge. Param-value lanes keep base GeometryError.
     if name in (
         'coverage_is_valid',
         'coverage_invalid_edges',
         'coverage_simplify',
-        'coverage_union',
+        'coverage_union_all',
         'coverage_clean',
     ) and owner in ('', 'GeometryArray'):
-        if name != 'coverage_union':
+        if name != 'coverage_union_all':
             required.add('GeometryTypeError')
         if name in (
             'coverage_is_valid',
@@ -234,7 +230,7 @@ def required_raises(
             'coverage_clean',
         ):
             required.add('GeometryError')
-        if name in ('coverage_simplify', 'coverage_union', 'coverage_clean'):
+        if name in ('coverage_simplify', 'coverage_union_all', 'coverage_clean'):
             required.add('InvalidGeometryError')
         if owner == '':
             required.add('CRSMismatchError')
@@ -298,7 +294,6 @@ def required_raises(
     if qualname in (
         'h3_cover',
         's2_cover',
-        's2_cover_adaptive',
         'geohash_cover',
         'tile_cover',
     ):
@@ -319,8 +314,6 @@ def required_raises(
         if name in ('query', 'nearest', 'candidates'):
             required.add('GeometryError')
     if qualname == 'join':
-        required.add('CRSMismatchError')
-    if qualname in ('array', 'index'):
         required.add('CRSMismatchError')
     if parameters and 'crs' in parameters:
         required.add('CRSError')
@@ -354,6 +347,8 @@ def _check_raises(
 
 
 def check_subject_raises(subject: DocSubject) -> list[str]:
+    if subject.kind in {'class', 'attribute', 'schema'}:
+        return []
     errors: list[str] = []
     doc = parse_doc(subject.prose)
     entries = raises_entries(doc)
@@ -386,7 +381,7 @@ def check_mirrored_raises(subjects: Iterable[DocSubject]) -> list[str]:
     by_name = {
         subject.qualname: subject
         for subject in subjects
-        if subject.prose and subject.kind != 'class'
+        if subject.prose and subject.kind not in {'class', 'attribute', 'schema'}
     }
     errors: list[str] = []
     for name in sorted(_MIRRORED_RAISES):
@@ -418,12 +413,22 @@ def main() -> int:
     gm, _, _ = require_runtime(_ROOT)
     cfg = load_config(_TOOLS_ROOT / 'stubs' / 'stubconfig.py')
     ctx = CheckContext(cfg)
-    subjects = tuple(iter_doc_subjects(ctx, runtime_module=gm))
+    inventory = load_public_symbols(
+        cfg.stub_path,
+        _ROOT / 'python' / 'gometry' / '__init__.py',
+    )
+    subjects = tuple(
+        iter_doc_subjects(
+            ctx,
+            runtime_module=gm,
+            source_classes=inventory.source_classes,
+        )
+    )
     errors: list[str] = []
     checked: Counter[str] = Counter()
     errors.extend(check_mirrored_raises(subjects))
     for subject in subjects:
-        if subject.kind == 'class':
+        if subject.kind in {'class', 'attribute', 'schema'}:
             continue
         owner = subject.qualname.rpartition('.')[0] or '<top-level>'
         checked[owner] += 1

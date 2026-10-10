@@ -5,7 +5,7 @@ use crate::py::errors::GeometryError;
 use crate::py::support::LineReferenceBasis;
 use crate::{
     DistanceUnit, F64Param, GeometryInput, NavigationPath, PyGeometry, PyGeometryArray, Typed,
-    parse_interpolate_plan,
+    parameter_input_with_expected, parse_interpolate_plan,
 };
 
 /// `basis='m'` forbids distance-only options (`normalized`, `unit`).
@@ -39,7 +39,8 @@ Parameters
 ----------
 at : float or sequence of float, optional
     One location or many explicit distance-basis locations. Under
-    ``basis='m'``, pass one stored M value (or one value per array row).
+    ``basis='m'``, pass one stored M value for a scalar result or a sequence of
+    stored M values for one line; an array accepts one M value per row.
 
 ";
     scalar: (r"
@@ -74,10 +75,11 @@ GeometryArray[Point] or Groups[GeometryArray[Point]]
 
 ");
     post: concat!(r"
-basis : {'distance', 'm'}, default 'distance'
-    Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-    the M fraction selects the same arclength fraction on each edge: ellipsoidal
-    chart-edge arclength on a geographic CRS, planar length otherwise.
+basis : {'distance', 'm'}
+    Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+    omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+    the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+    on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Interpret distance-basis ``at`` values as fractions of the route length
@@ -133,10 +135,11 @@ start, end : float or sequence of float
     Ordered locations on the selected basis. Distance values follow the CRS;
     M values are stored route measures. A scalar applies to every array row.
 
-basis : {'distance', 'm'}, default 'distance'
-    Use CRS-aware distance, or the line's monotonic M ordinate. For ``basis='m'``,
-    the M fraction selects the same arclength fraction on each edge: ellipsoidal
-    chart-edge arclength on a geographic CRS, planar length otherwise.
+basis : {'distance', 'm'}
+    Use CRS-aware distance, or the line's monotonic M ordinate. Distance forms
+    omit ``basis``; M stationing requires ``basis='m'``. Its M fraction selects
+    the same arclength fraction on each edge: ellipsoidal chart-edge arclength
+    on a geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Interpret distance-basis positions as fractions of the route length under
@@ -254,7 +257,7 @@ Examples
 
 method_doc! {
     doc_line_locate;
-    body: concat!(r"Locate the position on linework nearest ``geom``. Empty linework, or
+    body: concat!(r"Locate the position on linework nearest ``point``. Empty linework, or
 an empty query point, locates to ``nan``.
 
 Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
@@ -273,13 +276,15 @@ coordinate space.
 
 Parameters
 ----------
-geom : Geometry or GeometryArray
-    A geometry to project, or one geometry per line row.
+point : Point or GeometryArray[Point | None]
+    A point to project, or one point per line row. Missing query rows produce
+    ``nan`` in the result column.
 
-basis : {'distance', 'm'}, default 'distance'
-    Return a CRS-aware distance, or the line's monotonic M ordinate. For
-    ``basis='m'``, nearest-point projection follows the same chart-edge metric:
-    ellipsoidal arclength on a geographic CRS, planar length otherwise.
+basis : {'distance', 'm'}
+    Return a CRS-aware distance, or the line's monotonic M ordinate. Distance
+    forms omit ``basis``; M stationing requires ``basis='m'``. M-based
+    projection follows the same chart-edge metric: ellipsoidal arclength on a
+    geographic CRS, planar length otherwise.
 
 normalized : bool, default False
     Return a distance-basis fraction in [0, 1] under the selected metric.
@@ -293,7 +298,7 @@ normalized : bool, default False
 Returns
 -------
 float or numpy.ndarray
-    One location, or a column when ``geom`` is an array.
+    One location, or a column when ``point`` is an array.
 
 ";
     array: r"
@@ -353,6 +358,29 @@ impl PyGeometry {
             .map(|value| crate::f64_scalar_named("at", value))
             .transpose()?
             .flatten();
+        if basis == LineReferenceBasis::M
+            && count.is_none()
+            && at_scalar.is_none()
+            && let Some(at) = at
+        {
+            reject_m_basis_distance_options(normalized, unit)?;
+            let stations = parameter_input_with_expected(py, at, "at", None, &|| {
+                "at must be finite".to_owned()
+            })?
+            .values;
+            let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
+            let value = crate::dispatch::unary_scalar_linref_column(
+                py,
+                self,
+                op,
+                op.resolver_with_unit(None),
+                stations,
+                |data, ctx, station| {
+                    kernels::unary_line_interpolate_point_m(data, ctx, &F64Param::Scalar(station))
+                },
+            )?;
+            return value.into_pyobject(py).map(|value| value.unbind().into());
+        }
         if count.is_some() || at_scalar.is_none() {
             if basis != LineReferenceBasis::Distance {
                 return Err(GeometryError::new_err(
@@ -461,13 +489,13 @@ impl PyGeometry {
 
     #[doc = doc_line_locate!(scalar)]
     #[pyo3(
-        signature = (geom, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
-        text_signature = "($self, geom, *, basis='distance', normalized=False, unit=None)"
+        signature = (point, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
+        text_signature = "($self, point, *, basis='distance', normalized=False, unit=None)"
     )]
     pub fn line_locate(
         &self,
         py: Python<'_>,
-        geom: &Bound<'_, PyAny>,
+        point: &Bound<'_, PyAny>,
         basis: LineReferenceBasis,
         normalized: bool,
         unit: Option<DistanceUnit>,
@@ -478,7 +506,7 @@ impl PyGeometry {
         crate::dispatch::line_locate_input(
             py,
             GeometryInput::One(self),
-            geom,
+            point,
             basis,
             normalized,
             unit,
@@ -498,8 +526,9 @@ impl PyGeometryArray {
     /// distance : float or sequence of float
     ///     Finite, non-negative distance to travel in CRS-natural units, unless
     ///     `unit` is set.
-    /// path : {'geodesic', 'rhumb'}, default 'geodesic'
-    ///     Route model. Rhumb paths require a geographic CRS and use meters.
+    /// path : {'geodesic', 'rhumb'}
+    ///     Route model. Geodesic forms omit ``path``; rhumb forms require
+    ///     ``path='rhumb'`` and a geographic CRS.
     #[doc = unit_parameter_doc!()]
     ///     ``path='rhumb'`` uses meters and does not accept a unit override.
     ///
@@ -674,13 +703,13 @@ impl PyGeometryArray {
 
     #[doc = doc_line_locate!(array)]
     #[pyo3(
-        signature = (geom, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
-        text_signature = "($self, geom, *, basis='distance', normalized=False, unit=None)"
+        signature = (point, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
+        text_signature = "($self, point, *, basis='distance', normalized=False, unit=None)"
     )]
     pub fn line_locate(
         &self,
         py: Python<'_>,
-        geom: &Bound<'_, PyAny>,
+        point: &Bound<'_, PyAny>,
         basis: LineReferenceBasis,
         normalized: bool,
         unit: Option<DistanceUnit>,
@@ -691,7 +720,7 @@ impl PyGeometryArray {
         crate::dispatch::line_locate_input(
             py,
             GeometryInput::Many(self),
-            geom,
+            point,
             basis,
             normalized,
             unit,

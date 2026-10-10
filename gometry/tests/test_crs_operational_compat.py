@@ -39,9 +39,9 @@ def test_crs84_4326_predicates_metrics_overlay_lrs_prepared() -> None:
     poly_a = gm.box(0, 0, 2, 2, crs=4326)
     poly_b = gm.box(1, 1, 3, 3, crs='OGC:CRS84')
     inter = gm.intersection(poly_a, poly_b)
-    assert inter.crs == 'EPSG:4326'  # left-biased label
+    assert inter.crs == gm.CRS('EPSG:4326')  # left-biased label
     rev = gm.intersection(poly_b, poly_a)
-    assert rev.crs == 'OGC:CRS84'
+    assert rev.crs == gm.CRS('OGC:CRS84')
     assert gm.equals(inter, rev)  # coordinate result commutative
 
     line = gm.LineString([(0, 0), (1, 1)], crs=4326)
@@ -152,24 +152,28 @@ def test_collection_seams_accept_equivalent_crs_and_keep_the_receiver_label() ->
     alias = gm.Point(1, 1, crs='OGC:CRS84')
 
     filled = arr.fill_missing(alias)
-    assert filled.crs == 'EPSG:4326'  # the column's label, not the fill's
+    assert filled.crs == gm.CRS('EPSG:4326')  # the column's label, not the fill's
     assert filled[1].to_wkt() == 'POINT (1 1)'
 
     replaced = arr._replace_at([0], [gm.Point(9, 9, crs='OGC:CRS84')])
-    assert replaced.crs == 'EPSG:4326'
+    assert replaced.crs == gm.CRS('EPSG:4326')
     assert replaced[0].to_wkt() == 'POINT (9 9)'
 
     joined = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).concat(
         gm.GeometryArray([alias])
     )
-    assert joined.crs == 'EPSG:4326'
+    assert joined.crs == gm.CRS('EPSG:4326')
     assert len(joined) == 2
 
     # Construction is first-biased, in both directions.
-    assert gm.GeometryArray([alias, gm.Point(0, 0, crs=4326)]).crs == 'OGC:CRS84'
-    assert gm.GeometryArray([gm.Point(0, 0, crs=4326), alias]).crs == 'EPSG:4326'
+    assert gm.GeometryArray([alias, gm.Point(0, 0, crs=4326)]).crs == gm.CRS(
+        'OGC:CRS84'
+    )
+    assert gm.GeometryArray([gm.Point(0, 0, crs=4326), alias]).crs == gm.CRS(
+        'EPSG:4326'
+    )
     # An explicit crs= is the requested output label.
-    assert gm.GeometryArray([alias], crs=4326).crs == 'EPSG:4326'
+    assert gm.GeometryArray([alias], crs=4326).crs == gm.CRS('EPSG:4326')
 
 
 def test_index_insert_and_query_both_accept_equivalent_crs() -> None:
@@ -185,9 +189,9 @@ def test_require_retags_an_equivalent_label_to_the_requested_one() -> None:
     already in the requested frame is relabelled to what the caller asked for.
     """
     g = gm.from_geojson('{"type":"Point","coordinates":[10,50]}')
-    assert g.crs == 'OGC:CRS84'
-    assert gm.require(g, crs=4326).crs == 'EPSG:4326'
-    assert gm.require(gm.GeometryArray([g]), crs=4326).crs == 'EPSG:4326'
+    assert g.crs == gm.CRS('OGC:CRS84')
+    assert gm.require(g, crs=4326).crs == gm.CRS('EPSG:4326')
+    assert gm.require(gm.GeometryArray([g]), crs=4326).crs == gm.CRS('EPSG:4326')
 
 
 def test_equals_identical_and_object_eq_stay_exact() -> None:
@@ -200,7 +204,7 @@ def test_equals_identical_and_object_eq_stay_exact() -> None:
 
 def test_geojson_default_stays_crs84() -> None:
     g = gm.from_geojson('{"type":"Point","coordinates":[10,50]}')
-    assert g.crs == 'OGC:CRS84'
+    assert g.crs == gm.CRS('OGC:CRS84')
     # And it interoperates with EPSG:4326 points operationally.
     assert gm.equals(g, gm.Point(10, 50, crs=4326)) is True
 
@@ -301,9 +305,9 @@ def test_ewkb_identity_loss_and_alias_restore() -> None:
     g = gm.Point(10, 50, crs='OGC:CRS84')
     ewkb = g.to_wkb(include_srid=True)
     lost = gm.from_wkb(ewkb)
-    assert lost.crs == 'EPSG:4326'
+    assert lost.crs == gm.CRS('EPSG:4326')
     restored = gm.from_wkb(ewkb, crs='OGC:CRS84')
-    assert restored.crs == 'OGC:CRS84'
+    assert restored.crs == gm.CRS('OGC:CRS84')
     assert gm.equals(restored, g) is True
     with pytest.raises(CRSMismatchError):
         gm.from_wkb(ewkb, crs=3857)

@@ -62,7 +62,7 @@ pub(crate) fn line_locate_point_on_lines(
                             .map_err(|error| (row, error))?;
                     }
                 }
-                let rows = if let Some(first_present) = first_present {
+                if let Some(first_present) = first_present {
                     crate::crs::with_geographic_coordseq_metric_at(geodesic_crs, state, |metric| {
                         let rows = (0..logical_len)
                             .map(|row| {
@@ -91,8 +91,7 @@ pub(crate) fn line_locate_point_on_lines(
                         Ok(Ok(vec![f64::NAN; logical_len]))
                     })
                     .map_err(|error| (0, error))?
-                };
-                rows
+                }
             },
             crs::MetricModel::Planar { .. } => {
                 let map = row_map.as_deref();

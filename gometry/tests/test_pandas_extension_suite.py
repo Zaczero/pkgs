@@ -11,14 +11,23 @@ pandas-container contract.
 
 from __future__ import annotations
 
+import importlib
 import itertools
 
 import gometry as gm
 import numpy as np
-import pandas as pd
 import pytest
-from gometry._pandas import GeometryDtype, GeometryExtensionArray
-from pandas.tests.extension import base
+
+pd = pytest.importorskip(
+    'pandas', reason='pandas is an optional extension-array dependency'
+)
+base = pytest.importorskip(
+    'pandas.tests.extension.base',
+    reason='pandas==3.0.5 extension-test module is unavailable here',
+)
+_pandas = importlib.import_module('gometry._pandas')
+GeometryDtype = _pandas.GeometryDtype
+GeometryExtensionArray = _pandas.GeometryExtensionArray
 
 
 def _points(n: int) -> list[gm.Point]:
@@ -173,13 +182,10 @@ class TestInterface(base.BaseInterfaceTests):
 
 class TestConstructors(base.BaseConstructorsTests):
     def test_from_dtype(self, data):
-        """Concrete dtype construction works without global string registration."""
+        """Concrete dtype instances construct extension arrays directly."""
         expected = pd.Series(data)
         result = pd.Series(list(data), dtype=data.dtype)
         pd.testing.assert_series_equal(result, expected)
-
-        with pytest.raises(TypeError):
-            pd.Series(list(data), dtype=str(data.dtype))
 
 
 class TestGetitem(base.BaseGetitemTests):

@@ -126,7 +126,7 @@ impl MetricOp {
             Self::Polylabel => "polylabel",
             Self::RhumbBearing => "bearing(path='rhumb')",
             Self::RhumbDestination => "destination(path='rhumb')",
-            Self::RhumbDistance => "rhumb_distance",
+            Self::RhumbDistance => "distance(path='rhumb')",
             Self::Segmentize => "segmentize",
             Self::ShortestLine => "shortest_line",
             Self::SpatialIndexDistanceQuery => "spatial index distance query",

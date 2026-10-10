@@ -60,12 +60,12 @@ def test_computed_point_ops_are_2d(op: str) -> None:
     assert getattr(_xy_polygon(), op)().coordinate_axes == 'XY'
 
 
-@pytest.mark.parametrize('op', ['voronoi_polygons', 'voronoi_edges'])
-def test_voronoi_results_are_2d(op: str) -> None:
+@pytest.mark.parametrize('output', ['polygons', 'edges'])
+def test_voronoi_results_are_2d(output: str) -> None:
     """Voronoi cells are synthesized and therefore have no source Z/M."""
     zsquare = _z_polygon()
-    assert all(part.coordinate_axes == 'XY' for part in getattr(zsquare, op)())
-    assert getattr(_xy_polygon(), op)() is not None
+    assert all(part.coordinate_axes == 'XY' for part in zsquare.voronoi(output=output))
+    assert _xy_polygon().voronoi(output=output) is not None
 
 
 @pytest.mark.parametrize('method', ['delaunay', 'constrained', 'earcut'])

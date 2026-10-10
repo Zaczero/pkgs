@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
 
-import geopandas as gpd
 import gometry as gm
 import pytest
-from shapely.geometry import LineString, Point, Polygon
 
 from tests._support import canon
+
+shapely_geometry = pytest.importorskip(
+    'shapely.geometry',
+    reason='shapely is an optional GeoParquet geometry dependency',
+)
+gpd = pytest.importorskip(
+    'geopandas',
+    reason='geopandas is an optional GeoParquet dependency',
+)
+LineString = shapely_geometry.LineString
+Point = shapely_geometry.Point
+Polygon = shapely_geometry.Polygon
 
 _RADIAN_CRS = (
     'GEOGCS["WGS 84 rad",'
@@ -65,6 +76,36 @@ def test_geoparquet_round_trip_preserves_native_geographic_coordinates(
     assert restored.to_wkt() == source.to_wkt()
     assert restored.crs is not None
     assert restored.crs.same_as(source.crs, mode='ignore_axis_order')
+
+
+def test_geoparquet_binary_streams_are_caller_owned() -> None:
+    pa = pytest.importorskip('pyarrow')
+    source = gm.GeometryArray([
+        gm.Point(1, 2, crs=4326),
+        gm.LineString([(2, 3), (4, 5)], crs=4326),
+    ])
+
+    stream = io.BytesIO()
+    source.to_geoparquet(stream)
+    assert not stream.closed
+    stream.seek(0)
+    restored, _ = gm.from_geoparquet(stream)
+    assert not stream.closed
+    _assert_roundtrip(source, restored)
+
+    native_output = pa.BufferOutputStream()
+    source.to_geoparquet(native_output)
+    assert not native_output.closed
+    payload = native_output.getvalue()
+    native_input = pa.BufferReader(payload)
+    native_restored, _ = gm.from_geoparquet(native_input)
+    assert not native_input.closed
+    _assert_roundtrip(source, native_restored)
+
+    with pytest.raises(TypeError, match='binary'):
+        source.to_geoparquet(io.StringIO())
+    with pytest.raises(TypeError):
+        gm.from_geoparquet(io.StringIO('not parquet'))
 
 
 @pytest.mark.parametrize(
@@ -320,7 +361,7 @@ def test_from_geoparquet_geoarrow_crs_mismatch_raises(parquet_path: str) -> None
             'geometry': {
                 'encoding': 'point',
                 'geometry_types': ['Point'],
-                'crs': gm.CRS(4326).to_projjson_dict(),
+                'crs': gm.CRS(4326).to_projjson(as_dict=True),
             }
         },
     }
@@ -387,7 +428,7 @@ def test_geoparquet_absent_and_null_crs_are_distinct(parquet_path: str) -> None:
     base = {'encoding': 'WKB', 'geometry_types': ['Point']}
     _write_geo_table(parquet_path, base)
     defaulted = _read_geometry(parquet_path)
-    assert defaulted.crs == 'OGC:CRS84'
+    assert defaulted.crs == gm.CRS('OGC:CRS84')
 
     _write_geo_table(parquet_path, {**base, 'crs': None})
     unframed = _read_geometry(parquet_path)
@@ -754,7 +795,7 @@ def test_geoparquet_rejects_invalid_epoch(parquet_path: str, epoch: object) -> N
         {
             'encoding': 'WKB',
             'geometry_types': ['Point'],
-            'crs': gm.CRS(4326).to_projjson_dict(),
+            'crs': gm.CRS(4326).to_projjson(as_dict=True),
             'epoch': epoch,
         },
     )
@@ -1008,7 +1049,7 @@ def _write_field_wkb_geoparquet(
         if field_crs is None:
             raise ValueError('field_crs is required when field_extension is full')
         ext_meta: dict[str, object] = {
-            'crs': gm.CRS(field_crs).to_projjson_dict(),
+            'crs': gm.CRS(field_crs).to_projjson(as_dict=True),
             'crs_type': 'projjson',
         }
         if field_epoch is not None:
@@ -1033,7 +1074,7 @@ def _write_field_wkb_geoparquet(
     col_meta: dict[str, object] = {
         'encoding': 'WKB',
         'geometry_types': ['Point'],
-        'crs': gm.CRS(declared_crs).to_projjson_dict(),
+        'crs': gm.CRS(declared_crs).to_projjson(as_dict=True),
     }
     if declared_epoch is not None:
         col_meta['epoch'] = declared_epoch
@@ -2028,7 +2069,7 @@ def test_bbox_z_and_x_ordering_rejected() -> None:
                     'geometry': {
                         'encoding': 'WKB',
                         'geometry_types': [],
-                        'crs': gm.CRS(3857).to_projjson_dict(),
+                        'crs': gm.CRS(3857).to_projjson(as_dict=True),
                         'bbox': [10, 0, 0, 4],
                     }
                 }
@@ -2467,7 +2508,7 @@ def test_admit_preserves_raw_field_extension_frame() -> None:
     meta = {
         b'ARROW:extension:name': b'geoarrow.point',
         b'ARROW:extension:metadata': json.dumps({
-            'crs': gm.CRS(4326).to_projjson_dict(),
+            'crs': gm.CRS(4326).to_projjson(as_dict=True),
             'crs_type': 'projjson',
         }).encode(),
     }
@@ -2477,7 +2518,7 @@ def test_admit_preserves_raw_field_extension_frame() -> None:
     )
     assert layout.has_extension is True
     assert layout.embedded_crs is not None
-    assert json.loads(layout.embedded_crs) == gm.CRS(4326).to_projjson_dict()
+    assert json.loads(layout.embedded_crs) == gm.CRS(4326).to_projjson(as_dict=True)
     assert layout.embedded_epoch is None
 
     # Rewrap with matching geoparquet frame succeeds; mismatched raises.
@@ -2505,9 +2546,9 @@ def test_parse_geoparquet_column_frame_mapping_contract() -> None:
 
     # Finite epoch + -0 normalization; non-boolean numeric.
     crs, epoch = _parse_geoparquet_column_frame(
-        {'crs': gm.CRS(4326).to_projjson_dict(), 'epoch': -0.0}, 'geometry'
+        {'crs': gm.CRS(4326).to_projjson(as_dict=True), 'epoch': -0.0}, 'geometry'
     )
-    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
+    assert json.loads(crs) == gm.CRS(4326).to_projjson(as_dict=True)
     assert epoch == 0.0
     assert str(epoch) == '0.0'  # not -0.0
 
@@ -2520,9 +2561,9 @@ def test_parse_geoparquet_column_frame_mapping_contract() -> None:
 
     # PROJJSON-only identity; planar edges ok; spherical rejected with pinned text.
     crs, _ = _parse_geoparquet_column_frame(
-        {'crs': gm.CRS(4326).to_projjson_dict(), 'edges': 'planar'}, 'geometry'
+        {'crs': gm.CRS(4326).to_projjson(as_dict=True), 'edges': 'planar'}, 'geometry'
     )
-    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
+    assert json.loads(crs) == gm.CRS(4326).to_projjson(as_dict=True)
     with pytest.raises(
         gm.ParseError,
         match=r"edges 'spherical' are unsupported; only planar edges are accepted",

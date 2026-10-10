@@ -12,12 +12,15 @@ import time
 import argparse
 from pathlib import Path
 
-import gometry as gm
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'python'))
 from _bench_public_fixtures import repair_1k_gometry
-from _observation import emit
+from _observation import bootstrap, emit, prepare_measurement
 from _validation import emit_validation
+
+if __name__ == '__main__':
+    bootstrap()
+
+import gometry as gm
 
 
 def build_input(mix: str) -> gm.GeometryArray:
@@ -44,6 +47,7 @@ def main() -> None:
     input_array = build_input(args.mix)
     for _ in range(2):
         input_array.repair(method='linework')
+    prepare_measurement()
     started = time.perf_counter()
     result = input_array.repair(method='linework')
     elapsed = time.perf_counter() - started
