@@ -17,35 +17,11 @@ import re
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from functools import partial
+from pathlib import Path
 from typing import Any, Literal
 
 import griffe
 
-_STUB_LOCAL = (
-    '_AffineMatrix',
-    '_ArealLike',
-    '_ArrowInput',
-    '_BoolArray1D',
-    '_BoolLane',
-    '_Bounds2D',
-    '_Bounds3D',
-    '_Coordinate',
-    '_CoordinateMatrix',
-    '_CoordinatesInput',
-    '_FloatArray1D',
-    '_FloatColumn1D',
-    '_FloatScalarInput',
-    '_GeoJsonScalar',
-    '_GeometryLike',
-    '_IdArray',
-    '_IndexLane',
-    '_IntArray0D',
-    '_IntArray1D',
-    '_IntInput',
-    '_IntScalar',
-    '_IntScalarInput',
-    '_RingsInput',
-)
 _PRIVATE_TYPEVAR_RENAMES = {
     '_CellT': 'CellT',
     '_DefaultT': 'DefaultT',
@@ -1087,11 +1063,19 @@ def expand_annotation(
             return griffe.ExprName('Iterator')
         if expr.name in {'_NumericCell', '_Cell'}:
             return griffe.ExprName('object')
-        if expr.name in aliases and expr.name not in expanding:
+        alias_path = getattr(expr, 'canonical_path', None)
+        alias_name = (
+            alias_path
+            if alias_path in aliases
+            else expr.name
+            if expr.name in aliases
+            else None
+        )
+        if alias_name is not None and alias_name not in expanding:
             return expand_annotation(
-                _copy_expression(aliases[expr.name]),
+                _copy_expression(aliases[alias_name]),
                 aliases,
-                expanding | {expr.name},
+                expanding | {alias_name},
             )
         return expr
     if isinstance(expr, griffe.ExprBinOp):
@@ -1503,22 +1487,41 @@ def _expand_docstring_sections(sections: list[Any], aliases: dict[str, Any]) -> 
 
 
 def annotation_aliases(pkg: griffe.Module) -> dict[str, Any]:
-    """Aliases expanded in rendered annotations, shared with the model gate."""
+    """Return reachable source expansions keyed by declaration identity."""
+    package_file = getattr(pkg, 'filepath', None)
+    package_root = Path(package_file).parent if package_file is not None else None
+    if package_root is None or not (package_root / '_lib.pyi').is_file():
+        return {}
+
+    import gometry
+    from reference_types import build_public_type_graph
+
+    graph = build_public_type_graph(package_root, gometry)
     aliases: dict[str, Any] = {}
-    types_module = pkg.members.get('_types')
-    if isinstance(types_module, griffe.Module):
-        for name, member in types_module.members.items():
-            if isinstance(member, griffe.Alias):
-                continue
-            value = getattr(member, 'value', None)
-            if value is not None and str(value).startswith('Literal['):
-                aliases[name] = value
-    lib = pkg.members.get('_lib')
-    if isinstance(lib, griffe.Module):
-        for name in _STUB_LOCAL:
-            value = getattr(lib.members.get(name), 'value', None)
-            if value is not None:
-                aliases[name] = value
+    names: dict[str, list[Any]] = {}
+    for path, source in graph.expansions.items():
+        module: Any = pkg
+        for part in source.module.name.split('.')[1:]:
+            module = getattr(module, 'members', {}).get(part)
+            if not isinstance(module, griffe.Module):
+                break
+        if not isinstance(module, griffe.Module):
+            continue
+        expression = griffe.get_expression(
+            source.expression,
+            module,
+            parse_strings=True,
+        )
+        if expression is None:
+            continue
+        aliases[path] = expression
+        names.setdefault(path.rsplit('.', 1)[-1], []).append(expression)
+
+    aliases.update({
+        name: variants[0]
+        for name, variants in names.items()
+        if len({str(variant) for variant in variants}) == 1
+    })
     return aliases
 
 

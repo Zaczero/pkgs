@@ -364,4 +364,8 @@ def resolved_symbols(page: Page, exports: set[str]) -> tuple[str, ...]:
 
 
 def generated_api_nav_paths() -> frozenset[str]:
-    return frozenset({'api/index.md', *(f'api/{page.path}.md' for page in PAGES)})
+    return frozenset({
+        'api/index.md',
+        'api/types.md',
+        *(f'api/{page.path}.md' for page in PAGES),
+    })

@@ -1041,6 +1041,26 @@ def test_griffe_canonicalizes_private_classes_to_public_paths() -> None:
     ), found
 
 
+def test_griffe_expands_private_aliases_from_their_source_identity() -> None:
+    pkg = _load_griffe_model()
+    expand = _expand()
+    lib = pkg.members['_lib']
+    assert isinstance(lib, griffe.Module)
+    aliases = expand.annotation_aliases(pkg)
+    expression = griffe.ExprName(
+        '_FloatScalarInput',
+        parent=lib,
+        member=lib.members['_FloatScalarInput'],
+    )
+
+    expanded = expand.expand_annotation(expression, aliases)
+
+    assert isinstance(expanded, griffe.ExprBinOp)
+    assert str(expanded) == 'FloatScalar | ScalarFloatArray'
+    assert expanded.left.canonical_path == 'gometry._types.FloatScalar'
+    assert expanded.right.canonical_path == 'gometry._types.ScalarFloatArray'
+
+
 def test_class_materialization_preserves_source_relationships_and_copy_isolation(
     tmp_path: Path,
 ) -> None:

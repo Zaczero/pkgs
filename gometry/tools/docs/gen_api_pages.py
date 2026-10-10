@@ -1,7 +1,8 @@
-"""Generate the API reference from one exact page manifest.
+"""Generate public API pages and reachable source type definitions.
 
 The handwritten stub owns signatures, member order, and documentation.  This
-module only assigns public symbols to pages and emits mkdocstrings directives.
+module assigns public symbols to pages, emits mkdocstrings directives, and
+derives the separate definitions page from public source annotations.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ from api_structure import (
     Section,
     resolved_symbols,
 )
+from reference_types import build_public_type_graph
+from reference_types_page import render_type_page
 
 # Executable guide figures import ``_figures`` directly.  The docs build runs
 # every page in this process, so one stable examples path serves all snippets.
@@ -133,8 +136,16 @@ def _write_page(page: Page) -> None:
             _write_section(file, section_spec)
 
 
+def _write_type_definitions() -> None:
+    graph = build_public_type_graph(_ROOT / 'python' / 'gometry', gm)
+    with mkdocs_gen_files.open('api/types.md', 'w') as file:
+        file.write(render_type_page(graph))
+
+
 for _page in PAGES:
     _write_page(_page)
+
+_write_type_definitions()
 
 
 with mkdocs_gen_files.open('api/index.md', 'w') as file:
@@ -152,6 +163,7 @@ with mkdocs_gen_files.open('api/index.md', 'w') as file:
     for page in PAGES:
         file.write(f'| [{page.title}]({page.path}.md) | {page.description} |\n')
     file.write(
+        '| [Reference type definitions](types.md) | Named declarations used by public signatures and structured results. |\n'
         '\n'
         '## Route by result shape\n\n'
         'Use the operation pages above for signatures. These links route by the '
