@@ -492,14 +492,15 @@ impl PyCellArray {
     }
 
     fn arrow_id_buffer(&self) -> (crate::geometry::SharedSlice<u64>, usize) {
-        if let Some(rows) = self.selection_ref().csr_rows(0..self.len()) {
-            (self.storage.ids.clone(), rows.start)
-        } else {
-            (
-                crate::geometry::SharedSlice::from_vec(self.logical_ids_vec()),
-                0,
-            )
-        }
+        self.selection_ref().csr_rows(0..self.len()).map_or_else(
+            || {
+                (
+                    crate::geometry::SharedSlice::from_vec(self.logical_ids_vec()),
+                    0,
+                )
+            },
+            |rows| (self.storage.ids.clone(), rows.start),
+        )
     }
 
     fn arrow_missing_mask(&self) -> Option<ValidityMask> {

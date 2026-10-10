@@ -11,6 +11,7 @@ use crate::py::arrow_c::{
     GeometryEncoding, GeometryError, NativeArrowExportError, NativeArrowExportResult, PyResult,
     SchemaNode, SchemaPrivate, release_array, release_schema,
 };
+use crate::py::geoarrow::CRS_DEFINITION_METADATA_KEY;
 
 impl SchemaNode {
     pub(crate) fn materialize_schema(&self) -> NativeArrowExportResult<GometryArrowSchema> {
@@ -380,9 +381,9 @@ pub(crate) fn apply_top_level_validity(
     let offset = usize::try_from(array.offset).map_err(|_| {
         GeometryError::new_err("Arrow array export offset is negative or too large")
     })?;
-    let total_bits = offset.checked_add(mask.len()).ok_or_else(|| {
-        GeometryError::new_err("Arrow array export validity span exceeds usize")
-    })?;
+    let total_bits = offset
+        .checked_add(mask.len())
+        .ok_or_else(|| GeometryError::new_err("Arrow array export validity span exceeds usize"))?;
     let (owned, mask_offset) = mask.arrow_bitmap();
     let owned_bits = owned.len().saturating_mul(8);
     let validity = if mask_offset == offset && owned_bits >= total_bits {
@@ -392,7 +393,9 @@ pub(crate) fn apply_top_level_validity(
         for row in 0..mask.len() {
             if mask.is_valid(row) {
                 let bit = offset.wrapping_add(row);
-                validity[bit / 8] |= 1 << (bit % 8);
+                *validity
+                    .get_mut(bit / 8)
+                    .expect("validity bit lies within its reserved bitmap") |= 1 << (bit % 8);
             }
         }
         crate::geometry::SharedSlice::from_vec(validity)
@@ -749,7 +752,7 @@ fn assemble_extension_metadata(
     );
     let crs_definition_field_len = CRS_DEFINITION_FIELD_PREFIX
         .len()
-        .wrapping_add(crate::py::geoarrow::CRS_DEFINITION_METADATA_KEY.len())
+        .wrapping_add(CRS_DEFINITION_METADATA_KEY.len())
         .wrapping_add(CRS_DEFINITION_FIELD_SUFFIX.len());
     let extra = match (projjson.is_some(), epoch.is_some()) {
         (true, false) => CRS_PREFIX
@@ -789,7 +792,7 @@ fn assemble_extension_metadata(
         out.push_str(&projjson);
         out.push_str(CRS_TYPE_FIELD);
         out.push_str(CRS_DEFINITION_FIELD_PREFIX);
-        out.push_str(crate::py::geoarrow::CRS_DEFINITION_METADATA_KEY);
+        out.push_str(CRS_DEFINITION_METADATA_KEY);
         out.push_str(CRS_DEFINITION_FIELD_SUFFIX);
         out.push_str(
             crs_definition

@@ -4,10 +4,10 @@ use crate::py::arrow::ArrowEncoding;
 use crate::py::arrow_c::{
     ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray,
     GometryArrowSchema, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult,
-    PyTuple, Python, StreamPrivate, array_capsule_destructor, array_capsule_name, c_char, ffi,
-    release_array, release_schema, release_stream, schema_capsule_destructor, schema_capsule_name,
-    stream_capsule_destructor, stream_capsule_name, stream_get_last_error, stream_get_next,
-    stream_get_schema,
+    PyTuple, Python, SchemaNode, StreamPrivate, array_capsule_destructor, array_capsule_name,
+    c_char, ffi, release_array, release_schema, release_stream, schema_capsule_destructor,
+    schema_capsule_name, stream_capsule_destructor, stream_capsule_name, stream_get_last_error,
+    stream_get_next, stream_get_schema,
 };
 use crate::py::{arrow, arrow_c};
 
@@ -239,7 +239,7 @@ pub(crate) fn array_to_array_capsules(
 
 pub(crate) fn array_capsules_with_schema(
     py: Python<'_>,
-    schema_node: crate::py::arrow_c::SchemaNode,
+    schema_node: SchemaNode,
     array: GometryArrowArray,
     requested_schema: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
