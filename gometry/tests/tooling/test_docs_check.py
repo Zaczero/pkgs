@@ -484,6 +484,23 @@ def test_rendered_signature_parser_keeps_tokens_and_parameter_kinds() -> None:
     assert missing_star != signature.form
 
 
+def test_rendered_property_signature_is_not_parsed_as_a_call() -> None:
+    check = _check()
+    source = """\
+<div class="doc doc-object doc-attribute">
+  <h3 id="gometry.CRS.area_of_use">
+    <code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>
+  </h3>
+  <div class="language-python doc-signature highlight"><pre><span class="n">area_of_use</span><span class="p">:</span> <span class="n">CrsAreaOfUse</span> <span class="o">|</span> <span class="kc">None</span></pre></div>
+</div>
+"""
+
+    signature = check.rendered_call_forms(source)['gometry.CRS.area_of_use'][0]
+
+    assert signature.source == 'area_of_use: CrsAreaOfUse | None'
+    assert signature.form is None
+
+
 def test_real_handler_renders_parameter_kinds_and_default_states(
     tmp_path: Path,
 ) -> None:
