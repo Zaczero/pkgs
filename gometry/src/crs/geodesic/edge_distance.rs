@@ -17,8 +17,10 @@ use crate::geometry::{
 
 const MAX_POINT_EDGE_MINIMUM_EVALUATIONS: usize = 128;
 pub(crate) const EVALUATION_SAFETY_CEILING: usize = 0x4000;
-// A [0, 1] binary64 interval has at most this many successive midpoint splits.
-const MAX_PARAMETER_REFINEMENTS_PER_BRANCH: usize =
+// Midpoint depth supplies a threshold work scale; safeguarded secant steps
+// and previously resolved branches can exhaust the allowance before parameter
+// resolution.
+const BINARY64_MIDPOINT_DEPTH_SCALE: usize =
     f64::MIN_EXP.unsigned_abs() as usize + f64::MANTISSA_DIGITS as usize + 1;
 
 #[derive(Default)]
@@ -734,7 +736,7 @@ fn interval_lower_bound(
 }
 
 fn evaluation_limit(live_branches: usize) -> usize {
-    MAX_PARAMETER_REFINEMENTS_PER_BRANCH
+    BINARY64_MIDPOINT_DEPTH_SCALE
         .saturating_mul(live_branches.max(1))
         .min(EVALUATION_SAFETY_CEILING)
 }

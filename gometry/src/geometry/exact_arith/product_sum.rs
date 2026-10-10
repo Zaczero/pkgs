@@ -143,13 +143,7 @@ impl ExactSum {
         self.subtract_product(x1, y0);
     }
 
-    pub(in crate::geometry) fn add_scaled_product(
-        &mut self,
-        lhs: f64,
-        rhs: f64,
-        scale: i64,
-        subtract: bool,
-    ) {
+    pub(crate) fn add_scaled_product(&mut self, lhs: f64, rhs: f64, scale: i64, subtract: bool) {
         let (lhs_negative, lhs_mantissa, lhs_exponent) = decompose(lhs);
         let (rhs_negative, rhs_mantissa, rhs_exponent) = decompose(rhs);
         let magnitude = u128::from(scale.unsigned_abs());

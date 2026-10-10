@@ -469,29 +469,33 @@ arclength and adds the prefix before that edge.
 
 Point-to-chart-edge `dwithin` returns `True` only after an attained sample is at
 or below the supplied radius, and returns `False` only when its search certifies
-the threshold result. Its evaluation allowance is derived from binary64
-parameter-refinement depth and the number of live intervals, with a
-16,384-evaluation safety ceiling per point-edge query. If that allowance, the
-safety ceiling, or binary64 parameter precision ends while the bounds straddle
-the radius, `dwithin` raises `CRSError` rather than reporting `False`. It does
-not add a contact tolerance or widen the radius by pruning slack. A positive
-infinite radius returns `True` for admitted non-empty operands without forcing
-an unrepresentable distance result. Vectorized results retain one boolean per
-input pair: missing rows and present empty geometries remain in place as
-`False`; a nonconvergent present pair raises instead of receiving a boolean.
+the threshold result. Accumulated evaluations are limited to a binary64
+midpoint-depth factor times the current live frontier, with a 16,384-evaluation
+ceiling. The search also uses safeguarded secant proposals; this allowance is a
+work limit, not a guarantee of reaching binary64 parameter resolution. If it
+cannot certify the radius, `dwithin` raises `CRSError` rather than reporting
+`False`. It does not add a contact tolerance or widen the radius by pruning
+slack. A positive infinite radius returns `True` for admitted non-empty
+operands without forcing an unrepresentable distance result. Vectorized results
+retain one boolean per input pair: missing rows and present empty geometries
+remain in place as `False`; a nonconvergent present pair raises instead of
+receiving a boolean.
 
 Geographic Hausdorff measures the continuous linework supports of the stored
 chart edges: the source ranges over each straight longitude/latitude edge, and
 its distance to the target is the minimum geodesic distance to target edges and
-isolated points. A global frontier combines a Lipschitz upper bound with a
-second-order Taylor upper bound from fixed target witnesses only inside a
-certified normal neighborhood; elsewhere it uses the Lipschitz upper bound.
-Each reported value is an attained source/target pair, not an interval bound.
-Its algorithmic gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS
-84. These binary64 budgets are numerical quality targets, not real-arithmetic
+isolated points. Its global frontier uses a moving correspondence between
+source and target chart edges when that gives a tighter variation bound;
+otherwise it retains the fixed-witness Lipschitz bound and applies the
+second-order Taylor bound only inside a normal neighborhood. Each reported
+value is an attained source/target pair, not an interval bound. The algorithmic
+gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS 84. If source
+parameter refinement reaches adjacent binary64 values before the frontier
+closes that gap, Hausdorff raises `CRSError` rather than dropping the interval.
+These binary64 budgets are numerical quality targets, not real-arithmetic
 certificates.
-Geographic Hausdorff supports point and linework operands only; filled polygon
-interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
+ Geographic Hausdorff supports point and linework operands only; filled polygon
+ interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
 geographic path; its algorithmic gap does not promise a caller-requested bound.
 
 !!! note "Why geodesic and projected answers differ"

@@ -11,6 +11,8 @@ import gometry as gm
 import pytest
 
 from tests._support import (
+    EAST_DEGREE_SOUTH_LATITUDE_CRS,
+    WEST_RADIAN_SOUTH_GRAD_CRS,
     chart_parallel_length,
     chart_rectangle_perimeter,
     chart_zone_area,
@@ -23,6 +25,12 @@ pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle depe
 Geod = pyproj.Geod
 
 GEOD = Geod(ellps='WGS84')
+GRAD_CRS = """GEOGCRS["WGS 84 grad",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",east,ORDER[1],ANGLEUNIT["grad",0.015707963267948967]],
+ AXIS["Latitude",north,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"""
 LONG_PARALLEL_WEST = -0.463_147_336_714_631_5
 LONG_PARALLEL_EAST = 6.463_147_336_714_631_5
 LONG_PARALLEL_SOUTH = 39.0
@@ -97,6 +105,26 @@ def _distance_to_long_parallel_boundary(longitude: float, latitude: float) -> fl
 
 def _custom_geographic_crs(flattening: float) -> str:
     return f'+proj=longlat +a=6378137 +f={flattening:.17g} +type=crs'
+
+
+def _native_geographic_xy(
+    frame: str,
+    longitude_degrees: float,
+    latitude_degrees: float,
+) -> tuple[float, float]:
+    match frame:
+        case 'degree':
+            return longitude_degrees, latitude_degrees
+        case 'south-degree':
+            return longitude_degrees, -latitude_degrees
+        case 'west-radian-south-grad':
+            return (
+                -math.radians(longitude_degrees),
+                -latitude_degrees * 10.0 / 9.0,
+            )
+        case 'grad':
+            return longitude_degrees * 10.0 / 9.0, latitude_degrees * 10.0 / 9.0
+    raise AssertionError(f'unknown geographic test frame: {frame}')
 
 
 @pytest.mark.parametrize(
@@ -302,6 +330,196 @@ def test_geographic_hausdorff_uses_chart_edges_across_scalar_and_gathered_rows()
     assert abs(gathered[0] - expected) <= 0.010000_001
     assert math.isnan(gathered[1])
     assert abs(gathered[2] - expected) <= 0.010000_001
+
+
+@pytest.mark.parametrize(
+    ('frame_name', 'crs'),
+    [
+        pytest.param('degree', 4326, id='east-degree'),
+        pytest.param('south-degree', EAST_DEGREE_SOUTH_LATITUDE_CRS, id='south-degree'),
+        pytest.param(
+            'west-radian-south-grad',
+            WEST_RADIAN_SOUTH_GRAD_CRS,
+            id='west-radian-south-grad',
+        ),
+        pytest.param('grad', GRAD_CRS, id='400-grad-period'),
+    ],
+)
+def test_parallel_copy_hausdorff_tracks_native_frame_perturbations(
+    frame_name: str,
+    crs: object,
+) -> None:
+    expected = GEOD.inv(10.0, 60.0, 10.0, 60.01)[2]
+    for name, longitude_offset, one_ulp in [
+        ('exact', 0.0, False),
+        ('one ULP', 0.0, True),
+        ('1e-9 degree', 1.0e-9, False),
+        ('1e-6 degree', 1.0e-6, False),
+    ]:
+        source_coordinates = [
+            _native_geographic_xy(frame_name, longitude, 60.0)
+            for longitude in (10.0, 12.5)
+        ]
+        target_coordinates = []
+        for longitude in (10.0 + longitude_offset, 12.5 + longitude_offset):
+            x, y = _native_geographic_xy(frame_name, longitude, 60.01)
+            if one_ulp:
+                x = math.nextafter(x, math.inf)
+            target_coordinates.append((x, y))
+        source = gm.LineString(source_coordinates, crs=crs)
+        target = gm.LineString(target_coordinates, crs=crs)
+
+        actual = gm.hausdorff_distance(source, target)
+
+        assert abs(actual - expected) <= 0.010000_001, (
+            f'{frame_name} {name}: {actual} vs {expected}'
+        )
+
+
+def test_geographic_hausdorff_keeps_endpoint_candidate_distances() -> None:
+    source_line = gm.LineString([(10.5, 60.0), (11.5, 60.0)], crs=4326)
+    candidate_line = gm.LineString([(10.0, 60.01), (12.0, 60.01)], crs=4326)
+    endpoints = [gm.Point(10.5, 60.0, crs=4326), gm.Point(11.5, 60.0, crs=4326)]
+    source = gm.GeometryCollection(
+        [source_line, candidate_line, *endpoints],
+        crs=4326,
+    )
+    target = gm.GeometryCollection(
+        [
+            candidate_line,
+            *endpoints,
+        ],
+        crs=4326,
+    )
+    expected = GEOD.inv(10.5, 60.0, 10.5, 60.01)[2]
+
+    assert abs(gm.hausdorff_distance(source, target) - expected) <= 0.01
+
+
+def test_geographic_hausdorff_refreshes_mappings_at_shared_and_clipped_endpoints() -> (
+    None
+):
+    source = gm.LineString([(10.0, 60.0), (12.5, 60.0)], crs=4326)
+    expected_parallel_gap = GEOD.inv(10.0, 60.0, 10.0, 60.01)[2]
+    resegmented_reversed_target = gm.MultiLineString(
+        [
+            [(11.25, 60.01), (12.5, 60.01)],
+            [(11.25, 60.01), (10.0, 60.01)],
+        ],
+        crs=4326,
+    )
+    shared_endpoint_target = gm.GeometryCollection(
+        [
+            gm.Point(10.0, 60.0, crs=4326),
+            gm.LineString([(10.0, 60.01), (12.5, 60.01)], crs=4326),
+        ],
+        crs=4326,
+    )
+
+    for target in (resegmented_reversed_target, shared_endpoint_target):
+        assert (
+            abs(gm.hausdorff_distance(source, target) - expected_parallel_gap) <= 0.01
+        )
+
+    short_source = gm.LineString([(10.5, 60.0), (11.5, 60.0)], crs=4326)
+    long_target = gm.LineString([(10.0, 60.01), (12.0, 60.01)], crs=4326)
+    source_with_target_support = gm.GeometryCollection(
+        [short_source, long_target],
+        crs=4326,
+    )
+    interior_mapping_gap = GEOD.inv(10.5, 60.0, 10.5, 60.01)[2]
+    assert (
+        abs(
+            gm.hausdorff_distance(source_with_target_support, long_target)
+            - interior_mapping_gap
+        )
+        <= 0.01
+    )
+
+    clipped_source = gm.LineString([(9.5, 60.0), (13.0, 60.0)], crs=4326)
+    clipped_target = gm.LineString([(10.0, 60.01), (12.5, 60.01)], crs=4326)
+    clipped_expected = max(
+        GEOD.inv(9.5, 60.0, 10.0, 60.01)[2],
+        GEOD.inv(13.0, 60.0, 12.5, 60.01)[2],
+    )
+    assert (
+        abs(gm.hausdorff_distance(clipped_source, clipped_target) - clipped_expected)
+        <= 0.01
+    )
+
+
+def test_geographic_hausdorff_supports_periodic_and_pole_edge_families() -> None:
+    meridian_gap = GEOD.inv(10.0, 60.0, 10.0, 60.01)[2]
+    periodic_pairs = [
+        (
+            gm.LineString([(179.0, 60.0), (-179.0, 60.0)], crs=4326),
+            gm.LineString([(179.0, 60.01), (-179.0, 60.01)], crs=4326),
+        ),
+        (
+            gm.LineString([(370.0, 60.0), (372.5, 60.0)], crs=4326),
+            gm.LineString([(10.0, 60.01), (12.5, 60.01)], crs=4326),
+        ),
+        (
+            gm.LineString([(10.0, 60.0), (370.0, 60.0)], crs=4326),
+            gm.LineString([(10.0, 60.01), (370.0, 60.01)], crs=4326),
+        ),
+    ]
+    for source, target in periodic_pairs:
+        assert abs(gm.hausdorff_distance(source, target) - meridian_gap) <= 0.01
+
+    grad_circle_source = gm.LineString(
+        [(10.0, 200.0 / 3.0), (410.0, 200.0 / 3.0)], crs=GRAD_CRS
+    )
+    grad_circle_target = gm.LineString(
+        [(10.0, 200.0 / 3.0 + 1.0 / 90.0), (410.0, 200.0 / 3.0 + 1.0 / 90.0)],
+        crs=GRAD_CRS,
+    )
+    expected_grad_gap = GEOD.inv(9.0, 60.0, 9.0, 60.01)[2]
+    assert (
+        abs(
+            gm.hausdorff_distance(grad_circle_source, grad_circle_target)
+            - expected_grad_gap
+        )
+        <= 0.01
+    )
+
+    pole_source = gm.LineString([(10.0, 89.99), (20.0, 90.0)], crs=4326)
+    pole_target = gm.Point(0.0, 90.0, crs=4326)
+    pole_expected = GEOD.inv(10.0, 89.99, 0.0, 90.0)[2]
+    assert abs(gm.hausdorff_distance(pole_source, pole_target) - pole_expected) <= 0.01
+
+    no_pole_witness_target = gm.Point(0.0, 0.0, crs=4326)
+    no_pole_witness_expected = GEOD.inv(0.0, 0.0, 0.0, 90.0)[2]
+    assert (
+        abs(
+            gm.hausdorff_distance(pole_source, no_pole_witness_target)
+            - no_pole_witness_expected
+        )
+        <= 0.01
+    )
+
+
+@pytest.mark.parametrize('flattening', [0.0, 0.02], ids=['sphere', 'oblate'])
+def test_parallel_copy_hausdorff_matches_custom_ellipsoid_oracle(
+    flattening: float,
+) -> None:
+    crs = _custom_geographic_crs(flattening)
+    source = gm.LineString([(10.0, 60.0), (12.5, 60.0)], crs=crs)
+    target = gm.LineString([(10.000001, 60.01), (12.500001, 60.01)], crs=crs)
+    oracle = pyproj.Geod(a=6_378_137.0, f=flattening)
+    expected = oracle.inv(10.0, 60.0, 10.0, 60.01)[2]
+
+    assert abs(gm.hausdorff_distance(source, target) - expected) <= 0.01
+
+
+def test_geographic_hausdorff_rejects_ambiguous_half_period_chart_edge() -> None:
+    source = gm.LineString([(0.0, 0.0), (180.0, 0.0)], crs=4326)
+    target = gm.Point(90.0, 1.0, crs=4326)
+
+    with pytest.raises(
+        gm.GeometryError, match='edge spans exactly half the longitude period'
+    ):
+        gm.hausdorff_distance(source, target)
 
 
 def test_geographic_hausdorff_rejects_max_error() -> None:

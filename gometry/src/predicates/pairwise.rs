@@ -311,7 +311,9 @@ pub(crate) fn distance_3d(
 /// ------
 /// CRSError
 ///     If the CRS lacks linear axis units for a metric result, or a geographic
-///     operand includes a filled polygon interior.
+///     operand includes a filled polygon interior, or the geographic source
+///     frontier cannot close its numerical gap before binary64 parameter
+///     refinement stops.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
@@ -604,9 +606,10 @@ pub(crate) fn nearest_points(
 ///     infinity is accepted and matches every pair of admitted non-empty
 ///     operands.
 /// CRSError
-///     If geographic point-edge search reaches its binary64-resolution-derived
-///     work allowance or 16,384-evaluation safety ceiling, or parameter
-///     precision ends without proving the threshold result.
+///     If geographic point-edge search exhausts its work allowance (a
+///     binary64 midpoint-depth factor times the current live frontier, subject
+///     to a 16,384-evaluation ceiling) or parameter precision ends without
+///     certifying the threshold.
 ///
 /// See Also
 /// --------
