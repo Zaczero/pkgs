@@ -995,8 +995,18 @@ if TYPE_CHECKING:
         )
         serialized_bytes = b'{"type":"Feature","geometry":null}'
 
+        class _FeatureInterface:
+            @property
+            def __geo_interface__(self) -> sht.GeoJsonFeatureNonNull:
+                return {
+                    'type': 'Feature',
+                    'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+                    'properties': {'name': 'feature'},
+                }
+
         reveal_type(gm.from_geojson([serialized_text, None], features=True))
         reveal_type(gm.from_geojson([serialized_bytes, None], features=True))
+        reveal_type(gm.from_geojson(_FeatureInterface(), features=True))
         assert_type(
             gm.from_geojson([serialized_text, None], features=True),
             gm.Features,
@@ -1005,6 +1015,7 @@ if TYPE_CHECKING:
             gm.from_geojson([serialized_bytes, None], features=True),
             gm.Features,
         )
+        assert_type(gm.from_geojson(_FeatureInterface(), features=True), gm.Features)
 
     reveal_type(gm.points([(1.0, 2.0)]))
     reveal_type(gm.points(1.0, 2.0))

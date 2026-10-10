@@ -154,8 +154,19 @@ if TYPE_CHECKING:
         from typing_extensions import TypeVar as _DefaultTypeVar
 
     _ExtremeT = _DefaultTypeVar('_ExtremeT', default=Point)
+    _GeoJsonInterfaceT_co = _DefaultTypeVar(
+        '_GeoJsonInterfaceT_co',
+        bound=Mapping[str, Any],
+        covariant=True,
+        default=Mapping[str, Any],
+    )
 else:
     _ExtremeT = TypeVar('_ExtremeT')
+    _GeoJsonInterfaceT_co = TypeVar(
+        '_GeoJsonInterfaceT_co',
+        bound=Mapping[str, Any],
+        covariant=True,
+    )
 
 __all__ = [
     'ArrowEncoding',
@@ -931,11 +942,11 @@ def _restore_polygonize_result_v1(
     return PolygonizeResult(polygons, cut_edges, dangles, invalid_rings)
 
 
-class SupportsGeoInterface(Protocol):
-    """Any object exposing a GeoJSON-like ``__geo_interface__`` mapping."""
+class SupportsGeoInterface(Protocol[_GeoJsonInterfaceT_co]):
+    """Any object exposing a typed GeoJSON-like ``__geo_interface__`` mapping."""
 
     @property
-    def __geo_interface__(self) -> Mapping[str, Any]: ...
+    def __geo_interface__(self) -> _GeoJsonInterfaceT_co: ...
 
 
 class SupportsArrowArray(Protocol):

@@ -384,17 +384,15 @@ _GeoJsonScalar: TypeAlias = (
     str | bytes | bytearray | memoryview | Mapping[str, Any] | SupportsGeoInterface
 )
 
-class _SupportsGeoJsonFeatureInterface(Protocol):
-    @property
-    def __geo_interface__(self) -> GeoJsonFeatureNonNull: ...
-
 _GeoJsonFeatureRow: TypeAlias = (
-    str | Buffer | GeoJsonFeatureNonNull | _SupportsGeoJsonFeatureInterface
+    str | Buffer | GeoJsonFeatureNonNull | SupportsGeoInterface[GeoJsonFeatureNonNull]
 )
 _GeoJsonFeatureBatch: TypeAlias = (
     Sequence[_GeoJsonFeatureRow | None]
     | Iterator[_GeoJsonFeatureRow | None]
-    | Iterable[GeoJsonFeatureNonNull | _SupportsGeoJsonFeatureInterface | None]
+    | Iterable[
+        GeoJsonFeatureNonNull | SupportsGeoInterface[GeoJsonFeatureNonNull] | None
+    ]
     | np.ndarray[Any, np.dtype[Any]]
 )
 _GeoJsonFeatureInput: TypeAlias = (
@@ -402,7 +400,7 @@ _GeoJsonFeatureInput: TypeAlias = (
     | Buffer
     | GeoJsonFeatureNonNull
     | GeoJsonFeatureCollection
-    | _SupportsGeoJsonFeatureInterface
+    | SupportsGeoInterface[GeoJsonFeatureNonNull]
     | _GeoJsonFeatureBatch
 )
 
@@ -21093,7 +21091,9 @@ def from_geojson(
 
     features : bool, default varies by call form
         Preserve Feature properties and IDs in a ``Features`` result. Geometry-
-        only inputs are not valid when this is ``True``.
+        only inputs are not valid when this is ``True``. Feature row iterables
+        accept Feature mappings or serialized Feature text/bytes; ``None`` rows
+        retain alignment with a missing geometry, missing properties, and no ID.
 
     crs : CRS-like, default 'OGC:CRS84'
         CRS to attach. `geojson` coordinates are WGS84 by specification, so
