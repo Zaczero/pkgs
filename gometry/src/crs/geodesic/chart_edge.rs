@@ -416,10 +416,6 @@ impl ChartEdge {
         distance.is_finite().then_some(distance)
     }
 
-    #[expect(
-        clippy::suspicious_operation_groupings,
-        reason = "the azimuth derivative is the 2D cross product divided by squared speed"
-    )]
     pub(super) fn derivatives(self, parameter: f64, geodesic: &Geodesic) -> ChartEdgeDerivatives {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let dphi = self.latitude_delta * self.latitude_unit;

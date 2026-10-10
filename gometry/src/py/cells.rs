@@ -59,6 +59,7 @@ mod construct;
 mod coverage_ops;
 mod engine;
 mod grid_kind;
+mod input;
 #[macro_use]
 mod pymethod_macros;
 mod geohash;

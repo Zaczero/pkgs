@@ -136,7 +136,7 @@ it, geometries still expose Arrow PyCapsules for dependency-free consumers.
 | Shapely geometry, predicates, overlays, constructive ops | `gm.Point/box/...`, `gm.contains(a, b)`, `geom.buffer(...)` |
 | pyproj transforms and CRS introspection | `geom.to_crs(...)`, `gm.CRS(...)`, `gm.crs_*` |
 | geographiclib / haversine geodesy | CRS-aware ellipsoidal chart-edge `area`/`length`, geodesic point-to-point `distance`, `gm.bearing(..., path='rhumb')` / `point.destination(..., path='rhumb')` |
-| h3-py, s2sphere | `gm.h3_cover(geom, ...)`, fixed `gm.s2_cover(geom, level=...)` / adaptive `gm.s2_cover_adaptive(geom, ...)`, typed cell arrays |
+| h3-py, s2sphere | `gm.h3_cover(geom, ...)`, fixed `gm.s2_cover(geom, level=...)` or adaptive `gm.s2_cover(geom, target_cells=...)`, typed cell arrays |
 | pygeohash, mercantile | `gm.geohash_cover(geom, ...)` / `gm.tile_cover(geom, ...)` |
 | rtree | `gm.SpatialIndex(values)` with exact-predicate refinement |
 | polyline, openlocationcode | `gm.from_polyline(...)`, `gm.pluscode_*` |

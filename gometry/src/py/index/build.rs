@@ -395,11 +395,10 @@ pub(crate) fn restore_spatial_index_v2(
             "spatial index pickle handle must be less than next_handle",
         ));
     }
-    if handles.windows(2).any(|pair| {
-        pair.first()
-            .zip(pair.get(1))
-            .is_some_and(|(previous, next)| previous >= next)
-    }) {
+    if handles
+        .array_windows::<2>()
+        .any(|[left, right]| left >= right)
+    {
         return Err(GeometryError::new_err(
             "spatial index pickle handles must be strictly increasing",
         ));
@@ -540,7 +539,13 @@ mod ownership_tests {
     }
 
     fn sparse_nullable_points(logical_len: usize) -> PyGeometryArray {
-        let present_handles = [7_usize, 63, logical_len - 1];
+        let present_handles = [
+            7_usize,
+            63,
+            logical_len
+                .checked_sub(1)
+                .expect("sparse test points require nonempty logical rows"),
+        ];
         let mut bitmap = vec![0_u8; logical_len.div_ceil(8)];
         for handle in present_handles {
             *bitmap
@@ -624,7 +629,7 @@ mod ownership_tests {
     #[test]
     fn compact_point_index_heap_excludes_missing_handle_span() {
         let small_source = sparse_nullable_points(1_000);
-        let large_source = sparse_nullable_points(131_072);
+        let large_source = sparse_nullable_points(0x0002_0000);
         let small = packed_spatial_index(&small_source).unwrap().unwrap();
         let large = packed_spatial_index(&large_source).unwrap().unwrap();
         let small_delta = HeapSize::heap_bytes(&small)
@@ -905,7 +910,7 @@ mod ownership_tests {
     }
 
     fn sparse_v1_point_values(logical_len: usize) -> PyGeometryArray {
-        let present_handles = [7_usize, 63, 65_537];
+        let present_handles = [7_usize, 63, 0x0001_0001];
         let mut bitmap = vec![0_u8; logical_len.div_ceil(8)];
         for handle in present_handles {
             *bitmap
@@ -916,8 +921,13 @@ mod ownership_tests {
             storage::ValidityMask::from_bitmap(SharedSlice::from_vec(bitmap), 0, logical_len)
                 .expect("the v1 fixture has missing rows");
         let present = PyGeometryArray::packed_points(
-            CoordSeq::try_from_vecs(vec![7.0, 63.0, 65_537.0], vec![1.0, 2.0, 3.0], None, None)
-                .unwrap(),
+            CoordSeq::try_from_vecs(
+                vec![7.0, 63.0, f64::from(0x0001_0001_u32)],
+                vec![1.0, 2.0, 3.0],
+                None,
+                None,
+            )
+            .unwrap(),
             Frame::None,
         )
         .unwrap();
@@ -938,18 +948,26 @@ mod ownership_tests {
         assert!(small.rows.packed.is_none());
         assert!(large.rows.packed.is_none());
         assert_eq!(small.rows.live_handles.iter().collect::<Vec<_>>(), [
-            7, 63, 65_537
+            7,
+            63,
+            0x0001_0001
         ]);
         assert_eq!(large.rows.live_handles.iter().collect::<Vec<_>>(), [
-            7, 63, 65_537
+            7,
+            63,
+            0x0001_0001
         ]);
         assert_eq!(HeapSize::heap_bytes(&small), HeapSize::heap_bytes(&large));
         let mut rows = small.rows.operation();
         assert_eq!(rows.row(63).unwrap().quick_bounds().unwrap().minx(), 63.0);
         let mut rows = large.rows.operation();
         assert_eq!(
-            rows.row(65_537).unwrap().quick_bounds().unwrap().minx(),
-            65_537.0
+            rows.row(0x0001_0001)
+                .unwrap()
+                .quick_bounds()
+                .unwrap()
+                .minx(),
+            f64::from(0x0001_0001_u32)
         );
 
         let inserted = PyGeometry::with_frame(
@@ -966,7 +984,7 @@ mod ownership_tests {
             vec![
                 Shape::Point(Point::new_raw_xy(7.0, 1.0)),
                 Shape::Point(Point::new_raw_xy(63.0, 2.0)),
-                Shape::Point(Point::new_raw_xy(65_537.0, 3.0)),
+                Shape::Point(Point::new_raw_xy(f64::from(0x0001_0001_u32), 3.0)),
             ],
             Frame::None,
         )
@@ -986,7 +1004,7 @@ mod ownership_tests {
                 .quick_bounds()
                 .unwrap()
                 .minx(),
-            65_537.0
+            f64::from(0x0001_0001_u32)
         );
 
         assert_eq!(
@@ -1033,7 +1051,7 @@ mod ownership_tests {
             vec![
                 Shape::Point(Point::new_raw_xy(7.0, 1.0)),
                 Shape::Point(Point::new_raw_xy(63.0, 2.0)),
-                Shape::Point(Point::new_raw_xy(65_537.0, 3.0)),
+                Shape::Point(Point::new_raw_xy(f64::from(0x0001_0001_u32), 3.0)),
             ],
             Frame::None,
         )

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::array::{ArrayRow, ArrayRowOperation};
+use crate::array::{ArrayRow, ArrayRowOperation, StreamingShapes};
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, rows_err,
     validate_paired_arrays,
@@ -55,12 +55,6 @@ impl<R> FramedRows<R> {
 impl<R: BulkElement> FramedRows<R> {
     fn into_py(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         R::bulk_into_py_masked(self.values, py, &self.frame, self.missing.as_ref())
-    }
-}
-
-impl FramedRows<Shape> {
-    fn into_geometry_array(self) -> Result<PyGeometryArray> {
-        PyGeometryArray::from_shapes(self.values, self.frame)?.with_missing_mask(self.missing)
     }
 }
 
@@ -230,6 +224,113 @@ where
                 },
             })
             .collect_rows()
+    })
+}
+
+fn run_array_shape_rows<K>(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<StreamingShapes, (usize, crate::error::Error)>
+where
+    K: for<'row, 'ctx> Fn(
+            usize,
+            ShapeRow<'row>,
+            &CachelessRowContext<'ctx>,
+            &mut ArrayRowOperation<'row>,
+        ) -> Result<Shape>
+        + Send
+        + Sync,
+{
+    let array = array.clone();
+    py.detach(move || {
+        let mut rows = array.row_operation();
+        let mut output = StreamingShapes::with_capacity(0, array.len());
+        for row in rows.rows_with_missing(Shape::empty_point) {
+            let (logical, result) = match row {
+                ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
+                ArrayRow::Present(present) => {
+                    let row_index = present.logical();
+                    let shape_row = present.row();
+                    let ctx = CachelessRowContext {
+                        frame,
+                        domain,
+                        metric,
+                        lane: Lane::Array(row_index),
+                    };
+                    let result = kernel(row_index, shape_row, &ctx, &mut rows)
+                        .and_then(|shape| output.try_push(shape));
+                    (row_index, result)
+                },
+            };
+            result.map_err(|error| (logical, error))?;
+        }
+        Ok(output)
+    })
+}
+
+fn run_paired_shape_rows<K>(
+    py: Python<'_>,
+    left: &PyGeometryArray,
+    right: &PyGeometryArray,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<StreamingShapes, (usize, crate::error::Error)>
+where
+    K: for<'left, 'right, 'ctx> Fn(
+            usize,
+            ShapeRow<'left>,
+            ShapeRow<'right>,
+            &CachelessRowContext<'ctx>,
+            &mut ArrayRowOperation<'left>,
+            &mut ArrayRowOperation<'right>,
+        ) -> Result<Shape>
+        + Send
+        + Sync,
+{
+    let left_array = left.clone();
+    let right_array = right.clone();
+    py.detach(move || {
+        let mut left_rows = left_array.row_operation();
+        let mut right_rows = right_array.row_operation();
+        let mut output = StreamingShapes::with_capacity(0, left_array.len());
+        let left_iter = left_rows.rows_with_missing(Shape::empty_point);
+        let right_iter = right_rows.rows_with_missing(Shape::empty_point);
+        for (left, right) in left_iter.zip(right_iter) {
+            let (logical, result) = match (left, right) {
+                (ArrayRow::Present(left), ArrayRow::Present(right)) => {
+                    let row_index = left.logical();
+                    let left_row = left.row();
+                    let right_row = right.row();
+                    let ctx = CachelessRowContext {
+                        frame,
+                        domain,
+                        metric,
+                        lane: Lane::Array(row_index),
+                    };
+                    let result = kernel(
+                        row_index,
+                        left_row,
+                        right_row,
+                        &ctx,
+                        &mut left_rows,
+                        &mut right_rows,
+                    )
+                    .and_then(|shape| output.try_push(shape));
+                    (row_index, result)
+                },
+                (ArrayRow::Missing { logical, .. }, _) | (_, ArrayRow::Missing { logical, .. }) => {
+                    (logical, output.try_push_missing())
+                },
+            };
+            result.map_err(|error| (logical, error))?;
+        }
+        Ok(output)
     })
 }
 
@@ -911,7 +1012,7 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
                 };
                 // Overlay rows use transient plans and retain no frame cache;
                 // geographic carry keeps its lazy metric scratch call-local.
-                run_array_rows(
+                run_array_shape_rows(
                     py,
                     right,
                     &frame,
@@ -931,8 +1032,9 @@ pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
                 )
             };
             drop(metric_scratch);
-            let shapes = result.map_err(rows_err)?;
-            FramedRows::fixed_array(shapes, right, &output_frame).into_py(py)
+            let rows = result.map_err(rows_err)?;
+            let output = rows.finish(output_frame)?;
+            Ok(output.into_pyobject(py)?.unbind().into())
         },
         (Many(left), right_in) => {
             let frame = admission.frame.clone();
@@ -980,7 +1082,7 @@ where
             };
             // Transient row plans retain no frame caches; any geographic carry
             // metric scratch belongs only to this operation.
-            run_array_rows(
+            run_array_shape_rows(
                 py,
                 left,
                 frame,
@@ -1001,7 +1103,7 @@ where
         },
         Many(right) => {
             let right_bounds = right.existing_element_bounds();
-            run_paired_rows(
+            run_paired_shape_rows(
                 py,
                 left,
                 right,
@@ -1025,13 +1127,8 @@ where
             )
         },
     };
-    let shapes = result.map_err(rows_err)?;
-    match right {
-        One(_) => Ok(FramedRows::fixed_array(shapes, left, frame).into_geometry_array()?),
-        Many(right) => {
-            Ok(FramedRows::paired_arrays(shapes, left, right, frame).into_geometry_array()?)
-        },
-    }
+    let rows = result.map_err(rows_err)?;
+    rows.finish(frame.clone()).map_err(PyErr::from)
 }
 
 pub(crate) fn geometry_kernel_over_array<K>(
@@ -1069,6 +1166,7 @@ mod tests {
     use crate::crs::RUNTIME_STATE_TEST_LOCK;
     use crate::dispatch::kernels;
     use crate::geometry::Point;
+    use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
     use crate::py::errors::CRSError;
     use crate::test_support::binary_dispatch_counters::Snapshot;
 
@@ -1097,6 +1195,122 @@ mod tests {
             Bound::new(py, left).unwrap().into_any(),
             Bound::new(py, right).unwrap().into_any(),
         )
+    }
+
+    fn nullable_measured_lines(missing: [bool; 3]) -> PyGeometryArray {
+        let present = PyGeometryArray::from_shapes(
+            vec![
+                crate::io::parse_wkt("LINESTRING M (0 0 10, 1 0 20, 2 0 30)")
+                    .expect("first measured line"),
+                crate::io::parse_wkt("LINESTRING M (3 0 40, 4 0 50, 5 0 60)")
+                    .expect("second measured line"),
+            ],
+            Frame::None,
+        )
+        .expect("homogeneous lines pack");
+        PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(3, missing.to_vec()).expect("mask"),
+        )
+        .expect("nullable lines admit")
+    }
+
+    fn assert_packed_measured_lines(array: &PyGeometryArray, offsets: &[i32], measures: &[f64]) {
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords,
+            offsets: actual_offsets,
+            ..
+        }) = array.storage()
+        else {
+            panic!("homogeneous nullable lines stay packed");
+        };
+        assert_eq!(coords.ms(), Some(measures));
+        assert_eq!(actual_offsets.as_slice(), offsets);
+    }
+
+    #[test]
+    fn binary_geometry_scalar_array_stream_keeps_nullable_lines_packed() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let fixed = PyGeometry::with_frame(
+                crate::io::parse_wkt("LINESTRING M (10 0 70, 11 0 80, 12 0 90)")
+                    .expect("fixed measured line"),
+                Frame::None,
+            );
+            let array = nullable_measured_lines([false, true, false]);
+            let left = Bound::new(py, fixed).unwrap().into_any();
+            let right = Bound::new(py, array).unwrap().into_any();
+            let result = dispatch_binary_geometry(
+                py,
+                &left,
+                &right,
+                "test binary geometry",
+                MetricResolver::None,
+                |left, _, _| Ok(left.shape().clone()),
+            )
+            .expect("scalar/array geometry stream");
+            let result = result.bind(py);
+            let array = crate::broadcast::exact_geometry_array(result)
+                .expect("geometry dispatch returns GeometryArray");
+
+            assert_packed_measured_lines(array, &[0, 3, 3, 6], &[
+                70.0, 80.0, 90.0, 70.0, 80.0, 90.0,
+            ]);
+            assert!(array.is_row_missing(1));
+        });
+    }
+
+    #[test]
+    fn binary_geometry_array_scalar_stream_keeps_nullable_lines_packed() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let array = nullable_measured_lines([false, true, false]);
+            let fixed = PyGeometry::with_frame(
+                crate::io::parse_wkt("LINESTRING M (10 0 70, 11 0 80, 12 0 90)")
+                    .expect("fixed measured line"),
+                Frame::None,
+            );
+            let output = geometry_kernel_over_array(
+                py,
+                &array,
+                GeometryInput::One(&fixed),
+                "test binary geometry",
+                MetricResolver::None,
+                |left, _, _| Ok(left.shape().clone()),
+            )
+            .expect("array/scalar geometry stream");
+
+            assert_packed_measured_lines(&output, &[0, 3, 3, 6], &[
+                10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+            ]);
+            assert!(output.is_row_missing(1));
+        });
+    }
+
+    #[test]
+    fn binary_geometry_array_pair_stream_unions_missing_rows() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let left = nullable_measured_lines([false, true, false]);
+            let right = nullable_measured_lines([true, false, false]);
+            let output = geometry_kernel_over_array(
+                py,
+                &left,
+                GeometryInput::Many(&right),
+                "test binary geometry",
+                MetricResolver::None,
+                |left, _, _| Ok(left.shape().clone()),
+            )
+            .expect("array-pair geometry stream");
+
+            assert_packed_measured_lines(&output, &[0, 0, 0, 3], &[40.0, 50.0, 60.0]);
+            assert!(output.is_row_missing(0));
+            assert!(output.is_row_missing(1));
+            assert!(!output.is_row_missing(2));
+        });
     }
 
     #[test]

@@ -294,7 +294,6 @@ def required_raises(
     if qualname in (
         'h3_cover',
         's2_cover',
-        's2_cover_adaptive',
         'geohash_cover',
         'tile_cover',
     ):

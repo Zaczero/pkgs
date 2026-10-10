@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import re
 import sys
 from dataclasses import dataclass
@@ -1010,12 +1011,19 @@ def collect_errors() -> list[str]:
         for variant in variants:
             annotations = [parameter.annotation for parameter in variant.parameters]
             annotations.append(variant.returns)
-            private = sorted({
-                expr.name
-                for annotation in annotations
-                for expr in _expressions(annotation)
-                if expr.name.startswith('_')
-            })
+            # Private TypeAlias names are implementation details; their expanded
+            # members, rather than the alias spelling, determine the public type.
+            private_names = set()
+            for annotation in annotations:
+                expressions = _expressions(annotation)
+                if any(expr.name.startswith('_') for expr in expressions):
+                    expressions = _expressions(
+                        expand_annotation(copy.deepcopy(annotation), aliases)
+                    )
+                private_names.update(
+                    expr.name for expr in expressions if expr.name.startswith('_')
+                )
+            private = sorted(private_names)
             if private:
                 errors.append(
                     f'{function.canonical_path}: private annotations {private}'

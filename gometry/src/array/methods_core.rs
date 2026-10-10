@@ -201,6 +201,7 @@ fn replace_array_coordinates(
             .map_or(array.len(), storage::ValidityMask::present_count),
     );
     for row in array.row_operation().present_rows() {
+        let logical = row.logical();
         let count = row.row().coordinates(&mut counts).map_err(PyErr::from)?;
         let next_present_cursor = present_cursor
             .checked_add(count)
@@ -210,7 +211,8 @@ fn replace_array_coordinates(
         present_cursor = next_present_cursor;
         shapes.push(
             row.row()
-                .try_with_shape(|shape| replace_shape_coordinates(shape, &sub))?,
+                .try_with_shape(|shape| replace_shape_coordinates(shape, &sub))
+                .map_err(|error| crate::note_array_row(error, logical))?,
         );
     }
     debug_assert_eq!(present_cursor, replacement.len);
@@ -1341,5 +1343,55 @@ mod geographic_total_bounds_tests {
             .and_then(|support| support.bounds(crate::geographic::GeographicFrame::crs84()))
             .map(Bounds::into_tuple)
         );
+    }
+}
+
+#[cfg(test)]
+mod mixed_replacement_row_note_tests {
+    use pyo3::prelude::*;
+
+    use super::{PyGeometryArray, replace_array_coordinates};
+    use crate::crs::frame::Frame;
+    use crate::geometry::storage::ValidityMask;
+    use crate::geometry::storage::replacement::{CoordinateReplacement, ReplacementAxis};
+    use crate::geometry::{CoordinateAxes, Shape, SharedSlice};
+
+    #[test]
+    fn present_empty_mixed_replacement_error_keeps_logical_row_note() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let empty = crate::io::parse_wkt("POLYGON M EMPTY").expect("typed empty polygon");
+            let polygon = crate::io::parse_wkt("POLYGON M ((0 0 11, 4 0 12, 4 4 13, 0 0 11))")
+                .expect("measured polygon");
+            let array = PyGeometryArray::mixed_shapes(
+                vec![Shape::empty_point(), empty, Shape::empty_point(), polygon],
+                Frame::None,
+            )
+            .expect("mixed geometry array")
+            .with_missing_mask(Some(
+                ValidityMask::from_vec(4, vec![true, false, true, false])
+                    .expect("logical missing mask"),
+            ))
+            .expect("missing rows attach");
+            let replacement = CoordinateReplacement {
+                xs: SharedSlice::from_vec(vec![0.0, 4.0, 4.0, 0.5]),
+                ys: SharedSlice::from_vec(vec![0.0, 0.0, 4.0, 0.0]),
+                zs: ReplacementAxis::Carry,
+                ms: ReplacementAxis::Carry,
+                len: 4,
+                axes: CoordinateAxes::XYM,
+                positional: false,
+            };
+
+            let error = replace_array_coordinates(&array, py, replacement)
+                .expect_err("open mixed polygon replacement fails");
+            let notes = error
+                .value(py)
+                .getattr("__notes__")
+                .expect("row error note")
+                .extract::<Vec<String>>()
+                .expect("row error notes are strings");
+            assert_eq!(notes, ["while processing array element 3"]);
+        });
     }
 }

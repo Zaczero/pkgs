@@ -2388,7 +2388,6 @@ pub(super) fn global_face_structure(
 
 #[expect(
     clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
     reason = "Q IDs and ring transitions index the dense topology and source inventory built together"
 )]
 fn build_global_face_topology(

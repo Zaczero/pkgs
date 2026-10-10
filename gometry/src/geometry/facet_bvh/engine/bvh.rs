@@ -256,8 +256,13 @@ fn partition_facets(
     let height = finite_span(min_y, max_y).unwrap_or(0.0);
     let axis = usize::from(height > width);
     let center = |id: u32| {
-        let facet = facet_aabbs[id as usize];
-        finite_midpoint(facet[axis], facet[axis + 2])
+        let [min_x, min_y, max_x, max_y] = facet_aabbs[id as usize];
+        let (minimum, maximum) = if axis == 0 {
+            (min_x, max_x)
+        } else {
+            (min_y, max_y)
+        };
+        finite_midpoint(minimum, maximum)
     };
     let mid = ids.len() / 2;
     ids.select_nth_unstable_by(mid, |&a, &b| {

@@ -669,9 +669,11 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     interpolated_m = measured_rows.line_interpolate(50.0, basis='m')
     assert interpolated_m[0].to_wkt() == 'POINT M (5 0 50)'
     assert interpolated_m[1] is None
+    assert interpolated_m.to_arrow().type.extension_name == 'geoarrow.point'
     substrings_m = measured_rows.line_substring(25.0, 75.0, basis='m')
     assert substrings_m[0].to_wkt() == 'LINESTRING M (2.5 0 25, 7.5 0 75)'
     assert substrings_m[1] is None
+    assert substrings_m.to_arrow().type.extension_name == 'geoarrow.linestring'
 
     invalid_m = gm.GeometryArray([
         measured,
@@ -867,6 +869,8 @@ def test_geojson_feature_null_geometry_dict_lanes_become_missing_rows() -> None:
 
 def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
     expected = [False, True, False]
+    buffered = masked.buffer(0.1)
+    affine = masked.affine_transform([1.0, 0.0, 0.0, 1.0, 10.0, 10.0])
     survivors = [
         masked.set_crs(4326),
         masked.set_crs(4326).set_epoch(2020.0),
@@ -875,8 +879,8 @@ def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
         masked.force_3d(),
         masked.reverse(),
         masked.swap_xy(),
-        masked.affine_transform([1.0, 0.0, 0.0, 1.0, 10.0, 10.0]),
-        masked.buffer(0.1),
+        affine,
+        buffered,
         masked.simplify(0.1),
         masked[:],
         masked[[0, 1, 2]],
@@ -884,8 +888,26 @@ def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
     ]
     for result in survivors:
         assert result.is_missing.tolist() == expected, repr(result)
+    assert affine.to_arrow().type.extension_name == 'geoarrow.point'
+    assert buffered.to_arrow().type.extension_name == 'geoarrow.polygon'
     assert masked[1:].is_missing.tolist() == [True, False]
     assert masked[[False, True, True]].is_missing.tolist() == [True, False]
+
+
+def test_binary_geometry_streams_homogeneous_nullable_line_results() -> None:
+    left = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(4, 4)])
+    right = gm.GeometryArray([gm.Point(1, 0), gm.Point(5, 5), None])
+
+    paired = gm.shortest_line(left, right)
+    left_scalar = gm.shortest_line(gm.Point(0, 0), right)
+    right_scalar = gm.shortest_line(left, gm.Point(1, 0))
+
+    assert paired.is_missing.tolist() == [False, True, True]
+    assert left_scalar.is_missing.tolist() == [False, False, True]
+    assert right_scalar.is_missing.tolist() == [False, True, False]
+    assert paired.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert left_scalar.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert right_scalar.to_arrow().type.extension_name == 'geoarrow.linestring'
 
 
 def test_frame_semantics_with_missing() -> None:

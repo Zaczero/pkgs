@@ -12,6 +12,8 @@ use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, ValidityMask, row_map_is_identity,
     row_ord_extremes,
 };
+#[cfg(test)]
+use crate::geometry::types::ShapeHeapMemo;
 use crate::geometry::{CoordSeqBuilder, storage};
 use crate::py::numpy::optional_float64_array;
 
@@ -838,7 +840,7 @@ mod compact_nullable_tests {
             .saturating_add(std::mem::size_of::<GeometryArrayStorage>());
         owner.saturating_add(match layout {
             GeometryArrayStorage::Mixed(shapes) => {
-                let mut memo = crate::geometry::types::ShapeHeapMemo::default();
+                let mut memo = ShapeHeapMemo::default();
                 let nested = shapes.iter().fold(0_usize, |bytes, shape| {
                     bytes.saturating_add(memo.heap_bytes(shape))
                 });
@@ -930,7 +932,7 @@ mod compact_nullable_tests {
             .saturating_add(std::mem::size_of::<GeometryArrayStorage>());
         owner.saturating_add(match array.storage() {
             GeometryArrayStorage::Mixed(shapes) => {
-                let mut memo = crate::geometry::types::ShapeHeapMemo::default();
+                let mut memo = ShapeHeapMemo::default();
                 let selected = shapes
                     .get(rows.clone())
                     .expect("test range is bounded by mixed storage");
@@ -1021,9 +1023,9 @@ mod compact_nullable_tests {
         PyGeometryArray::packed_lines(
             CoordSeq::try_from_vecs(
                 (0..9).map(f64::from).collect(),
-                (0..9).map(|row| f64::from(row * 2)).collect(),
-                Some((0..9).map(|row| f64::from(row * 3)).collect()),
-                Some((0..9).map(|row| f64::from(row * 4)).collect()),
+                (0..9).map(|row| f64::from(row) * 2.0).collect(),
+                Some((0..9).map(|row| f64::from(row) * 3.0).collect()),
+                Some((0..9).map(|row| f64::from(row) * 4.0).collect()),
             )
             .unwrap(),
             CsrOffsetColumn::try_new(vec![0, 2, 2, 5, 8, 9], 9).unwrap(),
@@ -1036,9 +1038,9 @@ mod compact_nullable_tests {
         PyGeometryArray::packed_polygons(
             CoordSeq::try_from_vecs(
                 (0..17).map(f64::from).collect(),
-                (0..17).map(|row| f64::from(row * 2)).collect(),
-                Some((0..17).map(|row| f64::from(row * 3)).collect()),
-                Some((0..17).map(|row| f64::from(row * 4)).collect()),
+                (0..17).map(|row| f64::from(row) * 2.0).collect(),
+                Some((0..17).map(|row| f64::from(row) * 3.0).collect()),
+                Some((0..17).map(|row| f64::from(row) * 4.0).collect()),
             )
             .unwrap(),
             CsrOffsetColumn::<RingLevel>::try_new(vec![0, 4, 8, 13, 17, 17], 17).unwrap(),
@@ -1052,9 +1054,9 @@ mod compact_nullable_tests {
         PyGeometryArray::packed_points(
             CoordSeq::try_from_vecs(
                 (0..5).map(f64::from).collect(),
-                (0..5).map(|row| f64::from(row * 2)).collect(),
-                Some((0..5).map(|row| f64::from(row * 3)).collect()),
-                Some((0..5).map(|row| f64::from(row * 4)).collect()),
+                (0..5).map(|row| f64::from(row) * 2.0).collect(),
+                Some((0..5).map(|row| f64::from(row) * 3.0).collect()),
+                Some((0..5).map(|row| f64::from(row) * 4.0).collect()),
             )
             .unwrap(),
             Frame::None,
