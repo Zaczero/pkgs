@@ -1638,7 +1638,7 @@ def test_geoparquet_sized_array_like_attributes_preserve_native_types(
     degraded pandas.Categorical to plain strings. Sized columns are proportional
     data — pass them through for date32 / dictionary encodings.
     """
-    import datetime
+    import datetime as dt
 
     import numpy as np
     import pandas as pd
@@ -1653,8 +1653,8 @@ def test_geoparquet_sized_array_like_attributes_preserve_native_types(
     _assert_roundtrip(values, restored)
     assert pa.types.is_date32(attrs.schema.field('when').type)
     assert attrs.column('when').to_pylist() == [
-        datetime.date(2020, 1, 1),
-        datetime.date(2020, 1, 2),
+        dt.date(2020, 1, 1),
+        dt.date(2020, 1, 2),
     ]
 
     # pandas.Categorical → dictionary-encoded Arrow (not plain strings).
