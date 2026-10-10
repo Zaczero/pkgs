@@ -221,14 +221,14 @@ def test_a6_tile_rejects_out_of_web_mercator_latitude():
 
 
 # ---------------------------------------------------------------------------
-# B2/B3 - dynamic CRS discovery + epoch fixtures
+# B2/B3 - geometry epoch admission + time-dependent transform fixtures
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ('code', 'preserve'),
     [
-        (4326, True),  # WGS 84 dynamic
+        (4326, True),  # WGS 84 ensemble
         (3857, True),  # Web Mercator (derived from WGS 84)
         (4258, False),  # ETRS89 static - clears epoch
         (2180, False),  # ETRF2000-PL static
@@ -246,7 +246,7 @@ def test_b3_epoch_policy_to_crs(code, preserve):
         assert out.epoch is None, f'EPSG:{code} should clear epoch'
 
 
-def test_b2_compound_9707_is_dynamic_for_epoch():
+def test_b2_compound_9707_admits_geometry_epoch():
     pt = gm.Point(10.0, 50.0, crs=4326, epoch=2020.0)
     out = pt.to_crs(9707)
     assert out.epoch == 2020.0

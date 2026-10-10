@@ -94,6 +94,9 @@ if TYPE_CHECKING:
     LINE.line_interpolate(1.0, basis='m', unit='meters')  # type: ignore[call-overload]
     LINE.line_interpolate(count=2, basis='m')  # type: ignore[call-overload]
     LINE.line_interpolate(count=2, normalized=True)  # type: ignore[call-overload]
+    LINE.line_locate(POLY)  # type: ignore[call-overload]
+    LINE.line_locate(geom=POINT)  # type: ignore[call-overload]
+    POINT.voronoi(output='triangles')  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', unit='planar')  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', normalized=True)  # type: ignore[call-overload]
 
@@ -113,6 +116,16 @@ if TYPE_CHECKING:
     gm.GeometryParts()  # type: ignore[call-arg]
     gm.Groups()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
+
+    gm.H3VertexArray([1.5])  # type: ignore[list-item]
+    gm.H3EdgeArray([1.5])  # type: ignore[list-item]
+
+    def _reject_to_pairs_for_noninteger_groups(
+        geometries: gm.Groups[gm.GeometryArray[gm.Geometry]],
+        cells: gm.Groups[gm.CellArray[gm.H3Cell]],
+    ) -> None:
+        geometries.to_pairs()  # type: ignore[misc]
+        cells.to_pairs()  # type: ignore[misc]
 
     gm.SpatialIndex(POINTS).query(POINTS).__getitem__(index=0)  # type: ignore[call-overload]
 

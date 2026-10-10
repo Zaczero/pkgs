@@ -22,6 +22,7 @@ from pyo3stubs import (
     MacroExport,
     StubConfig,
     SurfaceConfig,
+    TextSignatureDefault,
     TokenConfig,
 )
 
@@ -72,6 +73,128 @@ UNINSPECTABLE_ALLOWLIST: dict[str, str] = {
     ),
 }
 
+# Exact Rust defaults whose Python text-signature presentation is deliberately
+# a public token, effective scalar, coordinate tuple, or unwrapped Option value.
+# These entries name values; the checker does not evaluate Rust expressions.
+TEXT_SIGNATURE_DEFAULT_ALIASES = {
+    'ArrowEncoding::Auto': TextSignatureDefault(
+        value='auto',
+        reason='The ArrowEncoding variant is exposed as its public token.',
+    ),
+    'BufferCapStyle::Round': TextSignatureDefault(
+        value='round',
+        reason='The BufferCapStyle variant is exposed as its public token.',
+    ),
+    'BufferJoinStyle::Round': TextSignatureDefault(
+        value='round',
+        reason='The BufferJoinStyle variant is exposed as its public token.',
+    ),
+    'BufferSide::Both': TextSignatureDefault(
+        value='both',
+        reason='The BufferSide variant is exposed as its public token.',
+    ),
+    'CellRule::Overlap': TextSignatureDefault(
+        value='overlap',
+        reason='The CellRule variant is exposed as its public token.',
+    ),
+    'DEFAULT_MITER_LIMIT': TextSignatureDefault(
+        value=5.0,
+        reason='The named miter-limit constant is exposed as the numeric default.',
+    ),
+    'DefaultedF64Input::Default(0.0)': TextSignatureDefault(
+        value=0.0,
+        reason='The wrapper Default payload is the exposed effective scalar value.',
+    ),
+    'DefaultedF64Input::Default(2.0)': TextSignatureDefault(
+        value=2.0,
+        reason='The wrapper Default payload is the exposed effective scalar value.',
+    ),
+    'DefaultedI64Input::Default(2)': TextSignatureDefault(
+        value=2,
+        reason='The wrapper Default payload is the exposed effective scalar value.',
+    ),
+    'GridOrigin::DEFAULT': TextSignatureDefault(
+        value=(0.0, 0.0),
+        reason='GridOrigin::DEFAULT is the exposed coordinate pair.',
+    ),
+    'LineReferenceBasis::Distance': TextSignatureDefault(
+        value='distance',
+        reason='The LineReferenceBasis variant is exposed as its public token.',
+    ),
+    'MinConfidence::DEFAULT': TextSignatureDefault(
+        value=70,
+        reason='MinConfidence::DEFAULT is the public confidence threshold.',
+    ),
+    'NavigationPath::Geodesic': TextSignatureDefault(
+        value='geodesic',
+        reason='The NavigationPath variant is exposed as its public token.',
+    ),
+    'OriginSpec::Centroid': TextSignatureDefault(
+        value='centroid',
+        reason='The centroid anchor is exposed as the public origin token.',
+    ),
+    'QUADRANT_SEGMENTS_DEFAULT_I64': TextSignatureDefault(
+        value=8,
+        reason='The named quadrant-segment constant is exposed as an integer.',
+    ),
+    'RepairMethod::Linework': TextSignatureDefault(
+        value='linework',
+        reason='The RepairMethod variant is exposed as its public token.',
+    ),
+    'SimplifyMethod::Vw': TextSignatureDefault(
+        value='vw',
+        reason='The SimplifyMethod variant is exposed as its public token.',
+    ),
+    'SmoothMethod::Chaikin': TextSignatureDefault(
+        value='chaikin',
+        reason='The SmoothMethod variant is exposed as its public token.',
+    ),
+    'Some(1_000_000)': TextSignatureDefault(
+        value=1_000_000,
+        reason='The Python signature exposes the inner value of the Rust Some default.',
+    ),
+    'Some(crate::grid::GRID_MAX_CELLS)': TextSignatureDefault(
+        value=1_000_000,
+        reason='The Python signature exposes the inner maximum-cell count.',
+    ),
+    'SpatialCurve::Hilbert': TextSignatureDefault(
+        value='hilbert',
+        reason='The SpatialCurve variant is exposed as its public token.',
+    ),
+    'VoronoiClipInput::DEFAULT': TextSignatureDefault(
+        value='padded',
+        reason='The default clip wrapper is presented as the public padded mode.',
+    ),
+    'VoronoiOutput::Polygons': TextSignatureDefault(
+        value='polygons',
+        reason='The VoronoiOutput variant is exposed as its public token.',
+    ),
+    'Wgs84DefaultCrs::Default': TextSignatureDefault(
+        value='OGC:CRS84',
+        reason='The omitted CRS resolves to the public WGS84 longitude/latitude label.',
+    ),
+    'crate::grid::GRID_MAX_CELLS': TextSignatureDefault(
+        value=1_000_000,
+        reason='The named maximum-cell constant is exposed as its integer value.',
+    ),
+    'crs::ProjDirection::Forward': TextSignatureDefault(
+        value='forward',
+        reason='The ProjDirection variant is exposed as its public token.',
+    ),
+    'crs::WktAxisRule::Auto': TextSignatureDefault(
+        value='auto',
+        reason='The WktAxisRule variant is exposed as its public token.',
+    ),
+    'crs::WktVersion::Wkt2_2019': TextSignatureDefault(
+        value='WKT2_2019',
+        reason='The WktVersion variant is exposed as its public token.',
+    ),
+    'geometry::CoverageOverlapRule::LongestBorder': TextSignatureDefault(
+        value='longest_border',
+        reason='The overlap-rule variant is exposed as its public token.',
+    ),
+}
+
 EXTRA_IGNORED_TYPE_NAMES = frozenset({'_GeometryT', '_GeometryT_co', '_CellT'})
 
 SURFACES = (
@@ -105,6 +228,7 @@ def config() -> StubConfig:
         extra_ignored_type_names=EXTRA_IGNORED_TYPE_NAMES,
         macro_exports=(GEOMETRY_LEAF,),
         constructor_doc_macros=frozenset({'h3_index_array_common'}),
+        text_signature_default_aliases=TEXT_SIGNATURE_DEFAULT_ALIASES,
         # Array method returns are DERIVED from the scalar contract.
         duality=DualityConfig(pairs=(('Geometry', 'GeometryArray'),)),
         tokens=TokenConfig(

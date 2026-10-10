@@ -16,7 +16,6 @@ use crate::py::functions::constructors::{
     ensure_homogeneous_axes, exact_geometry, extract_coordinate, extract_coordinate_or_empty,
     extract_lines, extract_points, extract_polygons, finite_coordinate_required,
     optional_coordinate_column_values, optional_coordinates, parse_crs, parse_crs_epoch,
-    wrapped_box,
 };
 use crate::py::numpy;
 
@@ -640,40 +639,43 @@ pub(super) fn build_box_shape(
             }
             if let Some(crs) = crs
                 && let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame()
-                && (-frame.longitude().half_period()..=frame.longitude().half_period())
-                    .contains(&minx)
-                && (-frame.longitude().half_period()..=frame.longitude().half_period())
-                    .contains(&maxx)
-                && (-frame.pole()..=frame.pole()).contains(&miny)
-                && (-frame.pole()..=frame.pole()).contains(&maxy)
+                && let Ok(bounds) = Bounds::new_geographic(frame, minx, miny, maxx, maxy)
                 && minx < maxx
                 && miny < maxy
             {
-                geographic_bounds_to_shape(Bounds::new(minx, miny, maxx, maxy)?, frame)
-                    .map_err(PyErr::from)
+                geographic_bounds_to_shape(bounds, frame).map_err(PyErr::from)
             } else {
                 Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
             }
         },
         Some("split") => {
-            match crs {
-                Some(crs) if crs::is_wgs84_lonlat(crs) => {},
-                _ => {
-                    return Err(CRSError::new_err(
-                        "box wrap='split' requires crs=4326 (EPSG:4326 longitude/latitude)",
-                    ));
-                },
-            }
-            if maxx - minx >= 360.0 && miny < maxy {
-                // Every full turn denotes the complete longitude band.
-                let frame = crs::info("EPSG:4326")
-                    .map_err(PyErr::from)?
-                    .geographic_frame()
-                    .expect("EPSG:4326 has a geographic frame");
-                geographic_bounds_to_shape(Bounds::new(-180.0, miny, 180.0, maxy)?, frame)
-                    .map_err(PyErr::from)
+            let Some(crs) = crs else {
+                return Err(CRSError::new_err(
+                    "box wrap='split' requires a geographic CRS",
+                ));
+            };
+            let Some(frame) = crs::info(crs).map_err(PyErr::from)?.geographic_frame() else {
+                return Err(CRSError::new_err(
+                    "box wrap='split' requires a geographic CRS",
+                ));
+            };
+            let bounds = if maxx - minx >= frame.longitude().period() {
+                Bounds::full_geographic_longitude(frame, miny, maxy)?
             } else {
-                Ok(wrapped_box(minx, miny, maxx, maxy)?)
+                Bounds::new_geographic(frame, minx, miny, maxx, maxy)?
+            };
+            if let Some([west, east]) = bounds.split_geographic(frame) {
+                Ok(Shape::multi_polygon(
+                    crate::geometry::CoordinateAxes::XY,
+                    vec![
+                        box_polygon(west.minx(), west.miny(), west.maxx(), west.maxy())?,
+                        box_polygon(east.minx(), east.miny(), east.maxx(), east.maxy())?,
+                    ],
+                ))
+            } else if maxx - minx >= frame.longitude().period() {
+                geographic_bounds_to_shape(bounds, frame).map_err(PyErr::from)
+            } else {
+                Ok(Shape::Polygon(box_polygon(minx, miny, maxx, maxy)?))
             }
         },
         Some(value) => Err(parameter_error(

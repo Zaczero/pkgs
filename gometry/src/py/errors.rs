@@ -554,7 +554,7 @@ impl From<Error> for PyErr {
                 // `epoch ⟹ crs` violated at a Frame::new construction boundary
                 // — a CRS-domain error, like its siblings (ValueError subclass).
                 // Deliberately no left/right/index (single-geometry invariant).
-                F::EpochRequiresCrs | F::EpochRequiresDynamicCrs { .. } => {
+                F::EpochRequiresCrs | F::EpochRequiresAdmittedCrs { .. } => {
                     CRSError::new_err(message)
                 },
             },

@@ -5,24 +5,25 @@ use pyo3::PyErr;
 use pyo3::types::{PyInt, PyList};
 
 use crate::array::{
-    ArrayRow, Bound, Bounds, CRSError, CoordSeq, Crs, CsrOffsetColumn, FrameAdoption, GeometryKind,
-    InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
-    PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
-    PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
-    bool_array, coerce_present_geometry_items, coordinate_epoch_option, crs, crs_arc,
-    exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw, line_is_simple,
-    line_is_valid, map_coordinates_callback, parse_coordinate_replacement, parse_crs,
-    polygon_is_valid, pymethods, replace_shape_coordinates, require_geojson_crs,
-    slice_replacement_for_shape,
+    ArrayRow, Bound, Bounds, CRSError, Crs, FrameAdoption, GeometryKind, Py, PyAny,
+    PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _, PyGeometry,
+    PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError, PyTypeMethods as _,
+    Python, Result, SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items,
+    coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
+    geometry_array_svg_grid_html_masked, line_is_ccw, line_is_simple, line_is_valid,
+    map_coordinates_callback, parse_coordinate_replacement, parse_crs, polygon_is_valid, pymethods,
+    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
 };
 use crate::boundary::coordinates::checked_vector_len;
 use crate::boundary::metadata;
 use crate::crs::frame;
 use crate::crs::frame::FrameError;
-use crate::geometry::storage::admission::{CheckedRingWindow, RingWindowError};
+#[cfg(test)]
+use crate::geometry::CoordSeq;
 use crate::geometry::storage::kernels::{
     geographic_total_bounds_from_columns, raw_total_bounds_from_columns,
 };
+use crate::geometry::storage::packed_columns::validate_replacement_ring;
 use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
 use crate::geometry::{
@@ -117,33 +118,6 @@ fn shapely_wkb_batch<'py>(
     ))
 }
 
-fn validate_packed_replacement_rings(
-    coords: &CoordSeq,
-    ring_offsets: &CsrOffsetColumn<RingLevel>,
-) -> PyResult<()> {
-    for [start, end] in ring_offsets.array_windows::<2>() {
-        let start = *start as usize;
-        let end = *end as usize;
-        match CheckedRingWindow::checked(coords, start..end) {
-            Ok(_) => {},
-            Err(RingWindowError::TooShort(len)) => {
-                let error: crate::error::Error =
-                    crate::geometry::GeometryErrorKind::RingTooShort(len).into();
-                return Err(error.into());
-            },
-            Err(RingWindowError::Open) => {
-                return Err(InvalidGeometryError::new_err("polygon ring must be closed"));
-            },
-            Err(RingWindowError::Inverted | RingWindowError::OutOfRange) => {
-                return Err(InvalidGeometryError::new_err(
-                    "polygon ring range is invalid",
-                ));
-            },
-        }
-    }
-    Ok(())
-}
-
 /// Adopt dense identity-packed replacement columns directly. Selected and
 /// masked arrays need logical-row gathering/scattering and stay on the generic
 /// packed dispatcher below.
@@ -186,7 +160,9 @@ fn replace_dense_packed_coordinates(
         }) if row_map.is_identity() => {
             debug_assert_eq!(coords.len(), replacement.len);
             let coords = replacement.apply_to_seq(coords)?;
-            validate_packed_replacement_rings(&coords, ring_offsets)?;
+            for [start, end] in ring_offsets.array_windows::<2>() {
+                validate_replacement_ring(&coords, *start as usize..*end as usize)?;
+            }
             Ok(Ok(PyGeometryArray::packed_polygons(
                 coords,
                 ring_offsets.clone(),
@@ -212,7 +188,7 @@ fn replace_array_coordinates(
         Ok(output) => return Ok(output),
         Err(replacement) => replacement,
     };
-    if !array.is_compact_nullable() && !matches!(array.storage(), GeometryArrayStorage::Mixed(_)) {
+    if !matches!(array.storage(), GeometryArrayStorage::Mixed(_)) {
         return Ok(array
             .replace_packed_coords_detached(py, array.frame.clone(), replacement)?
             .expect("non-Mixed storage has packed columns"));
@@ -307,8 +283,8 @@ impl PyGeometryArray {
     ///     Shared CRS label. CRS-free rows adopt it; existing CRS values must
     ///     be equivalent to it.
     /// epoch : float or None, optional, default None
-    ///     Shared coordinate epoch for a dynamic CRS. Existing epochs must
-    ///     agree with it.
+    ///     Shared coordinate epoch for a CRS that admits geometry epochs.
+    ///     Existing epochs must agree with it.
     ///
     /// Returns
     /// -------

@@ -3,8 +3,8 @@ use pyo3::prelude::*;
 use crate::{Predicate, xy_predicate};
 /// Test whether ``left`` contains ``right``.
 ///
-/// Returns ``True`` if no points of ``right`` lie outside ``left`` and at least
-/// one interior point of ``right`` lies in the interior of ``left``.
+/// Returns ``True`` if no point of ``right`` lies outside ``left`` and the
+/// interiors of the two geometries share a point.
 /// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
 /// longitude and pole quotient.
 ///
@@ -400,8 +400,11 @@ pub(crate) fn touches(
     crate::dispatch::dispatch_predicate(py, left, right, Predicate::Touches)
 }
 
-/// Test whether ``left`` and ``right`` cross (interiors meet with lower
-/// dimension).
+/// Test whether ``left`` and ``right`` cross.
+///
+/// The dimension pair determines the relation. A line crosses a polygon when
+/// part of the line interior is inside the polygon and part is outside. Two
+/// curves cross when their interiors meet at a point.
 ///
 /// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
 /// longitude and pole quotient.

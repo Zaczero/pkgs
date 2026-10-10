@@ -5,7 +5,7 @@ use crate::py::errors::GeometryError;
 use crate::py::support::LineReferenceBasis;
 use crate::{
     DistanceUnit, F64Param, GeometryInput, NavigationPath, PyGeometry, PyGeometryArray, Typed,
-    parse_interpolate_plan,
+    parameter_input_with_expected, parse_interpolate_plan,
 };
 
 /// `basis='m'` forbids distance-only options (`normalized`, `unit`).
@@ -39,7 +39,8 @@ Parameters
 ----------
 at : float or sequence of float, optional
     One location or many explicit distance-basis locations. Under
-    ``basis='m'``, pass one stored M value (or one value per array row).
+    ``basis='m'``, pass one stored M value for a scalar result or a sequence of
+    stored M values for one line; an array accepts one M value per row.
 
 ";
     scalar: (r"
@@ -254,7 +255,7 @@ Examples
 
 method_doc! {
     doc_line_locate;
-    body: concat!(r"Locate the position on linework nearest ``geom``. Empty linework, or
+    body: concat!(r"Locate the position on linework nearest ``point``. Empty linework, or
 an empty query point, locates to ``nan``.
 
 Projection is in X/Y. Zero-length X/Y segments add no distance-basis projection.
@@ -273,8 +274,9 @@ coordinate space.
 
 Parameters
 ----------
-geom : Geometry or GeometryArray
-    A geometry to project, or one geometry per line row.
+point : Point or GeometryArray[Point | None]
+    A point to project, or one point per line row. Missing query rows produce
+    ``nan`` in the result column.
 
 basis : {'distance', 'm'}, default 'distance'
     Return a CRS-aware distance, or the line's monotonic M ordinate. For
@@ -293,7 +295,7 @@ normalized : bool, default False
 Returns
 -------
 float or numpy.ndarray
-    One location, or a column when ``geom`` is an array.
+    One location, or a column when ``point`` is an array.
 
 ";
     array: r"
@@ -353,6 +355,29 @@ impl PyGeometry {
             .map(|value| crate::f64_scalar_named("at", value))
             .transpose()?
             .flatten();
+        if basis == LineReferenceBasis::M
+            && count.is_none()
+            && at_scalar.is_none()
+            && let Some(at) = at
+        {
+            reject_m_basis_distance_options(normalized, unit)?;
+            let stations = parameter_input_with_expected(py, at, "at", None, &|| {
+                "at must be finite".to_owned()
+            })?
+            .values;
+            let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
+            let value = crate::dispatch::unary_scalar_linref_column(
+                py,
+                self,
+                op,
+                op.resolver_with_unit(None),
+                stations,
+                |data, ctx, station| {
+                    kernels::unary_line_interpolate_point_m(data, ctx, &F64Param::Scalar(station))
+                },
+            )?;
+            return value.into_pyobject(py).map(|value| value.unbind().into());
+        }
         if count.is_some() || at_scalar.is_none() {
             if basis != LineReferenceBasis::Distance {
                 return Err(GeometryError::new_err(
@@ -461,13 +486,13 @@ impl PyGeometry {
 
     #[doc = doc_line_locate!(scalar)]
     #[pyo3(
-        signature = (geom, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
-        text_signature = "($self, geom, *, basis='distance', normalized=False, unit=None)"
+        signature = (point, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
+        text_signature = "($self, point, *, basis='distance', normalized=False, unit=None)"
     )]
     pub fn line_locate(
         &self,
         py: Python<'_>,
-        geom: &Bound<'_, PyAny>,
+        point: &Bound<'_, PyAny>,
         basis: LineReferenceBasis,
         normalized: bool,
         unit: Option<DistanceUnit>,
@@ -478,7 +503,7 @@ impl PyGeometry {
         crate::dispatch::line_locate_input(
             py,
             GeometryInput::One(self),
-            geom,
+            point,
             basis,
             normalized,
             unit,
@@ -585,14 +610,10 @@ impl PyGeometryArray {
             )?;
             return value.into_pyobject(py).map(|value| value.unbind().into());
         }
-        let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
         let distance = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
         distance.ensure_finite("at")?;
-        let resolver = op.resolver_with_unit(unit);
-        let model = resolver
-            .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
-            .require_model(MetricOp::LineInterpolate)?
-            .clone();
+        let model =
+            crate::broadcast::resolve_metric(self.crs_str(), unit, MetricOp::LineInterpolate)?;
         let packed = crate::dispatch::PackedLinearReference::InterpolatePoint {
             distance: distance.clone(),
             normalized,
@@ -634,16 +655,12 @@ impl PyGeometryArray {
                 move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end),
             );
         }
-        let op = crate::dispatch::Operation::Metric(MetricOp::LineSubstring);
         let start_distance = F64Param::parse_raw(start, "start", unary_len!(array, self))?;
         let end_distance = F64Param::parse_raw(end, "end", unary_len!(array, self))?;
         start_distance.ensure_finite("start")?;
         end_distance.ensure_finite("end")?;
-        let resolver = op.resolver_with_unit(unit);
-        let model = resolver
-            .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?
-            .require_model(MetricOp::LineSubstring)?
-            .clone();
+        let model =
+            crate::broadcast::resolve_metric(self.crs_str(), unit, MetricOp::LineSubstring)?;
         let packed = crate::dispatch::PackedLinearReference::Substring {
             start_distance: start_distance.clone(),
             end_distance: end_distance.clone(),
@@ -682,13 +699,13 @@ impl PyGeometryArray {
 
     #[doc = doc_line_locate!(array)]
     #[pyo3(
-        signature = (geom, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
-        text_signature = "($self, geom, *, basis='distance', normalized=False, unit=None)"
+        signature = (point, *, basis = LineReferenceBasis::Distance, normalized = false, unit = None),
+        text_signature = "($self, point, *, basis='distance', normalized=False, unit=None)"
     )]
     pub fn line_locate(
         &self,
         py: Python<'_>,
-        geom: &Bound<'_, PyAny>,
+        point: &Bound<'_, PyAny>,
         basis: LineReferenceBasis,
         normalized: bool,
         unit: Option<DistanceUnit>,
@@ -699,7 +716,7 @@ impl PyGeometryArray {
         crate::dispatch::line_locate_input(
             py,
             GeometryInput::Many(self),
-            geom,
+            point,
             basis,
             normalized,
             unit,

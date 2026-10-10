@@ -18,6 +18,7 @@ for _path in (_BENCHES / 'support', _BENCHES / 'drivers'):
         sys.path.insert(0, str(_path))
 
 import bench as bench_driver  # noqa: E402
+import benchmark_runtime  # noqa: E402
 from _bench_registry import ALL_PUBLIC_OPERATIONS, scaling_record  # noqa: E402
 from benchmark_observation import make_observation  # noqa: E402
 
@@ -61,12 +62,31 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
     provenance_b = producer(operation.competitor, 'B', lock_path)
     observation_a['producer_identity'] = provenance_a
     observation_b['producer_identity'] = provenance_b
+    block_id = (
+        f'competitors-pair-{ALL_PUBLIC_OPERATIONS.index(operation) + 1:02d}-'
+        f'block-{index + 1:02d}-{lead}'
+    )
+    process_pid = 2000 + ALL_PUBLIC_OPERATIONS.index(operation) * 10 + index
+    invocation_id = f'{block_id}-invocation'
+    case_processes = {}
+    for side, row, provenance, observation in (
+        ('A', operation.gometry, provenance_a, observation_a),
+        ('B', operation.competitor, provenance_b, observation_b),
+    ):
+        case_process = {
+            'pid': process_pid,
+            'invocation_id': invocation_id,
+            'row': row,
+            'identity_sha256': benchmark_runtime.identity_sha256(provenance),
+        }
+        observation['case_process'] = case_process
+        case_processes[side] = case_process
     return {
         'schema_version': 1,
         'artifact_type': 'gometry-paired-block',
         'profile': 'release',
         'run_id': 'run-1-release',
-        'block_id': f'competitors-pair-{ALL_PUBLIC_OPERATIONS.index(operation) + 1:02d}-block-{index + 1:02d}-{lead}',
+        'block_id': block_id,
         'pair_id': f'competitors-pair-{ALL_PUBLIC_OPERATIONS.index(operation) + 1:02d}',
         'operation': {
             'gometry': operation.gometry,
@@ -77,6 +97,12 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
         },
         'lead_order': order,
         'state_scope': 'shared-process-prepared-fixture',
+        'process': {
+            'pid': process_pid,
+            'invocation_id': invocation_id,
+            'platform': 'test',
+            'executable': '/python',
+        },
         'timestamps_monotonic_ns': {'block_started': 1, 'block_ended': 20},
         'sampling': {
             'warmup_iterations': 2,
@@ -92,6 +118,7 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
                 'ended_monotonic_ns': 3 if lead == 'ab' else 13,
                 'provenance_before': provenance_a,
                 'provenance_after': provenance_a,
+                'case_process': case_processes['A'],
                 'observation': observation_a,
             },
             'B': {
@@ -100,6 +127,7 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
                 'ended_monotonic_ns': 13 if lead == 'ab' else 3,
                 'provenance_before': provenance_b,
                 'provenance_after': provenance_b,
+                'case_process': case_processes['B'],
                 'observation': observation_b,
             },
         },
@@ -141,20 +169,25 @@ def _build_result(tmp_path: Path) -> dict[str, object]:
         'source_inputs_sha256': HASH,
         'native_source_inputs_sha256': HASH,
         'python_executable': '/python',
+        'python_prefix': '/venv',
         'python': '3.14',
         'python_version': '3.14 test build',
         'python_build': ['build', 'date'],
         'python_implementation': 'CPython',
         'python_debug': False,
         'python_cache_tag': 'cpython-314',
+        'python_ext_suffix': '.cpython-314.so',
+        'python_gil_disabled': False,
+        'python_gil_enabled': True,
         'extension': {
-            'path': '/checkout/target/release/gometry.so',
+            'path': '/checkout/site-packages/gometry/_lib.cpython-314.so',
             'sha256': HASH,
             'size_bytes': 1,
             'build_info': {
                 'schema_version': 1,
                 'source_inputs_format': 'sha256-path-nul-content-nul',
                 'source_inputs_sha256': HASH,
+                'native_source_inputs_sha256': HASH,
                 'profile_family': 'release',
                 'opt_level': '3',
                 'debug': False,
@@ -261,6 +294,50 @@ def _result(publication_baseline: str) -> dict[str, object]:
     return json.loads(publication_baseline)
 
 
+def _synthetic_subject() -> dict[str, object]:
+    identity = producer('gometry.op/fixture', 'A')
+    binding = identity['runtime_binding']
+    return {
+        'kind': 'release',
+        'path': binding['path'],
+        'receipt_sha256': binding['sha256'],
+        'source': {
+            'commit': None,
+            'version': '1',
+            'source_inputs_sha256': identity['source_inputs_sha256'],
+            'native_source_inputs_sha256': HASH,
+            'python_members': binding['python_members'],
+        },
+        'wheels': [
+            {
+                'filename': binding['wheel']['filename'],
+                'sha256': binding['wheel']['archive']['sha256'],
+                'extension_member': binding['wheel']['extension_member'],
+                'extension_sha256': binding['wheel']['extension_sha256'],
+            }
+        ],
+    }
+
+
+@pytest.fixture(autouse=True)
+def prevalidated_receipt_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, object]:
+    subject = _synthetic_subject()
+
+    def read_subject(path: Path) -> dict[str, object]:
+        if str(path.resolve()) != subject['path']:
+            raise AssertionError(f'unexpected synthetic receipt path: {path}')
+        return subject
+
+    monkeypatch.setattr(
+        bench_driver.artifact_release,
+        'validate_benchmark_receipt',
+        read_subject,
+    )
+    return subject
+
+
 def _run_manifest(
     tmp_path: Path,
     publication_baseline: str,
@@ -297,6 +374,14 @@ def _mutate_first_block(run_manifest: Path, mutate) -> None:
     for raw in sorted(run_manifest.parent.joinpath('raw').glob('block-*.json')):
         payload = json.loads(raw.read_text(encoding='utf-8'))
         mutate(payload)
+        for side in ('A', 'B'):
+            identity = payload['arms'][side]['provenance_before']
+            identity['runtime_binding']['extension'] = identity['extension']
+            case_process = payload['arms'][side]['case_process']
+            case_process['identity_sha256'] = benchmark_runtime.identity_sha256(
+                identity
+            )
+            payload['arms'][side]['observation']['case_process'] = case_process
         _replace_artifact(raw, json.dumps(payload))
         return
     raise AssertionError('fixture has no paired block artifact')
@@ -307,7 +392,9 @@ def _publish(run_manifest: Path, tmp_path: Path) -> Path:
 
 
 def test_release_measurement_cannot_publish_or_mutate_current(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prevalidated_receipt_boundary: dict[str, object],
 ) -> None:
     current = tmp_path / 'current'
     current.mkdir()
@@ -335,6 +422,16 @@ def test_release_measurement_cannot_publish_or_mutate_current(
         return [plan], {'competitors': [artifact]}
 
     monkeypatch.setattr(bench_driver, '_validate_oracle_builders', lambda _: None)
+    monkeypatch.setattr(
+        bench_driver.benchmark_runtime,
+        'load_subject',
+        lambda _path=None: prevalidated_receipt_boundary,
+    )
+    monkeypatch.setattr(
+        bench_driver.benchmark_runtime,
+        'package_root_for_subject',
+        lambda _subject, _explicit=None: Path('/checkout/site-packages'),
+    )
     monkeypatch.setattr(bench_driver, '_benchmark_plans', fake_plans)
     monkeypatch.setattr(bench_driver, '_resource_plans', lambda **_: [])
     monkeypatch.setattr(
@@ -683,7 +780,7 @@ def test_publication_writes_only_the_deterministic_summary(
     summary_md = first.decode('utf-8')
     assert '## Run environment' in summary_md
     assert 'Measured on test with Linux' in summary_md
-    assert 'CPython 3.14, at commit `deadbeef`.' in summary_md
+    assert 'CPython 3.14. Benchmark harness commit: `deadbeef`.' in summary_md
     assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
     assert 'core' not in summary_md.split('###')[0]
     assert '<table>' not in summary_md

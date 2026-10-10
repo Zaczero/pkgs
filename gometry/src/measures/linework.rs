@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::{
-    Frame, PyGeometry, PyGeometryArray, broadcast2_geometry, exact_geometry, exact_geometry_array,
+    Frame, PyGeometry, broadcast2_geometry, exact_geometry, exact_geometry_array,
     expected_geometry_or_array, splitter_points_from_array,
 };
 
@@ -71,8 +71,11 @@ pub(crate) fn shared_paths(
 ///
 /// Returns
 /// -------
-/// GeometryArray
-///     Split parts.
+/// GeometryArray or Groups[GeometryArray]
+///     A scalar line returns all split parts in one `GeometryArray`, even when
+///     its cutter is an array of points. A line array returns one `Groups` row
+///     per source line; an array cutter is paired row by row. Missing line or
+///     cutter rows produce empty groups.
 ///
 /// Raises
 /// ------
@@ -88,6 +91,9 @@ pub(crate) fn shared_paths(
 /// >>> import gometry as gm
 /// >>> gm.split(gm.LineString([(0, 0), (2, 0)]), gm.Point(1, 0)).to_wkt()
 /// ['LINESTRING (0 0, 1 0)', 'LINESTRING (1 0, 2 0)']
+/// >>> pieces = gm.split(gm.GeometryArray([gm.LineString([(0, 0), (2, 0)])]), gm.Point(1, 0))
+/// >>> pieces.offsets.tolist()
+/// [0, 2]
 #[pyfunction]
 #[pyo3(signature = (geom, splitter, *, tolerance = 0.0))]
 pub(crate) fn split(
@@ -95,11 +101,15 @@ pub(crate) fn split(
     geom: &Bound<'_, PyAny>,
     splitter: &Bound<'_, PyAny>,
     tolerance: f64,
-) -> PyResult<PyGeometryArray> {
+) -> PyResult<Py<PyAny>> {
     let tolerance = crate::NonNegative::try_new("tolerance", tolerance)?.get();
     if let Some(geometry) = exact_geometry(geom) {
         if let Some(splitter) = exact_geometry(splitter) {
-            return geometry.split(py, splitter, tolerance);
+            return Ok(geometry
+                .split(py, splitter, tolerance)?
+                .into_pyobject(py)?
+                .unbind()
+                .into());
         }
         if let Some(splitters) = exact_geometry_array(splitter) {
             Frame::compatible_parts(
@@ -116,11 +126,17 @@ pub(crate) fn split(
                 splitter_points,
                 geometry.frame.clone(),
                 tolerance,
-            );
+            )?
+            .into_pyobject(py)
+            .map(|array| array.unbind().into());
         }
     }
     if let Some(array) = exact_geometry_array(geom) {
-        return array.split(py, splitter, tolerance);
+        return Ok(array
+            .split(py, splitter, tolerance)?
+            .into_pyobject(py)?
+            .unbind()
+            .into());
     }
     Err(expected_geometry_or_array())
 }

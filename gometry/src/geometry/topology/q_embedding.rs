@@ -3615,50 +3615,36 @@ fn q_source_image_xy_bits(
     topology: &ExactGeographicTopology,
     image: QSourceImage,
 ) -> Result<Option<[u64; 2]>> {
-    let (record, normalize_latitude) = match image {
-        QSourceImage::SourcePoint(index) => (
-            topology
-                .sources
-                .points
-                .get(index as usize)
-                .map(|source| source.point),
-            true,
+    let record = match image {
+        QSourceImage::SourcePoint(index) => topology
+            .sources
+            .points
+            .get(index as usize)
+            .map(|source| source.point),
+        QSourceImage::SourceRingStart(edge) | QSourceImage::CollapsedStart(edge) => Some(
+            q_source_edge(topology, edge)?
+                .source
+                .first()
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source edge has no retained start point".into())
+                })?,
         ),
-        QSourceImage::SourceRingStart(edge) | QSourceImage::CollapsedStart(edge) => (
-            Some(
-                q_source_edge(topology, edge)?
-                    .source
-                    .first()
-                    .copied()
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("source edge has no retained start point".into())
-                    })?,
-            ),
-            matches!(image, QSourceImage::SourceRingStart(_)),
-        ),
-        QSourceImage::SourceRingEnd(edge) | QSourceImage::CollapsedEnd(edge) => (
-            Some(
-                q_source_edge(topology, edge)?
-                    .source
-                    .get(1)
-                    .copied()
-                    .ok_or_else(|| {
-                        GeometryErrorKind::Invalid("source edge has no retained end point".into())
-                    })?,
-            ),
-            matches!(image, QSourceImage::SourceRingEnd(_)),
+        QSourceImage::SourceRingEnd(edge) | QSourceImage::CollapsedEnd(edge) => Some(
+            q_source_edge(topology, edge)?
+                .source
+                .get(1)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source edge has no retained end point".into())
+                })?,
         ),
         QSourceImage::Port(_) | QSourceImage::PublicationSample(_) => return Ok(None),
     };
     let record = record.ok_or_else(|| {
         GeometryErrorKind::Invalid("source literal has no retained source record".into())
     })?;
-    let y = if normalize_latitude {
-        Latitude::from_admitted(topology.sources.frame, record.y).get()
-    } else {
-        record.y
-    };
-    Ok(Some([record.x.to_bits(), y.to_bits()]))
+    Ok(Some([record.x.to_bits(), record.y.to_bits()]))
 }
 
 pub(super) struct QSourceImages<'a> {
@@ -6806,10 +6792,7 @@ pub(super) fn source_ring_emitted_vertices<'topology>(
             topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
             })?;
-        let point = edge.source[0].with_xy_raw(
-            edge.source[0].x,
-            Latitude::from_admitted(topology.sources.frame, edge.source[0].y).get(),
-        );
+        let point = edge.source[0].with_xy_raw(edge.source[0].x, edge.source[0].y);
         let ports = topology
             .q
             .source_edge_ports
@@ -6832,10 +6815,7 @@ pub(super) fn source_ring_emitted_vertices<'topology>(
         .checked_sub(1)
         .and_then(|index| topology.sources.edges.get(index))
         .ok_or_else(|| GeometryErrorKind::Invalid("Q source ring has no edges".into()))?;
-    let point = last_edge.source[1].with_xy_raw(
-        last_edge.source[1].x,
-        Latitude::from_admitted(topology.sources.frame, last_edge.source[1].y).get(),
-    );
+    let point = last_edge.source[1].with_xy_raw(last_edge.source[1].x, last_edge.source[1].y);
     let last_ports = topology
         .q
         .source_edge_ports

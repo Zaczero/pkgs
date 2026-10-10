@@ -97,13 +97,19 @@ RELEASE_ENV_VARS = (
 )
 
 
-def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path = ROOT,
+    env: dict[str, str] | None = None,
+    capture_output: bool = True,
+) -> None:
     result = subprocess.run(
         cmd,
         cwd=cwd,
         env=env,
         check=False,
-        capture_output=True,
+        capture_output=capture_output,
         text=True,
     )
     if result.stdout:
@@ -402,22 +408,20 @@ def _effective_release_policy(target: str | None = None) -> dict[str, Any]:
             raise AssertionError(
                 f'{key.upper()} disagrees with target policy: {value!r} != {expected!r}'
             )
-    if present:
-        for prefix, key in (('CFLAGS', 'cflags'), ('CXXFLAGS', 'cxxflags')):
-            variable = f'{prefix}_{policy["target"].replace("-", "_")}'
-            value = os.environ.get(variable)
-            if value is None or value != expected_flags[key]:
-                raise AssertionError(
-                    f'{variable} is missing or disagrees with release policy: '
-                    f'{value!r} != {expected_flags[key]!r}'
-                )
     target_suffix = policy['target'].replace('-', '_')
     for key, prefix in (('cflags', 'CFLAGS'), ('cxxflags', 'CXXFLAGS')):
-        value = os.environ.get(f'{prefix}_{target_suffix}')
-        if value is not None and value != expected_flags[key]:
+        variable = f'{prefix}_{target_suffix}'
+        value = os.environ.get(variable)
+        expected = expected_flags[key]
+        if value is None:
+            if not present:
+                continue
             raise AssertionError(
-                f'{prefix}_{target_suffix} disagrees with target policy: '
-                f'{value!r} != {expected_flags[key]!r}'
+                f'{variable} is missing; release policy requires {expected!r}'
+            )
+        if value != expected:
+            raise AssertionError(
+                f'{variable} disagrees with release policy: {value!r} != {expected!r}'
             )
     return policy
 
@@ -596,6 +600,14 @@ def _prepared_output_hashes(root: Path = ROOT) -> dict[str, str]:
 def _prepared_input_identity(hashes: Mapping[str, str]) -> str:
     value = ''.join(f'{name}\0{digest}\n' for name, digest in sorted(hashes.items()))
     return _sha256_bytes(value.encode('ascii'))
+
+
+def _prepared_input_record(hashes: Mapping[str, str]) -> dict[str, Any]:
+    files = dict(sorted(hashes.items()))
+    return {
+        'identity_sha256': _prepared_input_identity(files),
+        'files': files,
+    }
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:

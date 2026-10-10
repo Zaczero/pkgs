@@ -9,8 +9,12 @@ import math
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -72,6 +76,7 @@ def main() -> None:
     args = parser.parse_args()
     _result, points, iterations = _run(args.vertices)
     source = gm.MultiPoint(points)
+    prepare_measurement()
     started = time.perf_counter()
     for _ in range(iterations):
         source.minimum_rotated_rectangle()

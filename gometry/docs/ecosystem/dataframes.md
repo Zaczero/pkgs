@@ -90,8 +90,11 @@ are not representable in WKB. `drop_crs=True` removes non-EPSG CRS metadata and
 `gm.from_polars(..., crs=..., epoch=...)`. Missing rows encode as Polars nulls
 and round-trip as missing geometry rows.
 
-gometry registers no Polars Series or Expr namespace. Conversion goes through
-`to_polars()` and `gm.from_polars()`, which keeps lazy plans free of Python UDFs.
+gometry registers no Polars Series or Expr namespace. `to_polars()` eagerly
+encodes a `GeometryArray` as a binary Series, and `gm.from_polars()` eagerly
+decodes the supplied Series into a `GeometryArray` in one native batch. These
+conversions run when called; they do not become deferred `LazyFrame`
+expressions.
 
 ## GeoPandas interchange
 

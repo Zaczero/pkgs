@@ -78,7 +78,7 @@ pub(crate) use bounds_index::{
     bounds_envelope, global_geographic_candidate_envelope, index_envelopes, point_from_bounds,
 };
 pub(crate) use constructive::{
-    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edges_flatten,
+    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edge_lines_flatten,
     voronoi_flatten,
 };
 pub(crate) use extract::{
@@ -100,12 +100,12 @@ pub(crate) use geojson::{
     py_to_json_value, py_to_json_value_classified, require_geojson_crs,
     validate_geojson_feature_side_data, validate_geojson_json_value,
 };
-pub(crate) use io_encoders::{box_polygon, wrapped_box};
+pub(crate) use io_encoders::box_polygon;
 pub(crate) use linref::{
-    InterpolatePlan, line_interpolate_coordseq, line_interpolate_points_coordseq,
-    line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,
-    line_locate_coordseq, line_locate_shape, line_locate_shape_m, line_substring_coordseq,
-    line_substring_shape, line_substring_shape_m, parse_interpolate_plan,
+    InterpolatePlan, PreparedLineLocate, line_interpolate_coordseq,
+    line_interpolate_points_coordseq, line_interpolate_points_shape, line_interpolate_shape,
+    line_interpolate_shape_m, line_locate_coordseq, line_substring_coordseq, line_substring_shape,
+    line_substring_shape_m, parse_interpolate_plan, prepare_line_locate,
 };
 pub(crate) use nearest::{
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
@@ -113,6 +113,7 @@ pub(crate) use nearest::{
 };
 pub(crate) use tokens::{
     _token_vocabulary, LineReferenceBasis, NavigationPath, SpatialCurve, TriangulationMethod,
+    VoronoiOutput,
 };
 pub(crate) use validate::{
     check_i32_min, note_array_row, parse_curve_bounds, parse_precision, parse_spatial_index_handle,

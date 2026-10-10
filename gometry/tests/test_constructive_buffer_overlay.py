@@ -1298,7 +1298,7 @@ def test_clip_by_rect_validates_bounds_when_arrays_have_no_present_rows() -> Non
             rows.clip_by_rect(2, 0, 1, 1)
 
     geographic_missing = gm.GeometryArray([None], crs=4326)
-    with pytest.raises(gm.GeometryError, match='clip rectangle bounds'):
+    with pytest.raises(gm.GeometryError, match='geographic rectangle bounds'):
         geographic_missing.clip_by_rect(-1, 1, 1, -1)
 
 

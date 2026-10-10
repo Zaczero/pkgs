@@ -132,7 +132,7 @@ GeometryArray[Point]
 ";
     tail: r"See Also
 --------
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 polylabel : Pole of inaccessibility (best label anchor).
 
 Raises
@@ -425,7 +425,7 @@ GeometryArray
 --------
 polylabel : Approximate pole-of-inaccessibility label point.
 maximum_inscribed_radius : The radius alone.
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 centroid : Area/length-weighted center (may fall outside).
 
 Raises
@@ -750,10 +750,11 @@ method_doc! {
     doc_point_on_surface;
     body: r"Representative point guaranteed to lie on the geometry. Geographic (lon/lat)
 input crossing the antimeridian is auto-split-normalized; no manual
-``split_antimeridian`` is required. Always inside (or on) the geometry,
-unlike centroid. The representative point is computed in XY and does not
-imply a source Z/M. On planar polygonal input, the first polygon component
-wins when representative chords have equal width.
+``split_antimeridian`` is required. The point lies inside or on the geometry,
+unlike centroid. Polygonal scanline candidates are checked after rounding; an
+uncovered candidate falls back to a source boundary point. The representative
+is computed in XY and does not imply a source Z/M. On planar polygonal input,
+the first polygon component wins when representative chords have equal width.
 
 See Also
 --------
@@ -773,7 +774,7 @@ Point
 Returns
 -------
 GeometryArray[Point]
-    One interior point per row.
+    One point inside or on each row's geometry.
 
 ";
     tail: r"
@@ -795,7 +796,7 @@ method_doc! {
     body: r"Build polygons from a geometry's own linework, automatically noding
 crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
 polygons from a pile of edges pooled across many geometries, use free function
-``polygonize`` on an iterable of
+``polygonize_all`` on an iterable of
 values. Input ordinates are carried where possible; unsourceable noding seams
 yield XY.";
     scalar: r"
@@ -814,10 +815,14 @@ Groups of GeometryArray
     One ragged group of polygons per input geometry, in input order — each
     input's OWN linework is polygonized independently (row ``i`` is
     ``self[i].polygonize()``). To pool ALL rows' edges into one graph so a
-    ring can close across inputs, use the free function ``polygonize``.
+    ring can close across inputs, use the free function ``polygonize_all``.
 
 ";
     tail: r"
+See Also
+--------
+polygonize_all : Pool linework across all supplied geometries.
+
 Raises
 ------
 GeometryError
@@ -852,7 +857,7 @@ See Also
 --------
 maximum_inscribed_circle : Certified filled disk from its own center search.
 centroid : Area/length-weighted center (may fall outside).
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 
 Parameters
 ----------";
@@ -1094,13 +1099,19 @@ Examples
 }
 
 method_doc! {
-    doc_voronoi_edges;
-    body: r"Voronoi diagram edges of the geometry's vertices. Operates in planar lon/lat
-space and does NOT auto-split antimeridian-crossing geographic input; call
-``split_antimeridian`` first.
+    doc_voronoi;
+    body: r"Construct a Voronoi diagram from the geometry's vertices. Operates in
+planar longitude/latitude space and does NOT auto-split antimeridian-crossing
+geographic input; call ``split_antimeridian`` first. Collinear vertices divide
+the clip region into strips at their perpendicular bisectors, and a lone
+vertex owns the whole clip polygon; the padded and envelope frames of a lone
+vertex, or the envelope of a horizontal or vertical row, bound no cells.
 
 Parameters
 ----------
+output : {'polygons', 'edges'}, default 'polygons'
+    Return clipped Voronoi cells or the internal Voronoi edges. Edge output
+    excludes the clip polygon's exterior boundary.
 tolerance : float, default 0.0
     Finite non-negative coordinate-space tolerance: native angular units for
     geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -1114,24 +1125,23 @@ clip : {'padded', 'envelope'} or Polygon, default 'padded'
 
 Returns
 -------
-GeometryArray
-    The Voronoi edges of the input geometry.
-
+GeometryArray[Polygon] or GeometryArray[LineString]
+    The selected output for the scalar geometry's vertices.
 ";
     array: r"
 
 Returns
 -------
-Groups of GeometryArray
-    One ragged group of Voronoi edges per input geometry, in input order.
-
+Groups[GeometryArray[Polygon]] or Groups[GeometryArray[LineString]]
+    One ragged group of the selected output per input geometry, in input order.
 ";
     tail: r"
 Raises
 ------
 GeometryError
     If the output cannot be represented in binary64 or its embedding search
-    exhausts the budget. ``operation`` is ``'voronoi_edges'``.
+    exhausts the budget. ``operation`` is ``'voronoi_cells'`` for polygon
+    output and ``'voronoi_edge_lines'`` for edge output.
 InvalidGeometryError
     If the clip polygon is invalid or exact Voronoi construction fails.
 
@@ -1139,60 +1149,9 @@ Examples
 --------
 >>> import gometry as gm
 >>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
->>> len(sites.voronoi_edges())
-3";
-}
-
-method_doc! {
-    doc_voronoi_polygons;
-    body: r"Voronoi diagram polygons of the geometry's vertices. Operates in planar
-lon/lat space and does NOT auto-split antimeridian-crossing geographic
-input; call ``split_antimeridian`` first. Collinear vertices divide the clip
-region into strips at their perpendicular bisectors, and a lone vertex owns
-the whole clip polygon; the padded and envelope frames of a lone vertex, or
-the envelope of a horizontal or vertical row, bound no cells.
-
-Parameters
-----------
-tolerance : float, default 0.0
-    Finite non-negative coordinate-space tolerance: native angular units for
-    geographic CRSs, native linear units for projected CRSs, and raw coordinate
-    units when CRS-free.
-clip : {'padded', 'envelope'} or Polygon, default 'padded'
-    How to bound the unbounded outer cells: a padded box, the input
-    envelope, or a `Polygon` to clip the diagram to.
-    Diagram vertices are synthesized and returned in XY. Rounded clip
-    incidences need not lie on the source polygon under overlay membership.";
-    scalar: r"
-
-Returns
--------
-GeometryArray
-    The Voronoi cells of the input geometry.
-
-";
-    array: r"
-
-Returns
--------
-Groups of GeometryArray
-    One ragged group of Voronoi cells per input geometry, in input order.
-
-";
-    tail: r"
-Raises
-------
-GeometryError
-    If the output cannot be represented in binary64 or its embedding search
-    exhausts the budget. ``operation`` is ``'voronoi_polygons'``.
-InvalidGeometryError
-    If the clip polygon is invalid or exact Voronoi construction fails.
-
-Examples
---------
->>> import gometry as gm
->>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
->>> len(sites.voronoi_polygons())
+>>> len(sites.voronoi())
+3
+>>> len(sites.voronoi(output='edges'))
 3";
 }
 

@@ -5,8 +5,12 @@ from __future__ import annotations
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 ROWS = 30_000
@@ -28,6 +32,7 @@ def main() -> None:
     geometries = mixed_rows()
     warm = geometries.to_arrow()
     assert len(warm) == ROWS
+    prepare_measurement()
     started = time.perf_counter()
     for _ in range(EXPORTS):
         exported = geometries.to_arrow()

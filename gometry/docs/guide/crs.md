@@ -42,7 +42,7 @@ edits and planar construction operate on stored coordinates.
 |---|---|---|
 | **CRS-aware measures** | [`area`][gometry.area], [`length`][gometry.length], [`distance`][gometry.distance], [`dwithin`][gometry.dwithin], [`hausdorff_distance`][gometry.hausdorff_distance], LRS | Geographic area, length, and LRS measure straight chart edges on the ellipsoid. Point-to-point distance uses a geodesic; shape distance, `dwithin`, `nearest_points`, and `shortest_line` minimize ellipsoidal geodesic separation over closed chart-edge supports, including filled polygons. Geographic Hausdorff ranges continuously over points and linework only. `unit='planar'` selects Cartesian measurement in stored coordinates. |
 | **Metric constructive** | [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve] | Distance *inputs* use CRS-natural units (and may use a local-projection construction on a geographic CRS); shapes are **coordinate-planar** — **not** antimeridian auto-split |
-| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits canonical geographic rectangle endpoints in `[-180, 180]`, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
+| **Topology** | predicates, overlay, [`relate`][gometry.relate], [`clip_by_rect`][gometry.Geometry.clip_by_rect] | strict frame match; geographic topology resolves longitude aliases and seam and pole equivalence in the CRS-native frame; seam-crossing inputs are split into straight chart pieces in an unwrapped longitude/latitude plane. `clip_by_rect` admits endpoints within the CRS frame's native longitude half-period and latitude poles, with west > east selecting the seam-crossing interval; non-canonical subjects use frame-aware overlay, while canonical seam-free inputs clip directly. Geographic rectangle parallels match [`box`][gometry.box]. |
 | **Coordinate refinement** | [`segmentize(max_length)`][gometry.Geometry.segmentize], [`line_interpolate`][gometry.Geometry.line_interpolate] | `segmentize` follows stored geographic edges by default; `path=` selects geodesic or rhumb routing. With CRS-aware units, geographic LRS inverts ellipsoidal arclength on those chart edges and retains original vertices. |
 | **Coordinate edit** | [`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid], affine | raw coordinate space; no metric conversion |
 | **Planar constructive** | [`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay | operate on stored XY; may need local projection or [`split_antimeridian`][gometry.Geometry.split_antimeridian] |
@@ -355,13 +355,15 @@ print(f"city area: {city.area/1e6:.0f} km²")
 
 For geographic shape area and length, each stored edge is straight in the
 longitude/latitude chart. A constant-latitude edge therefore follows its
-parallel, rather than the shortest geodesic between its endpoints. WKT and
-GeoJSON store only vertices; they do not encode an edge model. When the source
-means a rhumb line or a path in a particular projected frame, **generate
-intermediate vertices with that intended algorithm** before construction —
-ordinary densify interpolates the stored chart edge and does not synthesize a
-rhumb route. Split or otherwise disambiguate half-period edges that have no
-unique chart direction.
+parallel, rather than the shortest geodesic between its endpoints. WKT records
+vertices without specifying an edge interpolation rule. GeoJSON follows RFC
+7946's straight Cartesian interpolation in its WGS 84 longitude/latitude
+coordinate system; it has no geodesic or rhumb-line edge option. To represent a
+geodesic, rhumb line, or path defined in another projected frame, **sample that
+path into intermediate vertices before writing GeoJSON**. The serialized
+segments remain straight between those samples. Ordinary densify interpolates
+the stored chart edge and does not synthesize a rhumb route. Split or otherwise
+disambiguate half-period edges that have no unique chart direction.
 
 For geographic shape pairs, [`distance`][gometry.distance],
 [`dwithin`][gometry.dwithin],
@@ -440,33 +442,43 @@ composite algorithms.
 With CRS-aware units, geographic linework distance, nearest-point witnesses,
 and `line_locate` use a minimum over each straight chart edge's parameter `t`.
 Each sample evaluates geodesic distance from the query to the chart position. A
-global interval search combines a Lipschitz lower bound with a sampled
-second-order bound; degenerate edges and pole queries use their exact families.
-A witness lies on the chart edge, and LRS carries its ordinates by the fraction
-of edge arclength.
+global interval search combines a Lipschitz lower bound with analytic speed and
+covariant-acceleration bounds. Its second-order Taylor bound applies only when
+the full distance interval lies inside a certified normal neighborhood;
+otherwise the search uses the Lipschitz bound. Degenerate edges and pole
+queries use their direct families. A witness lies on the chart edge, and LRS
+carries its ordinates by the fraction of edge arclength.
 
 The attained binary64 minimum uses the radius-scaled gap `4e-11 × a` and a
 maximum of 128 evaluations per point-edge query. If the search reaches that
-budget, it returns its best attained distance and parameter. These are numerical
-quality budgets, not universal real-arithmetic error certificates. Search
-results are attained witnesses, not topological contacts. Exact chart topology
-establishes contact; a small positive distance does not.
-`line_locate` uses the attained parameter's ellipsoidal chart-edge arclength and
-adds the prefix before that edge. Point-to-chart-edge `dwithin` compares the
-same attained distance inclusively with the supplied radius. It does not add a
-contact tolerance or widen the radius by pruning slack. A positive infinite
-radius returns `True` for admitted non-empty operands without forcing an
-unrepresentable distance result. Vectorized results retain one boolean per
-input pair: missing rows and present empty geometries remain in place as `False`.
+budget, distance, nearest-point, and `line_locate` return their best attained
+sample. These are numerical quality budgets, not universal real-arithmetic
+error certificates. Search results are attained witnesses, not topological
+contacts. Exact chart topology establishes contact; a small positive distance
+does not. `line_locate` uses the attained parameter's ellipsoidal chart-edge
+arclength and adds the prefix before that edge.
+
+Point-to-chart-edge `dwithin` returns `True` only after an attained sample is at
+or below the supplied radius, and returns `False` only when a certified lower
+bound is strictly above it. If the 128-evaluation budget or binary64 parameter
+precision ends while those bounds straddle the radius, `dwithin` raises
+`CRSError` rather than reporting `False`. It does not add a contact tolerance or
+widen the radius by pruning slack. A positive infinite radius returns `True` for
+admitted non-empty operands without forcing an unrepresentable distance result.
+Vectorized results retain one boolean per input pair: missing rows and present
+empty geometries remain in place as `False`; a nonconvergent present pair raises
+instead of receiving a boolean.
 
 Geographic Hausdorff measures the continuous linework supports of the stored
 chart edges: the source ranges over each straight longitude/latitude edge, and
 its distance to the target is the minimum geodesic distance to target edges and
 isolated points. A global frontier combines a Lipschitz upper bound with a
-second-order Taylor bound from fixed target witnesses; each reported value is
-an attained source/target pair, not an interval bound. Its algorithmic gap is
-`a * (0.01 / 6_378_137)`, about one centimetre for WGS 84. These binary64
-budgets are numerical quality targets, not real-arithmetic certificates.
+second-order Taylor upper bound from fixed target witnesses only inside a
+certified normal neighborhood; elsewhere it uses the Lipschitz upper bound.
+Each reported value is an attained source/target pair, not an interval bound.
+Its algorithmic gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS
+84. These binary64 budgets are numerical quality targets, not real-arithmetic
+certificates.
 Geographic Hausdorff supports point and linework operands only; filled polygon
 interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
 geographic path; its algorithmic gap does not promise a caller-requested bound.
@@ -971,6 +983,9 @@ together with the **decimal year** it was observed — its *coordinate epoch*.
 gometry carries that as first-class metadata, [`geom.epoch`][gometry.Geometry.epoch], distinct from Z and M.
 A coordinate epoch dates a CRS realization, so it is **only meaningful with a CRS**:
 gometry enforces `epoch ⟹ crs` at every entry point.
+Geometry frames admit epochs for CRSs based on a dynamic datum or the WGS 84
+ensemble (EPSG:6326), including derived CRSs such as EPSG:3857. Dynamic members
+of another ensemble do not by themselves make that ensemble epoch-capable.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -1004,17 +1019,17 @@ print("output epoch:", geocentric.epoch)
 
 ```
 
-When you omit `epoch=`, the source epoch is kept when the target CRS is *dynamic*
-(ITRF, the WGS 84 ensemble — coordinates there stay time-dependent) and cleared
-when the target is *static* (plate-fixed national frames, where an epoch adds
-nothing and would block strict frame checks against ordinary epoch-free data in
-the same CRS).
+When you omit `epoch=`, the source epoch is kept when the CRS is unchanged or
+the target CRS admits geometry epochs; otherwise it is cleared. An explicit
+`epoch=` labels the output frame but does not assert that the selected coordinate
+operation is time-dependent or has a particular accuracy.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 observed = gm.Point(21.0, 52.0, crs=4326, epoch=2010.0)
 print("to ITRF2014 (dynamic):", observed.to_crs(9000).epoch)
+print("to Web Mercator (WGS 84 ensemble):", observed.to_crs(3857).epoch)
 print("to Poland CS92 (static):", observed.to_crs(2180).epoch)
 
 ```

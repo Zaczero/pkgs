@@ -4393,9 +4393,9 @@ fn embed(
     }
     live_nodes.sort_unstable();
     let operation = if product.includes_polygons() {
-        "voronoi_polygons"
+        "voronoi_cells"
     } else {
-        "voronoi_edges"
+        "voronoi_edge_lines"
     };
     let mut search_budget = EvaluationBudget::new(operation, 0)?;
     let clip_trace = ClipTrace::build(subdivision, clip, &mut search_budget)?;

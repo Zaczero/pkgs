@@ -64,8 +64,7 @@ def test_set_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
         )
         > 0.001
     )
-    # Dynamic-aware epoch policy: both targets are dynamic frames, so the
-    # source epoch survives the transform.
+    # Both target frames admit the source epoch.
     assert dynamic_epoch_array.epoch == 2010.0
     assert [item.epoch for item in dynamic_epoch_array] == [2010.0, 2010.0]
     assert epoch_geocentric.epoch == 2010.0
@@ -160,10 +159,10 @@ def test_epoch_requires_a_crs_and_set_crs_none_clears_it() -> None:
     assert stamped_array.to_crs(3857).epoch == 2020.0
 
 
-def test_epoch_requires_a_dynamic_crs_at_the_shared_frame_owner(
+def test_epoch_requires_an_admitted_crs_at_the_shared_frame_owner(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    message = r'^a coordinate epoch requires a dynamic CRS; EPSG:2180 is static\. Remove epoch= or transform to a dynamic CRS first$'
+    message = r'^a coordinate epoch is not admitted for CRS EPSG:2180; remove epoch= or transform to a CRS that admits coordinate epochs first$'
     for make in (
         lambda: gm.Point(1.0, 2.0, crs=2180, epoch=2020.0),
         lambda: gm.GeometryArray([gm.Point(1.0, 2.0)], crs=2180, epoch=2020.0),
@@ -181,7 +180,7 @@ def test_epoch_requires_a_dynamic_crs_at_the_shared_frame_owner(
         observed.set_crs(2180, overwrite=True)
     assert capsys.readouterr().err == ''
 
-    # The WGS84 ensemble and true dynamic frames remain usable end to end.
+    # The WGS84 ensemble and true dynamic datums remain usable end to end.
     assert observed.to_crs(9000).epoch == 2020.0
     assert observed.to_crs(2180).epoch is None
 
@@ -315,14 +314,12 @@ def test_derived_geometries_inherit_the_full_frame() -> None:
         gm.distance(geom, other.set_epoch(2010.0, overwrite=True))
 
 
-def test_to_crs_epoch_survives_exactly_while_the_frame_is_dynamic() -> None:
-    """Dynamic-aware epoch policy: omitted ``epoch=`` keeps the source epoch
-    when the target CRS is dynamic (WGS84 ensemble, ITRF), auto-clears it on a
-    static target (plate-fixed national frames), and an explicit ``epoch=``
-    always names the output epoch.
+def test_to_crs_epoch_survives_exactly_while_the_target_admits_it() -> None:
+    """Omitted ``epoch=`` keeps the source epoch when the target admits geometry
+    epochs, clears it otherwise, and explicit ``epoch=`` labels the output.
     """
     observed = gm.Point(21.0, 52.0, crs=4326, epoch=2010.0)
-    # Dynamic targets keep the epoch (4326 ensemble -> ITRF2014 -> webmerc).
+    # The WGS 84 ensemble, its derived Web Mercator CRS, and ITRF admit epochs.
     assert observed.to_crs(9000).epoch == 2010.0
     assert observed.to_crs(3857).epoch == 2010.0
     # Static target clears it; the result composes with epoch-free data.

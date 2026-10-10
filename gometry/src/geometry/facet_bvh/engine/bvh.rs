@@ -6,10 +6,10 @@ use crate::geometry::facet_bvh::{
     aabb_max_distance_squared, aabbs_overlap, point_aabb, segment_aabb, union_aabb,
 };
 use crate::geometry::{
-    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, axis_pow2_scale, clearance_strip_exceeds,
-    point_on_segment, point_pair_distance_key, point_segment_distance_squared,
-    point_segment_exact_distance_key, point_segment_selection, scaled_residual, segment_projection,
-    segments_intersect, source_dot_cmp,
+    BvhCode, BvhNode, Point, Segment, SquaredDistanceKey, axis_pow2_scale,
+    clearance_aabb_lower_bound, clearance_strip_exceeds, point_on_segment, point_pair_distance_key,
+    point_segment_distance_squared, point_segment_exact_distance_key, point_segment_selection,
+    scaled_residual, segment_projection, segments_intersect, source_dot_cmp,
 };
 
 #[cfg(test)]
@@ -171,13 +171,126 @@ pub(crate) struct FacetBvh {
 #[derive(Clone, Copy)]
 struct ClearanceStrip {
     normal: [f64; 2],
-    low_support: usize,
-    high_support: usize,
+    low_support: ClearanceSupport,
+    high_support: ClearanceSupport,
+}
+
+#[derive(Clone, Copy)]
+struct ClearanceSupport {
+    chain: u32,
+    local: u32,
 }
 
 pub(crate) struct ClearanceFacetBvh {
     tree: FacetBvh,
     strips: Box<[ClearanceStrip]>,
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "facet IDs were admitted from the same facet_aabbs slice"
+)]
+fn partition_aabb(facet_aabbs: &[[f64; 4]], ids: &[u32]) -> [f64; 4] {
+    ids.iter()
+        .map(|&id| facet_aabbs[id as usize])
+        .reduce(union_aabb)
+        .expect("partition contains at least one facet")
+}
+
+fn finite_span(lower: f64, upper: f64) -> Option<f64> {
+    if !lower.is_finite() || !upper.is_finite() || lower > upper {
+        return None;
+    }
+    let span = upper - lower;
+    Some(if span.is_finite() {
+        span
+    } else {
+        upper * 0.5 - lower * 0.5
+    })
+}
+
+fn finite_midpoint(lower: f64, upper: f64) -> f64 {
+    if lower.is_finite()
+        && upper.is_finite()
+        && lower.is_sign_negative() == upper.is_sign_negative()
+    {
+        lower + (upper - lower) * 0.5
+    } else {
+        lower * 0.5 + upper * 0.5
+    }
+}
+
+fn relative_span(child: f64, parent: f64) -> Option<f64> {
+    if parent == 0.0 {
+        (child == 0.0).then_some(0.0)
+    } else {
+        Some(child / parent)
+    }
+}
+
+fn partition_cost(parent: [f64; 4], lower: [f64; 4], upper: [f64; 4]) -> Option<f64> {
+    let [parent_min_x, parent_min_y, parent_max_x, parent_max_y] = parent;
+    let [lower_min_x, lower_min_y, lower_max_x, lower_max_y] = lower;
+    let [upper_min_x, upper_min_y, upper_max_x, upper_max_y] = upper;
+    let parent_x = finite_span(parent_min_x, parent_max_x)?;
+    let parent_y = finite_span(parent_min_y, parent_max_y)?;
+    let lower_x = relative_span(finite_span(lower_min_x, lower_max_x)?, parent_x)?;
+    let lower_y = relative_span(finite_span(lower_min_y, lower_max_y)?, parent_y)?;
+    let upper_x = relative_span(finite_span(upper_min_x, upper_max_x)?, parent_x)?;
+    let upper_y = relative_span(finite_span(upper_min_y, upper_max_y)?, parent_y)?;
+    Some(lower_x + lower_y + upper_x + upper_y)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "facet IDs were admitted from the same facet_aabbs slice"
+)]
+fn partition_facets(
+    aabb: [f64; 4],
+    facet_aabbs: &[[f64; 4]],
+    ids: &mut [u32],
+    prefer_tighter_source_order: bool,
+) -> usize {
+    let [min_x, min_y, max_x, max_y] = aabb;
+    let width = finite_span(min_x, max_x).unwrap_or(0.0);
+    let height = finite_span(min_y, max_y).unwrap_or(0.0);
+    let axis = usize::from(height > width);
+    let center = |id: u32| {
+        let facet = facet_aabbs[id as usize];
+        finite_midpoint(facet[axis], facet[axis + 2])
+    };
+    let mid = ids.len() / 2;
+    ids.select_nth_unstable_by(mid, |&a, &b| {
+        center(a).total_cmp(&center(b)).then_with(|| a.cmp(&b))
+    });
+    if !prefer_tighter_source_order {
+        return mid;
+    }
+    // For clearance, source order is only a layout candidate: use it when its
+    // normalized child extents tighten bounds more than the spatial median.
+    let (lower, upper) = ids.split_at(mid);
+    let spatial_cost = partition_cost(
+        aabb,
+        partition_aabb(facet_aabbs, lower),
+        partition_aabb(facet_aabbs, upper),
+    );
+    ids.select_nth_unstable_by(mid, u32::cmp);
+    let (lower, upper) = ids.split_at(mid);
+    let source_cost = partition_cost(
+        aabb,
+        partition_aabb(facet_aabbs, lower),
+        partition_aabb(facet_aabbs, upper),
+    );
+    if source_cost
+        .zip(spatial_cost)
+        .is_some_and(|(source, spatial)| source < spatial)
+    {
+        return mid;
+    }
+    ids.select_nth_unstable_by(mid, |&a, &b| {
+        center(a).total_cmp(&center(b)).then_with(|| a.cmp(&b))
+    });
+    mid
 }
 
 fn facet_for_leaf(linework: &PreparedLinework, index: usize) -> Facet {
@@ -246,8 +359,8 @@ fn clearance_strip_for_facets(
         .expect("clearance node facet range is nonempty");
     let normal =
         clearance_normal_for_facet(linework, facet_for_leaf(linework, representative as usize))?;
-    let mut low: Option<(usize, Point)> = None;
-    let mut high: Option<(usize, Point)> = None;
+    let mut low: Option<(ClearanceSupport, Point)> = None;
+    let mut high: Option<(ClearanceSupport, Point)> = None;
     for &id in ids {
         let facet = facet_for_leaf(linework, id as usize);
         for local in 0..=facet.segment_count as usize {
@@ -255,21 +368,28 @@ fn clearance_strip_for_facets(
             CLEARANCE_STRIP_BUILD_VERTICES.with(|count| {
                 count.set(count.get().saturating_add(1));
             });
-            let index = linework.facet_vertex_index(facet, local);
-            let point = linework.vertex_at(index);
+            let local = facet
+                .first_vertex
+                .checked_add(u32::try_from(local).expect("facet-local vertex index fits u32"))
+                .expect("facet-local support vertex belongs to its u32 chain");
+            let support = ClearanceSupport {
+                chain: facet.chain,
+                local,
+            };
+            let point = linework.vertex_at_chain_local(support.chain, support.local);
             match low {
-                None => low = Some((index, point)),
+                None => low = Some((support, point)),
                 Some((_, source)) => {
                     if source_dot_cmp(normal, point.xy(), source.xy())?.is_lt() {
-                        low = Some((index, point));
+                        low = Some((support, point));
                     }
                 },
             }
             match high {
-                None => high = Some((index, point)),
+                None => high = Some((support, point)),
                 Some((_, source)) => {
                     if source_dot_cmp(normal, point.xy(), source.xy())?.is_gt() {
-                        high = Some((index, point));
+                        high = Some((support, point));
                     }
                 },
             }
@@ -305,8 +425,8 @@ impl FacetBvh {
         let mut strips = vec![
             ClearanceStrip {
                 normal: [1.0, 0.0],
-                low_support: 0,
-                high_support: 0,
+                low_support: ClearanceSupport { chain: 0, local: 0 },
+                high_support: ClearanceSupport { chain: 0, local: 0 },
             };
             tree.aabbs.len()
         ];
@@ -359,21 +479,8 @@ impl FacetBvh {
             self.codes[node] = BvhCode::leaf(*id as usize).raw();
             return;
         }
-        let aabb = ids
-            .iter()
-            .map(|&id| facet_aabbs[id as usize])
-            .reduce(union_aabb)
-            .expect("split halves are non-empty");
-        // Facet ordinals break equal partition keys deterministically.
-        let axis = usize::from(aabb[3] - aabb[1] > aabb[2] - aabb[0]);
-        let center = |id: u32| {
-            let facet = facet_aabbs[id as usize];
-            facet[axis] + facet[axis + 2]
-        };
-        let mid = ids.len() / 2;
-        ids.select_nth_unstable_by(mid, |&a, &b| {
-            center(a).total_cmp(&center(b)).then_with(|| a.cmp(&b))
-        });
+        let aabb = partition_aabb(facet_aabbs, ids);
+        let mid = partition_facets(aabb, facet_aabbs, ids, false);
         let (lower, upper) = ids.split_at_mut(mid);
         let first_child = *next;
         *next += 2;
@@ -383,7 +490,7 @@ impl FacetBvh {
         self.fill_node(first_child + 1, next, facet_aabbs, upper);
     }
 
-    /// Median split of consecutive source facets for the clearance hierarchy.
+    /// Spatial median split, preferring a tighter source-ordinal median where available.
     #[expect(
         clippy::indexing_slicing,
         reason = "Facet ids and recursive node ids are builder-produced and stay below the allocated bounds/codes"
@@ -401,11 +508,7 @@ impl FacetBvh {
         linework: &PreparedLinework,
         strips: &mut [ClearanceStrip],
     ) -> crate::error::Result<()> {
-        let aabb = ids
-            .iter()
-            .map(|&id| facet_aabbs[id as usize])
-            .reduce(union_aabb)
-            .expect("clearance node facet range is nonempty");
+        let aabb = partition_aabb(facet_aabbs, ids);
         self.aabbs[node] = aabb;
         strips[node] = clearance_strip_for_facets(linework, ids)?;
         if let [id] = ids {
@@ -413,7 +516,7 @@ impl FacetBvh {
             return Ok(());
         }
 
-        let mid = ids.len() / 2;
+        let mid = partition_facets(aabb, facet_aabbs, ids, true);
         let (lower, upper) = ids.split_at_mut(mid);
         let first_child = *next;
         *next += 2;
@@ -1056,7 +1159,9 @@ impl ClearanceFacetBvh {
             let local = best.as_ref().map(|(_, key)| key);
             let limit = clearance_segment_limit(local, incumbent)?;
             if let Some(limit) = limit
-                && lower_bound(self.tree.node_aabb(index)) > limit.upper_bound()
+                && clearance_aabb_lower_bound(probe, self.tree.node_aabb(index))
+                    .cmp_distance(limit)?
+                    .is_gt()
             {
                 continue;
             }
@@ -1071,8 +1176,12 @@ impl ClearanceFacetBvh {
                 if clearance_strip_exceeds(
                     probe.xy(),
                     strip.normal,
-                    linework.vertex_at(strip.low_support).xy(),
-                    linework.vertex_at(strip.high_support).xy(),
+                    linework
+                        .vertex_at_chain_local(strip.low_support.chain, strip.low_support.local)
+                        .xy(),
+                    linework
+                        .vertex_at_chain_local(strip.high_support.chain, strip.high_support.local)
+                        .xy(),
                     limit,
                 )? {
                     continue;
@@ -1230,6 +1339,61 @@ mod public_nearest_work_tests {
     }
 
     #[test]
+    fn public_clearance_bit_reversal_work_scales_at_extreme_magnitudes() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib").unwrap();
+            crate::lib(&module).unwrap();
+            for scale in [1.0, 2.0_f64.powi(-700), 2.0_f64.powi(600)] {
+                let mut previous = None;
+                for count in [64_usize, 256] {
+                    let lines = PyList::empty(py);
+                    let bits = count.trailing_zeros();
+                    for index in 0..count {
+                        let source_index = index.reverse_bits() >> (usize::BITS - bits);
+                        let start = (10 * source_index) as f64 * scale;
+                        let end = (10 * source_index + 1) as f64 * scale;
+                        lines
+                            .append(
+                                PyList::new(py, [(start, 0.0), (end, 0.0)])
+                                    .expect("two-point line coordinates are accepted"),
+                            )
+                            .unwrap();
+                    }
+                    let shape = module
+                        .getattr("MultiLineString")
+                        .unwrap()
+                        .call1((&lines,))
+                        .unwrap();
+
+                    CLEARANCE_BVH_NODES.with(|work| work.set(0));
+                    CLEARANCE_BVH_SEGMENTS.with(|work| work.set(0));
+                    let answer = shape
+                        .call_method0("minimum_clearance")
+                        .unwrap()
+                        .extract::<f64>()
+                        .unwrap();
+                    assert_eq!(answer, scale);
+                    let nodes = CLEARANCE_BVH_NODES.with(std::cell::Cell::get);
+                    let segments = CLEARANCE_BVH_SEGMENTS.with(std::cell::Cell::get);
+                    let work = nodes.saturating_add(segments);
+                    eprintln!(
+                        "bit-reversal clearance: scale={scale:e}, {count} segments, answer={answer:e}, {nodes} BVH nodes, {segments} segment visits, {work} total",
+                    );
+
+                    if let Some(previous) = previous {
+                        assert!(
+                            work < previous * 7,
+                            "fourfold bit-reversal input at scale {scale:e} took {work} events versus {previous}",
+                        );
+                    }
+                    previous = Some(work);
+                }
+            }
+        });
+    }
+
+    #[test]
     fn public_split_bounds_point_projection_work() {
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -1281,7 +1445,7 @@ mod public_nearest_work_tests {
 
 #[cfg(test)]
 mod clearance_strip_tests {
-    use super::{BvhNode, ClearanceFacetBvh, FacetBvh};
+    use super::{BvhNode, ClearanceFacetBvh, FacetBvh, finite_midpoint};
     use crate::geometry::{CoordSeq, Point, PreparedLinework, source_dot_cmp};
 
     fn collect_descendant_facets(tree: &ClearanceFacetBvh, node: usize, facets: &mut Vec<usize>) {
@@ -1295,6 +1459,17 @@ mod clearance_strip_tests {
                 collect_descendant_facets(tree, first_child.wrapping_add(1), facets);
             },
         }
+    }
+
+    #[test]
+    fn facet_center_midpoints_stay_finite_at_coordinate_extremes() {
+        let maximum = f64::MAX;
+        assert_eq!(finite_midpoint(maximum, maximum), maximum);
+        assert_eq!(finite_midpoint(-maximum, maximum), 0.0);
+        assert_eq!(
+            finite_midpoint(0.0, 2.0 * f64::from_bits(1)),
+            f64::from_bits(1),
+        );
     }
 
     #[test]
@@ -1329,8 +1504,12 @@ mod clearance_strip_tests {
             .expect("linework has facets");
 
         for (node, strip) in clearance.strips.iter().enumerate() {
-            let low = linework.vertex_at(strip.low_support).xy();
-            let high = linework.vertex_at(strip.high_support).xy();
+            let low = linework
+                .vertex_at_chain_local(strip.low_support.chain, strip.low_support.local)
+                .xy();
+            let high = linework
+                .vertex_at_chain_local(strip.high_support.chain, strip.high_support.local)
+                .xy();
             let mut facets = Vec::new();
             collect_descendant_facets(&clearance, node, &mut facets);
             for facet_index in facets {

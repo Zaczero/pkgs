@@ -4,23 +4,9 @@
    keeps the forms keyboard-accessible, deep-link-safe, and available without JS. #}
 {% block signature scoped %}
   {% if config.separate_signature %}
-    {% if function.overloads %}
-      <details open class="doc-overloads-details">
-        <summary>Accepted call forms</summary>
-        <div class="doc-overloads" role="group" aria-label="Accepted call forms">
-          {% for overload in function.overloads %}
-            {% filter format_signature(overload, config.line_length, annotations=True, crossrefs=config.signature_crossrefs) %}
-              {{ overload.name }}
-            {% endfilter %}
-          {% endfor %}
-        </div>
-      </details>
-    {% else %}
-      <div class="doc-canonical-signature">
-        {% filter format_signature(function, config.line_length, crossrefs=config.signature_crossrefs) %}
-          {{ function.name }}
-        {% endfilter %}
-      </div>
-    {% endif %}
+    {% set call_forms = function.extra.get("gometry", {}).get("ordered_call_forms", (function,)) %}
+    {% set call_name = function.name %}
+    {% set show_call_forms = function.overloads %}
+    {% include "call_forms.html.jinja" with context %}
   {% endif %}
 {% endblock signature %}

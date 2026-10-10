@@ -172,7 +172,9 @@ def test_split_keeps_zero_xy_vertices_with_distinct_active_ordinates() -> None:
     ]
 
     assert gm.split(line, gm.Point(0.5, 0)).to_wkt() == expected
-    assert gm.split(gm.GeometryArray([line]), gm.Point(0.5, 0)).to_wkt() == expected
+    groups = gm.split(gm.GeometryArray([line]), gm.Point(0.5, 0))
+    assert groups.offsets.tolist() == [0, 2]
+    assert groups[0].to_wkt() == expected
 
 
 def test_shapely_linear_interpolation_agrees_on_zero_length_z_endpoints() -> None:

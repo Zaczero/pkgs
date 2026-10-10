@@ -1187,13 +1187,13 @@ pub(crate) fn unary_line_interpolate_point(
 ) -> Result<Shape> {
     degrade_linref_point(
         line_interpolate_shape(
-            ctx.model,
+            ctx.metric,
             data,
             ctx.cache,
-            distance.get(ctx.op.lane.row()),
+            distance.get(ctx.lane.row()),
             normalized,
         ),
-        ctx.op.lane,
+        ctx.lane,
     )
 }
 
@@ -1206,12 +1206,12 @@ pub(crate) fn unary_line_substring(
     normalized: bool,
 ) -> Result<Shape> {
     let range = MeasureRange::substring_distance(
-        start_distance.get(ctx.op.lane.row()),
-        end_distance.get(ctx.op.lane.row()),
+        start_distance.get(ctx.lane.row()),
+        end_distance.get(ctx.lane.row()),
     )?;
     degrade_linref_linestring(
-        line_substring_shape(ctx.model, data, ctx.cache, range, normalized),
-        ctx.op.lane,
+        line_substring_shape(ctx.metric, data, ctx.cache, range, normalized),
+        ctx.lane,
     )
 }
 
@@ -1222,8 +1222,8 @@ pub(crate) fn unary_line_interpolate_point_m(
     m: &F64Param,
 ) -> Result<Shape> {
     degrade_linref_point(
-        line_interpolate_shape_m(ctx.model, data, ctx.cache, m.get(ctx.op.lane.row())),
-        ctx.op.lane,
+        line_interpolate_shape_m(ctx.metric, data, ctx.cache, m.get(ctx.lane.row())),
+        ctx.lane,
     )
 }
 
@@ -1234,13 +1234,11 @@ pub(crate) fn unary_line_substring_m(
     start_m: &F64Param,
     end_m: &F64Param,
 ) -> Result<Shape> {
-    let range = MeasureRange::substring_measure(
-        start_m.get(ctx.op.lane.row()),
-        end_m.get(ctx.op.lane.row()),
-    )?;
+    let range =
+        MeasureRange::substring_measure(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
     degrade_linref_linestring(
-        line_substring_shape_m(ctx.model, data, ctx.cache, range),
-        ctx.op.lane,
+        line_substring_shape_m(ctx.metric, data, ctx.cache, range),
+        ctx.lane,
     )
 }
 

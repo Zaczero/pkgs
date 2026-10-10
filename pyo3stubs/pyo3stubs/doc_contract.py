@@ -28,15 +28,40 @@ if TYPE_CHECKING:
 
 def collect_errors(cfg: StubConfig) -> Findings:
     """Flag public runtime symbols missing docs and stub overrides without prose."""
+    from pyo3stubs.rust_scan import constructor_doc_sources
+
     ctx = CheckContext(cfg)
+    constructor_sources = constructor_doc_sources(cfg)
     missing: list[str] = []
     examined = 0
-    for subject in iter_doc_subjects(ctx):
+    for subject in iter_doc_subjects(
+        ctx,
+        constructor_sources=constructor_sources.by_class,
+    ):
         examined += 1
+        class_name = subject.qualname.rpartition('.')[0]
+        source = (
+            constructor_sources.by_class.get(class_name)
+            if subject.kind == 'constructor'
+            else None
+        )
+        if source is not None and source.reason is not None:
+            if source not in constructor_sources.issues:
+                missing.append(
+                    f'{source.path}:{source.line}: {subject.qualname}: {source.reason}'
+                )
+            continue
         if not (subject.prose or '').strip():
             missing.append(
                 f'{subject.source.path}:{subject.source.line}: {subject.qualname}: '
                 'runtime docstring missing or empty'
             )
 
+    missing.extend(
+        f'{source.path}:{source.line}: '
+        f'{source.python_class + ".__new__" if source.python_class else "constructor-doc macro"}: '
+        f'{source.reason}'
+        for source in constructor_sources.issues
+        if source.reason is not None
+    )
     return Findings(missing, examined=examined)

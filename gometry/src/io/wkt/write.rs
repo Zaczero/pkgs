@@ -3,7 +3,7 @@ use crate::io::wkt::{
     CoordinateAxes, Coordinates, GeometryKind, Point, Polygon, Result, Shape, extended_srid_code,
     require_serializable_axes,
 };
-use crate::io::{CheckedText, wkt_text_summary};
+use crate::io::{CheckedText, TextShapeSummary, wkt_text_summary};
 
 trait WktSink {
     fn len(&self) -> usize;
@@ -94,25 +94,10 @@ pub(crate) fn to_wkt_with_srid(
     require_serializable_axes(shape)?;
     // Preserve body-error precedence over a malformed SRID prefix.
     let prefix = wkt_srid_prefix(crs, include_srid);
-    let body_limit = match &prefix {
-        Ok(Some(prefix)) => isize::MAX.unsigned_abs().saturating_sub(prefix.len()),
-        Ok(None) | Err(_) => isize::MAX.unsigned_abs(),
-    };
-    let body = format_wkt_with_limit(shape, WktNumberFormat::Shortest, body_limit)?;
-    match prefix? {
-        Some(prefix) => {
-            let length = prefix
-                .len()
-                .checked_add(body.len())
-                .filter(|length| isize::try_from(*length).is_ok())
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            let mut output = String::with_capacity(length);
-            output.push_str(&prefix);
-            output.push_str(&body);
-            Ok(output)
-        },
-        None => Ok(body),
-    }
+    let prefix_text = prefix.as_ref().ok().and_then(Option::as_deref);
+    let output = format_wkt_with_prefix(shape, WktNumberFormat::Shortest, prefix_text)?;
+    prefix?;
+    Ok(output)
 }
 
 /// How `format(geom, spec)` renders WKT ordinates — display-only control,
@@ -224,28 +209,7 @@ fn format_wkt_with_limit(shape: &Shape, format: WktNumberFormat, limit: usize) -
     let summary = wkt_text_summary(shape);
     summary.wkt_lower_bound(limit).require_within()?;
 
-    // Reserve ordinary decimal widths; extreme values and precision can grow normally.
-    let bytes_per_ordinate = match format {
-        WktNumberFormat::Shortest => 24,
-        WktNumberFormat::Fixed(precision) | WktNumberFormat::Trimmed(precision) => {
-            usize::from(precision).checked_add(24).unwrap_or_default()
-        },
-    };
-    let coordinate_bytes_per_coord = shape.axes().dimension().checked_mul(bytes_per_ordinate);
-    let capacity = summary
-        .coordinate_count()
-        .zip(coordinate_bytes_per_coord)
-        .and_then(|(count, bytes_per_coord)| count.checked_mul(bytes_per_coord))
-        .zip(
-            summary
-                .structure_count()
-                .and_then(|count| count.checked_mul(32)),
-        )
-        .and_then(|(coordinate_bytes, structural_bytes)| {
-            coordinate_bytes.checked_add(structural_bytes)
-        })
-        .filter(|capacity| isize::try_from(*capacity).is_ok())
-        .unwrap_or_default();
+    let capacity = wkt_capacity_hint(shape, format, summary);
     let dimensions = shape.axes().dimension();
     let maximum_ordinate_bytes = format.maximum_ordinate_bytes();
     let base_writer_fits = summary
@@ -259,6 +223,56 @@ fn format_wkt_with_limit(shape: &Shape, format: WktNumberFormat, limit: usize) -
     }
 
     let mut out = CheckedWkt::with_capacity_hint(capacity.min(limit), limit);
+    write_wkt(&mut out, shape, format, usize::MAX)?;
+    let CheckedWkt { text, .. } = out;
+    Ok(text.into_string())
+}
+
+fn wkt_capacity_hint(shape: &Shape, format: WktNumberFormat, summary: TextShapeSummary) -> usize {
+    // Reserve ordinary decimal widths; extreme values and precision can grow normally.
+    let bytes_per_ordinate = match format {
+        WktNumberFormat::Shortest => 24,
+        WktNumberFormat::Fixed(precision) | WktNumberFormat::Trimmed(precision) => {
+            usize::from(precision).checked_add(24).unwrap_or_default()
+        },
+    };
+    let coordinate_bytes_per_coord = shape.axes().dimension().checked_mul(bytes_per_ordinate);
+    summary
+        .coordinate_count()
+        .zip(coordinate_bytes_per_coord)
+        .and_then(|(count, bytes_per_coord)| count.checked_mul(bytes_per_coord))
+        .zip(
+            summary
+                .structure_count()
+                .and_then(|count| count.checked_mul(32)),
+        )
+        .and_then(|(coordinate_bytes, structural_bytes)| {
+            coordinate_bytes.checked_add(structural_bytes)
+        })
+        .filter(|capacity| isize::try_from(*capacity).is_ok())
+        .unwrap_or_default()
+}
+
+fn format_wkt_with_prefix(
+    shape: &Shape,
+    format: WktNumberFormat,
+    prefix: Option<&str>,
+) -> Result<String> {
+    let limit = isize::MAX.unsigned_abs();
+    let prefix_length = prefix.map_or(0, str::len);
+    let body_limit = limit
+        .checked_sub(prefix_length)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let summary = wkt_text_summary(shape);
+    summary.wkt_lower_bound(body_limit).require_within()?;
+    let capacity = wkt_capacity_hint(shape, format, summary)
+        .checked_add(prefix_length)
+        .filter(|capacity| isize::try_from(*capacity).is_ok())
+        .unwrap_or(prefix_length);
+    let mut out = CheckedWkt::with_capacity_hint(capacity, limit);
+    if let Some(prefix) = prefix {
+        out.push_str(prefix)?;
+    }
     write_wkt(&mut out, shape, format, usize::MAX)?;
     let CheckedWkt { text, .. } = out;
     Ok(text.into_string())

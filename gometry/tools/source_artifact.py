@@ -34,6 +34,7 @@ from _artifact_common import (
     _maturin_command,
     _package_toolchain_channel,
     _prepared_input_identity,
+    _prepared_input_record,
     _prepared_output_hashes,
     _sha256_bytes,
     _source_build_env,
@@ -416,10 +417,7 @@ def _source_manifest(
         'python_members': dict(sorted(python_members.items())),
         'native_source_inputs_format': SOURCE_INPUTS_FORMAT,
         'native_source_inputs_sha256': source_digests['native_source_inputs_sha256'],
-        'prepared_inputs': {
-            'identity_sha256': _prepared_input_identity(prepared_hashes),
-            'files': dict(sorted(prepared_hashes.items())),
-        },
+        'prepared_inputs': _prepared_input_record(prepared_hashes),
         'generated_output_hashes': dict(sorted(prepared_hashes.items())),
         'sdist': {
             'filename': sdist.name,

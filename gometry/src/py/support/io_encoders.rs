@@ -3,7 +3,7 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::geometry::{CoordSeqBuilder, CoordinateAxes};
-use crate::py::support::{Point, Polygon, Ring, Shape};
+use crate::py::support::{Point, Polygon, Ring};
 
 pub(crate) fn box_polygon(
     minx: f64,
@@ -20,31 +20,5 @@ pub(crate) fn box_polygon(
     Ok(Polygon::new(
         Ring::try_from_closed(coords.finish()?)?,
         Vec::new(),
-    ))
-}
-
-pub(crate) fn wrapped_box(
-    west: f64,
-    south: f64,
-    east: f64,
-    north: f64,
-) -> crate::error::Result<Shape> {
-    // Bounds validated by caller (`box_` via `finite_coordinate_required`) — DbC.
-    let mut width = east - west;
-    if width < 0.0 {
-        width += 360.0;
-    }
-    if width >= 360.0 {
-        return Ok(Shape::Polygon(box_polygon(-180.0, south, 180.0, north)?));
-    }
-    if west <= east {
-        return Ok(Shape::Polygon(box_polygon(west, south, east, north)?));
-    }
-    Ok(Shape::multi_polygon(
-        crate::geometry::CoordinateAxes::XY,
-        vec![
-            box_polygon(west, south, 180.0, north)?,
-            box_polygon(-180.0, south, east, north)?,
-        ],
     ))
 }
