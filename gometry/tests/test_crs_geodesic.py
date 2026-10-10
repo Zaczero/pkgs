@@ -144,19 +144,19 @@ def _near_pole_directed_reference(
         candidates.append(
             _golden_extremum(distance, 0.0, 1.0 / source_samples, maximum=True)
         )
-    for index in range(1, source_samples):
+    candidates.extend(
+        _golden_extremum(
+            distance,
+            (index - 1) / source_samples,
+            (index + 1) / source_samples,
+            maximum=True,
+        )
+        for index in range(1, source_samples)
         if (
             distances[index] >= distances[index - 1]
             and distances[index] >= distances[index + 1]
-        ):
-            candidates.append(
-                _golden_extremum(
-                    distance,
-                    (index - 1) / source_samples,
-                    (index + 1) / source_samples,
-                    maximum=True,
-                )
-            )
+        )
+    )
     if distances[-1] >= distances[-2]:
         candidates.append(
             _golden_extremum(
