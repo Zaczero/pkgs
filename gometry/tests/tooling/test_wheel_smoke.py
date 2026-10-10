@@ -149,6 +149,30 @@ def _source_root(tmp_path: Path) -> Path:
     return root
 
 
+def _quality_settings_root(tmp_path: Path) -> Path:
+    workspace = tmp_path / 'settings-workspace'
+    root = workspace / 'gometry'
+    files = {
+        workspace / 'Cargo.toml': '[workspace]\n',
+        workspace / 'Cargo.lock': 'version = 4\n',
+        workspace / '.cargo' / 'config.toml': '[build]\n',
+        root / 'Cargo.toml': '[package]\nname = "gometry"\n',
+        root / 'pyproject.toml': '[project]\nname = "gometry"\n',
+        root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
+        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.6.2.tar.gz': (
+            'fixture archive'
+        ),
+        root / 'README.md': 'readme\n',
+        root / 'LICENSE-APACHE.md': 'apache license\n',
+        root / 'LICENSE-MIT.md': 'mit license\n',
+        root / 'LICENSE-THIRD-PARTY.md': 'third-party notices\n',
+    }
+    for path, contents in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding='utf-8')
+    return root
+
+
 def _producer_git_fixture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -466,6 +490,146 @@ def test_stage_sdist_propagates_missing_source_input_error(
         assert not output_dir.exists()
     finally:
         moved_source_dir.rename(source_dir)
+
+
+@pytest.mark.parametrize(
+    ('name', 'value'),
+    [
+        pytest.param('RUSTC', '/toolchain/bin/rustc', id='rustc'),
+        pytest.param('RUSTC_WRAPPER', '/wrappers/rustc', id='rustc-wrapper'),
+        pytest.param(
+            'RUSTC_WORKSPACE_WRAPPER',
+            '/wrappers/workspace-rustc',
+            id='workspace-rustc-wrapper',
+        ),
+        pytest.param(
+            'CARGO_BUILD_RUSTC_WRAPPER',
+            '/wrappers/cargo-rustc',
+            id='cargo-rustc-wrapper',
+        ),
+        pytest.param(
+            'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER',
+            '/wrappers/cargo-workspace-rustc',
+            id='cargo-workspace-rustc-wrapper',
+        ),
+        pytest.param(
+            'CARGO_BUILD_RUSTC',
+            '/toolchain/bin/rustc',
+            id='cargo-build-rustc',
+        ),
+        pytest.param('RUSTFLAGS', '-C target-cpu=x86-64-v3', id='rust-flags'),
+        pytest.param(
+            'CARGO_ENCODED_RUSTFLAGS',
+            '-C\x1ftarget-cpu=x86-64-v3',
+            id='encoded-rust-flags',
+        ),
+        pytest.param(
+            'CARGO_BUILD_TARGET',
+            'aarch64-unknown-linux-gnu',
+            id='cargo-build-target',
+        ),
+        pytest.param('CC', '/wrappers/cc', id='cc-wrapper'),
+        pytest.param('CXX', '/wrappers/cxx', id='cxx-wrapper'),
+        pytest.param('AR', '/wrappers/ar', id='ar-wrapper'),
+        pytest.param(
+            'CC_x86_64_unknown_linux_gnu',
+            '/wrappers/target-cc',
+            id='target-cc-wrapper',
+        ),
+        pytest.param(
+            'CXX_x86_64_unknown_linux_gnu',
+            '/wrappers/target-cxx',
+            id='target-cxx-wrapper',
+        ),
+        pytest.param(
+            'AR_x86_64_unknown_linux_gnu',
+            '/wrappers/target-ar',
+            id='target-ar-wrapper',
+        ),
+        pytest.param(
+            'CFLAGS_x86_64_unknown_linux_gnu',
+            '-fno-omit-frame-pointer',
+            id='target-c-flags',
+        ),
+        pytest.param(
+            'CXXFLAGS_x86_64_unknown_linux_gnu',
+            '-fno-omit-frame-pointer',
+            id='target-cxx-flags',
+        ),
+        pytest.param(
+            'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER',
+            '/wrappers/target-linker',
+            id='target-linker',
+        ),
+        pytest.param(
+            'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS',
+            '-C target-cpu=x86-64-v3',
+            id='cargo-target-rust-flags',
+        ),
+    ],
+)
+def test_quality_settings_identity_tracks_compiler_and_target_selectors(
+    tmp_path: Path,
+    name: str,
+    value: str,
+) -> None:
+    root = _quality_settings_root(tmp_path)
+    environment = {'CARGO_HOME': str(tmp_path / 'cargo-home')}
+    initial = quality_runtime.quality_settings(root, environment)
+    changed = quality_runtime.quality_settings(root, environment | {name: value})
+
+    assert changed['identity_sha256'] != initial['identity_sha256']
+
+
+def test_quality_settings_identity_ignores_cargo_target_output_directory(
+    tmp_path: Path,
+) -> None:
+    root = _quality_settings_root(tmp_path)
+    environment = {'CARGO_HOME': str(tmp_path / 'cargo-home')}
+    initial = quality_runtime.quality_settings(root, environment)
+    changed = quality_runtime.quality_settings(
+        root,
+        environment | {'CARGO_TARGET_DIR': str(tmp_path / 'target')},
+    )
+
+    assert changed['identity_sha256'] == initial['identity_sha256']
+
+
+@pytest.mark.parametrize(
+    ('name', 'filename'),
+    [
+        pytest.param('PYO3_CONFIG_FILE', 'pyo3-config.txt', id='pyo3-config'),
+        pytest.param(
+            'CMAKE_TOOLCHAIN_FILE',
+            'toolchain.cmake',
+            id='cmake-toolchain',
+        ),
+        pytest.param(
+            'CMAKE_TOOLCHAIN_FILE_x86_64_unknown_linux_gnu',
+            'target-toolchain.cmake',
+            id='target-cmake-toolchain',
+        ),
+    ],
+)
+def test_quality_settings_identity_tracks_selected_config_bytes(
+    tmp_path: Path,
+    name: str,
+    filename: str,
+) -> None:
+    root = _quality_settings_root(tmp_path)
+    config = tmp_path / filename
+    config.write_text('selected configuration v1\n', encoding='utf-8')
+    environment = {
+        'CARGO_HOME': str(tmp_path / 'cargo-home'),
+        name: str(config),
+    }
+    initial = quality_runtime.quality_settings(root, environment)
+
+    config.write_text('selected configuration v2\n', encoding='utf-8')
+    changed = quality_runtime.quality_settings(root, environment)
+
+    assert changed['files'] != initial['files']
+    assert changed['identity_sha256'] != initial['identity_sha256']
 
 
 def test_producer_commit_binding_uses_captured_finite_input_projection(
