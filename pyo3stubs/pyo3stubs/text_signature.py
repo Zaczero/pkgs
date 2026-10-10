@@ -25,7 +25,9 @@ from pyo3stubs.report import Findings
 from pyo3stubs.rust_scan import iter_sources, token_params, unquote
 
 if TYPE_CHECKING:
-    from pyo3stubs.config import StubConfig
+    from collections.abc import Mapping
+
+    from pyo3stubs.config import StubConfig, TextSignatureDefault
     from pyo3stubs.rust_scan import Item, RustSource
 
 #: PyO3 spells the receiver `$self` (or `$module`/`$cls`) in a text_signature;
@@ -48,11 +50,7 @@ INCOMPARABLE = _Incomparable()
 
 
 def _value(source: str) -> object:
-    """The value a default denotes, or ``INCOMPARABLE`` if it names none.
-
-    Rust expressions (`f64::NAN`, `Vec::new()`, a const) legitimately spell
-    differently on the two sides and are structure-checked only.
-    """
+    """A literal default value, or ``INCOMPARABLE`` for an expression."""
     if source in ('true', 'false'):
         return source == 'true'
     try:
@@ -100,20 +98,19 @@ def _python_params(body: str) -> list[Param]:
     return [param for param in params if param[0] != 'self']
 
 
-def _defaults_agree(rust: str, text: str) -> bool:
-    """False only when both defaults name a shared value and the values differ.
-
-    A Rust default of `None` against a concrete documented literal is the
-    deliberate resolve-inside idiom: the parameter is `Option<T>` resolved to
-    its effective default in the body, and `text_signature` documents that
-    effective value (`clip='padded'`) -- better DX than a bare `None`.
-    """
-    if rust == 'None' or text == '...':
-        return True
+def _defaults_agree(
+    rust: str,
+    text: str,
+    aliases: Mapping[str, TextSignatureDefault],
+) -> bool:
+    """Compare literal values or a declared nonliteral public presentation."""
     rust_value, text_value = _value(rust), _value(text)
-    if rust_value is INCOMPARABLE or text_value is INCOMPARABLE:
-        return True
-    return bool(rust_value == text_value)
+    if text_value is INCOMPARABLE:
+        return False
+    if rust_value is not INCOMPARABLE:
+        return bool(rust_value == text_value)
+    presentation = aliases.get(rust)
+    return presentation is not None and bool(presentation.value == text_value)
 
 
 def _declared(item: Item) -> tuple[str | None, str | None, int]:
@@ -133,15 +130,15 @@ def _declared(item: Item) -> tuple[str | None, str | None, int]:
     return signature, text_signature, line
 
 
-def _compare(item: Item, source: RustSource) -> list[str]:
+def _compare(
+    item: Item,
+    source: RustSource,
+    default_aliases: Mapping[str, TextSignatureDefault],
+) -> list[str]:
     signature, text_signature, line = _declared(item)
     if signature is None or text_signature is None:
         return []
     rust = _rust_params(signature)
-    if any(token.startswith('**') for token, _ in rust):
-        # `copy.replace` and friends surface `**kwargs` at runtime while the
-        # manual text_signature documents the public keyword names instead.
-        return []
     location = f'{source.label}:{line}'
     try:
         text = _python_params(unquote(text_signature))
@@ -152,6 +149,10 @@ def _compare(item: Item, source: RustSource) -> list[str]:
                 f'signature ({exc.msg}) — inspect.signature cannot read it either'
             )
         ]
+    if any(token.startswith('**') for token, _ in rust):
+        # Rust **kwargs hides the exposed keyword names, but the Python syntax
+        # of their manual presentation must still be valid.
+        return []
     if [token for token, _ in rust] != [token for token, _ in text]:
         return [
             (
@@ -169,12 +170,29 @@ def _compare(item: Item, source: RustSource) -> list[str]:
         elif (
             rust_default is not None
             and text_default is not None
-            and not _defaults_agree(rust_default, text_default)
+            and not _defaults_agree(rust_default, text_default, default_aliases)
         ):
-            errors.append(
-                f'{location}: {token}: text_signature default {text_default} != '
-                f'signature default {rust_default}'
-            )
+            presentation = default_aliases.get(rust_default)
+            if presentation is not None and _value(rust_default) is INCOMPARABLE:
+                errors.append(
+                    f'{location}: {token}: text_signature default {text_default} != '
+                    f'source-owned public default {presentation.value!r} for Rust '
+                    f'expression {rust_default!r} ({presentation.reason})'
+                )
+            else:
+                rust_value, text_value = _value(rust_default), _value(text_default)
+                if rust_value is INCOMPARABLE or text_value is INCOMPARABLE:
+                    errors.append(
+                        f'{location}: {token}: cannot verify text_signature default '
+                        f'{text_default} against Rust default expression '
+                        f'{rust_default}; declare a reasoned '
+                        '`text_signature_default_aliases` entry'
+                    )
+                else:
+                    errors.append(
+                        f'{location}: {token}: text_signature default {text_default} '
+                        f'!= signature default {rust_default}'
+                    )
     return errors
 
 
@@ -182,11 +200,25 @@ def collect_errors(cfg: StubConfig) -> Findings:
     """Manual ``text_signature`` attributes that contradict their ``signature``."""
     errors: list[str] = []
     examined = 0
+    used_aliases: set[str] = set()
     for source in iter_sources(cfg):
         for item in source.walk():
             signature, text_signature, _ = _declared(item)
             if signature is None or text_signature is None:
                 continue
             examined += 1
-            errors.extend(_compare(item, source))
+            used_aliases.update(
+                default
+                for _, default in _rust_params(signature)
+                if default is not None
+                and default in cfg.text_signature_default_aliases
+                and _value(default) is INCOMPARABLE
+            )
+            errors.extend(_compare(item, source, cfg.text_signature_default_aliases))
+    errors.extend(
+        f'text_signature_default_aliases: unused Rust default expression {expression!r}'
+        for expression in sorted(
+            cfg.text_signature_default_aliases.keys() - used_aliases
+        )
+    )
     return Findings(errors, examined=examined)

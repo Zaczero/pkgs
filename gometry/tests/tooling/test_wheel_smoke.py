@@ -2044,24 +2044,6 @@ def test_corrupt_quality_wheel_is_not_rebuilt(
         )
 
 
-def test_artifact_runner_streams_child_output(
-    capfd: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    artifact_common.run(
-        [
-            sys.executable,
-            '-c',
-            'import sys; print("build stdout"); print("build stderr", file=sys.stderr)',
-        ],
-        cwd=tmp_path,
-        stream_output=True,
-    )
-
-    captured = capfd.readouterr()
-    assert captured.out == 'build stdout\n'
-    assert captured.err == 'build stderr\n'
-
-
 def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2163,12 +2145,12 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
         *,
         cwd: Path,
         env: dict[str, str],
-        stream_output: bool,
+        capture_output: bool,
     ) -> None:
         nonlocal builds
         assert cwd == root
         assert env['PYO3_PYTHON'] == str(Path(sys.executable).resolve())
-        assert stream_output
+        assert not capture_output, 'quality builds must stream their output'
         output = Path(command[command.index('--out') + 1])
         package_members = {
             f'gometry/{path.relative_to(package).as_posix()}': path.read_bytes()

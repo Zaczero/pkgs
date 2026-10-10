@@ -59,11 +59,11 @@ def test_crs_public_type_hints_resolve() -> None:
     assert gm.CRS(4326).kind == 'geographic_2d'
     assert gm.CRS(3857).is_projected is True
     assert isinstance(gm.CRS(5703).geoid_models, list)
-    assert isinstance(gm.CRS(4326).to_projjson_dict(), dict)
+    assert isinstance(gm.CRS(4326).to_projjson(as_dict=True), dict)
 
 
 def test_crs_html_preview_escapes_retained_text() -> None:
-    projjson = gm.CRS(3857).to_projjson_dict()
+    projjson = gm.CRS(3857).to_projjson(as_dict=True)
     projjson['name'] = '<img src=x onerror=alert(1)>&unsafe<script>'
     projjson.pop('id')
 
@@ -97,7 +97,6 @@ def test_crs_public_surface_stays_documented_and_native_registered() -> None:
         'proj_operations',
         'reset',
         'roundtrip',
-        'search',
         'transform',
         'transform_bounds',
         'unit',
@@ -226,7 +225,7 @@ def test_crs_input_forms_are_accepted_across_representative_params() -> None:
     import pyproj
 
     pyproj_crs = pyproj.CRS.from_epsg(4326)
-    projjson = gm.CRS(4326).to_projjson_dict()
+    projjson = gm.CRS(4326).to_projjson(as_dict=True)
     forms = [4326, 'EPSG:4326', ('EPSG', 4326), projjson, pyproj_crs]
     for form in forms:
         definition = gm.CRS(form).definition

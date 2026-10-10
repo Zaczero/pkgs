@@ -851,12 +851,11 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
         prefix='quality-build-', dir=scratch
     ) as temporary_build:
         wheel_dir = Path(temporary_build)
-        # Keep bounded quality runs informed while the remote build is running.
         run(
             [*command, '--out', str(wheel_dir)],
             cwd=root,
             env=build_env,
-            stream_output=True,
+            capture_output=False,
         )
         wheels = sorted(wheel_dir.glob('gometry-*.whl'))
         if len(wheels) != 1:

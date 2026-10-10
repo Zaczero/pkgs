@@ -33,6 +33,7 @@ from pyo3stubs.config import (
     Reasons,
     StubConfig,
     SurfaceConfig,
+    TextSignatureDefault,
     TokenConfig,
 )
 
@@ -46,6 +47,7 @@ __all__ = [
     'Reasons',
     'StubConfig',
     'SurfaceConfig',
+    'TextSignatureDefault',
     'TokenConfig',
     'render_stub_with_docs',
 ]

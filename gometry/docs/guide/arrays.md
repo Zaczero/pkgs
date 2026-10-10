@@ -120,6 +120,19 @@ guarantees: this point array's `arr.buffer(...)` is a
 [`GeometryArray[Polygon]`][gometry.GeometryArray], `arr.area` is a `float64` ndarray while
 `geom.area` is `float`, and so on across the whole surface.
 
+[`GeometryArray`][gometry.GeometryArray], [`CellArray`][gometry.CellArray],
+[`H3VertexArray`][gometry.H3VertexArray], and [`H3EdgeArray`][gometry.H3EdgeArray]
+share one row-selection rule. An integer or integer-like object implementing
+`__index__` (not a boolean), or a zero-dimensional NumPy integer array, selects
+one element. A slice, one-dimensional
+integer array, integer sequence, or boolean mask selects a container of the same
+family. NumPy selectors with rank greater than one raise `TypeError` because
+these row containers have one dimension. Type checkers preserve the result when
+an ndarray's rank is known; if its
+annotation uses a variable-length tuple of integer dimensions, the result is the
+honest scalar-or-container union. If NumPy types the shape as `Any`, annotate the
+rank when you need a narrower result type.
+
 The public classes and cross-grid protocols can be used directly in your own
 annotations. Accepted string tokens are already narrowed in every gometry signature,
 so IDEs and type checkers flag misspellings at the call site:
@@ -135,8 +148,9 @@ print(round(cell_area(gm.H3Cell("871fb4662ffffff"))))
 
 ### NumPy bridge and preview
 
-[`to_numpy`][gometry.GeometryArray.to_numpy] materializes an `object` ndarray of geometry
-handles; [`gm.GeometryArray`][gometry.GeometryArray] is the inverse for object ndarrays
+[`to_numpy`][gometry.GeometryArray.to_numpy] explicitly materializes an `object` ndarray
+of geometry handles; NumPy's array protocol also supports `np.asarray(arr, dtype=object)`.
+[`gm.GeometryArray`][gometry.GeometryArray] is the inverse for object ndarrays
 and `__geo_interface__` rows. Coordinate columns live on [`.coords`][gometry.GeometryArray.coords] ([`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]/[`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m]
 are read-only `float64` ndarrays):
 

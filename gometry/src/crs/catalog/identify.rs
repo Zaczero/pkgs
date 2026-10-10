@@ -12,13 +12,13 @@ use crate::crs::catalog::{
 };
 use crate::crs::{
     AuthorityObjectInfo, AxisInfo, CRS_AUTHORITY_MATCH_CACHE, CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
-    CRS_SEARCH_CACHE, CRS_SEARCH_CACHE_CAPACITY, CachedAuthorityObjects, CachedCrsAuthorityMatches,
-    CachedCrsSearch, CfValue, Confidence, CrsError, CrsExportKind, CrsInfo, CrsObjectKind,
-    CrsSearchOptions, CrsWktOptions, IdentifyCandidate, NON_DEPRECATED_CACHE,
-    NON_DEPRECATED_CACHE_CAPACITY, ProjObjList, ProjObject, RuntimeState, WktVersion,
-    authority_object_info, cstring, ensure_thread_caches_current, info_with_state, lru_resolve,
-    normalize, proj_context_error_message, runtime_state_snapshot, validate_min_confidence,
-    with_proj_context_at,
+    CRS_NAME_MATCH_CACHE, CRS_NAME_MATCH_CACHE_CAPACITY, CachedAuthorityObjects,
+    CachedCrsAuthorityMatches, CachedCrsNameMatch, CfValue, Confidence, CrsError, CrsExportKind,
+    CrsInfo, CrsNameMatchOptions, CrsObjectKind, CrsWktOptions, IdentifyCandidate,
+    NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, ProjObjList, ProjObject, RuntimeState,
+    WktVersion, authority_object_info, cstring, ensure_thread_caches_current, info_with_state,
+    lru_resolve, normalize, proj_context_error_message, runtime_state_snapshot,
+    validate_min_confidence, with_proj_context_at,
 };
 use crate::error::Result;
 
@@ -432,35 +432,30 @@ pub(crate) fn non_deprecated_with_state(
     })
 }
 
-pub(crate) fn search(name: &str, options: &CrsSearchOptions) -> Result<Vec<AuthorityObjectInfo>> {
-    let state = runtime_state_snapshot()?;
-    search_with_state(name, options, &state)
-}
-
-pub(crate) fn search_with_state(
+pub(crate) fn catalog_name_matches_with_state(
     name: &str,
-    options: &CrsSearchOptions,
+    options: &CrsNameMatchOptions,
     state: &RuntimeState,
-) -> Result<Vec<AuthorityObjectInfo>> {
+) -> Result<Vec<String>> {
     ensure_thread_caches_current(state);
     options.validate()?;
     let name = name.trim();
     if name.is_empty() {
         return Err(CrsError::invalid(
-            "CRS search name must be a non-empty string".to_owned(),
+            "CRS catalog name must be a non-empty string".to_owned(),
         ));
     }
-    CRS_SEARCH_CACHE.with(|cache| {
+    CRS_NAME_MATCH_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let entry = lru_resolve(
             &mut cache,
-            CRS_SEARCH_CACHE_CAPACITY,
+            CRS_NAME_MATCH_CACHE_CAPACITY,
             |item| item.name == name && item.options == *options,
             || {
-                Ok(CachedCrsSearch {
+                Ok(CachedCrsNameMatch {
                     name: name.to_owned(),
                     options: options.clone(),
-                    items: search_uncached(name, options, state)?,
+                    items: catalog_name_matches_uncached(name, options, state)?,
                 })
             },
         )?;
@@ -468,11 +463,11 @@ pub(crate) fn search_with_state(
     })
 }
 
-fn search_uncached(
+fn catalog_name_matches_uncached(
     name: &str,
-    options: &CrsSearchOptions,
+    options: &CrsNameMatchOptions,
     state: &RuntimeState,
-) -> Result<Vec<AuthorityObjectInfo>> {
+) -> Result<Vec<String>> {
     let name = cstring(name)?;
     let authority = options.authority.as_deref().map(cstring).transpose()?;
     let types = options
@@ -497,7 +492,7 @@ fn search_uncached(
                 },
                 types.len(),
                 i32::from(options.approximate),
-                options.limit.get(),
+                usize::MAX,
                 ptr::null(),
             )
         };
@@ -512,7 +507,7 @@ fn search_uncached(
         let mut items = Vec::with_capacity(count.max(0) as usize);
         for index in 0..count {
             if let Some(object) = list.get(context, index) {
-                items.push(authority_object_info(context, &object));
+                items.push(authority_object_info(context, &object).crs);
             }
         }
         Ok(items)

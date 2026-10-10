@@ -5,6 +5,8 @@ use crate::crs::geodesic::{
     with_geographic_metric_erased_at,
 };
 use crate::geometry::{ChartLineIndex, CoordSeq, MeasureRange, Point, Shape};
+#[cfg(test)]
+use crate::test_support::linear_reference_counters;
 
 pub(crate) fn with_geographic_coordseq_metric_at<T>(
     crs: &str,
@@ -12,7 +14,7 @@ pub(crate) fn with_geographic_coordseq_metric_at<T>(
     f: impl FnOnce(&EllipsoidMetric<'_>) -> Result<T>,
 ) -> Result<T> {
     #[cfg(test)]
-    crate::test_support::linear_reference_counters::geographic_metric_scope();
+    linear_reference_counters::geographic_metric_scope();
     with_geographic_metric_erased_at(crs, &[], state, |error| error, |_, metric| f(metric))
 }
 
@@ -25,7 +27,7 @@ pub(crate) fn chart_line_interpolate_coordseq_admitted(
     let distance_mode = distance_mode.into();
     let distance = Finite::try_new("distance", distance)?.get();
     #[cfg(test)]
-    crate::test_support::linear_reference_counters::coordseq_chart_index_build();
+    linear_reference_counters::coordseq_chart_index_build();
     let index = ChartLineIndex::build_chart_coordseq(line, metric)?;
     index.interpolate_route_position(distance, distance_mode.is_normalized(), metric)
 }
@@ -38,7 +40,7 @@ pub(crate) fn chart_line_substring_coordseq_admitted(
 ) -> Result<Shape> {
     let distance_mode = distance_mode.into();
     #[cfg(test)]
-    crate::test_support::linear_reference_counters::coordseq_chart_index_build();
+    linear_reference_counters::coordseq_chart_index_build();
     let index = ChartLineIndex::build_chart_coordseq(line, metric)?;
     index.substring(range, distance_mode.is_normalized(), metric)
 }
@@ -54,7 +56,7 @@ pub(crate) fn chart_line_locate_coordseq_admitted(
         ensure_geographic_lonlat_in_frame(metric.frame(), query.x, query.y)?;
     }
     #[cfg(test)]
-    crate::test_support::linear_reference_counters::coordseq_chart_index_build();
+    linear_reference_counters::coordseq_chart_index_build();
     let index = ChartLineIndex::build_chart_coordseq(line, metric)?;
     index.locate_chart_point(query, distance_mode.is_normalized(), metric)
 }

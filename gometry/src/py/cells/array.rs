@@ -801,14 +801,17 @@ impl PyCellArray {
         self.len() != 0
     }
 
-    /// Select cells by integer, slice, or fancy index.
+    /// Select cells by integer-like scalar, slice, or fancy index.
     ///
-    /// An ``int`` returns one cell object. A ``slice`` or fancy index returns
-    /// a ``CellArray`` of the same cell kind.
+    /// An ``int``, object implementing ``__index__``, or zero-dimensional
+    /// integer ndarray returns one cell object or ``None`` for a missing row.
+    /// A ``slice``, integer sequence, one-dimensional integer ndarray, or
+    /// boolean mask returns a ``CellArray`` of the same cell kind. Boolean
+    /// scalars and NumPy index arrays with rank above one raise ``TypeError``.
     ///
     /// Returns
     /// -------
-    /// Cell or CellArray
+    /// Cell, None, or CellArray
     fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         array_getitem(self, py, index)
     }

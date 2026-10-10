@@ -49,8 +49,13 @@ def test_split_exact_projection_survives_every_line_point_and_array_carrier() ->
                 assert sum((offset, 0.0) in _coords(piece) for piece in pieces) == 2
 
     array_pieces = gm.split(gm.GeometryArray([forward, reverse]), point)
-    assert len(array_pieces) == 4
-    assert sum((offset, 0.0) in _coords(piece) for piece in array_pieces) == 4
+    assert array_pieces.offsets.tolist() == [0, 2, 4]
+    assert (
+        sum(
+            (offset, 0.0) in _coords(piece) for group in array_pieces for piece in group
+        )
+        == 4
+    )
 
 
 def _clearance_fixture(*, near_end: bool, indexed: bool) -> gm.MultiLineString:

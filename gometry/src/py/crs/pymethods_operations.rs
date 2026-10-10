@@ -10,7 +10,7 @@ impl PyCrs {
     ///
     /// Parameters
     /// ----------
-    /// target : str or int or CRS
+    /// target : CRS-like
     ///     Destination CRS.
     ///
     /// at : tuple of float, optional
@@ -126,7 +126,7 @@ impl PyCrs {
     ///
     /// Parameters
     /// ----------
-    /// target : str or int or CRS
+    /// target : CRS-like
     ///     Destination CRS.
     ///
     /// area_of_interest : sequence of float, optional
