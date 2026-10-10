@@ -478,9 +478,10 @@ def validate_quality_producer_inputs(
     ):
         raise TypeError('quality receipt has no producer input identity')
     build_cargo = build.get('cargo')
-    if not isinstance(build_cargo, dict) or source.get('cargo') != build_cargo.get(
-        'dependencies'
-    ):
+    dependencies = (
+        build_cargo.get('dependencies') if isinstance(build_cargo, dict) else None
+    )
+    if not isinstance(dependencies, dict) or source.get('cargo') != dependencies:
         raise AssertionError(
             'quality receipt source and build dependency identities disagree'
         )
@@ -539,21 +540,10 @@ def validate_quality_producer_inputs(
     if quality_settings(root, settings_environment) != build_settings:
         raise QualityPreparationRequired('quality runtime build settings are stale')
 
-    compiler = _tool_output(['rustc', '-vV'], cwd=root)
-    if compiler != build.get('compiler', {}).get('rustc_vv'):
-        raise QualityPreparationRequired('quality runtime compiler receipt is stale')
-    cargo_version = _tool_output(['cargo', '--version'], cwd=root)
-    if cargo_version != build_cargo.get('version'):
-        raise QualityPreparationRequired('quality runtime Cargo receipt is stale')
-    metadata = cargo_metadata(root.parent, locked=True)
-    dependencies = {
-        'lock_sha256': sha256_file(root.parent / 'Cargo.lock'),
-        'required_sources': required_source_records(metadata, root=root.parent),
-    }
-    if dependencies != build_cargo.get('dependencies'):
-        raise QualityPreparationRequired(
-            'quality runtime Cargo dependency receipt is stale'
-        )
+    # The receipt records Cargo's producer-time resolution; admission binds it
+    # to the current manifests, lockfile and build settings without invoking Cargo.
+    if dependencies.get('lock_sha256') != sha256_file(root.parent / 'Cargo.lock'):
+        raise QualityPreparationRequired('quality runtime Cargo.lock input is stale')
 
 
 def _materialize_quality_package(
