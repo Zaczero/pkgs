@@ -980,9 +980,21 @@ def test_split_antimeridian_uses_selected_native_period_for_seam_coordinates(
 
 
 def test_split_antimeridian_reexpresses_west_south_mixed_axes() -> None:
-    for physical, z, m in (
-        ([(179.0, 0.0), (-175.0, 6.0)], [10.0, 50.0], [2.0, 10.0]),
-        ([(-175.0, 6.0), (179.0, 0.0)], [50.0, 10.0], [10.0, 2.0]),
+    # The radian endpoints and grad unit factor are binary64 approximations;
+    # these direction-specific latitudes follow those exact stored values.
+    for physical, z, m, expected_latitude in (
+        (
+            [(179.0, 0.0), (-175.0, 6.0)],
+            [10.0, 50.0],
+            [2.0, 10.0],
+            0.9999999999999915,
+        ),
+        (
+            [(-175.0, 6.0), (179.0, 0.0)],
+            [50.0, 10.0],
+            [10.0, 2.0],
+            0.9999999999999919,
+        ),
     ):
         native = [
             (-math.radians(longitude), -latitude * 10.0 / 9.0)
@@ -995,8 +1007,10 @@ def test_split_antimeridian_reexpresses_west_south_mixed_axes() -> None:
         seam = [point for point in coordinates if abs(point[0]) == 180.0]
 
         assert len(seam) == 2
+        latitude_tolerance = 2.0 * math.ulp(expected_latitude)
         assert all(
-            point[1] == pytest.approx(1.0, abs=8.0 * math.ulp(1.0)) for point in seam
+            point[1] == pytest.approx(expected_latitude, abs=latitude_tolerance)
+            for point in seam
         )
         expected = (16.67246866128446, 3.3344937322568917)
         for point in seam:
@@ -1184,24 +1198,28 @@ def test_split_antimeridian_reversed_grad_hole_overlay_ordinates() -> None:
         'UNIT["grad",0.015707963267948967],'
         'AXIS["Longitude",WEST],AXIS["Latitude",SOUTH]]'
     )
+    lower_owner_z = 38.36571009570337
+    lower_owner_m = 383.6571009570337
+    upper_owner_z = 76.731420191406755
+    upper_owner_m = 767.31420191406755
     polygon = gm.from_wkt(
-        'POLYGON ZM ('
+        f'POLYGON ZM ('
         '(-150 50 0 0, 150 50 0 0, 150 -80 100 1000, '
         '-150 -80 100 1000, -150 50 0 0),'
-        '(-160 0 38.365710095703378 383.65710095703378, '
-        '-160 -50 76.731420191406755 767.31420191406755, '
-        '-200 -50 76.731420191406755 767.31420191406755, '
-        '-200 0 38.365710095703378 383.65710095703378, '
-        '-160 0 38.365710095703378 383.65710095703378))',
+        f'(-160 0 {lower_owner_z!r} {lower_owner_m!r}, '
+        f'-160 -50 {upper_owner_z!r} {upper_owner_m!r}, '
+        f'-200 -50 {upper_owner_z!r} {upper_owner_m!r}, '
+        f'-200 0 {lower_owner_z!r} {lower_owner_m!r}, '
+        f'-160 0 {lower_owner_z!r} {lower_owner_m!r}))',
         crs=crs,
     )
 
     split = polygon.split_antimeridian()
     assert split.coordinate_axes == 'XYZM'
-    # Compensated Simpson references over 4,096 to 65,536 panels on the 1/150 ellipsoid.
-    for native_latitude, expected_z, expected_m in (
-        (0.0, 38.365710095703378, 383.65710095703378),
-        (-50.0, 76.731420191406755, 767.31420191406755),
+    # The lower seam owner rounds one ULP below the compensated Simpson reference.
+    for native_latitude, owner_z, owner_m, expected_z, expected_m in (
+        (0.0, lower_owner_z, lower_owner_m, 38.365710095703378, 383.65710095703378),
+        (-50.0, upper_owner_z, upper_owner_m, 76.731420191406755, 767.31420191406755),
     ):
         seam = [
             coordinate
@@ -1211,6 +1229,10 @@ def test_split_antimeridian_reversed_grad_hole_overlay_ordinates() -> None:
         ]
         assert seam, f'missing final seam node at latitude {native_latitude}'
         for coordinate in seam:
+            assert (coordinate[2].hex(), coordinate[3].hex()) == (
+                owner_z.hex(),
+                owner_m.hex(),
+            )
             assert abs(coordinate[2] - expected_z) <= 4.0 * math.ulp(expected_z)
             assert abs(coordinate[3] - expected_m) <= 4.0 * math.ulp(expected_m)
         assert len({(coordinate[2], coordinate[3]) for coordinate in seam}) == 1

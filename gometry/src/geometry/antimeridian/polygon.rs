@@ -337,10 +337,14 @@ struct ChartEdgeEvent {
 }
 
 fn chart_connection(start: Point, end: Point, frame: GeographicFrame) -> Result<ChartConnection> {
+    chart_connection_at(start.x, end.x, frame)
+}
+
+fn chart_connection_at(start: f64, end: f64, frame: GeographicFrame) -> Result<ChartConnection> {
     frame
         .longitude()
-        .chart_connection(start.x, end.x)
-        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()).into())
+        .chart_connection(start, end)
+        .map_err(|error| GeometryErrorKind::antimeridian_split_failed(error.to_string()))
 }
 
 fn certified_no_chart_events(start: f64, end: f64, frame: GeographicFrame) -> bool {
@@ -507,7 +511,19 @@ fn append_source_edge_events<M: ChartMetric>(
     if include_seam && certified_no_chart_events(source[0].x, source[1].x, frame) {
         return Ok(());
     }
-    let connection = chart_connection(source[0], source[1], frame)?;
+    let source_connection = chart_connection(source[0], source[1], frame)?;
+    let connection = if source_connection.step.is_circle()
+        || (source_connection.start.get().to_bits() == source[0].x.to_bits()
+            && source_connection.end.get().to_bits() == source[1].x.to_bits())
+    {
+        source_connection
+    } else {
+        chart_connection_at(
+            source_connection.start.get(),
+            source_connection.end.get(),
+            frame,
+        )?
+    };
     let longitude = connection.retained();
     let mut events = Vec::new();
     if circle_witnesses && connection.step.is_circle() {
@@ -1797,10 +1813,10 @@ mod tests {
             // 16384, for the WGS84 first-fundamental-form speed on the root
             // (170,0)->(530,60). The subedge reference uses the rounded
             // binary64 seam latitude, as the emitted piece does.
-            let q_seam = 0.033_323_535_838_094_220_426_f64;
-            let q_quarter = 0.296_653_444_529_051_574_389_f64;
-            let q_later_root = 0.166_073_296_867_606_938_760_f64;
-            let q_later_piece = 0.166_073_296_867_606_938_760_f64;
+            let q_seam = 0.033_323_535_838_094_22_f64;
+            let q_quarter = 0.296_653_444_529_051_57_f64;
+            let q_later_root = 0.166_073_296_867_606_94_f64;
+            let q_later_piece = 0.166_073_296_867_606_94_f64;
             let root_z = |q: f64| 100.0 * q;
             let root_m = |q: f64| 100.0 + 1000.0 * q;
             let mut max_absolute_error = 0.0_f64;
@@ -1924,7 +1940,7 @@ mod tests {
         let accesses = std::cell::Cell::new(0);
         let failing_metric = || -> crate::error::Result<&crate::crs::GeodesicMetric> {
             accesses.set(accesses.get() + 1);
-            Err(crate::crs::CrsError::invalid("seam metric sentinel").into())
+            Err(crate::crs::CrsError::invalid("seam metric sentinel"))
         };
         let result = chart_line(
             &line,
