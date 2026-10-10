@@ -233,6 +233,10 @@ fn ordinary_chart_certificate_matches_selected_period_and_edge_contracts() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "these tests characterize exact binary64 spellings at a periodic seam"
+)]
 fn removed_period_workarounds_preserve_finite_longitude_bits() {
     fn previous_wrap(axis: PeriodicAxis, value: f64) -> f64 {
         let mut reduced = value % axis.period();

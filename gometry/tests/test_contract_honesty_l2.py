@@ -84,9 +84,10 @@ def test_crs_export_defaults_are_literals_and_match_omission() -> None:
     )
     assert (
         str(inspect.signature(crs.to_projjson))
-        == '(*, pretty=False, indentation_width=2)'
+        == '(*, as_dict=False, pretty=False, indentation_width=2)'
     )
     assert crs.to_wkt() == crs.to_wkt(output_axis='auto')
+    assert crs.to_projjson() == crs.to_projjson(as_dict=False)
     assert crs.to_wkt(pretty=True) == crs.to_wkt(pretty=True, indentation_width=4)
     assert crs.to_projjson(pretty=True) == crs.to_projjson(
         pretty=True, indentation_width=2

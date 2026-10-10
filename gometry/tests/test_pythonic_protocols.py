@@ -1377,7 +1377,7 @@ def test_python_result_types_pickle_preserves_fields() -> None:
     values = (
         gm.Features(gm.GeometryArray([gm.Point(2, 3)]), [{'name': 'sample'}], ['a']),
         gm.LineString([(1, 2), (4, -3), (7, 8), (-5, 6)]).extremes(),
-        gm.polygonize_full([ring, gm.LineString([(5, 6), (7, 8)])]),
+        gm.polygonize_all([ring, gm.LineString([(5, 6), (7, 8)])], diagnostics=True),
     )
     for value in values:
         restored = pickle.loads(pickle.dumps(value))

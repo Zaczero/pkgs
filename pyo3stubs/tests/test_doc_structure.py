@@ -61,7 +61,14 @@ def _subject(
     prose: str,
     parameters: tuple[inspect.Parameter, ...],
     *,
-    kind: Literal['callable', 'property', 'constructor', 'class'] = 'callable',
+    kind: Literal[
+        'callable',
+        'property',
+        'constructor',
+        'class',
+        'attribute',
+        'schema',
+    ] = 'callable',
 ) -> DocSubject:
     return DocSubject(
         qualname,
@@ -372,9 +379,158 @@ def test_google_returns_parse_full_types_and_keep_their_descriptions():
         ),
         ('float', 'One numeric measurement.'),
         ('Iterator[Geometry]', 'The generated geometries.'),
-        ('Geometry | None', 'The optional next geometry.'),
     ]
     assert check_doc_subject(_subject('measure', doc, ())) == []
+
+
+@pytest.mark.parametrize(
+    ('header', 'expected_name', 'expected_type', 'expected_default'),
+    [
+        pytest.param(
+            'pair (tuple[int, int], default=(0, 1)): Bounds.',
+            'pair',
+            'tuple[int, int]',
+            '(0, 1)',
+            id='nested-parentheses-in-default',
+        ),
+        pytest.param(
+            "token (Literal[')']): Token.",
+            'token',
+            "Literal[')']",
+            None,
+            id='quoted-close-paren-in-type',
+        ),
+        pytest.param(
+            "token (Literal['default=None']): Token.",
+            'token',
+            "Literal['default=None']",
+            None,
+            id='quoted-default-like-type-literal',
+        ),
+    ],
+)
+def test_google_parameter_headers_scan_the_complete_type_wrapper(
+    header,
+    expected_name,
+    expected_type,
+    expected_default,
+):
+    parsed = parse_doc(
+        f"""\
+        Read a value.
+
+        Args:
+            {header}
+        """
+    )
+    (entry,) = parameter_entries(parsed)
+
+    assert (entry.names, entry.type_text, entry.default_text) == (
+        (expected_name,),
+        expected_type,
+        expected_default,
+    )
+
+
+def test_numpy_untyped_parameter_headers_cover_named_varargs_without_prose():
+    doc = """\
+    Accept values.
+
+    Parameters
+    ----------
+    value
+        The primary value.
+    *args
+        Additional positional values.
+    **kwargs
+        Additional named values.
+    provide an integer
+        This sentence is prose, not a parameter name.
+
+    Returns
+    -------
+    object
+    """
+    parsed = parse_doc(doc)
+    entries = parameter_entries(parsed)
+
+    assert [
+        (entry.names, entry.type_text, entry.default_text) for entry in entries
+    ] == [
+        (('value',), '', None),
+        (('args',), '', None),
+        (('kwargs',), '', None),
+    ]
+    parameters = (
+        inspect.Parameter('value', inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter('args', inspect.Parameter.VAR_POSITIONAL),
+        inspect.Parameter('kwargs', inspect.Parameter.VAR_KEYWORD),
+    )
+    assert check_doc_subject(_subject('accept', doc, parameters)) == []
+
+    missing_kwargs = doc.replace(
+        '    **kwargs\n        Additional named values.\n',
+        '',
+    )
+    assert check_doc_subject(_subject('accept', missing_kwargs, parameters)) == [
+        "accept: parameter 'kwargs' is not documented"
+    ]
+
+
+@pytest.mark.parametrize(
+    'default_marker',
+    [
+        pytest.param('default=True', id='equals'),
+        pytest.param('default True', id='space'),
+        pytest.param('default: True', id='colon'),
+    ],
+)
+def test_numpy_default_marker_forms_parse_and_check_against_the_signature(
+    default_marker,
+):
+    doc = f"""\
+    Copy a value.
+
+    Parameters
+    ----------
+    copy : bool, {default_marker}
+        Whether to copy.
+
+    Returns
+    -------
+    object
+    """
+    (entry,) = parameter_entries(parse_doc(doc))
+
+    assert (entry.names, entry.type_text, entry.default_text) == (
+        ('copy',),
+        'bool',
+        'True',
+    )
+    parameter = inspect.Parameter(
+        'copy',
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        default=False,
+    )
+    assert check_doc_subject(_subject('copy_value', doc, (parameter,))) == [
+        'copy_value.copy: documented default True != runtime False'
+    ]
+
+
+def test_receives_does_not_satisfy_the_output_contract():
+    doc = """\
+    Consume a value.
+
+    Receives
+    --------
+    value : object
+        The value sent into the generator.
+    """
+
+    assert return_entries(parse_doc(doc)) == ()
+    assert check_doc_subject(_subject('consume', doc, ())) == [
+        'consume: no Returns section — document what it gives back'
+    ]
 
 
 def test_duplicate_google_section_aliases_remain_visible():
@@ -408,6 +564,194 @@ def test_class_overview_does_not_require_callable_returns():
         kind='class',
     )
     assert check_doc_subject(subject) == []
+
+
+@pytest.mark.parametrize('kind', ['attribute', 'schema'])
+def test_typed_field_subjects_do_not_require_callable_returns(kind):
+    subject = _subject('Features.ids', 'One id per feature.', (), kind=kind)
+
+    assert check_doc_subject(subject) == []
+
+
+def test_source_facade_class_subjects_keep_member_provenance_and_one_init_carrier(
+    tmp_path,
+):
+    import types
+
+    from pyo3stubs.context import CheckContext
+    from pyo3stubs.doc_structure import (
+        DocClassSource,
+        DocInitializationSource,
+        DocLocation,
+        DocMemberSource,
+        iter_doc_subjects,
+    )
+    from tests._support import make_config
+
+    source = ast.parse(
+        '''\
+class Base:
+    @property
+    def origin(self) -> str:
+        """The inherited source name.
+
+        Returns
+        -------
+        str
+        """
+
+class Public(Base):
+    """A public source-defined class.
+
+    Parameters
+    ----------
+    value : int
+        The value to retain.
+
+    Returns
+    -------
+    Public
+    """
+
+    def __init__(self, value: int) -> None:
+        """A competing initializer carrier that is not selected."""
+
+    @property
+    def label(self) -> str:
+        """The overridden label.
+
+        Returns
+        -------
+        str
+        """
+
+    value: int
+    """The retained value."""
+'''
+    )
+    base_node, public_node = source.body
+    assert isinstance(base_node, ast.ClassDef)
+    assert isinstance(public_node, ast.ClassDef)
+    origin_node = base_node.body[0]
+    init_node = next(
+        node
+        for node in public_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == '__init__'
+    )
+    label_node = next(
+        node
+        for node in public_node.body
+        if isinstance(node, ast.FunctionDef) and node.name == 'label'
+    )
+    value_node = next(
+        node for node in public_node.body if isinstance(node, ast.AnnAssign)
+    )
+    assert isinstance(origin_node, ast.FunctionDef)
+    assert isinstance(value_node.target, ast.Name)
+    source_class = DocClassSource(
+        node=public_node,
+        source=DocLocation('src/models.py', public_node.body[0].lineno),
+        members={
+            '__init__': DocMemberSource(
+                node=init_node,
+                kind='callable',
+                prose=ast.get_docstring(init_node),
+                source=DocLocation('src/models.py', init_node.body[0].lineno),
+            ),
+            'origin': DocMemberSource(
+                node=origin_node,
+                kind='property',
+                prose=ast.get_docstring(origin_node),
+                source=DocLocation('src/base.py', origin_node.body[0].lineno),
+            ),
+            'label': DocMemberSource(
+                node=label_node,
+                kind='property',
+                prose=ast.get_docstring(label_node),
+                source=DocLocation('src/models.py', label_node.body[0].lineno),
+            ),
+            'value': DocMemberSource(
+                node=value_node,
+                kind='attribute',
+                prose='The retained value.',
+                source=DocLocation('src/models.py', value_node.lineno + 1),
+            ),
+        },
+        initialization=DocInitializationSource(
+            node=public_node,
+            prose=ast.get_docstring(public_node),
+            source=DocLocation('src/models.py', public_node.body[0].lineno),
+        ),
+    )
+
+    class Base:
+        @property
+        def origin(self) -> str:
+            """The inherited source name.
+
+            Returns
+            -------
+            str
+            """
+            return 'base'
+
+    class Public(Base):
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        @property
+        def label(self) -> str:
+            """The overridden label.
+
+            Returns
+            -------
+            str
+            """
+            return str(self.value)
+
+    runtime = types.ModuleType('fakepkg.facade')
+    runtime.__all__ = ['Public']
+    runtime.Public = Public  # type: ignore[attr-defined]
+    cfg = make_config(tmp_path)
+    ctx = CheckContext(cfg, _runtime_module=runtime)
+    subjects = tuple(
+        iter_doc_subjects(
+            ctx,
+            runtime_module=runtime,
+            source_classes={'Public': source_class},
+        )
+    )
+
+    (constructor,) = tuple(
+        subject for subject in subjects if subject.kind == 'constructor'
+    )
+    (field,) = tuple(
+        subject for subject in subjects if subject.qualname == 'Public.value'
+    )
+    (label,) = tuple(
+        subject for subject in subjects if subject.qualname == 'Public.label'
+    )
+    (inherited,) = tuple(
+        subject for subject in subjects if subject.qualname == 'Public.origin'
+    )
+    assert constructor.source == DocLocation(
+        'src/models.py',
+        public_node.body[0].lineno,
+    )
+    assert constructor.prose == ast.get_docstring(public_node)
+    assert constructor.declarations == (public_node,)
+    assert check_doc_subject(constructor) == []
+    assert (field.kind, field.prose, field.source.path) == (
+        'attribute',
+        'The retained value.',
+        'src/models.py',
+    )
+    assert field.declarations == (value_node,)
+    assert check_doc_subject(field) == []
+    assert label.source.path == 'src/models.py'
+    assert inherited.source.path == 'src/base.py'
+    assert len([s for s in subjects if s.qualname == 'Public.label']) == 1
+    assert len([s for s in subjects if s.qualname == 'Public.origin']) == 1
 
 
 STUB_OVERRIDE = cast(

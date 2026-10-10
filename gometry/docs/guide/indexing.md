@@ -175,8 +175,11 @@ print("within 1 deg:", idx.query(probe, predicate="dwithin", distance=1.0, unit=
 Distance `unit=` follows the CRS metric rules in [CRS, units & measurement](crs.md).
 The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate math.
 `dwithin` accepts a positive-infinite threshold and matches only admitted
-non-empty geometries. Array results keep one boolean per input pair; missing rows
-and present empty geometries remain in their positions as `False`.
+non-empty geometries. On a geographic CRS, `dwithin` raises `CRSError` if the
+128-evaluation search cannot prove whether a present pair is within the radius;
+it does not report an unresolved pair as `False`. Successful array results keep
+one boolean per input pair, and missing rows and present empty geometries remain
+in their positions as `False`.
 
 ## Nearest neighbors
 
@@ -281,7 +284,9 @@ for li, ri in zip(left, right, strict=True):
 `join` refines to exact predicates. Use `distance=`/`unit=` for a
 `predicate="dwithin"` join. For a direct index query, compare
 `len(idx.candidates(q))` with `len(idx.query(q, predicate=...))` to measure the
-candidate superset and its exact refinement.
+candidate superset and its exact refinement. Geographic `dwithin` refinement
+raises `CRSError` if the point-edge search exhausts its budget without proving
+the threshold result.
 
 !!! note "Many-to-many query cost"
     The brute-force `for a in polys: for b in points: if gm.contains(a, b)` pattern is

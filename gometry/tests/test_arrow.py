@@ -29,7 +29,7 @@ from tests._support import (
 )
 
 _WGS84_PROJJSON_METADATA = _json.dumps(
-    {'crs': _CRS(4326).to_projjson_dict(), 'crs_type': 'projjson'},
+    {'crs': _CRS(4326).to_projjson(as_dict=True), 'crs_type': 'projjson'},
     separators=(',', ':'),
 ).encode()
 
@@ -846,7 +846,7 @@ def test_arrow_capsule_roundtrip_via_pyarrow_array_protocol() -> None:
             arrow.type.__arrow_ext_serialize__()
             == _json.dumps(
                 {
-                    'crs': _CRS(4326).to_projjson_dict(),
+                    'crs': _CRS(4326).to_projjson(as_dict=True),
                     'crs_type': 'projjson',
                     'epoch': 2020.0,
                 },

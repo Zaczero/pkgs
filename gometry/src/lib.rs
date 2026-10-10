@@ -94,8 +94,8 @@ mod text;
 mod tokens;
 use measures::{
     area, area_natural_array, area_natural_scalar, bearing, bounds_array, cross_track_distance,
-    length, length_3d, length_natural_array, length_natural_scalar, point_between, rhumb_distance,
-    shared_paths, snap, split,
+    length, length_3d, length_natural_array, length_natural_scalar, point_between, shared_paths,
+    snap, split,
 };
 mod array;
 pub(crate) use array::PyGeometryArray;
@@ -122,11 +122,11 @@ use py::functions::polyline::from_polyline;
 use py::functions::{
     _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1,
     _unpickle_validation_report_v1, OverlayOp, PyValidationReport, coverage_clean,
-    coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union, difference,
+    coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union_all, difference,
     from_geojson, from_wkb, from_wkt, intersection, intersection_all, osm_shortlink_encode,
     osm_shortlink_location, overlay_operator, pluscode_encode, pluscode_polygon, pluscode_recover,
-    pluscode_shorten, polygonize, polygonize_full, require, symmetric_difference,
-    symmetric_difference_all, to_feature, to_feature_collection, union, union_all,
+    pluscode_shorten, polygonize_all, require, symmetric_difference, symmetric_difference_all,
+    to_feature, to_feature_collection, union, union_all,
 };
 mod grid;
 mod predicates;
@@ -156,11 +156,11 @@ use py::errors::{CRSError, GeometryError, InvalidGeometryError, geometry_type_er
 use py::support::{
     _token_vocabulary, GeoJsonDecodeContext, GeometryValues, H3_MAX_RESOLUTION, InterpolatePlan,
     NavigationPath, OwnedBytes, QUADRANT_SEGMENTS_DEFAULT_I64, SVG_ARRAY_PREVIEW, ScalarOrIterator,
-    SpatialCurve, VoronoiClipInput, Wgs84DefaultCrs, add_classes, add_functions, bounds_envelope,
-    box_polygon, check_i32_min, classify_scalar_or_iterator, coerce_geojson_geometry_value,
-    coerce_geojson_geometry_value_at, coerce_present_geometry_items, copy_wkb_payload,
-    deserialized_epoch, ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate,
-    extract_coordinate_or_empty, extract_points, features_type,
+    SpatialCurve, VoronoiClipInput, VoronoiOutput, Wgs84DefaultCrs, add_classes, add_functions,
+    bounds_envelope, box_polygon, check_i32_min, classify_scalar_or_iterator,
+    coerce_geojson_geometry_value, coerce_geojson_geometry_value_at, coerce_present_geometry_items,
+    copy_wkb_payload, deserialized_epoch, ensure_homogeneous_axes, exact_backed_bytes,
+    extract_coordinate, extract_coordinate_or_empty, extract_points, features_type,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     geometry_items, global_geographic_candidate_envelope, gometry_lib_module, guard_epoch_frame,
     index_envelopes, is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray,
@@ -175,7 +175,7 @@ use py::support::{
     require_geojson_crs, validate_buffer_miter_limit, validate_buffer_quadrant_segments,
     validate_densify_fraction, validate_distance, validate_dwithin_distance,
     validate_dwithin_distance_arg, validate_equals_exact_tolerance, validate_max_segment_length,
-    validate_nearest_k, validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten,
+    validate_nearest_k, validate_smooth_iterations, voronoi_edge_lines_flatten, voronoi_flatten,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -255,14 +255,14 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         relate, relate_pattern, equals, equals_exact, equals_identical,
         distance, distance_3d, hausdorff_distance,
         frechet_distance, nearest_points, shortest_line, split, dwithin,
-        bearing, cross_track_distance, point_between, rhumb_distance,
+        bearing, cross_track_distance, point_between,
     );
     py::index::register(m)?;
     add_functions!(m;
         intersection, union, difference, symmetric_difference, union_all,
         intersection_all, symmetric_difference_all,
         coverage_is_valid, coverage_invalid_edges, coverage_simplify, coverage_clean,
-        coverage_union, polygonize, polygonize_full,
+        coverage_union_all, polygonize_all,
         // IO, validation, and coordinate access.
         from_wkt, from_wkb, from_geojson, to_feature, to_feature_collection,
         from_polyline, require,

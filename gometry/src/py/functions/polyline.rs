@@ -14,9 +14,9 @@ use crate::geographic::lonlat::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_L
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Point, storage,
 };
-use crate::py::errors;
 use crate::py::errors::{InvalidGeometryError, ParseError};
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
+use crate::py::{errors, support};
 use crate::{
     CRSError, Coordinates, Crs, GeometryError, PyGeometry, PyGeometryArray, PyTypeError, Shape,
     Typed, Wgs84DefaultCrs, coordinate_epoch_option, geometry_type_err, guard_epoch_frame,
@@ -315,7 +315,7 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 /// precision : int, default 5
 ///     Decimal digits encoded per ordinate (``0`` to ``11``); 5 is the
 ///     classic default, 6 the high-resolution variant.
-/// crs : str or int or None, default 'OGC:CRS84'
+/// crs : CRS-like or None, default 'OGC:CRS84'
 ///     Frame for the decoded longitude/latitude coordinates. Only WGS84
 ///     longitude/latitude CRS are valid; pass ``None`` for CRS-free output.
 /// epoch : float, optional
@@ -362,7 +362,7 @@ pub(crate) fn from_polyline(
     require_polyline_crs(crs.as_ref().map(Crs::as_str))?;
     let epoch = coordinate_epoch_option("epoch", epoch)?;
     guard_epoch_frame(epoch, crs.as_ref())?;
-    let column = crate::py::support::normalize_format_column(data)?;
+    let column = support::normalize_format_column(data)?;
     let data = column.as_ref().map_or(data, |column| column.as_any());
     let decode_tagged = |text: &str| -> PyResult<Shape> {
         let points = decode_line(text, factor)

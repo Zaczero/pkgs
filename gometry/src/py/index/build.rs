@@ -3,10 +3,10 @@ use crate::boundary::metadata;
 use crate::geometry::{TopologyDomain, storage};
 use crate::py::index::{
     Bound, BoxedRows, Frame, GeometryArrayStorage, GeometryError, IndexEntry, IndexRows,
-    PackedStore, PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PySpatialIndex,
-    Python, ShapeData, StaticStrForest, StaticStrTree, bounds_envelope, checked_index_handle_end,
-    cover_count_exceptions, exact_geometry, exact_geometry_array, geodesic_domain_invalid,
-    index_envelopes,
+    PackedRowAddressing, PackedStore, PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray,
+    PyResult, PySpatialIndex, Python, ShapeData, StaticStrForest, StaticStrTree, bounds_envelope,
+    checked_index_handle_end, cover_count_exceptions, exact_geometry, exact_geometry_array,
+    geodesic_domain_invalid, index_envelopes,
 };
 
 pub(crate) fn spatial_index(mut items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
@@ -110,10 +110,19 @@ fn finish_spatial_index(
 fn packed_index_payload(
     array: &PyGeometryArray,
     domain: TopologyDomain,
-) -> PyResult<(Vec<IndexEntry>, LiveHandles, usize)> {
-    let mut entries = Vec::with_capacity(array.len());
+) -> PyResult<(Vec<IndexEntry>, LiveHandles, usize, PackedRowAddressing)> {
+    let present_count = array
+        .missing()
+        .map_or(array.len(), |mask| mask.present_count());
+    let mut entries = Vec::with_capacity(present_count);
     let mut live_handles = LiveHandles::default();
     let mut non_prunable_live = 0_usize;
+    let mut present_ordinals = (array.missing().is_some()
+        && matches!(
+            array.storage(),
+            GeometryArrayStorage::Packed(storage::PackedStorage::Points { .. })
+        ))
+    .then(|| Vec::with_capacity(present_count));
     let element_bounds = (!matches!(
         array.storage(),
         GeometryArrayStorage::Packed(storage::PackedStorage::Points { .. })
@@ -126,6 +135,10 @@ fn packed_index_payload(
             continue;
         };
         let logical = row.logical();
+        if let Some(handles) = &mut present_ordinals {
+            // A present empty point occupies a physical ordinal but no live index row.
+            handles.push(logical);
+        }
         let shape_row = row.row();
         let bounds = element_bounds
             .as_ref()
@@ -157,7 +170,12 @@ fn packed_index_payload(
             non_prunable_live = non_prunable_live.wrapping_add(usize::from(row_non_prunable));
         }
     }
-    Ok((entries, live_handles, non_prunable_live))
+    let addressing = present_ordinals.map_or(PackedRowAddressing::Logical, |handles| {
+        debug_assert_eq!(handles.len(), present_count);
+        debug_assert_eq!(handles.len(), array.storage().len());
+        PackedRowAddressing::PresentOrdinals(std::sync::Arc::from(handles))
+    });
+    Ok((entries, live_handles, non_prunable_live, addressing))
 }
 
 pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<PySpatialIndex>> {
@@ -174,12 +192,14 @@ pub(crate) fn packed_spatial_index(array: &PyGeometryArray) -> PyResult<Option<P
         .map(crate::geometry::topology_domain)
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
-    let (entries, live_handles, non_prunable_live) = packed_index_payload(array, domain)?;
+    let (entries, live_handles, non_prunable_live, addressing) =
+        packed_index_payload(array, domain)?;
     let cover_counts = cover_count_exceptions(&entries);
     Ok(Some(PySpatialIndex {
         rows: IndexRows {
             packed: Some(PackedStore {
                 source: array.clone(),
+                addressing,
             }),
             boxed: BoxedRows::default(),
             next_handle: total_rows,
@@ -291,7 +311,10 @@ pub(crate) fn restore_spatial_index(
     } else {
         crate::geometry::topology_domain(&values.frame)?
     };
-    let mut entries = Vec::with_capacity(values.len());
+    let present_count = values
+        .missing()
+        .map_or(values.len(), |missing| missing.present_count());
+    let mut entries = Vec::with_capacity(present_count);
     let mut non_prunable_live = 0_usize;
     for logical in 0..values.len() {
         let geometry = if let Some(row) = row_operation.present_row_at(logical) {
@@ -372,7 +395,10 @@ pub(crate) fn restore_spatial_index_v2(
             "spatial index pickle handle must be less than next_handle",
         ));
     }
-    if handles.windows(2).any(|pair| pair[0] >= pair[1]) {
+    if handles
+        .array_windows::<2>()
+        .any(|[left, right]| left >= right)
+    {
         return Err(GeometryError::new_err(
             "spatial index pickle handles must be strictly increasing",
         ));
@@ -457,6 +483,7 @@ mod ownership_tests {
     use crate::crs::frame;
     use crate::geometry::{
         Bounds, CoordSeq, CsrOffsetColumn, LineSeq, Point, PolygonLevel, RingLevel, Shape,
+        SharedSlice,
     };
 
     fn points() -> PyGeometryArray {
@@ -509,6 +536,29 @@ mod ownership_tests {
         let missing = storage::ValidityMask::from_vec(missing.len(), missing)
             .expect("fixture contains a missing row");
         PyGeometryArray::scatter_present_rows(&source, missing).unwrap()
+    }
+
+    fn sparse_nullable_points(logical_len: usize) -> PyGeometryArray {
+        let last_handle = logical_len
+            .checked_sub(1)
+            .expect("sparse point fixture has a non-empty logical span");
+        let present_handles = [7_usize, 63, last_handle];
+        let mut bitmap = vec![0_u8; logical_len.div_ceil(8)];
+        for handle in present_handles {
+            *bitmap
+                .get_mut(handle / 8)
+                .expect("present handle belongs to the sparse point mask") |= 1 << (handle % 8);
+        }
+        let mask =
+            storage::ValidityMask::from_bitmap(SharedSlice::from_vec(bitmap), 0, logical_len)
+                .expect("sparse point fixture includes missing rows");
+        let source = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![10.0, 20.0, 30.0], vec![1.0, 2.0, 3.0], None, None)
+                .unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        PyGeometryArray::scatter_present_rows(&source, mask).unwrap()
     }
 
     fn compact_lines() -> PyGeometryArray {
@@ -574,6 +624,21 @@ mod ownership_tests {
     }
 
     #[test]
+    fn compact_point_index_heap_excludes_missing_handle_span() {
+        let small_source = sparse_nullable_points(1_000);
+        let large_source = sparse_nullable_points(0x2_0000);
+        let small = packed_spatial_index(&small_source).unwrap().unwrap();
+        let large = packed_spatial_index(&large_source).unwrap().unwrap();
+        let small_delta = HeapSize::heap_bytes(&small)
+            .checked_sub(HeapSize::heap_bytes(&small_source))
+            .expect("index includes its retained source");
+        let large_delta = HeapSize::heap_bytes(&large)
+            .checked_sub(HeapSize::heap_bytes(&large_source))
+            .expect("index includes its retained source");
+        assert_eq!(small_delta, large_delta);
+    }
+
+    #[test]
     fn dense_boxed_rows_keep_vector_lookup_and_release_removed_copies() {
         let first = PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(-3.0, 2.0))),
@@ -634,6 +699,17 @@ mod ownership_tests {
         assert_eq!(index.live_handles_sorted(), [1, 3]);
         assert!(index.rows.packed.is_some());
         assert!(index.rows.boxed.is_empty());
+        let directory = match &index.rows.packed.as_ref().unwrap().addressing {
+            PackedRowAddressing::PresentOrdinals(handles) => Arc::clone(handles),
+            PackedRowAddressing::Logical => panic!("compact nullable points need ordinals"),
+        };
+        let copy = index.clone();
+        let copy_directory = match &copy.rows.packed.as_ref().unwrap().addressing {
+            PackedRowAddressing::PresentOrdinals(handles) => Arc::clone(handles),
+            PackedRowAddressing::Logical => panic!("compact nullable point copy needs ordinals"),
+        };
+        assert!(Arc::ptr_eq(&directory, &copy_directory));
+        assert_eq!(&*directory, [1, 3]);
         assert_eq!(source.row_products.initialized_counts(), before);
         assert_eq!(storage::shape_iter_materializations(), 0);
 
@@ -652,6 +728,43 @@ mod ownership_tests {
         let mut hits = Vec::new();
         index.collect_intersecting(&AABB::from_point([0.0, 0.0]), &mut hits);
         assert_eq!(hits, [1]);
+    }
+
+    #[test]
+    fn compact_point_addressing_keeps_present_empty_ordinals() {
+        let present = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![f64::NAN, 30.0], vec![f64::NAN, 40.0], None, None)
+                .unwrap(),
+            Frame::None,
+        )
+        .unwrap();
+        let source = PyGeometryArray::scatter_present_rows(
+            &present,
+            storage::ValidityMask::from_vec(3, vec![false, true, false]).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(source.storage().len(), 2);
+        assert_eq!(source.missing().unwrap().present_count(), 2);
+
+        let index = packed_spatial_index(&source).unwrap().unwrap();
+        let handles = match &index.rows.packed.as_ref().unwrap().addressing {
+            PackedRowAddressing::PresentOrdinals(handles) => handles,
+            PackedRowAddressing::Logical => panic!("compact nullable points need ordinals"),
+        };
+        assert_eq!(&**handles, [0, 2]);
+        assert_eq!(index.live_handles_sorted(), [2]);
+        assert!(!index.rows.is_live(0));
+        assert_eq!(
+            index
+                .rows
+                .operation()
+                .row(2)
+                .unwrap()
+                .quick_bounds()
+                .unwrap()
+                .minx(),
+            30.0
+        );
     }
 
     #[test]
@@ -793,27 +906,60 @@ mod ownership_tests {
         assert!(crate::HeapSize::heap_bytes(&source) > nbytes);
     }
 
-    #[test]
-    fn v1_restore_keeps_sparse_handles_without_retaining_the_source() {
-        let source = PyGeometryArray::scatter_present_rows(
-            &PyGeometryArray::packed_points(
-                CoordSeq::try_from_vecs(vec![10.0], vec![10.0], None, None).unwrap(),
-                Frame::None,
-            )
-            .unwrap(),
-            storage::ValidityMask::from_vec(2, vec![true, false]).unwrap(),
+    fn sparse_v1_point_values(logical_len: usize) -> PyGeometryArray {
+        let present_handles = [7_usize, 63, 0x1_0001];
+        let mut bitmap = vec![0_u8; logical_len.div_ceil(8)];
+        for handle in present_handles {
+            *bitmap
+                .get_mut(handle / 8)
+                .expect("present handle belongs to the v1 mask") |= 1 << (handle % 8);
+        }
+        let mask =
+            storage::ValidityMask::from_bitmap(SharedSlice::from_vec(bitmap), 0, logical_len)
+                .expect("the v1 fixture has missing rows");
+        let present = PyGeometryArray::packed_points(
+            CoordSeq::try_from_vecs(vec![7.0, 63.0, 65_537.0], vec![1.0, 2.0, 3.0], None, None)
+                .unwrap(),
+            Frame::None,
         )
         .unwrap();
-        let restored = restore_spatial_index(&source, false).unwrap();
-        assert!(restored.rows.packed.is_none());
-        assert_eq!(restored.rows.boxed.len(), 1);
-        assert!(!restored.rows.is_live(0));
-        assert!(restored.rows.is_live(1));
-        assert_eq!(restored.rows.live_handles.iter().collect::<Vec<_>>(), [1]);
+        PyGeometryArray::scatter_present_rows(&present, mask).unwrap()
+    }
+
+    #[test]
+    fn v1_restore_retained_heap_ignores_encoded_missing_span() {
+        let small_len = 70_000;
+        let large_len = 1_000_000;
+        let small_source = sparse_v1_point_values(small_len);
+        let large_source = sparse_v1_point_values(large_len);
+        let mut small = restore_spatial_index(&small_source, false).unwrap();
+        let mut large = restore_spatial_index(&large_source, false).unwrap();
+        drop(small_source);
+        drop(large_source);
+
+        assert!(small.rows.packed.is_none());
+        assert!(large.rows.packed.is_none());
+        assert_eq!(small.rows.live_handles.iter().collect::<Vec<_>>(), [
+            7, 63, 0x1_0001
+        ]);
+        assert_eq!(large.rows.live_handles.iter().collect::<Vec<_>>(), [
+            7, 63, 0x1_0001
+        ]);
+        assert_eq!(HeapSize::heap_bytes(&small), HeapSize::heap_bytes(&large));
+        let mut rows = small.rows.operation();
+        assert_eq!(rows.row(63).unwrap().quick_bounds().unwrap().minx(), 63.0);
+        let mut rows = large.rows.operation();
         assert_eq!(
-            restored.rows.heap_bytes(),
-            HeapSize::heap_bytes(&restored.rows)
+            rows.row(0x1_0001).unwrap().quick_bounds().unwrap().minx(),
+            65_537.0
         );
+
+        let inserted = PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(10.0, 11.0))),
+            Frame::None,
+        );
+        assert_eq!(small.insert_one(&inserted).unwrap(), small_len);
+        assert_eq!(large.insert_one(&inserted).unwrap(), large_len);
     }
 
     #[test]
@@ -828,16 +974,16 @@ mod ownership_tests {
         )
         .unwrap();
         let mut index =
-            restore_spatial_index_v2(&values, vec![7, 63, 65_537], 70_000, false).unwrap();
+            restore_spatial_index_v2(&values, vec![7, 63, 0x1_0001], 70_000, false).unwrap();
 
         assert!(matches!(&index.rows.boxed, BoxedRows::Sparse(_)));
         assert_eq!(index.rows.next_handle, 70_000);
-        assert_eq!(index.live_handles_sorted(), [7, 63, 65_537]);
+        assert_eq!(index.live_handles_sorted(), [7, 63, 0x1_0001]);
         let mut rows = index.rows.operation();
         assert_eq!(rows.row(7).unwrap().quick_bounds().unwrap().minx(), 7.0);
         assert_eq!(rows.row(63).unwrap().quick_bounds().unwrap().minx(), 63.0);
         assert_eq!(
-            rows.row(65_537).unwrap().quick_bounds().unwrap().minx(),
+            rows.row(0x1_0001).unwrap().quick_bounds().unwrap().minx(),
             65_537.0
         );
 
@@ -890,7 +1036,7 @@ mod ownership_tests {
             Frame::None,
         )
         .unwrap();
-        let handles = [7, 63, 65_537];
+        let handles = [7, 63, 0x1_0001];
         let small = restore_spatial_index_v2(&values, handles.to_vec(), 70_000, false).unwrap();
         let large = restore_spatial_index_v2(&values, handles.to_vec(), 1 << 40, false).unwrap();
 
@@ -916,12 +1062,12 @@ mod ownership_tests {
         let mut small_rows = small.rows.operation();
         let (small_bounds, small_resolve_allocations) =
             crate::test_support::allocation_count(|| {
-                small_rows.row(65_537).unwrap().quick_bounds()
+                small_rows.row(0x1_0001).unwrap().quick_bounds()
             });
         let mut large_rows = large.rows.operation();
         let (large_bounds, large_resolve_allocations) =
             crate::test_support::allocation_count(|| {
-                large_rows.row(65_537).unwrap().quick_bounds()
+                large_rows.row(0x1_0001).unwrap().quick_bounds()
             });
         assert_eq!(small_bounds, large_bounds);
         assert!(small_bounds.is_some());

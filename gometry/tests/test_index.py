@@ -1192,9 +1192,9 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
     import pickle
 
     values = gm.GeometryArray([
-        gm.Point(7.0, 1.0),
-        gm.Point(63.0, 2.0),
-        gm.Point(65_537.0, 3.0),
+        gm.Point(1.0, 1.0),
+        gm.Point(1.0, 1.0),
+        gm.Point(9.0, 9.0),
     ])
     handles = (7, 63, 65_537)
     small = _lib._unpickle_spatial_index_v2(values, handles, 70_000, False)
@@ -1203,12 +1203,12 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
 
     assert list(small) == [7, 63, 65_537]
     assert list(large) == [7, 63, 65_537]
-    assert ids(small.query(gm.Point(63.0, 2.0))) == [63]
-    assert ids(large.query(gm.Point(63.0, 2.0))) == [63]
-    assert ids(small.nearest(gm.Point(65_537.0, 3.0))) == [65_537]
-    assert ids(large.nearest(gm.Point(65_537.0, 3.0))) == [65_537]
-    assert pair_rows(small.self_join()) == []
-    assert pair_rows(large.self_join()) == []
+    assert ids(small.query(gm.Point(1.0, 1.0))) == [7, 63]
+    assert ids(large.query(gm.Point(1.0, 1.0))) == [7, 63]
+    assert ids(small.nearest(gm.Point(9.0, 9.0))) == [65_537]
+    assert ids(large.nearest(gm.Point(9.0, 9.0))) == [65_537]
+    assert pair_rows(small.self_join(predicate='intersects')) == [(7, 63)]
+    assert pair_rows(large.self_join(predicate='intersects')) == [(7, 63)]
     assert sys.getsizeof(small) == sys.getsizeof(large)
 
     copied = copy.copy(large)
@@ -1218,15 +1218,18 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
 
     restored = pickle.loads(pickle.dumps(large))
     assert list(restored) == [7, 63, 65_537]
-    assert ids(restored.query(gm.Point(7.0, 1.0))) == [7]
+    assert ids(restored.query(gm.Point(9.0, 9.0))) == [65_537]
     # Size follows the prepared products a restore has initialized, so compare
     # restores that did the same work: it must not depend on the next handle.
     restored_small = pickle.loads(pickle.dumps(small))
-    assert ids(restored_small.query(gm.Point(7.0, 1.0))) == [7]
+    assert ids(restored_small.query(gm.Point(9.0, 9.0))) == [65_537]
     assert sys.getsizeof(restored) == sys.getsizeof(restored_small)
+    assert pair_rows(restored.self_join(predicate='intersects')) == [(7, 63)]
+    assert restored.remove(7)
+    assert pair_rows(restored.self_join(predicate='intersects')) == []
     next_handle = restored.insert(gm.Point(float(large_next), 4.0))
     assert next_handle == large_next
-    assert list(restored) == [7, 63, 65_537, large_next]
+    assert list(restored) == [63, 65_537, large_next]
 
     framed = gm.GeometryArray([gm.Point(1.0, 2.0, crs=4326, epoch=2020.0)])
     empty = _lib._unpickle_spatial_index_v2(framed[:0], (), large_next, True)

@@ -166,7 +166,7 @@ fn parse_geojson_concrete_row(
 ///     Preserve Feature properties and IDs in a ``Features`` result. Geometry-
 ///     only inputs are not valid when this is ``True``.
 ///
-/// crs : str or int, default 'OGC:CRS84'
+/// crs : CRS-like, default 'OGC:CRS84'
 ///     CRS to attach. `geojson` coordinates are WGS84 by specification, so
 ///     the default declares OGC:CRS84 (lon/lat, matching GeoParquet);
 ///     pass ``None`` for a CRS-free geometry or ``crs=4326`` for EPSG:4326.
@@ -235,7 +235,7 @@ pub(crate) fn from_geojson(
     crs: Wgs84DefaultCrs,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    let column = crate::py::support::normalize_format_column(data)?;
+    let column = support::normalize_format_column(data)?;
     let data = column.as_ref().map_or(data, |column| column.as_any());
     let crs = crs.into_crs();
     require_geojson_crs(crs.as_ref().map(Crs::as_str))?;

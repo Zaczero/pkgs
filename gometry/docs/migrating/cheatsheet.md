@@ -103,8 +103,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `shortest_line(a, b)` | [`gm.shortest_line(a, b)`][gometry.shortest_line] | Connects the nearest witnesses. On a geographic CRS the default chart-edge length is no shorter than their geodesic separation, subject to binary64 rounding; measure with the same `unit=` choice and expect computed publication to add vertices when needed. |
 | `ops.nearest_points(a, b)` | [`gm.nearest_points(a, b)`][gometry.nearest_points] | The `(pa, pb)` pair behind `shortest_line`. |
 | `delaunay_triangles(g)` | `g.triangulate(method='delaunay')` | Use `method='constrained'` for constrained edges or `method='earcut'` for polygon interiors. |
-| `voronoi_polygons(g)` | `g.voronoi_polygons()` / `g.voronoi_edges()` | |
-| `polygonize(...)` | [`gm.polygonize(values)`][gometry.polygonize] to pool one graph; `array.polygonize()` for independent rows; [`gm.polygonize_full(values)`][gometry.polygonize_full] for pooled diagnostics | The free aggregates accept `GeometryArray` directly and pool its present rows. |
+| Voronoi diagram output | [`g.voronoi()`][gometry.Geometry.voronoi] / `g.voronoi(output='edges')` | Use the `output` keyword to select cells or internal edges. |
+| `shapely.ops.polygonize(...)` / `shapely.ops.polygonize_full(...)` | [`gm.polygonize_all(values)`][gometry.polygonize_all], with `diagnostics=True` for pooled cut edges, dangles, and invalid rings; `array.polygonize()` for independent rows | The pooled function accepts a `GeometryArray` directly and pools its present rows. |
 | `build_area(...)` (GEOS) | `(...).build_area()` | Even-odd fill; unlike `polygonize`. |
 | `node(...)` (GEOS 3.7+) | `(...).node()` | Noded linework as `MultiLineString`. |
 | `line_merge(...)` | `(...).line_merge()` | |
@@ -125,7 +125,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `line.interpolate(d)` | `line.line_interpolate(d)` | |
 | `line.project(pt)` | `line.line_locate(pt)` | |
 | `substring(line, a, b)` | `line.line_substring(a, b)` | |
-| `split(geom, splitter)` | [`gm.split(geom, splitter)`][gometry.split] | Binary free function (no instance method). |
+| `split(geom, splitter)` | [`gm.split(geom, splitter)`][gometry.split] | Binary free function; array line inputs return one `Groups` row per source line. |
 
 ### Validation, repair, precision
 
@@ -186,12 +186,12 @@ for coordinate exports without changing the geometry.
 | `crs.is_geographic` / `is_projected` | [`gm.CRS(c).is_geographic`][gometry.CRS.is_geographic] / `.is_projected` | `is_*` property family. |
 | `crs.axis_info` | [`gm.CRS(c).axis_order`][gometry.CRS.axis_order] | Diagnostic only; boundary stays X/Y. |
 | `crs.to_authority()` / `to_epsg()` | [`gm.CRS(c).to_authority()`][gometry.CRS.to_authority] / `.to_epsg()` | |
-| `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()` / `.to_projjson_dict()` | |
+| `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()`; pass `as_dict=True` for a mapping | |
 | `crs == other` | `gm.CRS(c) == other` | `CRS` compares by code/string. |
 | `CRS.from_user_input(...)` normalize | [`gm.CRS(c).definition`][gometry.CRS.definition] / [`gm.CRS(c).identify()`][gometry.CRS.identify] | `definition` retains normalized authored text; `identify()` supplies authority metadata. |
 | `crs.to_2d()` / `to_3d()` | [`gm.CRS(c).to_2d()`][gometry.CRS.to_2d] / `.to_3d()` | Return a `CRS`. |
 | unit / factors | [`gm.crs_unit(c)`][gometry.crs_unit] / [`gm.crs_units(c)`][gometry.crs_units] / [`gm.CRS(c).factors(lon, lat)`][gometry.CRS.factors] | |
-| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_search(...)`][gometry.crs_search] / [`gm.crs_catalog(...)`][gometry.crs_catalog] | Global `crs_*` functions (not `CRS` classmethods). There is no `gm.crs_list`. |
+| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_catalog(name=...)`][gometry.crs_catalog] | Global `crs_*` functions (not `CRS` classmethods). There is no `gm.crs_list`. |
 | catalogs | [`gm.crs_ellipsoids()`][gometry.crs_ellipsoids] / [`gm.crs_prime_meridians()`][gometry.crs_prime_meridians] / [`gm.crs_proj_operations()`][gometry.crs_proj_operations] / [`gm.crs_utm_zones(...)`][gometry.crs_utm_zones] / [`gm.crs_celestial_bodies()`][gometry.crs_celestial_bodies] | |
 | operations | [`gm.CRS(a).operation(b)`][gometry.CRS.operation] / `.operations(b)` / `.operation(b, at=(x, y))` / [`gm.crs_apply(...)`][gometry.crs_apply] | |
 | grid lookup | [`gm.crs_grid(...)`][gometry.crs_grid] | Local grid metadata and availability. |

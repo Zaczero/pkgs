@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 
 use crate::py::functions::bulk_rows::{StreamedSridRow, batch_bulk_srid, stream_bulk_srid};
+use crate::py::support;
 use crate::py::wire_crs::{rebase_ewkt_parse_error, resolve_wire_crs, split_ewkt_srid};
 use crate::{
     OwnedBytes, PyGeometry, Typed, coordinate_epoch_option, copy_wkb_payload, exact_backed_bytes,
@@ -23,7 +24,7 @@ use crate::{
 ///     Series or PyArrow Array/ChunkedArray. Missing column values become
 ///     missing rows.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
@@ -68,7 +69,7 @@ pub(crate) fn from_wkt(
 ) -> PyResult<Py<PyAny>> {
     let fallback = parse_crs(crs)?;
     let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
-    let column = crate::py::support::normalize_format_column(data)?;
+    let column = support::normalize_format_column(data)?;
     let data = column.as_ref().map_or(data, |column| column.as_any());
     let parse = |text: &str| -> PyResult<PyGeometry> {
         let (body, srid) = split_ewkt_srid(text)?;
@@ -142,7 +143,7 @@ pub(crate) fn from_wkt(
 ///     ndarray is one scalar byte buffer; other ndarrays are row columns.
 ///     Missing column values become missing rows.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
@@ -192,7 +193,7 @@ pub(crate) fn from_wkb(
 ) -> PyResult<Py<PyAny>> {
     let fallback = parse_crs(crs)?;
     let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
-    let column = crate::py::support::normalize_format_column(data)?;
+    let column = support::normalize_format_column(data)?;
     let data = column.as_ref().map_or(data, |column| column.as_any());
     let attach = |mut geometry: PyGeometry| -> PyResult<PyGeometry> {
         let resolved =

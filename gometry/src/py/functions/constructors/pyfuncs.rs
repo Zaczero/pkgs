@@ -3,7 +3,10 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
+use crate::boundary::coordinate_input::broadcast_optional_coordinate_input;
+use crate::boundary::metadata::resolve_frame_rows;
 use crate::geometry::{GeometryKind, MOrdinate, Point, Shape, ZOrdinate};
+use crate::py::errors::geometry_type_err;
 use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, InvalidGeometryError, PyAny, PyAnyMethods as _, PyGeometry,
     PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
@@ -24,7 +27,7 @@ use crate::py::numpy;
 ///     except that ``minx > maxx`` is allowed with ``wrap='split'`` to wrap a
 ///     geographic box across the CRS frame's longitude seam.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
 ///     With a geographic CRS, positive-size ``wrap=None`` bounds wholly inside
@@ -117,7 +120,7 @@ pub(super) fn box_(
 /// z, m : float or sequence of float, optional
 ///     Z and M ordinates, broadcast like ``x``/``y``.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
 ///
@@ -223,6 +226,10 @@ pub(super) fn points(
     Ok(PyGeometryArray::packed_points(seq, frame)?)
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "embedded and supplied ordinates must be exactly equal; a tolerance would accept a different coordinate"
+)]
 fn points_from_rows(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
@@ -231,7 +238,7 @@ fn points_from_rows(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometryArray> {
-    crate::py::numpy::reject_masked_array(values)?;
+    numpy::reject_masked_array(values)?;
     let iter = values.try_iter()?;
     let row_capacity = crate::optional_len(values)?.unwrap_or_default();
     let mut shapes = Vec::with_capacity(row_capacity);
@@ -244,9 +251,15 @@ fn points_from_rows(
                 Shape::Point(_) | Shape::Empty(GeometryKind::Point, _) => {
                     (geometry.shape.shape().clone(), geometry.frame.clone())
                 },
-                shape => {
+                shape @ (Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..)) => {
                     return Err(crate::note_array_row(
-                        crate::py::errors::geometry_type_err(format!(
+                        geometry_type_err(format!(
                             "points rows must be Points, got {}",
                             shape.geometry_type()
                         )),
@@ -272,26 +285,30 @@ fn points_from_rows(
 
     let mut z = crate::optional_coordinate_input_with_expected(py, z, "z", Some(shapes.len()))?;
     let mut m = crate::optional_coordinate_input_with_expected(py, m, "m", Some(shapes.len()))?;
-    crate::boundary::coordinate_input::broadcast_optional_coordinate_input(
-        &mut z,
-        shapes.len(),
-        "point rows and z",
-    )?;
-    crate::boundary::coordinate_input::broadcast_optional_coordinate_input(
-        &mut m,
-        shapes.len(),
-        "point rows and m",
-    )?;
+    broadcast_optional_coordinate_input(&mut z, shapes.len(), "point rows and z")?;
+    broadcast_optional_coordinate_input(&mut m, shapes.len(), "point rows and m")?;
     for (row, shape) in shapes.iter_mut().enumerate() {
-        let z_value = z.as_ref().map(|input| input.values[row]);
-        let m_value = m.as_ref().map(|input| input.values[row]);
+        let z_value = z.as_ref().map(|input| {
+            input
+                .values
+                .get(row)
+                .copied()
+                .expect("broadcast z input has one value per geometry row")
+        });
+        let m_value = m.as_ref().map(|input| {
+            input
+                .values
+                .get(row)
+                .copied()
+                .expect("broadcast m input has one value per geometry row")
+        });
         match shape {
             Shape::Point(point) => {
                 let existing_z = point.z();
                 let existing_m = point.m();
                 if z_value.is_some_and(|value| existing_z.is_some_and(|old| old != value)) {
                     return Err(crate::note_array_row(
-                        crate::py::errors::InvalidGeometryError::new_err(
+                        InvalidGeometryError::new_err(
                             "z column conflicts with an embedded point ordinate",
                         ),
                         row,
@@ -299,7 +316,7 @@ fn points_from_rows(
                 }
                 if m_value.is_some_and(|value| existing_m.is_some_and(|old| old != value)) {
                     return Err(crate::note_array_row(
-                        crate::py::errors::InvalidGeometryError::new_err(
+                        InvalidGeometryError::new_err(
                             "m column conflicts with an embedded point ordinate",
                         ),
                         row,
@@ -315,7 +332,7 @@ fn points_from_rows(
             Shape::Empty(GeometryKind::Point, axes) => {
                 if z_value.is_some() || m_value.is_some() {
                     return Err(crate::note_array_row(
-                        crate::py::errors::InvalidGeometryError::new_err(
+                        InvalidGeometryError::new_err(
                             "ordinate columns cannot add coordinates to an empty Point",
                         ),
                         row,
@@ -323,12 +340,26 @@ fn points_from_rows(
                 }
                 *shape = Shape::typed_empty(GeometryKind::Point, *axes);
             },
-            _ => unreachable!("points row admission accepts only Point geometries"),
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(
+                GeometryKind::MultiPoint
+                | GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::Polygon
+                | GeometryKind::MultiPolygon
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => unreachable!("point row admission accepts only Point geometries"),
         }
     }
     let explicit = parse_crs_epoch(crs, epoch)?;
     let frame = if let Some(mut frames) = frames {
-        crate::boundary::metadata::resolve_frame_rows(
+        resolve_frame_rows(
             &mut frames,
             crate::FrameAdoption {
                 crs: explicit.crs_owned(),
@@ -408,7 +439,7 @@ fn try_points_from_arc_columns(
 ///     Rectangle bounds per row. Scalars broadcast numpy-style; four scalar
 ///     bounds produce a one-row array.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every box. Geographic rows follow the same native-range
 ///     chart-edge and corner-only ``wrap=None`` rules as `box`. Geographic area
 ///     and length measure the stored chart edges when the chart-edge path applies.
@@ -516,7 +547,7 @@ pub(super) fn boxes(
 ///     Each member is a ``LineString`` or a raw coordinate sequence accepted
 ///     by `LineString`.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every linestring.
 ///
 /// epoch : float, optional
@@ -570,7 +601,7 @@ pub(super) fn line_strings(
 ///     Each member is a ``Polygon``, a raw shell coordinate sequence, or
 ///     ``[shell, *holes]``.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every polygon.
 ///
 /// epoch : float, optional
@@ -624,7 +655,7 @@ pub(super) fn polygons(
 ///     Each member is a ``MultiPoint`` or input accepted by `MultiPoint`,
 ///     including ``Point`` members and raw coordinate values.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every multipoint.
 ///
 /// epoch : float, optional
@@ -678,7 +709,7 @@ pub(super) fn multi_points(
 ///     Each member is a ``MultiLineString`` or input accepted by
 ///     `MultiLineString`, including ``LineString`` members.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every multilinestring.
 ///
 /// epoch : float, optional
@@ -732,7 +763,7 @@ pub(super) fn multi_line_strings(
 ///     Each member is a ``MultiPolygon`` or input accepted by `MultiPolygon`,
 ///     including ``Polygon`` members and shell/ring coordinate shorthand.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every multipolygon.
 ///
 /// epoch : float, optional

@@ -7,7 +7,7 @@ use crate::geometry::{
     Bounds, CoordSeqBuilder, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint,
     MultiPolygon, ZOrdinate, geographic_bounds_to_shape,
 };
-use crate::py::errors::parameter_error;
+use crate::py::errors::{geometry_type_err, parameter_error};
 use crate::py::functions::constructors::{
     Bound, CRSError, CoordSeq, CoordinateAxes, Crs, Frame, FrameAdoption, GeometryKind,
     InvalidGeometryError, LineSeq, Point, Polygon, PyAny, PyAnyMethods as _, PyErr, PyGeometry,
@@ -48,9 +48,7 @@ fn multipart_members(
         crate::check_python_signals(values.py(), row)?;
         if let Some(geometry) = exact_geometry(&item) {
             let shape = exact(geometry.shape.shape()).ok_or_else(|| {
-                crate::py::errors::geometry_type_err(format!(
-                    "{context} expected {expected} at element {row}"
-                ))
+                geometry_type_err(format!("{context} expected {expected} at element {row}"))
             })?;
             members.push(shape);
             frames.push(geometry.frame.clone());
@@ -141,8 +139,14 @@ pub(crate) fn build_point(
                             epoch,
                         );
                     },
-                    shape => {
-                        return Err(crate::py::errors::geometry_type_err(format!(
+                    shape @ (Shape::MultiPoint(_)
+                    | Shape::LineString(_)
+                    | Shape::MultiLineString(_)
+                    | Shape::Polygon(_)
+                    | Shape::MultiPolygon(_)
+                    | Shape::GeometryCollection(_)
+                    | Shape::Empty(..)) => {
+                        return Err(geometry_type_err(format!(
                             "Point coordinate input must be a Point, got {}",
                             shape.geometry_type()
                         )));
@@ -176,6 +180,10 @@ pub(crate) fn build_point(
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "embedded and supplied ordinates must be exactly equal; a tolerance would accept a different coordinate"
+)]
 fn point_with_ordinates(point: Point, z: Option<f64>, m: Option<f64>) -> PyResult<Point> {
     if z.is_some_and(|value| point.z().is_some_and(|embedded| embedded != value)) {
         return Err(InvalidGeometryError::new_err(
@@ -203,7 +211,7 @@ fn geometry_with_frame(
 ) -> PyResult<PyGeometry> {
     let explicit = parse_crs_epoch(crs, epoch)?;
     let mut frames = [row_frame];
-    let frame = crate::boundary::metadata::resolve_frame_rows(
+    let frame = metadata::resolve_frame_rows(
         &mut frames,
         FrameAdoption {
             crs: explicit.crs_owned(),
@@ -1039,7 +1047,7 @@ fn geometry_from_data_item(
     if let Some(geometry) = exact_geometry(item) {
         let shape = geometry.shape.shape();
         if !matches_kind(shape) {
-            return Err(crate::py::errors::geometry_type_err(format!(
+            return Err(geometry_type_err(format!(
                 "{expected} array factories require {expected} rows, got {}",
                 shape.geometry_type()
             )));
@@ -1389,7 +1397,7 @@ pub(super) fn build_geometry_array<'py>(
         row_count = row_count.wrapping_add(1);
     }
     let frame = if let Some(mut frames) = row_frames {
-        crate::boundary::metadata::resolve_frame_rows(
+        metadata::resolve_frame_rows(
             &mut frames,
             crate::FrameAdoption {
                 crs: frame.crs_owned(),

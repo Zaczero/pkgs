@@ -965,6 +965,7 @@ def collect(
         'native_source_inputs_sha256': native_source_inputs_sha256,
         'uv_lock': uv_lock,
         'python_executable': str(Path(sys.executable).resolve()),
+        'python_prefix': sys.prefix,
         'rustc': _run(['rustc', '--version']),
         'rustc_host_target': rustc_host_target,
         'cargo': _run(['cargo', '--version']),
@@ -974,6 +975,13 @@ def collect(
         'python_implementation': platform.python_implementation(),
         'python_debug': bool(sysconfig.get_config_var('Py_DEBUG')),
         'python_cache_tag': getattr(sys.implementation, 'cache_tag', None),
+        'python_ext_suffix': sysconfig.get_config_var('EXT_SUFFIX'),
+        'python_gil_disabled': bool(sysconfig.get_config_var('Py_GIL_DISABLED')),
+        'python_gil_enabled': (
+            bool(sys._is_gil_enabled())
+            if callable(getattr(sys, '_is_gil_enabled', None))
+            else True
+        ),
         'platform': platform.platform(),
         'kernel': platform.release(),
         'cpu_model': _cpu_model(),

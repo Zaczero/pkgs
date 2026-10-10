@@ -11,8 +11,12 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -21,13 +25,15 @@ def _line_array(n: int) -> gm.GeometryArray:
     return gm.GeometryArray([line] * n)
 
 
-def _median_eq(n: int, *, warm: int = 3, reps: int = 11) -> float:
+def _median_eq(n: int, *, warm: int = 3, reps: int = 11, prepare: bool = True) -> float:
     arr = _line_array(n)
     left = arr[::2].coords
     right = gm.GeometryArray(list(arr[::2])).coords
     assert left == right
     for _ in range(warm):
         assert left == right
+    if prepare:
+        prepare_measurement()
     samples: list[float] = []
     for _ in range(reps):
         t0 = time.perf_counter()
@@ -55,7 +61,7 @@ def main() -> None:
 
 
 def validate_case() -> None:
-    assert _median_eq(4, warm=0, reps=1) >= 0.0
+    assert _median_eq(4, warm=0, reps=1, prepare=False) >= 0.0
     emit_validation(
         'case_coordinates_equality_scale',
         useful_output={'count': 4, 'unit': 'rows'},
