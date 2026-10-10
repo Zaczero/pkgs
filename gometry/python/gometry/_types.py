@@ -38,6 +38,7 @@ from typing import (
     TypeAlias,
     TypedDict,
     TypeVar,
+    cast,
 )
 
 import numpy as np
@@ -798,24 +799,38 @@ class Features:
     # object.__hash__ as callable and cannot express this contract.
     __hash__: ClassVar[None] = None  # type: ignore[assignment]
 
-    def __replace__(self, /, **changes: Any) -> Features:
+    def __copy__(self) -> Self:
+        """Return a new record sharing its existing columns."""
+        return type(self)._from_normalized(self.geometries, self.properties, self.ids)
+
+    def __replace__(
+        self,
+        /,
+        *,
+        geometries: GeometryArray[Geometry | None] = cast('Any', ...),
+        properties: Mapping[str, Any]
+        | Iterable[Mapping[str, Any] | None]
+        | None = cast('Any', ...),
+        ids: Iterable[FeatureId] | None = cast('Any', ...),
+    ) -> Self:
         """Return a new ``Features`` with the given fields replaced.
 
-        Matches frozen-dataclass / ``copy.replace`` semantics: only the three
-        column fields are accepted; unknown keywords raise ``TypeError``.
-        Unspecified fields keep the receiver's values (re-validated by
-        ``__init__`` so row alignment stays enforced).
+        Omitted fields retain their existing objects. Supplied fields pass
+        through the validating constructor, which checks row alignment and
+        normalizes properties and ids.
         """
-        known = ('geometries', 'properties', 'ids')
-        for key in changes:
-            if key not in known:
-                raise TypeError(
-                    f'Features.__replace__() got an unexpected keyword argument {key!r}'
-                )
-        return type(self)(
-            changes.get('geometries', self.geometries),
-            changes.get('properties', self.properties),
-            changes.get('ids', self.ids),
+        if geometries is ... and properties is ... and ids is ...:
+            return self.__copy__()
+
+        validated = type(self)(
+            self.geometries if geometries is ... else geometries,
+            self.properties if properties is ... else properties,
+            self.ids if ids is ... else ids,
+        )
+        return type(self)._from_normalized(
+            self.geometries if geometries is ... else validated.geometries,
+            self.properties if properties is ... else validated.properties,
+            self.ids if ids is ... else validated.ids,
         )
 
     def __reduce__(

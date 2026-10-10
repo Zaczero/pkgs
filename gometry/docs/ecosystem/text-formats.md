@@ -269,7 +269,9 @@ scalar IDs never broadcast, avoiding accidental duplicate identifiers.
 
 Pickle applies to durable public value and container types: [`Geometry`][gometry.Geometry],
 `GeometryArray` (packed point, line, and polygon columns round-trip as raw
-coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups], `CRS`, [`H3Cell`][gometry.H3Cell], and [`S2Cell`][gometry.S2Cell].
+coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
+[`Features`][gometry.Features], `CRS`, [`H3Cell`][gometry.H3Cell], and
+[`S2Cell`][gometry.S2Cell].
 Their CRS, epoch, and Z/M metadata remain intact through pickle. The same value
 protocol supports [`multiprocessing`](https://docs.python.org/3/library/multiprocessing.html),
 [`concurrent.futures`](https://docs.python.org/3/library/concurrent.futures.html), joblib, and cache
@@ -281,6 +283,12 @@ containers. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retain
 view, preserving its selected layout and flattened row indexes; iterator types
 are not picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an
 immutable parent view; it is reconstructed from its geometry when unpickled.
+
+`copy.copy(features)` returns a new record sharing its geometry, property, and ID
+columns, so edits to a shared property dictionary are visible through either
+record. `copy.deepcopy(features)` recursively copies property mappings and their
+values. On Python 3.13 and newer, `copy.replace(features, ...)` preserves each
+omitted column by identity and validates supplied columns.
 
 With pickle protocol 5, packed `GeometryArray` payload columns and their offsets
 can be sent out of band when the pickler uses `buffer_callback`. Those buffers

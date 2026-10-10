@@ -485,6 +485,69 @@ def test_features_copy_replace_and_identity_eq() -> None:
     assert features != replaced
 
 
+def test_features_copy_shares_existing_columns() -> None:
+    geometries = gm.GeometryArray([gm.Point(0, 0)])
+    features = gm.Features(geometries, [{'score': 7}], ['alpha'])
+
+    shallow = copy.copy(features)
+    assert shallow is not features
+    assert shallow.geometries is features.geometries
+    assert shallow.properties is features.properties
+    assert shallow.ids is features.ids
+
+
+def test_features_deepcopy_copies_property_values() -> None:
+    nested = ['source']
+    features = gm.Features(
+        gm.GeometryArray([gm.Point(0, 0)]), [{'nested': nested}], ['alpha']
+    )
+    deep = copy.deepcopy(features)
+    assert deep.properties is not features.properties
+    assert deep.properties[0] is not features.properties[0]
+    assert deep.properties[0]['nested'] is not nested
+    deep.properties[0]['nested'].append('copy')
+    assert nested == ['source']
+
+
+@pytest.mark.skipif(not hasattr(copy, 'replace'), reason='requires Python 3.13+')
+def test_features_replace_shares_omitted_fields_and_copies_changed_properties() -> None:
+    geometries = gm.GeometryArray([gm.Point(0, 0)])
+    features = gm.Features(geometries, [{'score': 7}], ['alpha'])
+
+    unchanged = copy.replace(features)
+    assert unchanged is not features
+    assert unchanged.geometries is features.geometries
+    assert unchanged.properties is features.properties
+    assert unchanged.ids is features.ids
+
+    replaced_ids = copy.replace(features, ids=[9])
+    assert replaced_ids.geometries is features.geometries
+    assert replaced_ids.properties is features.properties
+    assert replaced_ids.ids == (9,)
+    assert replaced_ids.ids is not features.ids
+
+    cleared_properties = copy.replace(features, properties=None)
+    assert cleared_properties.properties == (None,)
+    assert cleared_properties.properties is not features.properties
+    assert cleared_properties.geometries is features.geometries
+    assert cleared_properties.ids is features.ids
+
+    changed_properties = [{'score': 11}]
+    replaced_properties = copy.replace(features, properties=changed_properties)
+    assert replaced_properties.geometries is features.geometries
+    assert replaced_properties.ids is features.ids
+    assert replaced_properties.properties == ({'score': 11},)
+    assert replaced_properties.properties[0] is not changed_properties[0]
+    changed_properties[0]['score'] = 13
+    assert replaced_properties.properties[0] == {'score': 11}
+
+    with pytest.raises(gm.GeometryError, match='properties length'):
+        copy.replace(
+            features,
+            geometries=gm.GeometryArray([gm.Point(1, 1), gm.Point(2, 2)]),
+        )
+
+
 def test_features_record_validates_alignment_and_has_bounded_repr() -> None:
     geometries = gm.GeometryArray([gm.Point(i, i) for i in range(10)])
     features = gm.Features(geometries, [{'row': 0}] * 10, [None] * 10)
@@ -558,6 +621,21 @@ def test_features_pickle_revalidates_parallel_columns() -> None:
 
     with pytest.raises(gm.GeometryError, match='properties length'):
         pickle.loads(pickle.dumps(InvalidFeatures()))
+
+
+def test_features_pickle_rebuilds_metadata_independently() -> None:
+    nested = ['source']
+    features = gm.Features(
+        gm.GeometryArray([gm.Point(0, 0)]), [{'nested': nested}], ['alpha']
+    )
+
+    restored = pickle.loads(pickle.dumps(features))
+    assert restored == features
+    assert restored.properties is not features.properties
+    assert restored.properties[0] is not features.properties[0]
+    assert restored.properties[0]['nested'] is not nested
+    restored.properties[0]['nested'].append('restored')
+    assert nested == ['source']
 
 
 def test_feature_collection_broadcasts_mapping_and_bounds_alignment() -> None:

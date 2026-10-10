@@ -1045,6 +1045,11 @@ if TYPE_CHECKING:
     )
     navigation_path: sht.NavigationPath = 'rhumb'
     features = gm.Features(POINTS)
+    reveal_type(features.__replace__())
+    assert_type(features.__replace__(), gm.Features)
+    assert_type(features.__replace__(geometries=POINTS), gm.Features)
+    assert_type(features.__replace__(properties=None), gm.Features)
+    assert_type(features.__replace__(ids=None), gm.Features)
     with TemporaryDirectory() as _temporary:
         parquet_path = Path(_temporary) / 'points.parquet'
         assert_type(POINTS.to_geoparquet(parquet_path, encoding='native'), None)
