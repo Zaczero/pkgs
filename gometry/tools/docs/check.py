@@ -286,17 +286,38 @@ class _RenderedSignatures(HTMLParser):
             self.active.parts.append(data)
 
 
-def rendered_call_forms(source: str) -> dict[str, tuple[RenderedSignature, ...]]:
-    """Parse canonical subjects and exact displayed signatures from rendered HTML."""
+def rendered_signature_texts(source: str) -> dict[str, tuple[str, ...]]:
+    """Return all displayed call and attribute signatures by canonical subject."""
     parser = _RenderedSignatures()
     parser.feed(source)
     parser.close()
-    grouped: dict[str, list[RenderedSignature]] = {}
+    grouped: dict[str, list[str]] = {}
     for subject, signature in parser.values:
-        grouped.setdefault(subject, []).append(
-            RenderedSignature(subject, signature, _signature_form(signature))
-        )
+        grouped.setdefault(subject, []).append(signature)
     return {subject: tuple(signatures) for subject, signatures in grouped.items()}
+
+
+def _is_call_signature(source: str) -> bool:
+    visible = source.strip()
+    opening = visible.find('(')
+    if opening < 0:
+        return False
+    colon = _top_level_index(visible, ':')
+    return colon < 0 or colon > opening
+
+
+def rendered_call_forms(source: str) -> dict[str, tuple[RenderedSignature, ...]]:
+    """Parse callable forms from rendered signatures, excluding attribute annotations."""
+    grouped: dict[str, tuple[RenderedSignature, ...]] = {}
+    for subject, signatures in rendered_signature_texts(source).items():
+        calls = tuple(
+            RenderedSignature(subject, signature, _signature_form(signature))
+            for signature in signatures
+            if _is_call_signature(signature)
+        )
+        if calls:
+            grouped[subject] = calls
+    return grouped
 
 
 class _Ids(HTMLParser):
@@ -399,9 +420,8 @@ def collect_errors(site: Path = SITE) -> list[str]:
                 f'gometry.{name}: expected one canonical API anchor, found {count}'
             )
 
-    for subject, signatures in rendered_call_forms(api_html).items():
-        for signature in signatures:
-            visible = signature.source
+    for subject, signatures in rendered_signature_texts(api_html).items():
+        for visible in signatures:
             leaked = sorted({
                 name
                 for name in _PRIVATE_NAME.findall(visible)

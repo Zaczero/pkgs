@@ -484,6 +484,19 @@ def test_rendered_signature_parser_keeps_tokens_and_parameter_kinds() -> None:
     assert missing_star != signature.form
 
 
+def test_rendered_property_annotation_is_not_a_call_form() -> None:
+    check = _check()
+    source = """\
+<div class="doc doc-object doc-attribute"><h3 id="gometry.Widget.area">area</h3>
+<div class="doc-signature highlight"><pre><span class="n">area</span><span class="p">:</span> <span class="n">gometry</span><span class="o">.</span><span class="n">_types</span><span class="o">.</span><span class="n">Area</span> <span class="o">|</span> <span class="kc">None</span></pre></div></div>
+"""
+
+    assert check.rendered_call_forms(source) == {}
+    assert check.rendered_signature_texts(source) == {
+        'gometry.Widget.area': ('area: gometry._types.Area | None',)
+    }
+
+
 def test_real_handler_renders_parameter_kinds_and_default_states(
     tmp_path: Path,
 ) -> None:
