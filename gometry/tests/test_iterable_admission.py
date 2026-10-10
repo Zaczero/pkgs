@@ -428,7 +428,7 @@ assert all(name == "GeometryError" for _, name, _ in errs)
     'call',
     [
         'gm.crs_transform(4326, 4326, itertools.repeat(0.0), [0.0])',
-        'gm.Point(0, 0).set_coordinates(x=itertools.repeat(1.0), y=[2.0])',
+        'gm.Point(0, 0).with_coordinates(x=itertools.repeat(1.0), y=[2.0])',
         'gm.points(itertools.repeat(0.0), [0.0])',
         'gm.LineString(x=itertools.repeat(0.0), y=[0.0])',
         'gm.LineString(x=itertools.repeat(0.0), y=itertools.repeat(1.0), z=[0.0])',

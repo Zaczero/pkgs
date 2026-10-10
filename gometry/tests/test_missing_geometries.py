@@ -89,7 +89,7 @@ def test_fill_missing_accepts_row_aligned_arrays(masked: gm.GeometryArray) -> No
     with pytest.raises(ValueError, match='fill array length 1 does not match'):
         masked.fill_missing(gm.GeometryArray([gm.Point(1.0, 1.0)]))
     with pytest.raises(gm.CRSMismatchError):
-        masked.set_crs(4326).fill_missing(
+        masked.with_crs(4326).fill_missing(
             gm.GeometryArray([
                 gm.Point(0.0, 0.0, crs=3857),
                 gm.Point(1.0, 1.0, crs=3857),
@@ -878,10 +878,10 @@ def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
     buffered = masked.buffer(0.1)
     affine = masked.affine_transform([1.0, 0.0, 0.0, 1.0, 10.0, 10.0])
     survivors = [
-        masked.set_crs(4326),
-        masked.set_crs(4326).set_epoch(2020.0),
-        masked.set_crs(4326).to_crs(3857),
-        masked.set_z(1.0),
+        masked.with_crs(4326),
+        masked.with_crs(4326).with_epoch(2020.0),
+        masked.with_crs(4326).to_crs(3857),
+        masked.with_coordinates(z=1.0),
         masked.force_3d(),
         masked.reverse(),
         masked.swap_xy(),

@@ -100,7 +100,7 @@ pub enum GeometryErrorKind {
     AntimeridianSplitFailed(Box<str>),
     #[error(
         "split_antimeridian cannot preserve Z/M on inferred pole-closure vertices; call \
-         set_z(None).set_m(None) first"
+         with_coordinates(z=None, m=None) first"
     )]
     AntimeridianPoleOrdinates,
     #[error("{0}")]

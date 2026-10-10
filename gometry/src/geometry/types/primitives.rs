@@ -130,6 +130,10 @@ impl CoordinateAxes {
         self.0
     }
 
+    pub(crate) const fn with_axes(self, has_z: bool, has_m: bool) -> Self {
+        Self((if has_z { Self::Z } else { 0 }) | (if has_m { Self::M } else { 0 }))
+    }
+
     pub const fn has_z(self) -> bool {
         self.0 & Self::Z != 0
     }

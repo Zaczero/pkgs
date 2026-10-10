@@ -457,7 +457,7 @@ def test_dynamic_crs_transform_threads_source_epoch_to_time_lane() -> None:
     assert abs(got_lon - no_time_lon) > 1e-9
     assert abs(got_lat - no_time_lat) > 1e-9
 
-    point = gm.Point(lon, lat, crs=9990).set_epoch(epoch)
+    point = gm.Point(lon, lat, crs=9990).with_epoch(epoch)
     transformed = point.to_crs(9000)
     assert (transformed.x, transformed.y) == pytest.approx(
         (expected_lon, expected_lat), abs=1e-12

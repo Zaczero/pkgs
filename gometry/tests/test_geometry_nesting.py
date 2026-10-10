@@ -139,7 +139,7 @@ def test_structure_preserving_operations_accept_boundary() -> None:
         shape.reverse(),
         shape.snap_to_grid((1.0, 1.0)),
         shape.orient_polygons(),
-        shape.set_z(None),
+        shape.with_coordinates(z=None),
         shape.boundary(),
     ]
     assert all(result.geometry_type == 'GeometryCollection' for result in results)

@@ -165,9 +165,9 @@ except gm.InvalidGeometryError as e:
 
 !!! warning "GeoJSON cannot carry M or epoch"
     `to_geojson` and `__geo_interface__` raise on M; epoch metadata must be
-    explicitly dropped with `drop_epoch=True`. Clear M with [`set_m(None)`][gometry.Geometry.set_m] or
+    explicitly dropped with `drop_epoch=True`. Clear M with [`with_coordinates(m=None)`][gometry.Geometry.with_coordinates] or
     [`force_2d()`][gometry.Geometry.force_2d], and
-    epoch with [`set_epoch(None)`][gometry.Geometry.set_epoch] only when that loss is intended. WKB/EWKB
+    epoch with [`with_epoch(None)`][gometry.Geometry.with_epoch] only when that loss is intended. WKB/EWKB
     preserves M but not epoch. For lossless M/epoch interchange, use gometry's
     GeoArrow extension metadata with gometry or an extension-aware consumer;
     standard GeoArrow metadata alone does not carry epoch.
@@ -331,7 +331,7 @@ print(restored == point, restored.crs, restored.epoch)
 | EWKB | `to_wkb(include_srid=True, drop_epoch=True)` | [`from_wkb`][gometry.from_wkb] | yes (SRID) | no (requires `drop_epoch=True` when present) | yes | yes |
 | WKT | [`to_wkt(drop_epoch=True)`][gometry.Geometry.to_wkt] | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes, when carried | yes (`M`/`ZM` tags) |
 | EWKT | `to_wkt(include_srid=True, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes, when carried | yes |
-| GeoJSON | [`to_geojson(drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes, when carried | no — raises on M; use `set_m(None)` or `force_2d()` first |
+| GeoJSON | [`to_geojson(drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes, when carried | no — raises on M; use `with_coordinates(m=None)` or `force_2d()` first |
 | `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no — raises when present | yes (when present) | no — raises when present |
 | GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes without explicit empty members; WKB fallback for mixed axes or explicit empty members) |
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of [`Geometry`][gometry.Geometry] | yes (on each geometry) | yes (on each geometry object) | yes | yes |

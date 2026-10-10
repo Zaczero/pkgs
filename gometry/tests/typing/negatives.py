@@ -221,14 +221,13 @@ if TYPE_CHECKING:
     matrix_1d: np.ndarray[tuple[int], np.dtype[np.float64]] = np.array(
         [0.0, 0.0], dtype=np.float64
     )
-    POINT.set_coordinates(matrix_1d)  # type: ignore[arg-type]
+    POINT.with_coordinates(matrix_1d)  # type: ignore[arg-type]
     matrix_3d: np.ndarray[tuple[int, int, int], np.dtype[np.float64]] = np.zeros(
         (1, 1, 2), dtype=np.float64
     )
-    POINT.set_coordinates(matrix_3d)  # type: ignore[arg-type]
+    POINT.with_coordinates(matrix_3d)  # type: ignore[arg-type]
     gm.LineString([(0.0, 0.0), (1.0, 1.0)], x=[0.0], y=[1.0])  # type: ignore[call-overload]
-    POINT.set_coordinates()  # type: ignore[call-overload]
-    POINT.set_coordinates(x=[0.0])  # type: ignore[call-overload]
+    POINT.with_coordinates(x=None)  # type: ignore[call-overload]
     POINTS.to_geoparquet('points.parquet', encoding='bogus')  # type: ignore[arg-type]
 
     # Optional dataframe boundaries are explicit and statically typed; native

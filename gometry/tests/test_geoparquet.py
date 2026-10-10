@@ -165,7 +165,7 @@ def test_scalar_geometry_writes_single_row(parquet_path: str) -> None:
 def test_geoparquet_nullable_packed_roundtrip_preserves_frame_and_rows(
     encoding: str, rows: list[object], parquet_path: str
 ) -> None:
-    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    values = gm.GeometryArray(rows, crs=4326).with_epoch(2020.0)
     values.to_geoparquet(parquet_path, encoding=encoding)
     restored = _read_geometry(parquet_path)
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
@@ -221,7 +221,7 @@ def test_from_geoparquet_preserves_attribute_columns(parquet_path: str) -> None:
 def test_to_geoparquet_array_crs_attaches_metadata(parquet_path: str) -> None:
     """GeometryArray CRS is written into geo metadata (no separate crs= kwarg)."""
     geometries = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
-    geometries.set_crs(4326).to_geoparquet(parquet_path)
+    geometries.with_crs(4326).to_geoparquet(parquet_path)
     restored = _read_geometry(parquet_path)
     assert restored.crs.to_epsg() == 4326
     assert canon(restored) == ['POINT (0 0)', 'POINT (1 1)']
@@ -2334,7 +2334,7 @@ def test_geoparquet_wkb_and_native_roundtrips_preserve_metadata(
         gm.Point(1.0, 2.0, crs=4326),
         gm.Point(3.0, 4.0, crs=4326),
     ])
-    values = values.set_epoch(2020.5)
+    values = values.with_epoch(2020.5)
     attributes = pa.table({'id': [1, 2], 'label': ['x', 'y']})
 
     for encoding in ('wkb', 'native'):

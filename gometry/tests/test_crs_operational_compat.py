@@ -269,8 +269,8 @@ def test_collection_seams_keep_rejecting_the_negatives(left: int, right: int) ->
 
 
 def test_mixed_epoch_and_presence_still_raise() -> None:
-    a = gm.Point(1, 2, crs=4326).set_epoch(2020.0)
-    b = gm.Point(1, 2, crs='OGC:CRS84').set_epoch(2021.0)
+    a = gm.Point(1, 2, crs=4326).with_epoch(2020.0)
+    b = gm.Point(1, 2, crs='OGC:CRS84').with_epoch(2021.0)
     with pytest.raises(CRSMismatchError):
         gm.equals(a, b)
     bare = gm.Point(1, 2)

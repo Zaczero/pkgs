@@ -38,6 +38,10 @@ from an encoding, transforms a value, or returns a changed value. See
 [`Geometry.to_wkt`][gometry.Geometry.to_wkt], [`from_wkt`][gometry.from_wkt],
 and [`Geometry.force_2d`][gometry.Geometry.force_2d].
 
+`with_crs` and `with_epoch` replace metadata; `with_coordinates` returns a copy
+with selected coordinate values changed. These operations do not reproject
+coordinates; use `to_crs` for a coordinate transformation.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
@@ -46,6 +50,15 @@ parsed = gm.from_wkt(wire)
 projected = gm.Point(-73.9, 40.7, crs=4326).to_crs(3857)
 flattened = gm.Point(1, 2, z=3).force_2d()
 print(parsed.to_wkt(), projected.crs.to_epsg(), flattened.to_wkt())
+
+```
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+point = gm.Point(-73.9, 40.7).with_crs(4326).with_epoch(2020.0)
+updated = point.with_coordinates(z=12.0)
+print(updated.crs.to_epsg(), updated.epoch, updated.to_wkt(drop_epoch=True))
 
 ```
 
@@ -319,8 +332,18 @@ equivalence.
 ## CRS and candidate boundaries
 
 CRS metadata, precision controls, edge models, and coverage rules are explicit
-inputs. [`set_crs`][gometry.Geometry.set_crs] declares existing coordinates, [`to_crs`][gometry.Geometry.to_crs] transforms them, and
+inputs. [`with_crs`][gometry.Geometry.with_crs] declares existing coordinates, [`to_crs`][gometry.Geometry.to_crs] transforms them, and
 metric behavior follows the frame described in [CRS, units & measurement](../guide/crs.md).
+
+## Copy-returning replacements
+
+Read geometry state through properties and replace immutable state with
+`with_<field>` methods: [`with_crs`][gometry.Geometry.with_crs] and
+[`with_epoch`][gometry.Geometry.with_epoch] update metadata, while
+[`with_coordinates`][gometry.Geometry.with_coordinates] replaces selected
+coordinate ordinates. `to_<format>` transforms or serializes, `from_<format>`
+parses, and [`force_2d`][gometry.Geometry.force_2d] /
+[`force_3d`][gometry.Geometry.force_3d] project dimensions.
 
 Spatial indexes expose bounding-box candidates and exact predicate queries; grid
 covers return typed cell arrays and exact membership remains a predicate on the

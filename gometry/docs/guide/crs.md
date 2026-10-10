@@ -18,10 +18,10 @@ may be degrees, radians, grads, or another admitted angular unit.
 
 CRS assignment and transformation have different effects:
 
-- **[`set_crs`][gometry.Geometry.set_crs] *declares*** what existing coordinates
+- **[`with_crs`][gometry.Geometry.with_crs] *declares*** what existing coordinates
   already mean. It never moves a coordinate.
 - **[`to_crs`][gometry.Geometry.to_crs] *transforms*** coordinates from one CRS
-  into another through the selected operation (unlike `set_crs`, which never
+  into another through the selected operation (unlike `with_crs`, which never
   moves a number). Identity pipelines, fixed points, carried M, and sometimes
   unchanged Z mean not every ordinate always changes.
 
@@ -56,7 +56,7 @@ distance is metres, but the produced outline is a local-projection approximation
 - **Everything requires one frame — but a frame, not a spelling.** Mixing CRSs —
   or mixing epochs on the same CRS — raises
   [`CRSMismatchError`][gometry.CRSMismatchError] up front; nothing is silently
-  reinterpreted. Reproject ([`to_crs`][gometry.Geometry.to_crs]) or relabel ([`set_crs`][gometry.Geometry.set_crs], if the metadata is
+  reinterpreted. Reproject ([`to_crs`][gometry.Geometry.to_crs]) or relabel ([`with_crs`][gometry.Geometry.with_crs], if the metadata is
   what's wrong) first. Two labels that name the *same* frame and differ only in
   axis order — `EPSG:4326` and `OGC:CRS84`, or a projected CRS in N/E versus E/N
   — are accepted everywhere: predicates, measures, overlays, and equally when
@@ -196,10 +196,10 @@ print("explicit pole closure:", explicit_closure.validate().valid)
 
 <a id="set-crs-vs-to-crs"></a>
 
-## `set_crs` vs `to_crs`
+## `with_crs` vs `to_crs`
 
 !!! warning "Relabeling is not reprojection"
-    [`set_crs`][gometry.Geometry.set_crs] relabels; [`to_crs`][gometry.Geometry.to_crs] reprojects. `set_crs` leaves numeric coordinates
+    [`with_crs`][gometry.Geometry.with_crs] relabels; [`to_crs`][gometry.Geometry.to_crs] reprojects. `with_crs` leaves numeric coordinates
     unchanged, so using it for a transformation changes the coordinates' claimed
     meaning without moving them. Use `to_crs` when the coordinates must move.
 
@@ -213,9 +213,9 @@ import gometry as gm
 raw = gm.Point(21.0, 52.0)
 print('crs before:', raw.crs)
 
-declared = raw.set_crs(4326)
-print('crs after set_crs:', declared.crs)
-print('coords after set_crs:', list(declared.coords))
+declared = raw.with_crs(4326)
+print('crs after with_crs:', declared.crs)
+print('coords after with_crs:', list(declared.coords))
 assert declared.coords.to_nested() == raw.coords.to_nested() == [21.0, 52.0]
 
 projected = declared.to_crs(3857)
@@ -226,22 +226,22 @@ assert isclose(projected.y, 6_800_125.454, rel_tol=0.0, abs_tol=0.001)
 
 ```
 
-`set_crs(4326)` left `(21, 52)` untouched and only stamped metadata.
+`with_crs(4326)` left `(21, 52)` untouched and only stamped metadata.
 `to_crs(3857)` ran a [PROJ](https://proj.org/) pipeline and produced meters. The
 numbers are completely different even though both geometries describe the same
 place on Earth.
 
 !!! danger "A wrong CRS label changes the data's meaning"
-    Calling `set_crs(3857)` on lon/lat data would *claim* `(21, 52)` is "21 meters
+    Calling `with_crs(3857)` on lon/lat data would *claim* `(21, 52)` is "21 meters
     east, 52 meters north" — a point in the Atlantic off the coast of Africa
     instead of Poland. Replacing one declared CRS with a *different* one raises
     unless you pass `overwrite=True` (re-tagging is
-    almost always a `to_crs` mistake). Use `set_crs` only to attach the CRS the
+    almost always a `to_crs` mistake). Use `with_crs` only to attach the CRS the
     coordinates were authored in.
 
 You can pass any CRS spelling PROJ can resolve to either call — an EPSG integer,
 an `"EPSG:4326"` string, a CRS name, WKT, or PROJJSON. CRS metadata supplied at a
-constructor or via `set_crs` is validated through PROJ *before* it is stored, so a
+constructor or via `with_crs` is validated through PROJ *before* it is stored, so a
 typo fails fast at the boundary rather than deep inside a later transform. WKT,
 PROJJSON, and PROJ definitions retain their normalized input text and numeric
 meaning; use `crs.definition` when the stored label matters:
@@ -251,16 +251,16 @@ import gometry as gm
 
 p = gm.Point(21.0, 52.0)
 for crs in (4326, "EPSG:4326", "WGS 84"):
-    print(repr(crs), "→", p.set_crs(crs).crs)
+    print(repr(crs), "→", p.with_crs(crs).crs)
 
 try:
-    p.set_crs(999999)
+    p.with_crs(999999)
 except Exception as e:
     print("rejected:", type(e).__name__)
 
 ```
 
-A `crs=` argument on any constructor is a `set_crs`, not a `to_crs`. It attaches
+A `crs=` argument on any constructor is a `with_crs`, not a `to_crs`. It attaches
 metadata to the coordinates you supplied — the bounds stay the native coordinates
 you passed:
 
@@ -274,7 +274,7 @@ print(area.crs, area.bounds)
 
 !!! tip "Troubleshooting a `CRSMismatchError`"
     Binary operations require both operands to share the same CRS and coordinate
-    epoch; gometry does not coerce a mismatch. Repair the metadata (`set_crs`,
+    epoch; gometry does not coerce a mismatch. Repair the metadata (`with_crs`,
     when only the tag is missing) or transform the coordinates (`to_crs`, when the
     numbers must move), then retry. The structured
     [`CRSMismatchError`][gometry.CRSMismatchError] carries `.left` / `.right`
@@ -469,29 +469,33 @@ arclength and adds the prefix before that edge.
 
 Point-to-chart-edge `dwithin` returns `True` only after an attained sample is at
 or below the supplied radius, and returns `False` only when its search certifies
-the threshold result. Its evaluation allowance is derived from binary64
-parameter-refinement depth and the number of live intervals, with a
-16,384-evaluation safety ceiling per point-edge query. If that allowance, the
-safety ceiling, or binary64 parameter precision ends while the bounds straddle
-the radius, `dwithin` raises `CRSError` rather than reporting `False`. It does
-not add a contact tolerance or widen the radius by pruning slack. A positive
-infinite radius returns `True` for admitted non-empty operands without forcing
-an unrepresentable distance result. Vectorized results retain one boolean per
-input pair: missing rows and present empty geometries remain in place as
-`False`; a nonconvergent present pair raises instead of receiving a boolean.
+the threshold result. Accumulated evaluations are limited to a binary64
+midpoint-depth factor times the current live frontier, with a 16,384-evaluation
+ceiling. The search also uses safeguarded secant proposals; this allowance is a
+work limit, not a guarantee of reaching binary64 parameter resolution. If it
+cannot certify the radius, `dwithin` raises `CRSError` rather than reporting
+`False`. It does not add a contact tolerance or widen the radius by pruning
+slack. A positive infinite radius returns `True` for admitted non-empty
+operands without forcing an unrepresentable distance result. Vectorized results
+retain one boolean per input pair: missing rows and present empty geometries
+remain in place as `False`; a nonconvergent present pair raises instead of
+receiving a boolean.
 
 Geographic Hausdorff measures the continuous linework supports of the stored
 chart edges: the source ranges over each straight longitude/latitude edge, and
 its distance to the target is the minimum geodesic distance to target edges and
-isolated points. A global frontier combines a Lipschitz upper bound with a
-second-order Taylor upper bound from fixed target witnesses only inside a
-certified normal neighborhood; elsewhere it uses the Lipschitz upper bound.
-Each reported value is an attained source/target pair, not an interval bound.
-Its algorithmic gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS
-84. These binary64 budgets are numerical quality targets, not real-arithmetic
+isolated points. Its global frontier uses a moving correspondence between
+source and target chart edges when that gives a tighter variation bound;
+otherwise it retains the fixed-witness Lipschitz bound and applies the
+second-order Taylor bound only inside a normal neighborhood. Each reported
+value is an attained source/target pair, not an interval bound. The algorithmic
+gap is `a * (0.01 / 6_378_137)`, about one centimetre for WGS 84. If source
+parameter refinement reaches adjacent binary64 values before the frontier
+closes that gap, Hausdorff raises `CRSError` rather than dropping the interval.
+These binary64 budgets are numerical quality targets, not real-arithmetic
 certificates.
-Geographic Hausdorff supports point and linework operands only; filled polygon
-interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
+ Geographic Hausdorff supports point and linework operands only; filled polygon
+ interiors require `unit='planar'` or a projected CRS. Omit `max_error` on the
 geographic path; its algorithmic gap does not promise a caller-requested bound.
 
 !!! note "Why geodesic and projected answers differ"
@@ -985,7 +989,7 @@ print(trace.coordinate_axes, "| m unchanged:", trace.m)
 !!! note "M is application data, not a coordinate"
     A timestamp or route measure has no datum, so no pipeline reprojects it;
     `to_crs` carries it through unchanged. Drop measures explicitly with
-    [`set_m(None)`][gometry.Geometry.set_m] (or [`force_2d()`][gometry.Geometry.force_2d] to drop both Z and M) before or after the
+    [`with_coordinates(m=None)`][gometry.Geometry.with_coordinates] (or [`force_2d()`][gometry.Geometry.force_2d] to drop both Z and M) before or after the
     transform.
 
 ## Coordinate epochs
@@ -1004,20 +1008,20 @@ of another ensemble do not by themselves make that ensemble epoch-capable.
 import gometry as gm
 
 station = gm.Point(21.0, 52.0, z=100.0, crs=4979)
-observed = station.set_epoch(2020.0)
+observed = station.with_epoch(2020.0)
 print("epoch:", observed.epoch, "| coords unchanged:", list(observed.coords) == list(station.coords))
 
 try:
-    gm.Point(21.0, 52.0).set_epoch(2020.0)
+    gm.Point(21.0, 52.0).with_epoch(2020.0)
 except gm.CRSError as error:
     print("rejected:", error)
 
-print("after set_crs(None):", observed.set_crs(None).epoch)
+print("after with_crs(None):", observed.with_crs(None).epoch)
 
 ```
 
-[`set_epoch`][gometry.Geometry.set_epoch] is the assign/clear setter (`set_epoch(None)` clears; changing a
-present epoch needs `overwrite=True`, like `set_crs`). When you reproject, the
+[`with_epoch`][gometry.Geometry.with_epoch] is the assign/clear setter (`with_epoch(None)` clears; changing a
+present epoch needs `overwrite=True`, like `with_crs`). When you reproject, the
 **source** epoch is the geometry's own `epoch`, and [`to_crs(..., epoch=...)`][gometry.Geometry.to_crs] labels
 the **output** epoch — there is no separate `source_epoch`/`target_epoch` on the
 geometry surface (those live on the raw [`gm.crs_transform(...)`][gometry.crs_transform] /

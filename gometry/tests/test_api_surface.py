@@ -191,7 +191,7 @@ def test_public_integer_boundaries_raise_value_error_not_overflow() -> None:
         (lambda: gm.CRS(-1), 'EPSG code'),
         (lambda: gm.CRS(huge), 'EPSG code'),
         (lambda: gm.Point(0, 0, crs=-1), 'EPSG code'),
-        (lambda: gm.Point(0, 0).set_crs(huge), 'EPSG code'),
+        (lambda: gm.Point(0, 0).with_crs(huge), 'EPSG code'),
         (lambda: gm.Point(0, 0, crs=4326).to_crs(-1), 'EPSG code'),
         (lambda: gm.crs_catalog('WGS 84', limit=0), 'CRS catalog limit'),
     ]
@@ -850,7 +850,7 @@ def test_geographic_array_nary_reductions_use_seam_topology() -> None:
     right = gm.Polygon(
         [(175, 10), (-175, 10), (-175, 30), (175, 30), (175, 10)], crs='OGC:CRS84'
     )
-    values = gm.GeometryArray([left, right]).set_epoch(2020.5)
+    values = gm.GeometryArray([left, right]).with_epoch(2020.5)
 
     left, right = values
     for name, binary in (
@@ -868,9 +868,9 @@ def test_geographic_array_nary_reductions_use_seam_topology() -> None:
 
         # Missing rows are skipped and one row reduces to itself, through the
         # same frame-aware dispatch.
-        with_missing = gm.GeometryArray([left, None, right]).set_epoch(2020.5)
+        with_missing = gm.GeometryArray([left, None, right]).with_epoch(2020.5)
         assert gm.equals(getattr(gm, name)(with_missing), expected)
-        single = gm.GeometryArray([left]).set_epoch(2020.5)
+        single = gm.GeometryArray([left]).with_epoch(2020.5)
         assert gm.equals(getattr(gm, name)(single), left)
 
 

@@ -269,7 +269,7 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
 def test_rectangular_covers_use_xy_membership_for_mixed_ordinate_sources(
     cover, depth, cell_rule
 ) -> None:
-    xyz = gm.box(-80, -60, 80, 60, crs=4326).set_z(1.0)
+    xyz = gm.box(-80, -60, 80, 60, crs=4326).with_coordinates(z=1.0)
     xy = gm.box(-40, -30, 60, 50, crs=4326)
     source = gm.GeometryCollection([xyz, xy], crs=4326)
     original_wkb = source.to_wkb()
@@ -296,7 +296,7 @@ def test_rectangular_covers_use_xy_membership_for_mixed_ordinate_sources(
 def test_h3_and_tile_covers_use_xy_membership_for_mixed_ordinate_sources(
     cover, depth
 ) -> None:
-    xyz = gm.box(0, 0, 2, 2, crs=4326).set_z(1.0)
+    xyz = gm.box(0, 0, 2, 2, crs=4326).with_coordinates(z=1.0)
     xy = gm.box(1, 1, 3, 3, crs=4326)
     source = gm.GeometryCollection([xyz, xy], crs=4326)
     original_wkb = source.to_wkb()

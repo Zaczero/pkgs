@@ -157,8 +157,6 @@ const fn unary_row_mode(op: Operation) -> UnaryRowMode {
         | Operation::Scale
         | Operation::Skew
         | Operation::Snap
-        | Operation::SetM
-        | Operation::SetZ
         | Operation::Simplify
         | Operation::Smooth
         | Operation::SnapToGrid

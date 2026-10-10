@@ -128,7 +128,7 @@ def test_country_pole_clearance_reaches_an_attained_inscribed_radius(
         for row in features
         if row['properties']['tags'].get('ISO3166-1:alpha2') == country
     )
-    polygon = gm.from_geojson(json.dumps(geometry)).set_crs(None)
+    polygon = gm.from_geojson(json.dumps(geometry)).with_crs(None)
     minx, miny, maxx, maxy = polygon.bounds
     tolerance = min(maxx - minx, maxy - miny) / 500
     label = polygon.polylabel()
@@ -341,8 +341,8 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
         triangulation_points.voronoi(output='polygons', clip=gm.Point(0, 0))
     clip_box = gm.box(-1, -1, 2, 2)
     with pytest.raises(ValueError, match='matching CRS'):
-        triangulation_points.set_crs('EPSG:3857').voronoi(
-            output='polygons', clip=clip_box.set_crs('EPSG:4326')
+        triangulation_points.with_crs('EPSG:3857').voronoi(
+            output='polygons', clip=clip_box.with_crs('EPSG:4326')
         )
     with pytest.raises(TypeError, match='Polygon or MultiPolygon'):
         gm.Point(0, 0).triangulate(method='constrained')

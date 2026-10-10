@@ -289,8 +289,8 @@ def test_array_detached_map_and_metric_lanes_match_scalar_results() -> None:
     assert line_array.segmentize(0.5).to_wkt() == [
         geom.segmentize(0.5).to_wkt() for geom in lines
     ]
-    assert line_array.set_z(7).set_m(3).to_wkt() == [
-        geom.set_z(7).set_m(3).to_wkt() for geom in lines
+    assert line_array.with_coordinates(z=7, m=3).to_wkt() == [
+        geom.with_coordinates(z=7, m=3).to_wkt() for geom in lines
     ]
     merged = gm.MultiLineString([[(0, 0), (1, 0)], [(1, 0), (2, 0)]])
     merge_array = gm.GeometryArray([merged, merged])
@@ -1388,7 +1388,7 @@ def test_equals_identical_is_the_vectorized_value_identity() -> None:
     # frame is part of the value: differing CRS/epoch is inequality, not an error
     assert gm.equals_identical(p, gm.Point(1, 2, crs=4326)) is False
     tagged = gm.Point(1, 2, crs=4326)
-    assert gm.equals_identical(tagged, tagged.set_epoch(2020.0)) is False
+    assert gm.equals_identical(tagged, tagged.with_epoch(2020.0)) is False
     # bit-pattern semantics match scalar ==
     assert gm.equals_identical(gm.Point(-0.0, 0), gm.Point(0.0, 0)) is False
     assert (gm.Point(-0.0, 0) == gm.Point(0.0, 0)) is False

@@ -77,11 +77,6 @@ pub(crate) enum PackedUnary {
     Force3d {
         z_fill: f64,
     },
-    /// `set_z` / `set_m` (which ordinate comes from the [`Operation`]).
-    SetOrdinate {
-        value: Option<f64>,
-        overwrite: bool,
-    },
     Quantize {
         precision: i32,
     },
@@ -402,12 +397,6 @@ pub(crate) fn try_unary_packed_array(
         ) => array.snap_to_grid_unary_packed(py, *size, *origin, *repair),
         (Operation::Force3d, PackedUnary::Force3d { z_fill }) => {
             Some(array.force_3d_unary_packed(py, *z_fill))
-        },
-        (Operation::SetZ, PackedUnary::SetOrdinate { value, overwrite }) => {
-            Some(array.set_z_unary_packed(py, *value, *overwrite))
-        },
-        (Operation::SetM, PackedUnary::SetOrdinate { value, overwrite }) => {
-            Some(array.set_m_unary_packed(py, *value, *overwrite))
         },
         (Operation::Quantize, PackedUnary::Quantize { precision }) => {
             Some(array.quantize_unary_packed(py, *precision))

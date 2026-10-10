@@ -817,7 +817,7 @@ assert_type(
 buffered = POINTS.buffer(1.0)[0]
 assert buffered is not None
 assert_type(buffered.area, float)
-assert_type(gm.require(POINTS.set_crs(4326), crs=4326), gm.GeometryArray[gm.Point])
+assert_type(gm.require(POINTS.with_crs(4326), crs=4326), gm.GeometryArray[gm.Point])
 assert_type(gm.require(POINTS), gm.GeometryArray[gm.Point])
 assert_type(gm.require(POINT), gm.Point)
 assert_type(gm.require([POINT, None]), gm.GeometryArray[gm.Point | None])
@@ -1008,10 +1008,24 @@ if TYPE_CHECKING:
 
     float_column: sht.FloatColumn = [1.0, 2.0]
     assert_type(gm.Point(np.float32(1.0), np.int64(2)), gm.Point)
+    reveal_type(POINT.with_coordinates(z=np.float32(3.0)))
+    reveal_type(POINT.with_coordinates(None, z=np.float32(3.0)))
+    reveal_type(POINTS.with_coordinates(x=float_column))
+    nullable_points: gm.GeometryArray[gm.Point | None] = gm.GeometryArray([POINT, None])
+    reveal_type(nullable_points.with_coordinates(z=None))
     assert_type(
-        gm.Point(1.0, 2.0).set_coordinates(np.zeros((1, 2), dtype=np.float32)),
+        gm.Point(1.0, 2.0).with_coordinates(np.zeros((1, 2), dtype=np.float32)),
         gm.Point,
     )
+    assert_type(POINT.with_coordinates(z=np.float32(3.0)), gm.Point)
+    assert_type(POINT.with_coordinates(x=np.float32(1.0)), gm.Point)
+    assert_type(POINTS.with_coordinates(z=np.float32(3.0)), gm.GeometryArray[gm.Point])
+    assert_type(
+        nullable_points.with_coordinates(z=None),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(POINT.with_crs(4326), gm.Point)
+    assert_type(POINTS.with_epoch(2020.0), gm.GeometryArray[gm.Point])
     assert_type(POINTS[np.int64(0)], gm.Point)
     assert_type(gm.contains(POLY, x=np.float32(1.0), y=np.int64(1)), bool)
     assert_type(

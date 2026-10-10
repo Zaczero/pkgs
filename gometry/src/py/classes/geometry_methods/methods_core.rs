@@ -1,8 +1,11 @@
+use pyo3::types::{PyDictMethods as _, PyTupleMethods as _};
+
 use crate::boundary::coordinates::measure_shape;
 use crate::dispatch::{MetricOp, kernels};
 use crate::predicates::unary;
 use crate::py::classes::geometry_methods::{
-    Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
+    Bound, Py, PyAny, PyAnyMethods as _, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed,
+    pymethods,
 };
 use crate::py::support::geojson_domain_metric;
 use crate::{
@@ -162,24 +165,24 @@ impl PyGeometry {
         let measure = measure_shape(py, self.shape.shape())?;
         Ok(measure.count_pyint(py))
     }
-    /// Return a geometry with the same topology and replacement coordinates.
+    /// Return a geometry with selected coordinate ordinates replaced.
     ///
-    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view) or
-    /// explicit ``x=`` and ``y=`` columns. The vertex count and ordinate
-    /// layout are preserved; use dimension setters for adding or removing
-    /// Z/M axes.
+    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view), or
+    /// replace any of ``x=``, ``y=``, ``z=``, and ``m=`` by a scalar or a
+    /// column over the flattened coordinate sequence. Omitted ordinates are
+    /// preserved. ``z=None`` and ``m=None`` remove those dimensions; X and Y
+    /// cannot be removed. Matrix and column modes cannot be mixed. Calling
+    /// without arguments returns an unchanged value.
     ///
     /// Parameters
     /// ----------
     /// coordinates : sequence of float, optional
     ///     Replacement ``(N, dims)`` coordinate matrix, including a
     ///     `Coordinates` view.
-    /// x, y : sequence of float, optional
-    ///     Replacement X and Y columns.
-    /// z, m : sequence of float, optional
-    ///     Replacement Z and M columns when this geometry already has those
-    ///     axes. Omitted axes are carried unchanged; ``None`` is not a
-    ///     clearing sentinel.
+    /// x, y, z, m : float, sequence of float, or None, optional
+    ///     Replace one ordinate by a scalar broadcast over vertices or a
+    ///     column with one value per coordinate. Omitted ordinates are
+    ///     preserved. ``None`` removes Z or M and is not valid for X or Y.
     ///
     /// Returns
     /// -------
@@ -188,15 +191,23 @@ impl PyGeometry {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.LineString([(0, 0), (1, 1)]).set_coordinates([(5, 5), (6, 6)]).to_wkt()
+    /// >>> gm.LineString([(0, 0), (1, 1)]).with_coordinates([(5, 5), (6, 6)]).to_wkt()
     /// 'LINESTRING (5 5, 6 6)'
     #[pyo3(signature = (*args, **kwargs), text_signature = "($self, coordinates=None, /, *, x=..., y=..., z=..., m=...)")]
-    pub fn set_coordinates(
+    pub fn with_coordinates(
         &self,
         py: Python<'_>,
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Typed> {
+        let no_matrix = match args.len() {
+            0 => true,
+            1 => args.get_item(0)?.is_none(),
+            _ => false,
+        };
+        if no_matrix && kwargs.is_none_or(|kwargs| kwargs.is_empty()) {
+            return Ok(Typed(self.clone()));
+        }
         let measure = measure_shape(py, self.shape.shape())?;
         let axes = measure.shape_axes();
         let len = measure.len_for_python()?;

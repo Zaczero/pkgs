@@ -76,7 +76,7 @@ pub(crate) fn from_wkt(
         let embedded = io::crs_from_optional_srid(srid)?;
         let crs = resolve_wire_crs(embedded, fallback.as_ref(), "EWKT SRID")?;
         guard_epoch_frame(parsed_epoch, crs.as_ref())?;
-        Ok(PyGeometry::with_epoch(
+        Ok(PyGeometry::new_with_crs_epoch(
             io::parse_wkt(body).map_err(|error| rebase_ewkt_parse_error(error, text, body))?,
             crs,
             parsed_epoch,

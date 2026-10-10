@@ -175,7 +175,7 @@ def test_python_arrow_metadata_frame_matches_rust_boundary_rules() -> None:
         gometry_arrow._metadata_frame(b'{"crs":"EPSG:4326","epoch":Infinity}')
     with pytest.raises(
         gm.ParseError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ) as exc:
         gometry_arrow._metadata_frame(b'{"epoch":2020.0}')
     assert exc.value.format == 'geoarrow'
@@ -505,7 +505,7 @@ def test_python_arrow_extension_type_rejects_epoch_without_crs() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gometry_arrow._extension_type(cast('Any', pa), 'geoarrow.point', None, 2020.0)
     with pytest.raises(ValueError, match='epoch must be finite'):

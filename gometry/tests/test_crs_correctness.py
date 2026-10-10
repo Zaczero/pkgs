@@ -867,14 +867,14 @@ def test_explicit_frame_metadata_fills_missing_array_and_collection_items() -> N
         gm.GeometryArray([bare, crs_only])
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.GeometryArray([bare], epoch=2020.0)
     with pytest.raises(ValueError, match='one shared coordinate epoch'):
         gm.GeometryArray([epoch_tagged], epoch=2021.0)
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.GeometryCollection([bare], epoch=2020.0)
 

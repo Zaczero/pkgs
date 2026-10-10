@@ -183,7 +183,7 @@ def test_crs_error_on_invalid_crs() -> None:
     with pytest.raises(errors.CRSError, match='cannot create CRS'):
         gm.CRS('not-a-crs')
     with pytest.raises(errors.CRSError, match='re-tag'):
-        gm.Point(0, 0, crs=4326).set_crs(3857)
+        gm.Point(0, 0, crs=4326).with_crs(3857)
 
 
 def test_crs_mismatch_error_on_index_frame_guard() -> None:
@@ -235,7 +235,7 @@ def test_crs_mismatch_error_on_frame_conflicts() -> None:
 def test_epoch_without_crs_is_a_crs_error_not_a_mismatch() -> None:
     with pytest.raises(
         errors.CRSError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ) as raised:
         gm.Point(0, 0, epoch=2020.0)
     assert not isinstance(raised.value, errors.CRSMismatchError)

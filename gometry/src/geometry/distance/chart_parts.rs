@@ -195,8 +195,15 @@ pub(crate) struct ChartPairMinimum {
     pub(crate) distance: f64,
     pub(crate) lower_bound: f64,
     pub(crate) intent: ChartStep,
+    pub(crate) target_edge: Option<ChartEdgeParameter>,
     role: crate::geometry::WitnessRole,
     order: u128,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ChartEdgeParameter {
+    pub(crate) edge_index: usize,
+    pub(crate) parameter: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -267,6 +274,8 @@ where
     };
     let mut lower_bound = f64::INFINITY;
     let mut visit_edge = |edge_index: usize, envelope_lower: f64, best_distance: &mut f64| {
+        #[cfg(test)]
+        counters::target_edge_candidate();
         let part = target
             .edges
             .get(edge_index)
@@ -372,6 +381,27 @@ where
     }))
 }
 
+#[cfg(test)]
+pub(crate) mod counters {
+    use std::cell::Cell;
+
+    thread_local! {
+        static TARGET_EDGE_CANDIDATES: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn reset() {
+        TARGET_EDGE_CANDIDATES.set(0);
+    }
+
+    pub(crate) fn target_edge_candidate() {
+        TARGET_EDGE_CANDIDATES.set(TARGET_EDGE_CANDIDATES.get().saturating_add(1));
+    }
+
+    pub(crate) fn target_edge_candidates() -> u64 {
+        TARGET_EDGE_CANDIDATES.get()
+    }
+}
+
 fn materialize_point_chart_candidate<M>(
     point: Point,
     candidate: &ChartPairCandidate<'_>,
@@ -392,12 +422,20 @@ where
         .longitude()
         .shortest_alias_step(point.x, target_point.x)
         .map_err(|error| crate::crs::CrsError::invalid(error.to_string()))?;
+    let target_edge = match candidate.target {
+        ChartTarget::Point(_) => None,
+        ChartTarget::Edge { parameter, .. } => Some(ChartEdgeParameter {
+            edge_index: candidate.source_ordinal,
+            parameter,
+        }),
+    };
     Ok(ChartPairMinimum {
         first: point,
         second: target_point,
         distance: candidate.distance,
         lower_bound: candidate.lower_bound,
         intent: ChartStep::Shortest(step),
+        target_edge,
         role,
         order: candidate.source_ordinal as u128,
     })
@@ -865,6 +903,7 @@ where
             distance: 0.0,
             lower_bound: 0.0,
             intent: ChartStep::Shortest(EdgeDirection::Minor(0.0)),
+            target_edge: None,
             role: crate::geometry::WitnessRole::Point,
             order: 0,
         }));

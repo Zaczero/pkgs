@@ -331,6 +331,6 @@ def test_from_wkb_epoch_after_ewkb_crs() -> None:
     plain = gm.Point(1, 2).to_wkb()  # no SRID
     with pytest.raises(
         gm.CRSError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.from_wkb([plain], epoch=2020.0)

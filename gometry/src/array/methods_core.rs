@@ -787,23 +787,25 @@ impl PyGeometryArray {
             int64_array(py, int64_values)
         }
     }
-    /// Return an array with the same topology and replacement coordinates.
+    /// Return an array with selected coordinate ordinates replaced.
     ///
-    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view) or
-    /// explicit ``x=`` and ``y=`` columns. Missing rows contribute no input
-    /// coordinates and remain missing in the result.
+    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view), or
+    /// replace any of ``x=``, ``y=``, ``z=``, and ``m=`` by a scalar or a
+    /// column over the flattened coordinate sequence. Omitted ordinates are
+    /// preserved. ``z=None`` and ``m=None`` remove those dimensions; X and Y
+    /// cannot be removed. Missing rows contribute no coordinates and remain
+    /// missing. Matrix and column modes cannot be mixed. Calling without
+    /// arguments returns an unchanged value.
     ///
     /// Parameters
     /// ----------
     /// coordinates : sequence of float, optional
     ///     Replacement ``(N, dims)`` coordinate matrix, including a
     ///     `Coordinates` view.
-    /// x, y : sequence of float, optional
-    ///     Replacement X and Y columns.
-    /// z, m : sequence of float, optional
-    ///     Replacement Z and M columns when the array already has those axes.
-    ///     Omitted axes are carried unchanged; ``None`` is not a clearing
-    ///     sentinel.
+    /// x, y, z, m : float, sequence of float, or None, optional
+    ///     Replace one ordinate by a scalar broadcast over vertices or a
+    ///     column with one value per coordinate. Omitted ordinates are
+    ///     preserved. ``None`` removes Z or M and is not valid for X or Y.
     ///
     /// Returns
     /// -------
@@ -813,15 +815,23 @@ impl PyGeometryArray {
     /// --------
     /// >>> import gometry as gm
     /// >>> arr = gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])])
-    /// >>> arr.set_coordinates([(5, 5), (6, 6)]).to_wkt()
+    /// >>> arr.with_coordinates([(5, 5), (6, 6)]).to_wkt()
     /// ['LINESTRING (5 5, 6 6)']
     #[pyo3(signature = (*args, **kwargs), text_signature = "($self, coordinates=None, /, *, x=..., y=..., z=..., m=...)")]
-    pub fn set_coordinates(
+    pub fn with_coordinates(
         &self,
         py: Python<'_>,
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
+        let no_matrix = match args.len()? {
+            0 => true,
+            1 => args.get_item(0)?.is_none(),
+            _ => false,
+        };
+        if no_matrix && kwargs.is_none_or(|kwargs| kwargs.is_empty()) {
+            return Ok(self.clone());
+        }
         // Union axes of the coordinate view (NaN-padded for members that lack
         // Z/M). Non-uniform arrays (mixed-axes rows, heterogeneous GC) parse
         // against that layout; replace_array_coordinates applies per-row via
@@ -862,7 +872,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         func: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        // Same union-axes + per-row replace path as set_coordinates; no early
+        // Same union-axes + per-row replace path as with_coordinates; no early
         // reject when uniform_axes() is None.
         let array = slf.borrow();
         let coords = PyCoordinates::new(array.coordinate_view(), slf.clone().unbind().into_any());
@@ -1379,8 +1389,8 @@ mod mixed_replacement_row_note_tests {
             ))
             .expect("missing rows attach");
             let replacement = CoordinateReplacement {
-                xs: SharedSlice::from_vec(vec![0.0, 4.0, 4.0, 0.5]),
-                ys: SharedSlice::from_vec(vec![0.0, 0.0, 4.0, 0.0]),
+                xs: Some(SharedSlice::from_vec(vec![0.0, 4.0, 4.0, 0.5])),
+                ys: Some(SharedSlice::from_vec(vec![0.0, 0.0, 4.0, 0.0])),
                 zs: ReplacementAxis::Carry,
                 ms: ReplacementAxis::Carry,
                 len: 4,

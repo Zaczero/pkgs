@@ -139,7 +139,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `require(...)` at boundary | [`gm.require(obj, crs=..., axes=...)`][gometry.require] | Storage contract. |
 | `geom.is_empty` / `is_ring` / `is_simple` / `is_closed` | [`geom.is_empty`][gometry.Geometry.is_empty] / [`geom.is_ring`][gometry.Geometry.is_ring] / [`geom.is_simple`][gometry.Geometry.is_simple] / [`geom.is_closed`][gometry.Geometry.is_closed] | |
 | `is_ccw(ring)` | `g.is_ccw` / [`geom.is_ccw`][gometry.Geometry.is_ccw] | Closed `LineString` winding. |
-| `force_2d(g)` / `force_3d(g, z)` | `g.force_2d()` / `g.force_3d(z)` | `force_3d` fills only missing Z. Set values everywhere with `g.set_z(z)` / `g.set_m(m)`; `None` clears an axis. |
+| `force_2d(g)` / `force_3d(g, z)` | `g.force_2d()` / `g.force_3d(z)` | `force_3d` fills only missing Z. Replace values everywhere with `g.with_coordinates(z=z, m=m)`; `None` clears an axis. |
 
 ### IO
 
@@ -156,8 +156,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `shapely.to_wkt(Point(...))` / `shapely.to_wkt(box(...))` | [`gm.Point(x, y).to_wkt(precision=...)`][gometry.Geometry.to_wkt] / `gm.box(...).to_wkt(precision=...)` |
 
 Shapely's `to_wkt(output_dimension=2)` becomes `geom.force_2d().to_wkt()` in
-gometry. Remove geometry axes before writing with `force_2d()`, `set_z(None)`,
-or `set_m(None)`; use `coords.select(...)` to choose a coordinate-view layout
+gometry. Remove geometry axes before writing with `force_2d()`,
+`with_coordinates(z=None)`, or `with_coordinates(m=None)`; use `coords.select(...)` to choose a coordinate-view layout
 for coordinate exports without changing the geometry.
 
 ### Indexing & prepared
@@ -176,7 +176,7 @@ for coordinate exports without changing the geometry.
 | pyproj | gometry | Notes |
 |---|---|---|
 | `CRS.from_epsg(4326)` | [`gm.CRS(4326)`][gometry.CRS] | CRS object; [`geom.crs`][gometry.Geometry.crs] returns one. |
-| `gdf.set_crs(c)` | [`geom.set_crs(c)`][gometry.Geometry.set_crs] | |
+| `gdf.set_crs(c)` | [`geom.with_crs(c)`][gometry.Geometry.with_crs] | |
 | `gdf.to_crs(c)` | [`geom.to_crs(c)`][gometry.Geometry.to_crs] | |
 | `Transformer.from_crs(a, b)` + `.transform(x, y)` | [`gm.crs_transform(a, b, x, y, z=..., t=...)`][gometry.crs_transform] | |
 | `transformer.transform_bounds(...)` | [`gm.crs_transform_bounds(...)`][gometry.crs_transform_bounds] | |

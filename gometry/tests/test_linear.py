@@ -269,8 +269,8 @@ def test_split_lines_by_points_is_rust_backed_and_preserves_crs_and_measures() -
 
 
 def test_split_parts_preserves_coordinate_epoch() -> None:
-    line = gm.LineString([(0, 0), (4, 0)], crs=4326).set_epoch(2020.0)
-    splitter = gm.Point(2, 0, crs=4326).set_epoch(2020.0)
+    line = gm.LineString([(0, 0), (4, 0)], crs=4326).with_epoch(2020.0)
+    splitter = gm.Point(2, 0, crs=4326).with_epoch(2020.0)
     pieces = gm.split(line, splitter)
     assert pieces.epoch == 2020.0
     assert all(piece.epoch == 2020.0 for piece in pieces)
