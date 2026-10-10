@@ -156,9 +156,9 @@ pub(crate) fn shortest_line(
 /// left, right : Geometry or GeometryArray
 ///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
 ///     coordinate epoch.
-/// path : {'geodesic', 'rhumb'}, default 'geodesic'
-///     Route for point operands. Rhumb distance requires a geographic CRS and
-///     uses meters.
+/// path : {'geodesic', 'rhumb'}
+///     Route for point operands. Geodesic forms omit ``path``; rhumb forms
+///     require ``path='rhumb'`` and a geographic CRS.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns

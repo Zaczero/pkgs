@@ -17,57 +17,11 @@ import re
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from functools import partial
+from pathlib import Path
 from typing import Any, Literal
 
 import griffe
 
-_STUB_LOCAL = (
-    '_AffineMatrix',
-    '_ArealLike',
-    '_ArrowInput',
-    '_BoolArray1D',
-    '_BoolLane',
-    '_Bounds2D',
-    '_Bounds3D',
-    '_Coordinate',
-    '_CoordinateMatrix',
-    '_CoordinatesInput',
-    '_FloatArray1D',
-    '_FloatColumn1D',
-    '_FloatScalarInput',
-    '_GeohashSetInput',
-    '_GeoJsonScalar',
-    '_GeometryLike',
-    '_H3SetInput',
-    '_IdArray',
-    '_IndexLane',
-    '_IntArray0D',
-    '_IntArray1D',
-    '_IntInput',
-    '_IntScalar',
-    '_IntScalarInput',
-    '_RingsInput',
-    '_S2SetInput',
-    '_TileSetInput',
-)
-_ERROR_CLASSES = (
-    'CRSError',
-    'CRSMismatchError',
-    'GeometryError',
-    'GeometryTypeError',
-    'InvalidGeometryError',
-    'ParseError',
-    'TransformError',
-)
-_GEOMETRY_LEAVES = frozenset({
-    'GeometryCollection',
-    'LineString',
-    'MultiLineString',
-    'MultiPoint',
-    'MultiPolygon',
-    'Point',
-    'Polygon',
-})
 _PRIVATE_TYPEVAR_RENAMES = {
     '_CellT': 'CellT',
     '_DefaultT': 'DefaultT',
@@ -167,12 +121,27 @@ def ordered_call_forms(
 
 
 def _constructor_source(obj: Any) -> ConstructorSource:
-    path = getattr(obj, 'relative_filepath', None) or getattr(obj, 'filepath', None)
+    namespace = getattr(obj, 'extra', {}).get(_CONSTRUCTOR_NAMESPACE, {})
+    declaration = namespace.get('declaration_source')
+    if isinstance(declaration, ConstructorSource):
+        return ConstructorSource(
+            getattr(obj, 'path', declaration.qualname),
+            declaration.path,
+            declaration.line,
+        )
+    path = getattr(obj, 'filepath', None) or getattr(obj, 'relative_filepath', None)
     return ConstructorSource(
         qualname=getattr(obj, 'path', getattr(obj, 'name', '<unknown>')),
         path=str(path or '<unknown>'),
         line=getattr(obj, 'lineno', None) or 1,
     )
+
+
+def _class_source(obj: griffe.Class) -> ConstructorSource:
+    source = obj.extra.get(_CONSTRUCTOR_NAMESPACE, {}).get('class_source')
+    if isinstance(source, ConstructorSource):
+        return ConstructorSource(obj.path, source.path, source.line)
+    return _constructor_source(obj)
 
 
 def _unsupported_constructor_error(outcome: UnsupportedConstructor) -> str:
@@ -197,10 +166,12 @@ def _module_type_variables(module: griffe.Module) -> set[str]:
                 continue
             value = getattr(member, 'value', None)
             function = getattr(value, 'function', None)
-            if getattr(function, 'name', None) in {
+            function_name = getattr(function, 'name', None)
+            if function_name in {
                 'TypeVar',
                 'TypeVarTuple',
                 'ParamSpec',
+                '_DefaultTypeVar',
             }:
                 names.add(name)
     return names
@@ -263,6 +234,115 @@ def _copy_expression(expression: Any) -> Any:
             )
         setattr(copied, field.name, value)
     return copied
+
+
+def _copy_extra(extra: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: _copy_extra(value) if isinstance(value, dict) else value
+        for name, value in extra.items()
+    }
+
+
+def _copy_docstring(docstring: Any, parent: Any) -> Any:
+    if docstring is None:
+        return None
+    return griffe.Docstring(
+        docstring.value,
+        lineno=docstring.lineno,
+        endlineno=docstring.endlineno,
+        parent=parent,
+        parser=docstring.parser,
+        parser_options=docstring.parser_options,
+    )
+
+
+def _copy_function_for_owner(
+    function: griffe.Function,
+    parent: Any,
+    *,
+    name: str | None = None,
+    seen: dict[int, griffe.Function] | None = None,
+) -> griffe.Function:
+    if seen is None:
+        seen = {}
+    if id(function) in seen:
+        return seen[id(function)]
+    local = copy.copy(function)
+    seen[id(function)] = local
+    local.name = function.name if name is None else name
+    local.parent = parent
+    local.extra = _copy_extra(function.extra)
+    namespace = dict(local.extra.get(_CONSTRUCTOR_NAMESPACE, {}))
+    namespace['declaration_source'] = ConstructorSource(
+        function.path,
+        str(getattr(function, 'filepath', None) or function.relative_filepath),
+        function.lineno or 1,
+    )
+    local.extra[_CONSTRUCTOR_NAMESPACE] = namespace
+    local.parameters = griffe.Parameters(
+        *(
+            griffe.Parameter(
+                parameter.name,
+                annotation=_copy_expression(parameter.annotation),
+                kind=parameter.kind,
+                default=_copy_expression(parameter.default),
+                docstring=parameter.docstring,
+            )
+            for parameter in function.parameters
+        )
+    )
+    local.overloads = [
+        _copy_function_for_owner(overload, parent, name=local.name, seen=seen)
+        for overload in function.overloads or ()
+        if not _is_never(overload)
+    ]
+    local.docstring = _copy_docstring(function.docstring, local)
+    return local
+
+
+def _copy_class_member(member: Any, parent: griffe.Class) -> Any:
+    if isinstance(member, griffe.Function):
+        return _copy_function_for_owner(member, parent)
+    if isinstance(member, griffe.Class):
+        return _copy_class_for_owner(member, member.name, parent)
+    local = copy.copy(member)
+    local.parent = parent
+    if hasattr(member, 'extra'):
+        local.extra = _copy_extra(member.extra)
+    if isinstance(member, griffe.Attribute):
+        local.annotation = _copy_expression(member.annotation)
+        local.value = _copy_expression(member.value)
+        local.labels = set(member.labels)
+    if hasattr(member, 'docstring'):
+        local.docstring = _copy_docstring(member.docstring, local)
+    return local
+
+
+def _copy_class_for_owner(
+    source: griffe.Class,
+    name: str,
+    parent: Any,
+) -> griffe.Class:
+    local = copy.copy(source)
+    local.aliases = dict(source.aliases)
+    local.name = name
+    local.parent = parent
+    local.extra = _copy_extra(source.extra)
+    source_location = ConstructorSource(
+        source.path,
+        str(getattr(source, 'filepath', None) or _constructor_source(source).path),
+        getattr(source, 'lineno', None) or 1,
+    )
+    namespace = dict(local.extra.get(_CONSTRUCTOR_NAMESPACE, {}))
+    namespace['class_source'] = source_location
+    local.extra[_CONSTRUCTOR_NAMESPACE] = namespace
+    local.bases = [_copy_expression(base) for base in source.bases]
+    local.members = {
+        member_name: _copy_class_member(member, local)
+        for member_name, member in source.members.items()
+    }
+    local.docstring = _copy_docstring(source.docstring, local)
+    return local
 
 
 def _class_call_result(
@@ -459,6 +539,124 @@ def _builtin_exception_base(
     return None
 
 
+def _class_import_target(class_obj: griffe.Class, name: str) -> str | None:
+    root = class_obj.module
+    modules = [root]
+    modules.extend(
+        member
+        for member in root.members.values()
+        if isinstance(member, griffe.Module) and member.path.startswith(f'{root.path}.')
+    )
+    for module in modules:
+        alias = module.members.get(name)
+        if isinstance(alias, griffe.Alias):
+            return alias.target_path
+    return None
+
+
+def _named_tuple_base_path(class_obj: griffe.Class, base: Any) -> str | None:
+    if isinstance(base, griffe.ExprSubscript):
+        base = base.left
+    if not isinstance(base, griffe.ExprName):
+        return None
+    canonical = base.canonical_path
+    if canonical in {'typing.NamedTuple', 'typing_extensions.NamedTuple'}:
+        return canonical
+    if canonical == 'typing.Generic':
+        return canonical
+    return _class_import_target(class_obj, base.name) or canonical
+
+
+def _is_named_tuple_class(class_obj: griffe.Class) -> bool:
+    return any(
+        _named_tuple_base_path(class_obj, base)
+        in {'typing.NamedTuple', 'typing_extensions.NamedTuple'}
+        for base in class_obj.bases
+    )
+
+
+def _named_tuple_constructor(
+    class_obj: griffe.Class,
+    type_variables: set[str],
+) -> RenderableConstructor | UnsupportedConstructor:
+    source = _class_source(class_obj)
+    allowed_bases = {
+        'typing.NamedTuple',
+        'typing_extensions.NamedTuple',
+        'typing.Generic',
+    }
+    if any(
+        _named_tuple_base_path(class_obj, base) not in allowed_bases
+        for base in class_obj.bases
+    ):
+        return UnsupportedConstructor(
+            'unsupported',
+            'NamedTuple constructor inheritance is not a direct NamedTuple/Generic declaration',
+            source,
+        )
+    if '__new__' in class_obj.members or '__init__' in class_obj.members:
+        return UnsupportedConstructor(
+            'unsupported',
+            'a NamedTuple subclass overrides a synthesized constructor phase',
+            source,
+        )
+
+    parameters = griffe.Parameters(
+        *(
+            griffe.Parameter(
+                name,
+                annotation=_copy_expression(member.annotation),
+                kind=griffe.ParameterKind.positional_or_keyword,
+                default=_copy_expression(member.value),
+                docstring=member.docstring,
+            )
+            for name, member in class_obj.members.items()
+            if (
+                not name.startswith('_')
+                and isinstance(member, griffe.Attribute)
+                and member.annotation is not None
+            )
+        )
+    )
+    form = griffe.Function(
+        '__call__',
+        parameters=parameters,
+        returns=_class_call_result(class_obj, type_variables),
+        type_parameters=class_obj.type_parameters,
+        parent=class_obj,
+        lineno=class_obj.lineno,
+        endlineno=class_obj.endlineno,
+        runtime=class_obj.runtime,
+        lines_collection=class_obj.lines_collection,
+        modules_collection=class_obj.modules_collection,
+        git_info=class_obj.git_info,
+        analysis=class_obj.analysis,
+    )
+    form.extra[_CONSTRUCTOR_NAMESPACE] = {'class_call_form': True}
+    binding = griffe.Function(
+        '__call__',
+        parameters=_documentation_parameters((form,)),
+        returns=_class_call_result(class_obj, type_variables),
+        type_parameters=class_obj.type_parameters,
+        parent=class_obj,
+        lineno=class_obj.lineno,
+        endlineno=class_obj.endlineno,
+        runtime=class_obj.runtime,
+        lines_collection=class_obj.lines_collection,
+        modules_collection=class_obj.modules_collection,
+        git_info=class_obj.git_info,
+        analysis=class_obj.analysis,
+    )
+    binding.overloads = [form]
+    binding.extra[_CONSTRUCTOR_NAMESPACE] = {
+        'source_function': None,
+        'constructor_name': 'NamedTuple',
+        'class_source': source,
+        'source_kind': 'namedtuple',
+    }
+    return RenderableConstructor('renderable', binding, source)
+
+
 def _inherited_constructor_owner(member: Any) -> griffe.Class | None:
     if isinstance(member, griffe.Alias):
         try:
@@ -477,7 +675,7 @@ def _constructor_outcome(
     inherited_members: dict[str, Any] | None = None,
     type_variables: set[str] | None = None,
 ) -> ConstructorOutcome:
-    class_source = _constructor_source(class_obj)
+    class_source = _class_source(class_obj)
 
     def unavailable(reason: str) -> UnavailableConstructor:
         return UnavailableConstructor('unavailable', reason, class_source)
@@ -497,6 +695,9 @@ def _constructor_outcome(
     inherited_members = (
         class_obj.inherited_members if inherited_members is None else inherited_members
     )
+    if _is_named_tuple_class(class_obj):
+        return _named_tuple_constructor(class_obj, type_variables)
+
     effective: dict[str, tuple[griffe.Function | None, bool]] = {}
     for name in ('__new__', '__init__'):
         if name in class_obj.members:
@@ -714,18 +915,7 @@ def _public_function_copy(
     name: str,
     parent: griffe.Module,
 ) -> griffe.Function:
-    local = copy.copy(function)
-    local.name = name
-    local.parent = parent
-    local.overloads = [
-        copy.copy(overload)
-        for overload in function.overloads or ()
-        if not _is_never(overload)
-    ]
-    for overload in local.overloads:
-        overload.name = name
-        overload.parent = parent
-    return local
+    return _copy_function_for_owner(function, parent, name=name)
 
 
 def _materialize_function_aliases(pkg: griffe.Module) -> None:
@@ -744,58 +934,41 @@ def _materialize_function_aliases(pkg: griffe.Module) -> None:
         pkg.set_member(alias_name, _public_function_copy(target, alias_name, pkg))
 
 
-def _materialize_class_aliases(pkg: griffe.Module) -> None:
-    """Materialize native class aliases so per-page member options apply."""
-    lib = pkg.members.get('_lib')
-    if not isinstance(lib, griffe.Module):
-        return
-    for alias_name, member in list(pkg.members.items()):
-        target_name = _native_alias_target(member)
-        if target_name is None:
-            continue
-        target = lib.members.get(target_name)
-        if not isinstance(target, griffe.Class):
-            continue
-        local = copy.copy(target)
-        local.aliases = dict(target.aliases)
-        local.name = alias_name
-        local.parent = pkg
-        if target_name in _GEOMETRY_LEAVES:
-            # The leaf reference page documents only type-specific members;
-            # Geometry is the canonical home for their shared surface.
-            local.bases = []
-        local.members = {
-            member_name: copy.copy(child)
-            for member_name, child in target.members.items()
-        }
-        for child in local.members.values():
-            child.parent = local
-        pkg.set_member(alias_name, local)
-
-
-def _materialize_classes(
+def _class_alias_target(
     pkg: griffe.Module,
-    module_name: str,
-    names: tuple[str, ...],
-) -> None:
-    module = pkg.members.get(module_name)
-    if not isinstance(module, griffe.Module):
-        return
-    for name in names:
-        target = module.members.get(name)
-        if not isinstance(target, griffe.Class):
+    member: Any,
+) -> griffe.Class | None:
+    if isinstance(member, griffe.Alias):
+        if not getattr(member, 'target_path', '').startswith(f'{pkg.path}.'):
+            return None
+        try:
+            target = member.target
+        except (griffe.AliasResolutionError, griffe.CyclicAliasError):
+            return None
+        return target if isinstance(target, griffe.Class) else None
+
+    target_name = _native_alias_target(member)
+    lib = pkg.members.get('_lib')
+    if (
+        target_name is None
+        or not isinstance(lib, griffe.Module)
+        or not isinstance((target := lib.members.get(target_name)), griffe.Class)
+    ):
+        return None
+    return target
+
+
+def _materialize_class_aliases(pkg: griffe.Module) -> None:
+    """Materialize in-package class aliases from their declared source owners."""
+    for alias_name, member in list(pkg.members.items()):
+        if alias_name.startswith('_') or isinstance(member, griffe.Class):
             continue
-        local = copy.copy(target)
-        local.aliases = dict(target.aliases)
-        local.name = name
-        local.parent = pkg
-        local.members = {
-            member_name: copy.copy(member)
-            for member_name, member in target.members.items()
-        }
-        for member in local.members.values():
-            member.parent = local
-        pkg.set_member(name, local)
+        target = _class_alias_target(pkg, member)
+        if target is not None:
+            local = _copy_class_for_owner(target, alias_name, pkg)
+            if isinstance(member, griffe.Alias):
+                local.aliases[member.path] = member
+            pkg.set_member(alias_name, local)
 
 
 def _cache_ordered_call_forms(obj: Any, seen: set[int]) -> None:
@@ -869,8 +1042,6 @@ class PromoteStubOverloads(griffe.Extension):
             return
         _promote_overloads(pkg, set())
         _materialize_class_aliases(pkg)
-        _materialize_classes(pkg, '_lib', _ERROR_CLASSES)
-        _materialize_classes(pkg, '_types', ('Cell',))
         _canonicalize_public_classes(pkg)
         _materialize_function_aliases(pkg)
         _cache_ordered_call_forms(pkg, set())
@@ -892,11 +1063,19 @@ def expand_annotation(
             return griffe.ExprName('Iterator')
         if expr.name in {'_NumericCell', '_Cell'}:
             return griffe.ExprName('object')
-        if expr.name in aliases and expr.name not in expanding:
+        alias_path = getattr(expr, 'canonical_path', None)
+        alias_name = (
+            alias_path
+            if alias_path in aliases
+            else expr.name
+            if expr.name in aliases
+            else None
+        )
+        if alias_name is not None and alias_name not in expanding:
             return expand_annotation(
-                _copy_expression(aliases[expr.name]),
+                _copy_expression(aliases[alias_name]),
                 aliases,
-                expanding | {expr.name},
+                expanding | {alias_name},
             )
         return expr
     if isinstance(expr, griffe.ExprBinOp):
@@ -1109,13 +1288,97 @@ def _merge_parameter_sections(
     return result
 
 
+def _resolved_parameter_sections(
+    sections: list[Any],
+    binding: griffe.Function,
+    resolution: Any,
+) -> list[Any]:
+    kinds = {
+        griffe.DocstringSectionKind.parameters,
+        griffe.DocstringSectionKind.other_parameters,
+    }
+    positions = [
+        index for index, section in enumerate(sections) if section.kind in kinds
+    ]
+    if not resolution.rows:
+        return sections
+
+    insertion = min(positions) if positions else len(sections)
+    title = next(
+        (
+            section.title
+            for section in sections
+            if section.kind in kinds and section.title
+        ),
+        None,
+    )
+    by_name = {
+        parameter.name: parameter
+        for section in sections
+        if section.kind in kinds
+        for parameter in section.value
+    }
+    parameters = []
+    for row in resolution.rows:
+        parameter = copy.copy(
+            by_name.get(row.name)
+            or griffe.DocstringParameter(row.name, description=''),
+        )
+        binding_parameter = next(
+            (
+                parameter
+                for parameter in binding.parameters
+                if parameter.name == row.name
+            ),
+            None,
+        )
+        parameter.description = row.description
+        parameter.annotation = (
+            _copy_expression(binding_parameter.annotation)
+            if binding_parameter is not None
+            and binding_parameter.annotation is not None
+            else row.annotation
+        )
+        if row.status == 'defaulted':
+            parameter.value = (
+                _copy_expression(binding_parameter.default)
+                if binding_parameter is not None
+                else row.default
+            )
+        elif row.status == 'varies':
+            parameter.value = 'varies by call form'
+        elif row.status == 'variadic':
+            parameter.value = 'not applicable'
+        else:
+            parameter.value = None
+        parameters.append(parameter)
+
+    sections = [section for section in sections if section.kind not in kinds]
+    sections.insert(
+        insertion,
+        griffe.DocstringSectionParameters(
+            parameters,
+            title=title,
+        ),
+    )
+    return sections
+
+
 def _prepare_constructor_docstrings(
     class_obj: griffe.Class,
     binding: griffe.Function,
 ) -> None:
+    from pyo3stubs.doc_structure import (
+        DocLocation,
+        SignatureParameter,
+        resolve_parameter_rows,
+    )
+
     extra = binding.extra[_CONSTRUCTOR_NAMESPACE]
-    source_function = extra['source_function']
+    source_function = extra.get('source_function')
     class_docstring = class_obj.docstring
+    class_source = _class_source(class_obj)
+    carriers = []
 
     if class_docstring is not None:
         binding.docstring = griffe.Docstring(
@@ -1127,12 +1390,17 @@ def _prepare_constructor_docstrings(
             parser_options=class_docstring.parser_options,
         )
         class_sections = binding.docstring.parsed
+        carriers.append((
+            class_docstring.value,
+            DocLocation(class_source.path, class_docstring.lineno or class_source.line),
+        ))
     else:
         class_sections = []
 
-    source_docstring = source_function.docstring
     constructor_sections = []
-    if source_docstring is not None:
+    if isinstance(source_function, griffe.Function) and source_function.docstring:
+        source_docstring = source_function.docstring
+        source_location = _constructor_source(source_function)
         source_context = griffe.Function(
             source_function.name,
             parameters=griffe.Parameters(
@@ -1166,11 +1434,45 @@ def _prepare_constructor_docstrings(
             parser_options=source_docstring.parser_options,
         )
         constructor_sections = extra['prose_docstring'].parsed
+        carriers.append((
+            source_docstring.value,
+            DocLocation(
+                source_location.path,
+                source_docstring.lineno or source_location.line,
+            ),
+        ))
 
-    extra['docstring_sections'] = _merge_parameter_sections(
-        class_sections,
-        constructor_sections,
+    forms = tuple(
+        tuple(
+            SignatureParameter(
+                parameter.name,
+                parameter.kind.value if parameter.kind is not None else '',
+                str(parameter.annotation) if parameter.annotation is not None else None,
+                str(parameter.default) if parameter.default is not None else None,
+            )
+            for parameter in form.parameters
+        )
+        for form in ordered_call_forms(binding)
     )
+    resolution = resolve_parameter_rows(
+        class_obj.path,
+        carriers,
+        forms,
+        require_documentation=isinstance(source_function, griffe.Function),
+    )
+    extra['parameter_resolution'] = resolution
+    sections = _merge_parameter_sections(class_sections, constructor_sections)
+    has_authored_parameters = any(
+        section.kind
+        in {
+            griffe.DocstringSectionKind.parameters,
+            griffe.DocstringSectionKind.other_parameters,
+        }
+        for section in sections
+    )
+    if has_authored_parameters:
+        sections = _resolved_parameter_sections(sections, binding, resolution)
+    extra['docstring_sections'] = sections
 
 
 def _expand_docstring_sections(sections: list[Any], aliases: dict[str, Any]) -> None:
@@ -1185,22 +1487,41 @@ def _expand_docstring_sections(sections: list[Any], aliases: dict[str, Any]) -> 
 
 
 def annotation_aliases(pkg: griffe.Module) -> dict[str, Any]:
-    """Aliases expanded in rendered annotations, shared with the model gate."""
+    """Return reachable source expansions keyed by declaration identity."""
+    package_file = getattr(pkg, 'filepath', None)
+    package_root = Path(package_file).parent if package_file is not None else None
+    if package_root is None or not (package_root / '_lib.pyi').is_file():
+        return {}
+
+    import gometry
+    from reference_types import build_public_type_graph
+
+    graph = build_public_type_graph(package_root, gometry)
     aliases: dict[str, Any] = {}
-    types_module = pkg.members.get('_types')
-    if isinstance(types_module, griffe.Module):
-        for name, member in types_module.members.items():
-            if isinstance(member, griffe.Alias):
-                continue
-            value = getattr(member, 'value', None)
-            if value is not None and str(value).startswith('Literal['):
-                aliases[name] = value
-    lib = pkg.members.get('_lib')
-    if isinstance(lib, griffe.Module):
-        for name in _STUB_LOCAL:
-            value = getattr(lib.members.get(name), 'value', None)
-            if value is not None:
-                aliases[name] = value
+    names: dict[str, list[Any]] = {}
+    for path, source in graph.expansions.items():
+        module: Any = pkg
+        for part in source.module.name.split('.')[1:]:
+            module = getattr(module, 'members', {}).get(part)
+            if not isinstance(module, griffe.Module):
+                break
+        if not isinstance(module, griffe.Module):
+            continue
+        expression = griffe.get_expression(
+            source.expression,
+            module,
+            parse_strings=True,
+        )
+        if expression is None:
+            continue
+        aliases[path] = expression
+        names.setdefault(path.rsplit('.', 1)[-1], []).append(expression)
+
+    aliases.update({
+        name: variants[0]
+        for name, variants in names.items()
+        if len({str(variant) for variant in variants}) == 1
+    })
     return aliases
 
 

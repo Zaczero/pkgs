@@ -69,9 +69,9 @@ impl PyGeometryArray {
     ///
     /// Parameters
     /// ----------
-    /// *others : GeometryArray
-    ///     Arrays to append, in order; each must share this array's CRS and
-    ///     epoch. With no arguments the array itself is returned.
+    /// other, *others : GeometryArray
+    ///     Arrays to append in order; each must share this array's CRS and
+    ///     epoch. The zero-argument form omits both names and returns this array.
     ///
     /// Returns
     /// -------

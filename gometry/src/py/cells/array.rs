@@ -56,10 +56,10 @@ use crate::py::vectors::Groups;
 ///
 /// Parameters
 /// ----------
-/// values : numpy.ndarray, buffer, or iterable
+/// values : iterable, numpy.ndarray, or buffer
 ///     Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
 ///     any grid are accepted when a concrete cell supplies the family.
-/// type : type, optional
+/// type : type
 ///     Native cell class. Inferred from a concrete typed cell when present.
 #[pyclass(
     name = "CellArray",
@@ -716,7 +716,7 @@ impl PyCellArray {
     ///     Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
     ///     are accepted when the grid can be inferred. Iterables are consumed
     ///     in input order.
-    /// type : type, optional, default None
+    /// type : type
     ///     One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
     ///     ``GeohashCell`` classes, required when the grid cannot be inferred.
     ///
