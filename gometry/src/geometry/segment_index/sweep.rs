@@ -5,7 +5,10 @@
 use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
-use crate::geometry::{Bounds, PointKey, Segment, XY, segment_envelopes_disjoint};
+use crate::geometry::{
+    Bounds, PointKey, Segment, Unmetered, Work, XY, segment_envelopes_disjoint,
+    try_sort_by_with_work,
+};
 
 fn u32_ordinal(value: usize) -> Result<u32> {
     u32::try_from(value).map_err(|_| ResourceError::SizeOverflow.into())
@@ -36,24 +39,41 @@ const OBLIQUE_PROJECTION_MIN_COHERENCE: f64 = 0.9;
 
 /// [`for_each_overlapping_bounds_pair`] over rows that may lack bounds: a row
 /// without bounds meets nothing, and the visitor receives row ordinals.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "the compact bounds and source ordinal vectors are appended together and the sweep emits compact IDs"
-)]
 pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair<B>(
     bounds: &[Option<Bounds>],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>> {
+    for_each_indexed_overlapping_bounds_pair_with_work(
+        bounds,
+        &mut Unmetered,
+        |left, right, _work| Ok(visit(left, right)),
+    )
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the compact bounds slice and ordinal column are built one-for-one, and the sweep only yields in-range compact positions"
+)]
+pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair_with_work<B, W: Work>(
+    bounds: &[Option<Bounds>],
+    work: &mut W,
+    mut visit: impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
+    // The compact ordinal and bounds columns each request one slot per input.
+    work.charge_product(bounds.len(), 2)?;
     let mut ordinals = Vec::with_capacity(bounds.len());
     let mut present = Vec::with_capacity(bounds.len());
     for (ordinal, bounds) in bounds.iter().enumerate() {
+        work.charge(1)?;
         if let Some(bounds) = bounds {
+            // Publish one ordinal and one copied bounds record.
+            work.charge(2)?;
             ordinals.push(ordinal);
             present.push(*bounds);
         }
     }
-    for_each_overlapping_bounds_pair(&present, |left, right| {
-        visit(ordinals[left], ordinals[right])
+    for_each_overlapping_bounds_pair_with_work(&present, work, |left, right, work| {
+        visit(ordinals[left], ordinals[right], work)
     })
 }
 
@@ -105,30 +125,33 @@ fn projected_point_interval(point: XY, projection: ObliqueProjection) -> Option<
     (lower <= upper).then_some((lower, upper))
 }
 
-fn run_oblique_bounds(
+fn run_oblique_bounds_with_work<W: Work>(
     pool: &[Segment],
     run: &MonotoneRun,
     projection: ObliqueProjection,
-) -> (f64, f64) {
+    work: &mut W,
+) -> Result<(f64, f64)> {
     let full = (f64::NEG_INFINITY, f64::INFINITY);
     let Some(segments) = pool.get(run.start as usize..run.end as usize) else {
-        return full;
+        return Ok(full);
     };
     let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
     for segment in segments {
+        work.charge(1)?;
         let Some((lo, hi)) = projected_point_interval(segment.start, projection) else {
-            return full;
+            return Ok(full);
         };
         min = min.min(lo);
         max = max.max(hi);
     }
     let Some(last) = segments.last() else {
-        return full;
+        return Ok(full);
     };
+    work.charge(1)?;
     let Some((lo, hi)) = projected_point_interval(last.end, projection) else {
-        return full;
+        return Ok(full);
     };
-    (min.min(lo), max.max(hi))
+    Ok((min.min(lo), max.max(hi)))
 }
 
 fn monotone_runs_oblique_projection(
@@ -165,14 +188,23 @@ fn monotone_runs_oblique_projection(
 }
 
 /// Reorient entries to sweep the wider axis, then sort on `sweep_min`.
-fn finish_sweep_entries(entries: &mut [SweepEntry], swapped: bool) {
+fn finish_sweep_entries_with_work<W: Work>(
+    entries: &mut [SweepEntry],
+    swapped: bool,
+    work: &mut W,
+) -> Result<()> {
     if swapped {
+        work.charge_product(entries.len(), 1)?;
         for entry in entries.iter_mut() {
             std::mem::swap(&mut entry.sweep_min, &mut entry.cross_min);
             std::mem::swap(&mut entry.sweep_max, &mut entry.cross_max);
         }
     }
-    entries.sort_unstable_by(|a, b| a.sweep_min.total_cmp(&b.sweep_min));
+    // Equal primary keys retain staging order: source ordinals for self joins,
+    // and left rows followed by right rows for cross joins.
+    try_sort_by_with_work(entries, work, |a, b, _work| {
+        Ok(a.sweep_min.total_cmp(&b.sweep_min))
+    })
 }
 
 /// One maximal monotone chain of the input: a run of CHAINED segments
@@ -211,6 +243,16 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair<B>(
     bounds: &[Bounds],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>> {
+    for_each_overlapping_bounds_pair_with_work(bounds, &mut Unmetered, |left, right, _work| {
+        Ok(visit(left, right))
+    })
+}
+
+pub(in crate::geometry) fn for_each_overlapping_bounds_pair_with_work<B, W: Work>(
+    bounds: &[Bounds],
+    work: &mut W,
+    mut visit: impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
     let count = bounds.len();
     if count < 2 {
         return Ok(ControlFlow::Continue(()));
@@ -221,10 +263,12 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair<B>(
         while let Some((left, right_bounds)) = remaining.split_first() {
             let mut right_index = left_index.wrapping_add(1);
             for right in right_bounds {
-                if left.intersects(*right)
-                    && let ControlFlow::Break(value) = visit(left_index, right_index)
-                {
-                    return Ok(ControlFlow::Break(value));
+                work.charge(1)?;
+                if left.intersects(*right) {
+                    match visit(left_index, right_index, work)? {
+                        ControlFlow::Continue(()) => {},
+                        ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
+                    }
                 }
                 right_index = right_index.wrapping_add(1);
             }
@@ -233,7 +277,7 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair<B>(
         }
         return Ok(ControlFlow::Continue(()));
     }
-    try_overlapping_bounds_sweep(bounds, &mut visit)
+    try_overlapping_bounds_sweep(bounds, work, &mut visit)
 }
 
 /// Visit every overlapping pair across two bounds sets, preserving each
@@ -242,6 +286,20 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_cross_pair<B>(
     left: &[Bounds],
     right: &[Bounds],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>> {
+    for_each_overlapping_bounds_cross_pair_with_work(
+        left,
+        right,
+        &mut Unmetered,
+        |left, right, _work| Ok(visit(left, right)),
+    )
+}
+
+pub(in crate::geometry) fn for_each_overlapping_bounds_cross_pair_with_work<B, W: Work>(
+    left: &[Bounds],
+    right: &[Bounds],
+    work: &mut W,
+    mut visit: impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     let (Some(left_last), Some(right_last)) =
         (left.len().checked_sub(1), right.len().checked_sub(1))
@@ -257,31 +315,38 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_cross_pair<B>(
     if count < SWEEP_MIN_ITEMS {
         for (left_index, left_bounds) in left.iter().enumerate() {
             for (right_index, right_bounds) in right.iter().enumerate() {
-                if left_bounds.intersects(*right_bounds)
-                    && let ControlFlow::Break(value) = visit(left_index, right_index)
-                {
-                    return Ok(ControlFlow::Break(value));
+                work.charge(1)?;
+                if left_bounds.intersects(*right_bounds) {
+                    match visit(left_index, right_index, work)? {
+                        ControlFlow::Continue(()) => {},
+                        ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
+                    }
                 }
             }
         }
         return Ok(ControlFlow::Continue(()));
     }
-    try_overlapping_bounds_cross_sweep(left, right, count, &mut visit)
+    try_overlapping_bounds_cross_sweep(left, right, count, work, &mut visit)
 }
 
-fn try_overlapping_bounds_sweep<B>(
+fn try_overlapping_bounds_sweep<B, W: Work>(
     bounds: &[Bounds],
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     let count = bounds.len();
     if let Some(last) = count.checked_sub(1) {
         u32_ordinal(last)?;
     }
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
+    // Reserve the logical entry row before touching retained scratch storage.
+    work.charge_product(count, 1)?;
     entries.reserve(count);
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
     for (ordinal, b) in bounds.iter().enumerate() {
+        // Read the bounds, fold their extents, and publish one entry.
+        work.charge(3)?;
         let (x_lo, x_hi, y_lo, y_hi) = (b.minx(), b.maxx(), b.miny(), b.maxy());
         min_x = min_x.min(x_lo);
         max_x = max_x.max(x_hi);
@@ -296,11 +361,16 @@ fn try_overlapping_bounds_sweep<B>(
             side: 0,
         });
     }
-    finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
+    finish_sweep_entries_with_work(
+        &mut entries,
+        wider_axis_swapped(min_x, max_x, min_y, max_y),
+        work,
+    )?;
     // Dense-enough sets take the banded windows; otherwise the plain
     // forward window (same split the segment sweep uses for large pools).
     if count >= SWEEP_BAND_MIN {
         let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
+        work.charge_product(entries.len(), 2)?;
         let cross_lo = entries
             .iter()
             .map(|e| e.cross_min)
@@ -310,30 +380,29 @@ fn try_overlapping_bounds_sweep<B>(
             .map(|e| e.cross_max)
             .fold(f64::NEG_INFINITY, f64::max);
         let band_height = ((cross_hi - cross_lo) / bands as f64).max(f64::EPSILON);
-        Ok(banded_windows(
-            &entries,
-            bands,
-            cross_lo,
-            band_height,
-            visit,
-        ))
+        banded_windows(&entries, bands, cross_lo, band_height, work, visit)
     } else {
-        Ok(plain_windows(&entries, visit))
+        plain_windows(&entries, work, visit)
     }
 }
 
-fn try_overlapping_bounds_cross_sweep<B>(
+fn try_overlapping_bounds_cross_sweep<B, W: Work>(
     left: &[Bounds],
     right: &[Bounds],
     count: usize,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
+    // Reserve the combined logical entry rows before touching retained scratch.
+    work.charge_product(count, 1)?;
     entries.reserve(count);
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
     for (side, bounds) in [(CROSS_LEFT_SIDE, left), (CROSS_RIGHT_SIDE, right)] {
         for (ordinal, bound) in bounds.iter().enumerate() {
+            // Read the bounds, fold their extents, and publish one entry.
+            work.charge(3)?;
             let (x_lo, x_hi, y_lo, y_hi) = (bound.minx(), bound.maxx(), bound.miny(), bound.maxy());
             min_x = min_x.min(x_lo);
             max_x = max_x.max(x_hi);
@@ -349,10 +418,15 @@ fn try_overlapping_bounds_cross_sweep<B>(
             });
         }
     }
-    finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
-    let mut cross_visit = |left: usize, right: usize| visit(left, right);
+    finish_sweep_entries_with_work(
+        &mut entries,
+        wider_axis_swapped(min_x, max_x, min_y, max_y),
+        work,
+    )?;
+    let mut cross_visit = |left: usize, right: usize, work: &mut W| visit(left, right, work);
     if count >= SWEEP_BAND_MIN {
         let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
+        work.charge_product(entries.len(), 2)?;
         let cross_lo = entries
             .iter()
             .map(|entry| entry.cross_min)
@@ -362,15 +436,16 @@ fn try_overlapping_bounds_cross_sweep<B>(
             .map(|entry| entry.cross_max)
             .fold(f64::NEG_INFINITY, f64::max);
         let band_height = ((cross_hi - cross_lo) / bands as f64).max(f64::EPSILON);
-        Ok(banded_windows(
+        banded_windows(
             &entries,
             bands,
             cross_lo,
             band_height,
+            work,
             &mut cross_visit,
-        ))
+        )
     } else {
-        Ok(plain_windows(&entries, &mut cross_visit))
+        plain_windows(&entries, work, &mut cross_visit)
     }
 }
 
@@ -409,6 +484,17 @@ pub(in crate::geometry) fn for_each_candidate_pair<B>(
     chain_of: impl Fn(usize) -> u32,
     mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>> {
+    for_each_candidate_pair_with_work(pool, chain_of, &mut Unmetered, |left, right, _work| {
+        Ok(visit(left, right))
+    })
+}
+
+pub(in crate::geometry) fn for_each_candidate_pair_with_work<B, W: Work>(
+    pool: &[Segment],
+    chain_of: impl Fn(usize) -> u32,
+    work: &mut W,
+    mut visit: impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
     // Per-call scratch reuse: bulk predicates sweep thousands of small rows, and
     // this run buffer was their only allocation.
     thread_local! {
@@ -417,8 +503,8 @@ pub(in crate::geometry) fn for_each_candidate_pair<B>(
         };
     }
     let mut runs = crate::scratch_pool::ScratchPool::checkout(&RUNS);
-    monotone_runs(pool, &chain_of, &mut runs)?;
-    candidate_pairs_over_staged_runs::<false, _>(pool, &runs, &mut visit)
+    monotone_runs_with_work(pool, &chain_of, &mut runs, work)?;
+    candidate_pairs_over_staged_runs_with_work::<false, _, _>(pool, &runs, work, &mut visit)
 }
 
 /// The shared entry point behind [`for_each_candidate_pair`] and the
@@ -426,7 +512,25 @@ pub(in crate::geometry) fn for_each_candidate_pair<B>(
 pub(in crate::geometry) fn candidate_pairs_over_staged_runs<const OBLIQUE: bool, B>(
     pool: &[Segment],
     runs: &[MonotoneRun],
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
+    mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>> {
+    candidate_pairs_over_staged_runs_with_work::<OBLIQUE, _, _>(
+        pool,
+        runs,
+        &mut Unmetered,
+        &mut |left, right, _work| Ok(visit(left, right)),
+    )
+}
+
+pub(in crate::geometry) fn candidate_pairs_over_staged_runs_with_work<
+    const OBLIQUE: bool,
+    B,
+    W: Work,
+>(
+    pool: &[Segment],
+    runs: &[MonotoneRun],
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
@@ -435,8 +539,10 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs<const OBLIQUE: bool,
         while let Some((_segment, right_segments)) = remaining.split_first() {
             let mut right = left.wrapping_add(1);
             for _ in right_segments {
-                if let ControlFlow::Break(value) = visit(left, right) {
-                    return Ok(ControlFlow::Break(value));
+                work.charge(1)?;
+                match visit(left, right, work)? {
+                    ControlFlow::Continue(()) => {},
+                    ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
                 }
                 right = right.wrapping_add(1);
             }
@@ -445,7 +551,7 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs<const OBLIQUE: bool,
         }
         return Ok(ControlFlow::Continue(()));
     }
-    try_candidate_pairs_over_runs::<OBLIQUE, _>(pool, runs, visit)
+    try_candidate_pairs_over_runs::<OBLIQUE, _, _>(pool, runs, work, visit)
 }
 
 /// The default `chain_of` for [`for_each_candidate_pair`]: one geometric chain,
@@ -458,18 +564,22 @@ pub(in crate::geometry) const fn single_chain(_: usize) -> u32 {
     clippy::indexing_slicing,
     reason = "run windows and entry ordinals are generated from these exact u32-admitted slices"
 )]
-fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B>(
+fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B, W: Work>(
     pool: &[Segment],
     runs: &[MonotoneRun],
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
+    // Reserve one logical envelope row per staged run.
+    work.charge_product(runs.len(), 1)?;
     entries.reserve(runs.len());
     let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     let (mut double_angle_x, mut double_angle_y) = (0.0_f64, 0.0_f64);
     let mut oblique_count = 0_usize;
     for (ordinal, run) in runs.iter().enumerate() {
+        work.charge(1)?;
         // Length-exact run window: first/last via slice pattern (elision).
         let segs = &pool[run.start as usize..run.end as usize];
         let (first, last) = match segs {
@@ -479,24 +589,28 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B>(
         };
         let (x_lo, x_hi) = (first.x.min(last.x), first.x.max(last.x));
         let (y_lo, y_hi) = (first.y.min(last.y), first.y.max(last.y));
+        work.charge(2)?;
         min_x = min_x.min(x_lo);
         min_y = min_y.min(y_lo);
         max_x = max_x.max(x_hi);
         max_y = max_y.max(y_hi);
-        let (dx, dy) = (last.x - first.x, last.y - first.y);
-        if OBLIQUE
-            && run.sign_x != 0
-            && run.sign_y != 0
-            && dx.is_finite()
-            && dy.is_finite()
-            && let scale = dx.abs().max(dy.abs())
-            && scale > 0.0
-        {
-            let (dx, dy) = (dx / scale, dy / scale);
-            let norm_squared = dx * dx + dy * dy;
-            double_angle_x += (dx * dx - dy * dy) / norm_squared;
-            double_angle_y += (2.0 * dx * dy) / norm_squared;
-            oblique_count = oblique_count.wrapping_add(1);
+        if OBLIQUE {
+            work.charge(1)?;
+            let (dx, dy) = (last.x - first.x, last.y - first.y);
+            if run.sign_x != 0
+                && run.sign_y != 0
+                && dx.is_finite()
+                && dy.is_finite()
+                && let scale = dx.abs().max(dy.abs())
+                && scale > 0.0
+            {
+                work.charge(1)?;
+                let (dx, dy) = (dx / scale, dy / scale);
+                let norm_squared = dx * dx + dy * dy;
+                double_angle_x += (dx * dx - dy * dy) / norm_squared;
+                double_angle_y += (2.0 * dx * dy) / norm_squared;
+                oblique_count = oblique_count.wrapping_add(1);
+            }
         }
         entries.push(SweepEntry {
             sweep_min: x_lo,
@@ -515,13 +629,15 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B>(
     // Keep the XY primary axis and reuse the plain sweep's cross interval for
     // the oblique coordinate. Run refinement still checks both XY envelopes.
     let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
-    finish_sweep_entries(&mut entries, swapped);
+    finish_sweep_entries_with_work(&mut entries, swapped, work)?;
     if let Some(projection) = projection {
         // An uncertain projection becomes an unbounded interval, so only a
         // certified gap between run envelopes can prune the XY sweep.
         for entry in entries.iter_mut() {
+            work.charge(1)?;
             let run = &runs[entry.ordinal as usize];
-            (entry.cross_min, entry.cross_max) = run_oblique_bounds(pool, run, projection);
+            (entry.cross_min, entry.cross_max) =
+                run_oblique_bounds_with_work(pool, run, projection, work)?;
         }
     }
     // Each run is monotone on both axes, so its endpoint envelope contains
@@ -543,28 +659,23 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B>(
     };
     let band_height = (cross_hi - cross_lo) / bands as f64;
     let projection_active = projection.is_some();
-    let mut run_visit = |left: usize, right: usize| -> ControlFlow<B> {
-        run_pair_join::<OBLIQUE, _>(
+    let mut run_visit = |left: usize, right: usize, work: &mut W| {
+        run_pair_join::<OBLIQUE, _, _>(
             pool,
             &runs[left],
             &runs[right],
             swapped,
             projection_active,
+            work,
             visit,
         )
     };
     if projection.is_some() {
-        Ok(plain_windows(&entries, &mut run_visit))
+        plain_windows(&entries, work, &mut run_visit)
     } else if bands > 1 && band_height > 0.0 {
-        Ok(banded_windows(
-            &entries,
-            bands,
-            cross_lo,
-            band_height,
-            &mut run_visit,
-        ))
+        banded_windows(&entries, bands, cross_lo, band_height, work, &mut run_visit)
     } else {
-        Ok(plain_windows(&entries, &mut run_visit))
+        plain_windows(&entries, work, &mut run_visit)
     }
 }
 
@@ -573,16 +684,18 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B>(
 /// keeps both direction signs within the run's quadrant (zero components
 /// are wildcards). Zero-length segments break out into their own runs so
 /// their point-touch pairs still reach the visitor through run pairs.
-pub(in crate::geometry) fn monotone_runs(
+pub(in crate::geometry) fn monotone_runs_with_work<W: Work>(
     pool: &[Segment],
     chain_of: &impl Fn(usize) -> u32,
     runs: &mut Vec<MonotoneRun>,
+    work: &mut W,
 ) -> Result<()> {
     let len = u32_ordinal(pool.len())?;
     let mut start = 0_u32;
     let (mut sign_x, mut sign_y) = (0_i8, 0_i8);
     let mut previous_segment = None;
     for (index, segment) in pool.iter().enumerate() {
+        work.charge(1)?;
         let index_u32 = index as u32;
         let dx = segment.end.x - segment.start.x;
         let dy = segment.end.y - segment.start.y;
@@ -590,13 +703,19 @@ pub(in crate::geometry) fn monotone_runs(
         let degenerate = sx == 0 && sy == 0;
         let previous = previous_segment;
         previous_segment = Some((index, segment));
-        let chained = index_u32 > start
-            && !degenerate
-            && previous.is_some_and(|(previous_index, previous_segment)| {
-                chain_of(previous_index) == chain_of(index)
+        let chained = (if index_u32 > start && !degenerate {
+            if let Some((previous_index, previous_segment)) = previous {
+                work.charge(1)?;
+                let previous_chain = chain_of(previous_index);
+                work.charge(1)?;
+                previous_chain == chain_of(index)
                     && PointKey::new(previous_segment.end) == PointKey::new(segment.start)
-            })
-            && (sx == 0 || sign_x == 0 || sx == sign_x)
+            } else {
+                false
+            }
+        } else {
+            false
+        }) && (sx == 0 || sign_x == 0 || sx == sign_x)
             && (sy == 0 || sign_y == 0 || sy == sign_y);
         if chained {
             if sign_x == 0 {
@@ -607,23 +726,36 @@ pub(in crate::geometry) fn monotone_runs(
             }
             continue;
         }
-        push_run(runs, start, index_u32, sign_x, sign_y);
+        push_run_with_work(runs, start, index_u32, sign_x, sign_y, work)?;
         start = index_u32;
         (sign_x, sign_y) = (sx, sy);
         if degenerate {
             let end = index_u32.wrapping_add(1);
-            push_run(runs, start, end, 0, 0);
+            push_run_with_work(runs, start, end, 0, 0, work)?;
             start = end;
             (sign_x, sign_y) = (0, 0);
         }
     }
-    push_run(runs, start, len, sign_x, sign_y);
+    push_run_with_work(runs, start, len, sign_x, sign_y, work)?;
     Ok(())
 }
 
-fn push_run(runs: &mut Vec<MonotoneRun>, start: u32, end: u32, sign_x: i8, sign_y: i8) {
+fn push_run_with_work<W: Work>(
+    runs: &mut Vec<MonotoneRun>,
+    start: u32,
+    end: u32,
+    sign_x: i8,
+    sign_y: i8,
+    work: &mut W,
+) -> Result<()> {
     if end > start {
+        if runs.len() == runs.capacity() {
+            let requested = runs.len().wrapping_add(1);
+            work.charge_product(requested, 1)?;
+            work.charge_product(runs.len(), 1)?;
+        }
         runs.reserve(1);
+        work.charge(1)?;
         runs.push(MonotoneRun {
             start,
             end,
@@ -631,6 +763,7 @@ fn push_run(runs: &mut Vec<MonotoneRun>, start: u32, end: u32, sign_x: i8, sign_
             sign_y,
         });
     }
+    Ok(())
 }
 
 pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
@@ -651,20 +784,22 @@ pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
 /// 1,200-vertex rings is found after a handful of halvings — where a linear
 /// interval merge walked every segment in the sweep overlap. Same candidate
 /// set: every pair whose envelopes overlap on both axes, each once.
-fn run_pair_join<const OBLIQUE: bool, B>(
+fn run_pair_join<const OBLIQUE: bool, B, W: Work>(
     pool: &[Segment],
     a: &MonotoneRun,
     b: &MonotoneRun,
     swapped: bool,
     projection_active: bool,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
-) -> ControlFlow<B> {
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
     // Single-segment runs are the noding pools' common case (split
     // pieces interleave their sources, so chains rarely form there) —
     // For an axis-aligned sweep the entry window already proves envelope
     // overlap on both axes. With a projected secondary interval, only the
     // primary axis was checked, so verify the XY envelopes below.
     if a.len() == 1 && b.len() == 1 {
+        work.charge(1)?;
         if OBLIQUE
             && projection_active
             && pool
@@ -672,14 +807,14 @@ fn run_pair_join<const OBLIQUE: bool, B>(
                 .zip(pool.get(b.start as usize))
                 .is_some_and(|(left, right)| segment_envelopes_disjoint(*left, *right))
         {
-            return ControlFlow::Continue(());
+            return Ok(ControlFlow::Continue(()));
         }
         let (low, high) = if a.start < b.start {
             (a.start, b.start)
         } else {
             (b.start, a.start)
         };
-        return visit(low as usize, high as usize);
+        return visit(low as usize, high as usize, work);
     }
     let (a, b) = (
         RunChain {
@@ -693,7 +828,7 @@ fn run_pair_join<const OBLIQUE: bool, B>(
             swapped,
         },
     );
-    bisect_runs(&a, 0, a.len(), &b, 0, b.len(), visit)
+    bisect_runs(&a, 0, a.len(), &b, 0, b.len(), work, visit)
 }
 
 /// One monotone run viewed by ascending sweep position, whichever way its
@@ -773,19 +908,21 @@ fn ordered(a: f64, b: f64) -> (f64, f64) {
     if a <= b { (a, b) } else { (b, a) }
 }
 
-fn bisect_runs<B>(
+fn bisect_runs<B, W: Work>(
     a: &RunChain<'_>,
     a_lo: u32,
     a_hi: u32,
     b: &RunChain<'_>,
     b_lo: u32,
     b_hi: u32,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
-) -> ControlFlow<B> {
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
+    work.charge(1)?;
     let (as_lo, as_hi, ac_lo, ac_hi) = a.envelope(a_lo, a_hi);
     let (bs_lo, bs_hi, bc_lo, bc_hi) = b.envelope(b_lo, b_hi);
     if as_hi < bs_lo || bs_hi < as_lo || ac_hi < bc_lo || bc_hi < ac_lo {
-        return ControlFlow::Continue(());
+        return Ok(ControlFlow::Continue(()));
     }
     let (a_len, b_len) = (a_hi.wrapping_sub(a_lo), b_hi.wrapping_sub(b_lo));
     let children_miss = if a_len == 2 {
@@ -796,7 +933,7 @@ fn bisect_runs<B>(
         false
     };
     if children_miss {
-        return ControlFlow::Continue(());
+        return Ok(ControlFlow::Continue(()));
     }
     if a_len == 1 && b_len == 1 {
         let (x, y) = (a.ordinal(a_lo), b.ordinal(b_lo));
@@ -807,27 +944,36 @@ fn bisect_runs<B>(
         } else {
             (x, y)
         };
-        return visit(low, high);
+        return visit(low, high, work);
     }
     if a_len >= b_len {
         let mid = a_lo.wrapping_add(a_len / 2);
-        bisect_runs(a, a_lo, mid, b, b_lo, b_hi, visit)?;
-        bisect_runs(a, mid, a_hi, b, b_lo, b_hi, visit)
+        match bisect_runs(a, a_lo, mid, b, b_lo, b_hi, work, visit)? {
+            ControlFlow::Continue(()) => {},
+            ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
+        }
+        bisect_runs(a, mid, a_hi, b, b_lo, b_hi, work, visit)
     } else {
         let mid = b_lo.wrapping_add(b_len / 2);
-        bisect_runs(a, a_lo, a_hi, b, b_lo, mid, visit)?;
-        bisect_runs(a, a_lo, a_hi, b, mid, b_hi, visit)
+        match bisect_runs(a, a_lo, a_hi, b, b_lo, mid, work, visit)? {
+            ControlFlow::Continue(()) => {},
+            ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
+        }
+        bisect_runs(a, a_lo, a_hi, b, mid, b_hi, work, visit)
     }
 }
 
 /// The plain forward-window scan over sweep-sorted entries.
-fn plain_windows<B>(
+fn plain_windows<B, W: Work>(
     entries: &[SweepEntry],
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
-) -> ControlFlow<B> {
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
     let mut remaining = entries;
     while let Some((left, right_entries)) = remaining.split_first() {
+        work.charge(1)?;
         for right in right_entries {
+            work.charge(1)?;
             if right.sweep_min > left.sweep_max {
                 break;
             }
@@ -835,12 +981,15 @@ fn plain_windows<B>(
                 && right.cross_min <= left.cross_max
                 && right.cross_max >= left.cross_min
             {
-                visit_pair(left, right, visit)?;
+                match visit_pair(left, right, work, visit)? {
+                    ControlFlow::Continue(()) => {},
+                    ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
+                }
             }
         }
         remaining = right_entries;
     }
-    ControlFlow::Continue(())
+    Ok(ControlFlow::Continue(()))
 }
 
 /// The banded forward-window scan (see [`for_each_candidate_pair`]): CSR
@@ -850,45 +999,61 @@ fn plain_windows<B>(
     clippy::indexing_slicing,
     reason = "at most 64 bands of u32-admitted entries keep every usize CSR offset representable on the supported 64-bit target"
 )]
-fn banded_windows<B>(
+fn banded_windows<B, W: Work>(
     entries: &[SweepEntry],
     bands: usize,
     cross_lo: f64,
     band_height: f64,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
-) -> ControlFlow<B> {
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
     let band_of = |cross: f64| -> usize {
         (((cross - cross_lo) / band_height) as usize).min(bands.wrapping_sub(1))
     };
     // Entries are already in sweep order, so every band row is too.
     let start_len = bands.wrapping_add(1);
+    // Allocate and zero the CSR row starts before counting memberships.
+    work.charge_product(start_len, 2)?;
     let mut starts = vec![0_usize; start_len];
     for entry in entries {
+        work.charge(1)?;
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
+            work.charge(1)?;
             let next = band.wrapping_add(1);
             starts[next] = starts[next].wrapping_add(1);
         }
     }
+    // Prefix sums visit one row per band.
+    work.charge_product(bands, 1)?;
     for band in 0..bands {
         let next = band.wrapping_add(1);
         starts[next] = starts[next].wrapping_add(starts[band]);
     }
+    // The cursor is a copied starts column.
+    work.charge_product(start_len, 2)?;
     let mut cursor = Vec::with_capacity(start_len);
     cursor.extend_from_slice(&starts);
+    // Allocate and zero one slot per actual band membership.
+    work.charge_product(starts[bands], 2)?;
     let mut slots = vec![0_usize; starts[bands]];
     for (position, entry) in entries.iter().enumerate() {
+        work.charge(1)?;
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
+            work.charge(1)?;
             slots[cursor[band]] = position;
             cursor[band] = cursor[band].wrapping_add(1);
         }
     }
     for band in 0..bands {
+        work.charge(1)?;
         let next = band.wrapping_add(1);
         let row = &slots[starts[band]..starts[next]];
         let mut remaining = row;
         while let Some((&left_slot, right_slots)) = remaining.split_first() {
+            work.charge(1)?;
             let left = &entries[left_slot];
             for &right_slot in right_slots {
+                work.charge(1)?;
                 let right = &entries[right_slot];
                 if right.sweep_min > left.sweep_max {
                     break;
@@ -897,29 +1062,32 @@ fn banded_windows<B>(
                     && right.cross_min <= left.cross_max
                     && right.cross_max >= left.cross_min
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
-                    && let ControlFlow::Break(value) = visit_pair(left, right, visit)
                 {
-                    return ControlFlow::Break(value);
+                    match visit_pair(left, right, work, visit)? {
+                        ControlFlow::Continue(()) => {},
+                        ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
+                    }
                 }
             }
             remaining = right_slots;
         }
     }
-    ControlFlow::Continue(())
+    Ok(ControlFlow::Continue(()))
 }
 
 /// Preserve operand order for cross joins and ascending ordinals for self joins.
-fn visit_pair<B>(
+fn visit_pair<B, W: Work>(
     left: &SweepEntry,
     right: &SweepEntry,
-    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
-) -> ControlFlow<B> {
+    work: &mut W,
+    visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
+) -> Result<ControlFlow<B>> {
     match (left.side, right.side) {
         (CROSS_LEFT_SIDE, CROSS_RIGHT_SIDE) => {
-            return visit(left.ordinal as usize, right.ordinal as usize);
+            return visit(left.ordinal as usize, right.ordinal as usize, work);
         },
         (CROSS_RIGHT_SIDE, CROSS_LEFT_SIDE) => {
-            return visit(right.ordinal as usize, left.ordinal as usize);
+            return visit(right.ordinal as usize, left.ordinal as usize, work);
         },
         _ => {},
     }
@@ -928,7 +1096,7 @@ fn visit_pair<B>(
     } else {
         (right.ordinal, left.ordinal)
     };
-    visit(low as usize, high as usize)
+    visit(low as usize, high as usize, work)
 }
 
 #[cfg(test)]

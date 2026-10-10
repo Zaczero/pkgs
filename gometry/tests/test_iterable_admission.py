@@ -109,7 +109,7 @@ def test_userdict_properties_are_preserved() -> None:
         'geometry': {'type': 'Point', 'coordinates': [0.0, 1.0]},
         'properties': props,
     }
-    features = gm.from_features([feat])
+    features = gm.from_geojson([feat], features=True)
     assert len(features.geometries) == 1
     assert features.properties[0]['name'] == 'a'
 
@@ -183,7 +183,7 @@ except Exception as e:
         'gm.from_geojson(M())',
         'gm.GeometryArray([M()])',
         'gm.to_feature(gm.Point(0, 0), properties=M())',
-        "gm.from_features([{'type': 'Feature', 'geometry': {'type': 'Point', 'coordinates': [0, 0]}, 'properties': M()}])",
+        "gm.from_geojson([{'type': 'Feature', 'geometry': {'type': 'Point', 'coordinates': [0, 0]}, 'properties': M()}])",
         'gm.Features(gm.GeometryArray([gm.Point(0, 0)]), properties=M())',
     ],
 )
@@ -220,7 +220,7 @@ def test_keys_only_properties_to_feature_and_features() -> None:
     features = gm.Features(gm.GeometryArray([gm.Point(0, 0)]), properties=Props())
     assert features.properties[0]['name'] == 'ok'
 
-    # from_features feature body with keys()-only properties
+    # from_geojson feature body with keys()-only properties
     class Feat:
         def keys(self):
             return ('type', 'geometry', 'properties')
@@ -232,7 +232,7 @@ def test_keys_only_properties_to_feature_and_features() -> None:
                 'properties': {'k': 1},
             }[key]
 
-    parsed = gm.from_features([Feat()])
+    parsed = gm.from_geojson([Feat()], features=True)
     assert parsed.geometries[0].to_wkt() == 'POINT (3 4)'
     assert parsed.properties[0]['k'] == 1
 
@@ -291,7 +291,7 @@ def test_nested_mapping_proxy_and_keys_duck() -> None:
         }).to_wkt()
         == 'POINT (7 8)'
     )
-    # GeometryArray / require / from_features nested geometry
+    # GeometryArray / require / from_geojson nested geometry
     arr = gm.GeometryArray([
         collections.UserDict({'type': 'Point', 'coordinates': [9.0, 10.0]})
     ])
@@ -302,16 +302,19 @@ def test_nested_mapping_proxy_and_keys_duck() -> None:
         ).to_wkt()
         == 'POINT (11 12)'
     )
-    feats = gm.from_features([
-        {
-            'type': 'Feature',
-            'geometry': collections.UserDict({
-                'type': 'Point',
-                'coordinates': [13.0, 14.0],
-            }),
-            'properties': {'k': 1},
-        }
-    ])
+    feats = gm.from_geojson(
+        [
+            {
+                'type': 'Feature',
+                'geometry': collections.UserDict({
+                    'type': 'Point',
+                    'coordinates': [13.0, 14.0],
+                }),
+                'properties': {'k': 1},
+            }
+        ],
+        features=True,
+    )
     assert feats.geometries[0].to_wkt() == 'POINT (13 14)'
 
 
@@ -343,7 +346,7 @@ def test_to_feature_collection_preserves_once_map_properties() -> None:
     assert props == [{'name': 'ok'}, {'name': 'ok'}]
 
 
-def test_from_features_accepts_keys_only_mapping() -> None:
+def test_from_geojson_accepts_keys_only_mapping() -> None:
     """Top-level keys()-only Feature (not only abc.Mapping) is accepted."""
 
     class Feat:
@@ -357,7 +360,7 @@ def test_from_features_accepts_keys_only_mapping() -> None:
                 'properties': {'name': 'ok'},
             }[key]
 
-    parsed = gm.from_features(Feat())
+    parsed = gm.from_geojson(Feat(), features=True)
     assert parsed.geometries[0].to_wkt() == 'POINT (2 3)'
     assert parsed.properties[0]['name'] == 'ok'
 
@@ -425,7 +428,7 @@ assert all(name == "GeometryError" for _, name, _ in errs)
     'call',
     [
         'gm.crs_transform(4326, 4326, itertools.repeat(0.0), [0.0])',
-        'gm.Point(0, 0).set_coordinates(x=itertools.repeat(1.0), y=[2.0])',
+        'gm.Point(0, 0).with_coordinates(x=itertools.repeat(1.0), y=[2.0])',
         'gm.points(itertools.repeat(0.0), [0.0])',
         'gm.LineString(x=itertools.repeat(0.0), y=[0.0])',
         'gm.LineString(x=itertools.repeat(0.0), y=itertools.repeat(1.0), z=[0.0])',
@@ -435,8 +438,8 @@ assert all(name == "GeometryError" for _, name, _ in errs)
         'gm.CRS({"grid_mapping_name": "lambert_conformal_conic", "standard_parallel": itertools.repeat(30.0)})',
         'gm.Point(0, 0).destination(itertools.repeat(0.0), [1.0])',
         'gm.point_between(gm.GeometryArray([gm.Point(0, 0)]), gm.Point(1, 1), itertools.repeat(0.0))',
-        'gm.contains_xy(gm.box(0, 0, 1, 1), itertools.repeat(0.0), [0.0])',
-        'gm.contains_xy(gm.GeometryArray([gm.Point(0, 0)]), itertools.repeat(0.0), itertools.repeat(0.0))',
+        'gm.contains(gm.box(0, 0, 1, 1), x=itertools.repeat(0.0), y=[0.0])',
+        'gm.contains(gm.GeometryArray([gm.Point(0, 0)]), x=itertools.repeat(0.0), y=itertools.repeat(0.0))',
         'gm.GeometryArray([gm.Point(0, 0)]).destination(itertools.repeat(0.0), itertools.repeat(1.0))',
         'gm.MultiPolygon([[itertools.repeat(1.0)]])',
         'gm.h3_cells([0.0], [0.0], resolution=itertools.repeat(1))',
@@ -483,13 +486,16 @@ def test_collection_and_features_accept_finite_inputs() -> None:
     assert gm.GeometryCollection([gm.Point(0, 0)]).to_wkt() == (
         'GEOMETRYCOLLECTION (POINT (0 0))'
     )
-    feats = gm.from_features([
-        {
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
-            'properties': {},
-        }
-    ])
+    feats = gm.from_geojson(
+        [
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+                'properties': {},
+            }
+        ],
+        features=True,
+    )
     assert len(feats.geometries) == 1
     assert feats.geometries[0].to_wkt() == 'POINT (1 2)'
     # Length-reporting multi-million-scale lists still work.

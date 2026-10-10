@@ -673,7 +673,7 @@ where
                     index,
                     format!(
                         "Polygon rings must share one coordinate axes layout for serialization; \
-                         got {} and {} — promote with force_3d/set_m first",
+                         got {} and {} — promote with force_3d/with_coordinates(m=...) first",
                         prev.as_str(),
                         member.as_str(),
                     )
@@ -817,6 +817,12 @@ mod tests {
         assert!(matches!(
             geojson_text_summary(&shape).geojson_lower_bound(limit),
             TextWidthBound::Exceeds { limit: got } if got == limit
+        ));
+        let error = to_wkt_with_srid(&shape, Some("not a CRS"), true)
+            .expect_err("WKT body width fails before SRID prefix validation");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
         ));
     }
 

@@ -29,8 +29,17 @@ pub(crate) fn py_iter_or_error<'py>(
     value: &Bound<'py, PyAny>,
     error: impl FnOnce() -> PyErr,
 ) -> PyResult<Bound<'py, PyIterator>> {
+    py_iter_or_none(value)?.ok_or_else(error)
+}
+
+/// Acquire a Python iterator, returning `None` only when the value has neither
+/// the iterator nor legacy sequence protocol. Errors raised by a supplied
+/// protocol are returned unchanged.
+pub(crate) fn py_iter_or_none<'py>(
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Option<Bound<'py, PyIterator>>> {
     match value.try_iter() {
-        Ok(iter) => Ok(iter),
+        Ok(iter) => Ok(Some(iter)),
         Err(protocol_error)
             if protocol_error.is_instance_of::<PyTypeError>(value.py())
                 && value
@@ -40,7 +49,7 @@ pub(crate) fn py_iter_or_error<'py>(
                     .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
                     .is_none() =>
         {
-            Err(error())
+            Ok(None)
         },
         Err(protocol_error) => Err(protocol_error),
     }
@@ -341,8 +350,7 @@ pub(crate) fn collect_py_iter_exact_from_iter<'py, T>(
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<T>> {
-    let mut out = Vec::new();
-    out.reserve(expected);
+    let mut out = Vec::with_capacity(expected);
     for index in 0..expected {
         check_python_signals(values.py(), index)?;
         let Some(item) = iter.next() else {

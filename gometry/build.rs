@@ -124,8 +124,8 @@ fn validate_release_identity(
 }
 
 fn validate_release_compiler_flags(target: &str) {
-    // wheel_smoke owns target-to-policy mapping; verify Cargo received its
-    // exported flags without duplicating that policy table here.
+    // tools/_artifact_common.py maps targets to flags; verify Cargo received
+    // its exported values without duplicating that policy table here.
     let policy_rustflags = env::var("GOMETRY_RELEASE_RUSTFLAGS")
         .expect("validated release identity contains GOMETRY_RELEASE_RUSTFLAGS")
         .split_whitespace()

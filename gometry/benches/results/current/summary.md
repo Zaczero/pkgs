@@ -1,3 +1,13 @@
+> Historical measurement: the coordinate row below measured the former
+> `get_coordinates(..., return_index=True)` entry point at commit `b8e785c8`.
+> It is retained as evidence for that release and does not measure the current
+> `.coords` plus NumPy matrix/row-index path. No replacement timing is claimed.
+>
+> Historical prepared-predicate measurements: the prepared XY row and
+> certified batch-boundary curve below measured `gometry.contains_xy` at
+> commit `b8e785c8`. They do not measure the current
+> `gometry.contains(..., x=..., y=...)` wrapper; no replacement timing is claimed.
+
 ## Run environment
 
 Measured on AMD Ryzen 9 5950X 16-Core Processor with Linux 7.2.6 and CPython 3.14.7, at commit `b8e785c8`.
@@ -11,7 +21,7 @@ Versions: GeoPandas 1.1.4, h3-py 4.5.0, Mercantile 1.2.1, NumPy 2.5.2, pyarrow 2
 | from_wkb mixed EWKB — 10k mixed EWKB | 1.69 ms | Shapely · 2.33 ms | <span class="benchmark-status benchmark-faster">1.38× faster</span> |
 | from_arrow mixed GeoArrow WKB — 100k mixed GeoArrow WKB / 10% missing | 11.91 ms | GeoPandas · 24.91 ms | <span class="benchmark-status benchmark-faster">2.07× faster</span> |
 | to_wkb mixed EWKB — 10k mixed EWKB | 660.94 us | Shapely · 2.99 ms | <span class="benchmark-status benchmark-faster">4.55× faster</span> |
-| get_coordinates with index — 100k vertices with index | 117.05 us | Shapely · 448.71 us | <span class="benchmark-status benchmark-faster">3.79× faster</span> |
+| Historical `get_coordinates` with index — 100k vertices with index | 117.05 us | Shapely · 448.71 us | <span class="benchmark-status benchmark-faster">3.79× faster</span> |
 | points from NumPy XY — 10k NumPy XY | 7.28 us | Shapely · 1.01 ms | <span class="benchmark-status benchmark-faster">140.45× faster</span> |
 | from WKT mixed geometries — 10k realistic mixed WKT | 5.03 ms | Shapely · 16.68 ms | <span class="benchmark-status benchmark-faster">3.32× faster</span> |
 | from GeoJSON countries — 217 countries / 2.26 MB | 13.41 ms | Shapely · 36.14 ms | <span class="benchmark-status benchmark-faster">2.70× faster</span> |
@@ -31,7 +41,7 @@ Versions: GeoPandas 1.1.4, h3-py 4.5.0, Mercantile 1.2.1, NumPy 2.5.2, pyarrow 2
 | buffer projected points — 10k projected points | 791.92 us | Shapely · 51.00 ms | <span class="benchmark-status benchmark-faster">64.40× faster</span> |
 | intersection pairwise — 1k irregular polygon pairs | 10.73 ms | Shapely · 7.28 ms | <span class="benchmark-status benchmark-slower">1.47× slower</span> |
 | intersects pairwise polygons — 1k irregular polygon pairs | 580.37 us | Shapely · 570.96 us | <span class="benchmark-status benchmark-inconclusive">Inconclusive</span> |
-| coverage_union parcels — 10k edge-matched parcels | 6.04 ms | Shapely · 10.13 ms | <span class="benchmark-status benchmark-faster">1.68× faster</span> |
+| coverage_union_all parcels — 10k edge-matched parcels | 6.04 ms | Shapely · 10.13 ms | <span class="benchmark-status benchmark-faster">1.68× faster</span> |
 | is_valid mixed polygons — 10k mixed polygons / 20% invalid | 6.01 ms | Shapely · 9.45 ms | <span class="benchmark-status benchmark-faster">1.58× faster</span> |
 | repair linework — 1k invalid polygons | 17.88 ms | Shapely · 92.93 ms | <span class="benchmark-status benchmark-faster">5.21× faster</span> |
 | bounds projected buildings — 10k projected buildings | 142.18 us | Shapely · 164.38 us | <span class="benchmark-status benchmark-faster">1.15× faster</span> |
@@ -163,7 +173,7 @@ Dimension `holes` in `holes`; each point is an independent paired workload.
 
 Endpoint growth (250 → 4k): gometry median 16.598x, comparator median 16.836x, gometry/work 1.037x, comparator/work 1.052x.
 
-#### contains_xy: certified batch boundary
+#### contains coordinate probes: certified batch boundary
 
 Dimension `probe-count` in `probes`; each point is an independent paired workload.
 

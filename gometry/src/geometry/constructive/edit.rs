@@ -1031,18 +1031,18 @@ impl CoordSeq {
     /// Set or clear the Z ordinate column. `value=None` removes Z (M is
     /// preserved); `Some(z)` with `overwrite` writes `z` at every vertex,
     /// otherwise fills only when the column is absent (existing Z is kept).
-    pub fn set_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::Z, value, overwrite)
     }
 
     /// Set or clear the M ordinate column. `value=None` removes M (Z is
     /// preserved); `Some(m)` with `overwrite` writes `m` at every vertex,
     /// otherwise fills only when the column is absent (existing M is kept).
-    pub fn set_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::M, value, overwrite)
     }
 
-    /// The columnar engine behind [`Shape::set_z`]/[`Shape::set_m`]: one
+    /// The columnar engine behind [`Shape::replace_z`]/[`Shape::replace_m`]: one
     /// optional ordinate column is replaced or dropped, the other passes
     /// through. Homogeneous packed storage shares uniform axes per column,
     /// so fill-only (`overwrite=False` on an existing column) is an
@@ -1068,7 +1068,7 @@ impl CoordSeq {
         // column (X, Y, and the OTHER optional ordinate) is Arc-carried, not
         // re-copied — zero allocation on the full-window common case.
         // An empty sequence gets a zero-length column: axes are real state
-        // on empties, so `set_z`/`force_3d` flip has_z/has_m even with no
+        // on empties, so `replace_z`/`force_3d` flip has_z/has_m even with no
         // vertices (`MULTIPOINT EMPTY` → `MULTIPOINT Z EMPTY`).
         let ordinate_column = |value: Option<f64>| {
             value.map(|value| crate::geometry::SharedSlice::from_vec(fill(value)))
@@ -1797,20 +1797,20 @@ impl Shape {
     /// Set or clear the Z ordinate. `value=None` removes Z (M is preserved);
     /// `Some(z)` with `overwrite` writes `z` at every vertex, otherwise fills
     /// only vertices that lack Z (existing Z is kept). M passes through.
-    pub fn set_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::Z, value, overwrite)
     }
 
     /// Set or clear the M ordinate. `value=None` removes M (Z is preserved);
     /// `Some(m)` with `overwrite` writes `m` at every vertex, otherwise fills
     /// only vertices that lack M (existing M is kept). Z passes through.
-    pub fn set_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::M, value, overwrite)
     }
 
     /// The same-kind empty retagged to `axes`, or `None` when `self` is not a
     /// canonical empty representation. The ordinate verbs route empties here
-    /// so declared axes are real state on emptiness (`set_z` on
+    /// so declared axes are real state on emptiness (`replace_z` on
     /// `MULTIPOLYGON EMPTY` yields `MULTIPOLYGON Z EMPTY`). A non-canonical
     /// empty (e.g. a collection OF empties) is `None` — its members retag
     /// individually through the recursive verb.
@@ -1836,7 +1836,7 @@ impl Shape {
         }
     }
 
-    /// The single engine behind [`Shape::set_z`]/[`Shape::set_m`]: per-vertex
+    /// The single engine behind [`Shape::replace_z`]/[`Shape::replace_m`]: per-vertex
     /// replacement of one optional ordinate, leaving the other axis untouched.
     /// Empties retag their declared axes (no vertices to fill, but the
     /// dimensionality is real state); collections recurse so nested empties
@@ -2045,25 +2045,18 @@ impl Shape {
     /// bounded parts, subdivision returns an unrepresentable-output error
     /// instead of emitting an oversized part.
     pub fn subdivide(&self, max_vertices: usize, drop: bool) -> Result<Vec<Self>> {
-        self.subdivide_with_frame(max_vertices, drop, None, None)
+        self.subdivide_with_context(
+            max_vertices,
+            drop,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
     }
 
-    pub(crate) fn subdivide_in_geographic_frame(
+    pub(crate) fn subdivide_with_context(
         &self,
         max_vertices: usize,
         drop: bool,
-        frame: crate::geographic::GeographicFrame,
-        metric_access: &crate::geometry::SourceArcMetricAccess<'_>,
-    ) -> Result<Vec<Self>> {
-        self.subdivide_with_frame(max_vertices, drop, Some(frame), Some(metric_access))
-    }
-
-    fn subdivide_with_frame(
-        &self,
-        max_vertices: usize,
-        drop: bool,
-        frame: Option<crate::geographic::GeographicFrame>,
-        metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Vec<Self>> {
         let mut parts = Vec::new();
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
@@ -2071,8 +2064,7 @@ impl Shape {
             self.clone(),
             max_vertices,
             drop,
-            frame,
-            metric_access,
+            context,
             &mut parts,
             &mut budget,
         )?;
@@ -2091,26 +2083,14 @@ impl Shape {
         rect: Bounds,
         drop: bool,
         frame: crate::geographic::GeographicFrame,
-        metric_access: &crate::geometry::SourceArcMetricAccess<'_, M>,
+        metric_access: &crate::geometry::SourceArcMetricAccess<'_, '_, M>,
     ) -> Result<Self> {
         let subject_plan = crate::geometry::PreparedPlan::transient(self);
         let subject_cache = crate::geometry::FrameDependentCaches::default();
         let subject =
             crate::geometry::GeographicPrepared::try_new(&subject_plan, &subject_cache, frame)?;
 
-        let rectangle = if rect.crosses_antimeridian() {
-            let west = Bounds::new(
-                rect.minx(),
-                rect.miny(),
-                frame.longitude().half_period(),
-                rect.maxy(),
-            )?;
-            let east = Bounds::new(
-                -frame.longitude().half_period(),
-                rect.miny(),
-                rect.maxx(),
-                rect.maxy(),
-            )?;
+        let rectangle = if let Some([west, east]) = rect.split_geographic(frame) {
             Self::geometry_collection(vec![
                 crate::geometry::geographic_bounds_to_shape(west, frame)?,
                 crate::geometry::geographic_bounds_to_shape(east, frame)?,
@@ -2128,7 +2108,10 @@ impl Shape {
             OverlayOp::Intersection,
             Strictness::from(drop),
             true,
-            Some(metric_access),
+            &crate::geometry::SourceArcContext::new(
+                crate::geometry::TopologyDomain::Geographic(frame),
+                Some(metric_access),
+            ),
         )?;
         Ok(clipped)
     }
@@ -2143,11 +2126,7 @@ impl Shape {
         bounds: Option<Bounds>,
     ) -> Result<Self> {
         if rect.crosses_antimeridian() {
-            let west = Bounds::new(rect.minx(), rect.miny(), 180.0, rect.maxy())?;
-            let east = Bounds::new(-180.0, rect.miny(), rect.maxx(), rect.maxy())?;
-            let left = self.clip_by_rect_with_bounds(west, drop, bounds)?;
-            let right = self.clip_by_rect_with_bounds(east, drop, bounds)?;
-            return left.union(&right, Strictness::from(drop));
+            return Err(crate::geometry::GeometryErrorKind::InvalidRectangle.into());
         }
         overlay_intersection_with_rectangle(self, rect, bounds, Strictness::from(drop))
     }

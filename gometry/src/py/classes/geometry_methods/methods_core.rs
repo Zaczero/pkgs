@@ -1,9 +1,13 @@
+use pyo3::types::{PyDictMethods as _, PyTupleMethods as _};
+
 use crate::boundary::coordinates::measure_shape;
 use crate::dispatch::{MetricOp, kernels};
 use crate::predicates::unary;
 use crate::py::classes::geometry_methods::{
-    Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
+    Bound, Py, PyAny, PyAnyMethods as _, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed,
+    pymethods,
 };
+use crate::py::support::geojson_domain_metric;
 use crate::{
     Arc, Bounds, PyCoordinates, PyCrs, PyTypeError, coordinates, map_coordinates_callback,
     parse_coordinate_replacement, render_shape_html, render_shape_svg, replace_shape_coordinates,
@@ -141,10 +145,12 @@ impl PyGeometry {
     /// Coordinates
     ///     Flat, indexable view of vertex coordinates (X/Y and active Z/M).
     #[getter]
-    pub fn coords(&self) -> PyCoordinates {
-        PyCoordinates::new(coordinates::CoordinateView::from_shape(Arc::clone(
-            &self.shape,
-        )))
+    pub fn coords(slf: &Bound<'_, Self>) -> PyCoordinates {
+        let geometry = slf.borrow();
+        PyCoordinates::new(
+            coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape)),
+            slf.clone().unbind().into_any(),
+        )
     }
     /// Total number of coordinates in this geometry.
     ///
@@ -159,24 +165,24 @@ impl PyGeometry {
         let measure = measure_shape(py, self.shape.shape())?;
         Ok(measure.count_pyint(py))
     }
-    /// Return a geometry with the same topology and replacement coordinates.
+    /// Return a geometry with selected coordinate ordinates replaced.
     ///
-    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view) or
-    /// explicit ``x=`` and ``y=`` columns. The vertex count and ordinate
-    /// layout are preserved; use dimension setters for adding or removing
-    /// Z/M axes.
+    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view), or
+    /// replace any of ``x=``, ``y=``, ``z=``, and ``m=`` by a scalar or a
+    /// column over the flattened coordinate sequence. Omitted ordinates are
+    /// preserved. ``z=None`` and ``m=None`` remove those dimensions; X and Y
+    /// cannot be removed. Matrix and column modes cannot be mixed. Calling
+    /// without arguments returns an unchanged value.
     ///
     /// Parameters
     /// ----------
     /// coordinates : sequence of float, optional
     ///     Replacement ``(N, dims)`` coordinate matrix, including a
     ///     `Coordinates` view.
-    /// x, y : sequence of float, optional
-    ///     Replacement X and Y columns.
-    /// z, m : sequence of float, optional
-    ///     Replacement Z and M columns when this geometry already has those
-    ///     axes. Omitted axes are carried unchanged; ``None`` is not a
-    ///     clearing sentinel.
+    /// x, y, z, m : float, sequence of float, or None, optional
+    ///     Replace one ordinate by a scalar broadcast over vertices or a
+    ///     column with one value per coordinate. Omitted ordinates are
+    ///     preserved. ``None`` removes Z or M and is not valid for X or Y.
     ///
     /// Returns
     /// -------
@@ -185,15 +191,23 @@ impl PyGeometry {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.LineString([(0, 0), (1, 1)]).set_coordinates([(5, 5), (6, 6)]).to_wkt()
+    /// >>> gm.LineString([(0, 0), (1, 1)]).with_coordinates([(5, 5), (6, 6)]).to_wkt()
     /// 'LINESTRING (5 5, 6 6)'
     #[pyo3(signature = (*args, **kwargs), text_signature = "($self, coordinates=None, /, *, x=..., y=..., z=..., m=...)")]
-    pub fn set_coordinates(
+    pub fn with_coordinates(
         &self,
         py: Python<'_>,
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Typed> {
+        let no_matrix = match args.len() {
+            0 => true,
+            1 => args.get_item(0)?.is_none(),
+            _ => false,
+        };
+        if no_matrix && kwargs.is_none_or(|kwargs| kwargs.is_empty()) {
+            return Ok(Typed(self.clone()));
+        }
         let measure = measure_shape(py, self.shape.shape())?;
         let axes = measure.shape_axes();
         let len = measure.len_for_python()?;
@@ -221,13 +235,19 @@ impl PyGeometry {
     /// >>> import gometry as gm
     /// >>> gm.LineString([(0, 0), (1, 1)]).map_coordinates(lambda m: m + 1).to_wkt()
     /// 'LINESTRING (1 1, 2 2)'
-    pub fn map_coordinates(&self, py: Python<'_>, func: &Bound<'_, PyAny>) -> PyResult<Typed> {
-        let coords = PyCoordinates::new(coordinates::CoordinateView::from_shape(Arc::clone(
-            &self.shape,
-        )));
+    pub fn map_coordinates(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        func: &Bound<'_, PyAny>,
+    ) -> PyResult<Typed> {
+        let geometry = slf.borrow();
+        let coords = PyCoordinates::new(
+            coordinates::CoordinateView::from_shape(Arc::clone(&geometry.shape)),
+            slf.clone().unbind().into_any(),
+        );
         let replacement = map_coordinates_callback(py, coords, func)?;
-        let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
-        Ok(self.typed_shape(shape))
+        let shape = replace_shape_coordinates(geometry.shape.shape(), &replacement)?;
+        Ok(geometry.typed_shape(shape))
     }
     /// Whether the geometry is empty (no points, rings, or parts).
     ///
@@ -356,14 +376,12 @@ impl PyGeometry {
         }
         let shape = std::sync::Arc::clone(&self.shape);
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
-        let (domain, metric) =
-            crate::py::support::geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let (domain, metric) = geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
         let metric_access = move || {
             metric.geographic_chart_metric()?.ok_or_else(|| {
                 crate::crs::CrsError::invalid(
                     "geographic GeoJSON source ordinates require the geometry CRS metric",
                 )
-                .into()
             })
         };
         let text = py.detach(move || {

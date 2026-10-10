@@ -3,7 +3,7 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::geometry::types::{CoordSeq, Ring, SharedSlice};
-use crate::geometry::{FacetBvh, PointEntry, PointSetIndex, PreparedLinework, xy_bounds_columns};
+use crate::geometry::{FacetBvh, PointSetIndex, PreparedLinework, xy_bounds_columns};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Polygon {
@@ -128,6 +128,10 @@ impl CoordinateAxes {
 
     pub(crate) const fn bits(self) -> u8 {
         self.0
+    }
+
+    pub(crate) const fn with_axes(self, has_z: bool, has_m: bool) -> Self {
+        Self((if has_z { Self::Z } else { 0 }) | (if has_m { Self::M } else { 0 }))
     }
 
     pub const fn has_z(self) -> bool {
@@ -326,7 +330,7 @@ pub(crate) struct DistanceParts {
     /// — turns the nearest-points point-vs-point phase from an O(probe·points)
     /// brute scan into O(probe·log points) for point-heavy operands (multipoint
     /// targets), amortized across a scalar-vs-array batch.
-    pub(crate) point_index: std::sync::OnceLock<Option<PointSetIndex<PointEntry>>>,
+    pub(crate) point_index: std::sync::OnceLock<Option<PointSetIndex>>,
 }
 
 /// Frame and runtime identity shared by chart-part and line-index products.

@@ -23,8 +23,8 @@ use crate::error::Result;
 use crate::geometry::area::{RingWinding, open_xy_cycle_winding};
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search,
-    build_proximity_classes, exact_chord_radius, possible_swept_bounds, proximity_limit,
+    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search, SearchAccount,
+    Work, build_proximity_classes, exact_chord_radius, possible_swept_bounds, proximity_limit,
 };
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{
@@ -593,7 +593,7 @@ impl ClipTrace {
         })?;
         u32::try_from(source_segment_count)
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-        budget.charge(
+        budget.charge_evaluations(
             u64::try_from(source_segment_count.div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
@@ -619,7 +619,7 @@ impl ClipTrace {
                 });
             }
         }
-        budget.charge(
+        budget.charge_evaluations(
             u64::try_from(subdivision.edges.len().div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
@@ -630,7 +630,7 @@ impl ClipTrace {
         })?;
         let source_atom_units = u64::try_from(source_atom_count.div_ceil(16))
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-        budget.charge(source_atom_units)?;
+        budget.charge_evaluations(source_atom_units)?;
         let mut rows: Vec<_> = std::iter::repeat_with(ClipSourceRow::default)
             .take(source_segment_count)
             .collect();
@@ -647,7 +647,7 @@ impl ClipTrace {
             }
         }
 
-        budget.charge(source_atom_units)?;
+        budget.charge_evaluations(source_atom_units)?;
         let mut rings: Vec<_> = std::iter::repeat_with(ClipTraceRing::default)
             .take(clip.rings.len())
             .collect();
@@ -2980,10 +2980,10 @@ impl<'a> VoronoiEmbedding<'a> {
             })
     }
 
-    fn clip_host_failures(
+    fn clip_host_failures<A: SearchAccount>(
         &self,
         coordinates: &[XY],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Vec<ClipHostFailure>> {
         if self.separator_chords.is_empty() {
             return Ok(Vec::new());
@@ -2993,7 +2993,7 @@ impl<'a> VoronoiEmbedding<'a> {
             self.clip,
             self.clip_trace,
             |vertex| self.xy(vertex, coordinates),
-            budget,
+            account,
         )?;
         let clip_edge_count = certificate.edges.len();
         let separator_count = self.separator_chords.len();
@@ -3001,7 +3001,7 @@ impl<'a> VoronoiEmbedding<'a> {
             .div_ceil(16)
             .checked_add(separator_count.div_ceil(16))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(index_units).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
         let bounds = |start: XY, end: XY| {
@@ -3029,7 +3029,7 @@ impl<'a> VoronoiEmbedding<'a> {
         let sweep_count = clip_edge_count
             .checked_add(separator_count)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(sweep_count.div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
@@ -3042,7 +3042,7 @@ impl<'a> VoronoiEmbedding<'a> {
                 if callback_error.is_some() {
                     return ControlFlow::Break(());
                 }
-                if let Err(error) = budget.charge(1) {
+                if let Err(error) = account.charge_evaluations(1) {
                     callback_error = Some(error);
                     return ControlFlow::Break(());
                 }
@@ -3057,7 +3057,7 @@ impl<'a> VoronoiEmbedding<'a> {
         candidate_pairs.sort_unstable();
         let candidate_units = u64::try_from(candidate_pairs.len().div_ceil(16))
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-        budget.charge(candidate_units)?;
+        account.charge_evaluations(candidate_units)?;
 
         let offset_count = separator_count
             .checked_add(1)
@@ -3082,7 +3082,7 @@ impl<'a> VoronoiEmbedding<'a> {
             return Err(clip_source_trace_error());
         }
 
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(clip_edge_count.div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
@@ -3100,7 +3100,7 @@ impl<'a> VoronoiEmbedding<'a> {
                 start.y.max(end.y),
             )
         })?;
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(self.clip_trace.atom_count.div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
@@ -3128,7 +3128,7 @@ impl<'a> VoronoiEmbedding<'a> {
                 &y_index,
                 &mut events,
                 &mut parity,
-                budget,
+                account,
             )? {
                 failures.push(ClipHostFailure { chord, boundary });
             }
@@ -3510,7 +3510,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
         class.map(|class| (class, ready_rank))
     }
 
-    fn prepare_proximity(&self, budget: &mut EvaluationBudget) -> Result<()> {
+    fn prepare_proximity<A: SearchAccount>(&self, account: &mut A) -> Result<()> {
         if self.proximity.borrow().is_some() {
             return Ok(());
         }
@@ -3539,7 +3539,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
                 );
             }
         }
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(self.embedding.chords.len().div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
@@ -3629,7 +3629,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
                 );
             }
         }
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(sites.len().div_ceil(16))
                 .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
         )?;
@@ -3852,14 +3852,22 @@ impl Problem for VoronoiProblem<'_, '_> {
     type Candidate = XY;
     type Key = PointKey;
     type ClassState = VoronoiClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         &self.classes
     }
 
-    fn fixed_keys(&self, class: usize, _variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        _variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        work.charge_product(self.embedding.live_nodes.len(), 1)?;
         let mut keys = Vec::with_capacity(self.embedding.live_nodes.len());
         for &node in self.embedding.live_nodes {
+            work.charge(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -3867,6 +3875,7 @@ impl Problem for VoronoiProblem<'_, '_> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
+                work.charge(1)?;
                 keys.push(PointKey::new(
                     self.embedding.xy(node, self.embedding.coordinates)?,
                 ));
@@ -3885,14 +3894,21 @@ impl Problem for VoronoiProblem<'_, '_> {
         })
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
         let nearest = self.embedding.xy(node, self.embedding.coordinates)?;
         let x_values = [nearest.x.next_down(), nearest.x, nearest.x.next_up()];
         let y_values = [nearest.y.next_down(), nearest.y, nearest.y.next_up()];
+        let candidate_count = x_values
+            .len()
+            .checked_mul(y_values.len())
+            .expect("three candidate coordinates per axis fit in usize");
+        work.charge_product(candidate_count, 1)?;
+        candidates.reserve(candidate_count);
         for &x in &x_values {
             for &y in &y_values {
                 let candidate = XY::new(x, y);
@@ -3920,13 +3936,13 @@ impl Problem for VoronoiProblem<'_, '_> {
         PointKey::new(candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         _variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        self.prepare_proximity(budget)?;
+        self.prepare_proximity(account)?;
         let prepared = self.proximity.borrow();
         Ok(prepared
             .as_ref()
@@ -3937,14 +3953,14 @@ impl Problem for VoronoiProblem<'_, '_> {
             .clone())
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         _variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
         let prepared = self.proximity.borrow();
         let prepared = prepared
@@ -3955,7 +3971,7 @@ impl Problem for VoronoiProblem<'_, '_> {
             .get(rank)
             .expect("rank belongs to the Voronoi class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let (left, right) = *prepared
                 .pairs
                 .get(pair)
@@ -3969,7 +3985,7 @@ impl Problem for VoronoiProblem<'_, '_> {
             .get(rank)
             .expect("rank belongs to the Voronoi class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             if !self.check_separator(chord, class, assigned)? {
                 return Ok(false);
             }
@@ -3979,7 +3995,7 @@ impl Problem for VoronoiProblem<'_, '_> {
             .get(rank)
             .expect("rank belongs to the Voronoi class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             if !self.check_site_pair(site_pair, class, assigned)? {
                 return Ok(false);
             }
@@ -3989,7 +4005,7 @@ impl Problem for VoronoiProblem<'_, '_> {
             .get(rank)
             .expect("rank belongs to the Voronoi class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             if !self.check_fan(fan, class, assigned)? {
                 return Ok(false);
             }
@@ -4005,7 +4021,7 @@ impl Problem for VoronoiProblem<'_, '_> {
                 .exact(self.embedding.parts)
                 .vertices
                 .len();
-            budget.charge(
+            account.charge_evaluations(
                 u64::try_from(vertices.div_ceil(16))
                     .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
             )?;
@@ -4016,11 +4032,11 @@ impl Problem for VoronoiProblem<'_, '_> {
         Ok(true)
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         let mut coordinates = self.embedding.coordinates.to_vec();
         for assignment in assignments {
             for (&node, &candidate) in assignment.variables.iter().zip(assignment.values) {
@@ -4053,8 +4069,9 @@ impl Problem for VoronoiProblem<'_, '_> {
             .checked_add(host_items.div_ceil(16))
             .and_then(|units| units.checked_add(self.embedding.live_nodes.len().div_ceil(16)))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        budget
-            .charge(u64::try_from(units).map_err(|_| crate::error::ResourceError::SizeOverflow)?)?;
+        account.charge_evaluations(
+            u64::try_from(units).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
 
         let mut blamed = vec![false; self.classes.len()];
         let mut rejected = false;
@@ -4082,7 +4099,7 @@ impl Problem for VoronoiProblem<'_, '_> {
                 }
             }
         }
-        for failure in self.embedding.clip_host_failures(&coordinates, budget)? {
+        for failure in self.embedding.clip_host_failures(&coordinates, account)? {
             rejected = true;
             let chord = self.embedding.chord(failure.chord);
             self.mark_node_class(VertexId(chord.nodes[0]), &mut blamed);
@@ -4157,7 +4174,7 @@ impl Problem for VoronoiProblem<'_, '_> {
         Ok(if rejected {
             GlobalCheck::Reject(classes)
         } else {
-            GlobalCheck::Pass
+            GlobalCheck::Pass(())
         })
     }
 
@@ -4370,9 +4387,9 @@ fn embed(
     }
     live_nodes.sort_unstable();
     let operation = if product.includes_polygons() {
-        "voronoi_polygons"
+        "voronoi_cells"
     } else {
-        "voronoi_edges"
+        "voronoi_edge_lines"
     };
     let mut search_budget = EvaluationBudget::new(operation, 0)?;
     let clip_trace = ClipTrace::build(subdivision, clip, &mut search_budget)?;
@@ -4746,14 +4763,14 @@ fn point_on_segment_xy(point: XY, start: XY, end: XY) -> bool {
         && exact::orient2d(start, end, point) == ExactSign::Zero
 }
 
-fn exact_point_covered_by_clip_index(
+fn exact_point_covered_by_clip_index<A: SearchAccount>(
     point: &exact::ExactPoint,
     edges: &[ClipCertificateEdge],
     index: &YStabbingIndex<usize>,
     parity: &mut ClipRingParity,
-    budget: &mut EvaluationBudget,
+    account: &mut A,
 ) -> Result<bool> {
-    budget.charge(1)?;
+    account.charge_evaluations(1)?;
     let query_y = point.round_nearest_even()?.y;
     parity.begin_query();
     let mut boundary = false;
@@ -4767,7 +4784,7 @@ fn exact_point_covered_by_clip_index(
             return ControlFlow::Break(());
         };
         failure = (|| {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let (start_y, end_y) = (edge.start.compare_y(point)?, edge.end.compare_y(point)?);
             let (low_y, high_y) = if edge.start.compare_y(&edge.end)?.is_le() {
                 (&edge.start, &edge.end)
@@ -4809,7 +4826,7 @@ fn exact_point_covered_by_clip_index(
     Ok(boundary || parity.covers())
 }
 
-fn rounded_segment_covered_by_clip(
+fn rounded_segment_covered_by_clip<A: SearchAccount>(
     segment: Segment,
     clip_edges: &[ClipCertificateEdge],
     candidates: &[usize],
@@ -4817,13 +4834,13 @@ fn rounded_segment_covered_by_clip(
     y_index: &YStabbingIndex<usize>,
     events: &mut Vec<exact::ExactPoint>,
     parity: &mut ClipRingParity,
-    budget: &mut EvaluationBudget,
+    account: &mut A,
 ) -> Result<Option<ClipBoundaryFailure>> {
     let mut interior_contact = false;
     let mut start_on_boundary = false;
     let mut end_on_boundary = false;
     for &edge_index in candidates {
-        budget.charge(1)?;
+        account.charge_evaluations(1)?;
         let edge = clip_edges.get(edge_index).ok_or_else(exact_cycle_error)?;
         let [start, end] = edge.rounded;
         start_on_boundary |= point_on_segment_xy(segment.start, start, end);
@@ -4859,10 +4876,11 @@ fn rounded_segment_covered_by_clip(
         (segment.end, end_on_boundary),
     ] {
         if !on_boundary {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             if !point_index.covers_point(Point::new_raw_xy(point.x, point.y)) {
                 let point = exact::ExactPoint::from_xy(point);
-                if exact_point_covered_by_clip_index(&point, clip_edges, y_index, parity, budget)? {
+                if exact_point_covered_by_clip_index(&point, clip_edges, y_index, parity, account)?
+                {
                     return Err(voronoi_error(
                         "assigned clip point index disagrees with exact ring membership",
                     ));
@@ -4878,7 +4896,7 @@ fn rounded_segment_covered_by_clip(
     let end = exact::ExactPoint::from_xy(segment.end);
     if !interior_contact {
         let midpoint = start.midpoint(&end)?;
-        if exact_point_covered_by_clip_index(&midpoint, clip_edges, y_index, parity, budget)? {
+        if exact_point_covered_by_clip_index(&midpoint, clip_edges, y_index, parity, account)? {
             return Ok(None);
         }
         return Ok(Some(ClipBoundaryFailure {
@@ -4890,7 +4908,7 @@ fn rounded_segment_covered_by_clip(
     events.reserve(2);
     events.extend([start.clone(), end.clone()]);
     for &edge_index in candidates {
-        budget.charge(1)?;
+        account.charge_evaluations(1)?;
         let edge = clip_edges.get(edge_index).ok_or_else(exact_cycle_error)?;
         match exact::segment_intersection(&start, &end, &edge.start, &edge.end)? {
             exact::SegmentIntersection::None => {},
@@ -4907,7 +4925,7 @@ fn rounded_segment_covered_by_clip(
             continue;
         }
         let midpoint = left.midpoint(right)?;
-        if !exact_point_covered_by_clip_index(&midpoint, clip_edges, y_index, parity, budget)? {
+        if !exact_point_covered_by_clip_index(&midpoint, clip_edges, y_index, parity, account)? {
             return Ok(Some(ClipBoundaryFailure {
                 ring: parity.outside_ring().ok_or_else(clip_source_trace_error)?,
                 atom: None,
@@ -4917,17 +4935,17 @@ fn rounded_segment_covered_by_clip(
     Ok(None)
 }
 
-fn clip_certificate_data(
+fn clip_certificate_data<A: SearchAccount>(
     subdivision: &ExactSubdivision,
     clip: &NormalizedClip<'_>,
     trace: &ClipTrace,
     xy_of: impl Fn(VertexId) -> Result<XY>,
-    budget: &mut EvaluationBudget,
+    account: &mut A,
 ) -> Result<ClipCertificate> {
     if trace.rings.len() != clip.rings.len() {
         return Err(clip_source_trace_error());
     }
-    budget.charge(
+    account.charge_evaluations(
         u64::try_from(trace.atom_count.div_ceil(16))
             .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;

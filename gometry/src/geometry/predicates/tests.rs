@@ -485,7 +485,13 @@ mod convex_tests {
     fn linework_repair_cancels_retraced_occurrences_within_one_ring() {
         let retraced =
             crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,2 0,2 2,0 2,0 0))").unwrap();
-        let repaired = retraced.repair(RepairMethod::Linework, false).unwrap();
+        let repaired = retraced
+            .repair_with_context(
+                RepairMethod::Linework,
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap();
         assert_eq!(crate::io::to_wkt(&repaired).unwrap(), "POLYGON EMPTY");
     }
 
@@ -494,8 +500,20 @@ mod convex_tests {
         let overlap =
             crate::io::parse_wkt("MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((2 2,6 2,6 6,2 6,2 2)))")
                 .unwrap();
-        let linework = overlap.repair(RepairMethod::Linework, false).unwrap();
-        let structure = overlap.repair(RepairMethod::Structure, false).unwrap();
+        let linework = overlap
+            .repair_with_context(
+                RepairMethod::Linework,
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap();
+        let structure = overlap
+            .repair_with_context(
+                RepairMethod::Structure,
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap();
         assert_eq!(linework.geometry_type(), "Polygon");
         assert_eq!(linework.area(), 28.0);
         assert_eq!(structure.geometry_type(), "Polygon");
@@ -506,7 +524,14 @@ mod convex_tests {
         )
         .unwrap();
         assert_eq!(
-            nested.repair(RepairMethod::Linework, false).unwrap().area(),
+            nested
+                .repair_with_context(
+                    RepairMethod::Linework,
+                    false,
+                    &crate::geometry::SourceArcContext::cartesian(),
+                )
+                .unwrap()
+                .area(),
             64.0
         );
     }
@@ -518,7 +543,10 @@ mod convex_tests {
             &bowtie,
             TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
             RepairMethod::Linework,
-            None,
+            &crate::geometry::SourceArcContext::new(
+                TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
+                None,
+            ),
         )
         .unwrap()
         .unwrap();

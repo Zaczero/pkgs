@@ -68,7 +68,7 @@ fn source_current_certificate_requires_every_edge_to_be_reversed() {
     assert!(!reversed_source_zero(&half_period, frame));
 
     let reversed_shell_open_hole = Polygon::new(
-        reversed.shell.clone(),
+        reversed.shell,
         vec![Ring::closed(
             [(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0)]
                 .into_iter()

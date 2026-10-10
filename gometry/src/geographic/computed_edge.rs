@@ -3,7 +3,13 @@ use super::{
     RetainedLongitudeClass,
 };
 use crate::error::Result;
-use crate::geometry::exact_arith::RetainedComputedSample;
+use crate::geometry::exact_arith::{
+    RetainedComputedSample, retained_computed_samples_connection, retained_edge_from_chart_witness,
+    retained_edge_from_lifted_binary64_pair, retained_exact_interval_class,
+    retained_exact_publisher_sample, retained_exact_split_piece_count,
+    retained_native_interval_class, retained_native_publisher_sample,
+    retained_native_split_piece_count,
+};
 use crate::geometry::{
     CoordSeq, Coordinates, ExpansionBudget, GeometryErrorKind, MOrdinate, Point, ZOrdinate,
     interpolate_optional_ordinate, interpolate_subdivision_ordinate,
@@ -34,13 +40,11 @@ impl ComputedLongitudeRelation<'_> {
         endpoints: [f64; 2],
         witness: ChartStep,
     ) -> Result<Self> {
-        Ok(Self::Native(
-            crate::geometry::exact_arith::retained_edge_from_chart_witness(
-                frame.longitude(),
-                endpoints,
-                witness,
-            )?,
-        ))
+        Ok(Self::Native(retained_edge_from_chart_witness(
+            frame.longitude(),
+            endpoints,
+            witness,
+        )?))
     }
 
     fn class(
@@ -50,41 +54,33 @@ impl ComputedLongitudeRelation<'_> {
         to: f64,
     ) -> Result<RetainedLongitudeClass> {
         match self {
-            Self::Native(edge) => {
-                crate::geometry::exact_arith::retained_native_interval_class(edge, axis, from, to)
-            },
+            Self::Native(edge) => retained_native_interval_class(edge, axis, from, to),
             Self::ExactLifted { endpoints } => {
-                crate::geometry::exact_arith::retained_exact_interval_class(
-                    endpoints, axis, from, to,
-                )
+                retained_exact_interval_class(endpoints, axis, from, to)
             },
         }
     }
 
     fn sample(self, axis: super::PeriodicAxis, parameter: f64) -> Result<RetainedComputedSample> {
         match self {
-            Self::Native(edge) => crate::geometry::exact_arith::retained_native_publisher_sample(
-                axis, edge, parameter,
-            ),
+            Self::Native(edge) => retained_native_publisher_sample(axis, edge, parameter),
             Self::ExactLifted { endpoints } => {
-                crate::geometry::exact_arith::retained_exact_publisher_sample(
-                    axis, endpoints, parameter,
-                )
+                retained_exact_publisher_sample(axis, endpoints, parameter)
             },
         }
     }
 
     fn split_piece_count(self, axis: super::PeriodicAxis) -> Result<usize> {
         match self {
-            Self::Native(edge) => {
-                crate::geometry::exact_arith::retained_native_split_piece_count(edge, axis)
-            },
-            Self::ExactLifted { endpoints } => {
-                crate::geometry::exact_arith::retained_exact_split_piece_count(endpoints, axis)
-            },
+            Self::Native(edge) => retained_native_split_piece_count(edge, axis),
+            Self::ExactLifted { endpoints } => retained_exact_split_piece_count(endpoints, axis),
         }
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "from and to use the exact binary64 endpoint parameters supplied by the publisher"
+    )]
     fn reads_as(
         self,
         frame: GeographicFrame,
@@ -98,17 +94,16 @@ impl ComputedLongitudeRelation<'_> {
             .chart_connection(start, end)
             .map_err(map_geographic_error)?
             .retained();
-        if from == 0.0 && to == 1.0 {
-            if let Self::Native(expected) = self {
-                return Ok(expected == actual);
-            }
+        if from == 0.0
+            && to == 1.0
+            && let Self::Native(expected) = self
+        {
+            return Ok(expected == actual);
         }
         let start_sample = self.sample(frame.longitude(), from)?;
         let end_sample = self.sample(frame.longitude(), to)?;
-        let intended = crate::geometry::exact_arith::retained_computed_samples_connection(
-            frame.longitude(),
-            [&start_sample, &end_sample],
-        )?;
+        let intended =
+            retained_computed_samples_connection(frame.longitude(), [&start_sample, &end_sample])?;
         Ok(intended == actual)
     }
 }
@@ -128,7 +123,7 @@ impl<'a> ComputedEdgeIntent<'a> {
         Self::Preserved { zero_longitude }
     }
 
-    pub(crate) fn retained_native(edge: RetainedChartDisplacement) -> Self {
+    pub(crate) const fn retained_native(edge: RetainedChartDisplacement) -> Self {
         Self::Retained(ComputedLongitudeRelation::Native(edge))
     }
 
@@ -141,7 +136,7 @@ impl<'a> ComputedEdgeIntent<'a> {
         endpoints: [f64; 2],
     ) -> Result<Self> {
         Ok(Self::retained_native(
-            crate::geometry::exact_arith::retained_edge_from_lifted_binary64_pair(axis, endpoints)?,
+            retained_edge_from_lifted_binary64_pair(axis, endpoints)?,
         ))
     }
 
@@ -214,17 +209,17 @@ fn collect_edge_intents<'intent, P: Coordinates + ?Sized>(
 
 fn interpolate_sample_ordinates(
     _edge_index: usize,
-    endpoints: [Point; 2],
+    endpoints: &[Point; 2],
     _relation: &ComputedLongitudeRelation<'_>,
     parameter: f64,
     _retained: &RetainedComputedSample,
-) -> Result<ComputedSampleOrdinates> {
-    let [start, end] = endpoints;
-    Ok(ComputedSampleOrdinates {
+) -> ComputedSampleOrdinates {
+    let [start, end] = *endpoints;
+    ComputedSampleOrdinates {
         y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
         z: ZOrdinate(interpolate_optional_ordinate(start.z(), end.z(), parameter)),
         m: MOrdinate(interpolate_optional_ordinate(start.m(), end.m(), parameter)),
-    })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -469,6 +464,14 @@ fn retained_relation_at_vertex<'intent>(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one routine binds the actual source root, endpoints, aliases, sample callbacks and publication policy"
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "sample parameters equal to zero or one identify exact source-record endpoints"
+)]
 fn publish_vertex_at<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
     points: &P,
@@ -481,14 +484,14 @@ fn publish_vertex_at<'intent, P: Coordinates + ?Sized>(
     preferred: Option<(usize, f64)>,
     samples: &mut impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
     ) -> Result<ComputedSampleOrdinates>,
     aliases: &[ZeroLongitudeAlias],
 ) -> Result<(Point, Option<SampledVertex<'intent>>)> {
-    let (point, sampled) = match intent {
+    let (point, source_sample) = match intent {
         ComputedVertexIntent::Canonical => (
             frame
                 .canonical_computed_point(point)
@@ -516,7 +519,7 @@ fn publish_vertex_at<'intent, P: Coordinates + ?Sized>(
                     m: MOrdinate(point.m()),
                 }
             } else {
-                samples(edge_index, endpoints, &relation, parameter, &retained)?
+                samples(edge_index, &endpoints, &relation, parameter, &retained)?
             };
             (
                 Point::new_axes(
@@ -537,7 +540,7 @@ fn publish_vertex_at<'intent, P: Coordinates + ?Sized>(
     };
     let point = zero_longitude_alias_at(aliases, index)
         .map_or(point, |longitude| point.with_xy_raw(longitude, point.y));
-    Ok((point, sampled))
+    Ok((point, source_sample))
 }
 
 fn observe_sampled_vertex<'intent>(
@@ -545,7 +548,7 @@ fn observe_sampled_vertex<'intent>(
     point: Point,
     on_published: &mut impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
@@ -555,7 +558,7 @@ fn observe_sampled_vertex<'intent>(
     if let Some(sampled) = sampled {
         on_published(
             sampled.edge_index,
-            sampled.endpoints,
+            &sampled.endpoints,
             &sampled.relation,
             sampled.parameter,
             &sampled.retained,
@@ -589,7 +592,11 @@ pub(crate) fn publish_computed_chain<'intent, P: Coordinates + ?Sized>(
         budget,
         &edge_intents,
         |_, _| ComputedVertexIntent::Canonical,
-        interpolate_sample_ordinates,
+        |edge_index, endpoints, relation, parameter, retained| {
+            Ok(interpolate_sample_ordinates(
+                edge_index, endpoints, relation, parameter, retained,
+            ))
+        },
         |_, _, _, _, _, _| Ok(()),
         &[],
     )
@@ -600,6 +607,29 @@ pub(crate) fn publish_certified_minor_chain(
     points: &CoordSeq,
     closed_ring: bool,
     budget: &mut ExpansionBudget,
+) -> Result<Option<Vec<Point>>> {
+    publish_certified_minor_chain_with_vertex_intents(frame, points, closed_ring, budget, |_, _| {
+        ComputedVertexIntent::Canonical
+    })
+}
+
+pub(crate) fn publish_preserved_minor_chain(
+    frame: GeographicFrame,
+    points: &CoordSeq,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Vec<Point>>> {
+    publish_certified_minor_chain_with_vertex_intents(frame, points, closed_ring, budget, |_, _| {
+        ComputedVertexIntent::Preserved
+    })
+}
+
+fn publish_certified_minor_chain_with_vertex_intents(
+    frame: GeographicFrame,
+    points: &CoordSeq,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
 ) -> Result<Option<Vec<Point>>> {
     let bound = frame.longitude().ordinary_longitude_bound();
     let canonical =
@@ -615,9 +645,14 @@ pub(crate) fn publish_certified_minor_chain(
         );
         return Ok(None);
     }
-    publish_computed_chain(frame, points, closed_ring, budget, |_, _, _| {
-        Ok(ComputedEdgeIntent::CertifiedMinor)
-    })
+    publish_computed_chain_with_vertex_intents(
+        frame,
+        points,
+        closed_ring,
+        budget,
+        |_, _, _| Ok(ComputedEdgeIntent::CertifiedMinor),
+        vertex_intent,
+    )
 }
 
 pub(crate) fn publish_computed_chain_with_vertex_intents<'intent, P: Coordinates + ?Sized>(
@@ -635,7 +670,11 @@ pub(crate) fn publish_computed_chain_with_vertex_intents<'intent, P: Coordinates
         budget,
         intent,
         vertex_intent,
-        interpolate_sample_ordinates,
+        |edge_index, endpoints, relation, parameter, retained| {
+            Ok(interpolate_sample_ordinates(
+                edge_index, endpoints, relation, parameter, retained,
+            ))
+        },
         |_, _, _, _, _, _| Ok(()),
     )
 }
@@ -652,14 +691,14 @@ pub(crate) fn publish_computed_chain_with_vertex_intents_and_samples<
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
     samples: impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
     ) -> Result<ComputedSampleOrdinates>,
     on_published: impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
@@ -701,14 +740,14 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
     vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
     mut samples: impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
     ) -> Result<ComputedSampleOrdinates>,
     mut on_published: impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
@@ -735,11 +774,7 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
         &mut samples,
         zero_aliases,
     )?;
-    let mut output = if first != first_source || first_sample.is_some() {
-        Some(vec![first])
-    } else {
-        None
-    };
+    let mut output = (first != first_source || first_sample.is_some()).then(|| vec![first]);
     observe_sampled_vertex(first_sample.as_ref(), first, &mut on_published)?;
     let mut canonical_start = first;
 
@@ -819,7 +854,7 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
             ComputedEdgeIntent::Retained(relation) => {
                 publish_retained_edge(
                     frame,
-                    [source_start, source_end],
+                    &[source_start, source_end],
                     canonical_start,
                     canonical_end,
                     relation,
@@ -854,9 +889,13 @@ fn publish_chain_with_aliases<'intent, P: Coordinates + ?Sized>(
     clippy::too_many_arguments,
     reason = "one publisher owns exact relation, original ordinal/parameters, carry callback and expansion budget"
 )]
+#[expect(
+    clippy::float_cmp,
+    reason = "interval endpoints are exact publisher parameters and a repeated midpoint means subdivision cannot make representable progress"
+)]
 fn publish_retained_edge<'intent, P: Coordinates + ?Sized>(
     frame: GeographicFrame,
-    source_endpoints: [Point; 2],
+    source_endpoints: &[Point; 2],
     canonical_start: Point,
     canonical_end: Point,
     relation: ComputedLongitudeRelation<'intent>,
@@ -869,14 +908,14 @@ fn publish_retained_edge<'intent, P: Coordinates + ?Sized>(
     vertex_intent: &impl Fn(usize, Point) -> ComputedVertexIntent,
     samples: &mut impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
     ) -> Result<ComputedSampleOrdinates>,
     on_published: &mut impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
@@ -968,7 +1007,7 @@ fn publish_retained_edge<'intent, P: Coordinates + ?Sized>(
                     point,
                     Some(SampledVertex {
                         edge_index,
-                        endpoints: source_endpoints,
+                        endpoints: *source_endpoints,
                         relation,
                         parameter: end_t,
                         retained,
@@ -996,13 +1035,13 @@ fn publish_retained_edge<'intent, P: Coordinates + ?Sized>(
 
 fn publish_sampled_point<'intent>(
     edge_index: usize,
-    endpoints: [Point; 2],
+    endpoints: &[Point; 2],
     relation: ComputedLongitudeRelation<'intent>,
     parameter: f64,
     retained: &RetainedComputedSample,
     samples: &mut impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
@@ -1035,7 +1074,7 @@ fn canonical_prefix<'intent, P: Coordinates + ?Sized>(
     vertex_intent: &impl Fn(usize, Point) -> ComputedVertexIntent,
     samples: &mut impl FnMut(
         usize,
-        [Point; 2],
+        &[Point; 2],
         &ComputedLongitudeRelation<'intent>,
         f64,
         &RetainedComputedSample,
@@ -1408,7 +1447,8 @@ mod tests {
                     ComputedVertexIntent::Sampled
                 }
             },
-            |_, [start, end], _, parameter, _| {
+            |_, endpoints, _, parameter, _| {
+                let &[start, end] = endpoints;
                 interior_samples = interior_samples.wrapping_add(1);
                 Ok(ComputedSampleOrdinates {
                     y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
@@ -1595,7 +1635,8 @@ mod tests {
                 ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
             },
             |_, _| ComputedVertexIntent::Sampled,
-            |_, [start, end], _, parameter, _| {
+            |_, endpoints, _, parameter, _| {
+                let &[start, end] = endpoints;
                 Ok(ComputedSampleOrdinates {
                     y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
                     z: ZOrdinate(None),

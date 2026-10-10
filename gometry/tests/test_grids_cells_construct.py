@@ -263,7 +263,7 @@ def test_world_tile_polygon_uses_geographic_rectangle_for_scalar_and_array() -> 
     minx, miny, maxx, maxy = hemisphere.bounds
     assert (minx, maxx) == (0.0, -180.0)
     midpoint = 90.0
-    assert gm.get_coordinates(hemisphere).tolist() == [
+    assert np.asarray(hemisphere.coords, dtype=np.float64).tolist() == [
         [minx, miny],
         [midpoint, miny],
         [-180.0, miny],
@@ -401,6 +401,98 @@ def test_empty_cell_array_neighbors_children_are_empty_groups() -> None:
     children = cells.children()
     assert isinstance(neighbors, gm.Groups) and len(neighbors) == 0
     assert isinstance(children, gm.Groups) and len(children) == 0
+
+
+def test_cell_array_outputs_preserve_nullable_reversed_duplicate_gathers() -> None:
+    source = gm.CellArray(
+        [
+            gm.H3Cell(-122.4194, 37.7749, resolution=7),
+            None,
+            gm.H3Cell(-122.4194, 37.7749, resolution=8),
+            gm.H3Cell(-122.4194, 37.7749, resolution=9),
+        ],
+        type=gm.H3Cell,
+    )
+    cells = source[::-1][[0, 1, 2, 3, 1]]
+    expected = list(cells)
+
+    centers = cells.center
+    assert centers.crs == gm.CRS('OGC:CRS84')
+    assert not centers.coords.x.flags.writeable
+    assert not centers.coords.y.flags.writeable
+    assert centers.to_wkt() == [
+        None if cell is None else cell.center.to_wkt() for cell in expected
+    ]
+    polygons = cells.polygon
+    assert polygons.crs == gm.CRS('OGC:CRS84')
+    assert polygons.to_wkt() == [
+        None if cell is None else cell.polygon.to_wkt() for cell in expected
+    ]
+
+    parents = cells.parent()
+    assert list(parents) == [
+        None if cell is None else cell.parent() for cell in expected
+    ]
+    target = 10
+    counts = cells.children_count(target)
+    expected_counts = np.array([
+        np.nan if cell is None else cell.children_count(target) for cell in expected
+    ])
+    np.testing.assert_array_equal(counts, expected_counts)
+
+
+def test_cell_array_parent_and_count_parse_depth_once_for_present_rows() -> None:
+    class CountingIndex:
+        def __init__(self, value: int) -> None:
+            self.value = value
+            self.calls = 0
+
+        def __index__(self) -> int:
+            self.calls += 1
+            return self.value
+
+    cells = gm.CellArray(
+        [
+            gm.H3Cell(-122.4194, 37.7749, resolution=7),
+            None,
+            gm.H3Cell(-122.4194, 37.7749, resolution=8),
+        ],
+        type=gm.H3Cell,
+    )[::-1]
+    target = CountingIndex(6)
+    assert list(cells.parent(target)) == [
+        cells[0].parent(target.value),
+        None,
+        cells[2].parent(target.value),
+    ]
+    assert target.calls == 1
+
+    target = CountingIndex(10)
+    counts = cells.children_count(target)
+    assert target.calls == 1
+    np.testing.assert_array_equal(counts, [49.0, np.nan, 343.0])
+
+    target = CountingIndex(6)
+    empty = gm.CellArray([], type=gm.H3Cell)
+    missing = gm.CellArray([None, None], type=gm.H3Cell)
+    assert len(empty.parent(target)) == 0
+    assert np.isnan(empty.children_count(target)).size == 0
+    assert list(missing.parent(target)) == [None, None]
+    assert np.isnan(missing.children_count(target)).all()
+    assert target.calls == 0
+
+
+def test_cell_array_parent_and_count_keep_root_and_max_depth_errors() -> None:
+    root = gm.CellArray([gm.H3Cell(-122.4194, 37.7749, resolution=0)], type=gm.H3Cell)
+    with pytest.raises(ValueError, match='minimum-resolution cell has no parent'):
+        root.parent()
+
+    maximum = gm.CellArray(
+        [gm.H3Cell(-122.4194, 37.7749, resolution=15)], type=gm.H3Cell
+    )
+    np.testing.assert_array_equal(maximum.children_count(), [0.0])
+    with pytest.raises(ValueError, match='must be >='):
+        maximum.children_count(14)
 
 
 def test_max_depth_cell_array_children_are_empty_rows() -> None:
@@ -582,6 +674,56 @@ def test_cells_accept_packed_point_arrays(grid: GridCase) -> None:
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_factories_accept_point_iterables(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    longitudes = [13.4, 14.4]
+    latitudes = [52.5, 53.5]
+    expected = grid.factory(longitudes, latitudes, **kwargs)
+
+    first = gm.Point(longitudes[0], latitudes[0], crs=4326)
+    second = gm.Point(longitudes[1], latitudes[1], crs=4326)
+    points = [
+        first,
+        None,
+        second,
+    ]
+    assert list(grid.factory(iter(points), **kwargs)) == [
+        expected[0],
+        None,
+        expected[1],
+    ]
+    projected = [point.to_crs(3857) if point is not None else None for point in points]
+    assert list(grid.factory(projected, **kwargs)) == [expected[0], None, expected[1]]
+    assert grid.factory([], **kwargs).is_missing.tolist() == []
+    assert grid.factory([None, None], **kwargs).is_missing.tolist() == [True, True]
+    all_missing = gm.GeometryArray([None, None])
+    assert grid.factory(all_missing, **kwargs).is_missing.tolist() == [True, True]
+
+    with pytest.raises(gm.CRSMismatchError):
+        grid.factory([first, second.to_crs(3857)], **kwargs)
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_factories_accept_coordinate_matrices(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    longitudes = [13.4, 14.4]
+    latitudes = [52.5, 53.5]
+    expected = grid.factory(longitudes, latitudes, **kwargs)
+    coordinates = np.array([
+        [longitudes[0], latitudes[0], 17.0],
+        [longitudes[1], latitudes[1], 29.0],
+    ])
+    assert grid.factory(coordinates, **kwargs) == expected
+    assert (
+        grid.factory(
+            [[longitudes[0], latitudes[0], -5.0], [longitudes[1], latitudes[1], 11.0]],
+            **kwargs,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_cell_admission_error_keeps_logical_row_after_missing(grid: GridCase) -> None:
     points = gm.points([0, 0], [0, 91], crs=4326)._with_missing([True, False])
     with pytest.raises(
@@ -620,6 +762,19 @@ def test_cell_array_hierarchical_predicate_broadcast(grid: GridCase) -> None:
     assert not values.contains(child).flags.writeable
     with pytest.raises(gm.GeometryError, match='equal lengths'):
         values.contains(paired[:1])
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_array_hierarchy_predicates_accept_grid_ids_and_tokens(
+    grid: GridCase,
+) -> None:
+    parent = grid.make()
+    child = grid.make(**{grid.depth_kw: grid.depth + 1})
+    values = gm.CellArray([parent, child], type=grid.cell_type)
+
+    for identity in (child.token, *((child.id,) if grid.has_int_id else ())):
+        np.testing.assert_array_equal(values.contains(identity), [True, True])
+        np.testing.assert_array_equal(values.intersects(identity), [True, True])
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
@@ -956,6 +1111,43 @@ def test_grid_set_algebra_accepts_atomic_identities_and_iterables_consistently()
             assert list(intersection_fn(identity, identity)) == [cell]
             assert list(difference_fn(identity, identity)) == []
         assert list(union_fn((x for x in [cell]), [cell])) == [cell]
+
+
+@pytest.mark.parametrize(
+    ('operations', 'cell'),
+    [
+        pytest.param(
+            (gm.h3_union, gm.h3_intersection, gm.h3_difference),
+            gm.H3Cell(21.0, 52.0, resolution=5),
+            id='h3',
+        ),
+        pytest.param(
+            (gm.s2_union, gm.s2_intersection, gm.s2_difference),
+            gm.S2Cell(21.0, 52.0, level=5),
+            id='s2',
+        ),
+        pytest.param(
+            (gm.geohash_union, gm.geohash_intersection, gm.geohash_difference),
+            gm.GeohashCell('u33d'),
+            id='geohash',
+        ),
+        pytest.param(
+            (gm.tile_union, gm.tile_intersection, gm.tile_difference),
+            gm.Tile(x=4, y=5, zoom=5),
+            id='tiles',
+        ),
+    ],
+)
+def test_grid_set_algebra_skips_missing_rows_but_rejects_bare_none(
+    operations, cell
+) -> None:
+    union_fn, intersection_fn, difference_fn = operations
+    assert list(union_fn([cell, None], [None])) == [cell]
+    assert list(intersection_fn([cell, None], [cell])) == [cell]
+    assert list(difference_fn([cell, None], [None])) == [cell]
+    assert list(union_fn([cell], (value for value in [None]))) == [cell]
+    with pytest.raises(TypeError, match='empty iterable'):
+        union_fn(None, [cell])
 
 
 def test_grid_set_algebra_preserves_real_iterator_errors() -> None:

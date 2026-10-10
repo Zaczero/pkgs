@@ -25,14 +25,14 @@ def _edges(
     source: gm.Geometry, clip: gm.Geometry | str, frontend: str
 ) -> gm.GeometryArray:
     if frontend == 'packed':
-        return gm.GeometryArray([source]).voronoi_edges(clip=clip)[0]
-    return source.voronoi_edges(clip=clip)
+        return gm.GeometryArray([source]).voronoi(output='edges', clip=clip)[0]
+    return source.voronoi(output='edges', clip=clip)
 
 
 def _cells(source: gm.Geometry, clip: gm.Geometry, frontend: str) -> gm.GeometryArray:
     if frontend == 'packed':
-        return gm.GeometryArray([source]).voronoi_polygons(clip=clip)[0]
-    return source.voronoi_polygons(clip=clip)
+        return gm.GeometryArray([source]).voronoi(output='polygons', clip=clip)[0]
+    return source.voronoi(output='polygons', clip=clip)
 
 
 def _normalized_edges(
@@ -55,13 +55,15 @@ def _outcome(
     try:
         source = gm.MultiPoint(points)
         segments = set()
-        for edge in source.voronoi_edges(clip=clip):
+        for edge in source.voronoi(output='edges', clip=clip):
             coords = [tuple(xy[:2]) for xy in edge.coords]
             for start, end in pairwise(coords):
                 segments.add((start, end) if start <= end else (end, start))
         return (
             'ok',
-            tuple(cell.to_wkb() for cell in source.voronoi_polygons(clip=clip)),
+            tuple(
+                cell.to_wkb() for cell in source.voronoi(output='polygons', clip=clip)
+            ),
             frozenset(segments),
         )
     except gm.GeometryError as error:
@@ -293,7 +295,7 @@ def test_seeded_binary64_witnesses_are_repaired_for_both_products() -> None:
 
     for index, points in enumerate(witnesses):
         source = gm.MultiPoint(points)
-        cells = source.voronoi_polygons(clip='padded')
+        cells = source.voronoi(output='polygons', clip='padded')
         assert len(cells) == len(points), index
         assert all(cell.is_valid for cell in cells), index
         assert gm.coverage_is_valid(cells), index
@@ -301,7 +303,7 @@ def test_seeded_binary64_witnesses_are_repaired_for_both_products() -> None:
             sum(gm.covers(cell, gm.Point(*site)) for cell in cells) == 1
             for site in points
         ), index
-        edges = source.voronoi_edges(clip='padded')
+        edges = source.voronoi(output='edges', clip='padded')
         assert all(edge.geometry_type == 'LineString' for edge in edges), index
 
 
@@ -378,7 +380,9 @@ def test_tolerance_clustering_is_permutation_invariant() -> None:
     sites = ((0.0, 0.0), (0.09, 0.0), (0.18, 0.0), (0.0, 1.0), (1.0, 0.0))
     clip = gm.box(-1, -1, 2, 2)
     diagrams = {
-        _normalized_edges(gm.MultiPoint(order).voronoi_edges(tolerance=0.1, clip=clip))
+        _normalized_edges(
+            gm.MultiPoint(order).voronoi(output='edges', tolerance=0.1, clip=clip)
+        )
         for order in itertools.permutations(sites)
     }
     assert len(diagrams) == 1
@@ -389,7 +393,7 @@ def test_ordinary_five_site_cells_are_valid_and_permutation_invariant() -> None:
     clip = gm.box(-1, -1, 2, 2)
     diagrams = set()
     for order in itertools.permutations(sites):
-        cells = gm.MultiPoint(order).voronoi_polygons(clip=clip)
+        cells = gm.MultiPoint(order).voronoi(output='polygons', clip=clip)
         _assert_topological_partition(
             cells,
             clip,
@@ -511,14 +515,14 @@ def test_mixed_magnitude_partition_is_complete(
     )
 
 
-def test_array_voronoi_edges_concat_preserves_missing_and_empty_groups() -> None:
+def test_array_voronoi_edge_lines_concat_preserves_missing_and_empty_groups() -> None:
     arr = gm.GeometryArray([
         gm.MultiPoint([(0.0, 0.0), (2.0, 2.0)]),
         None,
         gm.MultiPoint([(0.0, 0.0)]),
         gm.MultiPoint([(0.0, 0.0), (4.0, 4.0)]),
     ])
-    edges = arr.voronoi_edges(clip='envelope')
+    edges = arr.voronoi(output='edges', clip='envelope')
     assert isinstance(edges, gm.Groups)
     assert len(edges) == 4
     assert edges.offsets.tolist() == [0, 1, 1, 1, 2]
@@ -533,7 +537,7 @@ def test_array_voronoi_edges_concat_preserves_missing_and_empty_groups() -> None
     assert undirected(edges[3][0]) == ((0.0, 4.0), (4.0, 0.0))
 
 
-def test_array_voronoi_edges_match_scalar_packed_chains() -> None:
+def test_array_voronoi_edge_lines_match_scalar_packed_chains() -> None:
     sites = gm.MultiPoint([
         (-4.0, -3.0),
         (4.0, -2.0),
@@ -542,8 +546,8 @@ def test_array_voronoi_edges_match_scalar_packed_chains() -> None:
         (0.0, 0.0),
     ])
     clip = gm.box(-6.0, -6.0, 6.0, 6.0)
-    scalar = sites.voronoi_edges(clip=clip)
-    grouped = gm.GeometryArray([sites]).voronoi_edges(clip=clip)
+    scalar = sites.voronoi(output='edges', clip=clip)
+    grouped = gm.GeometryArray([sites]).voronoi(output='edges', clip=clip)
     assert len(grouped) == 1
     packed = grouped[0]
     assert _normalized_edges(scalar) == _normalized_edges(packed)
@@ -556,7 +560,9 @@ def test_cocircular_diagram_keeps_one_vertex_for_all_orders() -> None:
     sites = ((22.0, -61.0), (62.0, -19.0), (-22.0, 61.0), (-62.0, 19.0))
     diagrams = set()
     for order in itertools.permutations(sites):
-        edges = gm.MultiPoint(order).voronoi_edges()
+        edges = gm.MultiPoint(order).voronoi(
+            output='edges',
+        )
         assert len(edges) == 4
         assert all((0.0, 0.0) in list(edge.coords) for edge in edges)
         diagrams.add(_normalized_edges(edges))
@@ -565,7 +571,9 @@ def test_cocircular_diagram_keeps_one_vertex_for_all_orders() -> None:
 
 def test_hole_and_l_clip_guards_use_full_topology_oracle() -> None:
     clip = gm.difference(gm.box(-20, -20, 20, 20), gm.box(-1, -1, 1, 1))
-    cells = gm.MultiPoint([(-10, -10), (10, -10), (0, 10)]).voronoi_polygons(clip=clip)
+    cells = gm.MultiPoint([(-10, -10), (10, -10), (0, 10)]).voronoi(
+        output='polygons', clip=clip
+    )
     _partition(cells, clip)
     assert gm.union_all(cells).area == 1596.0
     assert not any(gm.covers(cell, gm.Point(0, 0)) for cell in cells)
@@ -579,8 +587,8 @@ def test_hole_and_l_clip_guards_use_full_topology_oracle() -> None:
         (0, 3),
         (0, 0),
     ])
-    l_cells = gm.MultiPoint([(0, 0), (1e150, 0), (0, 1e-150)]).voronoi_polygons(
-        clip=l_clip
+    l_cells = gm.MultiPoint([(0, 0), (1e150, 0), (0, 1e-150)]).voronoi(
+        output='polygons', clip=l_clip
     )
     _partition(l_cells, l_clip)
 
@@ -591,7 +599,7 @@ def test_convex_clip_accepts_topological_snap_partition(site_count: int) -> None
     clip = gm.Polygon([(50, 50), (950, 120), (900, 900), (120, 850), (50, 50)])
     sites = [(rng.uniform(0, 1000), rng.uniform(0, 1000)) for _ in range(site_count)]
 
-    cells = gm.MultiPoint(sites).voronoi_polygons(clip=clip)
+    cells = gm.MultiPoint(sites).voronoi(output='polygons', clip=clip)
 
     assert cells
     assert gm.coverage_is_valid(cells)
@@ -607,7 +615,7 @@ def test_seeded_4097_site_padded_diagram_completes_under_the_public_budget() -> 
     rng = random.Random(0xC0DEC0DE)
     sites = [(rng.random(), rng.random()) for _ in range(4097)]
 
-    cells = gm.MultiPoint(sites).voronoi_polygons(clip='padded')
+    cells = gm.MultiPoint(sites).voronoi(output='polygons', clip='padded')
 
     assert len(cells) == len(sites)
     assert all(cell.is_valid for cell in cells)
@@ -618,7 +626,7 @@ def test_convex_position_completes_with_certified_frame_walk() -> None:
     # puts every site on the same convex parabola chain.
     sites = [(float(i), float(i * i)) for i in range(6)]
 
-    cells = gm.MultiPoint(sites).voronoi_polygons(clip='padded')
+    cells = gm.MultiPoint(sites).voronoi(output='polygons', clip='padded')
 
     assert len(cells) == len(sites)
     assert all(cell.is_valid for cell in cells)

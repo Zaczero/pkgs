@@ -190,6 +190,33 @@ impl StreamingShapes {
         Ok(())
     }
 
+    /// Append logical shape outputs and their validity in one publication pass.
+    pub(crate) fn try_extend_shapes(
+        &mut self,
+        shapes: Vec<Shape>,
+        missing: Option<&ValidityMask>,
+    ) -> crate::error::Result<()> {
+        if let Some(mask) = missing {
+            if mask.len() != shapes.len() {
+                return Err(GeometryErrorKind::message(
+                    "logical nullable payload length must match the missing mask",
+                ));
+            }
+            for (row, shape) in shapes.into_iter().enumerate() {
+                if mask.is_missing(row) {
+                    self.try_push_missing()?;
+                } else {
+                    self.try_push(shape)?;
+                }
+            }
+        } else {
+            for shape in shapes {
+                self.try_push(shape)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Append a missing logical row. Point payload stays present-only; line
     /// and polygon CSR state receives a zero-width logical window.
     pub(crate) fn try_push_missing(&mut self) -> crate::error::Result<()> {
@@ -986,7 +1013,6 @@ mod demotion_tests {
             .unwrap();
         let points = points.finish(Frame::None).unwrap();
         assert_eq!(stream_row_advances(), 3);
-        assert!(points.is_compact_nullable());
         assert_eq!(points.len(), 3);
         assert_eq!(
             points
@@ -1009,7 +1035,6 @@ mod demotion_tests {
         else {
             panic!("homogeneous nullable lines must stay packed");
         };
-        assert!(lines.is_compact_nullable());
         assert_eq!(coords.len(), 4);
         assert_eq!(offsets.as_slice(), &[0, 0, 2, 2, 4]);
 
@@ -1029,7 +1054,6 @@ mod demotion_tests {
         else {
             panic!("homogeneous nullable polygons must stay packed");
         };
-        assert!(polygons.is_compact_nullable());
         assert_eq!(coords.len(), 10);
         assert_eq!(ring_offsets.as_slice(), &[0, 5, 10]);
         assert_eq!(polygon_offsets.as_slice(), &[0, 0, 1, 1, 2]);

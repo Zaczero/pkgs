@@ -12,11 +12,43 @@ import pytest
 def test_point_and_crs_metadata() -> None:
     point = gm.Point(21.0, 52.0, crs=4326)
     assert point.geometry_type == 'Point'
-    assert point.crs == 'EPSG:4326'
+    assert point.crs == gm.CRS('EPSG:4326')
     assert point.x == 21.0
     assert point.y == 52.0
     assert point.bounds == (21.0, 52.0, 21.0, 52.0)
     assert point.__geo_interface__ == {'type': 'Point', 'coordinates': [21.0, 52.0]}
+
+
+def test_point_accepts_one_coordinate_sequence() -> None:
+    assert gm.Point((1, 2)).to_wkt() == 'POINT (1 2)'
+    assert gm.Point(np.array([1.0, 2.0, 3.0, 4.0])).to_wkt() == 'POINT ZM (1 2 3 4)'
+    assert gm.Point((1, 2, 3), m=4).to_wkt() == 'POINT ZM (1 2 3 4)'
+
+
+def test_point_copy_preserves_axes_and_frame() -> None:
+    original = gm.Point(5, 6, z=7, crs=4326, epoch=2020.0)
+    copied = gm.Point(original)
+    assert copied == original
+    assert copied.coordinate_axes == 'XYZ'
+    assert copied.crs == gm.CRS('EPSG:4326')
+    assert copied.epoch == 2020.0
+    assert gm.Point(original, crs=4326, epoch=2020.0) == original
+
+
+def test_point_coordinate_rejects_conflicting_embedded_ordinates() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match=r'conflicts with.*embedded'):
+        gm.Point((1, 2, 3), z=4)
+
+
+def test_point_coordinate_rejects_malformed_dimensions() -> None:
+    with pytest.raises(gm.InvalidGeometryError, match='coordinate requires x and y'):
+        gm.Point((1,))
+
+
+def test_point_copy_reconciles_explicit_crs() -> None:
+    original = gm.Point(5, 6, crs=4326)
+    with pytest.raises(gm.CRSMismatchError, match='shared CRS'):
+        gm.Point(original, crs=3857)
 
 
 def test_box_ccw_controls_ring_orientation() -> None:
@@ -31,7 +63,7 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
     wrapped = gm.box(170, -10, -170, 10, crs=4326, wrap='split')
     whole_world = gm.box(-200, -10, 200, 10, crs=4326, wrap='split')
     assert wrapped.geometry_type == 'MultiPolygon'
-    assert wrapped.crs == 'EPSG:4326'
+    assert wrapped.crs == gm.CRS('EPSG:4326')
     assert wrapped.bounds == (170.0, -10.0, -170.0, 10.0)
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
@@ -49,9 +81,9 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
     assert gm.LineString([(170, 0), (-170, 0)]).crosses_antimeridian
     with pytest.raises(ValueError, match="wrap='split'"):
         gm.box(170, -10, -170, 10)
-    with pytest.raises(ValueError, match='requires crs=4326'):
+    with pytest.raises(ValueError, match='requires a geographic CRS'):
         gm.box(170, -10, -170, 10, crs=3857, wrap='split')
-    with pytest.raises(ValueError, match='requires crs=4326'):
+    with pytest.raises(ValueError, match='requires a geographic CRS'):
         gm.box(170, -10, -170, 10, wrap=cast('Any', 'split'))
     with pytest.raises(ValueError, match='unknown box wrap'):
         gm.box(0, 0, 1, 1, wrap=cast('Any', 'clip'))
@@ -93,7 +125,7 @@ def test_geographic_box_preserves_wide_directed_longitude_interval() -> None:
         (360.0, 9),
     ]:
         band = gm.box(-span / 2.0, -10.0, span / 2.0, 10.0, crs=4326)
-        coordinates = gm.get_coordinates(band)
+        coordinates = np.asarray(band.coords, dtype=np.float64)
         assert len(band.exterior.coords) == expected_positions
         steps = np.diff(coordinates[:, 0])
         steps = np.where(steps > 180.0, steps - 360.0, steps)
@@ -170,8 +202,8 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
     assert not gm.equals_exact(xyzm, gm.Point(1, 2, z=3, m=5, crs=4326))
     assert list(xyzm.coords.select('XYZM')) == [(1.0, 2.0, 3.0, 4.0)]
     assert xyzm.quantize(0).coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
-    assert xyzm.set_z(None).set_m(None).coordinate_axes == 'XY'
-    assert xyzm.set_z(None).set_m(None).coords.to_nested() == [1.0, 2.0]
+    assert xyzm.with_coordinates(z=None, m=None).coordinate_axes == 'XY'
+    assert xyzm.with_coordinates(z=None, m=None).coords.to_nested() == [1.0, 2.0]
     assert xyz.to_wkt() == 'POINT Z (1 2 3)'
     assert xyz.force_2d().to_wkt() == 'POINT (1 2)'
     assert xym.to_wkt() == 'POINT M (1 2 4)'
@@ -193,7 +225,7 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
     assert gm.from_wkb(wkb).coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
     ewkb = xyzm.to_wkb(include_srid=True)
     assert int.from_bytes(ewkb[1:5], 'little') == 3758096385
-    assert gm.from_wkb(ewkb).crs == 'EPSG:4326'
+    assert gm.from_wkb(ewkb).crs == gm.CRS('EPSG:4326')
     assert gm.from_wkb(ewkb).coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
     with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         xym.to_geojson()
@@ -260,8 +292,8 @@ def test_points_numpy_columns_copy_values_and_preserve_zm_axes() -> None:
     points = gm.points(x, y, z=z, m=m, crs=4326)
 
     assert points[0].coordinate_axes == 'XYZM'
-    assert points[0].crs == 'EPSG:4326'
-    coordinates = gm.get_coordinates(points)
+    assert points[0].crs == gm.CRS('EPSG:4326')
+    coordinates = np.asarray(points.coords, dtype=np.float64)
     assert coordinates.shape == (2, 4)
     np.testing.assert_array_equal(coordinates, np.column_stack((x, y, z, m)))
     # The packed constructor owns its columns; later producer mutation cannot
@@ -316,7 +348,7 @@ def test_points_numpy_big_endian_and_strided_columns_keep_axis_order() -> None:
     x = source[::2, 0].astype('>f8')
     y = source[::2, 1][::-1].astype('>f8')[::-1]
     points = gm.points(x, y)
-    coordinates = gm.get_coordinates(points)
+    coordinates = np.asarray(points.coords, dtype=np.float64)
     assert coordinates.shape == (3, 2)
     np.testing.assert_array_equal(
         coordinates,
@@ -365,7 +397,7 @@ def test_polygon_mixed_shell_hole_axes_rejected_at_construction() -> None:
     """D21/G2: Polygon(xy_shell, xyz_hole) rejects at construction (writer parity).
 
     Writers refuse mixed ring axes rather than invent Z/M; construction matches.
-    Promote with force_3d/set_m (or build homogeneous rings) first.
+    Promote with force_3d/with_coordinates(m=...) (or build homogeneous rings) first.
     """
     shell = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 0.0)]
     hole = [(1.0, 1.0, 1.0), (2.0, 1.0, 1.0), (1.0, 2.0, 1.0), (1.0, 1.0, 1.0)]
@@ -456,4 +488,4 @@ def test_empty_multipart_sequences_construct_typed_empties() -> None:
 
     tagged = gm.MultiPoint([], crs=4326)
     assert tagged.to_wkt() == 'MULTIPOINT EMPTY'
-    assert tagged.crs == 'EPSG:4326'
+    assert tagged.crs == gm.CRS('EPSG:4326')

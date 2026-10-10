@@ -44,7 +44,7 @@ pub(crate) enum FrameError {
         source: Box<str>,
     },
     EpochRequiresCrs,
-    EpochRequiresDynamicCrs {
+    EpochRequiresAdmittedCrs {
         crs: Crs,
     },
 }
@@ -59,7 +59,7 @@ impl std::fmt::Display for FrameError {
             } => write!(
                 formatter,
                 "{operation} requires matching CRS metadata: both operands must share one CRS, \
-                 or both be CRS-free; got {} and {}; use set_crs(...) or to_crs(...) \
+                 or both be CRS-free; got {} and {}; use with_crs(...) or to_crs(...) \
                  to align them",
                 crs_label(left.as_ref().map(Crs::as_str)),
                 crs_label(right.as_ref().map(Crs::as_str)),
@@ -109,13 +109,13 @@ impl std::fmt::Display for FrameError {
             ),
             Self::EpochRequiresCrs => write!(
                 formatter,
-                "a coordinate epoch requires a CRS; attach one with crs= (or set_crs(...)) \
+                "a coordinate epoch requires a CRS; attach one with crs= (or with_crs(...)) \
                  before tagging an epoch"
             ),
-            Self::EpochRequiresDynamicCrs { crs } => write!(
+            Self::EpochRequiresAdmittedCrs { crs } => write!(
                 formatter,
-                "a coordinate epoch requires a dynamic CRS; {} is static. Remove epoch= or \
-                 transform to a dynamic CRS first",
+                "a coordinate epoch is not admitted for CRS {}; remove epoch= or transform to \
+                 a CRS that admits coordinate epochs first",
                 crs.as_str(),
             ),
         }
@@ -143,7 +143,7 @@ pub(crate) enum Frame {
     None,
     /// A CRS with no coordinate epoch.
     Crs(Crs),
-    /// A CRS with a coordinate epoch (dynamic-datum realization date).
+    /// A CRS with an admitted coordinate epoch.
     CrsEpoch(Crs, f64),
 }
 
@@ -159,7 +159,7 @@ pub(crate) struct FrameAdoption {
 /// A metadata-only frame mutation at the Python setter boundary.
 ///
 /// Centralizes the silent-retag guards and `epoch => crs` invariant for
-/// `Geometry.set_crs`/`set_epoch` and their array counterparts.
+/// `Geometry.with_crs`/`with_epoch` and their array counterparts.
 #[derive(Clone, Debug)]
 pub(crate) enum FrameEdit {
     SetCrs { crs: Option<Crs>, overwrite: bool },
@@ -178,13 +178,15 @@ pub(crate) struct GeometryTransformFrame {
 }
 
 impl Frame {
-    /// Build from optional parts, enforcing `epoch ⟹ dynamic crs` — the single
-    /// checked constructor for every optional-parts ingress.
+    /// Build from optional parts, enforcing geometry epoch admission at the
+    /// shared frame boundary. A dynamic datum or the WGS 84 ensemble
+    /// (EPSG:6326), including a CRS derived from that ensemble, admits an
+    /// epoch; dynamic members of another ensemble do not.
     pub(crate) fn new(crs: Option<Crs>, epoch: Option<f64>) -> Result<Self> {
         match (crs, epoch) {
             (Some(crs), Some(epoch)) => {
-                if !crs::is_dynamic(&crs)? {
-                    return Err(FrameError::EpochRequiresDynamicCrs { crs }.into());
+                if !crs::admits_geometry_epoch(&crs)? {
+                    return Err(FrameError::EpochRequiresAdmittedCrs { crs }.into());
                 }
                 Ok(Self::CrsEpoch(crs, epoch))
             },
@@ -336,25 +338,25 @@ impl GeometryTransformFrame {
             CrsError::message("cannot transform coordinates without source CRS metadata")
         })?;
         let same_crs = source_crs == target;
-        // Dynamic-aware epoch policy: with no explicit `epoch=`, the source
-        // epoch survives exactly while it still means something — the CRS is
-        // unchanged, or the TARGET frame is dynamic (time-dependent
-        // coordinates). A static target auto-clears it, so the result never
-        // drags a meaningless epoch into strict frame checks against ordinary
-        // epoch-free data in the same static CRS.
+        // With no explicit `epoch=`, the source epoch survives when the CRS is
+        // unchanged or the target admits geometry epochs. Otherwise the
+        // target frame cannot carry it, so the result stays compatible with
+        // epoch-free data in that frame.
         let output_epoch = match explicit_epoch {
             Some(epoch) => Some(epoch),
             None if same_crs => source.epoch(),
             None => match source.epoch() {
-                Some(epoch) if crs::is_dynamic_with_state(&target, &state)? => Some(epoch),
+                Some(epoch) if crs::admits_geometry_epoch_with_state(&target, &state)? => {
+                    Some(epoch)
+                },
                 _ => None,
             },
         };
         if explicit_epoch.is_some()
             && output_epoch.is_some()
-            && !crs::is_dynamic_with_state(&target, &state)?
+            && !crs::admits_geometry_epoch_with_state(&target, &state)?
         {
-            return Err(FrameError::EpochRequiresDynamicCrs { crs: target }.into());
+            return Err(FrameError::EpochRequiresAdmittedCrs { crs: target }.into());
         }
         options.source_epoch = source.epoch();
         options.target_epoch = output_epoch;
@@ -374,7 +376,7 @@ impl GeometryTransformFrame {
     }
 }
 
-/// `set_crs` declares what coordinates already mean — silently re-tagging one
+/// `with_crs` declares what coordinates already mean — silently re-tagging one
 /// declared CRS as another is almost always a reprojection mistake. Attaching
 /// (``None`` -> crs), clearing (crs -> ``None``), and identical re-tags stay
 /// free; a genuine relabel requires ``overwrite=True``.
@@ -386,7 +388,7 @@ fn guard_crs_retag(existing: Option<&str>, new: Option<&str>, overwrite: bool) -
         && existing != new
     {
         return Err(CrsError::message(format!(
-            "set_crs would re-tag CRS {existing:?} as {new:?} without moving coordinates; \
+            "with_crs would re-tag CRS {existing:?} as {new:?} without moving coordinates; \
              use to_crs to reproject, or pass overwrite=True to relabel deliberately"
         )));
     }
@@ -406,7 +408,7 @@ fn guard_epoch_retag(existing: Option<f64>, new: Option<f64>, overwrite: bool) -
         && !epochs_equal(existing, new)
     {
         return Err(CrsError::message(format!(
-            "set_epoch would change the coordinate epoch from {existing} to {new} without \
+            "with_epoch would change the coordinate epoch from {existing} to {new} without \
              reprojecting; use to_crs to transform between epochs, or pass overwrite=True to \
              relabel deliberately"
         )));
@@ -510,6 +512,21 @@ mod tests {
         assert!(matches!(
             err.kind(),
             crate::error::ErrorKind::Frame(FrameError::EpochRequiresCrs)
+        ));
+    }
+
+    #[test]
+    fn geometry_epoch_admission_covers_ensemble_derived_and_dynamic_frames() {
+        for crs in ["EPSG:4326", "EPSG:3857", "EPSG:9000"] {
+            let frame = Frame::new(Some(crs_arc_static(crs)), Some(2020.0)).unwrap();
+            assert_eq!(frame.crs_str(), Some(crs));
+            assert_eq!(frame.epoch(), Some(2020.0));
+        }
+
+        let err = Frame::new(Some(crs_arc_static("EPSG:2180")), Some(2020.0)).unwrap_err();
+        assert!(matches!(
+            err.kind(),
+            crate::error::ErrorKind::Frame(FrameError::EpochRequiresAdmittedCrs { .. })
         ));
     }
 
@@ -635,17 +652,17 @@ mod tests {
         assert_eq!(same.options.source_epoch, Some(2020.0));
         assert_eq!(same.options.target_epoch, Some(2020.0));
 
-        // Dynamic-aware policy: EPSG:3857 rides the WGS 84 ensemble (dynamic
-        // realizations), so the source epoch stays meaningful and survives.
-        let dynamic_target = GeometryTransformFrame::new(
+        // EPSG:3857 derives from the WGS 84 ensemble, so the source epoch
+        // stays meaningful and survives.
+        let admitted_target = GeometryTransformFrame::new(
             &source,
             crs_arc_static("EPSG:3857"),
             None,
             crs::TransformOptions::default(),
         )
         .unwrap();
-        assert_eq!(dynamic_target.output.crs_str(), Some("EPSG:3857"));
-        assert_eq!(dynamic_target.output.epoch(), Some(2020.0));
+        assert_eq!(admitted_target.output.crs_str(), Some("EPSG:3857"));
+        assert_eq!(admitted_target.output.epoch(), Some(2020.0));
 
         // A static plate-fixed target clears the epoch automatically.
         let static_target = GeometryTransformFrame::new(
@@ -667,5 +684,34 @@ mod tests {
         .unwrap();
         assert_eq!(explicit.output.epoch(), Some(2025.0));
         assert_eq!(explicit.options.target_epoch, Some(2025.0));
+    }
+
+    #[test]
+    fn explicit_target_epoch_uses_the_same_frame_admission_policy() {
+        let source = Frame::new(Some(crs_arc_static("EPSG:4326")), Some(2020.0)).unwrap();
+        for crs in ["EPSG:4326", "EPSG:3857", "EPSG:9000"] {
+            let target = GeometryTransformFrame::new(
+                &source,
+                crs_arc_static(crs),
+                Some(2025.5),
+                crs::TransformOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(target.output.crs_str(), Some(crs));
+            assert_eq!(target.output.epoch(), Some(2025.5));
+            assert_eq!(target.options.target_epoch, Some(2025.5));
+        }
+
+        let err = GeometryTransformFrame::new(
+            &source,
+            crs_arc_static("EPSG:2180"),
+            Some(2025.5),
+            crs::TransformOptions::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err.kind(),
+            crate::error::ErrorKind::Frame(FrameError::EpochRequiresAdmittedCrs { .. })
+        ));
     }
 }

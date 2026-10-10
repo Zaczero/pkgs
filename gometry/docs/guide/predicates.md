@@ -30,7 +30,7 @@ for the edge and explicit-closure conventions.
 
 | Predicate | True when… | Symmetric? |
 |-----------|------------|------------|
-| [`contains`][gometry.contains] | `right` lies in `left`'s interior and they share interior | no |
+| [`contains`][gometry.contains] | no point of `right` lies outside `left`, and their interiors share a point | no |
 | [`contains_properly`][gometry.contains_properly] | `contains` with **no boundary contact** at all | no |
 | [`within`][gometry.within] | `left` is contained by `right` (the inverse of `contains`) | no |
 | [`covers`][gometry.covers] | every point of `right` is in `left` (boundary-inclusive) | no |
@@ -38,7 +38,7 @@ for the edge and explicit-closure conventions.
 | [`intersects`][gometry.intersects] | they share **any** point | yes |
 | [`disjoint`][gometry.disjoint] | they share **no** point (`not intersects`) | yes |
 | [`touches`][gometry.touches] | they meet only on boundaries, interiors stay apart | yes |
-| [`crosses`][gometry.crosses] | interiors cross with lower dimension than either | yes |
+| [`crosses`][gometry.crosses] | a dimension-dependent interior crossing; for example, a line has interior parts inside and outside a polygon, or two curves meet at an interior point | yes |
 | [`overlaps`][gometry.overlaps] | same-dimension overlap, neither contains the other | yes |
 | [`equals`][gometry.equals] | topologically identical point sets | yes |
 
@@ -97,30 +97,33 @@ print("matching indices:", [i for i, h in enumerate(hits) if h])
 
 ```
 
-A sequence argument returns one typed mask from a native batch. Broadcasting is
-strict: **scalar-vs-sequence** broadcasts, and **equal-length sequences** are
-compared pairwise; mismatched non-scalar lengths raise. Many-to-many work uses a
+A sequence argument returns one typed mask from a native batch. Lists, object
+arrays, and other iterables of `Geometry | None` are normalized to geometry
+rows; missing rows remain at their original positions. Broadcasting is strict:
+**scalar-vs-sequence** broadcasts, and **equal-length sequences** are compared
+pairwise; mismatched non-scalar lengths raise. Many-to-many work uses a
 [`gm.SpatialIndex`][gometry.SpatialIndex] or [`gm.join`][gometry.join].
 
-### The `_xy` coordinate path
+### Coordinate predicates
 
-When you are testing against raw coordinates rather than [`Point`][gometry.Point] objects,
-[`contains_xy`][gometry.contains_xy] and [`intersects_xy`][gometry.intersects_xy]
-skip constructing the point entirely:
+Use the same predicate with keyword-only `x` and `y` when testing raw
+coordinates. This keeps the point-probe kernel without constructing
+[`Point`][gometry.Point] objects:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 region = gm.box(0, 0, 10, 10)
-print(gm.contains_xy(region, 5, 5))
-print(repr(gm.intersects_xy(region, [5, 30], [5, 5])))
+print(gm.contains(region, x=5, y=5))
+print(repr(gm.intersects(region, x=[5, 30], y=[5, 5])))
 
 ```
 
-The coordinates are interpreted in the geometry's CRS. Geographic inputs use
-the same antimeridian and pole topology as predicates against explicit
-`Point` objects, including strict interior versus boundary
-contact at the frame's periodic seam and poles (±180°/±90° for EPSG:4326).
+Provide either a right-hand geometry or both coordinate keywords. The
+coordinates are interpreted in the left geometry's CRS. Geographic inputs use
+the same antimeridian and pole topology as predicates against explicit points,
+including strict interior versus boundary contact at the frame's periodic seam
+and poles (±180°/±90° for EPSG:4326).
 
 ## Robust predicates
 
@@ -157,10 +160,12 @@ print('intersects:', gm.intersects(square, on_edge))
 
 ## Boundary points are not contained
 
-The [OGC Simple Features](https://www.ogc.org/standard/sfa/) model defines `contains`
-requires the contained geometry to share the container's
-**interior** — a point sitting exactly on an edge does not qualify. Use
-`covers` when you want the boundary-inclusive answer.
+The [OGC Simple Features](https://www.ogc.org/standard/sfa/) `contains` relation
+requires that no point of the candidate lies outside the container and that
+their interiors share a point. A point exactly on a polygon boundary does not
+share the polygon's interior, so it fails `contains` and can satisfy `covers`.
+A contained polygon can share part of the container boundary as long as their
+interiors also overlap.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -195,8 +200,9 @@ print("properly inside:", gm.contains_properly(region, inner))
 ```
 
 !!! warning "`contains` vs `covers`"
-    **`covers` is `contains` plus the boundary.** Use `covers` when points on
-    tile edges, snapped grids, or shared borders belong to the result.
+    `covers` includes the whole boundary case: a boundary point can be covered
+    without being contained. Use `covers` when points on tile edges, snapped
+    grids, or shared borders belong to the result.
 
 ## Empty geometry semantics
 

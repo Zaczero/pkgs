@@ -8,8 +8,14 @@ import pytest
 
 def test_geometry_amplification_returns_errors_before_allocation() -> None:
     line = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
-    with pytest.raises(gm.GeometryError, match='max_length'):
+    with pytest.raises(gm.GeometryError, match='max_length') as output_limit:
         line.segmentize(float.fromhex('0x0.0000000000001p-1022'))
+    assert (
+        output_limit.value.code,
+        output_limit.value.operation,
+        output_limit.value.parameter,
+    ) == ('output_limit', 'segmentize', 'max_length')
+    assert output_limit.value.produced > output_limit.value.limit
     with pytest.raises(gm.GeometryError, match='count'):
         line.sample_points(16_000_001, seed=0)
     with pytest.raises(gm.GeometryError, match='count'):

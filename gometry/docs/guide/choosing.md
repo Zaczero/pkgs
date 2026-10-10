@@ -40,7 +40,7 @@ edge is *not* contained — use `covers` for boundary-inclusive membership. See
 
 | Situation | Use |
 | --- | --- |
-| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand; in a geographic CRS, pass canonical west/east longitudes in `[-180, 180]` (`west > east` crosses the antimeridian), while seam-crossing, polar, or non-canonical subjects use frame-aware topology |
+| crop to an axis-aligned window (map tile, viewport, bbox) | [`clip_by_rect`][gometry.Geometry.clip_by_rect] — a rectangular cut that does not build a polygon operand; in a geographic CRS, use endpoints within the frame's native longitude half-period and latitude poles (`west > east` crosses the longitude seam), while seam-crossing, polar, or non-canonical subjects use frame-aware topology |
 | crop to an arbitrary mask geometry | [`intersection`][gometry.intersection] (or the `&` operator) |
 
 There is no separate `clip(mask)`: use [`clip_by_rect`][gometry.Geometry.clip_by_rect] for a
@@ -54,7 +54,7 @@ rectangle and [`intersection`][gometry.intersection] for an arbitrary mask.
 | snap vertices onto a fixed coordinate grid | [`snap_to_grid`][gometry.Geometry.snap_to_grid] | grid-aligned vertices; collapsed parts become empty; output may be non-simple |
 | snap onto a grid **and** guarantee validity | [`snap_to_grid`][gometry.Geometry.snap_to_grid] with `repair=True` | grid-aligned, valid output (snap → repair → re-snap to a fixpoint); the geometry kind may change |
 | drop consecutive duplicate (or near-duplicate) vertices | [`remove_repeated_points`][gometry.Geometry.remove_repeated_points] | the geometry kind, with consecutive runs collapsed |
-| reduce vertex count while keeping shape | [`simplify`][gometry.Geometry.simplify] (`method='vw'` [Visvalingam–Whyatt](https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm) by default, or `method='dp'` [Douglas–Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm) for a distance band; `preserve_topology=True` keeps polygons valid and simple lines simple) | a vertex subset within tolerance |
+| reduce vertex count while keeping shape | [`simplify`][gometry.Geometry.simplify] (`method='vw'` [Visvalingam–Whyatt](https://en.wikipedia.org/wiki/Visvalingam%E2%80%93Whyatt_algorithm) by default, or `method='dp'` [Douglas–Peucker](https://en.wikipedia.org/wiki/Ramer%E2%80%93Douglas%E2%80%93Peucker_algorithm) for a distance band; `preserve_topology=True` keeps valid polygonal components valid and simple lineal components simple, but does not preserve relationships between separate [GeometryCollection][gometry.GeometryCollection] members) | a vertex subset within tolerance |
 | collect the distinct vertices themselves | [`unique_points`][gometry.Geometry.unique_points] | a [`MultiPoint`][gometry.MultiPoint] for homogeneous survivors, or an ordered [`GeometryCollection`][gometry.GeometryCollection] of full-fidelity points when axes differ |
 | fix actual invalidity (self-intersections, bad rings) | [`repair`][gometry.Geometry.repair] | a valid geometry, rebuilt |
 
@@ -126,7 +126,7 @@ print(panels(
         ("two parcel rows", {'source': input_rows}, "The two input parcels overlap along a narrow strip instead of forming a valid coverage."),
         ("invalid shared edges", {'source': input_rows, 'result': invalid_edges}, "Diagnostic edges mark the mismatched parcel border around the overlap."),
         ("cleaned parcel coverage", {'source': input_rows, 'result': [item for row in cleaned for item in with_vertices(row)]}, "Coverage cleaning aligns the shared border and leaves two non-overlapping parcel rows."),
-        ("coverage union", {'result': gm.coverage_union(cleaned)}, "The cleaned parcels dissolve into one continuous polygon with no overlap or gap."),
+        ("coverage union", {'result': gm.coverage_union_all(cleaned)}, "The cleaned parcels dissolve into one continuous polygon with no overlap or gap."),
     ],
     labels={'source': 'input parcels', 'result': 'what the call returns'},
 ))

@@ -9,7 +9,6 @@ use crate::crs::MetricModel;
 use crate::dispatch::metric::MetricScratch;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::dispatch::{Lane, kernels};
-use crate::geometry::storage::packed_columns::resolve_packed_columns;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef,
 };
@@ -77,11 +76,6 @@ pub(crate) enum PackedUnary {
     },
     Force3d {
         z_fill: f64,
-    },
-    /// `set_z` / `set_m` (which ordinate comes from the [`Operation`]).
-    SetOrdinate {
-        value: Option<f64>,
-        overwrite: bool,
     },
     Quantize {
         precision: i32,
@@ -216,8 +210,7 @@ fn packed_bool_values(array: &PyGeometryArray, op: Operation) -> Option<PyResult
         Operation::IsRing | Operation::IsSimple | Operation::IsValid
     ) && let TopologyDomain::Geographic(frame) = domain
     {
-        let columns =
-            resolve_packed_columns(array.storage(), array.missing(), array.point_row_layout())?;
+        let columns = array.packed_columns()?;
         if !columns.faithful_geographic_predicates(frame) {
             for row in array.row_operation().present_rows() {
                 let route = match row.row().with_shape(|shape| {
@@ -405,12 +398,6 @@ pub(crate) fn try_unary_packed_array(
         (Operation::Force3d, PackedUnary::Force3d { z_fill }) => {
             Some(array.force_3d_unary_packed(py, *z_fill))
         },
-        (Operation::SetZ, PackedUnary::SetOrdinate { value, overwrite }) => {
-            Some(array.set_z_unary_packed(py, *value, *overwrite))
-        },
-        (Operation::SetM, PackedUnary::SetOrdinate { value, overwrite }) => {
-            Some(array.set_m_unary_packed(py, *value, *overwrite))
-        },
         (Operation::Quantize, PackedUnary::Quantize { precision }) => {
             Some(array.quantize_unary_packed(py, *precision))
         },
@@ -427,8 +414,8 @@ pub(crate) fn try_unary_packed_array(
             let result = match resolver.resolve_topology_ctx(&array.frame, &mut scratch) {
                 Ok((domain, metric)) => {
                     let rect = match domain {
-                        TopologyDomain::Geographic(_) => {
-                            Bounds::new_geographic(*minx, *miny, *maxx, *maxy)
+                        TopologyDomain::Geographic(frame) => {
+                            Bounds::new_geographic(frame, *minx, *miny, *maxx, *maxy)
                         },
                         TopologyDomain::Cartesian => Bounds::new(*minx, *miny, *maxx, *maxy),
                     };
@@ -439,7 +426,6 @@ pub(crate) fn try_unary_packed_array(
                                     crate::crs::CrsError::invalid(
                                         "geographic rectangle clipping requires the operation's CRS metric",
                                     )
-                                    .into()
                                 })
                             };
                             array.clip_by_rect_unary_packed(py, rect, domain, &metric_access)
@@ -555,12 +541,20 @@ fn linref_point_between_packed_inner(
     // Parameter errors raise on BOTH surfaces: the coordseq row loop below
     // clamps out-of-range stationing by design, so a non-finite distance
     // must be rejected here (the scalar path's kernel owns its own check).
-    if let MetricModel::Geodesic { crs, state, .. } = model {
-        crate::crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
-            (0..len)
+    if let MetricModel::Geodesic { crs, frame, state } = model {
+        if len != 0 {
+            let first_line = GeometryArrayStorage::line_view(coords, offsets, row_map, 0);
+            crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
+                .map_err(|error| (0, error))?;
+        }
+        crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+            let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
-                    let point = crate::crs::chart_line_interpolate_coordseq(
+                    if row != 0 {
+                        crate::crs::ensure_geographic_coordseq_in_frame(*frame, &line)?;
+                    }
+                    let point = crate::crs::chart_line_interpolate_coordseq_admitted(
                         &line,
                         distance.get(row),
                         normalized,
@@ -568,8 +562,10 @@ fn linref_point_between_packed_inner(
                     );
                     degrade_linref_point(point.map(Shape::Point), Lane::Array(row))
                 })
-                .collect_rows()
+                .collect_rows();
+            Ok(rows)
         })
+        .map_err(|error| (0, error))?
     } else {
         (0..len)
             .map(|row| {
@@ -620,21 +616,32 @@ fn linref_substring_packed_inner(
     end_distance: &F64Param,
     normalized: bool,
 ) -> Result<Vec<Shape>, (usize, crate::error::Error)> {
-    if let MetricModel::Geodesic { crs, state, .. } = model {
-        crate::crs::with_geographic_coordseq_collect_rows_at(crs, state, |metric| {
-            (0..len)
+    if let MetricModel::Geodesic { crs, frame, state } = model {
+        if len != 0 {
+            let first_line = GeometryArrayStorage::line_view(coords, offsets, row_map, 0);
+            crate::crs::ensure_geographic_coordseq_in_frame(*frame, &first_line)
+                .map_err(|error| (0, error))?;
+        }
+        crate::crs::with_geographic_coordseq_metric_at(crs, state, |metric| {
+            let rows = (0..len)
                 .map(|row| {
                     let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
+                    if row != 0 {
+                        crate::crs::ensure_geographic_coordseq_in_frame(*frame, &line)?;
+                    }
                     let range = MeasureRange::substring_distance(
                         start_distance.get(row),
                         end_distance.get(row),
                     )?;
-                    let substring =
-                        crate::crs::chart_line_substring_coordseq(&line, range, normalized, metric);
+                    let substring = crate::crs::chart_line_substring_coordseq_admitted(
+                        &line, range, normalized, metric,
+                    );
                     degrade_linref_linestring(substring, Lane::Array(row))
                 })
-                .collect_rows()
+                .collect_rows();
+            Ok(rows)
         })
+        .map_err(|error| (0, error))?
     } else {
         (0..len)
             .map(|row| {

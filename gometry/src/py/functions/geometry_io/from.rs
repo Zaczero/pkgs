@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 
 use crate::py::functions::bulk_rows::{StreamedSridRow, batch_bulk_srid, stream_bulk_srid};
+use crate::py::support;
 use crate::py::wire_crs::{rebase_ewkt_parse_error, resolve_wire_crs, split_ewkt_srid};
 use crate::{
     OwnedBytes, PyGeometry, Typed, coordinate_epoch_option, copy_wkb_payload, exact_backed_bytes,
@@ -18,11 +19,12 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// data : str or iterable of str
-///     A single WKT/EWKT string, or any iterable of them for a
-///     ``GeometryArray``.
+/// data : str, iterable of str, or dataframe/Arrow column
+///     A single WKT/EWKT string, an iterable of rows, or a pandas/Polars
+///     Series or PyArrow Array/ChunkedArray. Missing column values become
+///     missing rows.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
@@ -67,12 +69,14 @@ pub(crate) fn from_wkt(
 ) -> PyResult<Py<PyAny>> {
     let fallback = parse_crs(crs)?;
     let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
+    let column = support::normalize_format_column(data)?;
+    let data = column.as_ref().map_or(data, |column| column.as_any());
     let parse = |text: &str| -> PyResult<PyGeometry> {
         let (body, srid) = split_ewkt_srid(text)?;
         let embedded = io::crs_from_optional_srid(srid)?;
         let crs = resolve_wire_crs(embedded, fallback.as_ref(), "EWKT SRID")?;
         guard_epoch_frame(parsed_epoch, crs.as_ref())?;
-        Ok(PyGeometry::with_epoch(
+        Ok(PyGeometry::new_with_crs_epoch(
             io::parse_wkt(body).map_err(|error| rebase_ewkt_parse_error(error, text, body))?,
             crs,
             parsed_epoch,
@@ -133,10 +137,13 @@ pub(crate) fn from_wkt(
 ///
 /// Parameters
 /// ----------
-/// data : bytes or sequence of bytes
-///     A WKB/EWKB buffer, or an iterable of them for a ``GeometryArray``.
+/// data : bytes, byte buffer, iterable of buffers, or dataframe/Arrow column
+///     A WKB/EWKB byte buffer, an iterable of byte buffers, or a pandas/Polars
+///     Series or PyArrow Array/ChunkedArray of WKB values. A one-byte integer
+///     ndarray is one scalar byte buffer; other ndarrays are row columns.
+///     Missing column values become missing rows.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS for SRID-less input. An embedded SRID that *contradicts* an
 ///     explicit ``crs`` raises rather than silently winning.
 ///
@@ -186,6 +193,8 @@ pub(crate) fn from_wkb(
 ) -> PyResult<Py<PyAny>> {
     let fallback = parse_crs(crs)?;
     let parsed_epoch = coordinate_epoch_option("epoch", epoch)?;
+    let column = support::normalize_format_column(data)?;
+    let data = column.as_ref().map_or(data, |column| column.as_any());
     let attach = |mut geometry: PyGeometry| -> PyResult<PyGeometry> {
         let resolved =
             resolve_wire_crs(geometry.crs_ref().cloned(), fallback.as_ref(), "EWKB SRID")?;

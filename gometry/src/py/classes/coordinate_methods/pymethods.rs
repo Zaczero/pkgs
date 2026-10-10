@@ -1,7 +1,8 @@
-use pyo3::PyErr;
-use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyOverflowError, PyValueError};
 use pyo3::types::PyInt;
+use pyo3::{IntoPyObjectExt as _, PyErr};
 
+use crate::boundary::reserve::py_iter_or_none;
 use crate::geometry::storage;
 use crate::geometry::storage::PackedStorage;
 use crate::py::classes::coordinate_methods::{
@@ -16,12 +17,6 @@ use crate::py::sizeof::python_sizeof;
 
 #[pymethods]
 impl PyCoordinates {
-    // NEP 13: opt out of numpy ufunc dispatch (we have our own & | - ^ /
-    // predicates)
-    #[classattr]
-    #[expect(non_upper_case_globals, reason = "Python dunder name")]
-    const __array_ufunc__: Option<Py<PyAny>> = None;
-
     /// Number of vertices in this coordinate view.
     ///
     /// Returns
@@ -46,19 +41,23 @@ impl PyCoordinates {
         self.view.nbytes_pyint(py)
     }
 
-    /// ``sys.getsizeof`` support: the wrapper plus the logical Rust-side
-    /// coordinate heap retained by this view (ordinate payload and structural
-    /// row metadata for array-backed views). Shared backing buffers are
-    /// reported like NumPy views, not as the full parent allocation. Parent
-    /// geometry/array sidecars (prepared caches, coverage membership, …) are
-    /// not owned by the view and are not counted here.
+    /// ``sys.getsizeof`` support: Python's allocation base plus the logical
+    /// Rust-side coordinate heap retained by this view (ordinate payload and
+    /// structural row metadata for array-backed views). Shared backing buffers
+    /// are estimated from the visible view, not the full parent allocation.
+    /// Parent geometry/array sidecars (prepared caches, coverage membership,
+    /// …) are not owned by the view and are not counted here.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    pub fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.view.logical_heap_bytes())
+    pub fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(
+            slf.py(),
+            slf.as_any(),
+            slf.borrow().view.logical_heap_bytes(),
+        )
     }
 
     /// Select vertices by integer or slice.
@@ -149,7 +148,7 @@ impl PyCoordinates {
     pub fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, false)?,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, false),
         )
     }
 
@@ -161,14 +160,20 @@ impl PyCoordinates {
     pub fn __reversed__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, true)?,
+            PyCoordinatesIter::new(slf.view.clone(), slf.layout, true),
         )
     }
 
-    pub fn __reduce__(&self) -> PyResult<Py<PyAny>> {
-        Err(PyTypeError::new_err(
-            "cannot pickle Coordinates; use numpy.asarray(coords) to materialize coordinates",
-        ))
+    pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        let callable = crate::gometry_lib_module(py)?
+            .getattr(pyo3::intern!(py, "_unpickle_coordinates_v1"))?
+            .unbind();
+        let args = (
+            self.owner.clone_ref(py),
+            self.layout.map(CoordinateAxes::as_str),
+        )
+            .into_py_any(py)?;
+        Ok((callable, args))
     }
 
     pub fn __copy__(slf: &Bound<'_, Self>) -> Py<Self> {
@@ -183,6 +188,11 @@ impl PyCoordinates {
 
     /// Coordinate layout: ``'XY'``, ``'XYZ'``, ``'XYM'``, or ``'XYZM'`` — the
     /// `select`-forced layout when set, else the union of the present axes.
+    ///
+    /// Returns
+    /// -------
+    /// CoordinateAxes
+    ///     The exact ordinate layout visible through this coordinate view.
     #[getter]
     pub fn coordinate_axes(&self, py: Python<'_>) -> PyResult<&'static str> {
         match self.layout {
@@ -192,11 +202,12 @@ impl PyCoordinates {
     }
 
     /// Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
-    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``): every tuple/column has that
-    /// shape. Nested/tuple output uses ``None`` where a coordinate lacks the
-    /// requested Z/M; ndarray columns and ``numpy.asarray`` use ``NaN`` there.
-    /// `select` changes which ordinates nested output, iteration, ndarray/dict
-    /// exports, and coordinate equality see; it does not change the geometry.
+    /// (``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'``). This layout defines the schema
+    /// of coordinate tuples, nested output, matrices, dictionaries, and equality.
+    /// Tuple/nested output uses ``None`` where a coordinate lacks the requested
+    /// Z/M; matrices and dictionary columns use ``NaN`` there. Independent axis
+    /// accessors such as ``.z`` continue to read the source view, regardless of
+    /// the selected layout. Selection does not change the geometry.
     ///
     /// Parameters
     /// ----------
@@ -214,27 +225,48 @@ impl PyCoordinates {
     /// >>> coords = gm.LineString([(0, 0), (1, 1)]).coords
     /// >>> coords.select('XYZ').to_nested()
     /// [(0.0, 0.0, None), (1.0, 1.0, None)]
-    pub fn select(&self, axes: CoordinateAxes) -> Self {
+    pub fn select(&self, py: Python<'_>, axes: CoordinateAxes) -> Self {
         Self {
             view: self.view.clone(),
+            owner: self.owner.clone_ref(py),
             layout: Some(axes),
         }
     }
 
     /// Per-coordinate source geometry row (all ``0`` for a scalar geometry);
     /// the source row for each vertex of a ``GeometryArray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     A materialized, read-only int64 array in flat coordinate order, one
+    ///     source-row label per vertex.
     #[getter]
     pub fn row_index(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         int64_array(py, self.view.try_row_index_i64(py)?)
     }
 
     /// The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order, in the geometry's
+    ///     native coordinate units (raw coordinate units when CRS-free). The
+    ///     array shares the immutable coordinate column when one is available.
     #[getter]
     pub fn x(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::X)
     }
 
     /// The Y ordinates as a read-only ``float64`` ``numpy.ndarray``.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order, in the geometry's
+    ///     native coordinate units (raw coordinate units when CRS-free). The
+    ///     array shares the immutable coordinate column when one is available.
     #[getter]
     pub fn y(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Y)
@@ -242,6 +274,13 @@ impl PyCoordinates {
 
     /// The Z ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
     /// length (``NaN`` when no coordinate carries Z).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order; missing Z ordinates
+    ///     are ``NaN``. Values remain in the geometry's native coordinate
+    ///     units; absent columns are materialized.
     #[getter]
     pub fn z(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::Z)
@@ -249,6 +288,13 @@ impl PyCoordinates {
 
     /// The M ordinates as a read-only ``float64`` ``numpy.ndarray`` of view
     /// length (``NaN`` when no coordinate carries M).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     One read-only value per vertex in view order; missing M ordinates
+    ///     are ``NaN``. M is a measure ordinate, not a CRS unit; absent columns
+    ///     are materialized.
     #[getter]
     pub fn m(slf: Bound<'_, Self>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         column_axis_to_py(py, slf, CoordinateAxis::M)
@@ -262,8 +308,9 @@ impl PyCoordinates {
     ///
     /// Parameters
     /// ----------
-    /// index : bool, default False
-    ///     Add an ``'index'`` column with each coordinate's source row.
+    /// index : bool
+    ///     Add an ``'index'`` column with each coordinate's source row when
+    ///     ``True``; the ``False`` form omits that column.
     ///
     /// Returns
     /// -------
@@ -383,19 +430,22 @@ impl PyCoordinates {
             coordinates::CoordinateSource::Shape(shape) => {
                 coordinates_object(py, shape, self.layout)
             },
-            coordinates::CoordinateSource::Array(storage, missing) => {
-                let nested = match storage {
+            coordinates::CoordinateSource::Array(rows) => {
+                let nested = match rows.storage() {
                     GeometryArrayStorage::Mixed(shapes) => shapes
                         .iter()
                         .enumerate()
-                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
+                        .filter(|(row, _)| {
+                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
+                        })
                         .map(|(_, shape)| coordinates_object(py, shape, self.layout))
                         .collect::<PyResult<Vec<_>>>()?,
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         let map = row_map.as_deref();
-                        if let Some(mask) = missing
-                            && mask.len() != storage::point_logical_len(coords, map)
-                        {
+                        if rows.is_compact_nullable() {
+                            let mask = rows
+                                .missing()
+                                .expect("compact nullable rows carry validity");
                             let nested = mask
                                 .cursor()
                                 .filter_map(|(_, present)| present)
@@ -412,7 +462,6 @@ impl PyCoordinates {
                             return Ok(PyList::new(py, nested)?.unbind().into());
                         }
                         (0..storage::point_logical_len(coords, map))
-                            .filter(|&index| !missing.is_some_and(|mask| mask.is_missing(index)))
                             .map(|index| {
                                 coordinates_object(
                                     py,
@@ -426,10 +475,13 @@ impl PyCoordinates {
                     },
                     GeometryArrayStorage::Packed(
                         PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-                    ) => storage
+                    ) => rows
+                        .storage()
                         .iter_shapes()
                         .enumerate()
-                        .filter(|(row, _)| !missing.is_some_and(|mask| mask.is_missing(*row)))
+                        .filter(|(row, _)| {
+                            !rows.missing().is_some_and(|mask| mask.is_missing(*row))
+                        })
                         .map(|(_, shape)| {
                             shape
                                 .map_err(PyErr::from)
@@ -443,23 +495,17 @@ impl PyCoordinates {
     }
 
     /// Value equality against another `Coordinates` or a sequence of coordinate
-    /// tuples. Other types defer with ``NotImplemented``. Provider exceptions
-    /// propagate; only non-iterable types yield ``NotImplemented``. Arc-identity
-    /// / short-circuit paths in ``coordinates_equal`` are preserved.
+    /// tuples. Other types defer with ``NotImplemented``. Errors from an
+    /// admitted iterator or item comparison propagate. Arc-identity /
+    /// short-circuit paths in ``coordinates_equal`` are preserved.
     pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
             return Ok(py_bool(py, self.coordinates_equal(py, &other_coords)?));
         }
-        // Do not call `try_iter` merely to probe — that drains one-shot
-        // generators. Attempt equality once; a TypeError (not iterable)
-        // becomes NotImplemented, other errors propagate.
-        match self.coordinates_equal_sequence(other) {
-            Ok(equal) => Ok(py_bool(py, equal)),
-            Err(err) if err.is_instance_of::<pyo3::exceptions::PyTypeError>(py) => {
-                Ok(py.NotImplemented())
-            },
-            Err(err) => Err(err),
-        }
+        let Some(items) = py_iter_or_none(other)? else {
+            return Ok(py.NotImplemented());
+        };
+        Ok(py_bool(py, self.coordinates_equal_iter(items)?))
     }
 
     /// Whether a coordinate tuple appears among the vertices, using the same
@@ -608,7 +654,7 @@ impl PyCoordinates {
         let measure = self.view.exact_measure(py)?;
         let axes = match self.view.source() {
             coordinates::CoordinateSource::Shape(_) => measure.shape_axes(),
-            coordinates::CoordinateSource::Array(..) => measure.present_axes(),
+            coordinates::CoordinateSource::Array(_) => measure.present_axes(),
         };
         let len = measure.count_pyint(py).str()?.extract::<String>()?;
         Ok(format!("<Coordinates {} len={len}>", axes.as_str()))

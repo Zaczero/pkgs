@@ -139,8 +139,9 @@ impl PyGeometryArray {
     ///
     /// Parameters
     /// ----------
-    /// path : path-like
-    ///     Output Parquet path.
+    /// path : str, path-like, or binary stream
+    ///     Output Parquet path or caller-owned binary writable stream. Text
+    ///     streams are not supported; the writer leaves streams open.
     /// attributes : pyarrow.Table or mapping, optional
     ///     Per-row attribute columns written beside the geometry column
     ///     (lengths must match).

@@ -29,6 +29,12 @@ if TYPE_CHECKING:
     H3_CELLS = gm.h3_cells([1.0], [2.0], resolution=9)
     S2_CELLS = gm.s2_cells([1.0], [2.0], level=9)
 
+    # S2 levels and adaptive controls use integer parameters.
+    gm.s2_cover(POLY, '8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, min_level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level_mod=True)  # type: ignore[call-overload]
+
     # Domain families are flat, prefix-discoverable top-level functions;
     # namespace spellings are deliberately not retained for this first release.
 
@@ -81,10 +87,15 @@ if TYPE_CHECKING:
     gm.point_between(POINT, POINT, 0.5, path='rhumb', unit='planar')  # type: ignore[call-overload]
     gm.point_between(POLY, POINT, 0.5)  # type: ignore[call-overload]
     gm.point_between(GEOMS, POINT, 0.5)  # type: ignore[arg-type]
-    gm.rhumb_distance(POLY, POINT)  # type: ignore[call-overload]
-    gm.rhumb_distance(GEOMS, POINT)  # type: ignore[arg-type]
+    gm.distance(POLY, POINT, path='rhumb')  # type: ignore[call-overload]
+    gm.distance(GEOMS, POINT, path='rhumb')  # type: ignore[call-overload]
+    gm.distance(POINT, POINT, path='rhumb', unit='meters')  # type: ignore[call-overload]
     LINE.line_interpolate(1.0, basis='m', unit='meters')  # type: ignore[call-overload]
     LINE.line_interpolate(count=2, basis='m')  # type: ignore[call-overload]
+    LINE.line_interpolate(count=2, normalized=True)  # type: ignore[call-overload]
+    LINE.line_locate(POLY)  # type: ignore[call-overload]
+    LINE.line_locate(geom=POINT)  # type: ignore[call-overload]
+    POINT.voronoi(output='triangles')  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', unit='planar')  # type: ignore[call-overload]
     LINE.line_substring(0.0, 1.0, basis='m', normalized=True)  # type: ignore[call-overload]
 
@@ -104,6 +115,16 @@ if TYPE_CHECKING:
     gm.GeometryParts()  # type: ignore[call-arg]
     gm.Groups()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
+
+    gm.H3VertexArray([1.5])  # type: ignore[list-item]
+    gm.H3EdgeArray([1.5])  # type: ignore[list-item]
+
+    def _reject_to_pairs_for_noninteger_groups(
+        geometries: gm.Groups[gm.GeometryArray[gm.Geometry]],
+        cells: gm.Groups[gm.CellArray[gm.H3Cell]],
+    ) -> None:
+        geometries.to_pairs()  # type: ignore[misc]
+        cells.to_pairs()  # type: ignore[misc]
 
     gm.SpatialIndex(POINTS).query(POINTS).__getitem__(index=0)  # type: ignore[call-overload]
 
@@ -130,6 +151,10 @@ if TYPE_CHECKING:
     # Geometry operators take geometries, not numbers.
     POINT & 1.0  # type: ignore[operator]
 
+    # Reflected difference narrows from the other (left) operand, not self.
+    _bad_reflected_scalar: gm.Point = POINT.__rsub__(POLY)  # type: ignore[assignment]
+    _bad_reflected_array: gm.GeometryArray[gm.Point] = POINTS.__rsub__(GEOMS)  # type: ignore[assignment]
+
     # Covariance points one way: a Geometry array is not a Point array.
     _pts: gm.GeometryArray[gm.Point] = GEOMS  # type: ignore[assignment]
 
@@ -138,12 +163,27 @@ if TYPE_CHECKING:
     _dense_pts: gm.GeometryArray[gm.Point] = nullable_points  # type: ignore[assignment]
     _ = gm.GeometryArray([POINT, None])[0].x  # type: ignore[union-attr]
     _ = next(iter(gm.GeometryArray([POINT, None]))).x  # type: ignore[union-attr]
+    _dense_required: gm.GeometryArray[gm.Point] = gm.require(nullable_points)  # type: ignore[assignment]
+    _ = gm.require(nullable_points)[0].x  # type: ignore[union-attr]
     _dense_cells: gm.CellArray[gm.H3Cell] = gm.CellArray([h3_cell, None])  # type: ignore[assignment]
     _ = gm.CellArray([h3_cell, None])[0].token  # type: ignore[union-attr]
     _ = gm.GeometryArray([POINT, None]).centroid()[0].x  # type: ignore[union-attr]
     _dense_overlay: gm.GeometryArray[gm.Geometry] = gm.intersection(
         gm.GeometryArray([POINT, None]), POLY
     )  # type: ignore[assignment]
+
+    def _reject_unchecked_nullable_group(
+        groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
+    ) -> None:
+        _ = gm.require(groups)[0].x  # type: ignore[union-attr]
+
+    def _reject_unchecked_cell_projections(
+        centers: gm.CellArray[gm.H3Cell | None],
+        polygons: gm.CellArray[gm.S2Cell | None],
+    ) -> None:
+        _ = centers.center[0].x  # type: ignore[union-attr]
+        _ = polygons.polygon[0].area  # type: ignore[union-attr]
+        centers.center = centers.center  # type: ignore[assignment]
 
     # Scalar overload result is a bare float — it has no ndarray attributes.
     _ = gm.distance(POINT, POLY).dtype  # type: ignore[attr-defined]
@@ -170,7 +210,7 @@ if TYPE_CHECKING:
     # --- High-value free-function overload groups (manifest: _OVERLOAD_TARGETS) ---
     # Binary predicates reject non-geometry operands.
     gm.contains(POINT, 1.0)  # type: ignore[call-overload]
-    gm.intersects(POINT, 'not-a-geom')  # type: ignore[call-overload]
+    gm.intersects(POINT, 'not-a-geom')  # type: ignore[arg-type]
     gm.distance(POINT, 0)  # type: ignore[call-overload]
     # from_wkt/from_wkb reject wrong payload types.
     gm.from_wkt(123)  # type: ignore[call-overload]
@@ -181,14 +221,13 @@ if TYPE_CHECKING:
     matrix_1d: np.ndarray[tuple[int], np.dtype[np.float64]] = np.array(
         [0.0, 0.0], dtype=np.float64
     )
-    POINT.set_coordinates(matrix_1d)  # type: ignore[arg-type]
+    POINT.with_coordinates(matrix_1d)  # type: ignore[arg-type]
     matrix_3d: np.ndarray[tuple[int, int, int], np.dtype[np.float64]] = np.zeros(
         (1, 1, 2), dtype=np.float64
     )
-    POINT.set_coordinates(matrix_3d)  # type: ignore[arg-type]
+    POINT.with_coordinates(matrix_3d)  # type: ignore[arg-type]
     gm.LineString([(0.0, 0.0), (1.0, 1.0)], x=[0.0], y=[1.0])  # type: ignore[call-overload]
-    POINT.set_coordinates()  # type: ignore[call-overload]
-    POINT.set_coordinates(x=[0.0])  # type: ignore[call-overload]
+    POINT.with_coordinates(x=None)  # type: ignore[call-overload]
     POINTS.to_geoparquet('points.parquet', encoding='bogus')  # type: ignore[arg-type]
 
     # Optional dataframe boundaries are explicit and statically typed; native
@@ -228,15 +267,15 @@ if TYPE_CHECKING:
     # Antimeridian splitting is explicit metadata-bearing geography.
     gm.box(170.0, -10.0, -170.0, 10.0, wrap='split')  # type: ignore[call-overload]
 
-    # Dtype families: GeometryArray/CellArray reject float dtypes statically
-    # (probe __array__/to_numpy — np.asarray erases the protocol dtype check).
-    POINTS.__array__(dtype=np.float64)  # type: ignore[arg-type]
+    # The builtin object spelling necessarily widens __array__ to type[object],
+    # so use dtype instances to probe static rejection of unsupported dtypes.
+    POINTS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
     POINTS.to_numpy(np.float64)  # type: ignore[call-arg]
-    H3_CELLS.__array__(dtype=np.float64)  # type: ignore[arg-type]
-    gm.CellArray([h3_cell, None]).__array__(dtype=np.uint64)  # type: ignore[arg-type]
+    H3_CELLS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
+    gm.CellArray([h3_cell, None]).__array__(dtype='uint64')  # type: ignore[call-overload]
     POINT.coords.__array__(dtype=np.int64)  # type: ignore[arg-type]
     # CRS kind vocabulary rejects unknown tokens.
-    gm.crs_search('WGS', kind='not_a_kind')  # type: ignore[arg-type]
+    gm.crs_catalog('WGS', kind='not_a_kind')  # type: ignore[arg-type]
     gm.crs_catalog(kind='ellipsoid')  # type: ignore[arg-type]
     gm.crs_codes('EPSG', kind='nope')  # type: ignore[arg-type]
     _bad_kind: sht.CrsKind = 'not_a_kind'  # type: ignore[assignment]

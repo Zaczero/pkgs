@@ -171,19 +171,23 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
         crate::geometry::CoordinateAxes::XY,
         outline.into_iter().map(LineSeq::from_proven).collect(),
     );
-    let polygons: Vec<_> = Shape::build_area_all(&[&outline], true)?
-        .into_iter()
-        .filter_map(|shape| match shape {
-            Shape::Polygon(polygon) => Some(polygon),
-            Shape::Point(_)
-            | Shape::MultiPoint(_)
-            | Shape::LineString(_)
-            | Shape::MultiLineString(_)
-            | Shape::MultiPolygon(_)
-            | Shape::GeometryCollection(_)
-            | Shape::Empty(..) => None,
-        })
-        .collect();
+    let polygons: Vec<_> = Shape::build_area_all_with_context(
+        &[&outline],
+        true,
+        &crate::geometry::SourceArcContext::cartesian(),
+    )?
+    .into_iter()
+    .filter_map(|shape| match shape {
+        Shape::Polygon(polygon) => Some(polygon),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => None,
+    })
+    .collect();
     if polygons.is_empty() {
         return Ok(None);
     }
@@ -336,12 +340,7 @@ impl GridSourceAdmission {
             None,
             crs::TransformOptions::default(),
         )?;
-        let transformer = crs::TransformPlan::new_with_options_at(
-            resolved.source.as_str(),
-            resolved.target.as_str(),
-            resolved.options,
-            resolved.state,
-        )?;
+        let transformer = crs::TransformPlan::from_geometry_frame(resolved)?;
         Ok(Self {
             transformer: Some(transformer),
         })
@@ -366,7 +365,7 @@ impl GridSourceAdmission {
         let mut shapes = Vec::with_capacity(source_rows.len());
         shapes.extend(source_rows.iter().map(|(_, shape)| shape));
         transformer
-            .transform_shapes_indexed(&shapes)
+            .transform_shapes_with_computed_edges_indexed(&shapes)
             .map_err(|failure| {
                 let row = failure
                     .coordinate
@@ -391,7 +390,7 @@ impl GridSourceAdmission {
         geometry: &PyGeometry,
     ) -> Result<PyGeometry, GridCoverError> {
         let shape = if let Some(transformer) = &self.transformer {
-            transformer.transform_shape(geometry.shape.shape())?
+            transformer.transform_shape_with_computed_edges(geometry.shape.shape())?
         } else {
             geometry.shape.shape().clone()
         };
@@ -706,19 +705,22 @@ pub(crate) fn coverage_factory_shapes(
 /// distant parts, and the band behind a seam split, with unrelated cells.
 pub(crate) fn envelope_windows(cover_shape: &Shape) -> Vec<crate::geometry::Bounds> {
     let mut windows = Vec::new();
-    cover_shape.for_each_component(&mut |component| {
-        let Some(bounds) = component.to_shape().bounds() else {
-            return;
-        };
-        let (west, south, east, north) =
-            (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
-        if west > east {
-            windows.push(crate::geometry::Bounds::new_raw(west, south, 180.0, north));
-            windows.push(crate::geometry::Bounds::new_raw(-180.0, south, east, north));
-        } else {
-            windows.push(bounds);
-        }
-    });
+    cover_shape
+        .try_for_each_first_component(&mut |component| {
+            let Some(bounds) = component.to_shape().bounds() else {
+                return Ok(());
+            };
+            let (west, south, east, north) =
+                (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
+            if west > east {
+                windows.push(crate::geometry::Bounds::new_raw(west, south, 180.0, north));
+                windows.push(crate::geometry::Bounds::new_raw(-180.0, south, east, north));
+            } else {
+                windows.push(bounds);
+            }
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .expect("component windows cannot fail");
     windows
 }
 
@@ -751,8 +753,46 @@ mod tests {
     use crate::crs::frame;
     use crate::error::ErrorKind;
     use crate::geographic::{GeographicFrame, ScalarGeographicView};
-    use crate::geometry::{GeometryErrorKind, Point, Shape};
+    use crate::geometry::{CoordSeq, GeometryErrorKind, LineSeq, Point, Shape};
     use crate::grid::CoverError;
+
+    #[test]
+    fn envelope_windows_preserve_distinct_occurrences_and_reduce_shared_owners() {
+        fn line(west: f64, east: f64) -> Shape {
+            Shape::LineString(
+                LineSeq::segment(Point::new_raw_xy(west, 0.0), Point::new_raw_xy(east, 0.0))
+                    .expect("valid test line"),
+            )
+        }
+
+        let source = Shape::geometry_collection(vec![line(-5.0, -4.0), line(4.0, 5.0)])
+            .expect("distinct envelope components");
+        let mut expanded = Vec::new();
+        source.for_each_component(&mut |component| {
+            if let Some(bounds) = component.to_shape().bounds() {
+                expanded.push(bounds);
+            }
+        });
+        assert_eq!(super::envelope_windows(&source), expanded);
+
+        let mut shared = line(-5.0, -4.0);
+        for _ in 0..9 {
+            shared = Shape::geometry_collection(vec![shared.clone(), shared])
+                .expect("shared collection node");
+        }
+        let mut occurrences = 0;
+        shared.for_each_component(&mut |_| occurrences += 1);
+        assert_eq!(occurrences, 1 << 9);
+        let mut first_owner_components = 0;
+        shared
+            .try_for_each_first_component(&mut |_| {
+                first_owner_components += 1;
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .expect("component traversal cannot fail");
+        assert_eq!(first_owner_components, 2);
+        assert_eq!(super::envelope_windows(&shared).len(), 2);
+    }
 
     #[test]
     fn canonicalizes_shuffled_duplicates() {
@@ -823,6 +863,43 @@ mod tests {
                 .contains("invalid longitude/latitude (0, 95)"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn source_error_prefix_uses_the_paired_transform_publisher() {
+        let line = |points: &[Point]| {
+            Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).unwrap())
+        };
+        let array = crate::PyGeometryArray::from_shapes(
+            vec![
+                line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(360.0, 0.0)]),
+                line(&[Point::new_raw_xy(0.0, 91.0), Point::new_raw_xy(10.0, 91.0)]),
+            ],
+            Frame::Crs(frame::crs_arc_static("EPSG:4267")),
+        )
+        .unwrap();
+        let admission = GridSourceAdmission::new_for_array(&array).unwrap();
+        let rows = admission.admit_array_shapes(&array).unwrap();
+
+        let Some(prefix) = rows[0].as_ref().unwrap() else {
+            panic!("the valid prefix row is present");
+        };
+        let Shape::LineString(prefix) = prefix else {
+            panic!("the valid prefix retains its line type");
+        };
+        assert_eq!(prefix.len(), 5);
+        // PROJ maps both endpoints to 0°; the source pair retains the turn.
+        assert_eq!(prefix.iter().collect::<Vec<_>>(), [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(90.0, 0.0),
+            Point::new_raw_xy(-180.0, 0.0),
+            Point::new_raw_xy(-90.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ]);
+        assert!(matches!(
+            rows[1].as_ref(),
+            Err(GridCoverError::NativeRow { row: 1, .. })
+        ));
     }
 
     #[test]

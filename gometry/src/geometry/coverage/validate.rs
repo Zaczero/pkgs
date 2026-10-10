@@ -24,9 +24,11 @@ pub(crate) struct CoverageRow<'a> {
     pub(crate) bounds: Option<Bounds>,
 }
 
+type CoverageRowIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
+
 pub(crate) struct PreparedCoverage<'a> {
     rows: Vec<CoverageRow<'a>>,
-    index: Option<Box<BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>>>,
+    index: Option<Box<CoverageRowIndex>>,
 }
 
 // Bulk loading costs more instructions than scanning through 64 rows. Keep
@@ -241,7 +243,7 @@ where
     let mut coincident = vec![false; rows.len()];
     // Group by canonical bounds bits so +0.0/−0.0 land in one bucket
     // (`f64::to_bits` alone splits them and misses coincident duplicates —
-    // edges then all look like shared interfaces and coverage_union empties).
+    // edges then all look like shared interfaces and coverage_union_all empties).
     let mut by_bounds = try_hash_map_with_capacity(rows.len())?;
     let mut duplicate_bounds = try_hash_map()?;
     for (index, row) in rows.iter().enumerate() {
@@ -694,7 +696,7 @@ mod tests {
                     "coverage_invalid_edges",
                     "coverage_simplify",
                     "coverage_clean",
-                    "coverage_union",
+                    "coverage_union_all",
                 ] {
                     ROW_CANDIDATE_WORK.with(|work| work.set(0));
                     let function = module.getattr(operation).unwrap();

@@ -11,7 +11,7 @@ refining coarse spatial candidates before treating them as geometry answers.
 
 ## Declare, transform, refine
 
-[`set_crs`][gometry.Geometry.set_crs] **declares** or relabels CRS metadata; its
+[`with_crs`][gometry.Geometry.with_crs] **declares** or relabels CRS metadata; its
 numeric coordinates do not move. [`to_crs`][gometry.Geometry.to_crs] **transforms**
 X/Y, so the same locations are represented by different numbers in another CRS.
 A cover or index candidate **narrows the search**; it is not an exact geometry
@@ -22,19 +22,19 @@ candidates into exact matches.
 import gometry as gm
 
 raw = gm.Point(21.0, 52.0)
-declared = raw.set_crs(4326)
+declared = raw.with_crs(4326)
 projected = declared.to_crs(3857)
 
-print("set_crs coordinates:", list(declared.coords))
-print("set_crs CRS:", declared.crs)
+print("with_crs coordinates:", list(declared.coords))
+print("with_crs CRS:", declared.crs)
 print("to_crs coordinates:", [round(value) for value in projected.coords[0]])
 print("to_crs CRS:", projected.crs)
 
 ```
 
-Use [`set_crs`][gometry.Geometry.set_crs] only when the existing coordinates were
+Use [`with_crs`][gometry.Geometry.with_crs] only when the existing coordinates were
 authored in that CRS. Use [`to_crs`][gometry.Geometry.to_crs] when the coordinates
-must move. The full choice, including Z/M and epochs, is [set_crs vs to_crs](../guide/crs.md#set-crs-vs-to-crs).
+must move. The full choice, including Z/M and epochs, is [with_crs vs to_crs](../guide/crs.md#set-crs-vs-to-crs).
 For a bbox prefilter, use [index candidates versus query](../guide/indexing.md#candidates-vs-query);
 for a cell selection, use [exact source membership after a grid cover](../guide/grids.md#exact-membership-with-the-source-geometry).
 

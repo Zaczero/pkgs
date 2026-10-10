@@ -1,4 +1,4 @@
-"""Optional integrations stay import-cheap and never mutate framework globals."""
+"""Optional integrations stay import-cheap and avoid global accessors."""
 
 from __future__ import annotations
 
@@ -109,6 +109,10 @@ def test_minimal_install_introspection_discovers_optional_exports() -> None:
 
 
 def test_pandas_and_polars_converters_are_inert_and_pyarrow_independent() -> None:
+    pytest.importorskip(
+        'polars',
+        reason='polars-runtime-32==1.43.2 has no CPython 3.14t wheel',
+    )
     _run_isolated(
         """
         import sys
@@ -150,12 +154,7 @@ def test_pandas_and_polars_converters_are_inert_and_pyarrow_independent() -> Non
         assert not hasattr(pd.Series, 'geo')
         assert not hasattr(pl.Series, 'geo')
         assert not hasattr(pl.Expr, 'geo')
-        try:
-            pd.api.types.pandas_dtype('gometry.geometry')
-        except TypeError:
-            pass
-        else:
-            raise AssertionError('converter registered the gometry dtype name')
+        assert pd.api.types.pandas_dtype('gometry.geometry') == pandas_series.dtype
         """
     )
 
@@ -196,16 +195,56 @@ def test_optional_dependency_rewrite_is_narrow() -> None:
 
 
 @pytest.mark.parametrize(
-    ('attribute', 'dependency', 'extra'),
+    ('dependency', 'extra', 'call'),
     [
-        ('from_pandas', 'pandas', 'pandas'),
-        ('from_polars', 'polars', 'polars'),
+        pytest.param(
+            'pandas',
+            'pandas',
+            'gm.from_pandas(object())',
+            id='from-pandas',
+        ),
+        pytest.param(
+            'pandas',
+            'pandas',
+            'gm.points([0.0], [1.0]).to_pandas()',
+            id='to-pandas',
+        ),
+        pytest.param(
+            'geopandas',
+            'geopandas',
+            'gm.from_geopandas(object())',
+            id='from-geopandas',
+        ),
+        pytest.param(
+            'geopandas',
+            'geopandas',
+            'gm.points([0.0], [1.0]).to_geopandas()',
+            id='to-geopandas',
+        ),
+        pytest.param(
+            'polars',
+            'polars',
+            'gm.from_polars(object())',
+            id='from-polars',
+        ),
+        pytest.param(
+            'polars',
+            'polars',
+            'gm.points([0.0], [1.0]).to_polars()',
+            id='to-polars',
+        ),
+        pytest.param(
+            'lonboard',
+            'viz',
+            'gm.explore(gm.points([0.0], [1.0], crs=4326))',
+            id='explore',
+        ),
     ],
 )
-def test_missing_dataframe_extra_has_targeted_install_hint(
-    attribute: str,
+def test_missing_optional_adapter_extra_has_targeted_install_hint(
     dependency: str,
     extra: str,
+    call: str,
 ) -> None:
     _run_isolated(
         f"""
@@ -215,7 +254,7 @@ def test_missing_dataframe_extra_has_targeted_install_hint(
         import gometry as gm
 
         try:
-            getattr(gm, {attribute!r})(object())
+            {call}
         except ModuleNotFoundError as error:
             assert error.name == {dependency!r}
             assert 'gometry[{extra}]' in str(error)

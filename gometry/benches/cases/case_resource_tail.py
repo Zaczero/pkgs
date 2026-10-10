@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import hashlib
 import json
 import os
 import resource
@@ -24,16 +23,19 @@ import tracemalloc
 from array import array
 from pathlib import Path
 from typing import TYPE_CHECKING
-
-import gometry as gm
-import gometry._lib as gm_lib
 import numpy as np
 
 _CASE_DIR = Path(__file__).resolve().parent
 if str(_CASE_DIR) not in sys.path:
     sys.path.insert(0, str(_CASE_DIR))
 
+from _observation import bootstrap, finish_measurement, prepare_measurement
 from _validation import emit_validation
+
+if __name__ == '__main__':
+    bootstrap()
+
+import gometry as gm
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -125,7 +127,7 @@ def features_case() -> tuple[Callable[[], Any], Callable[[Any], None], int, int]
     }
 
     def run() -> Any:
-        return gm.from_features(features)
+        return gm.from_geojson(features, features=True)
 
     def validate(result: Any) -> None:
         assert len(result.geometries) == count
@@ -166,14 +168,6 @@ CASES = {
 }
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def cpu_state() -> dict[str, object]:
     affinity = sorted(os.sched_getaffinity(0))
     states: dict[str, dict[str, str]] = {}
@@ -199,6 +193,7 @@ def main() -> None:
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
 
+    producer_identity = prepare_measurement()
     environment_before = cpu_state()
     rss_current_before_setup = current_rss_kib()
     pss_current_before_setup = current_pss_kib()
@@ -247,8 +242,7 @@ def main() -> None:
     # Lifetime high-water mark kept as diagnostic only (not endpoint arithmetic).
     rss_lifetime_maxrss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
 
-    extension_path = Path(gm_lib.__file__).resolve()
-    case_path = Path(__file__).resolve()
+    case_process = finish_measurement()
     payload = {
         'schema_version': 1,
         'mode': args.mode,
@@ -289,9 +283,8 @@ def main() -> None:
         'python_peak_traced_bytes': python_peak_bytes,
         'python_allocated_blocks_delta': blocks_after - blocks_before,
         'tracemalloc_active_during_latency': False,
-        'extension_path': str(extension_path),
-        'extension_sha256': file_sha256(extension_path),
-        'case_sha256': file_sha256(case_path),
+        'producer_identity': producer_identity,
+        'case_process': case_process,
         'python': sys.version,
         'environment_before': environment_before,
         'environment_after': cpu_state(),

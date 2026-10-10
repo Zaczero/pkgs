@@ -50,6 +50,20 @@ print("parent (level 10) token:", s.parent(10).token)
 
 ```
 
+The plural factories also accept an iterable of `Point` geometries or an
+N×2-or-wider coordinate matrix. Point rows share one CRS and epoch just like a
+`GeometryArray`; `None` rows remain missing cells. Bare coordinate matrices
+are WGS84 longitude/latitude and use only their first two columns.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+points = [gm.Point(21.0, 52.0, crs=4326), None]
+cells = gm.h3_cells(points, resolution=7)
+print("missing rows:", cells.is_missing.tolist())
+
+```
+
 Cell arrays include grouping helpers for “count by cell” analytics:
 
 ```python exec="on" source="block" result="text"
@@ -180,7 +194,7 @@ cell sets rather than a general spherical boolean-topology engine.
 import gometry as gm
 
 seam = gm.box(175.0, -5.0, -175.0, 5.0, crs=4326, wrap='split')
-covering = gm.s2_cover(seam, level=None, max_cells=24)
+covering = gm.s2_cover(seam, max_cells=24)
 positive_lon = sum(1 for cell in covering.polygon if cell.bounds[0] >= 0)
 
 print("cells:", len(covering), "| levels:", sorted({cell.level for cell in covering}))
@@ -223,8 +237,10 @@ print("covering cells:", len(covering))
 
 ## Covering an area
 
-[`gm.h3_cover(geom, resolution=...)`][gometry.h3_cover] and [`gm.s2_cover(geom, level=...)`][gometry.s2_cover] return a
-typed `CellArray` directly:
+[`gm.h3_cover(geom, resolution=...)`][gometry.h3_cover], fixed-level
+[`gm.s2_cover(geom, level=...)`][gometry.s2_cover], and adaptive
+[`gm.s2_cover(geom, target_cells=...)`][gometry.s2_cover] calls return a typed
+`CellArray` directly:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -234,6 +250,19 @@ cov = gm.h3_cover(area, resolution=5)
 
 print("# cells:", len(cov))
 print("first cell id:", cov[0].id)
+
+```
+
+Cover functions also accept an iterable of geometries. They return one
+`Groups[CellArray]` row per input item; `None` and empty geometries produce
+empty groups.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
+groups = gm.h3_cover([area, None], resolution=5)
+print("rows:", len(groups), "| missing row cells:", len(groups[1]))
 
 ```
 
@@ -362,7 +391,7 @@ cells = gm.h3_cover(area, resolution=5)
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 print('covers:', repr(gm.covers(area, points)))
 print('edge point:', gm.covers(area, gm.Point(20.0, 52.0, crs=4326)), '| strictly inside:', gm.contains(area, gm.Point(20.0, 52.0, crs=4326)))
-print('raw lon/lat stream:', repr(gm.intersects_xy(area, [21.0, 30.0], [52.0, 52.0])))
+print('raw lon/lat stream:', repr(gm.intersects(area, x=[21.0, 30.0], y=[52.0, 52.0])))
 
 ```
 
@@ -455,7 +484,7 @@ zoom 8.
 !!! warning "`cov.to_polygon()` is not `coverage_*`"
     `to_polygon()` dissolves *grid cells* — an approximate outline of the
     source under the grid. The polygonal-coverage operators
-    ([`coverage_union`][gometry.coverage_union], [`coverage_simplify`][gometry.coverage_simplify],
+    ([`coverage_union_all`][gometry.coverage_union_all], [`coverage_simplify`][gometry.coverage_simplify],
     [`coverage_clean`][gometry.coverage_clean]) validate and repair an *arbitrary source polygon fabric*
     (parcels, admin boundaries) with edge-matched interfaces. DGGS cell arrays
     are a different domain: same-resolution H3/S2 tessellations do
@@ -482,6 +511,8 @@ Every set-algebra, `compact()`, and `uncompact()` result uses the grid family's
 public identity order: H3 and S2 numeric id order, tile packed Morton-id order,
 and geohash token order. This presentation order is separate from the internal
 descendant-range order used to prove containment and merge sibling groups.
+Set-algebra operands skip `None` entries inside an iterable; use an empty
+iterable to represent an empty set.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -498,7 +529,7 @@ print("s2 union sample:", len(gm.s2_union(
 
 ```
 
-## S2 coverings: budget and multi-resolution
+## S2 coverings: fixed levels and adaptive budgets
 
 S2 coverings are multi-resolution, and S2 cell IDs nest as ranges. These
 properties provide a `cover` budget and whole-set algebra without touching
@@ -506,8 +537,9 @@ geometry.
 
 ### A budget and a rule
 
-`gm.s2_cover(geom, ...)` materializes cells at the requested `level`, with the
-same `cell_rule` and `max_cells` controls as the other grid factories:
+`gm.s2_cover(geom, level=...)` materializes cells only at the requested level.
+It never coarsens to fit `max_cells`. Fixed and adaptive modes use the same
+four `cell_rule` values:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -518,19 +550,21 @@ print('levels present:', sorted({c.level for c in cov}))
 
 ```
 
-`max_cells` is the hard output and allocation cap, defaulting to `1_000_000`;
-discarded cover candidates do not consume it, and grouped calls apply it to the
-total returned cells. It does not bound classifier or traversal CPU work. Pass
-`max_cells=None` for an unlimited cover (bounded only by memory). A fixed
-`level=` cover cannot coarsen, so it raises when the cover exceeds the cap. An
-adaptive cover (using `min_level`/`max_level`, or omitting `level`) stops
-refinement and retains coarser cells when its children would exceed the cap, so
-the result has at most `max_cells` cells. It raises only when even the
-admissible starting cover cannot fit or another coverage error occurs.
-`target_cells` remains the adaptive refinement target; it is distinct from the
-hard cap. The cells are a spatial key materialized according to `cell_rule`;
-exact geometry predicates remain free functions such as `gm.covers` and
-[`gm.contains_xy`][gometry.contains_xy].
+Omit `level` to use adaptive refinement through the same
+[`gm.s2_cover`][gometry.s2_cover] operation. `target_cells`, `min_level`,
+`max_level`, and `level_mod` control that mode. The target guides refinement
+but is not a hard limit; the legal minimum cover can exceed it. Refinement may
+retain coarser cells within the requested level range when children would
+exceed `max_cells`. A fixed `level` cannot be combined with non-default
+adaptive controls.
+
+Both S2 modes default `max_cells` to `1_000_000`; grouped calls apply it to the
+total returned cells. Discarded candidates do not consume the cap. Pass
+`max_cells=None` for an unlimited cover (bounded only by memory). The cap does
+not bound classifier or traversal CPU work. The cells are spatial keys
+materialized according to `cell_rule`; exact geometry predicates remain free
+functions such as `gm.covers` and [`gm.contains`][gometry.contains] with its
+coordinate-keyword form.
 
 ### Cell-set algebra
 
@@ -748,9 +782,12 @@ print("decoded:", gm.osm_shortlink_location(link))
 
 ```
 
-`pluscode` also accepts a `Point` or array (CRS-aware), and
-[`pluscode_shorten`][gometry.pluscode_shorten] / [`pluscode_recover`][gometry.pluscode_recover] encode and recover short codes against a
-reference location. [`osm_shortlink_location`][gometry.osm_shortlink_location] accepts the legacy `@` spelling.
+`pluscode_encode` accepts a `Point` or `GeometryArray` (CRS-aware), as well as
+coordinate columns. [`pluscode_shorten`][gometry.pluscode_shorten] and
+[`pluscode_recover`][gometry.pluscode_recover] accept a `Point` reference or
+broadcast longitude and latitude columns; one scalar code is applied to each
+coordinate row. [`osm_shortlink_location`][gometry.osm_shortlink_location]
+accepts the legacy `@` spelling.
 
 Coming from h3-py or s2sphere? See [Migrating](../migrating/index.md#coming-from-h3-py-s2sphere).
 

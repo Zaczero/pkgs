@@ -64,24 +64,44 @@ import gometry as gm
 
 city = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
 station = gm.Point(2.35, 48.85, crs=4326)
-print(gm.contains(city, station))  # True
-print(f'{city.area / 1_000_000.0:.1f} km²')  # 8217.7 km²
-print(f'{gm.area(city, unit="planar"):.4f} degree²')  # 1.0000 degree²
+contains_station = gm.contains(city, station)
+area_km2 = f'{city.area / 1_000_000.0:.1f} km²'
+planar_area = f'{gm.area(city, unit="planar"):.4f} degree²'
+print(contains_station)  # True
+print(area_km2)  # 8217.7 km²
+print(planar_area)  # 1.0000 degree²
+assert contains_station is True
+assert area_km2 == '8217.7 km²'
+assert planar_area == '1.0000 degree²'
 ```
 
 Arrays return NumPy ndarrays instead of Python-object lists:
 
 ```python
 import gometry as gm
+import numpy as np
 
 area = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
 points = gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)
 mask = gm.contains(area, points)
 print(type(mask).__name__, mask.tolist())  # ndarray [True, False]
+assert isinstance(mask, np.ndarray)
+assert mask.dtype == np.dtype(np.bool_)
+assert mask.shape == (2,)
+np.testing.assert_array_equal(mask, [True, False])
 bounds = points.bounds
 print(type(bounds).__name__, bounds.shape, bounds.dtype)  # ndarray (2, 4) float64
+assert isinstance(bounds, np.ndarray)
+assert bounds.dtype == np.dtype(np.float64)
+assert bounds.shape == (2, 4)
+np.testing.assert_array_equal(
+    bounds, [[21.0, 52.0, 21.0, 52.0], [30.0, 52.0, 30.0, 52.0]]
+)
 cover = gm.s2_cover(area, level=10, max_cells=None)
-print(cover.grid, gm.covers(area, points).tolist())  # s2 [True, False]
+covered = gm.covers(area, points)
+print(cover.grid, covered.tolist())  # s2 [True, False]
+assert cover.grid == 's2'
+np.testing.assert_array_equal(covered, [True, False])
 ```
 
 ## Install
@@ -116,7 +136,7 @@ it, geometries still expose Arrow PyCapsules for dependency-free consumers.
 | Shapely geometry, predicates, overlays, constructive ops | `gm.Point/box/...`, `gm.contains(a, b)`, `geom.buffer(...)` |
 | pyproj transforms and CRS introspection | `geom.to_crs(...)`, `gm.CRS(...)`, `gm.crs_*` |
 | geographiclib / haversine geodesy | CRS-aware ellipsoidal chart-edge `area`/`length`, geodesic point-to-point `distance`, `gm.bearing(..., path='rhumb')` / `point.destination(..., path='rhumb')` |
-| h3-py, s2sphere | `gm.h3_cover(geom, ...)` / `gm.s2_cover(geom, ...)`, typed cell arrays |
+| h3-py, s2sphere | `gm.h3_cover(geom, ...)`, fixed `gm.s2_cover(geom, level=...)` or adaptive `gm.s2_cover(geom, target_cells=...)`, typed cell arrays |
 | pygeohash, mercantile | `gm.geohash_cover(geom, ...)` / `gm.tile_cover(geom, ...)` |
 | rtree | `gm.SpatialIndex(values)` with exact-predicate refinement |
 | polyline, openlocationcode | `gm.from_polyline(...)`, `gm.pluscode_*` |

@@ -13,8 +13,9 @@ use crate::geographic::{
 };
 use crate::geometry::exact_arith::product_sum::{ExactSum, LIMBS, PRODUCT_MIN_EXP, cmp_magnitude};
 use crate::geometry::exact_arith::{
-    checked_dd_mul as double_double_mul, checked_two_product as two_product,
-    dd_add as double_double_add, dd_sub as double_double_sub, two_sum,
+    ExactSign, RetainedComputedSample, checked_dd_mul as double_double_mul,
+    checked_two_product as two_product, dd_add as double_double_add, dd_sub as double_double_sub,
+    retained_exact_site_sample, retained_site_longitude, two_sum,
 };
 use crate::geometry::{
     CoordSeq, ExactRational, ExpansionBudget, GeometryErrorKind, MOrdinate, Orientation, Point,
@@ -221,8 +222,8 @@ impl Basis {
         if length.is_finite() && length != 0.0 {
             return Ok(Self::from_vector(dx, dy));
         }
-        let start_x = axis.lifted_site_longitude(&start_longitude)?;
-        let end_x = axis.lifted_site_longitude(&end_longitude)?;
+        let start_x = axis.lifted_site_longitude(start_longitude)?;
+        let end_x = axis.lifted_site_longitude(end_longitude)?;
         let magnitude = start_x
             .abs()
             .max(end_x.abs())
@@ -486,6 +487,10 @@ fn exact_chart_width(
     magnitude
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the four caliper support indices are emitted by this admitted chart hull search"
+)]
 fn chart_candidate_area_order(
     hull: &[crate::geographic::ChartPointSite],
     left: Candidate,
@@ -711,19 +716,16 @@ fn chart_support_margin(
     candidate: &ExactChartPoint,
     frame: GeographicFrame,
 ) -> Result<ExactRational> {
-    let support_x = crate::geometry::exact_arith::retained_site_longitude(
-        frame.longitude(),
-        halfplane.support.longitude(),
-    )?;
+    let support_x = retained_site_longitude(frame.longitude(), halfplane.support.longitude())?;
     let dx = candidate
         .x
         .try_subtract(&ExactRational::from_dyadic(support_x))?;
     let dy = candidate
         .y
         .try_subtract(&ExactRational::from_f64(halfplane.support.source_y()))?;
-    Ok(ExactRational::from_f64(halfplane.gradient.0)
+    ExactRational::from_f64(halfplane.gradient.0)
         .try_product(&dx)?
-        .try_add(&ExactRational::from_f64(halfplane.gradient.1).try_product(&dy)?)?)
+        .try_add(&ExactRational::from_f64(halfplane.gradient.1).try_product(&dy)?)
 }
 
 fn retained_chart_corner(
@@ -734,11 +736,9 @@ fn retained_chart_corner(
     use crate::geometry::tessellation::exact::ExactDyadic;
 
     let axis = frame.longitude();
-    let origin_x =
-        crate::geometry::exact_arith::retained_site_longitude(axis, first.support.longitude())?;
+    let origin_x = retained_site_longitude(axis, first.support.longitude())?;
     let origin_y = ExactDyadic::from_f64(first.support.source_y());
-    let second_x =
-        crate::geometry::exact_arith::retained_site_longitude(axis, second.support.longitude())?;
+    let second_x = retained_site_longitude(axis, second.support.longitude())?;
     let second_y = ExactDyadic::from_f64(second.support.source_y());
     let dx = second_x.try_subtract(origin_x.clone())?;
     let dy = second_y.try_subtract(origin_y.clone())?;
@@ -767,11 +767,10 @@ fn render_chart_corner(
     corner: &ExactChartPoint,
     frame: GeographicFrame,
 ) -> Result<RenderedChartCorner> {
-    let longitude =
-        crate::geometry::exact_arith::retained_exact_site_sample(frame.longitude(), &corner.x)?;
+    let longitude = retained_exact_site_sample(frame.longitude(), &corner.x)?;
     let latitude = corner.y.round()?;
     if !latitude.is_finite() {
-        return Err(minimum_rectangle_not_representable().into());
+        return Err(minimum_rectangle_not_representable());
     }
     Ok(RenderedChartCorner {
         point: Point::new_raw_xy(longitude.longitude.get(), latitude),
@@ -787,7 +786,7 @@ fn upward_nonnegative_ratio(numerator: &ExactRational, denominator: f64) -> Resu
     let ratio = numerator.try_quotient(&ExactRational::from_f64(denominator))?;
     let (_, upper) = ratio.outward_bounds()?;
     if !upper.is_finite() {
-        return Err(minimum_rectangle_not_representable().into());
+        return Err(minimum_rectangle_not_representable());
     }
     Ok(upper)
 }
@@ -816,10 +815,10 @@ fn chart_corner_encloses_supports(
     point: &ExactChartPoint,
     frame: GeographicFrame,
 ) -> Result<bool> {
-    Ok(chart_support_margin(first, point, frame)?.sign()
-        != crate::geometry::exact_arith::ExactSign::Negative
-        && chart_support_margin(second, point, frame)?.sign()
-            != crate::geometry::exact_arith::ExactSign::Negative)
+    Ok(
+        chart_support_margin(first, point, frame)?.sign() != ExactSign::Negative
+            && chart_support_margin(second, point, frame)?.sign() != ExactSign::Negative,
+    )
 }
 
 fn shifted_chart_corner(
@@ -857,7 +856,7 @@ fn neighboring_chart_corner(
             rendered.point.x.next_down()
         };
         if !native.is_finite() {
-            return Err(minimum_rectangle_not_representable().into());
+            return Err(minimum_rectangle_not_representable());
         }
         let native_delta = ExactRational::from_f64(native)
             .try_subtract(&ExactRational::from_f64(rendered.point.x))?;
@@ -872,7 +871,7 @@ fn neighboring_chart_corner(
             rendered.point.y.next_down()
         };
         if !latitude.is_finite() {
-            return Err(minimum_rectangle_not_representable().into());
+            return Err(minimum_rectangle_not_representable());
         }
         Ok(ExactChartPoint {
             x: rendered.exact.x.clone(),
@@ -890,9 +889,7 @@ fn repair_chart_corner(
     let rendered = render_chart_corner(&preferred, frame)?;
     let first_margin = chart_support_margin(first, &rendered.exact, frame)?;
     let second_margin = chart_support_margin(second, &rendered.exact, frame)?;
-    if first_margin.sign() != crate::geometry::exact_arith::ExactSign::Negative
-        && second_margin.sign() != crate::geometry::exact_arith::ExactSign::Negative
-    {
+    if first_margin.sign() != ExactSign::Negative && second_margin.sign() != ExactSign::Negative {
         return Ok(ChartRectangleCorner {
             exact: preferred,
             point: rendered.point,
@@ -915,20 +912,18 @@ fn repair_chart_corner(
         } else {
             1.0
         };
-        let first_distance =
-            if first_margin.sign() == crate::geometry::exact_arith::ExactSign::Negative {
-                let deficit = ExactRational::from_f64(-1.0).try_product(&first_margin)?;
-                upward_nonnegative_ratio(&deficit, first_coefficient * sign)?
-            } else {
-                0.0
-            };
-        let second_distance =
-            if second_margin.sign() == crate::geometry::exact_arith::ExactSign::Negative {
-                let deficit = ExactRational::from_f64(-1.0).try_product(&second_margin)?;
-                upward_nonnegative_ratio(&deficit, second_coefficient * sign)?
-            } else {
-                0.0
-            };
+        let first_distance = if first_margin.sign() == ExactSign::Negative {
+            let deficit = ExactRational::from_f64(-1.0).try_product(&first_margin)?;
+            upward_nonnegative_ratio(&deficit, first_coefficient * sign)?
+        } else {
+            0.0
+        };
+        let second_distance = if second_margin.sign() == ExactSign::Negative {
+            let deficit = ExactRational::from_f64(-1.0).try_product(&second_margin)?;
+            upward_nonnegative_ratio(&deficit, second_coefficient * sign)?
+        } else {
+            0.0
+        };
         let distance = first_distance.max(second_distance);
         let candidate = shifted_chart_corner(&rendered.exact, x_axis, sign, distance)?;
         let candidate_rendered = render_chart_corner(&candidate, frame)?;
@@ -947,16 +942,15 @@ fn repair_chart_corner(
                 && chart_corner_encloses_supports(first, second, &neighbor_rendered.exact, frame)?)
             .then_some((neighbor, neighbor_rendered))
         };
-        if let Some((exact, rendered)) = accepted {
-            if best
+        if let Some((exact, rendered)) = accepted
+            && best
                 .as_ref()
                 .is_none_or(|(best_movement, _)| distance < *best_movement)
-            {
-                best = Some((distance, ChartRectangleCorner {
-                    exact,
-                    point: rendered.point,
-                }));
-            }
+        {
+            best = Some((distance, ChartRectangleCorner {
+                exact,
+                point: rendered.point,
+            }));
         }
     }
     best.map(|(_, corner)| corner)
@@ -967,7 +961,7 @@ fn exact_chart_orientation(
     first: &ExactChartPoint,
     second: &ExactChartPoint,
     third: &ExactChartPoint,
-) -> Result<crate::geometry::exact_arith::ExactSign> {
+) -> Result<ExactSign> {
     let first_x = second.x.try_subtract(&first.x)?;
     let first_y = second.y.try_subtract(&first.y)?;
     let second_x = third.x.try_subtract(&first.x)?;
@@ -1063,7 +1057,7 @@ struct PublishedChartBoundary {
 }
 
 impl PublishedChartBoundary {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             corners: [None, None, None, None],
             last: None,
@@ -1092,11 +1086,15 @@ impl PublishedChartBoundary {
         .into()
     }
 
+    #[expect(
+        clippy::float_cmp,
+        reason = "the publisher reports exact root parameters for corner endpoints and ring closure"
+    )]
     fn record(
         &mut self,
         edge: usize,
         parameter: f64,
-        sample: &crate::geometry::exact_arith::RetainedComputedSample,
+        sample: &RetainedComputedSample,
         point: Point,
     ) -> Result<()> {
         if self.last_sample == Some((3, 1.0))
@@ -1162,7 +1160,7 @@ impl PublishedChartBoundary {
         let is_closure = edge == 3 && parameter == 1.0;
         if self.last_sample.is_none() {
             self.first_record = Some(point);
-            self.last = Some(exact.clone());
+            self.last = Some(exact);
         } else {
             let first = self
                 .corners
@@ -1194,12 +1192,10 @@ impl PublishedChartBoundary {
                 exact.x.try_subtract(&previous.x)?,
                 exact.y.try_subtract(&previous.y)?,
             );
-            if direction.0.sign() != crate::geometry::exact_arith::ExactSign::Zero
-                || direction.1.sign() != crate::geometry::exact_arith::ExactSign::Zero
-            {
+            if direction.0.sign() != ExactSign::Zero || direction.1.sign() != ExactSign::Zero {
                 if let Some(previous_direction) = &self.last_direction {
                     let turn = vector_cross(previous_direction, &direction)?;
-                    if turn == crate::geometry::exact_arith::ExactSign::Negative {
+                    if turn == ExactSign::Negative {
                         return Err(Self::counterexample(
                             edge,
                             parameter,
@@ -1211,9 +1207,7 @@ impl PublishedChartBoundary {
                         .0
                         .try_product(&direction.0)?
                         .try_add(&previous_direction.1.try_product(&direction.1)?)?;
-                    if turn == crate::geometry::exact_arith::ExactSign::Zero
-                        && dot.sign() == crate::geometry::exact_arith::ExactSign::Negative
-                    {
+                    if turn == ExactSign::Zero && dot.sign() == ExactSign::Negative {
                         return Err(Self::counterexample(
                             edge,
                             parameter,
@@ -1257,18 +1251,18 @@ impl PublishedChartBoundary {
             .as_ref()
             .expect("a boundary with three edges has a last direction");
         let closing_turn = vector_cross(last_direction, first_direction)?;
-        if closing_turn == crate::geometry::exact_arith::ExactSign::Negative {
+        if closing_turn == ExactSign::Negative {
             return Err(GeometryErrorKind::Invalid(
                 "published minimum_rotated_rectangle boundary is non-convex at closure".into(),
             )
             .into());
         }
-        if closing_turn == crate::geometry::exact_arith::ExactSign::Zero {
+        if closing_turn == ExactSign::Zero {
             let closing_dot = last_direction
                 .0
                 .try_product(&first_direction.0)?
                 .try_add(&last_direction.1.try_product(&first_direction.1)?)?;
-            if closing_dot.sign() == crate::geometry::exact_arith::ExactSign::Negative {
+            if closing_dot.sign() == ExactSign::Negative {
                 return Err(GeometryErrorKind::Invalid(
                     "published minimum_rotated_rectangle boundary reverses at closure".into(),
                 )
@@ -1300,7 +1294,7 @@ impl PublishedChartBoundary {
 fn vector_cross(
     left: &(ExactRational, ExactRational),
     right: &(ExactRational, ExactRational),
-) -> Result<crate::geometry::exact_arith::ExactSign> {
+) -> Result<ExactSign> {
     Ok(left
         .0
         .try_product(&right.1)?
@@ -1315,10 +1309,8 @@ fn vector_quadrant(vector: &(ExactRational, ExactRational)) -> u8 {
     let y = vector.1.sign();
     if y == Negative {
         if x == Negative { 2 } else { 3 }
-    } else if x == Negative {
-        1
     } else {
-        0
+        u8::from(x == Negative)
     }
 }
 
@@ -1327,12 +1319,15 @@ fn certify_chart_rectangle(
     corners: [&ExactChartPoint; 4],
     frame: GeographicFrame,
 ) -> Result<()> {
-    for side in 0..4 {
-        let next = (side + 1) % 4;
-        let opposite = (side + 2) % 4;
-        if exact_chart_orientation(corners[side], corners[next], corners[opposite])?
-            != crate::geometry::exact_arith::ExactSign::Positive
-        {
+    let [first, second, third, fourth] = corners;
+    let sides = [
+        (first, second, third),
+        (second, third, fourth),
+        (third, fourth, first),
+        (fourth, first, second),
+    ];
+    for (side, (start, next, opposite)) in sides.iter().copied().enumerate() {
+        if exact_chart_orientation(start, next, opposite)? != ExactSign::Positive {
             return Err(GeometryErrorKind::Invalid(
                 format!(
                     "published minimum_rotated_rectangle support side {side} is not a convex corner edge"
@@ -1345,19 +1340,13 @@ fn certify_chart_rectangle(
 
     // One source-hull pass checks every actual published directed corner side.
     for site in hull {
-        let longitude = crate::geometry::exact_arith::retained_site_longitude(
-            frame.longitude(),
-            site.longitude(),
-        )?;
+        let longitude = retained_site_longitude(frame.longitude(), site.longitude())?;
         let source = ExactChartPoint {
             x: ExactRational::from_dyadic(longitude),
             y: ExactRational::from_f64(site.source_y()),
         };
-        for side in 0..4 {
-            let next = (side + 1) % 4;
-            if exact_chart_orientation(corners[side], corners[next], &source)?
-                == crate::geometry::exact_arith::ExactSign::Negative
-            {
+        for (side, (start, next, _)) in sides.iter().copied().enumerate() {
+            if exact_chart_orientation(start, next, &source)? == ExactSign::Negative {
                 return Err(GeometryErrorKind::Invalid(
                     format!(
                         "published minimum_rotated_rectangle excludes source hull ordinal {} at side {side}: ({}, {})",
@@ -1425,7 +1414,7 @@ fn publish_and_certify_chart_rectangle(
                 .try_add(&latitude_delta.try_product(&exact_parameter)?)?
                 .round()?;
             if !latitude.is_finite() {
-                return Err(minimum_rectangle_not_representable().into());
+                return Err(minimum_rectangle_not_representable());
             }
             Ok(ComputedSampleOrdinates {
                 y: latitude,
@@ -2974,7 +2963,7 @@ mod tests {
             chart_support_margin(first, &trial.exact, frame)
                 .unwrap()
                 .sign(),
-            crate::geometry::exact_arith::ExactSign::Negative
+            ExactSign::Negative
         );
 
         let repaired = repair_chart_corner(first, second, ideal.clone(), frame).unwrap();
@@ -3029,7 +3018,7 @@ mod tests {
         let axis = frame.longitude();
         let west = axis
             .lifted_site_longitude(
-                &ordered
+                ordered
                     .first()
                     .expect("chart hull has a west site")
                     .longitude(),
@@ -3037,7 +3026,7 @@ mod tests {
             .unwrap();
         let east = axis
             .lifted_site_longitude(
-                &ordered
+                ordered
                     .last()
                     .expect("chart hull has an east site")
                     .longitude(),

@@ -150,6 +150,7 @@ fn collect_h3_edge_ids(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
 
 macro_rules! h3_index_array_common {
     (
+        $(#[$constructor_doc:meta])*
         impl $array:ident {
             iter: $iter:ident,
             scalar: $scalar:ident,
@@ -306,6 +307,7 @@ macro_rules! h3_index_array_common {
             #[expect(non_upper_case_globals, reason = "Python dunder name")]
             const __array_ufunc__: Option<Py<PyAny>> = None;
 
+            $(#[$constructor_doc])*
             #[new]
             fn new(values: &Bound<'_, PyAny>) -> PyResult<Self> {
                 Ok(Self {
@@ -314,8 +316,12 @@ macro_rules! h3_index_array_common {
                 })
             }
 
-            fn __sizeof__(&self) -> usize {
-                self.total_size()
+            fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+                crate::py::sizeof::python_sizeof(
+                    slf.py(),
+                    slf.as_any(),
+                    slf.borrow().heap_bytes(),
+                )
             }
 
             /// Logical id payload in bytes (``len * 8``).
@@ -347,10 +353,14 @@ macro_rules! h3_index_array_common {
                 self.len() != 0
             }
 
-            /// Select by integer, slice, or fancy index.
+            /// Select by integer-like scalar, slice, or fancy index.
             ///
-            /// An ``int`` returns one edge/vertex. A ``slice`` or fancy index
-            /// returns an array of the same type.
+            /// An ``int``, object implementing ``__index__``, or
+            /// zero-dimensional integer ndarray returns one edge/vertex. A
+            /// ``slice``, integer sequence, one-dimensional integer ndarray,
+            /// or boolean mask returns an array of the same type. Boolean
+            /// scalars and NumPy index arrays with rank above one raise
+            /// ``TypeError``.
             ///
             /// Returns
             /// -------
@@ -737,6 +747,33 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
 }
 
 h3_index_array_common! {
+    /// Build an array of H3 vertices from vertex objects, ids, or tokens.
+    ///
+    /// Iterables may mix index objects, integer ids, and tokens. Integer NumPy
+    /// arrays with zero or one dimension and unsigned 64-bit buffers are also
+    /// accepted. Wrap one token in a one-item iterable.
+    /// ``None`` is not a missing row.
+    ///
+    /// Parameters
+    /// ----------
+    /// values : iterable, numpy.ndarray, or uint64 buffer
+    ///     An iterable of H3Vertex objects, non-negative H3 ids, and/or vertex
+    ///     tokens. Integer NumPy arrays and uint64 buffers must contain valid
+    ///     H3 vertex ids. Byte strings and byte-formatted buffers are not collections.
+    ///
+    /// Returns
+    /// -------
+    /// H3VertexArray
+    ///     An immutable array in input order with an owned, read-only
+    ///     ``uint64`` id column.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If a value is not an H3 vertex, integer id, or token, or if an array
+    ///     has unsupported dimensions.
+    /// ParseError
+    ///     If an id or token does not identify a valid H3 vertex.
     impl PyH3VertexArray {
         iter: PyH3VertexArrayIter,
         scalar: PyH3Vertex,
@@ -752,6 +789,33 @@ h3_index_array_common! {
 }
 
 h3_index_array_common! {
+    /// Build an array of H3 directed edges from edge objects, ids, or tokens.
+    ///
+    /// Iterables may mix index objects, integer ids, and tokens. Integer NumPy
+    /// arrays with zero or one dimension and unsigned 64-bit buffers are also
+    /// accepted. Wrap one token in a one-item iterable.
+    /// ``None`` is not a missing row.
+    ///
+    /// Parameters
+    /// ----------
+    /// values : iterable, numpy.ndarray, or uint64 buffer
+    ///     An iterable of H3Edge objects, non-negative H3 ids, and/or edge
+    ///     tokens. Integer NumPy arrays and uint64 buffers must contain valid
+    ///     directed-edge ids. Byte strings and byte-formatted buffers are not collections.
+    ///
+    /// Returns
+    /// -------
+    /// H3EdgeArray
+    ///     An immutable array in input order with an owned, read-only
+    ///     ``uint64`` id column.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If a value is not an H3 edge, integer id, or token, or if an array
+    ///     has unsupported dimensions.
+    /// ParseError
+    ///     If an id or token does not identify a valid H3 directed edge.
     impl PyH3EdgeArray {
         iter: PyH3EdgeArrayIter,
         scalar: PyH3Edge,

@@ -6,8 +6,8 @@ import json
 import math
 
 import gometry as gm
+import numpy as np
 import pytest
-from pyproj import Geod
 
 from tests._support import (
     EAST_DEGREE_SOUTH_LATITUDE_CRS,
@@ -19,6 +19,9 @@ from tests._support import (
     floats,
     ids,
 )
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+Geod = pyproj.Geod
 
 FOOT_CRS = 2263
 FOOT_UNIT_M = 0.3048006096012192
@@ -72,7 +75,7 @@ def _physical_coordinates(box: gm.Geometry, crs: object) -> list[tuple[float, fl
     longitude_factor, latitude_factor, prime_meridian = _angular_frame_parameters(crs)
     return [
         (float(x) * longitude_factor + prime_meridian, float(y) * latitude_factor)
-        for x, y in gm.get_coordinates(box).tolist()
+        for x, y in np.asarray(box.coords, dtype=np.float64).tolist()
     ]
 
 
@@ -329,7 +332,7 @@ def test_chart_area_uses_the_chart_interior_for_large_regions() -> None:
             west, east, south, north, semi_major=GEOD.a, flattening=GEOD.f
         )
         assert expected > ellipsoid_area / 2.0
-        coordinates = gm.get_coordinates(geometry).tolist()
+        coordinates = np.asarray(geometry.coords, dtype=np.float64).tolist()
         for ring in (coordinates[:-1], list(reversed(coordinates[:-1]))):
             polygon = gm.Polygon(ring, crs=4326)
             assert gm.contains(polygon, origin)
@@ -402,7 +405,7 @@ def test_chart_polar_cap_area_respects_south_directed_latitude_axis(
 
 def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
     shell = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
-    shell_coordinates = gm.get_coordinates(shell).tolist()
+    shell_coordinates = np.asarray(shell.coords, dtype=np.float64).tolist()
     hole = [
         (-10.0, -10.0),
         (10.0, -10.0),
@@ -424,7 +427,7 @@ def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
 
 def test_chart_area_array_matches_scalar_in_packed_and_mixed_storage() -> None:
     wide = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
-    coordinates = gm.get_coordinates(wide).tolist()
+    coordinates = np.asarray(wide.coords, dtype=np.float64).tolist()
     reversed_wide = gm.Polygon(list(reversed(coordinates[:-1])), crs=4326)
     expected = [wide.area, reversed_wide.area]
 
@@ -829,12 +832,11 @@ def test_geometry_collection_infers_and_validates_member_metadata() -> None:
     first = gm.Point(0, 0, crs=4326, epoch=2020.0)
     second = gm.Point(1, 1, crs=4326, epoch=2020.0)
     collection = gm.GeometryCollection([first, second])
-    assert collection.crs == 'EPSG:4326'
+    assert collection.crs == gm.CRS('EPSG:4326')
     assert collection.epoch == 2020.0
-    assert [part.crs for part in collection.parts] == ['EPSG:4326', 'EPSG:4326']
-    assert (
-        gm.GeometryCollection([first, second], crs=4326, epoch=2020.0).crs
-        == 'EPSG:4326'
+    assert [part.crs for part in collection.parts] == [gm.CRS('EPSG:4326')] * 2
+    assert gm.GeometryCollection([first, second], crs=4326, epoch=2020.0).crs == gm.CRS(
+        'EPSG:4326'
     )
     with pytest.raises(ValueError, match='one shared CRS'):
         gm.GeometryCollection([first, second], crs=3857)
@@ -849,14 +851,14 @@ def test_explicit_frame_metadata_fills_missing_array_and_collection_items() -> N
     crs_only = gm.Point(1, 1, crs=4326)
     epoch_tagged = gm.Point(2, 2, crs=4326, epoch=2020.0)
     array = gm.GeometryArray([bare, crs_only], crs=4326, epoch=2020.0)
-    assert array.crs == 'EPSG:4326'
+    assert array.crs == gm.CRS('EPSG:4326')
     assert array.epoch == 2020.0
-    assert [item.crs for item in array] == ['EPSG:4326', 'EPSG:4326']
+    assert [item.crs for item in array] == [gm.CRS('EPSG:4326')] * 2
     assert [item.epoch for item in array] == [2020.0, 2020.0]
     epoch_array = gm.GeometryArray([crs_only, epoch_tagged], epoch=2020.0)
     assert [item.epoch for item in epoch_array] == [2020.0, 2020.0]
     collection = gm.GeometryCollection([bare, crs_only], crs=4326, epoch=2020.0)
-    assert collection.crs == 'EPSG:4326'
+    assert collection.crs == gm.CRS('EPSG:4326')
     assert collection.epoch == 2020.0
     assert [item.epoch for item in collection.parts] == [2020.0, 2020.0]
     epoch_collection = gm.GeometryCollection([crs_only, epoch_tagged], epoch=2020.0)
@@ -865,14 +867,14 @@ def test_explicit_frame_metadata_fills_missing_array_and_collection_items() -> N
         gm.GeometryArray([bare, crs_only])
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.GeometryArray([bare], epoch=2020.0)
     with pytest.raises(ValueError, match='one shared coordinate epoch'):
         gm.GeometryArray([epoch_tagged], epoch=2021.0)
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.GeometryCollection([bare], epoch=2020.0)
 
@@ -1096,14 +1098,14 @@ def test_to_wkb_wire_aliases_crs84_and_rejects_unknown() -> None:
     crs84 = gm.Point(10, 50, crs='OGC:CRS84')
     ewkb = crs84.to_wkb(include_srid=True)
     lost = gm.from_wkb(ewkb)
-    assert lost.crs == 'EPSG:4326'
+    assert lost.crs == gm.CRS('EPSG:4326')
     assert gm.equals(lost, gm.Point(10, 50, crs=4326))
-    assert gm.from_wkb(ewkb, crs='OGC:CRS84').crs == 'OGC:CRS84'
+    assert gm.from_wkb(ewkb, crs='OGC:CRS84').crs == gm.CRS('OGC:CRS84')
 
     crs84h = gm.Point(10, 50, z=0, crs='OGC:CRS84h')
     ewkb_h = crs84h.to_wkb(include_srid=True)
-    assert gm.from_wkb(ewkb_h).crs == 'EPSG:4979'
-    assert gm.from_wkb(ewkb_h, crs='OGC:CRS84h').crs == 'OGC:CRS84h'
+    assert gm.from_wkb(ewkb_h).crs == gm.CRS('EPSG:4979')
+    assert gm.from_wkb(ewkb_h, crs='OGC:CRS84h').crs == gm.CRS('OGC:CRS84h')
 
     # A genuine conflict still raises (not every CRS is a wire alias of 4326).
     with pytest.raises(gm.CRSMismatchError):
@@ -1189,7 +1191,7 @@ def test_transform_batches_with_empty_members_and_extreme_longitudes() -> None:
         crs=4326,
     )
     out = mixed.to_crs(3857)
-    assert out.crs == 'EPSG:3857'
+    assert out.crs == gm.CRS('EPSG:3857')
     with pytest.raises(ValueError):
         gm.Point(1e308, 0.0, crs=4326).to_crs(3857)
     with pytest.raises(ValueError):

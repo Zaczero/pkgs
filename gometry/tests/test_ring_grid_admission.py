@@ -15,6 +15,7 @@ import struct
 from typing import Any
 
 import gometry as gm
+import numpy as np
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ def _ring_payloads() -> list[tuple[str, list[tuple[float, ...]], str | None]]:
             'XY-closed-M-open',
             # Point(x,y,z,m) via 4-tuple with Z None is awkward; use M via WKT
             # for serialized paths. Constructor uses (x, y, m) is not standard —
-            # gometry Point is (x,y,z=None,m=None). Build M via set_m after.
+            # gometry Point is (x,y,z=None,m=None). Build M via with_coordinates(m=...) after.
             # Represent as XYZM with Z equal and M open:
             [
                 (0.0, 0.0, 0.0, 1.0),
@@ -210,7 +211,7 @@ def test_r15i_h3_bounding_cell_seam_line_still_works() -> None:
     cell = gm.h3_bounding_cell(line)
     poly = cell.polygon
     if poly.crs is None:
-        poly = poly.set_crs(4326)
+        poly = poly.with_crs(4326)
     assert gm.covers(poly, gm.Point(179.9, 0.0, crs=4326))
     assert gm.covers(poly, gm.Point(-179.9, 0.0, crs=4326))
 
@@ -251,7 +252,7 @@ def test_r15i_h3_s2_covered_point_tokens_subset_of_visible() -> None:
         ),  # polar
     ]
     for geom in corpus:
-        coords = gm.get_coordinates(geom)
+        coords = np.asarray(geom.coords, dtype=np.float64)
         for res in (2,):
             h3 = gm.h3_cover(geom, resolution=res, cell_rule='overlap')
             visible = _cover_tokens(h3)

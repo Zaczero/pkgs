@@ -132,7 +132,9 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| degrade_linref_float(line.line_locate_point_m(query), Lane::Array(0)))
+            .map(|line| {
+                degrade_linref_float(line.line_locate_point_m_streaming(query), Lane::Array(0))
+            })
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!((results[0] - 50.0).abs() < 1e-12);
@@ -242,7 +244,7 @@ mod linref_array_degrade_tests {
         ));
         let query = query_point();
         let wrong_kind = polygon
-            .line_locate_point(query, false)
+            .line_locate_point_streaming(query, false)
             .expect_err("wrong kind");
         assert!(matches!(
             wrong_kind.kind(),
@@ -256,7 +258,12 @@ mod linref_array_degrade_tests {
         let lines = [line_xy(&[(0.0, 0.0), (10.0, 0.0)]), polygon];
         let batch = lines
             .iter()
-            .map(|line| degrade_linref_float(line.line_locate_point(query, false), Lane::Array(0)))
+            .map(|line| {
+                degrade_linref_float(
+                    line.line_locate_point_streaming(query, false),
+                    Lane::Array(0),
+                )
+            })
             .collect_rows();
         assert!(batch.is_err(), "wrong-kind rows must abort the batch");
     }
@@ -266,7 +273,8 @@ mod linref_array_degrade_tests {
 mod multipart_storage_tests {
     use pyo3::prelude::*;
 
-    use super::super::{Frame, GeometryArrayStorage, PyGeometryArray, ValidityMask};
+    use super::super::{Frame, PyGeometryArray};
+    use crate::geometry::storage::{GeometryArrayStorage, ValidityMask};
     use crate::io::{parse_wkt, to_wkt};
 
     #[test]

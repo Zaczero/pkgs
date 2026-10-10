@@ -11,9 +11,10 @@ Four gates over the stub AST + live runtime:
 * **finality** — a runtime class that cannot be subclassed (any PyO3 class
   without ``#[pyclass(subclass)]``) must be ``@final`` in the stub, and vice
   versa, so user subclassing fails statically instead of at import time.
-* **signature coverage** — a public runtime callable where
-  ``inspect.signature`` fails is invisible to every signature gate (stubtest
-  skips it silently); require an explicit allowlist entry per blind spot.
+* **signature coverage** — a public runtime callable or constructible class
+  binding where ``inspect.signature`` fails is invisible to every signature
+  gate (stubtest skips it silently); require an explicit allowlist entry per
+  blind spot.
 * **``__match_args__`` parity** — the stub's literal tuple must equal the
   runtime value (match statements silently misbind otherwise).
 * **exports** — every ``__all__`` entry names something the stub defines,
@@ -34,7 +35,12 @@ import ast
 import inspect
 from typing import TYPE_CHECKING
 
-from pyo3stubs.ast_util import decorator_names, function_groups
+from pyo3stubs.ast_util import (
+    class_prohibits_construction,
+    decorator_names,
+    function_groups,
+    passive_class_member,
+)
 from pyo3stubs.context import CheckContext
 from pyo3stubs.report import Findings, loc, unused_allowlist_errors
 
@@ -223,19 +229,28 @@ def _collect_signature_coverage(ctx: CheckContext, errors: list[str]) -> None:
             return
         blind.append(qualname)
 
+    def probe_class(qualname: str, cls: type, node: ast.ClassDef | None) -> None:
+        if node is not None and class_prohibits_construction(node):
+            return
+        if _inspectable(cls):
+            return  # an allowlist entry for an inspectable binding is stale
+        if qualname in allow:
+            seen.add(qualname)
+            return
+        blind.append(qualname)
+
     for name in dir(runtime):
         if name.startswith('_'):
             continue
         obj = getattr(runtime, name)
         if isinstance(obj, type):
+            probe_class(name, obj, ctx.stub_classes.get(name))
             for member in obj.__dict__:
                 if member.startswith('_'):
                     continue
-                static = inspect.getattr_static(obj, member)
-                if isinstance(static, (property, staticmethod, classmethod)):
-                    static = getattr(obj, member)
-                if not isinstance(static, property):
-                    probe(f'{name}.{member}', getattr(obj, member))
+                selected = passive_class_member(obj, member)
+                if selected is not None and not isinstance(selected, property):
+                    probe(f'{name}.{member}', selected)
         else:
             probe(name, obj)
 
@@ -243,6 +258,11 @@ def _collect_signature_coverage(ctx: CheckContext, errors: list[str]) -> None:
         f'{qualname}: inspect.signature fails — every signature gate is blind '
         'here; fix text_signature or allowlist with a reason'
         for qualname in sorted(blind)
+    )
+    errors.extend(
+        f'uninspectable allowlist entry {name!r} needs a non-empty reason'
+        for name, reason in sorted(allow.items())
+        if not reason.strip()
     )
     errors.extend(
         unused_allowlist_errors(

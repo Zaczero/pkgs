@@ -124,6 +124,21 @@ pub(crate) fn register_loaded_pyarrow_extension_types(py: Python<'_>) -> PyResul
     Ok(())
 }
 
+fn honor_requested_schema(
+    py: Python<'_>,
+    mut export: ExportedArray,
+    omit_extension_metadata: bool,
+) -> PyResult<ExportedArray> {
+    if omit_extension_metadata {
+        let schema_node = export.schema_node.without_extension_metadata();
+        export.schema = schema_node
+            .materialize_schema()
+            .map_err(|error| error.into_py_err(py))?;
+        export.schema_node = schema_node;
+    }
+    Ok(export)
+}
+
 pub(crate) fn geometry_to_schema_capsule(
     py: Python<'_>,
     geometry: &PyGeometry,
@@ -166,8 +181,20 @@ pub(crate) fn array_to_schema_capsule(
 pub(crate) fn geometry_to_array_capsules(
     py: Python<'_>,
     geometry: &PyGeometry,
+    requested_schema: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
+    let omit_extension_metadata = if let Some(requested_schema) =
+        requested_schema.filter(|schema| !schema.is_none())
+    {
+        let schema =
+            arrow_c::describe_shape(geometry.shape.shape(), geometry.crs_str(), geometry.epoch())
+                .materialize_schema()
+                .map_err(|error| error.into_py_err(py))?;
+        arrow::reject_requested_schema(Some(requested_schema), &schema)?
+    } else {
+        false
+    };
     let shapes = vec![geometry.shape.shape().clone()];
     let crs = geometry.crs_str().map(str::to_owned);
     let epoch = geometry.epoch();
@@ -178,14 +205,25 @@ pub(crate) fn geometry_to_array_capsules(
         })
         .map_err(|error| error.into_py_err(py))?;
     let export = arrow_c::materialize_export_plan(plan)?;
+    let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     array_capsules(py, export)
 }
 
 pub(crate) fn array_to_array_capsules(
     py: Python<'_>,
     array: &PyGeometryArray,
+    requested_schema: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
+    let omit_extension_metadata =
+        if let Some(requested_schema) = requested_schema.filter(|schema| !schema.is_none()) {
+            let schema = arrow_c::describe_geometry_array(array, ArrowEncoding::Auto)
+                .materialize_schema()
+                .map_err(|error| error.into_py_err(py))?;
+            arrow::reject_requested_schema(Some(requested_schema), &schema)?
+        } else {
+            false
+        };
     // Storage-direct: retain coordinate/CSR Arcs; no per-row PyGeometry.
     let array = array.clone();
     let plan = py
@@ -195,14 +233,27 @@ pub(crate) fn array_to_array_capsules(
         })
         .map_err(|error| error.into_py_err(py))?;
     let export = arrow_c::materialize_export_plan(plan)?;
+    let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     array_capsules(py, export)
 }
 
 pub(crate) fn geometry_to_stream_capsule(
     py: Python<'_>,
     geometry: &PyGeometry,
+    requested_schema: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
+    let omit_extension_metadata = if let Some(requested_schema) =
+        requested_schema.filter(|schema| !schema.is_none())
+    {
+        let schema =
+            arrow_c::describe_shape(geometry.shape.shape(), geometry.crs_str(), geometry.epoch())
+                .materialize_schema()
+                .map_err(|error| error.into_py_err(py))?;
+        arrow::reject_requested_schema(Some(requested_schema), &schema)?
+    } else {
+        false
+    };
     let shapes = vec![geometry.shape.shape().clone()];
     let crs = geometry.crs_str().map(str::to_owned);
     let epoch = geometry.epoch();
@@ -213,14 +264,25 @@ pub(crate) fn geometry_to_stream_capsule(
         })
         .map_err(|error| error.into_py_err(py))?;
     let export = arrow_c::materialize_export_plan(plan)?;
+    let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     stream_capsule(py, export)
 }
 
 pub(crate) fn array_to_stream_capsule(
     py: Python<'_>,
     array: &PyGeometryArray,
+    requested_schema: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     register_loaded_pyarrow_extension_types(py)?;
+    let omit_extension_metadata =
+        if let Some(requested_schema) = requested_schema.filter(|schema| !schema.is_none()) {
+            let schema = arrow_c::describe_geometry_array(array, ArrowEncoding::Auto)
+                .materialize_schema()
+                .map_err(|error| error.into_py_err(py))?;
+            arrow::reject_requested_schema(Some(requested_schema), &schema)?
+        } else {
+            false
+        };
     let array = array.clone();
     let plan = py
         .detach(move || {
@@ -229,6 +291,7 @@ pub(crate) fn array_to_stream_capsule(
         })
         .map_err(|error| error.into_py_err(py))?;
     let export = arrow_c::materialize_export_plan(plan)?;
+    let export = honor_requested_schema(py, export, omit_extension_metadata)?;
     stream_capsule(py, export)
 }
 

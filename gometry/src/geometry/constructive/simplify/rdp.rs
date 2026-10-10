@@ -339,14 +339,25 @@ mod tests {
     use crate::geometry::segments::{ExactDistanceWitness, exact_distance_witness_cmp};
 
     fn exact_split(xs: &[f64], ys: &[f64], tolerance: f64) -> Option<usize> {
+        let end = xs.len().wrapping_sub(1);
         let chord = Segment {
             start: point(xs, ys, 0),
-            end: point(xs, ys, xs.len() - 1),
+            end: point(xs, ys, end),
         };
-        let mut farthest = 1;
-        let mut best = ExactDistanceWitness::ClampedPointPair(point(xs, ys, 1), chord);
-        for index in 2..xs.len() - 1 {
-            let candidate = ExactDistanceWitness::ClampedPointPair(point(xs, ys, index), chord);
+        let interior_xs = xs
+            .get(1..end)
+            .expect("exact RDP interior belongs to its source range");
+        let interior_ys = ys
+            .get(1..end)
+            .expect("exact RDP interior belongs to its source range");
+        let mut interior = interior_xs.iter().zip(interior_ys).enumerate();
+        let (first_offset, (&first_x, &first_y)) =
+            interior.next().expect("exact RDP source has an interior");
+        let mut farthest = 1_usize.wrapping_add(first_offset);
+        let mut best = ExactDistanceWitness::Clamped(XY::new(first_x, first_y), chord);
+        for (offset, (&x, &y)) in interior {
+            let index = 1_usize.wrapping_add(offset);
+            let candidate = ExactDistanceWitness::Clamped(XY::new(x, y), chord);
             if exact_distance_witness_cmp(candidate, best).unwrap().is_gt() {
                 best = candidate;
                 farthest = index;
@@ -354,7 +365,7 @@ mod tests {
         }
         exact_distance_witness_cmp(
             best,
-            ExactDistanceWitness::PointPair(XY::new(0.0, 0.0), XY::new(tolerance, 0.0)),
+            ExactDistanceWitness::Points(XY::new(0.0, 0.0), XY::new(tolerance, 0.0)),
         )
         .unwrap()
         .is_gt()
@@ -388,11 +399,22 @@ mod tests {
                 2.0_f64.next_up(),
                 3.0,
                 5.0,
-                4.0,
             ]),
             (
-                &[0.0, 134217728.0, 134217732.0, 134217736.0, 268435457.0],
-                &[0.0, 134217729.0, 134217733.0, 134217737.0, 268435457.0],
+                &[
+                    0.0,
+                    134_217_728.0,
+                    134_217_732.0,
+                    134_217_736.0,
+                    268_435_457.0,
+                ],
+                &[
+                    0.0,
+                    134_217_729.0,
+                    134_217_733.0,
+                    134_217_737.0,
+                    268_435_457.0,
+                ],
             ),
             (&[0.0, -1.0, 1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 4.0], &[
                 0.0, 0.0, 1.0, -1.0, 1.0, -1.0, 1.0, 0.0, 0.0,
@@ -417,9 +439,21 @@ mod tests {
 
     #[test]
     fn exact_distance_rejects_the_rounded_hull_counterexample() {
-        let xs = [0.0, 134217728.0, 134217732.0, 134217736.0, 268435457.0];
-        let ys = [0.0, 134217729.0, 134217733.0, 134217737.0, 268435457.0];
-        assert_eq!(split(&xs, &ys, 0, 4, 0.70710679).unwrap(), None);
+        let xs = [
+            0.0,
+            134_217_728.0,
+            134_217_732.0,
+            134_217_736.0,
+            268_435_457.0,
+        ];
+        let ys = [
+            0.0,
+            134_217_729.0,
+            134_217_733.0,
+            134_217_737.0,
+            268_435_457.0,
+        ];
+        assert_eq!(split(&xs, &ys, 0, 4, 0.707_106_79).unwrap(), None);
         assert_eq!(split(&xs, &ys, 0, 4, 0.7).unwrap(), Some(1));
     }
 

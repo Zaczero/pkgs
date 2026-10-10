@@ -5,9 +5,13 @@ from __future__ import annotations
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
 import numpy as np
-from _observation import emit
 from _validation import emit_validation
 
 ROWS = 1_000_000
@@ -22,6 +26,7 @@ def main() -> None:
     longitudes = np.linspace(-170.0, 170.0, ROWS)
     for _ in range(2):
         gm.crs_transform(4326, 3857, longitudes, latitudes)
+    prepare_measurement()
     start = time.perf_counter()
     for _ in range(REPEATS):
         result = gm.crs_transform(4326, 3857, longitudes, latitudes)

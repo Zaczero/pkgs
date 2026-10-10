@@ -28,9 +28,11 @@ def public_api_symbols() -> frozenset[str]:
     """Public API inventory, parsed on first use: every paired-block worker
     imports this registry, and only manifest validation needs the inventory.
     """
-    return load_public_symbols(
-        _ROOT / 'python' / 'gometry' / '_lib.pyi',
-        _ROOT / 'python' / 'gometry' / '__init__.py',
+    return frozenset(
+        load_public_symbols(
+            _ROOT / 'python' / 'gometry' / '_lib.pyi',
+            _ROOT / 'python' / 'gometry' / '__init__.py',
+        )
     )
 
 
@@ -226,10 +228,14 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     ),
     _op(
         'Array construction & I/O',
-        'get_coordinates with index',
-        '100k vertices with index',
-        ('get_coordinates',),
-        'gometry.get_coordinates/100k_vertices_with_index',
+        'coords matrix and row_index',
+        '100k vertices / float64 matrix + int64 row index',
+        (
+            'GeometryArray.coords',
+            'Coordinates.__array__',
+            'Coordinates.row_index',
+        ),
+        'gometry.coords.matrix_and_index/100k_vertices',
         'shapely.get_coordinates/100k_vertices_with_index',
         'Shapely',
         ('batched',),
@@ -277,10 +283,10 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     ),
     _op(
         'Geometry',
-        'prepared polygon contains XY',
+        'prepared polygon contains coordinate probes',
         '100k probes / 1,316-coordinate holed polygon',
-        ('contains_xy',),
-        'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
+        ('contains',),
+        'gometry.contains/coordinate_100k_probes_1316_vertex_polygon',
         'shapely.contains_xy.prepared/100k_probes_1316_vertex_polygon',
         'Shapely',
         ('batched',),
@@ -367,11 +373,11 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     ),
     _op(
         'Geometry',
-        'coverage_union parcels',
+        'coverage_union_all parcels',
         '10k edge-matched parcels',
-        ('coverage_union',),
-        'gometry.coverage_union/10k_edge_matched_parcels',
-        'shapely.coverage_union/10k_edge_matched_parcels',
+        ('coverage_union_all',),
+        'gometry.coverage_union_all/10k_edge_matched_parcels',
+        'shapely.coverage_union_all/10k_edge_matched_parcels',
         'Shapely',
         ('batched',),
     ),
@@ -724,9 +730,9 @@ SCALING_CURVES: tuple[ScalingCurve, ...] = (
     ScalingCurve(
         curve_id='prepared-batch-boundary',
         domain='Geometry',
-        label='contains_xy: certified batch boundary',
+        label='contains coordinate probes: certified batch boundary',
         workload='prepared polygon / probe count',
-        canonical_symbols=('contains_xy',),
+        canonical_symbols=('contains',),
         dimension='probe-count',
         unit='probes',
         points=(
@@ -734,7 +740,7 @@ SCALING_CURVES: tuple[ScalingCurve, ...] = (
             ScalingPoint(10_000, 'gate'),
             ScalingPoint(10_001, 'above-gate'),
         ),
-        gometry_prefix='gometry.contains_xy',
+        gometry_prefix='gometry.contains/coordinate',
         competitor_prefix='shapely.contains_xy.prepared',
         competitor_label='Shapely',
         useful_work_unit='predicate-results',

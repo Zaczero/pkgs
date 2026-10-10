@@ -103,16 +103,18 @@ def test_point_nav_array_parity_is_bit_identical_to_scalar_loops() -> None:
         np.array([gm.bearing(point, right[0]) for point in left]),
     )
     assert np.array_equal(
-        gm.rhumb_distance(lefts, rights),
-        np.array([gm.rhumb_distance(a, b) for a, b in zip(left, right, strict=True)]),
+        gm.distance(lefts, rights, path='rhumb'),
+        np.array([
+            gm.distance(a, b, path='rhumb') for a, b in zip(left, right, strict=True)
+        ]),
     )
     assert np.array_equal(
-        gm.rhumb_distance(left[0], rights),
-        np.array([gm.rhumb_distance(left[0], point) for point in right]),
+        gm.distance(left[0], rights, path='rhumb'),
+        np.array([gm.distance(left[0], point, path='rhumb') for point in right]),
     )
     assert np.array_equal(
-        gm.rhumb_distance(lefts, right[0]),
-        np.array([gm.rhumb_distance(point, right[0]) for point in left]),
+        gm.distance(lefts, right[0], path='rhumb'),
+        np.array([gm.distance(point, right[0], path='rhumb') for point in left]),
     )
     assert np.array_equal(
         gm.bearing(lefts, rights, path='rhumb'),
@@ -498,10 +500,56 @@ def test_cross_track_distance_scalar() -> None:
     assert gm.cross_track_distance(probe, a, b) / 1000 == pytest.approx(11.1, abs=0.2)
 
 
-def test_rhumb_distance_and_bearing_path() -> None:
+@pytest.mark.parametrize(
+    ('start', 'end'),
+    [
+        (gm.Point(0, 0, crs=4326), gm.Point(360, 0, crs=4326)),
+        (gm.Point(0, 90, crs=4326), gm.Point(20, 90, crs=4326)),
+        (gm.Point(0, 0, crs=4326), gm.Point(180, 0, crs=4326)),
+        (gm.Point(0, 90, crs=4326), gm.Point(20, -90, crs=4326)),
+    ],
+)
+def test_cross_track_rejects_coincident_and_antipodal_endpoints(
+    start: gm.Point, end: gm.Point
+) -> None:
+    probe = gm.Point(5, 10, crs=4326)
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match=r'unique great circle.*coincident and antipodal',
+    ):
+        gm.cross_track_distance(probe, start, end)
+
+
+def test_cross_track_accepts_exactly_nonantipodal_nearby_endpoints() -> None:
+    probe = gm.Point(5, 10, crs=4326)
+    start = gm.Point(0, 0, crs=4326)
+    end = gm.Point(180, 1e-10, crs=4326)
+    assert np.isfinite(gm.cross_track_distance(probe, start, end))
+
+
+def test_distance_rhumb_and_bearing_path() -> None:
     jfk, lhr = gm.Point(-73.8, 40.6, crs=4326), gm.Point(-0.5, 51.6, crs=4326)
-    assert gm.rhumb_distance(jfk, lhr) / 1000 == pytest.approx(5771.1, abs=1.0)
+    rhumb = gm.distance(jfk, lhr, path='rhumb')
+    assert rhumb / 1000 == pytest.approx(5771.1, abs=1.0)
+    assert rhumb > gm.distance(jfk, lhr)
     assert gm.bearing(jfk, lhr, path='rhumb') == pytest.approx(77.768, abs=0.01)
+    with pytest.raises(
+        gm.GeometryError, match="does not accept unit when path='rhumb'"
+    ):
+        gm.distance(jfk, lhr, path='rhumb', unit='meters')
+    with pytest.raises(
+        gm.CRSError, match="distance\\(path='rhumb'\\) requires a geographic CRS"
+    ):
+        gm.distance(gm.Point(0, 0), gm.Point(1, 1), path='rhumb')
+
+
+def test_distance_rhumb_accepts_nullable_iterable_rows() -> None:
+    jfk, lhr = gm.Point(-73.8, 40.6, crs=4326), gm.Point(-0.5, 51.6, crs=4326)
+    distances = gm.distance(iter([jfk, None, lhr]), jfk, path='rhumb')
+
+    assert distances[0] == pytest.approx(0.0)
+    assert np.isnan(distances[1])
+    assert distances[2] / 1000 == pytest.approx(5771.1, abs=1.0)
 
 
 def test_rhumb_destination_path_scalar() -> None:
@@ -560,7 +608,7 @@ def test_rhumb_destination_nonpoint_array_keeps_row_type_error() -> None:
 def test_point_between_rhumb_path_matches_inverse_direct_and_array_lanes() -> None:
     start = gm.Point(-73.8, 40.6, z=2.0, m=10.0, crs=4326)
     end = gm.Point(-0.5, 51.6, z=6.0, m=30.0, crs=4326)
-    total = gm.rhumb_distance(start, end)
+    total = gm.distance(start, end, path='rhumb')
     bearing = gm.bearing(start, end, path='rhumb')
 
     midpoint = gm.point_between(start, end, 0.5, normalized=True, path='rhumb')
@@ -570,7 +618,9 @@ def test_point_between_rhumb_path_matches_inverse_direct_and_array_lanes() -> No
     assert midpoint.to_wkb() == by_distance.to_wkb()
     assert midpoint.x == pytest.approx(direct.x, abs=1e-09)
     assert midpoint.y == pytest.approx(direct.y, abs=1e-09)
-    assert gm.rhumb_distance(start, midpoint) == pytest.approx(total / 2.0, abs=1e-06)
+    assert gm.distance(start, midpoint, path='rhumb') == pytest.approx(
+        total / 2.0, abs=1e-06
+    )
     assert gm.bearing(start, midpoint, path='rhumb') == pytest.approx(
         bearing, abs=1e-10
     )
@@ -676,7 +726,7 @@ def _empty() -> gm.Geometry:
     [
         (gm.bearing, 'nan'),
         (lambda a, b: gm.bearing(a, b, path='rhumb'), 'nan'),
-        (gm.rhumb_distance, 'inf'),
+        (lambda a, b: gm.distance(a, b, path='rhumb'), 'inf'),
         (lambda a, b: gm.cross_track_distance(a, b, gm.Point(2, 0, crs=4326)), 'nan'),
         (lambda a, b: gm.point_between(a, b, 10.0), 'POINT EMPTY'),
         (lambda a, b: gm.point_between(a, b, 10.0, path='rhumb'), 'POINT EMPTY'),
@@ -684,7 +734,7 @@ def _empty() -> gm.Geometry:
     ids=[
         'bearing',
         'rhumb-bearing',
-        'rhumb-distance',
+        'distance-rhumb',
         'cross-track',
         'point-between',
         'rhumb-point-between',

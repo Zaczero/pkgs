@@ -821,63 +821,75 @@ pub(super) fn polygonize_full_emission(
     Ok(emission)
 }
 
-pub(super) fn polygonize_faces(
-    partition: &ExactPartition<'_>,
-    topology: &IndexedTopology,
-    edges: &[u32],
-    global: &GlobalFaces,
-    operation: &'static str,
-) -> Result<Vec<Polygon>> {
-    let emission = polygonize_emission(partition, topology, edges, global)?;
-    let embedding = partition.embed(&[&emission], operation)?;
-    polygonize_faces_with_embedding(partition, topology, global, &embedding)
-}
-
-pub(super) fn polygonize_faces_with_embedding(
+#[expect(
+    clippy::indexing_slicing,
+    reason = "boundary darts and node IDs come from the same checked topology and embedding"
+)]
+pub(super) fn polygonize_node_groups(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,
     global: &GlobalFaces,
     embedding: &Embedding<'_>,
-) -> Result<Vec<Polygon>> {
+) -> Result<Vec<Vec<Vec<NodeId>>>> {
     let face_of = |slot: usize| global.walk_faces[topology.face_of[slot] as usize];
-    let coordinates = embedding.coordinates();
     let walks = global.boundary_walks(topology, |face, other| face != 0 && face != other);
     let mut shells = Vec::with_capacity(global.count as usize);
     shells.resize(global.count as usize, None);
-    let mut polygons: Vec<(usize, Ring, Vec<Ring>)> = Vec::new();
+    let mut polygons: Vec<(usize, Vec<Vec<NodeId>>)> = Vec::new();
     let mut holes = Vec::new();
     for walk in &walks {
-        let face = face_of(walk[0] as usize) as usize;
-        let ring =
-            closed_ring(walk.iter().map(|&slot| {
-                Embedding::xy_at(coordinates, NodeId(topology.owners[slot as usize]))
-            }))?;
-        if walk_is_shell(
+        let first = *walk
+            .first()
+            .expect("a polygon boundary walk is a nonempty closed cycle");
+        let face = face_of(first as usize) as usize;
+        let is_shell = walk_is_shell(
             partition,
             topology,
             walk.len(),
             |step| walk[step],
             |step| walk[step],
-        )? {
+        )?;
+        let mut ring = walk
+            .iter()
+            .map(|&slot| NodeId(topology.owners[slot as usize]))
+            .collect::<Vec<_>>();
+        canonicalize_open_nodes_by_xy(embedding.coordinates(), &mut ring);
+        if is_shell {
             debug_assert!(shells[face].is_none());
             shells[face] = Some(polygons.len());
-            polygons.push((face, ring, Vec::new()));
+            polygons.push((face, vec![ring]));
         } else {
             holes.push((face, ring));
         }
     }
-    drop(walks);
     for (face, hole) in holes {
-        let polygon = shells[face].expect("bounded face has a shell");
-        polygons[polygon].2.push(hole);
+        polygons[shells[face].expect("bounded face has a shell")]
+            .1
+            .push(hole);
     }
-    drop(shells);
-    polygons.sort_unstable_by_key(|&(face, ..)| face);
-    let mut output = Vec::with_capacity(polygons.len());
-    for (_, shell, holes) in polygons {
-        output.push(Polygon::new(shell, holes));
+    polygons.sort_unstable_by_key(|(face, _)| *face);
+    Ok(polygons.into_iter().map(|(_, rings)| rings).collect())
+}
+
+fn canonicalize_open_nodes_by_xy(coordinates: &[XY], nodes: &mut [NodeId]) {
+    let Some((&first, remaining)) = nodes.split_first() else {
+        return;
+    };
+    let mut minimum = Embedding::xy_at(coordinates, first);
+    let mut rotation = 0;
+    for (index, &node) in remaining.iter().enumerate() {
+        let point = Embedding::xy_at(coordinates, node);
+        if point
+            .x
+            .total_cmp(&minimum.x)
+            .then_with(|| point.y.total_cmp(&minimum.y))
+            == Ordering::Less
+        {
+            minimum = point;
+            rotation = index.wrapping_add(1);
+        }
     }
-    Ok(output)
+    nodes.rotate_left(rotation);
 }
 
 /// Whether a closed boundary walk is the outer cycle of the face on its left,
@@ -1140,11 +1152,7 @@ impl GlobalFaces {
                 face_quotient[self.walk_faces[topology.face_of[dart as usize] as usize] as usize]
             })
         };
-        let can_join = |left: u32, right: u32| -> bool {
-            let node = topology.owners[right as usize] as usize;
-            if protected[node] || sides(left) != sides(right) {
-                return false;
-            }
+        let can_join_after_side_match = |node: usize, left: u32, right: u32| -> bool {
             let row =
                 topology.starts[node] as usize..topology.starts[node.wrapping_add(1)] as usize;
             // A two-slot row contains only the incoming twin and its distinct
@@ -1158,6 +1166,13 @@ impl GlobalFaces {
             let a = source(left);
             let b = source(right);
             stored_cross_sign(a.start, a.end, b.start, b.end) == ExactSign::Zero
+        };
+        let can_join = |left: u32, right: u32| -> bool {
+            let node = topology.owners[right as usize] as usize;
+            if protected[node] || sides(left) != sides(right) {
+                return false;
+            }
+            can_join_after_side_match(node, left, right)
         };
         // Every selected boundary dart and retained line source is appended
         // once; chord joins only change grouping. Production line spans are
@@ -1191,10 +1206,21 @@ impl GlobalFaces {
             let mut chords = Vec::with_capacity(walk.len());
             for (index, &slot) in walk.iter().enumerate() {
                 let chord = make_chord(slot)?;
-                if index > 0 && can_join(walk[index.wrapping_sub(1)], slot) {
-                    let previous: &mut PlannedChord = chords
-                        .last_mut()
-                        .expect("a joined chord has a preceding planned chord");
+                if index == 0 {
+                    chords.push(chord);
+                    continue;
+                }
+                let previous: &mut PlannedChord = chords
+                    .last_mut()
+                    .expect("every later dart follows a planned chord");
+                let node = topology.owners[slot as usize] as usize;
+                // Earlier joins extended this chord only after its labels matched.
+                let joins = if protected[node] || previous.sides != chord.sides {
+                    false
+                } else {
+                    can_join_after_side_match(node, walk[index.wrapping_sub(1)], slot)
+                };
+                if joins {
                     previous.sources.end = chord.sources.end;
                 } else {
                     chords.push(chord);
@@ -1286,28 +1312,40 @@ impl GlobalFaces {
         topology: &IndexedTopology,
         bounds: impl Fn(usize, usize) -> bool,
     ) -> Vec<Vec<u32>> {
-        let mut selected = Vec::with_capacity(topology.targets.len());
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        enum DartState {
+            Omitted,
+            Pending,
+            Walked,
+        }
+
+        let mut state = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {
             let other = topology.face_of[topology.twins[slot] as usize];
-            selected.push(bounds(
-                self.walk_faces[walk as usize] as usize,
-                self.walk_faces[other as usize] as usize,
-            ));
+            state.push(
+                if bounds(
+                    self.walk_faces[walk as usize] as usize,
+                    self.walk_faces[other as usize] as usize,
+                ) {
+                    DartState::Pending
+                } else {
+                    DartState::Omitted
+                },
+            );
         }
-        let mut visited = Vec::with_capacity(selected.len());
-        visited.resize(selected.len(), false);
         let mut positions = Vec::with_capacity(topology.component_of.len());
         positions.resize(topology.component_of.len(), None);
         let mut walks = Vec::new();
-        for start in 0..selected.len() {
-            if !selected[start] || visited[start] {
+        for start in 0..state.len() {
+            if state[start] != DartState::Pending {
                 continue;
             }
             let mut walk = Vec::new();
             let mut slot = start;
             loop {
-                debug_assert!(!visited[slot]);
-                visited[slot] = true;
+                debug_assert_eq!(state[slot], DartState::Pending);
+                state[slot] = DartState::Walked;
                 positions[topology.owners[slot] as usize] = Some(walk.len());
                 walk.push(slot as u32);
                 let target = topology.targets[slot] as usize;
@@ -1332,7 +1370,7 @@ impl GlobalFaces {
                     } else {
                         slot.wrapping_sub(1)
                     };
-                    if selected[slot] {
+                    if state[slot] != DartState::Omitted {
                         break;
                     }
                     debug_assert_ne!(slot, twin, "selected boundary has no successor");

@@ -21,8 +21,8 @@ relationship is a free function ([`gm.contains(a, b)`][gometry.contains]):
 | `gm.contains(poly, pt)` | scalar pair | `bool` |
 | `gm.contains(poly, pts)` | scalar × array | `bool_` ndarray |
 | [`idx.query(scalar)`][gometry.SpatialIndex.query] | one geometry | `int64` ndarray |
-| `idx.query(arr)` | `GeometryArray` | [`Groups[int64]`][gometry.Groups] |
-| `gm.get_coordinates(values)` | geometry or collection | `(n, dims)` `float64` ndarray; add `return_index=True` for a row-index pair |
+| `idx.query(arr)` | `GeometryArray` | [`Groups`][gometry.Groups] of `numpy.typing.NDArray[numpy.int64]` |
+| `geom.coords` | geometry or array | flattened [`Coordinates`][gometry.Coordinates] view; `np.asarray(view, dtype=np.float64)` exports a matrix and `view.row_index` gives source rows |
 
 ## GeometryArray
 
@@ -120,6 +120,19 @@ guarantees: this point array's `arr.buffer(...)` is a
 [`GeometryArray[Polygon]`][gometry.GeometryArray], `arr.area` is a `float64` ndarray while
 `geom.area` is `float`, and so on across the whole surface.
 
+[`GeometryArray`][gometry.GeometryArray], [`CellArray`][gometry.CellArray],
+[`H3VertexArray`][gometry.H3VertexArray], and [`H3EdgeArray`][gometry.H3EdgeArray]
+share one row-selection rule. An integer or integer-like object implementing
+`__index__` (not a boolean), or a zero-dimensional NumPy integer array, selects
+one element. A slice, one-dimensional
+integer array, integer sequence, or boolean mask selects a container of the same
+family. NumPy selectors with rank greater than one raise `TypeError` because
+these row containers have one dimension. Type checkers preserve the result when
+an ndarray's rank is known; if its
+annotation uses a variable-length tuple of integer dimensions, the result is the
+honest scalar-or-container union. If NumPy types the shape as `Any`, annotate the
+rank when you need a narrower result type.
+
 The public classes and cross-grid protocols can be used directly in your own
 annotations. Accepted string tokens are already narrowed in every gometry signature,
 so IDEs and type checkers flag misspellings at the call site:
@@ -135,8 +148,9 @@ print(round(cell_area(gm.H3Cell("871fb4662ffffff"))))
 
 ### NumPy bridge and preview
 
-[`to_numpy`][gometry.GeometryArray.to_numpy] materializes an `object` ndarray of geometry
-handles; [`gm.GeometryArray`][gometry.GeometryArray] is the inverse for object ndarrays
+[`to_numpy`][gometry.GeometryArray.to_numpy] explicitly materializes an `object` ndarray
+of geometry handles; NumPy's array protocol also supports `np.asarray(arr, dtype=object)`.
+[`gm.GeometryArray`][gometry.GeometryArray] is the inverse for object ndarrays
 and `__geo_interface__` rows. Coordinate columns live on [`.coords`][gometry.GeometryArray.coords] ([`.x`][gometry.Coordinates.x]/[`.y`][gometry.Coordinates.y]/[`.z`][gometry.Coordinates.z]/[`.m`][gometry.Coordinates.m]
 are read-only `float64` ndarrays):
 
@@ -195,7 +209,7 @@ Vectorized bulk lanes follow a fixed return contract:
 | Id pairs | `(left, right)` pair of `int64` ndarrays | [`join`][gometry.join], [`self_join`][gometry.SpatialIndex.self_join] |
 | Ragged matches | [`Groups`][gometry.Groups] (CSR) | array-form [`index.query`][gometry.SpatialIndex.query] |
 | Geometries | [`GeometryArray`][gometry.GeometryArray] | [`buffer`][gometry.Geometry.buffer], [`to_crs`][gometry.Geometry.to_crs], …; overlays via <code>&amp; / \|</code> |
-| Coordinates | [`Coordinates`][gometry.Coordinates] view or [`gm.get_coordinates`][gometry.get_coordinates] | [`geom.coords`][gometry.Geometry.coords], packed point columns |
+| Coordinates | [`Coordinates`][gometry.Coordinates] view | [`geom.coords`][gometry.Geometry.coords], packed point columns |
 | Witness pairs | `(left, right)` pair of point `GeometryArray` columns | [`nearest_points`][gometry.nearest_points] |
 
 Text/bytes and ragged diagnostic lanes stay ordinary Python lists because they have no
@@ -327,10 +341,11 @@ free predicates such as [`gm.covers`][gometry.covers] or [`gm.contains`][gometry
 ## Groups (ragged CSR)
 
 Some operations return **one variable-length result per input row** — spatial index
-queries against an array of probes, or multi-hit predicate scans. A flat `list[list[int]]`
-would work in Python but loses ndarray zero-copy sharing. [`Groups`][gometry.Groups]
-stores those results in **CSR form**: a single `int64` [`.values`][gometry.Groups.values] vector plus [`.offsets`][gometry.Groups.offsets]
-that bound each row.
+queries against an array of probes, or multi-hit predicate scans. [`Groups`][gometry.Groups]
+stores those results in **CSR form**: a flat [`.values`][gometry.Groups.values]
+payload plus [`.offsets`][gometry.Groups.offsets] that bound each row. The
+payload keeps its actual type: an `int64` ndarray, a
+[`GeometryArray`][gometry.GeometryArray], or a [`CellArray`][gometry.CellArray].
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -350,14 +365,17 @@ print("offsets:", groups.offsets.tolist())
 
 ```
 
-`Groups` is generic over the value type: index hits store `int64` rows (read-only
-`.values` / `.offsets` ndarray views over CSR storage); geometry-valued ragged
+`Groups.values` is the logical flat payload window; contiguous source windows
+can share backing, while gathered values may be materialized. A slice whose
+first row is source row zero can share its offsets; a slice starting later
+returns rebased offsets. `Groups.counts` is materialized from adjacent offsets.
+Index hits use read-only `int64` value and offset arrays; geometry-valued ragged
 results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
 [`GeometryArray.parts`][gometry.GeometryArray.parts] returns one geometry group per source row, keeping
 empty and missing rows as empty groups, so `offsets` remains a source-row map.
-Coordinate extraction is the flat numeric exception:
-[`get_coordinates`][gometry.get_coordinates] returns one matrix and, when
-requested, a parallel source-row index.
+Coordinate extraction is the flat numeric exception: `geom.coords` exposes one
+vertex stream; convert it with NumPy for a matrix and read `view.row_index` when
+source-row indexes are needed.
 
 !!! tip "Scalar vs array index query"
     A scalar [`idx.query(geom, predicate=...)`][gometry.SpatialIndex.query] returns a dense `int64` ndarray. Pass an
@@ -381,24 +399,27 @@ The columns after `geometry` are `is_missing`, `area`, and `contains(window)`:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
+import numpy as np
 
 geoms = gm.GeometryArray([gm.Point(1, 1), None, gm.from_wkt('POINT EMPTY')])
 window = gm.box(0, 0, 2, 2)
 areas = geoms.area
 contains = gm.contains(window, geoms)
-coordinates = gm.get_coordinates(geoms, return_index=True)
+coordinate_view = geoms.coords
+values = np.asarray(coordinate_view, dtype=np.float64)
+indexes = coordinate_view.row_index
 
 for row, geometry in enumerate(geoms.to_wkt()):
     print(row, geometry, geoms.is_missing[row], areas[row], contains[row])
-values, indexes = coordinates
 print('coordinate values:', values.tolist())
 print('coordinate indexes:', indexes.tolist())
 ```
 
 `values` is the flattened coordinate matrix and `indexes` repeats each source
-row for its coordinates. The missing and typed-empty rows contribute no values,
-so their absence from `indexes` is the row-preserving signal; `is_missing`
-still distinguishes the two kinds of zero-coordinate row.
+row for its coordinates. `len(geoms)` counts logical rows;
+`len(geoms.coords)` counts vertices. Missing and typed-empty rows both
+contribute no vertices, but `geoms.is_missing` distinguishes a missing row from
+an empty geometry.
 
 One rule set everywhere: **predicates → `False`, measures → `NaN`, geometry results stay
 missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that cannot hold
@@ -414,10 +435,10 @@ validity bitmaps, geopandas/pandas/polars nulls) and survive every row-aligned o
 slice, fancy indexing (`arr[[0, 2]]`), pickle, and Arrow round-trip.
 
 !!! note "Coordinates flatten present rows"
-    [`arr.coords`][gometry.GeometryArray.coords] and [`gm.get_coordinates(arr)`][gometry.get_coordinates] are vertex
-    streams, not row-aligned arrays. Missing rows contribute no vertices.
-    `get_coordinates(..., return_index=True)` returns a parallel source-row
-    index when you need to map each coordinate back, or call
+    [`arr.coords`][gometry.GeometryArray.coords] is a vertex stream, not a
+    row-aligned array. Missing rows contribute no vertices. Its
+    [`row_index`][gometry.Coordinates.row_index] property maps each coordinate
+    back to its source row, or call
     [`drop_missing()`][gometry.GeometryArray.drop_missing] first when a dense
     coordinate-only workflow is clearer.
 
@@ -559,12 +580,13 @@ overhead.
 | GeoJSON | `from_geojson(json.loads(s))` | `from_geojson(s)` — `str`/`bytes` |
 | Many points | `GeometryArray([Point(x, y) for ...])` | [`gm.points(xs, ys)`][gometry.points] |
 | WKB/WKT | `[from_wkb(b) for b in blobs]` | `from_wkb(blobs)` — one batch |
-| Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_features(text)`][gometry.from_features] |
+| Features + attributes | <a href="https://docs.python.org/3/library/json.html#json.loads"><code>json.loads</code></a> + a Python feature loop | [`gm.from_geojson(text, features=True)`][gometry.from_geojson] |
 
-When you need the per-feature `properties`/`id` alongside geometry,
-[`gm.from_features`][gometry.from_features] parses the whole FeatureCollection in Rust and
-hands back a validated [`Features(geometries, properties, ids)`][gometry.Features] record — one crossing instead of
-a Python loop.
+When you need the per-feature `properties`/`id` alongside geometry, pass
+`features=True` to [`gm.from_geojson`][gometry.from_geojson]. It parses the whole
+FeatureCollection in Rust and returns a validated
+[`Features(geometries, properties, ids)`][gometry.Features] record — one crossing
+instead of a Python loop.
 
 ## Crossing the dataframe / Arrow boundary
 
@@ -572,7 +594,8 @@ Per-row interop conversion changes a columnar boundary into Python object work. 
 converters accept whole columns.
 
 - **pandas:** [`arr.to_pandas()`][gometry.GeometryArray.to_pandas] stores the native array behind a concrete extension dtype;
-  [`gm.from_pandas()`][gometry.from_pandas] returns that same [`GeometryArray`][gometry.GeometryArray] **zero-copy**.
+  [`gm.from_pandas()`][gometry.from_pandas] shares that storage **zero-copy**. It also imports object Series
+  of geometry-like rows; those rows are converted rather than shared.
 - **Polars:** [`arr.to_polars()`][gometry.GeometryArray.to_polars] / [`gm.from_polars()`][gometry.from_polars] encode and decode a whole WKB/EWKB Binary
   Series in native batched calls. The boundary does not require PyArrow.
 - **GeoPandas:** [`gm.from_geopandas()`][gometry.from_geopandas] / [`arr.to_geopandas()`][gometry.GeometryArray.to_geopandas] convert a `GeoSeries` in one

@@ -126,7 +126,7 @@ impl MetricOp {
             Self::Polylabel => "polylabel",
             Self::RhumbBearing => "bearing(path='rhumb')",
             Self::RhumbDestination => "destination(path='rhumb')",
-            Self::RhumbDistance => "rhumb_distance",
+            Self::RhumbDistance => "distance(path='rhumb')",
             Self::Segmentize => "segmentize",
             Self::ShortestLine => "shortest_line",
             Self::SpatialIndexDistanceQuery => "spatial index distance query",
@@ -135,20 +135,13 @@ impl MetricOp {
 
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "ordinary metric operations share this hot resolver; only 3D and linear-reference metrics are specialized above"
+        reason = "ordinary metric operations share this hot resolver; only 3D metrics are specialized above"
     )]
     pub(crate) const fn resolver(self) -> MetricResolver {
         match self {
             Self::Distance3d | Self::Length3d => MetricResolver::Metric3d {
                 op: self,
                 unit: None,
-            },
-            Self::LineInterpolate | Self::LineLocate | Self::LineSubstring => {
-                MetricResolver::LineMetric {
-                    op: self,
-                    unit: None,
-                    normalized: false,
-                }
             },
             _ => MetricResolver::Metric {
                 op: self,
@@ -192,10 +185,8 @@ define_operation! {
     Scale => { name: "scale", resolver: MetricResolver::None },
     Skew => { name: "skew", resolver: MetricResolver::None },
     Snap => { name: "snap", resolver: MetricResolver::GeographicCarry },
-    SetM => { name: "set_m", resolver: MetricResolver::None },
-    SetZ => { name: "set_z", resolver: MetricResolver::None },
     Simplify => { name: "simplify", resolver: MetricResolver::None },
-    Smooth => { name: "smooth", resolver: MetricResolver::None },
+    Smooth => { name: "smooth", resolver: MetricResolver::GeographicCarry },
     SnapToGrid => { name: "snap_to_grid", resolver: MetricResolver::None },
     SplitAntimeridian => { name: "split_antimeridian", resolver: MetricResolver::GeographicCarry },
     SwapXy => { name: "swap_xy", resolver: MetricResolver::None },
@@ -209,14 +200,6 @@ impl Operation {
     /// Call-site ``unit=`` for CRS-aware ops (merged into [`MetricResolver`]).
     pub(crate) const fn resolver_with_unit(self, unit: Option<DistanceUnit>) -> MetricResolver {
         self.resolver().with_unit(unit)
-    }
-
-    pub(crate) const fn resolver_with_line_unit(
-        self,
-        unit: Option<DistanceUnit>,
-        normalized: bool,
-    ) -> MetricResolver {
-        self.resolver().with_line_unit(unit, normalized)
     }
 
     pub(crate) const fn from_overlay(op: OverlayOp) -> Self {

@@ -20,6 +20,19 @@ sparse row table, including tombstones for removed rows, and rebuilds the search
 structure on load. A round trip therefore preserves live handles and prior
 mutations rather than replaying the original source rows.
 
+Lookup and removal accept non-negative integer-index handles and reject
+`bool`. `idx.get(handle, default)` returns `default` for a valid handle that is
+unknown or removed, but negative and non-index inputs raise. Membership checks
+remain tolerant and return `False` for non-index probes.
+
+`SpatialIndex` compares like a mapping: equality uses its live handle-to-
+geometry contents, including after removals. Since it is mutable, it is
+unhashable and cannot be used as a dictionary key.
+
+`query`, `candidates`, `nearest`, and `join` accept a `GeometryArray` or an
+iterable of `Geometry | None` rows. Missing query rows produce empty result
+groups and keep their original row positions.
+
 !!! warning "Candidates are not matches"
     [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
     query's bounding box. Bounding boxes overlap far more often than geometries
@@ -169,8 +182,12 @@ print("within 1 deg:", idx.query(probe, predicate="dwithin", distance=1.0, unit=
 Distance `unit=` follows the CRS metric rules in [CRS, units & measurement](crs.md).
 The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate math.
 `dwithin` accepts a positive-infinite threshold and matches only admitted
-non-empty geometries. Array results keep one boolean per input pair; missing rows
-and present empty geometries remain in their positions as `False`.
+non-empty geometries. On a geographic CRS, `dwithin` raises `CRSError` if the
+accumulated evaluation work limit cannot certify whether a present pair is
+within the radius; it does not report an unresolved pair as `False`. The [CRS
+guide](crs.md#geographic-point-to-segment-accuracy) describes the work scale and
+ceiling. Successful array results keep one boolean per input pair, and missing
+rows and present empty geometries remain in their positions as `False`.
 
 ## Nearest neighbors
 
@@ -275,7 +292,9 @@ for li, ri in zip(left, right, strict=True):
 `join` refines to exact predicates. Use `distance=`/`unit=` for a
 `predicate="dwithin"` join. For a direct index query, compare
 `len(idx.candidates(q))` with `len(idx.query(q, predicate=...))` to measure the
-candidate superset and its exact refinement.
+candidate superset and its exact refinement. Geographic `dwithin` refinement
+raises `CRSError` if the point-edge search exhausts its budget without proving
+the threshold result.
 
 !!! note "Many-to-many query cost"
     The brute-force `for a in polys: for b in points: if gm.contains(a, b)` pattern is
@@ -293,6 +312,11 @@ the index), and [`remove`][gometry.SpatialIndex.remove] tombstones a row by
 handle. Inserted rows live in a small overflow tree chained after the bulk
 structure; query/nearest lanes see both. Removed rows stay sparse handles so row
 identity is preserved for joins — they are not renumbered.
+
+Batch insertion rejects empty geometries and GeometryArrays containing missing
+rows. It validates the complete input and frame before changing the index, so
+input-validation errors leave its rows and frame unchanged. This is not a
+transaction guarantee for allocation or publication failures.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

@@ -57,7 +57,7 @@ STORAGE_CASES = [
         'XYZM',
         lambda a: (a.to_wkt(), [gm.from_wkb(b).to_wkt() for b in a.to_wkb()]),
     ),
-    StorageCase('geojson', 'XY', lambda a: a.set_crs(None).to_geojson()),
+    StorageCase('geojson', 'XY', lambda a: a.with_crs(None).to_geojson()),
     StorageCase(
         'metrics',
         'XY',
@@ -89,7 +89,7 @@ STORAGE_CASES = [
         lambda a: (
             canon(a.reverse()),
             canon(a.normalize()),
-            canon(a.set_z(None).set_m(None)),
+            canon(a.with_coordinates(z=None, m=None)),
         ),
     ),
     StorageCase(
@@ -99,8 +99,8 @@ STORAGE_CASES = [
         'frame_ops',
         'XYZM',
         lambda a: (
-            a.set_crs(4326, overwrite=True).crs,
-            a.set_crs(None).crs,
+            a.with_crs(4326, overwrite=True).crs,
+            a.with_crs(None).crs,
             gm.require(a, crs=3857).crs,
         ),
     ),
@@ -158,8 +158,16 @@ def test_packed_storage_matches_mixed_storage(case: StorageCase) -> None:
     ('twins', 'arrow_kind', 'op'),
     [
         (line_storage_twins, 'geoarrow.linestring', lambda a: a.snap_to_grid(0.5)),
-        (line_storage_twins, 'geoarrow.linestring', lambda a: a.set_z(5.0)),
-        (line_storage_twins, 'geoarrow.linestring', lambda a: a.set_m(3.0)),
+        (
+            line_storage_twins,
+            'geoarrow.linestring',
+            lambda a: a.with_coordinates(z=5.0),
+        ),
+        (
+            line_storage_twins,
+            'geoarrow.linestring',
+            lambda a: a.with_coordinates(m=3.0),
+        ),
         (line_storage_twins, 'geoarrow.linestring', lambda a: a.line_merge()),
         (line_storage_twins, 'geoarrow.linestring', lambda a: a.rotate(90.0)),
         (line_storage_twins, 'geoarrow.linestring', lambda a: a.scale(2.0)),
@@ -176,9 +184,21 @@ def test_packed_storage_matches_mixed_storage(case: StorageCase) -> None:
             lambda a: a.scale(2.0, origin='center'),
         ),
         (polygon_storage_twins, 'geoarrow.polygon', lambda a: a.snap_to_grid(0.5)),
-        (polygon_storage_twins, 'geoarrow.polygon', lambda a: a.set_z(4.0)),
-        (polygon_storage_twins, 'geoarrow.polygon', lambda a: a.set_m(9.0)),
-        (polygon_z_storage_twins, 'geoarrow.polygon', lambda a: a.set_z(None)),
+        (
+            polygon_storage_twins,
+            'geoarrow.polygon',
+            lambda a: a.with_coordinates(z=4.0),
+        ),
+        (
+            polygon_storage_twins,
+            'geoarrow.polygon',
+            lambda a: a.with_coordinates(m=9.0),
+        ),
+        (
+            polygon_z_storage_twins,
+            'geoarrow.polygon',
+            lambda a: a.with_coordinates(z=None),
+        ),
         (line_storage_twins, 'geoarrow.linestring', lambda a: a.segmentize(0.5)),
         (polygon_storage_twins, 'geoarrow.polygon', lambda a: a.segmentize(0.5)),
         (
@@ -194,8 +214,8 @@ def test_packed_storage_matches_mixed_storage(case: StorageCase) -> None:
     ],
     ids=[
         'lines_snap',
-        'lines_set_z',
-        'lines_set_m',
+        'lines_with_z',
+        'lines_with_m',
         'lines_line_merge',
         'lines_rotate_centroid',
         'lines_scale_centroid',
@@ -204,8 +224,8 @@ def test_packed_storage_matches_mixed_storage(case: StorageCase) -> None:
         'polygons_scale_centroid',
         'polygons_scale_center',
         'polygons_snap',
-        'polygons_set_z',
-        'polygons_set_m',
+        'polygons_with_z',
+        'polygons_with_m',
         'polygons_clear_z',
         'lines_segmentize',
         'polygons_segmentize',
@@ -250,7 +270,7 @@ SPELLING_CASES = [
         lambda: gm.LineString([(0.0, 0.0, 1.0), (3.0, 4.0, 5.0)], crs=4326),
     ),
     SpellingCase('validate', _POLY),
-    SpellingCase('set_z', _Z_LINE, (None,)),
+    SpellingCase('with_coordinates', _Z_LINE, kwargs={'z': None}),
     SpellingCase('quantize', _Z_LINE, (1)),
     SpellingCase('length_3d', _Z_LINE),
     SpellingCase('area', _POLY),
@@ -354,7 +374,7 @@ FRAME_CASES: list[tuple[str, Callable[[], object]]] = [
     ('translate', lambda: _FRAME_POLY().translate(1.0, 2.0)),
     ('reverse', lambda: _FRAME_POLY().reverse()),
     ('normalize', lambda: _FRAME_POLY().normalize()),
-    ('set_z', lambda: _FRAME_POLY().set_z(None)),
+    ('with_coordinates', lambda: _FRAME_POLY().with_coordinates(z=None)),
     ('buffer', lambda: _FRAME_POLY().buffer(1.0)),
     ('centroid', lambda: _FRAME_POLY().centroid()),
     ('boundary', lambda: _FRAME_POLY().boundary()),
@@ -378,7 +398,12 @@ FRAME_CASES: list[tuple[str, Callable[[], object]]] = [
     ),
     ('parts', lambda: _FRAME_SITES().parts),
     ('triangulate', lambda: _FRAME_SITES().triangulate(method='delaunay')),
-    ('voronoi_polygons', lambda: _FRAME_SITES().voronoi_polygons()),
+    (
+        'voronoi_cells',
+        lambda: _FRAME_SITES().voronoi(
+            output='polygons',
+        ),
+    ),
     (
         'triangulate_array',
         lambda: (
@@ -409,12 +434,12 @@ def test_geometry_returning_ops_carry_the_input_frame(
 ) -> None:
     result = fn()
     if isinstance(result, gm.GeometryArray):
-        assert result.crs == 'EPSG:3857'
+        assert result.crs == gm.CRS('EPSG:3857')
         assert result.epoch == 2020.0
     geoms = each_geometry(result)
     assert geoms, f'{name} returned no geometries to check'
     for geom in geoms:
-        assert geom.crs == 'EPSG:3857'
+        assert geom.crs == gm.CRS('EPSG:3857')
         assert geom.epoch == 2020.0
 
 
@@ -518,7 +543,7 @@ def test_wkt_wkb_round_trip_identity(wkt: str) -> None:
     assert gm.from_wkb(geom.to_wkb()).to_wkt() == wkt
     ewkb = gm.from_wkb(geom.to_wkb(include_srid=True))
     assert ewkb.to_wkt() == wkt
-    assert ewkb.crs == 'EPSG:4326'
+    assert ewkb.crs == gm.CRS('EPSG:4326')
     if set(geom.coordinate_axes) <= {'X', 'Y', 'Z'}:
         assert gm.from_geojson(geom.to_geojson()).to_wkt() == wkt
 

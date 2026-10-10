@@ -1,7 +1,7 @@
 //! Lazy handle iterator over a `SpatialIndex`, kept beside its pymethods.
 
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::{Py, PyRef, PyResult, Python, pyclass, pymethods};
+use pyo3::{Bound, Py, PyRef, PyResult, Python, pyclass, pymethods};
 
 use crate::HeapSize as _;
 use crate::py::index::PySpatialIndex;
@@ -34,11 +34,13 @@ impl PySpatialIndexIter {
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self, py: Python<'_>) -> PyResult<isize> {
-        let source = self.source.borrow(py);
+    fn __sizeof__(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<isize> {
+        let iterator = slf.borrow();
+        let source = iterator.source.borrow(py);
         python_sizeof(
-            size_of_val(self).saturating_add(size_of_val(&*source)),
-            source.heap_bytes(),
+            py,
+            slf.as_any(),
+            size_of_val(&*source).saturating_add(source.heap_bytes()),
         )
     }
 
@@ -54,7 +56,7 @@ impl PySpatialIndexIter {
             self.remaining = self.remaining.wrapping_sub(1);
             return Ok(Some(handle));
         }
-        self.next_handle = index.rows.len();
+        self.next_handle = index.rows.next_handle;
         self.remaining = 0;
         Ok(None)
     }

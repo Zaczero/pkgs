@@ -217,7 +217,7 @@ def _compare_from_arrow(
         if g is None:
             continue
         checked += 1
-        ga = g.set_crs(None) if getattr(g, 'crs', None) is not None else g
+        ga = g.with_crs(None) if getattr(g, 'crs', None) is not None else g
         if not bool(shapely.equals(_as_shapely(ga), _as_shapely(s))):
             raise OracleMismatch(f'from_arrow geometry mismatch row={i}')
     if checked != 90_000:
@@ -255,12 +255,14 @@ def _coordinate_values_and_indices(
     return coordinates, np.asarray(indexes)
 
 
-def _compare_get_coordinates(
+def _compare_coords_matrix_and_row_index(
     left: object, right: object | None, context: OracleContext
 ) -> None:
     if right is None:
-        raise OracleMismatch('get_coordinates requires competitor')
-    l_coords, l_idx = _coordinate_values_and_indices(left, 'get_coordinates')
+        raise OracleMismatch('coords matrix and row_index require competitor')
+    l_coords, l_idx = _coordinate_values_and_indices(
+        left, 'coords matrix and row_index'
+    )
     r_coords, r_idx = right  # type: ignore[misc]
     exact_coordinates(
         l_coords,
@@ -274,7 +276,7 @@ def _compare_get_coordinates(
     )
     if not np.array_equal(np.asarray(l_idx), np.asarray(r_idx)):
         raise OracleMismatch(
-            'get_coordinates index mismatch',
+            'coords row_index mismatch',
             details=f'shapes {np.asarray(l_idx).shape} vs {np.asarray(r_idx).shape}',
         )
 
@@ -303,7 +305,7 @@ def _precondition_prepared_hit_rate() -> None:
     import gometry as gm
 
     data = prepared_polygon_and_probes()
-    mask = gm.contains_xy(data['gm_poly'], data['xs'], data['ys'])
+    mask = gm.contains(data['gm_poly'], x=data['xs'], y=data['ys'])
     rate = float(np.asarray(mask).mean())
     if not (0.40 <= rate <= 0.60):
         raise OracleMismatch(
@@ -339,12 +341,12 @@ def _precondition_validity_dist() -> None:
 def _compare_simplify(
     left: object, right: object | None, context: OracleContext
 ) -> None:
-    import gometry as gm
     import shapely
 
     if right is None:
         raise OracleMismatch('simplify requires competitor')
-    l_coordinates = gm.get_coordinates(left, return_index=True)
+    view = left.coords
+    l_coordinates = (np.asarray(view, dtype=np.float64), view.row_index)
     l_coords, l_idx = _coordinate_values_and_indices(l_coordinates, 'simplify')
     r_coords, r_idx = shapely.get_coordinates(right, include_z=False, return_index=True)
     if len(l_coords) != len(r_coords):
@@ -578,7 +580,6 @@ def _compare_nearest(
 def _compare_from_geojson(
     left: object, right: object | None, context: OracleContext
 ) -> None:
-    import gometry as gm
     import shapely
 
     if right is None:
@@ -596,14 +597,14 @@ def _compare_from_geojson(
     # coordinate count
     n_coords = 0
     for g in left:  # type: ignore[union-attr]
-        n_coords += len(gm.get_coordinates(g))
+        n_coords += len(g.coords)
     if n_coords != 16_604:
         raise OracleMismatch('from_geojson coordinate count', details=str(n_coords))
     # Rowwise geometric equality is required. Equal bounds alone must NOT pass
     # unequal shapes; when exact OGC equals fails on presentation noise, accept
     # only a tiny Hausdorff distance (never bounds-as-equality).
     for i, (g, s) in enumerate(zip(left, right, strict=True)):  # type: ignore[arg-type]
-        g_xy = g.set_crs(None) if getattr(g, 'crs', None) is not None else g
+        g_xy = g.with_crs(None) if getattr(g, 'crs', None) is not None else g
         if bool(shapely.equals(_as_shapely(g_xy), _as_shapely(s))):
             continue
         try:
@@ -777,26 +778,26 @@ def build_to_wkb() -> PublicCase:
     return _case(gometry_call, competitor_call, _compare_to_wkb, kind='exact_bytes')
 
 
-def build_get_coordinates() -> PublicCase:
+def build_coords_matrix_and_index() -> PublicCase:
     gm_roads = roads_10k_gometry()
     sh_roads = roads_10k_shapely()
 
     def gometry_call():
-        import gometry as gm
 
-        return gm.get_coordinates(gm_roads, return_index=True)
+        view = gm_roads.coords
+        return np.asarray(view, dtype=np.float64), view.row_index
 
     def competitor_call():
         import shapely
 
         return shapely.get_coordinates(sh_roads, include_z=False, return_index=True)
 
-    _reg('gometry.get_coordinates/100k_vertices_with_index', gometry_call)
+    _reg('gometry.coords.matrix_and_index/100k_vertices', gometry_call)
     _reg('shapely.get_coordinates/100k_vertices_with_index', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
-        _compare_get_coordinates,
+        _compare_coords_matrix_and_row_index,
         kind='exact_coordinates',
         unit='m',
     )
@@ -822,7 +823,7 @@ def build_points() -> PublicCase:
     )
 
 
-def build_contains_xy() -> PublicCase:
+def build_coordinate_contains() -> PublicCase:
     data = prepared_polygon_and_probes()
     polygon = data['gm_poly']
     sh_poly = data['sh_poly']
@@ -831,7 +832,7 @@ def build_contains_xy() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.contains_xy(polygon, xs, ys)
+        return gm.contains(polygon, x=xs, y=ys)
 
     def competitor_call():
         import shapely
@@ -839,7 +840,7 @@ def build_contains_xy() -> PublicCase:
         return shapely.contains_xy(sh_poly, xs, ys)
 
     _reg(
-        'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
+        'gometry.contains/coordinate_100k_probes_1316_vertex_polygon',
         gometry_call,
     )
     _reg(
@@ -1142,7 +1143,7 @@ def build_coverage_union() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.coverage_union(d['gm'])
+        return gm.coverage_union_all(d['gm'])
 
     def competitor_call():
         import shapely
@@ -1157,8 +1158,8 @@ def build_coverage_union() -> PublicCase:
         if not bool(np.all(shapely.coverage_is_valid(d['sh']))):
             raise OracleMismatch('parcels not coverage-valid on shapely')
 
-    _reg('gometry.coverage_union/10k_edge_matched_parcels', gometry_call)
-    _reg('shapely.coverage_union/10k_edge_matched_parcels', competitor_call)
+    _reg('gometry.coverage_union_all/10k_edge_matched_parcels', gometry_call)
+    _reg('shapely.coverage_union_all/10k_edge_matched_parcels', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
@@ -1870,10 +1871,10 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.from_wkb.batch/10k_mixed_ewkb': build_from_wkb,
     'gometry.from_arrow/100k_mixed_10pct_missing': build_from_arrow,
     'gometry.to_wkb.batch/10k_mixed_ewkb': build_to_wkb,
-    'gometry.get_coordinates/100k_vertices_with_index': build_get_coordinates,
+    'gometry.coords.matrix_and_index/100k_vertices': build_coords_matrix_and_index,
     'gometry.points/10k_numpy_xy': build_points,
     'gometry.from_wkt.batch/10k_realistic_mixed_wkt': build_from_wkt,
-    'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon': build_contains_xy,
+    'gometry.contains/coordinate_100k_probes_1316_vertex_polygon': build_coordinate_contains,
     'gometry.intersects/12k_irregular_polygon_point_array': build_intersects_polygon_points,
     'gometry.dwithin/pairwise_10k_50pct_matches': build_dwithin,
     'gometry.area/10k_projected_buildings': build_area,
@@ -1884,7 +1885,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.intersection/pairwise_1k_irregular_polygons': build_intersection,
     'gometry.intersects/pairwise_1k_irregular_polygons': build_intersects_pairs,
     'gometry.union_all/1024_service_areas': build_union_all,
-    'gometry.coverage_union/10k_edge_matched_parcels': build_coverage_union,
+    'gometry.coverage_union_all/10k_edge_matched_parcels': build_coverage_union,
     'gometry.is_valid/10k_mixed_polygons_20pct_invalid': build_is_valid,
     'gometry.repair.linework/1k_invalid_polygons': build_repair,
     'gometry.clip_by_rect/10k_realistic_linework_categories': build_clip_by_rect,

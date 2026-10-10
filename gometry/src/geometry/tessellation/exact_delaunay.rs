@@ -3,12 +3,11 @@
 //! Every decision is an exact predicate: the hull is the crate's exact corner
 //! hull, the seed fan over it is legalized by Lawson flips under exact
 //! `incircle`, point location walks by exact `orient2d`, and a cavity is the
-//! set of triangles whose circumcircle strictly contains the new site. Cavity
-//! insertion keeps a Delaunay mesh Delaunay, so the mesh is Delaunay as built
-//! and nothing has to be certified or repaired afterwards. Cocircular sites are left as whatever
-//! diagonal the insertion order produced, which is Delaunay either way, and
-//! every such edge is flagged from one final exact pass so the Voronoi dual can
-//! collapse the fan it belongs to.
+//! set of triangles selected by the canonical incircle sign. Cavity insertion
+//! keeps a Delaunay mesh Delaunay, so the mesh is Delaunay as built and nothing
+//! has to be certified or repaired afterwards. Cocircular sites use a symbolic
+//! lift to select a canonical diagonal independent of insertion order, while a
+//! separate final exact pass flags geometric-zero edges for Voronoi fan collapse.
 //!
 //! Sites are inserted in Hilbert order, and each point-location walk starts
 //! from the previous insertion's face. The seed fans the strict corner hull;
@@ -256,14 +255,7 @@ pub(in crate::geometry::tessellation) const fn site_xy(points: &[Point], site: u
 }
 
 pub(in crate::geometry::tessellation) fn compare_xy(left: XY, right: XY) -> std::cmp::Ordering {
-    let coordinate = |left: f64, right: f64| {
-        if left == right {
-            std::cmp::Ordering::Equal
-        } else {
-            left.total_cmp(&right)
-        }
-    };
-    coordinate(left.x, right.x).then_with(|| coordinate(left.y, right.y))
+    compare_f64(left.x, right.x).then_with(|| compare_f64(left.y, right.y))
 }
 
 /// Lexicographically ordered infinitesimal vertical lifts of the paraboloid.
@@ -558,8 +550,9 @@ impl MeshHull {
     }
 
     fn replace_chain(&mut self, start: usize, end: usize, site: usize, edges: usize) {
+        let required = site.wrapping_add(1);
         self.links
-            .resize(self.links.len().max(site + 1), [EMPTY; 2]);
+            .resize(self.links.len().max(required), [EMPTY; 2]);
         let mut at = self.next(start);
         while at != end {
             let next = self.next(at);
@@ -577,7 +570,7 @@ impl MeshHull {
             .get_mut(start)
             .expect("the chain starts on the hull")[1] = site;
         self.links.get_mut(end).expect("the chain ends on the hull")[0] = site;
-        self.len = self.len - edges + 2;
+        self.len = self.len.wrapping_sub(edges).wrapping_add(2);
     }
 
     fn expand(&mut self, start: usize, end: usize, site: usize, edges: usize) {
@@ -1254,9 +1247,10 @@ impl Mesh {
             },
         };
         let point = coordinates.query(site);
-        // The cavity: every triangle reachable from the seeds across edges
-        // whose far triangle's circumcircle strictly contains p. The seeds
-        // themselves are in by construction (p is inside or on them).
+        // The cavity starts with the seeds and crosses an edge only when its
+        // far triangle's canonical incircle sign is positive. A geometric zero
+        // uses the symbolic lift to select the diagonal without changing the
+        // exact cocircular flag retained for the Voronoi dual.
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.stamp.fill(0);
@@ -1903,6 +1897,8 @@ mod tests {
 
     #[test]
     fn public_delaunay_triangles_are_canonical_across_insertion_orders() {
+        use std::fmt::Write as _;
+
         use pyo3::prelude::*;
         use pyo3::types::{PyDict, PyModule};
 
@@ -1922,19 +1918,21 @@ mod tests {
                 .flat_map(|x| (0..8).map(move |y| format!("({x} {y})")))
                 .collect::<Vec<_>>()
                 .join(",");
-            let holes = (0..8)
-                .map(|index| {
-                    let x = f64::from(index);
-                    format!(
-                        ",({} 1,{} 1,{} 2,{} 2,{} 1)",
-                        x + 0.2,
-                        x + 0.8,
-                        x + 0.8,
-                        x + 0.2,
-                        x + 0.2
-                    )
-                })
-                .collect::<String>();
+
+            let mut holes = String::new();
+            for index in 0..8 {
+                let x = f64::from(index);
+                write!(
+                    &mut holes,
+                    ",({} 1,{} 1,{} 2,{} 2,{} 1)",
+                    x + 0.2,
+                    x + 0.8,
+                    x + 0.8,
+                    x + 0.2,
+                    x + 0.2
+                )
+                .unwrap();
+            }
             let fixtures = [
                 (format!("MULTIPOINT({grid})"), "delaunay"),
                 (

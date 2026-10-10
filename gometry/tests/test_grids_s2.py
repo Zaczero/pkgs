@@ -8,10 +8,14 @@ import operator
 import gometry as gm
 import numpy as np
 import pytest
-import shapely
-from pyproj import Geod
 
 from tests._support import GOMETRY_ROOT, load_tool
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely is an optional oracle dependency'
+)
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+Geod = pyproj.Geod
 
 _CHART_EDGE_REFERENCE = load_tool(
     '_bench_chart_edge_reference',
@@ -103,9 +107,9 @@ def test_s2_point_cell_boundary_and_parent() -> None:
     assert cell.intersects(parent)
     assert {cell, geometry_cell, parent} == {cell, parent}
     assert hash(cell) == hash(geometry_cell)
-    assert cell.center.crs == 'OGC:CRS84'
+    assert cell.center.crs == gm.CRS('OGC:CRS84')
     assert boundary.geometry_type == 'Polygon'
-    assert boundary.crs == 'OGC:CRS84'
+    assert boundary.crs == gm.CRS('OGC:CRS84')
     assert (
         gm.CellArray([cell.token], type=gm.S2Cell).polygon[0].to_wkt()
         == boundary.to_wkt()
@@ -132,7 +136,7 @@ def test_s2_bounds_coverage_membership() -> None:
     assert int(coverage[0]) in coverage
     assert coverage[0].token in coverage
     assert gm.S2Cell(30.0, 52.0, level=12) not in coverage
-    assert coverage.polygon.crs == 'OGC:CRS84'
+    assert coverage.polygon.crs == gm.CRS('OGC:CRS84')
     np.testing.assert_array_equal(
         gm.contains(polygon, gm.points([21.0, 30.0], [52.0, 52.0], crs=4326)),
         [True, False],
@@ -146,7 +150,7 @@ def test_s2_bounds_coverage_membership() -> None:
     )
     assert not gm.contains(polygon, gm.Point(30.0, 52.0, crs=4326))
     with pytest.raises(ValueError):
-        gm.s2_cover(gm.box(0, 0, 1, 1), max_cells=0)
+        gm.s2_cover(gm.box(0, 0, 1, 1), level=1, max_cells=0)
 
 
 def test_s2_membership_is_exact_against_geometry_not_bounds() -> None:
@@ -439,29 +443,38 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
     window = gm.LineString([(-10.0, 0.0), (10.0, 0.0)], crs=4326)
     repeated = gm.GeometryCollection([window] * 8, crs=4326)
 
-    for options in (
-        {'level': 8, 'max_cells': None},
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': None,
-        },
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': 1,
-        },
-        {
-            'min_level': 0,
-            'max_level': 30,
-            'target_cells': 8,
-            'max_cells': 8,
-        },
+    for cover, options in (
+        (gm.s2_cover, {'level': 8, 'max_cells': None}),
+        (
+            gm.s2_cover,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': None,
+            },
+        ),
+        (
+            gm.s2_cover,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': 1,
+            },
+        ),
+        (
+            gm.s2_cover,
+            {
+                'min_level': 0,
+                'max_level': 30,
+                'target_cells': 8,
+                'max_cells': 8,
+            },
+        ),
     ):
-        single = gm.s2_cover(window, cell_rule='bbox', **options)
-        duplicate = gm.s2_cover(repeated, cell_rule='bbox', **options)
+        single = cover(window, cell_rule='bbox', **options)
+        duplicate = cover(repeated, cell_rule='bbox', **options)
         assert [cell.id for cell in duplicate] == [cell.id for cell in single]
         if options['max_cells'] is not None:
             assert len(duplicate) <= options['max_cells']
@@ -1045,18 +1058,67 @@ def test_s2_within_certifies_against_the_complete_component_union() -> None:
     assert cell in gm.s2_cover(source, level=6, cell_rule='within')
 
 
-def test_s2_within_line_drops_invisible_candidates_at_every_level_mod() -> None:
+def test_s2_within_line_is_empty_at_every_level_mod_and_budget() -> None:
     line = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
     for level_mod in (1, 2, 3):
-        assert not gm.s2_cover(
-            line,
-            cell_rule='within',
-            min_level=0,
-            max_level=9,
-            level_mod=level_mod,
-            max_cells=None,
-        )
+        for max_cells in (None, 1):
+            assert not gm.s2_cover(
+                line,
+                cell_rule='within',
+                min_level=0,
+                max_level=9,
+                level_mod=level_mod,
+                max_cells=max_cells,
+            )
+    for max_cells in (None, 1):
+        assert not gm.s2_cover(line, level=8, cell_rule='within', max_cells=max_cells)
     assert gm.s2_cover(line, level=8, cell_rule='overlap')
+
+
+def test_s2_within_nonpolygon_still_validates_coordinates_and_level() -> None:
+    invalid_latitude = gm.LineString([(0.0, 95.0), (1.0, 96.0)], crs=4326)
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
+        gm.s2_cover(invalid_latitude, level=8, cell_rule='within')
+
+    line = gm.LineString([(-1.0, 0.0), (1.0, 0.0)], crs=4326)
+    with pytest.raises(
+        gm.InvalidGeometryError, match=r'invalid longitude/latitude \(0, 95\)'
+    ):
+        gm.s2_cover(
+            gm.GeometryArray([line, invalid_latitude], crs=4326),
+            level=8,
+            cell_rule='within',
+            max_cells=1,
+        )
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.s2_cover(
+            gm.GeometryArray(
+                [line, gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326), invalid_latitude],
+                crs=4326,
+            ),
+            level=8,
+            cell_rule='within',
+            max_cells=1,
+        )
+
+    with pytest.raises(gm.GeometryError, match='S2 level'):
+        gm.s2_cover(line, level=31, cell_rule='within')
+
+
+def test_s2_within_keeps_scalar_empty_rejection_and_array_rows() -> None:
+    empty = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match='non-empty geometry'):
+        gm.s2_cover(empty, level=8, cell_rule='within')
+
+    groups = gm.s2_cover(
+        gm.GeometryArray([empty, None], crs=4326), level=8, cell_rule='within'
+    )
+    assert isinstance(groups, gm.Groups)
+    assert len(groups) == 2
+    assert len(groups[0]) == 0
+    assert len(groups[1]) == 0
 
 
 def test_s2_bowtie_cover_keeps_both_filled_lobes() -> None:
@@ -1068,6 +1130,12 @@ def test_s2_bowtie_cover_keeps_both_filled_lobes() -> None:
     for longitude, latitude in ((0.5, 1.5), (1.5, 0.5)):
         owner = gm.S2Cell(longitude, latitude, level=8)
         assert any(cell.contains(owner) for cell in covering)
+    # The L8 lower witness touches the source edge; L9 fits strictly in both lobes.
+    within = gm.s2_cover(bowtie, level=9, cell_rule='within')
+    for latitude in (0.25, 1.75):
+        owner = gm.S2Cell(1.0, latitude, level=9)
+        assert owner in within
+        assert gm.within(owner.polygon, bowtie)
 
 
 def test_s2_set_utilities_mirror_h3() -> None:
@@ -1338,11 +1406,11 @@ def test_geohash_and_tile_coverage_classify_exactly() -> None:
         assert all(gm.intersects(box, cell.polygon) for cell in inter)
         assert gm.contains(box, gm.Point(13.4, 52.5, crs=4326))
         assert not gm.contains(box, gm.Point(0, 0, crs=4326))
-        assert gm.contains_xy(box, 13.4, 52.5)
+        assert gm.contains(box, x=13.4, y=52.5)
         np.testing.assert_array_equal(
-            gm.contains_xy(box, [13.4, 0.0], [52.5, 0.0]), [True, False]
+            gm.contains(box, x=[13.4, 0.0], y=[52.5, 0.0]), [True, False]
         )
-        assert gm.intersects_xy(box, 13.2, 52.4)
+        assert gm.intersects(box, x=13.2, y=52.4)
         polys = coverage.polygon
         assert len(polys) == len(coverage)
         assert all(p.geometry_type == 'Polygon' for p in polys)

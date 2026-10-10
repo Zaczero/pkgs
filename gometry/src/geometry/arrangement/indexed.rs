@@ -64,18 +64,6 @@ impl IndexedTopology {
         self.twins[next]
     }
 
-    #[cfg(test)]
-    pub(crate) fn clear(&mut self) {
-        self.starts.clear();
-        self.targets.clear();
-        self.owners.clear();
-        self.twins.clear();
-        self.component_of.clear();
-        self.face_of.clear();
-        self.face_starts.clear();
-        self.face_slots.clear();
-    }
-
     #[expect(
         clippy::indexing_slicing,
         reason = "edge, vertex, twin, successor, and face slots are derived from the admitted CSR columns built here"
@@ -193,19 +181,13 @@ impl IndexedTopology {
 }
 
 #[cfg(test)]
-impl IndexedTopologyScratch {
-    pub(crate) fn clear(&mut self) {
-        self.component_stack.clear();
-        self.successor.clear();
-        self.first_slot.clear();
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn finish(starts: &[u32], targets: &[u32], edges: &[u32]) -> IndexedTopology {
+    fn reserved_topology(
+        starts: &[u32],
+        targets: &[u32],
+    ) -> (IndexedTopology, IndexedTopologyScratch) {
         let mut topology = IndexedTopology {
             starts: starts.to_vec(),
             targets: targets.to_vec(),
@@ -230,27 +212,112 @@ mod tests {
         scratch.component_stack.reserve(vertices);
         scratch.successor.reserve(slots);
         scratch.first_slot.reserve(slots / 2);
-        topology.finish(edges, &mut scratch);
-        topology
+        (topology, scratch)
+    }
+
+    fn finish(starts: &[u32], targets: &[u32], edges: &[u32]) -> (IndexedTopology, u32) {
+        let (mut topology, mut scratch) = reserved_topology(starts, targets);
+        let component_count = topology.finish(edges, &mut scratch);
+        (topology, component_count)
+    }
+
+    fn assert_same_topology(
+        actual: &IndexedTopology,
+        actual_components: u32,
+        expected: &IndexedTopology,
+        expected_components: u32,
+    ) {
+        assert_eq!(actual.starts, expected.starts);
+        assert_eq!(actual.targets, expected.targets);
+        assert_eq!(actual.owners, expected.owners);
+        assert_eq!(actual.twins, expected.twins);
+        assert_eq!(actual.component_of, expected.component_of);
+        assert_eq!(actual.face_of, expected.face_of);
+        assert_eq!(actual.face_starts, expected.face_starts);
+        assert_eq!(actual.face_slots, expected.face_slots);
+        assert_eq!(actual_components, expected_components);
     }
 
     #[test]
     fn indexes_parallel_disconnected_and_isolated_vertices() {
         // Vertices 0 and 1 have two distinct reciprocal edges. Vertices 2--4
         // form an independent triangle; vertex 5 is intentionally isolated.
-        let topology = finish(
+        let (topology, component_count) = finish(
             &[0, 2, 4, 6, 8, 10, 10],
             &[1, 1, 0, 0, 3, 4, 2, 4, 2, 3],
             &[0, 1, 0, 1, 2, 4, 2, 3, 4, 3],
         );
-        assert_eq!(topology.component_of, [0, 0, 1, 1, 1, 2]);
+        assert_eq!(component_count, 3);
+        assert_eq!(topology.owners, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]);
         assert_eq!(topology.twins, [2, 3, 0, 1, 6, 8, 4, 9, 5, 7]);
-        assert_eq!(topology.face_starts.first(), Some(&0));
-        assert_eq!(topology.face_starts.last(), Some(&10));
+        assert_eq!(topology.component_of, [0, 0, 1, 1, 1, 2]);
+        assert_eq!(topology.face_of, [0, 1, 1, 0, 2, 3, 3, 2, 2, 3]);
+        assert_eq!(topology.face_starts, [0, 2, 4, 7, 10]);
+        assert_eq!(topology.face_slots, [0, 3, 1, 2, 4, 7, 8, 5, 9, 6]);
         for (slot, &twin) in topology.twins.iter().enumerate() {
             assert_eq!(topology.twins[twin as usize], slot as u32);
             assert_eq!(topology.owners[slot], topology.targets[twin as usize]);
         }
+    }
+
+    #[test]
+    fn finish_keeps_vertex_ids_across_an_empty_row() {
+        let (topology, component_count) = finish(&[0, 1, 1, 2], &[2, 0], &[0, 0]);
+
+        assert_eq!(component_count, 2);
+        assert_eq!(topology.owners, [0, 2]);
+        assert_eq!(topology.twins, [1, 0]);
+        assert_eq!(topology.component_of, [0, 1, 0]);
+        assert_eq!(topology.face_of, [0, 0]);
+        assert_eq!(topology.face_starts, [0, 2]);
+        assert_eq!(topology.face_slots, [0, 1]);
+    }
+
+    #[test]
+    fn finish_handles_zero_edges_with_no_vertices() {
+        let (topology, component_count) = finish(&[0], &[], &[]);
+
+        assert_eq!(component_count, 0);
+        assert!(topology.owners.is_empty());
+        assert!(topology.twins.is_empty());
+        assert!(topology.component_of.is_empty());
+        assert!(topology.face_of.is_empty());
+        assert_eq!(topology.face_starts, [0]);
+        assert!(topology.face_slots.is_empty());
+    }
+
+    #[test]
+    fn finish_handles_zero_edges_with_isolated_vertices() {
+        let (topology, component_count) = finish(&[0, 0, 0, 0], &[], &[]);
+
+        assert_eq!(component_count, 3);
+        assert!(topology.owners.is_empty());
+        assert!(topology.twins.is_empty());
+        assert_eq!(topology.component_of, [0, 1, 2]);
+        assert!(topology.face_of.is_empty());
+        assert_eq!(topology.face_starts, [0]);
+        assert!(topology.face_slots.is_empty());
+    }
+
+    #[test]
+    fn finish_reuse_matches_a_fresh_topology_after_shrinking() {
+        let larger_starts = [0, 2, 4, 6, 8, 10, 10];
+        let larger_targets = [1, 1, 0, 0, 3, 4, 2, 4, 2, 3];
+        let larger_edges = [0, 1, 0, 1, 2, 4, 2, 3, 4, 3];
+        let (mut reused, mut scratch) = reserved_topology(&larger_starts, &larger_targets);
+        assert_eq!(reused.finish(&larger_edges, &mut scratch), 3);
+
+        reused.starts.clear();
+        reused.starts.extend([0, 1, 1, 2]);
+        reused.targets.clear();
+        reused.targets.extend([2, 0]);
+        let reused_components = reused.finish(&[0, 0], &mut scratch);
+        let (fresh, fresh_components) = finish(&[0, 1, 1, 2], &[2, 0], &[0, 0]);
+
+        assert_same_topology(&reused, reused_components, &fresh, fresh_components);
+        assert_eq!(reused.owners, [0, 2]);
+        assert_eq!(reused.twins, [1, 0]);
+        assert_eq!(reused.component_of, [0, 1, 0]);
     }
 
     #[test]

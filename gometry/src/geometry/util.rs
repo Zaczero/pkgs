@@ -216,14 +216,17 @@ pub(crate) fn dedup_consecutive_xy(v: &mut Vec<XY>) {
     v.dedup_by(|right, left| same_point(*left, *right));
 }
 
-/// Cyclic ring index `base + offset` wrapped into `0..len`, branchlessly.
-/// Identical to `(base + offset) % len` whenever `offset <= len` (i.e. the
-/// value is below `2 * len`) — which holds for every cyclic neighbour access
-/// here (`+1`, `+2`, or `+ len - 1` predecessor). The compiler lowers the
-/// single compare to a `cmov`, replacing the per-iteration integer `div` that
-/// `% len` emits (which also blocks bounds-check elision and vectorization).
+/// Wrap a precomputed cyclic index once into `0..len`.
+///
+/// The caller supplies a nonzero length and a value below twice that length;
+/// one conditional subtraction then produces the wrapped index without a
+/// remainder.
 pub(crate) const fn wrap_index(value: usize, len: usize) -> usize {
-    if value >= len { value - len } else { value }
+    if value >= len {
+        value.wrapping_sub(len)
+    } else {
+        value
+    }
 }
 
 pub(crate) const fn same_topological_coordinate(left: f64, right: f64) -> bool {
@@ -280,12 +283,12 @@ pub(crate) fn points_equal_exact<
         .all(|(left, right)| point_equals_exact::<Z, M>(left, right, tolerance))
 }
 
-/// Column form of [`coord_within`]: every paired ordinate equal within
-/// `tolerance`, in 8-wide SIMD lanes with a scalar tail. The lane test
-/// `|l − r| ≤ tol || bits(l) == bits(r)` is exactly the scalar semantics:
-/// the difference form covers ±0 at any tolerance, and the bit comparison
-/// preserves the non-finite matching (`inf == inf`, `NaN` by payload) of
-/// `same_topological_coordinate`.
+/// Column form of [`coord_within`]: every paired ordinate equal within the
+/// admitted finite, nonnegative `tolerance`, in 8-wide SIMD lanes with a scalar
+/// tail. The lane test `|l − r| ≤ tol || bits(l) == bits(r)` preserves the
+/// scalar semantics in that domain: the difference form covers ±0, and the
+/// bit comparison preserves the non-finite matching (`inf == inf`, `NaN` by
+/// payload) of `same_topological_coordinate`.
 pub(crate) fn columns_within(left: &[f64], right: &[f64], tolerance: f64) -> bool {
     debug_assert_eq!(left.len(), right.len());
     let tolerances = ReduceSimd::splat(tolerance);
@@ -294,6 +297,10 @@ pub(crate) fn columns_within(left: &[f64], right: &[f64], tolerance: f64) -> boo
     for (left_chunk, right_chunk) in std::iter::zip(left_chunks, right_chunks) {
         let left_lane = ReduceSimd::from_slice(left_chunk);
         let right_lane = ReduceSimd::from_slice(right_chunk);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "IEEE subtraction intentionally permits finite overflow and NaN before the tolerance and bit-identity comparisons"
+        )]
         let within = (left_lane - right_lane).abs().simd_le(tolerances);
         let identical = left_lane.to_bits().simd_eq(right_lane.to_bits());
         if !(within | identical.cast()).all() {
@@ -359,5 +366,163 @@ mod unique_xy_capacity_tests {
             unique_xy_points(HugeSizeHint([first, second, first, last].into_iter())).unwrap();
 
         assert_eq!(unique, [first, second, last]);
+    }
+}
+
+#[cfg(test)]
+mod cyclic_and_nearness_tests {
+    use super::{columns_within, wrap_index};
+
+    #[test]
+    fn wrap_index_retains_single_wrap_boundaries_and_extrema() {
+        for (value, len, expected) in [
+            (0_usize, 1, 0),
+            (1, 1, 0),
+            (0, 2, 0),
+            (1, 2, 1),
+            (2, 2, 0),
+            (3, 2, 1),
+            (4, 5, 4),
+            (5, 5, 0),
+            (9, 5, 4),
+        ] {
+            assert_eq!(wrap_index(value, len), expected);
+        }
+
+        let maximum_half = usize::MAX.wrapping_div(2);
+        assert_eq!(
+            wrap_index(usize::MAX.wrapping_sub(1), usize::MAX),
+            usize::MAX.wrapping_sub(1)
+        );
+        assert_eq!(wrap_index(usize::MAX, usize::MAX), 0);
+        assert_eq!(
+            wrap_index(usize::MAX, maximum_half.wrapping_add(1)),
+            maximum_half
+        );
+    }
+
+    #[test]
+    fn columns_within_keeps_tolerance_boundaries_across_chunks_and_tail() {
+        for len in [0_usize, 1, 7, 8, 9, 16, 17] {
+            let equal = vec![0.0; len];
+            assert!(columns_within(&equal, &equal, 0.0), "equal length {len}");
+        }
+
+        let distinct = [
+            2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0,
+            18.0,
+        ];
+        for (len, position) in [(1_usize, 0_usize), (8, 7), (9, 8), (17, 16)] {
+            let mut left: Vec<_> = distinct.iter().copied().take(len).collect();
+            let mut right = left.clone();
+            *left
+                .get_mut(position)
+                .expect("test position is in its column") = 0.0;
+            *right
+                .get_mut(position)
+                .expect("test position is in its column") = 1.0;
+
+            assert!(
+                columns_within(&left, &right, 1.0),
+                "inclusive tolerance at position {position}"
+            );
+            assert!(
+                !columns_within(&left, &right, 1.0_f64.next_down()),
+                "value above tolerance at position {position}"
+            );
+            assert!(
+                columns_within(&left, &right, 1.0_f64.next_up()),
+                "value below tolerance at position {position}"
+            );
+        }
+
+        let negative_zero = [-0.0; 9];
+        let positive_zero = [0.0; 9];
+        assert!(columns_within(&negative_zero, &positive_zero, 0.0));
+        assert!(columns_within(&negative_zero, &positive_zero, -0.0));
+    }
+
+    #[test]
+    fn columns_within_preserves_exceptional_ordinate_decisions_in_chunks_and_tail() {
+        let first_nan = f64::from_bits(0x7FF8_0000_0000_0001);
+        let second_nan = f64::from_bits(0x7FF8_0000_0000_0002);
+        let smallest_subnormal = f64::from_bits(1);
+        let cases = [
+            (
+                "equal positive infinity",
+                f64::INFINITY,
+                f64::INFINITY,
+                0.0,
+                true,
+            ),
+            (
+                "equal negative infinity",
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                0.0,
+                true,
+            ),
+            (
+                "opposite infinities",
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::MAX,
+                false,
+            ),
+            (
+                "finite and infinity",
+                f64::MAX,
+                f64::INFINITY,
+                f64::MAX,
+                false,
+            ),
+            ("same NaN payload", first_nan, first_nan, 0.0, true),
+            (
+                "different NaN payload",
+                first_nan,
+                second_nan,
+                f64::MAX,
+                false,
+            ),
+            (
+                "finite subtraction overflow",
+                f64::MAX,
+                -f64::MAX,
+                f64::MAX,
+                false,
+            ),
+            (
+                "subnormal above zero tolerance",
+                smallest_subnormal,
+                0.0,
+                0.0,
+                false,
+            ),
+            (
+                "subnormal at tolerance",
+                smallest_subnormal,
+                0.0,
+                smallest_subnormal,
+                true,
+            ),
+        ];
+
+        for (name, left_value, right_value, tolerance, expected) in cases {
+            for position in [0_usize, 8] {
+                let mut left = [0.0; 9];
+                let mut right = [0.0; 9];
+                *left
+                    .get_mut(position)
+                    .expect("test position is in its column") = left_value;
+                *right
+                    .get_mut(position)
+                    .expect("test position is in its column") = right_value;
+                assert_eq!(
+                    columns_within(&left, &right, tolerance),
+                    expected,
+                    "{name} at position {position}"
+                );
+            }
+        }
     }
 }

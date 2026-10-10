@@ -6,12 +6,14 @@ import importlib.util
 import itertools
 import math
 import sys
+import sysconfig
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import gometry as gm
 import numpy as np
 import numpy.typing as npt
+import pytest
 
 WEST_RADIAN_SOUTH_GRAD_CRS = """GEOGCRS["West-radian south-grad WGS84",
  DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
@@ -36,6 +38,15 @@ TOOL_IMPORT_DIRS = (
     TOOLS / 'stubs',
     TOOLS / 'docs',
 )
+
+
+def h3_oracle() -> Any:
+    if sysconfig.get_config_var('Py_GIL_DISABLED'):
+        pytest.skip(
+            'H3 has no GIL-free wheel for CPython free-threading; its available '
+            'extension enables the GIL'
+        )
+    return pytest.importorskip('h3', reason='H3 is an optional external oracle')
 
 
 def chart_zone_area(

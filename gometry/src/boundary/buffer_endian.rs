@@ -10,7 +10,7 @@ use std::ffi::{CStr, c_int};
 
 use numpy::{PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::{Element, PyBuffer, PyUntypedBuffer};
-use pyo3::exceptions::PyBufferError;
+use pyo3::exceptions::{PyBufferError, PyOverflowError};
 use pyo3::prelude::*;
 #[cfg(Py_GIL_DISABLED)]
 use pyo3::types::PyBytes;
@@ -102,7 +102,47 @@ pub(crate) fn buffer_item_count<T: Element>(buffer: &PyBuffer<T>) -> PyResult<us
     if item_count != 0 && buffer.buf_ptr().is_null() {
         return Err(PyBufferError::new_err("buffer has a null data pointer"));
     }
+    validate_buffer_stride_span(buffer)?;
     Ok(item_count)
+}
+
+fn validate_buffer_stride_span<T: Element>(buffer: &PyBuffer<T>) -> PyResult<()> {
+    let shape = buffer.shape();
+    let strides = buffer.strides();
+    if shape.len() != strides.len() {
+        return Err(PyBufferError::new_err(
+            "buffer stride count does not match its dimensions",
+        ));
+    }
+    if shape.contains(&0) {
+        return Ok(());
+    }
+
+    let mut minimum = 0_isize;
+    let mut maximum = 0_isize;
+    for (&dimension, &stride) in shape.iter().zip(strides) {
+        let steps = isize::try_from(dimension.wrapping_sub(1))
+            .map_err(|_| PyOverflowError::new_err("buffer stride span overflows"))?;
+        let offset = steps
+            .checked_mul(stride)
+            .ok_or_else(|| PyOverflowError::new_err("buffer stride span overflows"))?;
+        if offset < 0 {
+            minimum = minimum
+                .checked_add(offset)
+                .ok_or_else(|| PyOverflowError::new_err("buffer stride span overflows"))?;
+        } else {
+            maximum = maximum
+                .checked_add(offset)
+                .ok_or_else(|| PyOverflowError::new_err("buffer stride span overflows"))?;
+        }
+    }
+    let item_size = isize::try_from(std::mem::size_of::<T>())
+        .map_err(|_| PyOverflowError::new_err("buffer stride span overflows"))?;
+    maximum
+        .checked_sub(minimum)
+        .and_then(|span| span.checked_add(item_size))
+        .ok_or_else(|| PyOverflowError::new_err("buffer stride span overflows"))?;
+    Ok(())
 }
 
 /// Select direct typed loads instead of the generic buffer copy.

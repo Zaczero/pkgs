@@ -13,7 +13,7 @@ use crate::geometry::predicates::{
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq, Point,
     PointKey, RefinedChainProvenance, RepairMethod, Shape, SharedShapeOwners, ValidationIssue,
-    carry_ordinates, emit_from_original, point_distance, unique_xy_points,
+    emit_from_original, unique_xy_points,
 };
 
 impl Shape {
@@ -147,22 +147,7 @@ impl Shape {
     pub fn minimum_clearance(&self) -> Result<f64> {
         Ok(match minimum_clearance_witness(self)? {
             None => f64::INFINITY,
-            Some(witness) => {
-                // Shared squared-norm trust: normal → sqrt; zero/subnormal →
-                // recompute the witness pair in distance space so tiny positive
-                // clearances are not quantized (or dropped as false-zero).
-                if witness.distance_squared.is_normal() {
-                    witness.distance_squared.sqrt()
-                } else if witness.distance_squared >= 0.0 && witness.distance_squared.is_finite() {
-                    let emitted = emit_from_original(&witness.points, &witness.plan)?;
-                    let [a, b] = emitted.as_slice() else {
-                        return Ok(0.0);
-                    };
-                    point_distance(*a, *b)
-                } else {
-                    witness.distance_squared
-                }
-            },
+            Some(witness) => witness.planar_distance()?,
         })
     }
 
@@ -266,15 +251,29 @@ impl Shape {
     /// so no validation is re-run here; valid input would simply be
     /// rebuilt.
     pub fn repair(&self, method: RepairMethod, drop: bool) -> Result<Self> {
-        self.repair_with_source_vertices(method, drop, false)
+        self.repair_with_context(
+            method,
+            drop,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+    }
+
+    pub(crate) fn repair_with_context(
+        &self,
+        method: RepairMethod,
+        drop: bool,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
+    ) -> Result<Self> {
+        self.repair_with_source_vertices(method, drop, false, context)
     }
 
     pub(crate) fn repair_preserving_source_vertices(
         &self,
         method: RepairMethod,
         drop: bool,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Self> {
-        self.repair_with_source_vertices(method, drop, true)
+        self.repair_with_source_vertices(method, drop, true, context)
     }
 
     fn repair_with_source_vertices(
@@ -282,6 +281,7 @@ impl Shape {
         method: RepairMethod,
         drop: bool,
         preserve_source_vertices: bool,
+        context: &crate::geometry::SourceArcContext<'_, '_>,
     ) -> Result<Self> {
         match self {
             // Empty shapes are always valid; an invalid (multi)point means
@@ -296,12 +296,13 @@ impl Shape {
                     std::slice::from_ref(polygon),
                     method,
                     preserve_source_vertices,
+                    drop,
+                    context,
                 )?;
-                carry_ordinates(rebuilt, &[self], "repair", drop)
+                Ok(rebuilt)
             },
             Self::MultiPolygon(polygons) => {
-                let rebuilt = polygonal_repair(polygons, method, preserve_source_vertices)?;
-                carry_ordinates(rebuilt, &[self], "repair", drop)
+                polygonal_repair(polygons, method, preserve_source_vertices, drop, context)
             },
             Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
                 geometries.try_map_members(|geometry| {
@@ -309,7 +310,12 @@ impl Shape {
                     if geometry.validate()?.is_none() {
                         Ok(geometry.clone())
                     } else {
-                        geometry.repair_with_source_vertices(method, drop, preserve_source_vertices)
+                        geometry.repair_with_source_vertices(
+                            method,
+                            drop,
+                            preserve_source_vertices,
+                            context,
+                        )
                     }
                 })?,
             )),

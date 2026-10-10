@@ -15,6 +15,7 @@ use super::{
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::exact_arith::{dd_add, floor_binary_exponent, two_sum};
+use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, CoverageOverlapRule, ExactRationalArea, GeometryErrorKind, Polygon,
     Result, Ring, Shape, XY, axis_pow2_scale, point_distance, power_of_two_exponent,
@@ -337,13 +338,14 @@ impl ExactSourceInventory {
     /// row at a time and certified together against the union of their
     /// emitted chords. No emitted coordinate participates in selection, and
     /// no row is sent through a second partition.
-    pub(in crate::geometry) fn coverage_clean_rows(
+    pub(in crate::geometry) fn coverage_clean_rows<M: crate::geometry::ChartMetric>(
         &self,
         partition: &mut ExactPartition<'_>,
         row_areas: &[f64],
         gap_width: f64,
         overlaps: CoverageOverlapRule,
         declared_axes: CoordinateAxes,
+        context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Vec<Shape>> {
         let row_count = self.operand_count();
         if row_areas.len() != row_count {
@@ -597,11 +599,12 @@ impl ExactSourceInventory {
             .collect();
         let emission_refs: Vec<_> = emissions.iter().collect();
         let embedding = partition.embed(&emission_refs, "coverage_clean")?;
-        let by_node = self.resolve_node_points::<crate::crs::GeodesicMetric>(
+        let by_node = self.resolve_node_points(
             partition,
             &embedding,
-            &output_nodes,
+            output_nodes.iter().copied(),
             declared_axes,
+            context,
             None,
         )?;
 
@@ -785,21 +788,16 @@ impl ExactSourceInventory {
                 super::polygons_from_xy_nodes(parts.polygons, xy)?,
             ));
         }
-        let node_count = parts
-            .polygons
-            .iter()
-            .flat_map(|polygon| polygon.iter())
-            .map(Vec::len)
-            .try_fold(0_usize, |count, ring| {
-                count.checked_add(ring).ok_or(ResourceError::SizeOverflow)
-            })?;
-        let mut nodes = Vec::with_capacity(node_count);
-        for polygon in &parts.polygons {
-            for ring in polygon {
-                nodes.extend_from_slice(ring);
-            }
-        }
-        let axes = bucket_axes(&nodes, by_node, declared_axes, false, "coverage_clean")?;
+        let axes = bucket_axes(
+            parts
+                .polygons
+                .iter()
+                .flat_map(|polygon| polygon.iter().flatten().copied()),
+            by_node,
+            declared_axes,
+            false,
+            "coverage_clean",
+        )?;
         let xy = by_node.coordinates();
         let mut polygons = Vec::with_capacity(parts.polygons.len());
         for polygon in parts.polygons {

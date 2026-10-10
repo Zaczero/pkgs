@@ -1,6 +1,6 @@
 use super::*;
 use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, Search,
+    ClassAssignment, GlobalCheck, Problem, Search, SearchAccount, Work,
 };
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
@@ -54,6 +54,10 @@ fn geographic_embedding_domain_uses_frame_limits_and_existing_singular_lines() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the certified rectangle must retain its exact supplied bounds"
+)]
 fn rectangle_partition_uses_its_clip_window_as_embedding_domain() {
     let Shape::Polygon(polygon) =
         crate::io::parse_wkt("POLYGON ((-1 -1,1 -1,1 1,-1 1,-1 -1))").unwrap()
@@ -191,9 +195,8 @@ fn subdivision_children(source: &Shape, split_x: bool, cut: f64) -> [Shape; 2] {
             source.axes(),
             false,
             [1, 2],
-            None,
             &mut budget,
-            None::<&crate::geometry::SourceArcMetricAccess<'_>>,
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap();
     let [first, second] = &children;
@@ -283,8 +286,7 @@ fn subdivision_keeps_a_hole_vertex_on_the_other_childs_dissolved_seam() {
     assert!(
         crate::geometry::boundary_with_metric::<crate::crs::GeodesicMetric>(
             &crate::geometry::PreparedPlan::transient(&right),
-            crate::geometry::TopologyDomain::Cartesian,
-            None,
+            &crate::geometry::SourceArcContext::cartesian(),
         )
         .unwrap()
         .intersects(&Shape::Point(Point::new_raw_xy(0.0, 0.0)))
@@ -391,7 +393,11 @@ fn boundary_of_polygonal_support(wkt: &str) -> String {
         .partition(&mut budget)
         .expect("exact partition builds");
     let boundary = inventory
-        .occupied_boundary_shape::<crate::crs::GeodesicMetric>(&partition, shape.axes(), None)
+        .occupied_boundary_shape::<crate::crs::GeodesicMetric>(
+            &partition,
+            shape.axes(),
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
         .expect("boundary cells emit");
     crate::io::to_wkt(&boundary).expect("boundary WKT writes")
 }
@@ -538,8 +544,13 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
     let nodes = [residual_node, line_start, line_end];
     let axes = CoordinateAxes::XYZM;
     let accepted_nodes = inventory
-        .resolve_node_points::<crate::crs::GeodesicMetric>(
-            &partition, &accepted, &nodes, axes, None,
+        .resolve_node_points::<crate::crs::GeodesicMetric, _>(
+            &partition,
+            &accepted,
+            nodes.iter().copied(),
+            axes,
+            &crate::geometry::SourceArcContext::cartesian(),
+            None,
         )
         .unwrap();
     let accepted_shape = inventory
@@ -623,11 +634,12 @@ fn boundary_node_serializer_uses_accepted_embedding_for_line_and_residual_zm_poi
 
     let nearest_embedding = embedding::Embedding::nearest(&partition);
     let nearest_nodes = inventory
-        .resolve_node_points::<crate::crs::GeodesicMetric>(
+        .resolve_node_points::<crate::crs::GeodesicMetric, _>(
             &partition,
             &nearest_embedding,
-            &nodes,
+            nodes.iter().copied(),
             axes,
+            &crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -701,6 +713,7 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
                 &partition,
                 crossing,
                 crate::geometry::CoordinateAxes::XYZM,
+                &crate::geometry::SourceArcContext::cartesian(),
                 None,
             )
             .unwrap();
@@ -711,6 +724,7 @@ fn mixed_source_order_keeps_absent_and_interpolated_ordinates_distinct() {
                 &partition,
                 endpoint,
                 crate::geometry::CoordinateAxes::XYZM,
+                &crate::geometry::SourceArcContext::cartesian(),
                 None,
             )
             .unwrap();
@@ -733,11 +747,12 @@ fn resolved_node_points_use_embedding_xy_and_exact_ordinates() {
         .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);
     let embedding = embedding::Embedding::from_owned(coordinates);
     let points = inventory
-        .resolve_node_points::<crate::crs::GeodesicMetric>(
+        .resolve_node_points::<crate::crs::GeodesicMetric, _>(
             &partition,
             &embedding,
-            &[crossing, endpoint],
+            [crossing, endpoint],
             crate::geometry::CoordinateAxes::XYZM,
+            &crate::geometry::SourceArcContext::cartesian(),
             None,
         )
         .unwrap();
@@ -764,7 +779,7 @@ fn xy_node_parts_serialize_the_certified_embedding() {
         .get_mut(crossing.0 as usize)
         .expect("crossing belongs to the partition coordinate table") = XY::new(12.0, 13.0);
     let embedding = embedding::Embedding::from_owned(coordinates);
-    let points = ResolvedNodePoints::XY(&embedding);
+    let points = ResolvedNodePoints::from_embedding(&embedding, None);
     let result = inventory
         .node_parts_to_shape_resolved(
             NodeParts {
@@ -791,7 +806,12 @@ fn xy_node_parts_serialize_the_certified_embedding() {
             assert_eq!(lines[0].xs(), [0.0, 12.0]);
             assert_eq!(lines[0].ys(), [0.0, 13.0]);
         },
-        other => panic!("expected one line, got {other:?}"),
+        other @ (Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..)) => panic!("expected one line, got {other:?}"),
     }
 }
 
@@ -815,7 +835,7 @@ fn coverage_xy_parts_serialize_the_certified_embedding() {
         .get_mut(moved.0 as usize)
         .expect("stored vertex belongs to the partition coordinate table") = XY::new(5.0, 5.0);
     let embedding = embedding::Embedding::from_owned(coordinates);
-    let points = ResolvedNodePoints::XY(&embedding);
+    let points = ResolvedNodePoints::from_embedding(&embedding, None);
     let result = ExactSourceInventory::coverage_shape_from_node_parts(
         NodeParts {
             points: Vec::new(),
@@ -837,7 +857,12 @@ fn coverage_xy_parts_serialize_the_certified_embedding() {
             assert_eq!(polygons[0].shell.coords().xs(), [0.0, 4.0, 5.0, 0.0, 0.0]);
             assert_eq!(polygons[0].shell.coords().ys(), [0.0, 0.0, 5.0, 4.0, 0.0]);
         },
-        other => panic!("expected one polygon, got {other:?}"),
+        other @ (Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..)) => panic!("expected one polygon, got {other:?}"),
     }
 }
 
@@ -851,6 +876,31 @@ fn csr_prefix_offsets_use_the_native_index_domain_past_u32_max() {
     let mut at_u32 = [0, u32_max.wrapping_sub(1), 1];
     construction::prefix_contact_offsets(&mut at_u32);
     assert_eq!(at_u32, [0, u32_max.wrapping_sub(1), u32_max]);
+}
+
+#[test]
+fn source_provenance_placement_offsets_keep_checked_u32_totals() {
+    let mut counts = [2, 0, 3];
+    assert_eq!(placement_offsets(&mut counts).unwrap(), [0, 2, 2, 5]);
+    assert_eq!(counts, [0, 2, 2]);
+
+    let mut at_limit = [u32::MAX, 0];
+    assert_eq!(placement_offsets(&mut at_limit).unwrap(), [
+        0,
+        u32::MAX,
+        u32::MAX
+    ]);
+    assert_eq!(at_limit, [0, u32::MAX]);
+
+    let mut over_limit = [u32::MAX, 1];
+    assert!(matches!(
+        placement_offsets(&mut over_limit),
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            )
+    ));
 }
 
 #[test]
@@ -1057,6 +1107,265 @@ fn boundary_contraction_preserves_explicit_points_and_source_paths() {
             }));
         }
     }
+}
+
+#[test]
+fn square_boundary_contraction_preserves_ordered_chain_and_point() {
+    for (name, explicit_point, expected_sources, expected_groups, expected_xs, expected_ys) in [
+        (
+            "four-dart square bottom contracts once",
+            None,
+            vec![
+                ((0.0, 0.0), (1.0, 0.0)),
+                ((1.0, 0.0), (2.0, 0.0)),
+                ((2.0, 0.0), (3.0, 0.0)),
+                ((3.0, 0.0), (4.0, 0.0)),
+                ((4.0, 0.0), (4.0, 2.0)),
+                ((4.0, 2.0), (0.0, 2.0)),
+                ((0.0, 2.0), (0.0, 0.0)),
+            ],
+            vec![
+                (0..4, [1, 0]),
+                (4..5, [1, 0]),
+                (5..6, [1, 0]),
+                (6..7, [1, 0]),
+            ],
+            vec![0.0, 4.0, 4.0, 0.0, 0.0],
+            vec![0.0, 0.0, 2.0, 2.0, 0.0],
+        ),
+        (
+            "explicit point at the square bottom midpoint splits the chord",
+            Some(XY::new(2.0, 0.0)),
+            vec![
+                ((0.0, 0.0), (1.0, 0.0)),
+                ((1.0, 0.0), (2.0, 0.0)),
+                ((2.0, 0.0), (3.0, 0.0)),
+                ((3.0, 0.0), (4.0, 0.0)),
+                ((4.0, 0.0), (4.0, 2.0)),
+                ((4.0, 2.0), (0.0, 2.0)),
+                ((0.0, 2.0), (0.0, 0.0)),
+            ],
+            vec![
+                (0..2, [1, 0]),
+                (2..4, [1, 0]),
+                (4..5, [1, 0]),
+                (5..6, [1, 0]),
+                (6..7, [1, 0]),
+            ],
+            vec![0.0, 2.0, 4.0, 4.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 2.0, 2.0, 0.0],
+        ),
+    ] {
+        let case = square_boundary_case(explicit_point);
+        let mut budget = ExpansionBudget::new("union", "square boundary regression");
+        let partition = partition_unique_segments::<true>(
+            &case.unique,
+            &case.provenance,
+            &case.isolated,
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(budget.used(), 0, "{name}");
+        assert!(
+            matches!(&partition.kept_nodes, KeptNodes::Selected),
+            "{name}"
+        );
+        if let Some(point) = explicit_point {
+            let point = partition
+                .stored_node(point)
+                .expect("explicit point is stored");
+            assert!(partition.point_nodes.contains(&point), "{name}");
+        }
+        let (topology, edges) = partition.local_topology().unwrap();
+        let global = partition.global_faces(&topology, &edges).unwrap();
+        assert_eq!(global.count, 2, "{name}");
+        let inner_face = edges
+            .iter()
+            .enumerate()
+            .find_map(|(slot, _)| {
+                let origin = partition.nearest_xy(NodeId(topology.owners[slot]));
+                let target = partition.nearest_xy(NodeId(topology.targets[slot]));
+                (origin == XY::new(0.0, 0.0) && target == XY::new(1.0, 0.0))
+                    .then_some(global.walk_faces[topology.face_of[slot] as usize] as usize)
+            })
+            .expect("square bottom has a directed source dart");
+        assert_ne!(inner_face, 0, "{name}");
+        let mut occupied = vec![false; global.count as usize];
+        occupied[inner_face] = true;
+        let plan = global
+            .boundary_plan(&[], &topology, &edges, &partition, &occupied)
+            .unwrap();
+
+        assert_eq!(plan.face_quotient, [0, 1], "{name}");
+        assert_eq!(plan.walks.len(), 1, "{name}");
+        assert!(plan.lines.is_empty(), "{name}");
+        assert!(plan.points.is_empty(), "{name}");
+        assert_eq!(plan.source_darts.len(), 7, "{name}");
+        assert_eq!(
+            forward_source_darts(&plan, &partition, &topology),
+            expected_sources,
+            "{name}: ordered source darts"
+        );
+        assert_eq!(
+            plan.walks[0]
+                .iter()
+                .map(|chord| (chord.sources.clone(), chord.sides))
+                .collect::<Vec<_>>(),
+            expected_groups,
+            "{name}: chord source ranges and side labels"
+        );
+
+        let (points, lines, polygons) = plan
+            .emit_xy_parts(&partition, &topology, &edges, "union")
+            .unwrap();
+        assert!(points.is_empty(), "{name}");
+        assert!(lines.is_empty(), "{name}");
+        assert_eq!(polygons.len(), 1, "{name}");
+        assert!(polygons[0].holes.is_empty(), "{name}");
+        assert_eq!(
+            polygons[0].shell.coords().xs(),
+            expected_xs,
+            "{name}: emitted x-coordinate buffer"
+        );
+        assert_eq!(
+            polygons[0].shell.coords().ys(),
+            expected_ys,
+            "{name}: emitted y-coordinate buffer"
+        );
+    }
+}
+
+#[test]
+fn areal_boundary_contraction_merges_radial_multi_joins() {
+    let radial =
+        crate::io::parse_wkt("POLYGON ((-4 0,-3 -1,-2 -2,-1 -3,0 -4,3 -3,4 0,3 3,0 4,-3 3,-4 0))")
+            .unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&radial]).unwrap();
+    let context = union_boundary_context(&inventory);
+    let plan = context
+        .cells
+        .emission_plan(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            &context.global,
+        )
+        .unwrap();
+
+    assert_eq!(context.budget_used, 0);
+    assert_eq!(context.global.count, 2);
+    assert_eq!(plan.face_quotient, [0, 1]);
+    assert_eq!(plan.walks.len(), 1);
+    assert_eq!(plan.lines.len(), 0);
+    assert!(plan.points.is_empty());
+    assert_eq!(plan.source_darts.len(), 10);
+    assert_eq!(
+        forward_source_darts(&plan, &context.partition, &context.topology),
+        [
+            ((-4.0, 0.0), (-3.0, -1.0)),
+            ((-3.0, -1.0), (-2.0, -2.0)),
+            ((-2.0, -2.0), (-1.0, -3.0)),
+            ((-1.0, -3.0), (0.0, -4.0)),
+            ((0.0, -4.0), (3.0, -3.0)),
+            ((3.0, -3.0), (4.0, 0.0)),
+            ((4.0, 0.0), (3.0, 3.0)),
+            ((3.0, 3.0), (0.0, 4.0)),
+            ((0.0, 4.0), (-3.0, 3.0)),
+            ((-3.0, 3.0), (-4.0, 0.0)),
+        ]
+    );
+    assert_eq!(plan.walks[0].len(), 7);
+    let mut source_counts: Vec<_> = plan.walks[0]
+        .iter()
+        .map(|chord| chord.sources.len())
+        .collect();
+    source_counts.sort_unstable();
+    assert_eq!(source_counts, [1, 1, 1, 1, 1, 1, 4]);
+    assert!(plan.walks[0].iter().all(|chord| chord.sides == [1, 0]));
+    let (points, lines, polygons) = plan
+        .emit_xy_parts(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            "union",
+        )
+        .unwrap();
+    assert!(points.is_empty());
+    assert!(lines.is_empty());
+    assert_eq!(polygons.len(), 1);
+    assert_eq!(
+        crate::io::to_wkt(&Shape::Polygon(polygons.into_iter().next().unwrap())).unwrap(),
+        "POLYGON ((-4 0, 0 -4, 3 -3, 4 0, 3 3, 0 4, -3 3, -4 0))"
+    );
+}
+
+#[test]
+fn explicit_point_and_residual_line_preserve_forward_join_paths() {
+    let case = protected_mixed_boundary_case();
+    let context = raw_protected_mixed_boundary_context(&case);
+    let protected_node = context
+        .partition
+        .stored_node(XY::new(-2.0, -2.0))
+        .expect("the explicit point is a stored radial boundary node");
+    assert!(context.partition.point_nodes.contains(&protected_node));
+    let plan = context
+        .cells
+        .emission_plan(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            &context.global,
+        )
+        .unwrap();
+
+    assert_eq!(context.budget_used, 0);
+    assert_eq!(plan.face_quotient, [0, 1]);
+    assert_eq!(plan.walks.len(), 1);
+    assert_eq!(plan.walks[0].len(), 8);
+    assert_eq!(plan.source_darts.len(), 12);
+    let mut source_counts: Vec<_> = plan.walks[0]
+        .iter()
+        .map(|chord| chord.sources.len())
+        .collect();
+    source_counts.sort_unstable();
+    assert_eq!(source_counts, [1, 1, 1, 1, 1, 1, 2, 2]);
+    assert_eq!(plan.lines.len(), 1);
+    assert_eq!(plan.lines[0].sources.len(), 2);
+    assert!(plan.points.is_empty());
+    assert_eq!(
+        forward_source_darts(&plan, &context.partition, &context.topology),
+        [
+            ((-4.0, 0.0), (-3.0, -1.0)),
+            ((-3.0, -1.0), (-2.0, -2.0)),
+            ((-2.0, -2.0), (-1.0, -3.0)),
+            ((-1.0, -3.0), (0.0, -4.0)),
+            ((0.0, -4.0), (3.0, -3.0)),
+            ((3.0, -3.0), (4.0, 0.0)),
+            ((4.0, 0.0), (3.0, 3.0)),
+            ((3.0, 3.0), (0.0, 4.0)),
+            ((0.0, 4.0), (-3.0, 3.0)),
+            ((-3.0, 3.0), (-4.0, 0.0)),
+            ((8.0, 0.0), (9.0, 0.0)),
+            ((9.0, 0.0), (10.0, 0.0)),
+        ]
+    );
+    let (points, lines, polygons) = plan
+        .emit_xy_parts(
+            &context.partition,
+            &context.topology,
+            &context.edges,
+            "union",
+        )
+        .unwrap();
+    assert!(points.is_empty());
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].xs(), [8.0, 10.0]);
+    assert_eq!(lines[0].ys(), [0.0, 0.0]);
+    assert_eq!(polygons.len(), 1);
+    assert_eq!(
+        crate::io::to_wkt(&Shape::Polygon(polygons.into_iter().next().unwrap())).unwrap(),
+        "POLYGON ((-4 0, -2 -2, 0 -4, 3 -3, 4 0, 3 3, 0 4, -3 3, -4 0))"
+    );
 }
 
 #[test]
@@ -1803,22 +2112,19 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     assert!(staged.relation_components().is_none());
     assert_eq!(staged.segments().len(), 10);
     assert_eq!(staged.source_operands(), &[0; 10]);
-    assert_eq!(
-        staged
-            .source_rings()
-            .iter()
-            .filter(|ring| ring.is_none())
-            .count(),
-        2
-    );
-    assert_eq!(
-        staged
-            .source_ring_kinds()
-            .iter()
-            .filter(|kind| kind.is_some())
-            .count(),
-        8
-    );
+    assert_eq!(staged.source_rings(), &[
+        None,
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(1),
+    ]);
+    assert_eq!(staged.ring_count, 2);
     assert_eq!(staged.ring_kinds(), &[RingKind::Winding, RingKind::Winding]);
     assert_eq!(staged.ring_polygons(), &[0, 1]);
     assert_eq!(staged.ring_holes(), &[false, false]);
@@ -1849,6 +2155,83 @@ fn staged_source_occurrences_are_readable_and_can_omit_zm_carriers() {
     assert_eq!(staged_xy.source_operands(), staged.source_operands());
     assert_eq!(staged_xy.source_rings(), staged.source_rings());
     assert!(staged_xy.source_points.is_none());
+}
+
+#[test]
+fn source_ring_kind_projection_uses_each_full_ring_id() {
+    let source = crate::io::parse_wkt(
+        "GEOMETRYCOLLECTION (\
+            LINESTRING (30 0,31 0),\
+            LINESTRING (40 0,41 0,41 1,40 0),\
+            LINESTRING (50 0,50 0),\
+            POLYGON ((20 20,22 20,22 22,20 22,20 20)),\
+            POLYGON ((60 0,61 0,62 0,60 0)),\
+            POLYGON ((70 0,70 0,70 0,70 0)),\
+            POINT (80 0)\
+        )",
+    )
+    .unwrap();
+    let staged = StagedExactSources::from_rows_with_occurrences(
+        [storage::ShapeRow::Shape(&source)].into_iter(),
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(staged.segments().len(), 15);
+    assert_eq!(staged.ring_count, 3);
+    assert_eq!(staged.isolated().len(), 3);
+    assert_eq!(staged.source_rings(), &[
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(2),
+        Some(2),
+        Some(2),
+    ]);
+    assert_eq!(staged.ring_kinds(), &[
+        RingKind::Winding,
+        RingKind::Collapsed,
+        RingKind::Collapsed
+    ]);
+
+    let inventory = ExactSourceInventory::from_staged(staged).unwrap();
+    assert_eq!(inventory.winding_source_rings(), vec![
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ]);
+    assert_eq!(
+        inventory.source_winding_at_stored(XY::new(21.0, 21.0)),
+        (vec![1, 0, 0], false)
+    );
+    let interior = [dyadic(21.0), dyadic(21.0), dyadic(1.0)];
+    assert_eq!(
+        inventory
+            .source_winding_at_symbolic(&interior, [1, 0])
+            .unwrap(),
+        vec![1, 0, 0]
+    );
 }
 
 #[test]
@@ -2358,7 +2741,7 @@ fn polygonal_union_as_one_operand_matches_separate_operands() {
                 crate::geometry::OverlayOp::Union,
                 axes,
                 true,
-                None,
+                &crate::geometry::SourceArcContext::cartesian(),
             )
             .unwrap()
     };
@@ -2428,6 +2811,146 @@ impl Case {
 
 fn run(segments: &[Segment]) -> Case {
     Case::from_segments(segments)
+}
+
+struct BoundaryContext<'a> {
+    partition: ExactPartition<'a>,
+    topology: IndexedTopology,
+    edges: Vec<u32>,
+    global: GlobalFaces,
+    cells: ArealCells,
+    budget_used: usize,
+}
+
+fn union_boundary_context(inventory: &ExactSourceInventory) -> BoundaryContext<'_> {
+    let mut budget = ExpansionBudget::new("union", "boundary regression");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let budget_used = budget.used();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let cells = inventory
+        .select_cells(
+            &partition,
+            &topology,
+            &edges,
+            &global,
+            crate::geometry::OverlayOp::Union,
+            false,
+        )
+        .unwrap();
+    BoundaryContext {
+        partition,
+        topology,
+        edges,
+        global,
+        cells,
+        budget_used,
+    }
+}
+
+fn protected_mixed_boundary_case() -> Case {
+    let mut segments = vec![
+        seg(-4.0, 0.0, -3.0, -1.0),
+        seg(-3.0, -1.0, -2.0, -2.0),
+        seg(-2.0, -2.0, -1.0, -3.0),
+        seg(-1.0, -3.0, 0.0, -4.0),
+        seg(0.0, -4.0, 3.0, -3.0),
+        seg(3.0, -3.0, 4.0, 0.0),
+        seg(4.0, 0.0, 3.0, 3.0),
+        seg(3.0, 3.0, 0.0, 4.0),
+        seg(0.0, 4.0, -3.0, 3.0),
+        seg(-3.0, 3.0, -4.0, 0.0),
+    ];
+    segments.push(seg(-2.0, -2.0, -2.0, -2.0));
+    segments.extend([seg(8.0, 0.0, 9.0, 0.0), seg(9.0, 0.0, 10.0, 0.0)]);
+    Case::from_segments(&segments)
+}
+
+fn square_boundary_case(explicit_point: Option<XY>) -> Case {
+    let mut segments = vec![
+        seg(0.0, 0.0, 1.0, 0.0),
+        seg(1.0, 0.0, 2.0, 0.0),
+        seg(2.0, 0.0, 3.0, 0.0),
+        seg(3.0, 0.0, 4.0, 0.0),
+        seg(4.0, 0.0, 4.0, 2.0),
+        seg(4.0, 2.0, 0.0, 2.0),
+        seg(0.0, 2.0, 0.0, 0.0),
+    ];
+    if let Some(point) = explicit_point {
+        segments.push(seg(point.x, point.y, point.x, point.y));
+    }
+    Case::from_segments(&segments)
+}
+
+fn raw_protected_mixed_boundary_context(case: &Case) -> BoundaryContext<'_> {
+    let mut budget = ExpansionBudget::new("union", "protected mixed boundary regression");
+    let partition = partition_unique_segments::<true>(
+        &case.unique,
+        &case.provenance,
+        &case.isolated,
+        &mut budget,
+    )
+    .unwrap();
+    assert!(matches!(&partition.kept_nodes, KeptNodes::Selected));
+    let budget_used = budget.used();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    assert_eq!(global.count, 2);
+    let inner_face = edges
+        .iter()
+        .enumerate()
+        .find_map(|(slot, _)| {
+            let origin = partition.nearest_xy(NodeId(topology.owners[slot]));
+            let target = partition.nearest_xy(NodeId(topology.targets[slot]));
+            ((origin.x, origin.y) == (-4.0, 0.0) && (target.x, target.y) == (-3.0, -1.0))
+                .then_some(global.walk_faces[topology.face_of[slot] as usize] as usize)
+        })
+        .expect("the radial boundary has its first directed source dart");
+    assert_ne!(inner_face, 0);
+    let mut faces = vec![false; global.count as usize];
+    faces[inner_face] = true;
+    let mut spans = vec![false; partition.spans.len()];
+    assert_eq!(partition.point_nodes.len(), 1);
+    for (index, span) in partition.spans.iter().enumerate() {
+        let start = partition.nearest_xy(span.start);
+        let end = partition.nearest_xy(span.end);
+        if start.y == 0.0 && end.y == 0.0 && start.x.min(end.x) >= 8.0 {
+            spans[index] = true;
+        }
+    }
+    assert_eq!(spans.iter().filter(|&&selected| selected).count(), 2);
+    let mut nodes = vec![false; partition.node_count()];
+    let point = partition.point_nodes[0];
+    assert_eq!(partition.nearest_xy(point), XY::new(-2.0, -2.0));
+    nodes[point.0 as usize] = true;
+    let cells = ArealCells {
+        faces,
+        spans,
+        nodes,
+    };
+    BoundaryContext {
+        partition,
+        topology,
+        edges,
+        global,
+        cells,
+        budget_used,
+    }
+}
+
+fn forward_source_darts(
+    plan: &BoundaryPlan,
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+) -> Vec<((f64, f64), (f64, f64))> {
+    plan.source_darts
+        .iter()
+        .map(|&slot| {
+            let origin = partition.nearest_xy(NodeId(topology.owners[slot as usize]));
+            let target = partition.nearest_xy(NodeId(topology.targets[slot as usize]));
+            ((origin.x, origin.y), (target.x, target.y))
+        })
+        .collect()
 }
 
 fn metric_support_for(wkt: &str) -> ExactMetricSupport {
@@ -2895,6 +3418,45 @@ fn metric_support_returns_boundary_flags_only_when_requested() {
     assert_eq!(boundary.boundary_points, Some(Vec::new()));
 }
 
+fn assert_ring_xy(ring: &Ring, xs: &[f64], ys: &[f64]) {
+    assert_eq!(ring.coords().xs(), xs);
+    assert_eq!(ring.coords().ys(), ys);
+}
+
+fn polygon_with_shell_xy<'a>(polygons: &'a [Shape], xs: &[f64], ys: &[f64]) -> &'a Polygon {
+    polygons
+        .iter()
+        .filter_map(polygon_output)
+        .find(|polygon| polygon.shell.coords().xs() == xs && polygon.shell.coords().ys() == ys)
+        .expect("polygon with the literal shell is emitted")
+}
+
+fn polygon_output(shape: &Shape) -> Option<&Polygon> {
+    match shape {
+        Shape::Polygon(polygon) => Some(polygon),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => None,
+    }
+}
+
+fn line_string_output(shape: &Shape) -> Option<&LineSeq> {
+    match shape {
+        Shape::LineString(line) => Some(line),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => None,
+    }
+}
+
 #[test]
 fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
     let crossing = [
@@ -2909,10 +3471,28 @@ fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
     let mut budget = ExpansionBudget::new("polygonize", "partition");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let faces = inventory
-        .linework_polygons(&mut partition, false, "test")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "test",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(faces.len(), 4);
-    assert_eq!(faces.iter().map(Polygon::area).sum::<f64>(), 4.0);
+    for (xs, ys) in [
+        (&[0.0, 2.0, 1.0, 0.0][..], &[0.0, 0.0, 1.0, 0.0][..]),
+        (&[1.0, 2.0, 2.0, 1.0][..], &[1.0, 0.0, 2.0, 1.0][..]),
+        (&[0.0, 1.0, 2.0, 0.0][..], &[2.0, 1.0, 2.0, 2.0][..]),
+        (&[0.0, 1.0, 0.0, 0.0][..], &[0.0, 1.0, 2.0, 0.0][..]),
+    ] {
+        let polygon = polygon_with_shell_xy(&faces, xs, ys);
+        assert!(
+            polygon.holes.is_empty(),
+            "each crossing-square cell is a simple triangle"
+        );
+    }
 
     let disconnected = [
         seg(0.0, 0.0, 2.0, 2.0),
@@ -2928,10 +3508,17 @@ fn linework_selection_keeps_minimal_faces_and_disconnected_support() {
     let mut budget = ExpansionBudget::new("build_area", "partition");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let parts = inventory
-        .linework_polygons(&mut partition, true, "test")
+        .linework_polygons(
+            &mut partition,
+            true,
+            "test",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(parts.len(), 3);
-    assert_eq!(parts.iter().map(Polygon::area).sum::<f64>(), 3.0);
+    assert_eq!(parts.iter().map(Shape::area).sum::<f64>(), 3.0);
 }
 
 #[test]
@@ -2950,9 +3537,34 @@ fn polygonize_emission_preserves_hosts_across_disconnected_cycles() {
     let mut budget = ExpansionBudget::new("polygonize", "partition");
     let mut partition = inventory.partition(&mut budget).unwrap();
     let polygons = inventory
-        .linework_polygons(&mut partition, false, "polygonize")
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
         .unwrap();
     assert_eq!(polygons.len(), 2);
+    let annulus = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the annulus face is emitted");
+    let inner_face = polygons
+        .get(1)
+        .and_then(polygon_output)
+        .expect("the inner face is emitted");
+    assert_ring_xy(&annulus.shell, &[0.0, 8.0, 8.0, 0.0, 0.0], &[
+        0.0, 0.0, 8.0, 8.0, 0.0,
+    ]);
+    assert_eq!(annulus.holes.len(), 1);
+    let hole = annulus.holes.first().expect("the annulus has its hole");
+    assert_ring_xy(hole, &[2.0, 2.0, 4.0, 4.0, 2.0], &[2.0, 4.0, 4.0, 2.0, 2.0]);
+    assert_ring_xy(&inner_face.shell, &[2.0, 4.0, 4.0, 2.0, 2.0], &[
+        2.0, 2.0, 4.0, 4.0, 2.0,
+    ]);
+    assert!(inner_face.holes.is_empty());
 
     let (topology, edges) = partition.local_topology().unwrap();
     let global = partition.global_faces(&topology, &edges).unwrap();
@@ -3084,9 +3696,456 @@ fn polygonize_full_certifies_diagnostic_lines_with_polygon_faces() {
     );
     assert!(witnesses.0.is_empty());
 
-    let full = inventory.polygonize_full(&mut partition).unwrap();
+    let full = inventory
+        .polygonize_full(
+            &mut partition,
+            CoordinateAxes::XY,
+            &[CoordinateAxes::XY],
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
     assert_eq!(full.polygons.len(), 2);
-    assert_eq!(full.dangles[0].len(), 2);
+    let lower = polygon_output(full.polygons.first().expect("the lower face is emitted"))
+        .expect("polygonize_full emits polygon faces");
+    let upper = polygon_output(full.polygons.get(1).expect("the upper face is emitted"))
+        .expect("polygonize_full emits polygon faces");
+    assert_ring_xy(&lower.shell, &[0.0, 4.0, 4.0, 0.0, 0.0], &[
+        0.0, 0.0, 2.0, 2.0, 0.0,
+    ]);
+    assert_ring_xy(&upper.shell, &[0.0, 4.0, 4.0, 0.0, 0.0], &[
+        2.0, 2.0, 4.0, 4.0, 2.0,
+    ]);
+    assert_eq!(full.dangles.len(), 1);
+    let row = full
+        .dangles
+        .first()
+        .expect("the source has one diagnostic row");
+    assert_eq!(row.len(), 2);
+    let right = line_string_output(row.first().expect("the right dangle is emitted"))
+        .expect("diagnostic dangles are line strings");
+    let left = line_string_output(row.get(1).expect("the left dangle is emitted"))
+        .expect("diagnostic dangles are line strings");
+    assert_eq!(right.as_coords().xs(), &[4.0, 5.0]);
+    assert_eq!(right.as_coords().ys(), &[2.0, 2.0]);
+    assert_eq!(left.as_coords().xs(), &[-1.0, 0.0]);
+    assert_eq!(left.as_coords().ys(), &[2.0, 2.0]);
+}
+
+#[test]
+fn polygonize_faces_attach_closed_holes_to_their_literal_hosts() {
+    let segments = [
+        seg(0.0, 0.0, 8.0, 0.0),
+        seg(8.0, 0.0, 8.0, 8.0),
+        seg(8.0, 8.0, 0.0, 8.0),
+        seg(0.0, 8.0, 0.0, 0.0),
+        seg(2.0, 2.0, 4.0, 2.0),
+        seg(4.0, 2.0, 4.0, 4.0),
+        seg(4.0, 4.0, 2.0, 4.0),
+        seg(2.0, 4.0, 2.0, 2.0),
+        seg(12.0, 0.0, 20.0, 0.0),
+        seg(20.0, 0.0, 20.0, 8.0),
+        seg(20.0, 8.0, 12.0, 8.0),
+        seg(12.0, 8.0, 12.0, 0.0),
+        seg(14.0, 2.0, 17.0, 2.0),
+        seg(17.0, 2.0, 17.0, 5.0),
+        seg(17.0, 5.0, 14.0, 5.0),
+        seg(14.0, 5.0, 14.0, 2.0),
+    ];
+    let inventory = ExactSourceInventory::from_segments(&segments).unwrap();
+    let mut budget = ExpansionBudget::new("polygonize", "two closed hole hosts");
+    let mut partition = inventory.partition(&mut budget).unwrap();
+    let polygons = inventory
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
+    assert_eq!(polygons.len(), 4);
+
+    let outer_a = polygon_with_shell_xy(&polygons, &[0.0, 8.0, 8.0, 0.0, 0.0], &[
+        0.0, 0.0, 8.0, 8.0, 0.0,
+    ]);
+    assert_eq!(outer_a.holes.len(), 1);
+    let hole_a = outer_a
+        .holes
+        .first()
+        .expect("the first annulus has its hole");
+    assert_ring_xy(hole_a, &[2.0, 2.0, 4.0, 4.0, 2.0], &[
+        2.0, 4.0, 4.0, 2.0, 2.0,
+    ]);
+
+    let inner_a = polygon_with_shell_xy(&polygons, &[2.0, 4.0, 4.0, 2.0, 2.0], &[
+        2.0, 2.0, 4.0, 4.0, 2.0,
+    ]);
+    assert!(inner_a.holes.is_empty());
+
+    let outer_b = polygon_with_shell_xy(&polygons, &[12.0, 20.0, 20.0, 12.0, 12.0], &[
+        0.0, 0.0, 8.0, 8.0, 0.0,
+    ]);
+    assert_eq!(outer_b.holes.len(), 1);
+    let hole_b = outer_b
+        .holes
+        .first()
+        .expect("the second annulus has its hole");
+    assert_ring_xy(hole_b, &[14.0, 14.0, 17.0, 17.0, 14.0], &[
+        2.0, 5.0, 5.0, 2.0, 2.0,
+    ]);
+
+    let inner_b = polygon_with_shell_xy(&polygons, &[14.0, 17.0, 17.0, 14.0, 14.0], &[
+        2.0, 2.0, 5.0, 5.0, 2.0,
+    ]);
+    assert!(inner_b.holes.is_empty());
+}
+
+#[test]
+fn polygonize_faces_keep_point_touching_and_tangent_hole_cycles_separate() {
+    let tangent_hole = [
+        seg(0.0, 0.0, 6.0, 0.0),
+        seg(6.0, 0.0, 6.0, 6.0),
+        seg(6.0, 6.0, 0.0, 6.0),
+        seg(0.0, 6.0, 0.0, 0.0),
+        seg(0.0, 3.0, 2.0, 2.0),
+        seg(2.0, 2.0, 2.0, 4.0),
+        seg(2.0, 4.0, 0.0, 3.0),
+    ];
+    let inventory = ExactSourceInventory::from_segments(&tangent_hole).unwrap();
+    let mut budget = ExpansionBudget::new("polygonize", "tangent hole cycles");
+    let mut partition = inventory.partition(&mut budget).unwrap();
+    let polygons = inventory
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
+    assert_eq!(polygons.len(), 2);
+    let outer = polygons
+        .iter()
+        .filter_map(polygon_output)
+        .find(|polygon| polygon.shell.coords().xs().contains(&6.0))
+        .expect("the outer bounded face is emitted");
+    assert_ring_xy(&outer.shell, &[0.0, 6.0, 6.0, 0.0, 0.0, 0.0], &[
+        0.0, 0.0, 6.0, 6.0, 3.0, 0.0,
+    ]);
+    assert_eq!(outer.holes.len(), 1);
+    let hole = outer
+        .holes
+        .first()
+        .expect("the outer face has its tangent hole");
+    assert_ring_xy(hole, &[0.0, 2.0, 2.0, 0.0], &[3.0, 4.0, 2.0, 3.0]);
+    let triangle = polygons
+        .iter()
+        .filter_map(polygon_output)
+        .find(|polygon| polygon.shell.coords().xs().iter().all(|&x| x <= 2.0))
+        .expect("the bounded tangent triangle is emitted independently");
+    assert_ring_xy(&triangle.shell, &[0.0, 2.0, 2.0, 0.0], &[
+        3.0, 2.0, 4.0, 3.0,
+    ]);
+    assert!(triangle.holes.is_empty());
+
+    let point_touch = [
+        seg(0.0, 0.0, 2.0, 0.0),
+        seg(2.0, 0.0, 2.0, 2.0),
+        seg(2.0, 2.0, 0.0, 2.0),
+        seg(0.0, 2.0, 0.0, 0.0),
+        seg(2.0, 2.0, 4.0, 2.0),
+        seg(4.0, 2.0, 4.0, 4.0),
+        seg(4.0, 4.0, 2.0, 4.0),
+        seg(2.0, 4.0, 2.0, 2.0),
+    ];
+    let inventory = ExactSourceInventory::from_segments(&point_touch).unwrap();
+    let mut budget = ExpansionBudget::new("polygonize", "point-touching faces");
+    let mut partition = inventory.partition(&mut budget).unwrap();
+    let polygons = inventory
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
+    assert_eq!(polygons.len(), 2);
+    let first = polygons
+        .iter()
+        .filter_map(polygon_output)
+        .find(|polygon| polygon.shell.coords().xs().contains(&0.0))
+        .expect("the left point-touching face is emitted");
+    assert_ring_xy(&first.shell, &[0.0, 2.0, 2.0, 0.0, 0.0], &[
+        0.0, 0.0, 2.0, 2.0, 0.0,
+    ]);
+    assert!(first.holes.is_empty());
+    let second = polygons
+        .iter()
+        .filter_map(polygon_output)
+        .find(|polygon| polygon.shell.coords().xs().contains(&4.0))
+        .expect("the right point-touching face is emitted separately");
+    assert_ring_xy(&second.shell, &[2.0, 4.0, 4.0, 2.0, 2.0], &[
+        2.0, 2.0, 4.0, 4.0, 2.0,
+    ]);
+    assert!(second.holes.is_empty());
+}
+
+#[test]
+fn polygonize_keeps_collinear_partition_nodes_in_serialized_and_certified_boundaries() {
+    let segments = [
+        seg(0.0, 0.0, 1.0, 0.0),
+        seg(1.0, 0.0, 2.0, 0.0),
+        seg(2.0, 0.0, 2.0, 2.0),
+        seg(2.0, 2.0, 0.0, 2.0),
+        seg(0.0, 2.0, 0.0, 0.0),
+    ];
+    let inventory = ExactSourceInventory::from_segments(&segments).unwrap();
+    let mut budget = ExpansionBudget::new("polygonize", "collinear partition node");
+    let mut partition = inventory.partition(&mut budget).unwrap();
+    let polygons = inventory
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
+    assert_eq!(polygons.len(), 1);
+    let polygon = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the closed linework emits a face");
+    assert_ring_xy(&polygon.shell, &[0.0, 1.0, 2.0, 2.0, 0.0, 0.0], &[
+        0.0, 0.0, 0.0, 2.0, 2.0, 0.0,
+    ]);
+    let node = partition
+        .stored_node(XY::new(1.0, 0.0))
+        .expect("the collinear source endpoint is a partition node");
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let emission = emission::polygonize_emission(&partition, &topology, &edges, &global).unwrap();
+    assert!(
+        emission.items.iter().any(|item| item.contains(&node)),
+        "the embedding certificate includes each serialized boundary node"
+    );
+}
+
+#[test]
+fn polygonize_faces_sort_global_faces_after_dangling_walks() {
+    let segments = [
+        seg(1.0, 1.0, 2.0, 1.0),
+        seg(6.0, 0.0, 7.0, 0.0),
+        seg(7.0, 0.0, 7.0, 1.0),
+        seg(7.0, 1.0, 6.0, 1.0),
+        seg(6.0, 1.0, 6.0, 0.0),
+        seg(2.0, 1.0, 2.0, 0.0),
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(4.0, 0.0, 4.0, 4.0),
+        seg(4.0, 4.0, 0.0, 4.0),
+        seg(0.0, 4.0, 0.0, 0.0),
+    ];
+    let inventory = ExactSourceInventory::from_segments(&segments).unwrap();
+    let mut budget = ExpansionBudget::new("polygonize", "source-order face labels");
+    let mut partition = inventory.partition(&mut budget).unwrap();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let walks = global.boundary_walks(&topology, |face, other| face != 0 && face != other);
+    let mut shell_faces = Vec::new();
+    for walk in &walks {
+        let first = *walk.first().expect("a boundary walk is nonempty");
+        let local_face = *topology
+            .face_of
+            .get(first as usize)
+            .expect("boundary dart belongs to the topology");
+        let face = *global
+            .walk_faces
+            .get(local_face as usize)
+            .expect("local face belongs to the global face map");
+        if emission::walk_is_shell(
+            &partition,
+            &topology,
+            walk.len(),
+            |step| {
+                *walk
+                    .get(step)
+                    .expect("shell classifier step belongs to the boundary walk")
+            },
+            |step| {
+                *walk
+                    .get(step)
+                    .expect("shell classifier step belongs to the boundary walk")
+            },
+        )
+        .unwrap()
+        {
+            shell_faces.push(face);
+        }
+    }
+    assert_eq!(shell_faces, [2, 1], "walk discovery precedes face sorting");
+
+    let polygons = inventory
+        .linework_polygons(
+            &mut partition,
+            false,
+            "polygonize",
+            CoordinateAxes::XY,
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
+    assert_eq!(polygons.len(), 2);
+    let a = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the first square face is emitted");
+    let b = polygons
+        .get(1)
+        .and_then(polygon_output)
+        .expect("the second square face is emitted");
+    assert_ring_xy(&a.shell, &[0.0, 2.0, 4.0, 4.0, 0.0, 0.0], &[
+        0.0, 0.0, 0.0, 4.0, 4.0, 0.0,
+    ]);
+    assert!(a.holes.is_empty());
+    assert_ring_xy(&b.shell, &[6.0, 7.0, 7.0, 6.0, 6.0], &[
+        0.0, 0.0, 1.0, 1.0, 0.0,
+    ]);
+    assert!(b.holes.is_empty());
+}
+
+#[test]
+fn polygonize_faces_serialize_the_supplied_certified_node_table() {
+    let segments = [
+        seg(-2.0, 0.0, 2.0, 0.0),
+        seg(-1.0, -2.0, 1.0, 4.0),
+        seg(-1.0, 2.0, 2.0, -1.0),
+    ];
+    let inventory = ExactSourceInventory::from_segments(&segments).unwrap();
+    let mut budget = ExpansionBudget::new("polygonize", "certified constructed vertex");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let emission = emission::polygonize_emission(&partition, &topology, &edges, &global).unwrap();
+    let nearest = embedding::Embedding::nearest(&partition);
+    let crossing = partition
+        .crossings()
+        .into_iter()
+        .find(|&node| partition.nearest_xy(node).x.to_bits() == 0xBFD5_5555_5555_5555)
+        .expect("the left crossing rounds to negative one third");
+    let nearest_xy = partition.nearest_xy(crossing);
+    assert_eq!(nearest_xy.y.to_bits(), 0_u64);
+    let candidate_xy = XY::new(f64::from_bits(0xBFD5_5555_5555_5554), nearest_xy.y);
+    let mut coordinates = nearest.coordinates().to_vec();
+    *coordinates
+        .get_mut(crossing.0 as usize)
+        .expect("the constructed node belongs to the embedding table") = candidate_xy;
+    let supplied = embedding::Embedding::from_owned(coordinates);
+    for point in [
+        XY::new(-2.0, 0.0),
+        XY::new(2.0, 0.0),
+        XY::new(-1.0, -2.0),
+        XY::new(1.0, 4.0),
+        XY::new(-1.0, 2.0),
+        XY::new(2.0, -1.0),
+    ] {
+        let node = partition
+            .stored_node(point)
+            .expect("source vertex is stored");
+        assert_eq!(
+            supplied.coordinates().get(node.0 as usize),
+            Some(&point),
+            "source vertices stay pinned at {point:?}"
+        );
+    }
+    let emitted_segments: Vec<_> = emission
+        .items
+        .iter()
+        .map(|&item| embedding::Embedding::segment_at(supplied.coordinates(), item))
+        .collect();
+    let segment_views = [emitted_segments.as_slice()];
+    let mut witnesses = WitnessLog::default();
+    assert!(
+        embedding::certify(
+            &partition,
+            &supplied,
+            &[&emission],
+            &segment_views,
+            &mut witnesses,
+        )
+        .unwrap()
+        .is_continue(),
+        "the complete supplied coordinate table passes the production certificate"
+    );
+    assert!(witnesses.0.is_empty());
+
+    let groups =
+        emission::polygonize_node_groups(&partition, &topology, &global, &supplied).unwrap();
+    let polygons = inventory
+        .polygon_shapes_from_node_groups(
+            &partition,
+            &supplied,
+            groups,
+            CoordinateAxes::XY,
+            false,
+            "polygonize",
+            &crate::geometry::SourceArcContext::cartesian(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(polygons.len(), 1);
+    let polygon = polygons
+        .first()
+        .and_then(polygon_output)
+        .expect("the bounded triangle is emitted");
+    assert_eq!(
+        polygon
+            .shell
+            .coords()
+            .xs()
+            .iter()
+            .map(|x| x.to_bits())
+            .collect::<Vec<_>>(),
+        [
+            0xBFD5_5555_5555_5554,
+            0x3FF0_0000_0000_0000,
+            0,
+            0xBFD5_5555_5555_5554
+        ]
+    );
+    assert_eq!(polygon.shell.coords().ys(), &[0.0, 0.0, 1.0, 0.0]);
+    assert!(polygon.holes.is_empty());
+}
+
+#[test]
+fn polygonize_returns_no_polygons_without_a_bounded_face() {
+    for segments in [
+        &[][..],
+        &[seg(0.0, 0.0, 0.0, 0.0)][..],
+        &[seg(0.0, 0.0, 2.0, 0.0)][..],
+    ] {
+        let inventory = ExactSourceInventory::from_segments(segments).unwrap();
+        let mut budget = ExpansionBudget::new("polygonize", "linework without a bounded face");
+        let mut partition = inventory.partition(&mut budget).unwrap();
+        assert!(
+            inventory
+                .linework_polygons(
+                    &mut partition,
+                    false,
+                    "polygonize",
+                    CoordinateAxes::XY,
+                    false,
+                    &crate::geometry::SourceArcContext::cartesian(),
+                )
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[test]
@@ -3367,6 +4426,114 @@ fn overlap_aggregate_owners_are_one_atom() {
         .collect();
     assert_eq!(shared.len(), 1);
     assert_eq!(partition.owners(shared[0].0).len(), 2);
+}
+
+#[test]
+fn sourced_dedup_unique_segments_keep_identity_owner_rows() {
+    let (unique, provenance) = dedup_undirected_segments_sourced([
+        seg(0.0, 0.0, 1.0, 0.0),
+        seg(0.0, 1.0, 1.0, 1.0),
+        seg(0.0, 2.0, 1.0, 2.0),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        unique
+            .iter()
+            .map(|segment| (segment.start, segment.end))
+            .collect::<Vec<_>>(),
+        vec![
+            (XY::new(0.0, 0.0), XY::new(1.0, 0.0)),
+            (XY::new(0.0, 1.0), XY::new(1.0, 1.0)),
+            (XY::new(0.0, 2.0), XY::new(1.0, 2.0)),
+        ]
+    );
+    assert_eq!(provenance.owners(0), &[(0, false)]);
+    assert_eq!(provenance.owners(1), &[(1, false)]);
+    assert_eq!(provenance.owners(2), &[(2, false)]);
+}
+
+#[test]
+fn sourced_dedup_first_late_duplicate_keeps_every_ordered_owner() {
+    let (unique, provenance) = dedup_undirected_segments_sourced([
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(0.0, 2.0, 4.0, 2.0),
+        seg(0.0, 4.0, 4.0, 4.0),
+        seg(4.0, 2.0, 0.0, 2.0),
+        seg(0.0, 0.0, 4.0, 0.0),
+        seg(0.0, 6.0, 4.0, 6.0),
+        seg(0.0, 2.0, 4.0, 2.0),
+        seg(4.0, 0.0, 0.0, 0.0),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        unique
+            .iter()
+            .map(|segment| (segment.start, segment.end))
+            .collect::<Vec<_>>(),
+        vec![
+            (XY::new(0.0, 0.0), XY::new(4.0, 0.0)),
+            (XY::new(0.0, 2.0), XY::new(4.0, 2.0)),
+            (XY::new(0.0, 4.0), XY::new(4.0, 4.0)),
+            (XY::new(0.0, 6.0), XY::new(4.0, 6.0)),
+        ]
+    );
+    assert_eq!(provenance.owners(0), &[(0, false), (4, false), (7, true)]);
+    assert_eq!(provenance.owners(1), &[(1, false), (3, true), (6, false)]);
+    assert_eq!(provenance.owners(2), &[(2, false)]);
+    assert_eq!(provenance.owners(3), &[(5, false)]);
+}
+
+#[test]
+fn sourced_dedup_preserves_signed_zero_and_degenerate_owner_direction() {
+    let (unique, provenance) = dedup_undirected_segments_sourced([
+        seg(-0.0, 0.0, 2.0, 0.0),
+        seg(2.0, 0.0, 0.0, 0.0),
+        seg(0.0, 1.0, -0.0, 1.0),
+        seg(-0.0, 1.0, 0.0, 1.0),
+    ])
+    .unwrap();
+
+    assert_eq!(unique.len(), 2);
+    assert_eq!(unique[0].start.x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(unique[0].end.x.to_bits(), 2.0_f64.to_bits());
+    assert_eq!(unique[1].start.x.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(unique[1].end.x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(provenance.owners(0), &[(0, false), (1, true)]);
+    assert_eq!(provenance.owners(1), &[(2, false), (3, false)]);
+}
+
+#[test]
+fn segment_provenance_preserves_empty_direct_csr_rows_and_iteration() {
+    let default = SegmentProvenance::default();
+    let (empty_unique, empty) = dedup_undirected_segments_sourced(Vec::<Segment>::new()).unwrap();
+    assert!(empty_unique.is_empty());
+    for provenance in [&default, &empty] {
+        assert_eq!(provenance.len(), 0);
+        assert_eq!(provenance.iter().count(), 0);
+    }
+
+    let provenance =
+        SegmentProvenance::from_csr(vec![0, 2, 2, 3], vec![(7, false), (2, true), (9, false)]);
+    assert_eq!(provenance.len(), 3);
+    assert_eq!(provenance.owners(0), &[(7, false), (2, true)]);
+    assert_eq!(&provenance[0], &[(7, false), (2, true)]);
+    assert!(provenance[1].is_empty());
+    assert_eq!(provenance.owners(2), &[(9, false)]);
+
+    let rows = provenance.iter().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], &[(7, false), (2, true)]);
+    assert!(rows[1].is_empty());
+    assert_eq!(rows[2], &[(9, false)]);
+}
+
+#[test]
+#[should_panic(expected = "index out of bounds")]
+fn segment_provenance_index_out_of_range_keeps_slice_panic() {
+    let provenance = SegmentProvenance::from_csr(vec![0, 0], Vec::new());
+    let _ = provenance[1];
 }
 
 #[test]
@@ -3747,12 +4914,12 @@ fn rays_handle_empty_queries_and_query_height_boundaries() {
             [span.start.0, span.end.0]
         };
         assert!(
-            shoot_left(&partition.points, partition.spans.len(), &ray_edge, &[])
+            shoot_left(&partition.points, partition.spans.len(), ray_edge, &[])
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
-            shoot_left(&partition.points, partition.spans.len(), &ray_edge, &[
+            shoot_left(&partition.points, partition.spans.len(), ray_edge, &[
                 query.0
             ],)
             .unwrap(),
@@ -5030,6 +6197,106 @@ fn rectangle_intersection_uses_exact_source_contacts() {
 }
 
 #[test]
+fn rectangle_source_zip_preserves_full_ordinals_and_zm_in_both_orders() {
+    let Shape::Polygon(subject) = crate::io::parse_wkt(
+        "POLYGON ZM ((-2 -1 10 100,2 -1 20 200,2 1 30 300,-2 1 50 500,-2 -1 10 100))",
+    )
+    .unwrap() else {
+        panic!("expected polygon");
+    };
+    let bounds = Bounds::new_raw(-1.0, -0.5, 1.0, 1.5);
+    let rectangle = rect_polygon(bounds).unwrap();
+
+    for rectangle_first in [false, true] {
+        let (inventory, intervals) = ExactSourceInventory::from_polygon_rect_clip(
+            &[&subject],
+            &rectangle,
+            bounds,
+            rectangle_first,
+        )
+        .unwrap()
+        .expect("the subject's top edge enters the rectangle interior");
+
+        let expected_operands = if rectangle_first {
+            [1, 1, 1, 1, 0, 0, 0, 0]
+        } else {
+            [0, 0, 0, 0, 1, 1, 1, 1]
+        };
+        assert_eq!(inventory.source_operands.as_slice(), expected_operands);
+
+        let expected_unique_segments = if rectangle_first {
+            [
+                [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
+                [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
+                [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
+                [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
+                [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
+            ]
+        } else {
+            [
+                [XY::new(2.0, 1.0), XY::new(-2.0, 1.0)],
+                [XY::new(-1.0, -0.5), XY::new(1.0, -0.5)],
+                [XY::new(1.0, -0.5), XY::new(1.0, 1.5)],
+                [XY::new(1.0, 1.5), XY::new(-1.0, 1.5)],
+                [XY::new(-1.0, 1.5), XY::new(-1.0, -0.5)],
+            ]
+        };
+        let expected_source_ordinals = if rectangle_first {
+            [0, 1, 2, 3, 6]
+        } else {
+            [2, 4, 5, 6, 7]
+        };
+        let actual_unique_segments: Vec<_> = inventory
+            .unique
+            .iter()
+            .map(|segment| [segment.start, segment.end])
+            .collect();
+        assert_eq!(actual_unique_segments, expected_unique_segments);
+        for (owners, source) in inventory.provenance.iter().zip(expected_source_ordinals) {
+            assert_eq!(owners, &[(source, false)]);
+        }
+
+        let mut budget = ExpansionBudget::new("clip_by_rect", "rectangle source ordinals");
+        let partition = inventory
+            .partition_in_window(&intervals, bounds, &mut budget)
+            .unwrap();
+        let mut crossing_ordinates = Vec::new();
+        for node in partition.crossings() {
+            let (z, m) = inventory
+                .resolve_node_ordinates::<crate::crs::GeodesicMetric>(
+                    &partition,
+                    node,
+                    crate::geometry::CoordinateAxes::XYZM,
+                    &SourceArcContext::cartesian(),
+                    None,
+                )
+                .unwrap();
+            crossing_ordinates.push((partition.nearest_xy(node), z.0, m.0));
+        }
+        let expected_crossing_ordinates = [
+            (XY::new(-1.0, 1.0), Some(45.0), Some(450.0)),
+            (XY::new(1.0, 1.0), Some(35.0), Some(350.0)),
+        ];
+        assert!(
+            crossing_ordinates
+                .iter()
+                .all(
+                    |&(actual_xy, actual_z, actual_m)| expected_crossing_ordinates.iter().any(
+                        |&(expected_xy, expected_z, expected_m)| {
+                            same_point(actual_xy, expected_xy)
+                                && actual_z == expected_z
+                                && actual_m == expected_m
+                        }
+                    )
+                )
+        );
+        for expected in expected_crossing_ordinates {
+            assert!(crossing_ordinates.contains(&expected));
+        }
+    }
+}
+
+#[test]
 fn polygon_occupancy_uses_staged_ids_when_rectangle_is_first() {
     let Shape::Polygon(subject) =
         crate::io::parse_wkt("POLYGON ((10 10,14 10,14 14,10 14,10 10),(9 9,15 9,15 15,9 15,9 9))")
@@ -5062,13 +6329,89 @@ fn polygon_occupancy_uses_staged_ids_when_rectangle_is_first() {
 }
 
 #[test]
+fn rectangle_clip_provenance_keeps_full_source_ring_ordinals() {
+    let Shape::Polygon(subject) =
+        crate::io::parse_wkt("POLYGON ((-10 0,10 0,10 2,-10 2,-10 0))").unwrap()
+    else {
+        panic!("expected polygon");
+    };
+    let bounds = Bounds::new_raw(-1.0, -1.0, 1.0, 3.0);
+    let rectangle = rect_polygon(bounds).unwrap();
+    let (inventory, intervals) =
+        ExactSourceInventory::from_polygon_rect_clip(&[&subject], &rectangle, bounds, true)
+            .unwrap()
+            .expect("the subject crosses the clip window");
+
+    assert_eq!(intervals.len(), 6);
+    assert_eq!(inventory.source_segments.len(), 8);
+    assert_eq!(inventory.ring_count, 2);
+    assert_eq!(inventory.source_rings, [
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(1),
+    ]);
+    assert_eq!(inventory.winding_source_rings(), vec![
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(0),
+        Some(1),
+        Some(1),
+        Some(1),
+        Some(1),
+    ]);
+    assert_eq!(
+        inventory
+            .provenance
+            .iter()
+            .map(<[_]>::to_vec)
+            .collect::<Vec<_>>(),
+        vec![
+            vec![(0, false)],
+            vec![(1, false)],
+            vec![(2, false)],
+            vec![(3, false)],
+            vec![(4, false)],
+            vec![(6, false)],
+        ]
+    );
+}
+
+#[test]
 fn polygon_occupancy_keeps_raw_winding_rings_unowned() {
-    let inventory =
-        ExactSourceInventory::from_raw_loops(&[(vec![0.0, 1.0, 0.0], vec![0.0, 1.0, 0.0])])
-            .unwrap();
-    assert_eq!(inventory.ring_count, 1);
+    let inventory = ExactSourceInventory::from_raw_loops(&[
+        (vec![0.0, 1.0, 2.0], vec![0.0, 0.0, 0.0]),
+        (vec![7.0, 8.0], vec![0.0, 0.0]),
+        (Vec::new(), Vec::new()),
+    ])
+    .unwrap();
+    assert_eq!(inventory.ring_count, 3);
     assert!(inventory.ring_polygons.is_empty());
     assert!(inventory.ring_holes.is_empty());
+    assert_eq!(inventory.ring_kinds, [
+        RingKind::Winding,
+        RingKind::Winding,
+        RingKind::Winding
+    ]);
+    assert_eq!(inventory.source_rings, [
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        None
+    ]);
+    assert_eq!(inventory.winding_source_rings(), vec![
+        Some(0),
+        Some(0),
+        Some(0),
+        None,
+        None
+    ]);
 
     let mut occupancy = PolygonOccupancy::new(&inventory, false);
     let error = occupancy.seed(&[]).unwrap_err();
@@ -5079,7 +6422,7 @@ fn polygon_occupancy_keeps_raw_winding_rings_unowned() {
 
     let mut winding = vec![0; inventory.ring_count];
     occupancy.cross(&mut winding, 0, 1);
-    assert_eq!(winding, [1]);
+    assert_eq!(winding, [1, 0, 0]);
     assert!(!occupancy.operand_occupied(0));
 }
 
@@ -5181,40 +6524,40 @@ fn lattice_crossing_group(origin: f64, ulp: f64) -> [Segment; 3] {
 fn argentina_uruguay_minimal_segments() -> [Segment; 6] {
     [
         seg(
-            -58.4040016,
-            -33.178818,
-            -58.12298950960621,
-            -33.02249063956715,
+            -58.404_001_6,
+            -33.178_818,
+            -58.122_989_509_606_21,
+            -33.022_490_639_567_15,
         ),
         seg(
-            -58.12298950960621,
-            -33.02249063956715,
-            -58.1275839,
-            -33.022275,
+            -58.122_989_509_606_21,
+            -33.022_490_639_567_15,
+            -58.127_583_9,
+            -33.022_275,
         ),
         seg(
-            -58.114883013439915,
-            -33.017980986099005,
-            -58.113024156144505,
-            -33.01694690157259,
+            -58.114_883_013_439_915,
+            -33.017_980_986_099_005,
+            -58.113_024_156_144_505,
+            -33.016_946_901_572_59,
         ),
         seg(
-            -58.113024156144505,
-            -33.01694690157259,
-            -58.1001006,
-            -32.9516227,
+            -58.113_024_156_144_505,
+            -33.016_946_901_572_59,
+            -58.100_100_6,
+            -32.951_622_7,
         ),
         seg(
-            -58.11180215965657,
-            -33.01105783153063,
-            -58.11295390239603,
-            -33.01690781932867,
+            -58.111_802_159_656_57,
+            -33.011_057_831_530_63,
+            -58.112_953_902_396_03,
+            -33.016_907_819_328_67,
         ),
         seg(
-            -58.11295390239603,
-            -33.01690781932867,
-            -58.4040016,
-            -33.178818,
+            -58.112_953_902_396_03,
+            -33.016_907_819_328_67,
+            -58.404_001_6,
+            -33.178_818,
         ),
     ]
 }
@@ -5258,7 +6601,9 @@ fn planar_candidate_values(
         embedding::PlanarProblem::new(&partition, &[&emission], &[node], movable_cache).unwrap();
     let nearest = partition.nearest_xy(node);
     let mut candidates = Vec::new();
-    problem.fill_candidates(node, &mut candidates).unwrap();
+    problem
+        .fill_candidates(node, &mut candidates, &mut Unmetered)
+        .unwrap();
     let mut ordered = candidates.clone();
     crate::geometry::try_sort_by(&mut ordered, |left, right| {
         problem.compare_candidates(node, *left, *right)
@@ -5286,27 +6631,34 @@ fn assert_exact_axis_displacement_bound(
     );
 }
 
-struct TestVerifier<'a, P: Problem> {
-    inner: &'a P,
+struct TestVerifier<'a, P: Problem<Output = ()>> {
+    inner: &'a mut P,
     local_calls: &'a std::cell::Cell<usize>,
     global_calls: &'a std::cell::Cell<usize>,
     node_order: Option<&'a dyn Fn(P::Node, P::Node) -> Ordering>,
+    candidate_filter: Option<&'a dyn Fn(P::Node, P::Candidate) -> bool>,
     bypass_local: bool,
     bypass_global: bool,
 }
 
-impl<P: Problem> Problem for TestVerifier<'_, P> {
+impl<P: Problem<Output = ()>> Problem for TestVerifier<'_, P> {
     type Node = P::Node;
     type Candidate = P::Candidate;
     type Key = P::Key;
     type ClassState = P::ClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         self.inner.classes()
     }
 
-    fn fixed_keys(&self, class: usize, variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
-        self.inner.fixed_keys(class, variables)
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        self.inner.fixed_keys(class, variables, work)
     }
 
     fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
@@ -5316,12 +6668,18 @@ impl<P: Problem> Problem for TestVerifier<'_, P> {
         )
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
-        self.inner.fill_candidates(node, candidates)
+        self.inner.fill_candidates(node, candidates, work)?;
+        if let Some(allowed) = self.candidate_filter {
+            work.charge_product(candidates.len(), 1)?;
+            candidates.retain(|&candidate| allowed(node, candidate));
+        }
+        Ok(())
     }
 
     fn compare_candidates(
@@ -5337,44 +6695,44 @@ impl<P: Problem> Problem for TestVerifier<'_, P> {
         self.inner.candidate_key(candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        self.inner.prepare_class(class, variables, budget)
+        self.inner.prepare_class(class, variables, account)
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
         self.local_calls.set(self.local_calls.get().wrapping_add(1));
         if self.bypass_local {
             Ok(true)
         } else {
             self.inner
-                .check_local(class_state, class, variables, rank, assigned, budget)
+                .check_local(class_state, class, variables, rank, assigned, account)
         }
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         self.global_calls
             .set(self.global_calls.get().wrapping_add(1));
         if self.bypass_global {
-            Ok(GlobalCheck::Pass)
+            Ok(GlobalCheck::Pass(()))
         } else {
-            self.inner.check_global(assignments, budget)
+            Problem::check_global(&mut *self.inner, assignments, account)
         }
     }
 
@@ -5384,7 +6742,7 @@ impl<P: Problem> Problem for TestVerifier<'_, P> {
 }
 
 struct FanBypassVerifier<'a, 'p, 's, 'e> {
-    inner: &'a embedding::PlanarProblem<'p, 's, 'e>,
+    inner: &'a mut embedding::PlanarProblem<'p, 's, 'e>,
     global_calls: &'a std::cell::Cell<usize>,
 }
 
@@ -5393,25 +6751,32 @@ impl Problem for FanBypassVerifier<'_, '_, '_, '_> {
     type Candidate = XY;
     type Key = PointKey;
     type ClassState = embedding::PlanarClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         Problem::classes(self.inner)
     }
 
-    fn fixed_keys(&self, class: usize, variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
-        Problem::fixed_keys(self.inner, class, variables)
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        Problem::fixed_keys(self.inner, class, variables, work)
     }
 
     fn compare_nodes(&self, left: Self::Node, right: Self::Node) -> Result<Ordering> {
         Problem::compare_nodes(self.inner, left, right)
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
-        Problem::fill_candidates(self.inner, node, candidates)
+        Problem::fill_candidates(self.inner, node, candidates, work)
     }
 
     fn compare_candidates(
@@ -5427,36 +6792,36 @@ impl Problem for FanBypassVerifier<'_, '_, '_, '_> {
         Problem::candidate_key(self.inner, candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        Problem::prepare_class(self.inner, class, variables, budget)
+        Problem::prepare_class(self.inner, class, variables, account)
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
         self.inner
-            .check_local_without_fans(class_state, class, variables, rank, assigned, budget)
+            .check_local_without_fans(class_state, class, variables, rank, assigned, account)
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         self.global_calls
             .set(self.global_calls.get().wrapping_add(1));
-        Problem::check_global(self.inner, assignments, budget)
+        Problem::check_global(&mut *self.inner, assignments, account)
     }
 
     fn initial_evaluations(&self) -> u64 {
@@ -5577,11 +6942,13 @@ fn assert_collision_class_matches_search(count: usize, compare_oracle: bool) {
     .unwrap();
 
     let oracle = compare_oracle.then(|| {
-        let fixed = problem.fixed_keys(0, &variables).unwrap();
+        let fixed = problem.fixed_keys(0, &variables, &mut Unmetered).unwrap();
         let mut candidates = Vec::with_capacity(count);
         for &node in &variables {
             let mut values = Vec::new();
-            problem.fill_candidates(node, &mut values).unwrap();
+            problem
+                .fill_candidates(node, &mut values, &mut Unmetered)
+                .unwrap();
             crate::geometry::try_sort_by(&mut values, |left, right| {
                 problem.compare_candidates(node, *left, *right)
             })
@@ -5753,10 +7120,10 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
     let case = run(&argentina_uruguay_minimal_segments());
     let partition = case.partition();
     let at_58 = partition
-        .stored_node(XY::new(-58.12298950960621, -33.02249063956715))
+        .stored_node(XY::new(-58.122_989_509_606_21, -33.022_490_639_567_15))
         .unwrap();
     let at_62 = partition
-        .stored_node(XY::new(-58.113024156144505, -33.01694690157259))
+        .stored_node(XY::new(-58.113_024_156_144_505, -33.016_946_901_572_59))
         .unwrap();
     let first = partition
         .crossings()
@@ -5786,11 +7153,13 @@ fn argentina_uruguay_minimal_crossings_match_the_exhaustive_oracle() {
         problem.compare_nodes(*left, *right)
     })
     .unwrap();
-    let fixed = problem.fixed_keys(0, &variables).unwrap();
+    let fixed = problem.fixed_keys(0, &variables, &mut Unmetered).unwrap();
     let mut candidates = Vec::with_capacity(variables.len());
     for &node in &variables {
         let mut values = Vec::new();
-        problem.fill_candidates(node, &mut values).unwrap();
+        problem
+            .fill_candidates(node, &mut values, &mut Unmetered)
+            .unwrap();
         crate::geometry::try_sort_by(&mut values, |left, right| {
             problem.compare_candidates(node, *left, *right)
         })
@@ -6001,7 +7370,7 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let point = append_constructed_point(&mut partition, exact.clone(), exact);
     let mut emission = partition.span_emission(0..u32::try_from(partition.spans.len()).unwrap());
     emission.items.push([point, point]);
-    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[point], vec![
+    let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &[point], vec![
         None;
         partition
             .node_count(
@@ -6011,9 +7380,11 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let classes = Problem::classes(&problem);
     assert_eq!(classes.len(), 1);
     assert_eq!(classes.first().unwrap(), &vec![point]);
-    let fixed = problem.fixed_keys(0, &[point]).unwrap();
+    let fixed = problem.fixed_keys(0, &[point], &mut Unmetered).unwrap();
     let mut raw_candidates = Vec::new();
-    problem.fill_candidates(point, &mut raw_candidates).unwrap();
+    problem
+        .fill_candidates(point, &mut raw_candidates, &mut Unmetered)
+        .unwrap();
     assert_eq!(raw_candidates.len(), 9);
     crate::geometry::try_sort_by(&mut raw_candidates, |left, right| {
         problem.compare_candidates(point, *left, *right)
@@ -6041,10 +7412,11 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let normal_global_calls = std::cell::Cell::new(0);
     let error = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &local_calls,
             global_calls: &normal_global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: false,
             bypass_global: false,
         },
@@ -6067,10 +7439,11 @@ fn exhaustive_contact_failure_rejects_an_injective_certificate_bypass() {
     let bypass_global_calls = std::cell::Cell::new(0);
     let bypass = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &bypass_calls,
             global_calls: &bypass_global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: true,
             bypass_global: false,
         },
@@ -6261,6 +7634,39 @@ fn zero_subnormal_and_finite_extreme_candidates_keep_their_real_keys() {
 }
 
 #[test]
+fn exactly_represented_candidate_axes_keep_nearest_values() {
+    let exact_x = dyadic(0.5);
+    let y_step = 0.75_f64.next_up() - 0.75;
+    let inexact_y = dyadic(0.75).try_add(dyadic(y_step / 8.0)).unwrap();
+    let (nearest, candidates, _) =
+        planar_candidate_values(exact_x, inexact_y, embedding::EmbeddingDomain::Plane);
+
+    assert_eq!(nearest.x, 0.5);
+    assert!(!candidates.is_empty());
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.x.to_bits() == nearest.x.to_bits()),
+        "an exactly represented axis must retain its nearest coordinate: {candidates:?}"
+    );
+
+    let x_step = 0.5_f64.next_up() - 0.5;
+    let inexact_x = dyadic(0.5).try_add(dyadic(x_step / 8.0)).unwrap();
+    let exact_y = dyadic(0.75);
+    let (nearest, candidates, _) =
+        planar_candidate_values(inexact_x, exact_y, embedding::EmbeddingDomain::Plane);
+
+    assert_eq!(nearest.y, 0.75);
+    assert!(!candidates.is_empty());
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.y.to_bits() == nearest.y.to_bits()),
+        "an exactly represented axis must retain its nearest coordinate: {candidates:?}"
+    );
+}
+
+#[test]
 fn rectangle_and_geographic_domains_filter_boundary_neighbors() {
     let half = 0.5_f64;
     let half_step = half.next_up() - half;
@@ -6367,25 +7773,266 @@ fn distant_collision_classes_are_searched_independently() {
     );
 }
 
+#[test]
+fn same_chord_endpoint_domains_retain_the_legal_diagonal_assignment() {
+    let line = crate::io::parse_wkt("LINESTRING (0 0, 2 2)").unwrap();
+    let triangle =
+        crate::io::parse_wkt("POLYGON ((1 0, 1.0000000000000002 4, 1.0000000000000002 8, 1 0))")
+            .unwrap();
+    let inventory = ExactSourceInventory::from_shapes(&[&line, &triangle]).unwrap();
+    let mut budget = ExpansionBudget::new("intersection", "same-chord embedding test");
+    let partition = inventory.partition(&mut budget).unwrap();
+    let (topology, edges) = partition.local_topology().unwrap();
+    let global = partition.global_faces(&topology, &edges).unwrap();
+    let cells = inventory
+        .select_cells(
+            &partition,
+            &topology,
+            &edges,
+            &global,
+            crate::geometry::OverlayOp::Intersection,
+            false,
+        )
+        .unwrap();
+    let plan = cells
+        .emission_plan(&partition, &topology, &edges, &global)
+        .unwrap();
+    let emission = plan.emission(&topology, &edges);
+    assert_eq!(emission.items.len(), 1);
+    assert_eq!(emission.chords, 1);
+    assert!(emission.faces.is_none());
+
+    let nearest = XY::new(1.0, 1.0);
+    let [source_start, source_end] = *emission
+        .items
+        .first()
+        .expect("the selected line/area intersection has one chord");
+    let mut endpoints = [source_start, source_end];
+    crate::geometry::try_sort_by(&mut endpoints, |left, right| {
+        partition.compare_nodes(*left, *right)
+    })
+    .unwrap();
+    let [first, second] = endpoints;
+    assert_eq!(partition.nearest_xy(first), nearest);
+    assert_eq!(partition.nearest_xy(second), nearest);
+    for node in [first, second] {
+        let exact = partition.exact(node).unwrap();
+        let [x, y, _] = exact.as_ref();
+        assert_eq!(x, y, "both exact intersections lie on the source diagonal");
+    }
+    assert_eq!(
+        partition.compare_axis(first, second, Axis::X).unwrap(),
+        Ordering::Less
+    );
+    assert_eq!(
+        partition.compare_axis(first, second, Axis::Y).unwrap(),
+        Ordering::Less
+    );
+    let upper = XY::new(nearest.x.next_up(), nearest.y.next_up());
+    assert_ne!(PointKey::new(nearest), PointKey::new(upper));
+
+    let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &[first], vec![
+        None;
+        partition
+            .node_count(
+            )
+    ])
+    .unwrap();
+    let allowed_assignment = |node: NodeId, candidate: XY| {
+        (node == first && candidate == nearest) || (node == second && candidate == upper)
+    };
+    let local_calls = std::cell::Cell::new(0);
+    let global_calls = std::cell::Cell::new(0);
+    let assignment = Search::new(
+        TestVerifier {
+            inner: &mut problem,
+            local_calls: &local_calls,
+            global_calls: &global_calls,
+            node_order: None,
+            candidate_filter: Some(&allowed_assignment),
+            bypass_local: false,
+            bypass_global: false,
+        },
+        "intersection",
+        2,
+    )
+    .unwrap()
+    .run()
+    .expect("the legal nearest/upper joint assignment survives embedding search");
+    let solution = assignment
+        .classes
+        .first()
+        .expect("the selected chord's movable endpoints share one prepared class");
+    assert_eq!(solution.variables.as_slice(), &[first, second]);
+    assert_eq!(solution.values.as_slice(), &[nearest, upper]);
+
+    let mut coordinates = embedding::Embedding::nearest(&partition)
+        .coordinates()
+        .to_vec();
+    for (&node, &candidate) in solution.variables.iter().zip(&solution.values) {
+        *coordinates
+            .get_mut(node.0 as usize)
+            .expect("the selected chord endpoint belongs to the partition") = candidate;
+    }
+    let embedding = embedding::Embedding::from_owned(coordinates);
+    let segments: Vec<_> = emission
+        .items
+        .iter()
+        .map(|&item| embedding::Embedding::segment_at(embedding.coordinates(), item))
+        .collect();
+    assert_eq!(embedding.xy(first), nearest);
+    assert_eq!(embedding.xy(second), upper);
+    let mut sink = embedding::FirstFailure::default();
+    assert!(
+        embedding::certify(
+            &partition,
+            &embedding,
+            &[&emission],
+            &[segments.as_slice()],
+            &mut sink,
+        )
+        .unwrap()
+        .is_continue()
+    );
+}
+
+#[test]
+fn long_chord_with_disjoint_axiswise_candidate_domains_keeps_independent_classes() {
+    let source = run(&[seg(0.0, 0.0, 0.0, 0.0)]);
+    let minimum_subnormal = dyadic(f64::from_bits(1));
+    let cases = [
+        (
+            "horizontal",
+            dyadic(-1.0e100),
+            minimum_subnormal.try_product(&dyadic(0.5)).unwrap(),
+            dyadic(1.0e100),
+            minimum_subnormal.try_product(&dyadic(0.5)).unwrap(),
+        ),
+        (
+            "vertical",
+            dyadic(1.0e100),
+            dyadic(-1.0).try_add(dyadic(2.0_f64.powi(-55))).unwrap(),
+            dyadic(1.0e100),
+            dyadic(1.0).try_add(dyadic(2.0_f64.powi(-54))).unwrap(),
+        ),
+    ];
+
+    for (name, start_x, start_y, end_x, end_y) in cases {
+        let mut partition = source.partition();
+        let start = append_constructed_point(&mut partition, start_x, start_y);
+        let end = append_constructed_point(&mut partition, end_x, end_y);
+        let emission = embedding::Emission {
+            items: vec![[start, end]],
+            chords: 1,
+            areal_chords: 0,
+            fan_spans: Vec::new(),
+            faces: None,
+        };
+        let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[start], vec![
+            None;
+            partition
+                .node_count(
+                )
+        ])
+        .unwrap();
+
+        let mut start_candidates = Vec::new();
+        problem
+            .fill_candidates(start, &mut start_candidates, &mut Unmetered)
+            .unwrap();
+        let mut end_candidates = Vec::new();
+        problem
+            .fill_candidates(end, &mut end_candidates, &mut Unmetered)
+            .unwrap();
+        assert!(
+            start_candidates.iter().all(|left| end_candidates
+                .iter()
+                .all(|right| PointKey::new(*left) != PointKey::new(*right))),
+            "{name} endpoint candidate-key domains must be disjoint"
+        );
+        assert_eq!(
+            Problem::classes(&problem),
+            &[vec![start]],
+            "{name} endpoint domains must remain independently repairable"
+        );
+    }
+}
+
+#[test]
+fn local_pair_with_two_movable_left_endpoints_owns_both_in_one_class() {
+    let case = run(&[seg(1.0, 0.0, 1.0, 0.0)]);
+    let mut partition = case.partition();
+    let minimum_subnormal = dyadic(f64::from_bits(1));
+    let start = append_constructed_point(
+        &mut partition,
+        dyadic(0.0),
+        minimum_subnormal.try_product(&dyadic(0.125)).unwrap(),
+    );
+    let end = append_constructed_point(
+        &mut partition,
+        dyadic(2.0),
+        minimum_subnormal.try_product(&dyadic(0.375)).unwrap(),
+    );
+    let fixed = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
+    let emission = embedding::Emission {
+        items: vec![[start, end], [fixed, fixed]],
+        chords: 1,
+        areal_chords: 0,
+        fan_spans: Vec::new(),
+        faces: None,
+    };
+    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[start], vec![
+        None;
+        partition
+            .node_count(
+            )
+    ])
+    .unwrap();
+    let assignment = Search::new(problem, "difference", 2)
+        .unwrap()
+        .run()
+        .unwrap();
+
+    assert_eq!(assignment.classes.len(), 1);
+    let solution = assignment.classes.first().unwrap();
+    assert_eq!(solution.variables.as_slice(), &[start, end]);
+    let [line_start, line_end] = solution.values.as_slice() else {
+        panic!("the local pair assigns both movable line endpoints");
+    };
+    let line = Segment {
+        start: *line_start,
+        end: *line_end,
+    };
+    let fixed_point = Segment {
+        start: XY::new(1.0, 0.0),
+        end: XY::new(1.0, 0.0),
+    };
+    assert_eq!(
+        segment_contact_exact(line, fixed_point),
+        Contact::Disjoint,
+        "the complete local pair must evaluate both movable line endpoints"
+    );
+}
+
 fn degree_two_reversal_segments() -> [Segment; 3] {
     [
         seg(
-            0.9999999999996705,
-            1.0000000000001992,
-            1.0000000000002955,
-            0.9999999999998217,
+            0.999_999_999_999_670_5,
+            1.000_000_000_000_199_2,
+            1.000_000_000_000_295_5,
+            0.999_999_999_999_821_7,
         ),
         seg(
-            0.9999999999997864,
-            1.0000000000005944,
-            1.000000000000156,
-            0.9999999999995663,
+            0.999_999_999_999_786_4,
+            1.000_000_000_000_594_4,
+            1.000_000_000_000_156,
+            0.999_999_999_999_566_3,
         ),
         seg(
-            1.0000000000005669,
-            0.9999999999996323,
-            0.9999999999995421,
-            1.0000000000002973,
+            1.000_000_000_000_566_9,
+            0.999_999_999_999_632_3,
+            0.999_999_999_999_542_1,
+            1.000_000_000_000_297_3,
         ),
     ]
 }
@@ -6406,25 +8053,26 @@ fn fan_reversal_quad_segments() -> [Segment; 6] {
 
 fn exact_orientation_order(
     partition: &ExactPartition<'_>,
-    [a, b, c]: [NodeId; 3],
+    [first_node, second_node, third_node]: [NodeId; 3],
 ) -> crate::error::Result<Ordering> {
-    let rational_xy = |node| -> crate::error::Result<(ExactRational, ExactRational)> {
+    let rational_coordinates = |node| -> crate::error::Result<(ExactRational, ExactRational)> {
         let exact = partition.exact(node)?;
-        let [x, y, weight] = &*exact;
+        let [x_numerator, y_numerator, homogeneous_weight] = &*exact;
         Ok((
-            ExactRational::new(x.clone(), weight.clone())?,
-            ExactRational::new(y.clone(), weight.clone())?,
+            ExactRational::new(x_numerator.clone(), homogeneous_weight.clone())?,
+            ExactRational::new(y_numerator.clone(), homogeneous_weight.clone())?,
         ))
     };
-    let (ax, ay) = rational_xy(a)?;
-    let (bx, by) = rational_xy(b)?;
-    let (cx, cy) = rational_xy(c)?;
-    let abx = bx.try_subtract(&ax)?;
-    let aby = by.try_subtract(&ay)?;
-    let acx = cx.try_subtract(&ax)?;
-    let acy = cy.try_subtract(&ay)?;
-    abx.try_product(&acy)?
-        .try_subtract(&aby.try_product(&acx)?)?
+    let (first_x, first_y) = rational_coordinates(first_node)?;
+    let (second_x, second_y) = rational_coordinates(second_node)?;
+    let (third_x, third_y) = rational_coordinates(third_node)?;
+    let first_to_second_x = second_x.try_subtract(&first_x)?;
+    let first_to_second_y = second_y.try_subtract(&first_y)?;
+    let first_to_third_x = third_x.try_subtract(&first_x)?;
+    let first_to_third_y = third_y.try_subtract(&first_y)?;
+    first_to_second_x
+        .try_product(&first_to_third_y)?
+        .try_subtract(&first_to_second_y.try_product(&first_to_third_x)?)?
         .try_cmp(&ExactRational::zero())
 }
 
@@ -6551,7 +8199,7 @@ fn degree_two_triangle_reversal_is_rejected_by_g_and_published_when_g_is_bypasse
     ]));
 
     let mut movable_cache = vec![None; partition.node_count()];
-    let problem = embedding::PlanarProblem::new(
+    let mut problem = embedding::PlanarProblem::new(
         &partition,
         &[&emission],
         &triangle,
@@ -6567,10 +8215,11 @@ fn degree_two_triangle_reversal_is_rejected_by_g_and_published_when_g_is_bypasse
     let global_calls = std::cell::Cell::new(0);
     let bypass = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &local_calls,
             global_calls: &global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: false,
             bypass_global: true,
         },
@@ -6668,9 +8317,9 @@ fn classify_fan_candidates(
         .iter()
         .position(|members| members.contains(&center))
         .expect("fan origin belongs to one movable class");
-    let fixed = problem.fixed_keys(class, &[center])?;
+    let fixed = problem.fixed_keys(class, &[center], &mut Unmetered)?;
     let mut candidates = Vec::new();
-    problem.fill_candidates(center, &mut candidates)?;
+    problem.fill_candidates(center, &mut candidates, &mut Unmetered)?;
     crate::geometry::try_sort_by(&mut candidates, |left, right| {
         problem.compare_candidates(center, *left, *right)
     })?;
@@ -6732,10 +8381,21 @@ fn classify_fan_candidates(
 
 #[test]
 fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
-    let case = run(&fan_reversal_quad_segments());
+    let mut case = run(&fan_reversal_quad_segments());
+    case.isolated.push(XY::new(7.0, 7.0));
     let partition = case.partition();
     assert_eq!(constructed_count(&partition), 1);
     let center = *partition.crossings().first().unwrap();
+    let isolated = *partition
+        .isolated
+        .first()
+        .expect("the unselected point supplies an empty fan row");
+    assert_eq!(isolated.0.wrapping_add(1), center.0);
+    assert_eq!(
+        usize::try_from(center.0).unwrap().wrapping_add(1),
+        partition.node_count(),
+        "the four-departure fan is the final CSR row"
+    );
     let step = 2.0_f64.powi(-52);
     let lattice =
         |(x, y): (i32, i32)| XY::new(1.0 + f64::from(x) * step, 1.0 + f64::from(y) * step);
@@ -6836,7 +8496,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
         .filter(|item| item.contains(&center))
         .count();
     assert_eq!(center_degree, 4);
-    let problem = embedding::PlanarProblem::new(&partition, &[&emission], &[center], vec![
+    let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &[center], vec![
         None;
         partition
             .node_count(
@@ -6846,9 +8506,11 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let classes = Problem::classes(&problem);
     assert_eq!(classes.len(), 1);
     assert_eq!(classes.first().unwrap(), &vec![center]);
-    let fixed = problem.fixed_keys(0, &[center]).unwrap();
+    let fixed = problem.fixed_keys(0, &[center], &mut Unmetered).unwrap();
     let mut candidates = Vec::new();
-    problem.fill_candidates(center, &mut candidates).unwrap();
+    problem
+        .fill_candidates(center, &mut candidates, &mut Unmetered)
+        .unwrap();
     crate::geometry::try_sort_by(&mut candidates, |left, right| {
         problem.compare_candidates(center, *left, *right)
     })
@@ -6860,10 +8522,11 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let normal_global_calls = std::cell::Cell::new(0);
     let normal = Search::new(
         TestVerifier {
-            inner: &problem,
+            inner: &mut problem,
             local_calls: &normal_local_calls,
             global_calls: &normal_global_calls,
             node_order: None,
+            candidate_filter: None,
             bypass_local: false,
             bypass_global: false,
         },
@@ -6876,7 +8539,7 @@ fn neighbor_float_fan_flip_is_classified_against_p_and_g() {
     let bypass_global_calls = std::cell::Cell::new(0);
     let without_fan_pruning = Search::new(
         FanBypassVerifier {
-            inner: &problem,
+            inner: &mut problem,
             global_calls: &bypass_global_calls,
         },
         "polygonize",
@@ -6935,7 +8598,7 @@ fn node_id_candidate_ordering_breaks_permutation_wkb_determinism() {
             fan_spans: Vec::new(),
             faces: None,
         };
-        let problem = embedding::PlanarProblem::new(&partition, &[&emission], &nodes, vec![
+        let mut problem = embedding::PlanarProblem::new(&partition, &[&emission], &nodes, vec![
                 None;
                 partition
                     .node_count()
@@ -6948,10 +8611,11 @@ fn node_id_candidate_ordering_breaks_permutation_wkb_determinism() {
             node_id_order.then_some(&by_node_id as &dyn Fn(NodeId, NodeId) -> Ordering);
         let assignment = Search::new(
             TestVerifier {
-                inner: &problem,
+                inner: &mut problem,
                 local_calls: &local_calls,
                 global_calls: &global_calls,
                 node_order,
+                candidate_filter: None,
                 bypass_local: true,
                 bypass_global: true,
             },

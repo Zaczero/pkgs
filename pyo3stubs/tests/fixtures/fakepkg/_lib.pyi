@@ -7,9 +7,14 @@ class Sealed:
     """A runtime-unsubclassable class (PyO3 default)."""
 
     __match_args__: Final = ('x', 'y')
-    @property
-    def maybe(self) -> int | None:
-        """Optional payload (fixture for the Option gate)."""
+    maybe: int | None
+    """Optional payload (fixture for the Option gate).
+
+    Returns
+    -------
+    int or None
+        The optional value.
+    """
     def method(self, value: int, flag: bool = True) -> int:
         """A documented method.
 

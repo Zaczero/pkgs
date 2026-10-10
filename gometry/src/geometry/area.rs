@@ -169,7 +169,9 @@ impl ExactFactorialArea {
             if degree == 0 {
                 denominator = ExactDyadic::from_i64(2);
             } else {
-                let factor = i64::try_from(degree + 2)
+                // Both callers zip non-ZST ExactDyadic slices, so their
+                // representable lengths bound degree and prevent wrapping.
+                let factor = i64::try_from(degree.wrapping_add(2))
                     .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
                 let factor = ExactDyadic::from_i64(factor);
                 numerator = numerator.try_product(&factor)?;
@@ -183,7 +185,7 @@ impl ExactFactorialArea {
         })
     }
 
-    pub(in crate::geometry) fn sign(&self) -> ExactSign {
+    pub(in crate::geometry) const fn sign(&self) -> ExactSign {
         self.numerator.sign()
     }
 
@@ -258,20 +260,6 @@ impl RingWinding {
     /// Reverse the ring when its winding does not match `clockwise`.
     pub(crate) const fn reverse_for_clockwise(self, clockwise: bool) -> bool {
         matches!(self, Self::CounterClockwise) == clockwise
-    }
-}
-
-impl AreaSign {
-    #[cfg(test)]
-    /// True when a face walk with this sign is a better outer-face candidate
-    /// for its component than one with `other`. A nondegenerate component's
-    /// outer face is its negative walk; when every walk is nonnegative the
-    /// component encloses no area and a zero walk seeds it.
-    pub(crate) const fn prefers_as_outer_face_than(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Negative, Self::Zero | Self::Positive) | (Self::Zero, Self::Positive)
-        )
     }
 }
 

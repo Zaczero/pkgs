@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import pickle
 import struct
 
@@ -101,7 +102,11 @@ def test_packed_payload_omits_unselected_parent_coordinates(
 ) -> None:
     selected = gm.from_wkt(rows)[[1]]
     _, args = selected.__reduce_ex__(5)
-    coordinate_payload = b''.join(value for value in args[:4] if value is not None)
+    coordinate_payload = b''.join(
+        bytes(value.raw()) if isinstance(value, pickle.PickleBuffer) else value
+        for value in args[:4]
+        if value is not None
+    )
 
     assert struct.pack('<d', 1234567.25) not in coordinate_payload
     assert selected.to_wkt() == [selected_wkt]
@@ -122,9 +127,9 @@ def test_packed_payload_omits_unselected_parent_coordinates(
 def test_nullable_packed_pickle_keeps_present_payload_and_logical_mask(
     rows: list[object],
 ) -> None:
-    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    values = gm.GeometryArray(rows, crs=4326).with_epoch(2020.0)
     _, args = values.__reduce_ex__(5)
-    assert args[-1] == b'\x00\x01\x00'
+    assert bytes(args[-1].raw()) == b'\x00\x01\x00'
     restored = pickle.loads(pickle.dumps(values, protocol=5))
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
     assert restored.is_missing.tolist() == [False, True, False]
@@ -133,6 +138,45 @@ def test_nullable_packed_pickle_keeps_present_payload_and_logical_mask(
     assert (
         restored.to_arrow().type.extension_name == values.to_arrow().type.extension_name
     )
+
+
+def test_protocol_five_pickle_buffers_roundtrip_after_source_drop() -> None:
+    sources = [
+        gm.points([0.0, 1.0, 2.0], [2.0, 3.0, 4.0], crs=4326, epoch=2020.5)[1:],
+        gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.5)[[1, 0]],
+        gm.GeometryArray([
+            gm.LineString([(0, 0), (1, 1)], z=[2, 3], m=[4, 5], crs=4326),
+            None,
+            gm.LineString([(2, 2), (3, 3)], z=[6, 7], m=[8, 9], crs=4326),
+        ]).with_epoch(2020.5),
+        gm.GeometryArray([
+            gm.Point(0, 0, crs=4326),
+            gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)], crs=4326),
+            None,
+        ]),
+    ]
+    pickles: list[tuple[bytes, list[pickle.PickleBuffer], list[str | None]]] = []
+
+    for source in sources:
+        buffers: list[pickle.PickleBuffer] = []
+        payload = pickle.dumps(source, protocol=5, buffer_callback=buffers.append)
+        assert buffers
+        assert all(buffer.raw().readonly for buffer in buffers)
+        pickles.append((payload, buffers, source.to_wkt(drop_epoch=True)))
+
+    del source
+    del sources
+    gc.collect()
+
+    for payload, buffers, expected_wkt in pickles:
+        with pytest.raises(pickle.UnpicklingError, match='out-of-band'):
+            pickle.loads(payload)
+        with pytest.raises(pickle.UnpicklingError):
+            pickle.loads(payload, buffers=buffers[:-1])
+
+        restored = pickle.loads(payload, buffers=buffers)
+        assert isinstance(restored, gm.GeometryArray)
+        assert restored.to_wkt(drop_epoch=True) == expected_wkt
 
 
 @pytest.mark.parametrize(
@@ -185,6 +229,45 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
         'mixed mask length': lambda: _lib._unpickle_geometry_array_v1(
             [gm.Point(0, 0).to_wkb()], None, None, bytes([0, 0])
         ),
+        'point all-present mask too short': lambda: _lib._unpickle_packed_array_v1(
+            doubles(1.0), doubles(2.0), None, None, (), None, None, b''
+        ),
+        'point all-present mask too long': lambda: _lib._unpickle_packed_array_v1(
+            doubles(1.0), doubles(2.0), None, None, (), None, None, b'\x00\x00'
+        ),
+        'line all-present mask too short': lambda: _lib._unpickle_packed_array_v1(
+            doubles(0.0, 1.0),
+            doubles(0.0, 1.0),
+            None,
+            None,
+            (offsets(0, 2),),
+            None,
+            None,
+            b'',
+        ),
+        'line all-present mask too long': lambda: _lib._unpickle_packed_array_v1(
+            doubles(0.0, 1.0),
+            doubles(0.0, 1.0),
+            None,
+            None,
+            (offsets(0, 2),),
+            None,
+            None,
+            b'\x00\x00',
+        ),
+        'polygon all-present mask too short': lambda: _lib._unpickle_packed_array_v1(
+            b'', b'', None, None, (offsets(0), offsets(0, 0)), None, None, b''
+        ),
+        'polygon all-present mask too long': lambda: _lib._unpickle_packed_array_v1(
+            b'',
+            b'',
+            None,
+            None,
+            (offsets(0), offsets(0, 0)),
+            None,
+            None,
+            b'\x00\x00\x00',
+        ),
         'one-vertex line': lambda: _lib._unpickle_packed_array_v1(
             square_xs, square_ys, None, None, (offsets(0, 1, 4),), None, None, None
         ),
@@ -221,8 +304,15 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
         'empty ring': lambda: _lib._unpickle_packed_array_v1(
             b'', b'', None, None, (offsets(0, 0), offsets(0, 1)), None, None, None
         ),
-        'no-shell polygon': lambda: _lib._unpickle_packed_array_v1(
-            b'', b'', None, None, (offsets(0), offsets(0, 0)), None, None, None
+        'descending polygon offsets': lambda: _lib._unpickle_packed_array_v1(
+            square_xs,
+            square_ys,
+            None,
+            None,
+            (offsets(0, 4), offsets(0, 1, 0)),
+            None,
+            None,
+            None,
         ),
     }
     for name, unpickle in rejected.items():
@@ -235,6 +325,146 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
         b'', b'', None, None, (offsets(0), offsets(0)), None, None, None
     )
     assert len(empty) == 0
+
+
+def test_packed_pickle_rejects_descending_offsets_with_valid_terminal_count() -> None:
+    xs = struct.pack('<4d', 0.0, 1.0, 1.0, 0.0)
+    ys = struct.pack('<4d', 0.0, 0.0, 1.0, 0.0)
+    ring_offsets = struct.pack('<2i', 0, 4)
+    # The final offset equals the one-ring payload count; only the interior
+    # descent makes this polygon CSR column invalid.
+    polygon_offsets = struct.pack('<4i', 0, 1, 0, 1)
+
+    with pytest.raises(gm.GeometryError):
+        _lib._unpickle_packed_array_v1(
+            xs,
+            ys,
+            None,
+            None,
+            (ring_offsets, polygon_offsets),
+            None,
+            None,
+            None,
+        )
+
+
+@pytest.mark.parametrize(
+    ('column', 'tail_length'),
+    [
+        pytest.param(column, tail, id=f'{column}-plus-{tail}')
+        for column in ('x', 'y', 'z', 'm')
+        for tail in range(1, 8)
+    ],
+)
+def test_packed_pickle_rejects_partial_coordinate_values(
+    column: str, tail_length: int
+) -> None:
+    valid = struct.pack('<2d', 0.0, 1.0)
+    trailing = bytes(tail_length)
+    xs, ys, zs, ms = valid, valid, None, None
+    match column:
+        case 'x':
+            xs += trailing
+        case 'y':
+            ys += trailing
+        case 'z':
+            zs = valid + trailing
+        case 'm':
+            ms = valid + trailing
+
+    with pytest.raises(gm.GeometryError, match='coordinate byte length'):
+        _lib._unpickle_packed_array_v1(xs, ys, zs, ms, (), None, None, None)
+
+
+@pytest.mark.parametrize(
+    ('level', 'tail_length'),
+    [
+        pytest.param(level, tail, id=f'{level}-offset-plus-{tail}')
+        for level in ('line', 'ring', 'polygon')
+        for tail in range(1, 4)
+    ],
+)
+def test_packed_pickle_rejects_partial_offset_values(
+    level: str, tail_length: int
+) -> None:
+    xs = struct.pack('<4d', 0.0, 1.0, 1.0, 0.0)
+    ys = struct.pack('<4d', 0.0, 0.0, 1.0, 0.0)
+    trailing = bytes(tail_length)
+    line_offsets = struct.pack('<2i', 0, 4)
+    polygon_offsets = struct.pack('<2i', 0, 1)
+    if level == 'line':
+        offsets = (line_offsets + trailing,)
+    elif level == 'ring':
+        offsets = (line_offsets + trailing, polygon_offsets)
+    else:
+        offsets = (line_offsets, polygon_offsets + trailing)
+
+    with pytest.raises(gm.GeometryError, match='offset byte length'):
+        _lib._unpickle_packed_array_v1(xs, ys, None, None, offsets, None, None, None)
+
+
+def test_packed_pickle_accepts_present_zero_ring_polygon() -> None:
+    empty = _lib._unpickle_packed_array_v1(
+        b'',
+        b'',
+        None,
+        None,
+        (struct.pack('<i', 0), struct.pack('<2i', 0, 0)),
+        None,
+        None,
+        None,
+    )
+
+    assert empty.to_wkt() == ['POLYGON EMPTY']
+    present_mask = _lib._unpickle_packed_array_v1(
+        b'',
+        b'',
+        None,
+        None,
+        (struct.pack('<i', 0), struct.pack('<2i', 0, 0)),
+        None,
+        None,
+        b'\x00',
+    )
+    assert present_mask.to_wkt() == ['POLYGON EMPTY']
+    assert present_mask.is_missing.tolist() == [False]
+
+
+def test_mixed_pickle_accepts_matching_all_present_mask() -> None:
+    rows = [gm.Point(1.0, 2.0).to_wkb(), gm.Point(3.0, 4.0).to_wkb()]
+    restored = _lib._unpickle_geometry_array_v1(rows, None, None, b'\x00\x00')
+
+    assert restored.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+def test_packed_pickle_accepts_matching_all_present_masks_for_points_and_lines() -> (
+    None
+):
+    point = _lib._unpickle_packed_array_v1(
+        struct.pack('<d', 1.0),
+        struct.pack('<d', 2.0),
+        None,
+        None,
+        (),
+        None,
+        None,
+        b'\x00',
+    )
+    line = _lib._unpickle_packed_array_v1(
+        struct.pack('<2d', 0.0, 1.0),
+        struct.pack('<2d', 0.0, 1.0),
+        None,
+        None,
+        (struct.pack('<2i', 0, 2),),
+        None,
+        None,
+        b'\x00',
+    )
+
+    assert point.to_wkt() == ['POINT (1 2)']
+    assert line.to_wkt() == ['LINESTRING (0 0, 1 1)']
+    assert not point.is_missing.any()
+    assert not line.is_missing.any()
 
 
 def test_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
@@ -376,12 +606,12 @@ def test_pickle_packed_polygon_drop_missing_gather_filter_round_trip() -> None:
 def test_pickle_malformed_wkb_polygon_stays_mixed_not_packed() -> None:
     """The mixed WKB unpickler must not opportunistically pack.
 
-    Uses a *valid, pack-admissible* polygon WKB so swapping
-    ``mixed`` for ``pack_or_mixed`` would produce packed storage and fail
+    Uses a *valid, pack-admissible* polygon WKB so replacing the mixed
+    unpickler with ``PyGeometryArray::from_shapes`` would produce packed storage and fail
     the reduce-name check (malformed WKB demotes under pack_admission and
     would not detect that swap).
     """
-    # Closed 4-vertex polygon — would pack under pack_or_mixed.
+    # Closed 4-vertex polygon — the standard shape builder packs it.
     wkb = gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)]).to_wkb()
     arr = _lib._unpickle_geometry_array_v1([wkb], None, None, None)
     assert len(arr) == 1

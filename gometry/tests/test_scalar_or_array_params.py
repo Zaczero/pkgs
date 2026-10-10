@@ -507,6 +507,76 @@ def test_free_snap_scalar_geometry_array_reference_per_element() -> None:
     assert out[1].to_wkt() == 'LINESTRING (0.05 0.05, 2 2)'
 
 
+def test_free_snap_scalar_tolerance_preserves_missing_and_typed_empty_rows() -> None:
+    """Scalar tolerance keeps nulls distinct from typed EMPTY in either direction."""
+    typed_empty = gm.from_wkt('POINT EMPTY')
+    source_rows = gm.GeometryArray([None, typed_empty, gm.Point(0.05, 0.05)])
+
+    source_array_results = (
+        gm.snap(source_rows, gm.Point(0, 0), 0.1),
+        gm.snap(source_rows, gm.Point(0, 0), [0.1, 0.1, 0.1]),
+    )
+
+    reference_rows = gm.GeometryArray([
+        None,
+        gm.Point(0, 0),
+        gm.from_wkt('POINT EMPTY'),
+    ])
+    reference_array_results = (
+        gm.snap(gm.Point(0.05, 0.05), reference_rows, 0.1),
+        gm.snap(gm.Point(0.05, 0.05), reference_rows, [0.1, 0.1, 0.1]),
+    )
+
+    paired_result = gm.snap(
+        gm.GeometryArray([
+            None,
+            gm.Point(0.05, 0.05),
+            typed_empty,
+            gm.Point(0.05, 0.05),
+        ]),
+        gm.GeometryArray([
+            gm.Point(0, 0),
+            None,
+            gm.Point(0, 0),
+            gm.Point(0, 0),
+        ]),
+        0.1,
+    )
+
+    observed = [
+        (
+            result.is_missing.tolist(),
+            [
+                None if result[row] is None else result[row].to_wkt()
+                for row in range(len(result))
+            ],
+        )
+        for result in (*source_array_results, *reference_array_results, paired_result)
+    ]
+    assert observed == [
+        (
+            [True, False, False],
+            [None, 'POINT EMPTY', 'POINT (0 0)'],
+        ),
+        (
+            [True, False, False],
+            [None, 'POINT EMPTY', 'POINT (0 0)'],
+        ),
+        (
+            [True, False, False],
+            [None, 'POINT (0 0)', 'POINT (0.05 0.05)'],
+        ),
+        (
+            [True, False, False],
+            [None, 'POINT (0 0)', 'POINT (0.05 0.05)'],
+        ),
+        (
+            [True, True, False, False],
+            [None, None, 'POINT EMPTY', 'POINT (0 0)'],
+        ),
+    ]
+
+
 def test_free_equals_exact_accepts_per_element_tolerance() -> None:
     """The free ``gm.equals_exact`` compares each row to its own tolerance;
     symmetric, so either operand may be the array.

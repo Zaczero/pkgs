@@ -31,6 +31,35 @@ fn assert_bits(value: f64, expected: f64) {
     assert_eq!(value.to_bits(), expected.to_bits());
 }
 
+#[test]
+fn conventional_degree_latitude_conversion_preserves_source_bits() {
+    let unit = factor(std::f64::consts::PI / 180.0);
+    for latitude_north in [true, false] {
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(true, latitude_north),
+        )
+        .unwrap();
+        for latitude in [
+            -63.870_640_325_120_85,
+            -61.836_984_191_501_61,
+            43.625_172_661_832_906,
+        ] {
+            let native_latitude = latitude * frame.latitude_orientation_sign();
+            assert_bits(
+                frame.to_geodesic_latitude(native_latitude).unwrap(),
+                latitude,
+            );
+            let native = frame
+                .point_from_geodesic(crate::geometry::Point::new_raw_xy(0.0, latitude))
+                .unwrap();
+            assert_bits(native.y, native_latitude);
+        }
+    }
+}
+
 fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::CoordSeq {
     crate::geometry::CoordSeq::try_from_vecs(xs, ys, None, None).unwrap()
 }
@@ -44,6 +73,41 @@ fn ring_from_points(points: &[(f64, f64)]) -> crate::geometry::Ring {
         points.iter().map(|&(x, _)| x).collect(),
         points.iter().map(|&(_, y)| y).collect(),
     )
+}
+
+fn nested_member_path(path: &[usize], mut child: crate::geometry::Shape) -> crate::geometry::Shape {
+    use crate::geometry::{CoordinateAxes, GeometryKind, Shape};
+
+    for &member in path.iter().rev() {
+        let mut members = vec![Shape::Empty(GeometryKind::Point, CoordinateAxes::XY); member];
+        members.push(child);
+        child = Shape::geometry_collection(members).expect("test member path stays within limits");
+    }
+    child
+}
+
+fn invalid_hole_polygon() -> crate::geometry::Polygon {
+    use crate::geometry::Polygon;
+
+    let shell = ring_from_points(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 0.0)]);
+    let hole = ring_from_points(&[(0.5, 0.5), (1.5, 0.5), (1.5, 91.0), (0.5, 0.5)]);
+    Polygon::new(shell, vec![hole])
+}
+
+fn nested_window_ring(ys: Vec<f64>) -> (crate::geometry::Ring, usize) {
+    use crate::geometry::{CoordWindow, Ring};
+
+    let parent = xy_seq(vec![901.0, 902.0, 10.0, 20.0, 20.0, 10.0, 903.0], ys);
+    let parent_window = CoordWindow::checked(1..7, parent.len())
+        .expect("first relative view is within the parent coordinates");
+    let parent_view = parent.view(parent_window);
+    let ring_window = CoordWindow::checked(1..5, parent_view.len())
+        .expect("second relative view is within the first visible window");
+    let ring_coords = parent_view.view(ring_window);
+    let x_address = ring_coords.xs().as_ptr().addr();
+    let ring =
+        Ring::try_from_closed(ring_coords).expect("fixture is a closed four-coordinate ring");
+    (ring, x_address)
 }
 
 fn rotated_ring(points: &[(f64, f64)], offset: usize, reverse: bool) -> crate::geometry::Ring {
@@ -198,6 +262,109 @@ fn ordinary_chart_certificate_matches_selected_period_and_edge_contracts() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "these tests characterize exact binary64 spellings at a periodic seam"
+)]
+fn removed_period_workarounds_preserve_finite_longitude_bits() {
+    fn previous_wrap(axis: PeriodicAxis, value: f64) -> f64 {
+        let mut reduced = value % axis.period();
+        if value.fract() == 0.0 && axis.period().fract() == 0.0 {
+            let nominal_remainder = value % axis.period();
+            if nominal_remainder == 0.0 {
+                reduced = 0.0;
+            } else if nominal_remainder.abs() == axis.period() / 2.0 {
+                reduced = -axis.half_period();
+            }
+        }
+        if reduced < -axis.half_period() {
+            reduced += axis.period();
+        } else if reduced >= axis.half_period() {
+            reduced -= axis.period();
+        }
+        if reduced == 0.0 {
+            reduced = 0.0;
+        }
+        reduced
+    }
+
+    fn previous_ordinary_longitude(axis: PeriodicAxis, value: f64) -> Option<u64> {
+        if value.abs().partial_cmp(&axis.half_period()) != Some(std::cmp::Ordering::Less) {
+            return None;
+        }
+        if value.fract() == 0.0
+            && axis.period().fract() == 0.0
+            && value.abs() == axis.period() / 2.0
+        {
+            return None;
+        }
+        Some(if value == 0.0 { 0.0 } else { value }.to_bits())
+    }
+
+    fn previous_ordinary_longitude_bound(axis: PeriodicAxis) -> f64 {
+        if axis.period().fract() == 0.0 && (axis.period() / 2.0).fract() == 0.0 {
+            axis.half_period().min(axis.period() / 2.0)
+        } else {
+            axis.half_period()
+        }
+    }
+
+    let mut axes = vec![degrees().longitude(), frame(1.0).longitude()];
+    for turn in [400.0_f64.next_down(), 400.0, 400.0_f64.next_up()] {
+        let unit = factor(std::f64::consts::TAU / turn);
+        assert_eq!(unit.recognized_period(), Some(400.0));
+        axes.push(
+            GeographicFrame::try_new(unit, unit, 0.0)
+                .unwrap()
+                .longitude(),
+        );
+    }
+
+    for axis in axes {
+        let half = axis.half_period();
+        let period = axis.period();
+        let large_alias = period * (2.0_f64.powi(40));
+        let values = [
+            -half,
+            half,
+            -half.next_down(),
+            -half.next_up(),
+            half.next_down(),
+            half.next_up(),
+            -0.0,
+            0.0,
+            -period,
+            period,
+            -large_alias,
+            large_alias,
+            -large_alias - half,
+            large_alias + half,
+            f64::MIN,
+            f64::MAX,
+        ];
+
+        assert_eq!(
+            axis.ordinary_longitude_bound().to_bits(),
+            previous_ordinary_longitude_bound(axis).to_bits()
+        );
+        for value in values {
+            assert!(value.is_finite());
+            assert_eq!(
+                axis.wrap_admitted(value).get().to_bits(),
+                previous_wrap(axis, value).to_bits(),
+                "wrapped bits for {value:?} with period {period:?}"
+            );
+            assert_eq!(
+                axis.ordinary_longitude(value)
+                    .map(|value| value.get().to_bits()),
+                previous_ordinary_longitude(axis, value),
+                "ordinary bits for {value:?} with period {period:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn latitude_admission_is_one_exterior_ulp_and_contextual() {
     let pole = degrees().pole();
     let admitted =
@@ -259,6 +426,42 @@ fn ring_summary_uses_chart_turn_and_keeps_axis_bands() {
 }
 
 #[test]
+fn geographic_ring_keeps_nested_visible_window_after_parent_drop() {
+    let (ring, visible_x_address) =
+        nested_window_ring(vec![91.0, -91.0, 60.0, 60.0, 70.0, 60.0, 91.0]);
+
+    assert_eq!(ring.len(), 4);
+    assert_eq!(ring.coords().xs(), &[10.0, 20.0, 20.0, 10.0]);
+    assert_eq!(ring.coords().ys(), &[60.0, 60.0, 70.0, 60.0]);
+    assert_eq!(ring.coords().xs().as_ptr().addr(), visible_x_address);
+
+    let geographic = GeographicRing::from_ring(&ring);
+    assert_eq!(geographic.native_xs(), &[10.0, 20.0, 20.0, 10.0]);
+    assert_eq!(geographic.native_xs().as_ptr().addr(), visible_x_address);
+    let summary = RingSummary::try_new(degrees(), &geographic).unwrap();
+    assert_eq!(summary.chart_turn, 0);
+    assert_eq!(summary.domain, RingDomain::Ordinary);
+    assert_eq!(summary.south.get(), 60.0);
+    assert_eq!(summary.north.get(), 70.0);
+}
+
+#[test]
+fn geographic_ring_reports_local_coordinate_index_for_nested_window() {
+    let (ring, visible_x_address) =
+        nested_window_ring(vec![91.0, -91.0, 60.0, 60.0, 91.0, 60.0, 91.0]);
+    assert_eq!(ring.coords().xs().as_ptr().addr(), visible_x_address);
+
+    let error = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&ring)).unwrap_err();
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 20.0);
+    assert_bits(error.native.y, 91.0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
+}
+
+#[test]
 fn raw_bounds_certify_only_strictly_ordinary_nonpolar_chart_support() {
     let frame = degrees();
     let bounds = |minx, miny, maxx, maxy| crate::geometry::Bounds::new_raw(minx, miny, maxx, maxy);
@@ -310,6 +513,50 @@ fn explicit_period_edge_keeps_the_ambiguous_ring_admission_gate() {
 }
 
 #[test]
+fn every_ambiguous_nonzero_turn_is_rejected_in_both_directions() {
+    use crate::geometry::{Polygon, Shape};
+
+    let forward = [
+        (0.0, 20.0),
+        (120.0, -20.0),
+        (240.0, 20.0),
+        (360.0, -20.0),
+        (480.0, 20.0),
+        (600.0, -20.0),
+        (0.0, 20.0),
+    ];
+    let reverse = [
+        (0.0, 20.0),
+        (600.0, -20.0),
+        (480.0, 20.0),
+        (360.0, -20.0),
+        (240.0, 20.0),
+        (120.0, -20.0),
+        (0.0, 20.0),
+    ];
+
+    for (points, expected_turn) in [(&forward, 2), (&reverse, -2)] {
+        let ring = ring_from_points(points);
+        let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&ring)).unwrap();
+        assert_eq!(summary.chart_turn, expected_turn);
+        assert_eq!(summary.full_turn_pole(), Some(FullTurnPole::Ambiguous));
+
+        let shape = Shape::Polygon(Polygon::new(ring, Vec::new()));
+        let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+        assert_eq!(error.location.ring, Some(0));
+        assert_eq!(error.location.coordinate, 0);
+        assert_bits(error.native.x, 0.0);
+        assert_bits(error.native.y, 20.0);
+        assert!(matches!(
+            error.source,
+            GeographicError::AmbiguousFullTurnRing { south, north }
+                if south.to_bits() == (-20.0_f64).to_bits()
+                    && north.to_bits() == 20.0_f64.to_bits()
+        ));
+    }
+}
+
+#[test]
 fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     let xs = vec![-180.0, -90.0, 0.0, 90.0, 180.0];
     let north = ring(xs.clone(), vec![0.0, 5.0, 5.0, 5.0, 0.0]);
@@ -355,20 +602,34 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
 
 #[test]
 fn coordinate_domain_errors_precede_pending_ambiguous_ring_gates() {
-    let shell = ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
-        -5.0, 5.0, 5.0, 5.0, -5.0,
-    ]);
-    let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
-        100.0, 100.0, 101.0, 100.0,
-    ]);
-    let shape = crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
+    for shell in [
+        ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
+            -5.0, 5.0, 5.0, 5.0, -5.0,
+        ]),
+        ring_from_points(&[
+            (0.0, 20.0),
+            (120.0, -20.0),
+            (240.0, 20.0),
+            (360.0, -20.0),
+            (480.0, 20.0),
+            (600.0, -20.0),
+            (0.0, 20.0),
+        ]),
+    ] {
+        let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
+            100.0, 100.0, 101.0, 100.0,
+        ]);
+        let shape =
+            crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
 
-    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
-    assert_eq!(error.location.ring, Some(1));
-    assert!(matches!(
-        error.source,
-        GeographicError::LatitudeOutOfRange { .. }
-    ));
+        let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+        assert_eq!(error.location.ring, Some(1));
+        assert_eq!(error.location.coordinate, 0);
+        assert!(matches!(
+            error.source,
+            GeographicError::LatitudeOutOfRange { .. }
+        ));
+    }
 }
 
 fn axis_box(frame: GeographicFrame, west: f64, east: f64, south: f64, north: f64) -> RingSummary {
@@ -575,7 +836,10 @@ fn seam_spelled_axis_ring_is_not_an_explicit_world_band() {
 
 #[test]
 fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
-    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape, SharedSlice};
+    use crate::geometry::{
+        CoordinateAxes, LineSeq, MultiLineString, MultiMember, MultiPolygon, Polygon, Shape,
+        SharedSlice,
+    };
 
     let shell = ring(vec![0.0, 2.0, 2.0, 0.0, 0.0], vec![0.0, 0.0, 2.0, 2.0, 0.0]);
     let bad_hole = ring(vec![0.5, 1.5, 1.5, 0.5, 0.5], vec![
@@ -601,6 +865,34 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
     assert_eq!(error.location.coordinate, 2);
     assert_bits(error.native.x, 1.5);
     assert_bits(error.native.y, 91.0);
+
+    let valid_line =
+        LineSeq::try_new(xy_seq(vec![0.0, 1.0], vec![0.0, 1.0])).expect("valid XY line");
+    let invalid_line = LineSeq::try_new(xy_seq(vec![0.0, 1.0], vec![0.0, 91.0]))
+        .expect("finite line outside the latitude range");
+    let multipart = MultiLineString::try_new(CoordinateAxes::XY, vec![
+        MultiMember::Empty,
+        MultiMember::Value(valid_line),
+        MultiMember::Value(invalid_line.clone()),
+        MultiMember::Value(invalid_line),
+    ])
+    .expect("multipart lines have homogeneous XY axes");
+    let nested_line = Shape::geometry_collection(vec![
+        Shape::geometry_collection(vec![Shape::MultiLineString(multipart)])
+            .expect("test collection is valid"),
+    ])
+    .expect("test collection is valid");
+    let error = ScalarGeographicView::try_new(degrees(), &nested_line)
+        .expect_err("the first invalid line member must be rejected");
+    assert_eq!(error.location.members.as_slice(), [0, 0, 2]);
+    assert_eq!(error.location.ring, None);
+    assert_eq!(error.location.coordinate, 1);
+    assert_bits(error.native.x, 1.0);
+    assert_bits(error.native.y, 91.0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
 }
 
 #[test]
@@ -621,6 +913,141 @@ fn shared_dag_domain_error_keeps_the_first_member_path() {
     assert_eq!(error.location.coordinate, 0);
     assert!(error.native.x.is_nan());
     assert_bits(error.native.y, 30.0);
+}
+
+#[test]
+fn member_path_inline_depth_preserves_literal_logical_ordinals() {
+    use crate::geometry::Shape;
+
+    let shape = nested_member_path(&[2, 1, 3, 0], Shape::Polygon(invalid_hole_polygon()));
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 1.5);
+    assert_bits(error.native.y, 91.0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
+}
+
+#[test]
+fn member_path_spill_pop_preserves_the_sibling_path() {
+    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape};
+
+    let valid = Polygon::new(
+        ring_from_points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]),
+        Vec::new(),
+    );
+    let multipart = Shape::MultiPolygon(
+        MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Value(valid),
+            MultiMember::Empty,
+            MultiMember::Value(invalid_hole_polygon()),
+        ])
+        .unwrap(),
+    );
+    let shape = nested_member_path(&[2, 1, 3, 0], multipart);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0, 2]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 1.5);
+    assert_bits(error.native.y, 91.0);
+}
+
+#[test]
+fn member_path_depth_six_preserves_nested_empty_ordinals() {
+    use crate::geometry::{
+        CoordinateAxes, GeometryKind, MultiMember, MultiPolygon, Point, Polygon, Shape,
+    };
+
+    let valid = Polygon::new(
+        ring_from_points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]),
+        Vec::new(),
+    );
+    let multipart = Shape::MultiPolygon(
+        MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(valid),
+            MultiMember::Empty,
+            MultiMember::Value(invalid_hole_polygon()),
+        ])
+        .unwrap(),
+    );
+    let branch = Shape::geometry_collection(vec![
+        Shape::Point(Point::new(5.0, 6.0).unwrap()),
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+        multipart,
+    ])
+    .unwrap();
+    let shape = nested_member_path(&[2, 1, 3, 0], branch);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0, 2, 3]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 1.5);
+    assert_bits(error.native.y, 91.0);
+}
+
+#[test]
+fn member_path_spill_unwinds_before_outer_sibling() {
+    use crate::geometry::{CoordinateAxes, GeometryKind, Point, Shape};
+
+    let deep_success = nested_member_path(&[1, 0], Shape::Point(Point::new(5.0, 6.0).unwrap()));
+    let branch = Shape::geometry_collection(vec![
+        deep_success,
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+        Shape::Polygon(invalid_hole_polygon()),
+    ])
+    .unwrap();
+    let shape = nested_member_path(&[2, 1, 3], branch);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 3]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+}
+
+#[test]
+fn pending_ring_gate_keeps_spilled_member_path_after_later_pops() {
+    use crate::geometry::{
+        CoordinateAxes, GeometryKind, MultiMember, MultiPolygon, Point, Polygon, Shape,
+    };
+
+    let ambiguous = ring(vec![0.0, 360.0, 300.0, 0.0], vec![
+        -10.0, -10.0, 10.0, -10.0,
+    ]);
+    let multipart = Shape::MultiPolygon(
+        MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Empty,
+            MultiMember::Value(Polygon::new(ambiguous, Vec::new())),
+        ])
+        .unwrap(),
+    );
+    let later_success = nested_member_path(&[1, 0], Shape::Point(Point::new(5.0, 6.0).unwrap()));
+    let branch = Shape::geometry_collection(vec![
+        multipart,
+        later_success,
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+    ])
+    .unwrap();
+    let shape = nested_member_path(&[2, 1, 3], branch);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0, 2]);
+    assert_eq!(error.location.ring, Some(0));
+    assert_eq!(error.location.coordinate, 0);
+    assert!(matches!(
+        error.source,
+        GeographicError::AmbiguousFullTurnRing { .. }
+    ));
 }
 
 fn deeply_nested_line(coordinate_count: usize) -> crate::geometry::Shape {

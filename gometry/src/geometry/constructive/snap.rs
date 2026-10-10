@@ -6,7 +6,7 @@ use crate::geometry::constructive::Result;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates, GeometryErrorKind, GeometryKind, LineSeq,
     MultiLineString, MultiMember, MultiPolygon, Point, Polygon, RepairMethod, Ring, RunIdentity,
-    Segment, SegmentProjection, Shape, SourceArcMetricAccess, TopologyDomain, XY,
+    Segment, SegmentProjection, Shape, SourceArcContext, TopologyDomain, XY,
     bounds_distance_squared, dedup_consecutive_points, point_distance,
     point_segment_distance_and_projection, points_dwithin, push_distinct_xy_position,
     repair_shape_in_frame, same_point, same_topological_coordinate, validate_shape_in_frame,
@@ -611,7 +611,7 @@ impl Shape {
         size: (f64, f64),
         origin: (f64, f64),
         domain: TopologyDomain,
-        metric_access: Option<&SourceArcMetricAccess<'_>>,
+        context: &SourceArcContext<'_, '_>,
     ) -> Result<Self, crate::error::Error> {
         const MAX_PASSES: usize = 8;
         let mut shape = self.snap_to_grid(size, origin)?;
@@ -619,7 +619,7 @@ impl Shape {
             if validate_shape_in_frame(&shape, domain)?.is_none() {
                 return Ok(shape);
             }
-            shape = repair_shape_in_frame(&shape, domain, RepairMethod::Linework, metric_access)?
+            shape = repair_shape_in_frame(&shape, domain, RepairMethod::Linework, context)?
                 .expect("invalid geometry produces a repaired shape")
                 .snap_to_grid(size, origin)?;
         }

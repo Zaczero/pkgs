@@ -1,4 +1,6 @@
 use std::collections::hash_map::Entry;
+#[cfg(test)]
+use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
 #[cfg(test)]
@@ -29,14 +31,17 @@ pub(crate) struct SegmentProvenance {
 }
 
 impl SegmentProvenance {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a valid piece has adjacent offsets and every internal CSR builder keeps the terminal owner range in bounds"
+    )]
     pub(crate) fn owners(&self, piece: usize) -> &[SegmentSource] {
         let start = self.offsets[piece] as usize;
-        let end = self.offsets[piece + 1] as usize;
+        let end = self.offsets[piece.wrapping_add(1)] as usize;
         &self.entries[start..end]
     }
 
-    /// Adopt a caller-built CSR. Allocation of `offsets`/`entries` is the
-    /// caller's fallible work; this only binds the two columns.
+    /// Adopt caller-built CSR columns without copying them.
     pub(crate) fn from_csr(offsets: Vec<u32>, entries: Vec<SegmentSource>) -> Self {
         debug_assert!(!offsets.is_empty());
         Self { offsets, entries }
@@ -46,10 +51,14 @@ impl SegmentProvenance {
         self.offsets.len().saturating_sub(1)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "internal CSR builders publish monotone offsets whose terminal value equals the owner-entry length"
+    )]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &[SegmentSource]> + '_ {
-        self.offsets.array_windows::<2>().map(|window| {
-            let start = window[0] as usize;
-            let end = window[1] as usize;
+        self.offsets.array_windows::<2>().map(|&[start, end]| {
+            let start = start as usize;
+            let end = end as usize;
             &self.entries[start..end]
         })
     }
@@ -72,6 +81,10 @@ impl std::ops::Index<usize> for SegmentProvenance {
 /// Unique input publishes identity provenance directly. The first repeated edge
 /// stages assignments for the unique prefix, then counting placement groups
 /// `(ordinal, reversed)` owners into one flat `entries` vector.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "map-issued unique IDs address parallel count cursors, and checked CSR row/total counts bound owner-entry scatter slots"
+)]
 pub(crate) fn dedup_undirected_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
 ) -> Result<(Vec<Segment>, SegmentProvenance)> {
@@ -88,8 +101,10 @@ pub(crate) fn dedup_undirected_segments_sourced(
         match index_of.entry(key) {
             Entry::Occupied(entry) => {
                 if assignment.is_empty() {
+                    let prefix_count =
+                        u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
                     assignment.reserve(capacity);
-                    assignment.extend((0..unique.len() as u32).map(|index| (index, false)));
+                    assignment.extend((0..prefix_count).map(|index| (index, false)));
                 }
                 let unique_index = *entry.get();
                 let rep = unique[unique_index as usize];
@@ -129,28 +144,22 @@ pub(crate) fn dedup_undirected_segments_sourced(
             .ok_or(ResourceError::SizeOverflow)?;
     }
     let offsets = placement_offsets(&mut counts)?;
-    let mut cursor = counts;
-    let mut entries = Vec::with_capacity(assignment.len());
-    entries.resize(assignment.len(), (0_u32, false));
+    let mut entries = vec![(0_u32, false); assignment.len()];
     for (ordinal, &(unique_index, reversed)) in assignment.iter().enumerate() {
-        let slot = cursor[unique_index as usize] as usize;
+        let cursor = &mut counts[unique_index as usize];
+        let slot = *cursor as usize;
         entries[slot] = (
             u32::try_from(ordinal).map_err(|_| ResourceError::SizeOverflow)?,
             reversed,
         );
-        cursor[unique_index as usize] += 1;
+        *cursor = (*cursor).wrapping_add(1);
     }
     Ok((unique, SegmentProvenance { offsets, entries }))
 }
 
 /// Build CSR offsets, replacing row counts with starting write cursors.
 pub(super) fn placement_offsets(counts: &mut [u32]) -> Result<Vec<u32>> {
-    let mut offsets = Vec::with_capacity(
-        counts
-            .len()
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?,
-    );
+    let mut offsets = Vec::with_capacity(counts.len().wrapping_add(1));
     let mut start = 0_u32;
     for count in counts {
         offsets.push(start);
@@ -194,16 +203,16 @@ fn expand_provenance_to_atoms(
     Ok(SegmentProvenance { offsets, entries })
 }
 
-/// Noding for the geographic graph test oracle, with multi-source provenance
-/// retained per atomic piece.
+/// Test-only sourced noding, with multi-source provenance retained per atomic
+/// piece.
 ///
 /// Exact undirected duplicates always collapse before noding so the pair scan
 /// is O(U²) in unique edges, not O(E²) in duplicate multiplicity. Each atomic
 /// piece carries the **full** set of original ordinals that owned that
 /// undirected edge, including each source direction.
 ///
-/// Atoms stay in the representative direction; the geographic graph test
-/// oracle folds reverse flags into its source transitions.
+/// Atoms stay in the representative direction; each owner retains its source
+/// direction in the provenance row.
 #[cfg(test)]
 pub(crate) fn self_node_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
@@ -236,12 +245,11 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
     Ok((atomic, sources))
 }
 
-/// Endpoint cuts for collinear overlaps in the geographic graph test oracle.
+/// Endpoint cuts for collinear overlaps in sourced noding.
 #[cfg(test)]
 pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32, XY)>> {
     let mut events: Vec<(u32, XY)> = Vec::new();
-    let mut failure = Ok(());
-    let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
+    let candidate_flow = for_each_candidate_pair(segments, single_chain, |left, right| {
         let (a, b) = (segments[left], segments[right]);
         let orientations = PairOrientations::new(a, b);
         if orientations.right_start == Orientation::Collinear
@@ -249,12 +257,13 @@ pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32,
             && let Err(error) =
                 push_collinear_overlap_cuts(segments, left, right, orientations, &mut events)
         {
-            failure = Err(error);
-            return std::ops::ControlFlow::Break(());
+            return ControlFlow::Break(error);
         }
-        std::ops::ControlFlow::Continue(())
+        ControlFlow::Continue(())
     })?;
-    failure?;
+    if let ControlFlow::Break(error) = candidate_flow {
+        return Err(error);
+    }
     Ok(events)
 }
 
@@ -314,15 +323,13 @@ pub(in crate::geometry) struct NodingScan {
     pub(in crate::geometry) overlaps_found: bool,
 }
 
-/// Pairwise cut events and collinear-overlap observations for the geographic
-/// graph test oracle.
+/// Pairwise cut events and collinear-overlap observations for sourced noding.
 #[cfg(test)]
 pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
     let mut events: Vec<(u32, XY)> = Vec::new();
     let mut overlaps_found = false;
-    let mut failure = Ok(());
     // Large pools take the monotone-run path and avoid a flat sweep-entry sort.
-    let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
+    let candidate_flow = for_each_candidate_pair(segments, single_chain, |left, right| {
         // Endpoint-sharing pairs (every ADJACENT pair of a chain) cannot
         // cross at an interior point — the only interior cuts they can
         // produce are collinear-overlap endpoints, decided by the robust
@@ -334,7 +341,7 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
         // robust orientation work they'd otherwise pay (a
         // disjoint-envelope pair shares no point: no cuts of any kind).
         if segment_envelopes_disjoint(a, b) {
-            return std::ops::ControlFlow::Continue(());
+            return ControlFlow::Continue(());
         }
         let orientations = PairOrientations::new(a, b);
         let shares_endpoint = same_point(a.start, b.start)
@@ -359,15 +366,14 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
                 {
                     Ok(cut) => overlaps_found |= cut,
                     Err(error) => {
-                        failure = Err(error);
-                        return std::ops::ControlFlow::Break(());
+                        return ControlFlow::Break(error);
                     },
                 }
             }
-            return std::ops::ControlFlow::Continue(());
+            return ControlFlow::Continue(());
         }
         if shares_endpoint {
-            return std::ops::ControlFlow::Continue(());
+            return ControlFlow::Continue(());
         }
         match segment_cross_point_with_orientations(a, b, orientations) {
             Ok(Some(point)) => {
@@ -377,21 +383,21 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
                             .map_err(|_| ResourceError::SizeOverflow.into())
                             .map(|target| events.push((target, point)));
                         if let Err(error) = result {
-                            failure = Err(error);
-                            return std::ops::ControlFlow::Break(());
+                            return ControlFlow::Break(error);
                         }
                     }
                 }
             },
             Ok(None) => {},
             Err(error) => {
-                failure = Err(error);
-                return std::ops::ControlFlow::Break(());
+                return ControlFlow::Break(error);
             },
         }
-        std::ops::ControlFlow::Continue(())
+        ControlFlow::Continue(())
     })?;
-    failure?;
+    if let ControlFlow::Break(error) = candidate_flow {
+        return Err(error);
+    }
     Ok(NodingScan {
         events,
         overlaps_found,

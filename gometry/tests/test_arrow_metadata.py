@@ -175,13 +175,13 @@ def test_python_arrow_metadata_frame_matches_rust_boundary_rules() -> None:
         gometry_arrow._metadata_frame(b'{"crs":"EPSG:4326","epoch":Infinity}')
     with pytest.raises(
         gm.ParseError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ) as exc:
         gometry_arrow._metadata_frame(b'{"epoch":2020.0}')
     assert exc.value.format == 'geoarrow'
     with pytest.raises(
         gm.ParseError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a dynamic CRS; EPSG:2180 is static\. Remove epoch= or transform to a dynamic CRS first$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch is not admitted for CRS EPSG:2180; remove epoch= or transform to a CRS that admits coordinate epochs first$',
     ):
         gometry_arrow._metadata_frame(b'{"crs":"EPSG:2180","epoch":2020.0}')
     with pytest.raises(ValueError, match='JSON object'):
@@ -453,7 +453,7 @@ def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> N
         metadata={
             b'ARROW:extension:name': b'geoarrow.point',
             b'ARROW:extension:metadata': _json.dumps({
-                'crs': gm.CRS('OGC:CRS84').to_projjson_dict()
+                'crs': gm.CRS('OGC:CRS84').to_projjson(as_dict=True)
             }).encode(),
         },
     )
@@ -505,7 +505,7 @@ def test_python_arrow_extension_type_rejects_epoch_without_crs() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gometry_arrow._extension_type(cast('Any', pa), 'geoarrow.point', None, 2020.0)
     with pytest.raises(ValueError, match='epoch must be finite'):

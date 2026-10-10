@@ -168,6 +168,22 @@ class TokenConfig:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class TextSignatureDefault:
+    """One nonliteral Rust default's explicit public text-signature value.
+
+    Use this only where an exposed effective default or sentinel deliberately
+    differs from the Rust expression; the expression itself is never evaluated.
+    """
+
+    value: object
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.reason.strip():
+            raise ValueError('TextSignatureDefault.reason must not be empty')
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class StubConfig:
     """Everything a PyO3 project must supply to run the gates.
 
@@ -190,7 +206,8 @@ class StubConfig:
     typecheck_targets:
         Explicit paths checked by validity and pyright. Defaults to the stub.
     uninspectable_allowlist:
-        Public runtime callables where ``inspect.signature`` legitimately fails.
+        Public runtime callables or constructible class bindings where
+        ``inspect.signature`` legitimately fails (reason per name).
     doc_structure_allowlist:
         Public callables exempt from the ``doc-structure`` prose rules
         (reason per qualified name). Unused entries fail the run.
@@ -199,6 +216,13 @@ class StubConfig:
         :data:`~pyo3stubs.config.DEFAULT_IGNORED_TYPE_NAMES`.
     macro_exports:
         Project macros that declare ``#[pyclass]`` types, by argument position.
+    constructor_doc_macros:
+        Macros that carry a constructor's Rust doc comment on the class ``impl``
+        passed to the invocation rather than on a visible ``#[new]`` item.
+    text_signature_default_aliases:
+        Exact nonliteral Rust default expressions and their deliberate public
+        text-signature values, with a reason for each presentation. Unused
+        entries fail the text-signature gate.
     disabled_gates:
         Gate names to skip entirely. Reported as disabled, never as passing.
     surface:
@@ -221,6 +245,10 @@ class StubConfig:
     doc_structure_allowlist: Reasons = field(default_factory=dict)
     extra_ignored_type_names: frozenset[str] = field(default_factory=frozenset)
     macro_exports: tuple[MacroExport, ...] = ()
+    constructor_doc_macros: frozenset[str] = field(default_factory=frozenset)
+    text_signature_default_aliases: dict[str, TextSignatureDefault] = field(
+        default_factory=dict
+    )
     disabled_gates: frozenset[str] = field(default_factory=frozenset)
     surface: SurfaceConfig | None = None
     duality: DualityConfig | None = None

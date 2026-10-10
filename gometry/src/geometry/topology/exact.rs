@@ -2090,7 +2090,7 @@ fn seam_start_spelling(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::AngularFactor;
+    use crate::geographic::{AngularFactor, GeographicAxisOrientation, source_admission_counts};
     use crate::geometry::{CoordSeq, LineSeq, MOrdinate, Ring, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
@@ -2147,6 +2147,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact half-period equality selects the source seam spelling without rounding"
+    )]
     fn admitted_source_producer_preserves_raw_branch_and_piece_correspondence() {
         let degree = degrees();
         let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
@@ -2179,7 +2183,7 @@ mod tests {
         for (frame, from, to, native_from, native_to, periods) in cases {
             let source = [Point::new_raw_xy(from, 1.0), Point::new_raw_xy(to, 2.0)];
             let mut inventory = ExactGeographicChartInventory::new(frame, 1);
-            let before = crate::geographic::source_admission_counts::snapshot();
+            let before = source_admission_counts::snapshot();
             let _ = inventory
                 .append_source_edge(
                     source[0],
@@ -2191,7 +2195,7 @@ mod tests {
                     0,
                 )
                 .unwrap();
-            let after = crate::geographic::source_admission_counts::snapshot();
+            let after = source_admission_counts::snapshot();
             assert_eq!(after.0 - before.0, 1, "{from} -> {to}");
             let edge = &inventory.edges[0];
             for (actual, original) in edge.source.iter().zip(source) {
@@ -2256,10 +2260,7 @@ mod tests {
                 .delta_x(frame.longitude().period())
                 .unwrap();
             assert_eq!(actual_delta, delta);
-            assert_eq!(
-                crate::geographic::source_admission_counts::snapshot(),
-                after
-            );
+            assert_eq!(source_admission_counts::snapshot(), after);
         }
     }
 
@@ -2273,14 +2274,14 @@ mod tests {
             (175.0, 20.0),
             (175.0, 10.0),
         ]);
-        let before = crate::geographic::source_admission_counts::snapshot().0;
+        let before = source_admission_counts::snapshot().0;
         RingSummary::try_new(frame, &crate::geographic::GeographicRing::from_ring(&ring)).unwrap();
-        let summary_calls = crate::geographic::source_admission_counts::snapshot().0 - before;
+        let summary_calls = source_admission_counts::snapshot().0 - before;
         let polygon = Polygon::new(ring, Vec::new());
         let mut inventory = ExactGeographicChartInventory::new(frame, 1);
-        let before = crate::geographic::source_admission_counts::snapshot().0;
+        let before = source_admission_counts::snapshot().0;
         inventory.push_polygon(&polygon, SourceRowId(0)).unwrap();
-        let actual = crate::geographic::source_admission_counts::snapshot().0 - before;
+        let actual = source_admission_counts::snapshot().0 - before;
         assert_eq!(actual, summary_calls + inventory.edges.len());
     }
 
@@ -2368,6 +2369,42 @@ mod tests {
                 | ExactQuotientKey::SouthPole => None,
             })
             .expect("the exact seam node exists")
+    }
+
+    #[test]
+    fn source_points_share_exact_seam_and_pole_nodes() {
+        let source = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(-180.0, 5.0)),
+            Shape::Point(Point::new_raw_xy(180.0, 5.0)),
+            Shape::Point(Point::new_raw_xy(-30.0, 90.0)),
+            Shape::Point(Point::new_raw_xy(120.0, 90.0)),
+            Shape::Point(Point::new_raw_xy(-180.0, -90.0)),
+            Shape::Point(Point::new_raw_xy(47.0, -90.0)),
+            Shape::Point(Point::new_raw_xy(-180.0, 6.0)),
+        ])
+        .unwrap();
+        let sources = inventory(degrees(), &[source]);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = sources.node(&mut budget).unwrap();
+        let point_node = |index: usize| {
+            let port = chart
+                .source_point_ports
+                .get(index)
+                .expect("source point port exists");
+            chart
+                .ports
+                .get(port.0 as usize)
+                .expect("source point port is admitted")
+                .node
+        };
+
+        assert_eq!(chart.source_point_ports.len(), 7);
+        assert_eq!(point_node(0), point_node(1));
+        assert_eq!(point_node(2), point_node(3));
+        assert_eq!(point_node(4), point_node(5));
+        assert_ne!(point_node(2), point_node(4));
+        assert_ne!(point_node(0), point_node(2));
+        assert_ne!(point_node(0), point_node(6));
     }
 
     #[test]
@@ -2637,6 +2674,210 @@ mod tests {
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(incident_sources.len(), 3);
         assert_eq!(budget.used(), 4);
+    }
+
+    #[test]
+    fn crossing_lines_keep_each_exact_half_source_range() {
+        let shapes = [
+            line(&[(0.0, 0.0), (4.0, 4.0)]),
+            line(&[(0.0, 4.0), (4.0, 0.0)]),
+        ];
+        let inventory = inventory(degrees(), &shapes);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = inventory.node(&mut budget).unwrap();
+        let half = ExactRational::from_f64(0.5);
+
+        assert_eq!(chart.atoms.len(), 4);
+        assert!(chart.atoms.iter().all(|atom| atom.owners.len() == 1));
+        for source in [SourceEdgeId(0), SourceEdgeId(1)] {
+            let mut ranges = chart
+                .atoms
+                .iter()
+                .flat_map(|atom| atom.owners.iter())
+                .filter(|owner| owner.source_edge == source)
+                .map(|owner| owner.source_range.clone())
+                .collect::<Vec<_>>();
+            ranges.sort_unstable_by(|left, right| {
+                left.start
+                    .try_cmp(&right.start)
+                    .expect("source parameters compare")
+            });
+            assert_eq!(ranges.len(), 2);
+            assert_eq!(
+                ranges[0].start.try_cmp(&ExactRational::zero()).unwrap(),
+                Ordering::Equal
+            );
+            assert_eq!(ranges[0].end.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(ranges[1].start.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(
+                ranges[1].end.try_cmp(&ExactRational::one()).unwrap(),
+                Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
+    fn seam_split_ring_edges_keep_exact_parameters_and_quotient_owners() {
+        let shape = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, 0.0),
+                (-170.0, 0.0),
+                (-170.0, 10.0),
+                (170.0, 10.0),
+                (170.0, 0.0),
+            ]),
+            vec![],
+        ));
+        let inventory = inventory(degrees(), &[shape]);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = inventory.node(&mut budget).unwrap();
+        let half = ExactRational::from_f64(0.5);
+
+        for source in [SourceEdgeId(0), SourceEdgeId(2)] {
+            let mut ranges = chart
+                .atoms
+                .iter()
+                .flat_map(|atom| atom.owners.iter())
+                .filter(|owner| owner.source_edge == source)
+                .map(|owner| owner.source_range.clone())
+                .collect::<Vec<_>>();
+            ranges.sort_unstable_by(|left, right| {
+                left.start
+                    .try_cmp(&right.start)
+                    .expect("source parameters compare")
+            });
+            assert_eq!(ranges.len(), 2);
+            assert_eq!(
+                ranges[0].start.try_cmp(&ExactRational::zero()).unwrap(),
+                Ordering::Equal
+            );
+            assert_eq!(ranges[0].end.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(ranges[1].start.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(
+                ranges[1].end.try_cmp(&ExactRational::one()).unwrap(),
+                Ordering::Equal
+            );
+        }
+
+        for (latitude, source) in [
+            (ExactRational::zero(), SourceEdgeId(0)),
+            (ExactRational::from_f64(10.0), SourceEdgeId(2)),
+        ] {
+            let node = seam_node(&chart, &latitude);
+            assert!(source_uses_node(&chart, source, node));
+        }
+    }
+
+    #[test]
+    fn reversed_native_axis_edges_keep_exact_seam_parameters() {
+        let frame = GeographicFrame::try_new_with_orientation(
+            AngularFactor::try_new("west longitude unit", std::f64::consts::TAU / 8.0).unwrap(),
+            AngularFactor::try_new("south latitude radian", 1.0).unwrap(),
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(false, false),
+        )
+        .unwrap();
+        let sources = inventory(frame, &[
+            line(&[(-3.75, 0.0), (3.25, -1.0)]),
+            line(&[(3.25, -1.0), (-3.75, 0.0)]),
+        ]);
+        let quarter = ExactRational::from_f64(0.25);
+        let three_quarters = ExactRational::from_f64(0.75);
+        let seam_latitude = ExactRational::from_f64(-0.25);
+
+        for (source, parameter) in [
+            (SourceEdgeId(0), &quarter),
+            (SourceEdgeId(1), &three_quarters),
+        ] {
+            let pieces = sources
+                .pieces
+                .iter()
+                .filter(|piece| piece.source_edge == source)
+                .collect::<Vec<_>>();
+            assert_eq!(pieces.len(), 2);
+            let crossing = pieces
+                .iter()
+                .flat_map(|piece| [&piece.start, &piece.end])
+                .find(|point| {
+                    point
+                        .x
+                        .try_cmp(&ExactRational::from_f64(-4.0))
+                        .unwrap()
+                        .is_eq()
+                        || point
+                            .x
+                            .try_cmp(&ExactRational::from_f64(4.0))
+                            .unwrap()
+                            .is_eq()
+                })
+                .expect("source edge crosses the native longitude seam");
+            assert_eq!(crossing.y.try_cmp(&seam_latitude).unwrap(), Ordering::Equal);
+            assert!(
+                pieces
+                    .iter()
+                    .any(|piece| { piece.source_range.end.try_cmp(parameter).unwrap().is_eq() })
+                    || pieces.iter().any(|piece| {
+                        piece.source_range.start.try_cmp(parameter).unwrap().is_eq()
+                    })
+            );
+        }
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = sources.node(&mut budget).unwrap();
+        let seam = seam_node(&chart, &seam_latitude);
+        assert!(source_uses_node(&chart, SourceEdgeId(0), seam));
+        assert!(source_uses_node(&chart, SourceEdgeId(1), seam));
+    }
+
+    #[test]
+    fn one_ulp_source_endpoint_is_shared_by_adjacent_exact_edges() {
+        let endpoint = (-170.0_f64).next_down();
+        let shape = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, 0.0),
+                (endpoint, 0.0),
+                (endpoint, 10.0),
+                (170.0, 10.0),
+                (170.0, 0.0),
+            ]),
+            vec![],
+        ));
+        let inventory = inventory(degrees(), &[shape]);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = inventory.node(&mut budget).unwrap();
+        let first_edge = chart
+            .source_edge_ports
+            .first()
+            .expect("first ring edge exists");
+        let second_edge = chart
+            .source_edge_ports
+            .get(1)
+            .expect("adjacent ring edge exists");
+        let first_endpoint = chart
+            .ports
+            .get(first_edge[1].0 as usize)
+            .expect("source endpoint port exists");
+        let second_start = chart
+            .ports
+            .get(second_edge[0].0 as usize)
+            .expect("adjacent source port exists");
+
+        assert_eq!(first_endpoint.node, second_start.node);
+        assert_eq!(
+            first_endpoint
+                .point
+                .x
+                .try_cmp(&ExactRational::from_f64(endpoint))
+                .unwrap(),
+            Ordering::Equal,
+        );
+        assert_eq!(
+            first_endpoint
+                .point
+                .y
+                .try_cmp(&ExactRational::zero())
+                .unwrap(),
+            Ordering::Equal,
+        );
     }
 
     #[test]

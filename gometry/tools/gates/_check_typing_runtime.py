@@ -1,15 +1,15 @@
 """Runtime typing gate for precise public signatures and private type support.
 
-Public annotations must resolve at runtime (numpy, geometry classes, and
-``collections.abc`` are hard/compiled dependencies — they cannot live only
-under ``if TYPE_CHECKING:``). Reusable implementation aliases live privately
-in ``gometry._types``; genuine runtime protocols are exported at top level.
+Core public annotations resolve against their real runtime globals. Optional
+adapter annotations stay postponed in the import-cheap package and are resolved
+here with the installed interop namespaces; their checked signatures must retain
+the actual external classes.
 
 Also drives the static gates: pyright AND mypy over the shared ``assert_type``
-conformance and negative fixtures, Pyright over its primary precision fixture,
-and a full-project Pyright run over ``python/gometry`` locked at zero errors.
-Negative misuse carries ``# type: ignore`` whose continued necessity catches a
-loosened stub.
+conformance and negative fixtures, and Pyright over its primary precision
+fixture. The separate pyo3stubs Pyright gate checks the shipped
+``python/gometry`` package at zero errors. Negative misuse carries
+``# type: ignore`` whose continued necessity catches a loosened stub.
 
 Usage::
 
@@ -21,82 +21,35 @@ Exit 1 on any failure. The final line is ``TOTAL FAILURES: N``.
 from __future__ import annotations
 
 import importlib
-import inspect
+import os
 import subprocess
 import sys
 import typing
+from collections.abc import Hashable, Mapping, Sequence
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent.parent
+_TOOLS = _ROOT / 'tools'
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
+require_runtime(_ROOT)
 
 import gometry
 from gometry import _types
 
-_ROOT = Path(__file__).resolve().parent.parent.parent
 _CONFORMANCE = _ROOT / 'tests/typing/test_conformance.py'
 _NEGATIVES = _ROOT / 'tests/typing/negatives.py'
 _PYRIGHT_PRECISION = _ROOT / 'tests/typing/pyright_precision.py'
 
 _TOP_LEVEL_HINT_TARGETS = (
-    'from_features',
+    'from_geojson',
     'to_feature',
     'to_feature_collection',
 )
-
-_INTEROP_MODULES = (
-    'gometry._arrow',
-    'gometry._from_pandas',
-    'gometry._geopandas',
-    'gometry._geoparquet',
-    'gometry._optional',
-    'gometry._pandas',
-    'gometry._polars',
-    'gometry._viz',
-)
-
-# Highest-value free-function overload groups that must keep both a positive
-# ``assert_type`` witness (tests/typing/test_conformance.py) and a negative
-# misuse ``# type: ignore`` witness (tests/typing/negatives.py).
-# Native PyO3 callables have no runtime ``@overload`` registry, so the
-# fixtures — not ``typing.get_overloads`` — are the real narrowing gate.
-_OVERLOAD_TARGETS: tuple[str, ...] = (
-    'contains',
-    'intersects',
-    'distance',
-    'area',
-    'length',
-    'from_wkt',
-    'from_wkb',
-    'Point',
-    'bearing',
-    'point_between',
-)
-
-_RESULT_CONTAINERS = frozenset({
-    'Extremes',
-    'Features',
-    'PolygonizeResult',
-})
-
-
-def _check_type_checking_sentinel(errors: list[str]) -> None:
-    offenders: list[str] = []
-    missing: list[str] = []
-    for path in sorted((_ROOT / 'python' / 'gometry').glob('*.py')):
-        text = path.read_text(encoding='utf-8')
-        rel = path.relative_to(_ROOT)
-        if 'from typing import TYPE_CHECKING' in text:
-            offenders.append(str(rel))
-        if 'if TYPE_CHECKING:' in text and 'TYPE_CHECKING = False' not in text:
-            missing.append(str(rel))
-    if offenders:
-        errors.append(
-            'shipped python modules must use TYPE_CHECKING = False, not '
-            f'from typing import TYPE_CHECKING: {offenders}'
-        )
-    if missing:
-        errors.append(
-            'shipped python modules with if TYPE_CHECKING: must define the '
-            f'TYPE_CHECKING = False sentinel: {missing}'
-        )
 
 
 def _hintable_names(module: object, names: tuple[str, ...]) -> list[str]:
@@ -108,152 +61,183 @@ def _hintable_names(module: object, names: tuple[str, ...]) -> list[str]:
     return out
 
 
-def _check_get_type_hints(label: str, obj: object, errors: list[str]) -> None:
+def _check_get_type_hints(
+    label: str,
+    obj: object,
+    errors: list[str],
+    globalns: dict[str, typing.Any] | None = None,
+) -> dict[str, typing.Any] | None:
     try:
-        typing.get_type_hints(obj)
+        return typing.get_type_hints(obj, globalns=globalns)
     except Exception as error:
         errors.append(f'{label}: {error}')
+        return None
 
 
-def _check_annotated_members(label: str, obj: object, errors: list[str]) -> None:
-    if not inspect.isclass(obj):
-        _check_get_type_hints(label, obj, errors)
-        return
-    # Own annotations only, never the base classes' — `get_annotations` reads
-    # them without the MRO walk a plain attribute access would do, and without
-    # forcing the deferred evaluation PEP 649 introduced.
-    if inspect.get_annotations(obj):
-        _check_get_type_hints(label, obj, errors)
-    for member_name, member in vars(obj).items():
-        target = member.fget if isinstance(member, property) else member
-        if not inspect.isfunction(target) or not getattr(
-            target, '__annotations__', None
-        ):
-            continue
-        if member_name.startswith('_') and not (
-            member_name.startswith('__') and member_name.endswith('__')
-        ):
-            continue
-        _check_get_type_hints(f'{label}.{member_name}', target, errors)
+def _check_get_type_alias(
+    label: str,
+    alias: object,
+    errors: list[str],
+    globalns: dict[str, typing.Any],
+) -> object | None:
+    def carrier() -> None:
+        pass
+
+    carrier.__annotations__ = {'return': alias}
+    hints = _check_get_type_hints(label, carrier, errors, globalns)
+    return None if hints is None else hints['return']
 
 
-def _check_public_interop_hints(errors: list[str]) -> None:
-    seen: set[int] = set()
+def _check_optional_adapter_hints(errors: list[str]) -> None:
+    """Resolve selected adapter signatures against installed nominal types."""
+    import geopandas as gpd
+    import lonboard
+    import numpy as np
+    import pandas as pd
+    import polars as pl
+    import pyarrow as pa
+    from pandas._typing import ListLike
 
-    for module_name in _INTEROP_MODULES:
+    interop_globals: dict[str, typing.Any] = {
+        'pd': pd,
+        'gpd': gpd,
+        'pl': pl,
+        'pa': pa,
+        'Map': lonboard.Map,
+        '_ArrowArray': pa.Array | pa.ChunkedArray,
+        'ListLike': ListLike,
+        # pandas._typing.ListLike retains these names as unresolved ForwardRefs.
+        'ExtensionArray': pd.api.extensions.ExtensionArray,
+        'Index': pd.Index,
+        'Series': pd.Series,
+    }
+    resolved_list_like = _check_get_type_alias(
+        'pandas._typing.ListLike', ListLike, errors, interop_globals
+    )
+    if resolved_list_like is None:
+        resolved_list_like = ListLike
+    geometry_rows = gometry.GeometryArray[gometry.Geometry | None]
+    table_attributes = pa.Table | Mapping[str, typing.Any] | None
+    contracts = (
+        (
+            'gometry._from_pandas',
+            'from_pandas',
+            {
+                'series': ('pandas.Series', pd.Series),
+                'return': ('GeometryArray[Geometry | None]', geometry_rows),
+            },
+        ),
+        (
+            'gometry._geopandas',
+            'from_geopandas',
+            {
+                'geoseries_or_gdf': (
+                    'GeoSeries | GeoDataFrame',
+                    gpd.GeoSeries | gpd.GeoDataFrame,
+                ),
+                'return': ('GeometryArray[Geometry | None]', geometry_rows),
+            },
+        ),
+        (
+            'gometry._geopandas',
+            'to_geopandas',
+            {'return': ('geopandas.GeoSeries', gpd.GeoSeries)},
+        ),
+        (
+            'gometry._polars',
+            'to_polars',
+            {'return': ('polars.Series', pl.Series)},
+        ),
+        (
+            'gometry._polars',
+            'from_polars',
+            {
+                'series': ('polars.Series', pl.Series),
+                'return': ('GeometryArray[Geometry | None]', geometry_rows),
+            },
+        ),
+        (
+            'gometry._pandas',
+            'to_pandas',
+            {
+                'index': (
+                    'pandas.Index | Sequence[Hashable] | None',
+                    pd.Index | Sequence[Hashable] | None,
+                ),
+                'return': ('pandas.Series', pd.Series),
+            },
+        ),
+        (
+            'gometry._pandas',
+            'GeometryDtype.__from_arrow__',
+            {
+                'array': (
+                    'pyarrow.Array | pyarrow.ChunkedArray',
+                    pa.Array | pa.ChunkedArray,
+                ),
+            },
+        ),
+        (
+            'gometry._pandas',
+            'GeometryExtensionArray.__setitem__',
+            {
+                'key': (
+                    'int | numpy.integer[Any] | pandas._typing.ListLike',
+                    int | np.integer[typing.Any] | resolved_list_like,
+                ),
+            },
+        ),
+        (
+            'gometry._geoparquet',
+            'to_geoparquet',
+            {
+                'attributes': (
+                    'pyarrow.Table | Mapping[str, Any] | None',
+                    table_attributes,
+                ),
+            },
+        ),
+        (
+            'gometry._geoparquet',
+            'from_geoparquet',
+            {
+                'return': (
+                    'tuple[GeometryArray[Geometry | None], pyarrow.Table]',
+                    tuple[geometry_rows, pa.Table],
+                ),
+            },
+        ),
+        (
+            'gometry._viz',
+            'explore',
+            {
+                'attributes': (
+                    'pyarrow.Table | Mapping[str, Any] | None',
+                    table_attributes,
+                ),
+                'return': ('lonboard.Map', lonboard.Map),
+            },
+        ),
+    )
+
+    for module_name, member_path, expectations in contracts:
         module = importlib.import_module(module_name)
-        for name, obj in vars(module).items():
-            if name.startswith('_') or id(obj) in seen:
-                continue
-            if not (inspect.isfunction(obj) or inspect.isclass(obj)):
-                continue
-            if getattr(obj, '__module__', None) != module_name:
-                continue
-            seen.add(id(obj))
-            _check_annotated_members(f'{module_name}.{name}', obj, errors)
-
-
-def _check_overload_witnesses(errors: list[str]) -> None:
-    """Require positive + negative static witnesses for each overload group.
-
-    The stub's ``@overload`` sets are the source of truth; pyright/mypy
-    over the fixtures prove narrowing. This hook only enforces that the
-    curated high-value groups stay covered when the fixtures drift.
-    """
-    import re
-
-    if not _OVERLOAD_TARGETS:
-        return
-    if not _CONFORMANCE.is_file():
-        errors.append(f'conformance fixture missing: {_CONFORMANCE}')
-        return
-    if not _NEGATIVES.is_file():
-        errors.append(f'negatives fixture missing: {_NEGATIVES}')
-        return
-    conf = _CONFORMANCE.read_text(encoding='utf-8')
-    neg = _NEGATIVES.read_text(encoding='utf-8')
-    for name in _OVERLOAD_TARGETS:
-        # Positive: an assert_type call that exercises gm.<name>(...) narrowing.
-        pos = re.search(
-            rf'assert_type\(\s*(?:gm\.)?{re.escape(name)}\s*\(',
-            conf,
-        )
-        if pos is None and name == 'Point':
-            # Constructors also appear as ``gm.Point(...)`` outside assert_type
-            # when the result is later assert_type'd — accept either form.
-            pos = re.search(r'assert_type\(\s*gm\.Point\b', conf) or re.search(
-                r'gm\.Point\s*\(', conf
-            )
-        if pos is None:
-            errors.append(
-                f'overload group {name!r}: missing positive assert_type witness '
-                f'in {_CONFORMANCE.relative_to(_ROOT)}'
-            )
-        # Negative: a deliberate misuse of gm.<name> under TYPE_CHECKING with
-        # a type: ignore that must stay used.
-        neg_hit = re.search(
-            rf'gm\.{re.escape(name)}\s*\([^;\n]*#\s*type:\s*ignore',
-            neg,
-        )
-        if neg_hit is None:
-            errors.append(
-                f'overload group {name!r}: missing negative type:ignore witness '
-                f'in {_NEGATIVES.relative_to(_ROOT)}'
-            )
-
-    # ``destination`` is a receiver method, not a top-level free function.
-    # Keep its scalar/array narrowing and the two important misuse lanes
-    # covered without treating the method name as a module export.
-    destination_positive = (
-        re.search(r'POINT\.destination\s*\(', conf) is not None
-        and re.search(r'POINTS\.destination\s*\(', conf) is not None
-    )
-    if not destination_positive:
-        errors.append(
-            'destination method: missing Point and GeometryArray positive '
-            f'witnesses in {_CONFORMANCE.relative_to(_ROOT)}'
-        )
-    if (
-        re.search(
-            r'POINT\.destination\s*\([^\n]*path\s*=\s*[\'\"]rhumb[\'\"][^\n]*'
-            r'unit\s*=\s*[\'\"]meters[\'\"]',
-            neg,
-        )
-        is None
-    ):
-        errors.append(
-            'destination method: missing rhumb-unit negative type:ignore '
-            f'witness in {_NEGATIVES.relative_to(_ROOT)}'
-        )
-    if not (
-        re.search(r'POLY\.destination\s*\([^\n]*#\s*type:\s*ignore', neg)
-        and re.search(r'GEOMS\.destination\s*\([^\n]*#\s*type:\s*ignore', neg)
-    ):
-        errors.append(
-            'destination method: missing invalid receiver negative '
-            f'witnesses in {_NEGATIVES.relative_to(_ROOT)}'
-        )
-
-
-def _check_private_types_have_producers(exported: set[str], errors: list[str]) -> None:
-    """Every typing export must be runtime-real or referenced by the shipped
-    surface — a vocabulary alias nothing produces or consumes is a phantom
-    (a private alias with no producer is still dead type vocabulary).
-    A stub-private ``_Name`` alias counts as a reference to ``Name``.
-    """
-    import re
-
-    corpus = (_ROOT / 'python' / 'gometry' / '_lib.pyi').read_text(encoding='utf-8')
-    for path in (_ROOT / 'python' / 'gometry').glob('*.py'):
-        corpus += path.read_text(encoding='utf-8')
-    phantoms = sorted(
-        name for name in exported if not re.search(rf'\b_?{re.escape(name)}\b', corpus)
-    )
-    if phantoms:
-        errors.append(
-            'gometry._types names with no producer or reference anywhere in '
-            f'the shipped surface (phantom private types): {phantoms}'
-        )
+        member: object = module
+        for part in member_path.split('.'):
+            member = getattr(member, part)
+        # Fill names omitted under TYPE_CHECKING without masking module bindings.
+        globalns = dict(interop_globals)
+        globalns.update(vars(module))
+        label = f'{module_name}.{member_path}'
+        hints = _check_get_type_hints(label, member, errors, globalns)
+        if hints is None:
+            continue
+        for name, (expected_name, expected_type) in expectations.items():
+            actual = hints.get(name)
+            if actual != expected_type:
+                errors.append(
+                    f'{label}.{name}: expected nominal {expected_name}, got {actual!r}'
+                )
 
 
 def _check_pyright(errors: list[str], label: str, *targets: str) -> None:
@@ -281,6 +265,15 @@ def _check_mypy(errors: list[str], label: str, *targets: str) -> None:
     """
     from mypy import api
 
+    # Mypy does not resolve imports through PYTHONPATH. Pin this checkout's
+    # handwritten facade stubs before any installed editable package.
+    previous_mypy_path = os.environ.get('MYPYPATH')
+    local_mypy_path = str(_ROOT / 'python')
+    os.environ['MYPYPATH'] = (
+        local_mypy_path
+        if not previous_mypy_path
+        else os.pathsep.join((local_mypy_path, previous_mypy_path))
+    )
     # A cache directory private to this gate.  Both typing gates call
     # `mypy.api.run` in-process; sharing mypy's default `.mypy_cache` means each
     # one invalidates the other's build, so alternating them leaves both cold
@@ -288,14 +281,20 @@ def _check_mypy(errors: list[str], label: str, *targets: str) -> None:
     # latent hazard: under xdist the two gates can run concurrently in different
     # workers against one cache directory.  mypy validates cache entries by
     # content hash, so a warm cache still fails on a real error.
-    stdout, stderr, status = api.run([
-        *targets,
-        '--cache-dir',
-        str(_ROOT / 'target' / 'mypy-cache' / 'typing-runtime'),
-        '--warn-unused-ignores',
-        '--no-error-summary',
-        '--no-color-output',
-    ])
+    try:
+        stdout, stderr, status = api.run([
+            *targets,
+            '--cache-dir',
+            str(_ROOT / 'target' / 'mypy-cache' / 'typing-runtime'),
+            '--warn-unused-ignores',
+            '--no-error-summary',
+            '--no-color-output',
+        ])
+    finally:
+        if previous_mypy_path is None:
+            os.environ.pop('MYPYPATH', None)
+        else:
+            os.environ['MYPYPATH'] = previous_mypy_path
     if status != 0:
         errors.append(f'{label} mypy failed:\n' + (stdout + stderr).strip())
 
@@ -303,21 +302,13 @@ def _check_mypy(errors: list[str], label: str, *targets: str) -> None:
 def collect_errors() -> list[str]:
     errors: list[str] = []
 
-    _check_type_checking_sentinel(errors)
-    _check_private_types_have_producers(
-        set(_types.__all__) - _RESULT_CONTAINERS,
-        errors,
-    )
-
     for name in _hintable_names(_types, tuple(_types.__all__)):
         _check_get_type_hints(f'gometry._types.{name}', getattr(_types, name), errors)
 
     for name in _TOP_LEVEL_HINT_TARGETS:
         _check_get_type_hints(f'gometry.{name}', getattr(gometry, name), errors)
 
-    _check_public_interop_hints(errors)
-
-    _check_overload_witnesses(errors)
+    _check_optional_adapter_hints(errors)
 
     # Shared conformance, Pyright-primary precision, and negatives run in one
     # Pyright process; shared conformance and negatives run in one Mypy

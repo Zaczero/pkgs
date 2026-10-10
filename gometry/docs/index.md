@@ -108,7 +108,7 @@ use free geometry predicates for exact source checks.
 
 ### Declare, transform, refine
 
-[`set_crs`][gometry.Geometry.set_crs] declares metadata without moving numeric
+[`with_crs`][gometry.Geometry.with_crs] declares metadata without moving numeric
 coordinates; [`to_crs`][gometry.Geometry.to_crs] transforms X/Y into another frame.
 See [when to declare or transform](guide/crs.md#set-crs-vs-to-crs). Spatial indexes
 expose [`candidates`][gometry.SpatialIndex.candidates] as a bbox prefilter and

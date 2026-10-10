@@ -1,6 +1,8 @@
 use super::frame::LocalCrsDefinition;
 use crate::error::Result;
-use crate::geographic::{GeographicFrame, publish_certified_minor_chain};
+use crate::geographic::{
+    GeographicFrame, publish_certified_minor_chain, publish_preserved_minor_chain,
+};
 use crate::geometry::{
     Coordinates as _, ExpansionBudget, GeometryErrorKind, Point, Shape, map_computed_shape_chains,
     point_on_segment,
@@ -12,9 +14,13 @@ pub(super) fn publish(
     local: &LocalCrsDefinition,
     frame: GeographicFrame,
     operation: &'static str,
+    preserve_input_vertices: bool,
     budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     if let Shape::Point(point) = restored {
+        if preserve_input_vertices {
+            return Ok(Shape::Point(*point));
+        }
         return Ok(Shape::Point(
             frame
                 .canonical_computed_point(*point)
@@ -24,7 +30,11 @@ pub(super) fn publish(
     let pole = local.projected_pole().map(|(x, y)| Point::new_raw_xy(x, y));
     map_computed_shape_chains(projected, restored, |projected, restored, closed| {
         check_local_edges(projected, pole, operation)?;
-        publish_certified_minor_chain(frame, restored, closed, budget)
+        if preserve_input_vertices {
+            publish_preserved_minor_chain(frame, restored, closed, budget)
+        } else {
+            publish_certified_minor_chain(frame, restored, closed, budget)
+        }
     })
 }
 

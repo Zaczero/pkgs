@@ -66,6 +66,10 @@ impl<'a> PreparedTopologyPair<'a> {
         ))
     }
 
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "the geographic variant stores both prepared views by value"
+    )]
     pub(crate) const fn from_geographic(
         left: GeographicPrepared<'a>,
         right: GeographicPrepared<'a>,
@@ -609,7 +613,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     if let Some(point) = row.point()
                         && let Some(membership) = point_membership
                     {
-                        if scalar_bounds.is_none_or(|bounds| !bounds.contains_xy(point.xy())) {
+                        if scalar_bounds.is_none_or(|bounds| !bounds.contains_point(point.xy())) {
                             return Ok(spec.predicate == Predicate::Disjoint);
                         }
                         let queries = if let Some(queries) = point_queries {

@@ -19,7 +19,7 @@ mod index;
 mod order_tree;
 mod persistent_order;
 mod stabbing;
-mod sweep;
+pub(in crate::geometry) mod sweep;
 
 /// Used child-slot bytes of a bulk-loaded R-tree.
 ///
@@ -52,7 +52,12 @@ pub(in crate::geometry) use chord::ChordIndex;
 #[cfg(test)]
 pub(in crate::geometry) use chord::take_contact_visits;
 pub(in crate::geometry) use hull::StoredHull;
-pub(crate) use index::{PointEntry, PointSetIndex, SegmentIndex};
+#[cfg(test)]
+pub(crate) use index::{
+    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
+    CLEARANCE_POINT_RECHECKS,
+};
+pub(crate) use index::{ClearancePointQuery, PointSetIndex, SegmentIndex};
 pub(in crate::geometry) use order_tree::OrderTree;
 pub(in crate::geometry) use persistent_order::PersistentOrder;
 pub(crate) use stabbing::{
@@ -62,7 +67,8 @@ pub(crate) use sweep::SEGMENT_INDEX_MIN_PAIRS;
 pub(in crate::geometry) use sweep::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
 
 #[cfg(test)]

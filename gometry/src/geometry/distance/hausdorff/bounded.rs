@@ -2238,10 +2238,6 @@ impl InradiusPlane<'_> {
         Ok(true)
     }
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "the finite normalized equations only propose a witness; source membership and clearance are recomputed exactly"
-    )]
     fn normalized_equation(&self, radius: f64) -> Result<Option<(f64, f64, f64)>> {
         let length = self.length_lower.round()?;
         let nx = -self.dy.round()? / length;
@@ -2251,10 +2247,6 @@ impl InradiusPlane<'_> {
     }
 }
 
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "the finite linear solve is a witness nomination, never an upper bound or membership decision"
-)]
 fn inradius_plane_witness(
     planes: [&InradiusPlane<'_>; 3],
     upper: &Rational,
@@ -3181,10 +3173,6 @@ fn directed_candidate(
     }))
 }
 
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "each seed is inset from a finite box edge by at most its short-axis half-extent"
-)]
 fn directed_seed_candidate(
     source: &PreparedSupport,
     target: &PreparedSupport,

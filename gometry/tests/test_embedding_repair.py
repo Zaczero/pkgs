@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 import gometry as gm
-import shapely
+import pytest
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely is an optional oracle dependency'
+)
 
 _COUNTRIES = (
     Path(__file__).resolve().parents[1] / 'fixtures' / 'osm_countries_0_1.geojson'
@@ -227,3 +231,30 @@ def test_moved_xym_crossings_preserve_exact_m_ordinates() -> None:
         float(Fraction(-1, 3)),
         float(Fraction(-4, 5)),
     }
+
+
+def test_difference_keeps_a_nearby_point_separate_and_pins_exact_axes() -> None:
+    smallest = math.ulp(0.0)
+    line = gm.LineString([(-1.0, 0.0), (7.0, smallest)])
+    point = gm.Point(1.0, 0.0)
+    assert not gm.intersects(line, point)
+    source = gm.GeometryCollection([line, point])
+    outside = gm.MultiPolygon([
+        gm.box(-2.0, -1.0, 0.0, 1.0),
+        gm.box(2.0, -1.0, 8.0, 1.0),
+    ])
+
+    result = gm.difference(source, outside)
+
+    assert result.geometry_type == 'GeometryCollection'
+    parts = list(result.parts)
+    points = [part for part in parts if part.geometry_type == 'Point']
+    lines = [part for part in parts if part.geometry_type == 'LineString']
+    assert len(points) == 1
+    assert gm.equals(points[0], point)
+    assert len(lines) == 1
+    coordinates = list(lines[0].coords)
+    assert len(coordinates) == 2
+    assert {coordinate[0] for coordinate in coordinates} == {0.0, 2.0}
+    assert not gm.intersects(lines[0], point)
+    assert lines[0].length > 1.9

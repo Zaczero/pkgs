@@ -8,10 +8,9 @@ use crate::py::numpy::float64_matrix;
 use crate::py::row::{RowIndexOrSlice, parse_row_index_or_slice};
 use crate::py::sizeof::python_sizeof;
 use crate::{
-    Arc, Bound, CoordSeq, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError,
-    HeapSize, Point, Py, PyAnyMethods, PyDictMethods, PyErr, PyGeometryArray, PyRef, PyResult,
-    PyTupleMethods, Python, Shape, coordinates, coordinates_object, point_tuple, py_bool, pyclass,
-    pymethods,
+    Bound, CoordSeq, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError, HeapSize,
+    Point, Py, PyAnyMethods, PyDictMethods, PyErr, PyRef, PyResult, PyTupleMethods, Python, Shape,
+    coordinates, coordinates_object, point_tuple, py_bool, pyclass, pymethods,
 };
 
 /// Flat, indexable coordinate sequence behind `geom.coords`:
@@ -34,6 +33,7 @@ use crate::{
 )]
 pub struct PyCoordinates {
     pub(crate) view: coordinates::CoordinateView,
+    pub(crate) owner: Py<PyAny>,
     /// `None` renders each coordinate in its native axes; `Some` forces a
     /// rectangular coordinate-view layout.
     pub(crate) layout: Option<CoordinateAxes>,
@@ -88,19 +88,18 @@ pub struct PyCoordinatesIter {
 
 impl PyCoordinatesIter {
     fn new(
-        py: Python<'_>,
         view: coordinates::CoordinateView,
         layout: Option<CoordinateAxes>,
         reverse: bool,
-    ) -> PyResult<Self> {
-        let hint = view.exact_measure(py)?.length_hint();
-        Ok(Self {
+    ) -> Self {
+        let hint = view.iterator_length_hint();
+        Self {
             source: CoordinateCursor {
                 points: std::sync::Mutex::new(view.point_cursor(reverse)),
                 layout,
                 remaining_hint: std::sync::atomic::AtomicUsize::new(hint),
             },
-        })
+        }
     }
 }
 
@@ -123,8 +122,8 @@ impl PyCoordinatesIter {
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.source.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().source.heap_bytes())
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
@@ -135,6 +134,9 @@ impl PyCoordinatesIter {
             .expect("coordinate iterator cursor mutex is not poisoned")
             .next_point();
         let Some(point) = point else {
+            self.source
+                .remaining_hint
+                .store(0, std::sync::atomic::Ordering::Relaxed);
             return Ok(None);
         };
         self.source
@@ -156,7 +158,6 @@ mod types;
 
 pub(crate) use helpers::{
     column_axis_to_py, coordinate_axis_order, coordinate_matrix_data, coordinate_tuple,
-    get_coordinates,
 };
 pub(crate) use set_coords::{
     map_coordinates_callback, parse_coordinate_replacement, replace_shape_coordinates,

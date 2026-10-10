@@ -8,10 +8,12 @@ from itertools import pairwise
 from typing import Literal
 
 import gometry as gm
-import pyproj
+import numpy as np
 import pytest
 
 from tests._support import canon
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 
 RADIAN_CRS = (
     'GEOGCS["WGS 84 rad",'
@@ -205,7 +207,7 @@ def test_chart_line_cache_isolated_across_frame_retag() -> None:
     original = gm.LineString(coordinates, crs=4326)
     # Warm WGS84 before the metadata-only retag shares the immutable shape.
     original.line_interpolate(500_000.0)
-    retagged = original.set_crs(4267, overwrite=True)
+    retagged = original.with_crs(4267, overwrite=True)
     fresh = gm.LineString(coordinates, crs=4267)
     assert (
         retagged.line_interpolate(500_000.0).to_wkb()
@@ -663,9 +665,10 @@ def test_rhumb_segmentize_matches_rhumbsolve_parallel_literal_and_array() -> Non
     # route from (-10, 45); equal rhumb arclength on this parallel is linear
     # in longitude.
     line = gm.LineString([(-10.0, 45.0), (2.682817246984, 45.0)], crs=4326)
-    rhumb_length = gm.rhumb_distance(
+    rhumb_length = gm.distance(
         gm.Point(-10.0, 45.0, crs=4326),
         gm.Point(2.682817246984, 45.0, crs=4326),
+        path='rhumb',
     )
     max_length = rhumb_length / 2.0 * (1.0 + 1e-12)
 
@@ -963,7 +966,7 @@ def test_fraction_densify_keeps_step_count_independent_of_shared_budget() -> Non
     collection = gm.GeometryCollection([line, line])
 
     refined = collection.segmentize(fraction=0.5)
-    assert gm.get_coordinates(refined).shape == (6, 2)
+    assert np.asarray(refined.coords, dtype=np.float64).shape == (6, 2)
 
 
 def test_geographic_chart_lrs_matches_independent_parallel_oracle() -> None:
@@ -1078,6 +1081,21 @@ def test_geographic_chart_lrs_matches_independent_sloped_edge_values() -> None:
         expected_midpoint,
         _SLOPED_XY_BUDGETS_NATIVE[1],
     )
+    normalized_midpoint = line.line_interpolate(0.5, normalized=True, unit='meters')
+    default_normalized_midpoint = line.line_interpolate(0.5, normalized=True)
+    counted_midpoint = line.line_interpolate(count=3, unit='meters')[1]
+    default_counted_midpoint = line.line_interpolate(count=3)[1]
+    for actual in (
+        normalized_midpoint,
+        default_normalized_midpoint,
+        counted_midpoint,
+        default_counted_midpoint,
+    ):
+        _assert_xy_within_budget(
+            (actual.x, actual.y),
+            expected_midpoint,
+            _SLOPED_XY_BUDGETS_NATIVE[1],
+        )
     _assert_station_within_budget(
         line.line_locate(midpoint),
         middle_distance,
@@ -1098,11 +1116,33 @@ def test_geographic_chart_lrs_matches_independent_sloped_edge_values() -> None:
         strict=True,
     ):
         _assert_xy_within_budget(tuple(actual[:2]), expected, xy_budget)
+    normalized_substring = line.line_substring(
+        0.25, 0.75, normalized=True, unit='meters'
+    )
+    default_normalized_substring = line.line_substring(0.25, 0.75, normalized=True)
+    for route in (normalized_substring, default_normalized_substring):
+        for actual, expected, xy_budget in zip(
+            route.coords,
+            expected_coordinates,
+            (_SLOPED_XY_BUDGETS_NATIVE[0], _SLOPED_XY_BUDGETS_NATIVE[2]),
+            strict=True,
+        ):
+            _assert_xy_within_budget(tuple(actual[:2]), expected, xy_budget)
     assert substring.length == pytest.approx(
         end_distance - start_distance,
         rel=0.0,
         abs=_SLOPED_SUBSTRING_LENGTH_BUDGET_M,
     )
+    oracle_point = gm.Point(*expected_midpoint, crs=4326)
+    for normalized_station in (
+        line.line_locate(oracle_point, normalized=True),
+        line.line_locate(oracle_point, normalized=True, unit='meters'),
+    ):
+        _assert_station_within_budget(
+            normalized_station * expected_length,
+            middle_distance,
+            _SLOPED_STATION_BUDGETS_M[1],
+        )
 
 
 def test_geographic_chart_lrs_preserves_lifted_370_degree_meridian() -> None:

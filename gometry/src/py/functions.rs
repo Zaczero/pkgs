@@ -11,13 +11,13 @@ pub(crate) use geocode::{
     pluscode_recover, pluscode_shorten,
 };
 pub(crate) use geometry_io::{
-    _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1, from_features,
-    from_geojson, from_wkb, from_wkt, reduce_geometry, reduce_geometry_array, to_feature,
-    to_feature_collection,
+    _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1, from_geojson,
+    from_wkb, from_wkt, reduce_geometry, reduce_geometry_array, to_feature, to_feature_collection,
+    unpickle_coordinates_v1,
 };
 pub(crate) use overlay::{
     OverlayOp, coverage_clean, coverage_invalid_edges, coverage_is_valid, coverage_simplify,
-    coverage_union, difference, intersection, intersection_all, overlay_operator, polygonize,
-    polygonize_full, symmetric_difference, symmetric_difference_all, union, union_all,
+    coverage_union_all, difference, intersection, intersection_all, overlay_operator,
+    polygonize_all, symmetric_difference, symmetric_difference_all, union, union_all,
 };
 pub(crate) use validation::{PyValidationReport, *};

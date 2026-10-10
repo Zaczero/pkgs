@@ -4,6 +4,8 @@
 //! `PeriodicAxis::chart_step`; latitude stays in native units until
 //! pole-referenced colatitude is formed.
 
+use std::cmp::Ordering;
+
 use geographiclib_rs::Geodesic;
 
 use crate::error::Result;
@@ -11,11 +13,20 @@ use crate::geographic::{
     ChartStep, CircularInterval, EdgeDirection, GeographicFrame, Latitude, LongitudeWindows,
     RetainedChartDisplacement,
 };
+use crate::geometry::exact_arith::product_sum::ExactSum;
+use crate::geometry::exact_arith::{
+    retained_delta_scaled, retained_source_interval_initial_piece_count,
+    retained_source_interval_reads_as, retained_source_sheet_site,
+};
+use crate::geometry::interval::{
+    HALF_PI_LOWER, HALF_PI_UPPER, Interval as CertifiedInterval, PI_LOWER, PI_UPPER,
+};
 use crate::geometry::types::ChartMetric;
 use crate::geometry::{
     ChartBox, ChartEdgeDifferential, ChartEdgeDifferentialBounds, ChartPointDistanceSample,
-    CoordinateAxes, GeographicAreaDensity, GeometryErrorKind, HasM, HasZ, MAX_AUTHALIC_HARMONICS,
-    Point, PointEdgeQuery, PointEdgeQueryResult, Segment, XY, segment_projection,
+    CoordinateAxes, GeodesicNumericalPolicy, GeographicAreaDensity, GeometryErrorKind, HasM, HasZ,
+    MAX_AUTHALIC_HARMONICS, MOrdinate, Point, PointEdgeQuery, PointEdgeQueryResult, Segment,
+    SegmentProjection, Unmetered, Work, XY, ZOrdinate, segment_projection,
 };
 
 const GL4_NODES: [f64; 4] = [
@@ -31,37 +42,83 @@ const GL4_WEIGHTS: [f64; 4] = [
     0.173_927_422_568_726_93,
 ];
 
-const GK15_NODES: [f64; 8] = [
-    0.991_455_371_120_812_6,
-    0.949_107_912_342_758_5,
-    0.864_864_423_359_769_1,
-    0.741_531_185_599_394_5,
-    0.586_087_235_467_691_1,
-    0.405_845_151_377_397_2,
-    0.207_784_955_007_898_48,
-    0.0,
-];
-const GK15_WEIGHTS: [f64; 8] = [
-    0.022_935_322_010_529_224,
-    0.063_092_092_629_978_55,
-    0.104_790_010_322_250_18,
-    0.140_653_259_715_525_92,
-    0.169_004_726_639_267_9,
-    0.190_350_578_064_785_42,
-    0.204_432_940_075_298_89,
-    0.209_482_141_084_727_82,
-];
-const G7_WEIGHTS: [f64; 4] = [
-    0.129_484_966_168_869_7,
-    0.279_705_391_489_276_67,
-    0.381_830_050_505_118_9,
-    0.417_959_183_673_469_4,
+const GK15_CENTER_KRONROD_WEIGHT: f64 = 0.209_482_141_084_727_82;
+const G7_CENTER_WEIGHT: f64 = 0.417_959_183_673_469_4;
+const GK15_NONCENTRAL_RULE: [(f64, f64, Option<f64>); 7] = [
+    (0.991_455_371_120_812_6, 0.022_935_322_010_529_224, None),
+    (
+        0.949_107_912_342_758_5,
+        0.063_092_092_629_978_55,
+        Some(0.129_484_966_168_869_7),
+    ),
+    (0.864_864_423_359_769_1, 0.104_790_010_322_250_18, None),
+    (
+        0.741_531_185_599_394_5,
+        0.140_653_259_715_525_92,
+        Some(0.279_705_391_489_276_67),
+    ),
+    (0.586_087_235_467_691_1, 0.169_004_726_639_267_9, None),
+    (
+        0.405_845_151_377_397_2,
+        0.190_350_578_064_785_42,
+        Some(0.381_830_050_505_118_9),
+    ),
+    (0.207_784_955_007_898_48, 0.204_432_940_075_298_89, None),
 ];
 
 const MAX_GK15_EVALUATIONS: usize = 5_000;
 const RELATIVE_LENGTH_ERROR: f64 = 4.0 * f64::EPSILON;
 const ONE_DEGREE: f64 = std::f64::consts::PI / 180.0;
 const AUTHALIC_TAIL_RELATIVE: f64 = 1.0e-17;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct QuadratureTestProgress {
+    pub(crate) seeds: u32,
+    pub(crate) scans: u32,
+    pub(crate) removals: u32,
+    pub(crate) child_pairs: u32,
+    pub(crate) growth_requests: u32,
+    pub(crate) growths: u32,
+    pub(crate) refinements: u32,
+    pub(crate) current_refinements: u32,
+    pub(crate) max_refinements: u32,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static QUADRATURE_TEST_PROGRESS: std::cell::Cell<QuadratureTestProgress> =
+        const { std::cell::Cell::new(QuadratureTestProgress {
+            seeds: 0,
+            scans: 0,
+            removals: 0,
+            child_pairs: 0,
+            growth_requests: 0,
+            growths: 0,
+            refinements: 0,
+            current_refinements: 0,
+            max_refinements: 0,
+        }) };
+}
+
+#[cfg(test)]
+fn update_test_progress(update: impl FnOnce(&mut QuadratureTestProgress)) {
+    QUADRATURE_TEST_PROGRESS.with(|progress| {
+        let mut current = progress.get();
+        update(&mut current);
+        progress.set(current);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn reset_quadrature_test_progress() {
+    QUADRATURE_TEST_PROGRESS.set(QuadratureTestProgress::default());
+}
+
+#[cfg(test)]
+pub(crate) fn quadrature_test_progress() -> QuadratureTestProgress {
+    QUADRATURE_TEST_PROGRESS.get()
+}
 
 #[derive(Clone, Copy, Debug)]
 /// Truncated authalic-q sine series cached with its ellipsoid's geodesic.
@@ -79,6 +136,10 @@ impl AuthalicSeries {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let ratio = (e2 / 4.0).abs();
         let mut harmonics: usize = 1;
+        #[expect(
+            clippy::while_float,
+            reason = "the retained sine-series order ends at the specified relative tail threshold"
+        )]
         while ratio.powi(harmonics as i32) >= AUTHALIC_TAIL_RELATIVE {
             harmonics = harmonics.wrapping_add(1);
         }
@@ -118,10 +179,10 @@ impl AuthalicSeries {
 }
 
 fn binomial(n: usize, k: usize) -> f64 {
-    let k = k.min(n - k);
+    let k = k.min(n.wrapping_sub(k));
     let mut coefficient = 1.0;
     for index in 1..=k {
-        coefficient *= (n + 1 - index) as f64 / index as f64;
+        coefficient *= n.wrapping_add(1).wrapping_sub(index) as f64 / index as f64;
     }
     coefficient
 }
@@ -260,7 +321,7 @@ impl ChartEdge {
         let axis = self.frame.longitude();
         let longitude = self.retained_longitude();
         let site: crate::geographic::RetainedLongitudeSite =
-            axis.native_site_at(&longitude, &parameter)?;
+            axis.native_site_at(&longitude, parameter)?;
         let native = *site.native();
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
@@ -274,7 +335,7 @@ impl ChartEdge {
         Ok(Point::new_raw_xy(longitude, latitude))
     }
 
-    fn retained_longitude(self) -> RetainedChartDisplacement {
+    const fn retained_longitude(self) -> RetainedChartDisplacement {
         self.longitude
     }
 
@@ -331,17 +392,15 @@ impl ChartEdge {
 
     #[expect(
         clippy::float_cmp,
-        reason = "the exact pole and parallel are analytic constant-distance families"
+        reason = "an exact pole witness has a monotone distance along affine latitude"
     )]
-    pub(super) fn parallel_pole_distance_upper_bound(
+    pub(super) fn pole_distance_upper_bound(
         self,
         geodesic: &Geodesic,
         frame: GeographicFrame,
+        source_interval: [f64; 2],
         target: Point,
     ) -> Option<f64> {
-        if self.latitude_delta != 0.0 {
-            return None;
-        }
         let latitude = frame
             .to_geodesic_latitude(target.y)
             .expect("the target witness was admitted before chart distance");
@@ -351,17 +410,28 @@ impl ChartEdge {
         let target = frame
             .to_geodesic_point(target)
             .expect("the target witness was admitted before chart distance");
-        let source = self.geodetic_position(0.0).ok()?;
-        let distance = super::ellipsoid_metric::inverse_distance(
-            geodesic, target.x, target.y, source.x, source.y,
+        let source_start = self.geodetic_position(source_interval[0]).ok()?;
+        let source_end = self.geodetic_position(source_interval[1]).ok()?;
+        // Distance to the fixed pole is monotone in signed latitude, so its
+        // maximum over an affine interval occurs at an endpoint.
+        let start_distance = super::ellipsoid_metric::inverse_distance(
+            geodesic,
+            target.x,
+            target.y,
+            source_start.x,
+            source_start.y,
         );
+        let end_distance = super::ellipsoid_metric::inverse_distance(
+            geodesic,
+            target.x,
+            target.y,
+            source_end.x,
+            source_end.y,
+        );
+        let distance = start_distance.max(end_distance);
         distance.is_finite().then_some(distance)
     }
 
-    #[expect(
-        clippy::suspicious_operation_groupings,
-        reason = "the azimuth derivative is the 2D cross product divided by squared speed"
-    )]
     pub(super) fn derivatives(self, parameter: f64, geodesic: &Geodesic) -> ChartEdgeDerivatives {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let dphi = self.latitude_delta * self.latitude_unit;
@@ -377,59 +447,337 @@ impl ChartEdge {
         if speed == 0.0 {
             return ChartEdgeDerivatives {
                 speed,
+                #[cfg(test)]
                 acceleration: 0.0,
                 azimuth: 0.0,
-                geodesic_curvature: 0.0,
             };
         }
+        #[cfg(test)]
         let east_derivative = -meridian * sin_latitude * dphi * dlambda;
+        #[cfg(test)]
         let north_derivative = dphi * dphi * 3.0 * e2 * sin_latitude * cos_latitude * meridian / w2;
+        #[cfg(test)]
+        let acceleration = east_derivative.hypot(north_derivative);
         let azimuth = east.atan2(north);
-        let azimuth_derivative =
-            (east_derivative * north - east * north_derivative) / (speed * speed);
-        let geodesic_curvature = (azimuth_derivative - sin_latitude * dlambda) / speed;
         ChartEdgeDerivatives {
             speed,
-            acceleration: east_derivative.hypot(north_derivative),
+            #[cfg(test)]
+            acceleration,
             azimuth,
-            geodesic_curvature,
         }
     }
 
-    pub(super) fn sampled_derivative_bounds(
-        self,
-        geodesic: &Geodesic,
-        endpoint_and_midpoint: &[ChartEdgeDerivatives; 3],
-    ) -> ChartEdgeDerivativeBounds {
-        const SAMPLE_PARAMETERS: [f64; 6] = [0.125, 0.25, 0.375, 0.625, 0.75, 0.875];
-        let sample_parameters: &[f64] = if self.latitude_delta == 0.0 {
-            &[]
+    pub(super) fn differential_bounds(self, geodesic: &Geodesic) -> ChartEdgeDifferentialBounds {
+        let one = CertifiedInterval::exact(1.0);
+        let flattening = CertifiedInterval::exact(geodesic.f);
+        let q = flattening.mul(CertifiedInterval::exact(2.0).sub(flattening));
+        let c = one.sub(q);
+        let d_min = 1.0_f64.min(c.lower());
+        let d_min_root = CertifiedInterval::exact(d_min).sqrt();
+        let semi_major = CertifiedInterval::exact(geodesic.a);
+        let n_max = semi_major.div(d_min_root).upper();
+        let m_max = semi_major
+            .mul(CertifiedInterval::exact(c.upper()))
+            .div(CertifiedInterval::exact(d_min).mul(d_min_root))
+            .upper();
+        let q_abs = q.max_abs_upper();
+        let latitude_delta = CertifiedInterval::exact(self.end_latitude)
+            .sub(CertifiedInterval::exact(self.start_latitude))
+            .abs_upper();
+        let latitude_rate = CertifiedInterval::exact(latitude_delta)
+            .mul(CertifiedInterval::exact(self.latitude_unit.abs()))
+            .upper();
+        let longitude_rate = if self.longitude_delta_native.is_finite() {
+            CertifiedInterval::from_bounds(
+                self.longitude_delta_native.next_down(),
+                self.longitude_delta_native.next_up(),
+            )
+            .mul(CertifiedInterval::exact(
+                self.frame.longitude().radians_per_unit(),
+            ))
+            .max_abs_upper()
         } else {
-            &SAMPLE_PARAMETERS
+            self.longitude_delta.abs().next_up()
         };
-        let mut speed = 0.0_f64;
-        let mut acceleration = 0.0_f64;
-        let mut curvature = 0.0_f64;
-        for derivative in endpoint_and_midpoint.iter().copied().chain(
-            sample_parameters
-                .iter()
-                .map(|&parameter| self.derivatives(parameter, geodesic)),
-        ) {
-            speed = speed.max(derivative.speed);
-            acceleration = acceleration.max(derivative.acceleration);
-            curvature = curvature.max(derivative.geodesic_curvature.abs());
-        }
-        ChartEdgeDerivativeBounds {
-            speed: speed * 1.05,
-            acceleration: acceleration * 1.05,
-            curvature: curvature * 1.05,
+        let east_speed = self.east_speed_upper(n_max, longitude_rate);
+        let speed = if self.is_parallel() {
+            east_speed
+        } else {
+            upper_hypot(east_speed, upper_product(m_max, latitude_rate))
+        };
+        let east_north_acceleration = upper_hypot(
+            upper_product(latitude_rate, longitude_rate),
+            upper_ratio(
+                upper_product(
+                    upper_product(3.0, q_abs),
+                    upper_product(latitude_rate, latitude_rate),
+                ),
+                lower_product(2.0, d_min),
+            ),
+        );
+        let acceleration = upper_product(m_max, east_north_acceleration);
+        let covariant_acceleration = upper_sum(acceleration, upper_product(speed, longitude_rate));
+        ChartEdgeDifferentialBounds {
+            speed,
+            covariant_acceleration,
         }
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact minimizer endpoint parameters preserve input coordinates and ordinates"
-    )]
+    pub(crate) fn moving_correspondence_upper(
+        &self,
+        target: &Self,
+        source_interval: [f64; 2],
+        target_interval: [f64; 2],
+        source_points: &[Point; 2],
+        target_points: &[Point; 2],
+        endpoint_distances: [f64; 2],
+        geodesic: &Geodesic,
+    ) -> Option<f64> {
+        if self.frame != target.frame {
+            return None;
+        }
+        let [source_left, source_right] = source_interval;
+        let [target_left, target_right] = target_interval;
+        if !(source_left.is_finite()
+            && source_right.is_finite()
+            && target_left.is_finite()
+            && target_right.is_finite()
+            && source_left >= 0.0
+            && source_left < source_right
+            && source_right <= 1.0
+            && target_left.is_finite()
+            && target_right.is_finite()
+            && (0.0..=1.0).contains(&target_left)
+            && (0.0..=1.0).contains(&target_right)
+            && endpoint_distances
+                .iter()
+                .all(|distance| distance.is_finite()))
+        {
+            return None;
+        }
+
+        let bounds = ellipsoid_metric_bounds(geodesic)?;
+        let longitude_axis = self.frame.longitude();
+        let longitude_sheet = longitude_sheet_shift(self, target);
+
+        let latitude_left = relative_latitude(self, target, source_left, target_left)?;
+        let latitude_right = relative_latitude(self, target, source_right, target_right)?;
+        let longitude_left =
+            relative_longitude(self, target, source_left, target_left, longitude_sheet)?;
+        let longitude_right =
+            relative_longitude(self, target, source_right, target_right, longitude_sheet)?;
+        let latitude_scale = CertifiedInterval::exact(
+            self.frame.latitude_radians_per_unit() * self.frame.latitude_orientation_sign(),
+        );
+        let longitude_scale = CertifiedInterval::exact(
+            longitude_axis.radians_per_unit() * self.frame.longitude_orientation_sign(),
+        );
+        let latitude_difference = latitude_left
+            .mul(latitude_scale)
+            .max_abs_upper()
+            .max(latitude_right.mul(latitude_scale).max_abs_upper());
+        let longitude_difference = longitude_left
+            .mul(longitude_scale)
+            .max_abs_upper()
+            .max(longitude_right.mul(longitude_scale).max_abs_upper());
+        let source_parallel_radius_upper =
+            chart_parallel_radius_upper(self, source_interval, bounds.prime_vertical_max)
+                .unwrap_or(bounds.prime_vertical_max);
+        let target_parallel_radius_upper =
+            chart_parallel_radius_upper(target, target_interval, bounds.prime_vertical_max)
+                .unwrap_or(bounds.prime_vertical_max);
+        let path_parallel_radius_upper =
+            source_parallel_radius_upper.min(target_parallel_radius_upper);
+
+        let distance_path = CertifiedInterval::exact(bounds.meridian_max)
+            .mul(CertifiedInterval::exact(latitude_difference))
+            .add(
+                CertifiedInterval::exact(path_parallel_radius_upper)
+                    .mul(CertifiedInterval::exact(longitude_difference)),
+            );
+        if !distance_path.upper().is_finite() {
+            return None;
+        }
+
+        let source_left_latitude = affine_latitude(self, source_left)?
+            .mul(latitude_scale)
+            .max_abs_upper();
+        let source_right_latitude = affine_latitude(self, source_right)?
+            .mul(latitude_scale)
+            .max_abs_upper();
+        let target_left_latitude = affine_latitude(target, target_left)?
+            .mul(latitude_scale)
+            .max_abs_upper();
+        let target_right_latitude = affine_latitude(target, target_right)?
+            .mul(latitude_scale)
+            .max_abs_upper();
+        let endpoint_latitude = source_left_latitude
+            .max(source_right_latitude)
+            .max(target_left_latitude)
+            .max(target_right_latitude);
+        let latitude_strip = CertifiedInterval::exact(endpoint_latitude)
+            .add(distance_path.div(CertifiedInterval::exact(bounds.meridian_min)));
+        let half_pi = CertifiedInterval::from_bounds(HALF_PI_LOWER, HALF_PI_UPPER);
+        let colatitude_lower = half_pi.sub(latitude_strip).lower().max(0.0);
+        if colatitude_lower == 0.0 {
+            return None;
+        }
+        let sine_lower = CertifiedInterval::exact(2.0)
+            .mul(CertifiedInterval::exact(colatitude_lower))
+            .div(CertifiedInterval::from_bounds(PI_LOWER, PI_UPPER))
+            .lower()
+            .max(0.0);
+        let radius_lower = CertifiedInterval::exact(bounds.prime_vertical_min)
+            .mul(CertifiedInterval::exact(sine_lower))
+            .lower();
+        if !(radius_lower.is_finite() && radius_lower > 0.0) {
+            return None;
+        }
+        let deformation = CertifiedInterval::exact(latitude_strip.upper().min(1.0))
+            .div(CertifiedInterval::exact(radius_lower))
+            .upper();
+
+        let mut source_latitude_rate = ExactSum::zero();
+        add_latitude_rate(
+            &mut source_latitude_rate,
+            self,
+            source_left,
+            source_right,
+            false,
+        );
+        let source_latitude_rate = exact_sum_interval(&source_latitude_rate)?;
+
+        let mut target_latitude_rate = ExactSum::zero();
+        add_latitude_rate(
+            &mut target_latitude_rate,
+            target,
+            target_left,
+            target_right,
+            false,
+        );
+        let target_latitude_rate = exact_sum_interval(&target_latitude_rate)?;
+
+        let mut relative_latitude_rate = ExactSum::zero();
+        add_latitude_rate(
+            &mut relative_latitude_rate,
+            target,
+            target_left,
+            target_right,
+            false,
+        );
+        add_latitude_rate(
+            &mut relative_latitude_rate,
+            self,
+            source_left,
+            source_right,
+            true,
+        );
+        let relative_latitude_rate = exact_sum_interval(&relative_latitude_rate)?
+            .mul(latitude_scale)
+            .max_abs_upper();
+
+        let source_latitude_rate = source_latitude_rate.mul(latitude_scale).max_abs_upper();
+        let target_latitude_rate = target_latitude_rate.mul(latitude_scale).max_abs_upper();
+
+        let mut relative_longitude_rate = ExactSum::zero();
+        add_longitude_rate(
+            &mut relative_longitude_rate,
+            target,
+            longitude_axis.period(),
+            target_left,
+            target_right,
+            false,
+        );
+        add_longitude_rate(
+            &mut relative_longitude_rate,
+            self,
+            longitude_axis.period(),
+            source_left,
+            source_right,
+            true,
+        );
+        let relative_longitude_rate = exact_sum_interval(&relative_longitude_rate)?
+            .mul(longitude_scale)
+            .max_abs_upper();
+
+        let source_longitude_motion = CertifiedInterval::exact(target_parallel_radius_upper)
+            .mul(CertifiedInterval::exact(relative_longitude_rate))
+            .upper();
+        let target_longitude_motion = CertifiedInterval::exact(source_parallel_radius_upper)
+            .mul(CertifiedInterval::exact(relative_longitude_rate))
+            .upper();
+        let common_metric_deformation = CertifiedInterval::exact(bounds.meridian_derivative_max)
+            .mul(CertifiedInterval::exact(latitude_difference));
+        let relative_meridional = CertifiedInterval::exact(bounds.meridian_max)
+            .mul(CertifiedInterval::exact(relative_latitude_rate));
+        let source_metric_deformation =
+            common_metric_deformation.mul(CertifiedInterval::exact(source_latitude_rate));
+        let target_metric_deformation =
+            common_metric_deformation.mul(CertifiedInterval::exact(target_latitude_rate));
+        let source_meridional = relative_meridional.add(source_metric_deformation);
+        let target_meridional = relative_meridional.add(target_metric_deformation);
+        let source_common_motion = CertifiedInterval::exact(bounds.meridian_max)
+            .mul(CertifiedInterval::exact(source_latitude_rate))
+            .mul(CertifiedInterval::exact(deformation))
+            .mul(distance_path);
+        let target_common_motion = CertifiedInterval::exact(bounds.meridian_max)
+            .mul(CertifiedInterval::exact(target_latitude_rate))
+            .mul(CertifiedInterval::exact(deformation))
+            .mul(distance_path);
+        let source_variation = CertifiedInterval::exact(source_longitude_motion)
+            .mul(CertifiedInterval::exact(source_longitude_motion))
+            .add(source_meridional.mul(source_meridional))
+            .sqrt()
+            .add(source_common_motion)
+            .upper();
+        let target_variation = CertifiedInterval::exact(target_longitude_motion)
+            .mul(CertifiedInterval::exact(target_longitude_motion))
+            .add(target_meridional.mul(target_meridional))
+            .sqrt()
+            .add(target_common_motion)
+            .upper();
+        let variation = source_variation.min(target_variation);
+        if !variation.is_finite() {
+            return None;
+        }
+
+        let allowance = GeodesicNumericalPolicy::new(geodesic.a)
+            .evaluation_allowance(4.0)
+            .next_up();
+        let source_left_error =
+            chart_position_rounding_error(self, source_left, source_points[0], bounds)?;
+        let source_right_error =
+            chart_position_rounding_error(self, source_right, source_points[1], bounds)?;
+        let target_left_error =
+            chart_position_rounding_error(target, target_left, target_points[0], bounds)?;
+        let target_right_error =
+            chart_position_rounding_error(target, target_right, target_points[1], bounds)?;
+        let left_distance = CertifiedInterval::exact(endpoint_distances[0])
+            .add(CertifiedInterval::exact(allowance))
+            .add(CertifiedInterval::exact(source_left_error))
+            .add(CertifiedInterval::exact(target_left_error))
+            .upper();
+        let right_distance = CertifiedInterval::exact(endpoint_distances[1])
+            .add(CertifiedInterval::exact(allowance))
+            .add(CertifiedInterval::exact(source_right_error))
+            .add(CertifiedInterval::exact(target_right_error))
+            .upper();
+        // The two endpoint Lipschitz cones peak at their crossing or an interval endpoint.
+        let cone_crossing = CertifiedInterval::exact(left_distance)
+            .add(CertifiedInterval::exact(right_distance))
+            .add(CertifiedInterval::exact(variation))
+            .div(CertifiedInterval::exact(2.0))
+            .upper();
+        let upper = left_distance.max(right_distance).max(cone_crossing);
+        upper.is_finite().then_some(upper)
+    }
+
+    fn east_speed_upper(self, n_max: f64, longitude_rate: f64) -> f64 {
+        let parallel_radius =
+            chart_parallel_radius_upper(&self, [0.0, 1.0], n_max).unwrap_or(n_max);
+        upper_product(parallel_radius, longitude_rate)
+    }
+
     pub(super) fn witness(
         self,
         start: Point,
@@ -438,17 +786,46 @@ impl ChartEdge {
         total_length: Option<f64>,
         geodesic: &Geodesic,
     ) -> Result<Point> {
+        self.witness_with_work(
+            start,
+            end,
+            parameter,
+            total_length,
+            geodesic,
+            &mut Unmetered,
+        )
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact minimizer endpoint parameters preserve input coordinates and ordinates"
+    )]
+    fn witness_with_work(
+        self,
+        start: Point,
+        end: Point,
+        parameter: f64,
+        total_length: Option<f64>,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<Point> {
         if parameter == 0.0 {
             return Ok(start);
         }
         if parameter == 1.0 {
             return Ok(end);
         }
-        let total = match total_length {
-            Some(length) => length,
-            None => self.length(geodesic)?,
+        let axes = CoordinateAxes::new(
+            HasZ(start.z().is_some() && end.z().is_some()),
+            HasM(start.m().is_some() && end.m().is_some()),
+        );
+        let fraction = if axes.has_z() || axes.has_m() {
+            let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
+            Some(self.arclength_fraction_with_work(parameter, Some(total), geodesic, work)?)
+        } else {
+            None
         };
-        self.witness_interior(start, end, parameter, total, geodesic)
+        self.witness_interior(start, end, parameter, axes, fraction)
     }
 
     fn witness_interior(
@@ -456,17 +833,13 @@ impl ChartEdge {
         start: Point,
         end: Point,
         parameter: f64,
-        total: f64,
-        geodesic: &Geodesic,
+        axes: CoordinateAxes,
+        fraction: Option<f64>,
     ) -> Result<Point> {
-        let fraction = self.arclength_fraction(parameter, Some(total), geodesic)?;
         let position = self.chart_position(parameter)?;
-        let axes = CoordinateAxes::new(
-            HasZ(start.z().is_some() && end.z().is_some()),
-            HasM(start.m().is_some() && end.m().is_some()),
-        );
-        let (z, m) =
-            crate::geometry::source_ordinate_values_at_fraction(start, end, axes, fraction);
+        let (z, m) = fraction.map_or((ZOrdinate(None), MOrdinate(None)), |fraction| {
+            crate::geometry::source_ordinate_values_at_fraction(start, end, axes, fraction)
+        });
         let point = Point::new_axes(position.x, position.y, z, m)
             .expect("an admitted chart-edge witness is finite");
         Ok(self
@@ -476,11 +849,21 @@ impl ChartEdge {
     }
 
     pub(crate) fn length(&self, geodesic: &Geodesic) -> Result<f64> {
+        self.length_with_work(geodesic, &mut Unmetered)
+    }
+
+    pub(crate) fn length_with_work(
+        &self,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
         if self.latitude_delta == 0.0 {
+            work.charge(1)?;
             return self.finite_length(self.parallel_length(geodesic));
         }
 
         if let Some(meridian) = self.meridian {
+            work.charge(1)?;
             return self.finite_length(super::inverse_distance(
                 geodesic,
                 meridian.longitude,
@@ -490,7 +873,7 @@ impl ChartEdge {
             ));
         }
 
-        self.integrate_full(geodesic)
+        self.integrate_full_with_work(geodesic, work)
     }
 
     /// Shared source-edge arclength fraction for both carried ordinates.
@@ -500,20 +883,30 @@ impl ChartEdge {
         total_length: Option<f64>,
         geodesic: &Geodesic,
     ) -> Result<f64> {
+        self.arclength_fraction_with_work(parameter, total_length, geodesic, &mut Unmetered)
+    }
+
+    pub(crate) fn arclength_fraction_with_work(
+        &self,
+        parameter: f64,
+        total_length: Option<f64>,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
         if parameter <= 0.0 {
             return Ok(0.0);
         }
         if parameter >= 1.0 {
             return Ok(1.0);
         }
-        let total = match total_length {
-            Some(length) => length,
-            None => self.length(geodesic)?,
-        };
+        let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
         if total == 0.0 {
             return Ok(0.0);
         }
-        Ok((self.arclength(parameter, geodesic)? / total).clamp(0.0, 1.0))
+        Ok(
+            (self.arclength_with_work(parameter, Some(total), geodesic, work)? / total)
+                .clamp(0.0, 1.0),
+        )
     }
 
     pub(crate) fn is_parallel(&self) -> bool {
@@ -532,17 +925,29 @@ impl ChartEdge {
 
     /// Ellipsoidal arclength from the stored start to parameter `t`.
     pub(crate) fn arclength(&self, t: f64, geodesic: &Geodesic) -> Result<f64> {
+        self.arclength_with_work(t, None, geodesic, &mut Unmetered)
+    }
+
+    pub(crate) fn arclength_with_work(
+        &self,
+        t: f64,
+        total_length: Option<f64>,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
         debug_assert!((0.0..=1.0).contains(&t));
         if t <= 0.0 {
             return Ok(0.0);
         }
         if t >= 1.0 {
-            return self.length(geodesic);
+            return total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok);
         }
         if self.latitude_delta == 0.0 {
-            return self.finite_length(self.length(geodesic)? * t);
+            let total = total_length.map_or_else(|| self.length_with_work(geodesic, work), Ok)?;
+            return self.finite_length(total * t);
         }
         if let Some(meridian) = self.meridian {
+            work.charge(1)?;
             let position = self.geodetic_position(t)?;
             return self.finite_length(super::inverse_distance(
                 geodesic,
@@ -552,7 +957,7 @@ impl ChartEdge {
                 position.y,
             ));
         }
-        self.integrate(0.0, t, geodesic)
+        self.integrate_with_work(0.0, t, geodesic, work)
     }
 
     /// Parameter whose accumulated ellipsoidal arclength is `distance`.
@@ -599,6 +1004,10 @@ impl ChartEdge {
             } else {
                 midpoint
             };
+            #[expect(
+                clippy::float_cmp,
+                reason = "an iterate equal to a bracket endpoint cannot advance past adjacent binary64 values"
+            )]
             if parameter == lower || parameter == upper {
                 break;
             }
@@ -611,8 +1020,8 @@ impl ChartEdge {
     pub(crate) fn chart_position(&self, t: f64) -> Result<crate::geometry::Point> {
         let axis = self.frame.longitude();
         let longitude = self.retained_longitude();
-        let site: crate::geographic::RetainedLongitudeSite = axis.native_site_at(&longitude, &t)?;
-        let longitude = axis.lifted_site_longitude(&site)?;
+        let site: crate::geographic::RetainedLongitudeSite = axis.native_site_at(&longitude, t)?;
+        let longitude = axis.lifted_site_longitude(site)?;
         let latitude = crate::geometry::interpolate_subdivision_ordinate(
             self.start_latitude,
             self.end_latitude,
@@ -644,12 +1053,7 @@ impl ChartEdge {
         let longitude = if source_start.x == source_end.x && retained.periods() == 0 {
             source_start.x
         } else {
-            crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                self.frame.longitude(),
-                parameter,
-            )?
+            retained_source_sheet_site(source_start.x, retained, self.frame.longitude(), parameter)?
         };
         Ok(canonical_point.with_xy_raw(longitude, canonical_point.y))
     }
@@ -666,7 +1070,7 @@ impl ChartEdge {
             .longitude()
             .chart_step(start.x, end.x)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        crate::geometry::exact_arith::retained_source_interval_reads_as(
+        retained_source_interval_reads_as(
             self.retained_longitude(),
             self.frame,
             [self.start_latitude, self.end_latitude],
@@ -679,7 +1083,7 @@ impl ChartEdge {
     }
 
     pub(crate) fn source_interval_initial_piece_count(&self, from: f64, to: f64) -> Result<usize> {
-        crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
+        retained_source_interval_initial_piece_count(
             self.retained_longitude(),
             self.frame.longitude(),
             from,
@@ -739,18 +1143,8 @@ impl ChartEdge {
         if previous.x == end.x {
             let axis = self.frame.longitude();
             let retained = self.retained_longitude();
-            let start_site = crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                axis,
-                from,
-            )?;
-            let end_site = crate::geometry::exact_arith::retained_source_sheet_site(
-                source_start.x,
-                retained,
-                axis,
-                to,
-            )?;
+            let start_site = retained_source_sheet_site(source_start.x, retained, axis, from)?;
+            let end_site = retained_source_sheet_site(source_start.x, retained, axis, to)?;
             // RN is monotone over the exact affine source longitude. When both
             // written endpoints are those rounded sites and are identical, no
             // interior parameter can produce a readable nonzero longitude.
@@ -836,36 +1230,60 @@ impl ChartEdge {
     /// Coordinate-plane projection proposal expressed in this edge's lifted
     /// chart. The minimizer still evaluates its geodesic objective before the
     /// parameter can affect the attained result.
-    pub(super) fn projection_parameter(self, point: Point) -> Result<f64> {
+    pub(crate) fn projection_parameter(self, point: Point) -> Result<f64> {
+        Ok(self.project_source_chart(point)?.0.fraction())
+    }
+
+    /// Project through the retained source branch, returning the local query
+    /// and segment for callers that must test source membership as well.
+    /// Coordinates in that local chart are rounded `f64`s, so an exact contact
+    /// predicate certifies only this represented segment, not exact membership
+    /// in the original source geometry.
+    pub(crate) fn project_source_chart(
+        self,
+        point: Point,
+    ) -> Result<(SegmentProjection, XY, Segment)> {
         let axis = self.frame.longitude();
         // The start alias folds a full-turn edge onto one endpoint. The stored
         // chart-step delta makes the midpoint the reference for its full lifted span.
         let longitude = self.retained_longitude();
         let midpoint: crate::geographic::RetainedLongitudeSite = axis
-            .native_site_at(&longitude, &0.5)
+            .native_site_at(&longitude, 0.5)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
         let midpoint_longitude = axis
-            .lifted_site_longitude(&midpoint)
+            .lifted_site_longitude(midpoint)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
         let lifted_longitude = axis
             .nearest_longitude_alias(midpoint_longitude, point.x)
             .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
-        let start = XY::new(0.0, 0.0);
-        let end = XY::new(self.longitude_delta_native, self.latitude_delta);
+        let segment = Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(self.longitude_delta_native, self.latitude_delta),
+        };
         let start_longitude = self.longitude.endpoints()[0].get();
         let query = XY::new(
             lifted_longitude - start_longitude,
             point.y - self.start_latitude,
         );
-        Ok(segment_projection(query, Segment { start, end })?.fraction())
+        Ok((segment_projection(query, segment)?, query, segment))
     }
 
     pub(super) fn integrate(&self, start: f64, end: f64, geodesic: &Geodesic) -> Result<f64> {
-        self.integrate_interval::<false>(start, end, geodesic)
+        self.integrate_with_work(start, end, geodesic, &mut Unmetered)
     }
 
-    fn integrate_full(&self, geodesic: &Geodesic) -> Result<f64> {
-        self.integrate_interval::<true>(0.0, 1.0, geodesic)
+    pub(crate) fn integrate_with_work(
+        &self,
+        start: f64,
+        end: f64,
+        geodesic: &Geodesic,
+        work: &mut impl Work,
+    ) -> Result<f64> {
+        self.integrate_interval::<false>(start, end, geodesic, work)
+    }
+
+    fn integrate_full_with_work(&self, geodesic: &Geodesic, work: &mut impl Work) -> Result<f64> {
+        self.integrate_interval::<true>(0.0, 1.0, geodesic, work)
     }
 
     #[expect(
@@ -877,6 +1295,7 @@ impl ChartEdge {
         start: f64,
         end: f64,
         geodesic: &Geodesic,
+        work: &mut impl Work,
     ) -> Result<f64> {
         if !FULL && start == end {
             return Ok(0.0);
@@ -884,6 +1303,7 @@ impl ChartEdge {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let dphi = self.latitude_delta * self.latitude_unit;
         if self.admits_gl4(dphi) {
+            work.charge(GL4_NODES.len() as u64)?;
             let width = if FULL { 1.0 } else { end - start };
             let value = std::iter::zip(GL4_NODES, GL4_WEIGHTS)
                 .map(|(node, weight)| {
@@ -895,7 +1315,8 @@ impl ChartEdge {
             return self.finite_length(value);
         }
 
-        let mut evaluations = 15;
+        let mut evaluations = 15_usize;
+        work.charge(15)?;
         let (initial, initial_error) = self.gk15(start, end, geodesic.a, e2, dphi);
         let tolerance = RELATIVE_LENGTH_ERROR * initial.abs();
         if initial_error <= tolerance {
@@ -904,29 +1325,84 @@ impl ChartEdge {
 
         let mut total = initial;
         let mut total_error = initial_error;
+        work.charge(2)?;
         let mut intervals = vec![Interval {
             start,
             end,
             value: initial,
             error: initial_error,
         }];
+        #[cfg(test)]
+        update_test_progress(|progress| {
+            progress.seeds = progress.seeds.wrapping_add(1);
+            progress.current_refinements = 0;
+        });
+        #[expect(
+            clippy::while_float,
+            reason = "adaptive quadrature refines until its computed error meets the numerical tolerance"
+        )]
         while total_error > tolerance {
+            work.charge(intervals.len() as u64)?;
             let largest = intervals
                 .iter()
                 .enumerate()
                 .max_by(|(_, left), (_, right)| left.error.total_cmp(&right.error))
                 .map(|(index, _)| index)
                 .expect("an unconverged quadrature has an interval");
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.scans = progress.scans.wrapping_add(1);
+            });
+            let removal_work = if largest < intervals.len().saturating_sub(1) {
+                2
+            } else {
+                1
+            };
+            work.charge(removal_work)?;
             let parent = intervals.swap_remove(largest);
-            if evaluations + 30 > MAX_GK15_EVALUATIONS {
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.removals = progress.removals.wrapping_add(1);
+            });
+            if evaluations.wrapping_add(30) > MAX_GK15_EVALUATIONS {
                 return Err(GeometryErrorKind::message(
                     "chart-edge length quadrature did not converge within 5,000 evaluations",
                 ));
             }
+            work.charge(30)?;
             let middle = f64::midpoint(parent.start, parent.end);
             let (left, left_error) = self.gk15(parent.start, middle, geodesic.a, e2, dphi);
             let (right, right_error) = self.gk15(middle, parent.end, geodesic.a, e2, dphi);
-            evaluations += 30;
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.child_pairs = progress.child_pairs.wrapping_add(1);
+            });
+
+            let needs_growth = intervals.capacity().saturating_sub(intervals.len()) < 2;
+            #[cfg(test)]
+            if needs_growth {
+                update_test_progress(|progress| {
+                    progress.growth_requests = progress.growth_requests.wrapping_add(1);
+                });
+            }
+            // Three scalar updates, two interval writes, and—when reserve
+            // relocates storage—two requested slots plus every live record.
+            // The 5,000-sample cap keeps this billing sum below 174.
+            let refinement_work = if needs_growth {
+                5_u64.wrapping_add(2).wrapping_add(intervals.len() as u64)
+            } else {
+                5
+            };
+            work.charge(refinement_work)?;
+            if needs_growth {
+                intervals.reserve(2);
+                #[cfg(test)]
+                update_test_progress(|progress| {
+                    progress.growths = progress.growths.wrapping_add(1);
+                });
+            }
+
+            evaluations = evaluations.wrapping_add(30);
             total += (left + right) - parent.value;
             total_error = (total_error - parent.error).max(0.0) + left_error + right_error;
             intervals.push(Interval {
@@ -940,6 +1416,13 @@ impl ChartEdge {
                 end: parent.end,
                 value: right,
                 error: right_error,
+            });
+            #[cfg(test)]
+            update_test_progress(|progress| {
+                progress.refinements = progress.refinements.wrapping_add(1);
+                progress.current_refinements = progress.current_refinements.wrapping_add(1);
+                progress.max_refinements =
+                    progress.max_refinements.max(progress.current_refinements);
             });
         }
         self.finite_length(total)
@@ -1014,20 +1497,334 @@ impl ChartEdge {
         let center = f64::midpoint(start, end);
         let half = (end - start) / 2.0;
         let center_value = self.speed(center, semi_major, e2, dphi);
-        let mut kronrod = center_value * GK15_WEIGHTS[7];
-        let mut gauss = center_value * G7_WEIGHTS[3];
-        for index in 0..7 {
-            let offset = half * GK15_NODES[index];
+        let mut kronrod = center_value * GK15_CENTER_KRONROD_WEIGHT;
+        let mut gauss = center_value * G7_CENTER_WEIGHT;
+        for &(node, kronrod_weight, gauss_weight) in &GK15_NONCENTRAL_RULE {
+            let offset = half * node;
             let pair = self.speed(center - offset, semi_major, e2, dphi)
                 + self.speed(center + offset, semi_major, e2, dphi);
-            kronrod += GK15_WEIGHTS[index] * pair;
-            if index % 2 == 1 {
-                gauss += G7_WEIGHTS[index / 2] * pair;
+            kronrod += kronrod_weight * pair;
+            if let Some(gauss_weight) = gauss_weight {
+                gauss += gauss_weight * pair;
             }
         }
         let value = kronrod * half;
         (value, ((kronrod - gauss) * half).abs())
     }
+}
+
+#[derive(Clone, Copy)]
+struct EllipsoidMetricBounds {
+    meridian_min: f64,
+    meridian_max: f64,
+    prime_vertical_min: f64,
+    prime_vertical_max: f64,
+    meridian_derivative_max: f64,
+}
+
+fn ellipsoid_metric_bounds(geodesic: &Geodesic) -> Option<EllipsoidMetricBounds> {
+    let one = CertifiedInterval::exact(1.0);
+    let flattening = CertifiedInterval::exact(geodesic.f);
+    let eccentricity_squared = flattening.mul(CertifiedInterval::exact(2.0).sub(flattening));
+    let one_minus_eccentricity_squared = one.sub(eccentricity_squared);
+    let denominator_min = one_minus_eccentricity_squared.lower().min(1.0);
+    let denominator_max = one_minus_eccentricity_squared.upper().max(1.0);
+    if !(denominator_min.is_finite() && denominator_min > 0.0) {
+        return None;
+    }
+    let semi_major = CertifiedInterval::exact(geodesic.a);
+    let min_denominator = CertifiedInterval::exact(denominator_min);
+    let max_denominator = CertifiedInterval::exact(denominator_max);
+    let min_root = min_denominator.sqrt();
+    let max_root = max_denominator.sqrt();
+    let prime_vertical_min = semi_major.div(max_root).lower();
+    let prime_vertical_max = semi_major.div(min_root).upper();
+    let meridian_min = semi_major
+        .mul(one_minus_eccentricity_squared)
+        .div(max_denominator.mul(max_root))
+        .lower();
+    let meridian_max = semi_major
+        .mul(one_minus_eccentricity_squared)
+        .div(min_denominator.mul(min_root))
+        .upper();
+    let minimum_denominator_fifth_half = min_denominator.mul(min_denominator).mul(min_root);
+    let meridian_derivative_max = CertifiedInterval::exact(3.0)
+        .mul(semi_major)
+        .mul(CertifiedInterval::exact(
+            one_minus_eccentricity_squared.upper(),
+        ))
+        .mul(CertifiedInterval::exact(
+            eccentricity_squared.max_abs_upper(),
+        ))
+        .div(CertifiedInterval::exact(2.0).mul(minimum_denominator_fifth_half))
+        .upper();
+    (meridian_min.is_finite()
+        && meridian_min > 0.0
+        && meridian_max.is_finite()
+        && prime_vertical_min.is_finite()
+        && prime_vertical_min > 0.0
+        && prime_vertical_max.is_finite()
+        && meridian_derivative_max.is_finite())
+    .then_some(EllipsoidMetricBounds {
+        meridian_min,
+        meridian_max,
+        prime_vertical_min,
+        prime_vertical_max,
+        meridian_derivative_max,
+    })
+}
+
+fn exact_sum_interval(sum: &ExactSum) -> Option<CertifiedInterval> {
+    let rounded = sum.round_to_binary64();
+    if rounded == f64::INFINITY {
+        return Some(CertifiedInterval::from_bounds(f64::MAX, f64::INFINITY));
+    }
+    if rounded == f64::NEG_INFINITY {
+        return Some(CertifiedInterval::from_bounds(f64::NEG_INFINITY, -f64::MAX));
+    }
+    if rounded.is_nan() {
+        return None;
+    }
+    let mut remainder = sum.clone();
+    remainder.subtract_product(rounded, 1.0);
+    Some(match remainder.ordering() {
+        Ordering::Equal => CertifiedInterval::exact(rounded),
+        Ordering::Greater => CertifiedInterval::from_bounds(rounded, rounded.next_up()),
+        Ordering::Less => CertifiedInterval::from_bounds(rounded.next_down(), rounded),
+    })
+}
+
+fn affine_latitude(edge: &ChartEdge, parameter: f64) -> Option<CertifiedInterval> {
+    let mut value = ExactSum::zero();
+    value.add_product(edge.start_latitude, 1.0);
+    value.add_product(edge.end_latitude, parameter);
+    value.subtract_product(edge.start_latitude, parameter);
+    exact_sum_interval(&value)
+}
+
+fn chart_parallel_radius_upper(
+    edge: &ChartEdge,
+    parameter_interval: [f64; 2],
+    prime_vertical_max: f64,
+) -> Option<f64> {
+    let latitude_scale = CertifiedInterval::exact(
+        edge.frame.latitude_radians_per_unit() * edge.frame.latitude_orientation_sign(),
+    );
+    let left = affine_latitude(edge, parameter_interval[0])?.mul(latitude_scale);
+    let right = affine_latitude(edge, parameter_interval[1])?.mul(latitude_scale);
+    let latitude_range = CertifiedInterval::from_bounds(
+        left.lower().min(right.lower()),
+        left.upper().max(right.upper()),
+    );
+    let latitude_magnitude_lower = if latitude_range.contains_zero() {
+        0.0
+    } else {
+        latitude_range
+            .lower()
+            .abs()
+            .min(latitude_range.upper().abs())
+            .next_down()
+            .max(0.0)
+    };
+    // Across this affine latitude range, the largest parallel radius is at its
+    // smallest absolute latitude; cos(phi) is bounded by its colatitude.
+    let colatitude_upper = CertifiedInterval::from_bounds(HALF_PI_LOWER, HALF_PI_UPPER)
+        .sub(CertifiedInterval::exact(latitude_magnitude_lower))
+        .upper()
+        .max(0.0);
+    let cosine_upper = 1.0_f64.min(colatitude_upper).next_up();
+    let radius_upper = CertifiedInterval::exact(prime_vertical_max)
+        .mul(CertifiedInterval::exact(cosine_upper))
+        .upper();
+    radius_upper.is_finite().then_some(radius_upper)
+}
+
+fn relative_latitude(
+    source: &ChartEdge,
+    target: &ChartEdge,
+    source_parameter: f64,
+    target_parameter: f64,
+) -> Option<CertifiedInterval> {
+    let mut difference = ExactSum::zero();
+    difference.add_product(target.start_latitude, 1.0);
+    difference.add_product(target.end_latitude, target_parameter);
+    difference.subtract_product(target.start_latitude, target_parameter);
+    difference.subtract_product(source.start_latitude, 1.0);
+    difference.subtract_product(source.end_latitude, source_parameter);
+    difference.add_product(source.start_latitude, source_parameter);
+    exact_sum_interval(&difference)
+}
+
+fn longitude_sheet_shift(source: &ChartEdge, target: &ChartEdge) -> i64 {
+    let axis = source.frame.longitude();
+    let source_start = source.longitude.endpoints()[0].get();
+    let target_start = target.longitude.endpoints()[0].get();
+    let mut difference = ExactSum::zero();
+    difference.add_product(target_start, 1.0);
+    difference.subtract_product(source_start, 1.0);
+
+    let mut above_positive_half = difference.clone();
+    above_positive_half.subtract_product(axis.half_period(), 1.0);
+    if above_positive_half.ordering() == Ordering::Greater {
+        return -1;
+    }
+    let mut below_negative_half = difference;
+    below_negative_half.add_product(axis.half_period(), 1.0);
+    if below_negative_half.ordering() == Ordering::Less {
+        return 1;
+    }
+    0
+}
+
+fn relative_longitude(
+    source: &ChartEdge,
+    target: &ChartEdge,
+    source_parameter: f64,
+    target_parameter: f64,
+    target_sheet_shift: i64,
+) -> Option<CertifiedInterval> {
+    let period = source.frame.longitude().period();
+    let [source_start, source_end] = *source.longitude.endpoints();
+    let [target_start, target_end] = *target.longitude.endpoints();
+    let mut difference = ExactSum::zero();
+    difference.add_product(target_start.get(), 1.0);
+    difference.subtract_product(source_start.get(), 1.0);
+    difference.add_scaled_product(period, 1.0, target_sheet_shift, false);
+    difference.add_product(target_end.get(), target_parameter);
+    difference.subtract_product(target_start.get(), target_parameter);
+    difference.add_scaled_product(period, target_parameter, target.longitude.periods(), false);
+    difference.subtract_product(source_end.get(), source_parameter);
+    difference.add_product(source_start.get(), source_parameter);
+    difference.add_scaled_product(period, source_parameter, source.longitude.periods(), true);
+    exact_sum_interval(&difference)
+}
+
+fn add_latitude_rate(sum: &mut ExactSum, edge: &ChartEdge, start: f64, end: f64, subtract: bool) {
+    add_or_subtract_product(sum, edge.end_latitude, end, subtract);
+    add_or_subtract_product(sum, edge.end_latitude, start, !subtract);
+    add_or_subtract_product(sum, edge.start_latitude, end, !subtract);
+    add_or_subtract_product(sum, edge.start_latitude, start, subtract);
+}
+
+fn add_longitude_rate(
+    sum: &mut ExactSum,
+    edge: &ChartEdge,
+    period: f64,
+    start: f64,
+    end: f64,
+    subtract: bool,
+) {
+    let [native_start, native_end] = *edge.longitude.endpoints();
+    add_or_subtract_product(sum, native_end.get(), end, subtract);
+    add_or_subtract_product(sum, native_end.get(), start, !subtract);
+    add_or_subtract_product(sum, native_start.get(), end, !subtract);
+    add_or_subtract_product(sum, native_start.get(), start, subtract);
+    sum.add_scaled_product(period, end, edge.longitude.periods(), subtract);
+    sum.add_scaled_product(period, start, edge.longitude.periods(), !subtract);
+}
+
+fn add_or_subtract_product(sum: &mut ExactSum, left: f64, right: f64, subtract: bool) {
+    if subtract {
+        sum.subtract_product(left, right);
+    } else {
+        sum.add_product(left, right);
+    }
+}
+
+fn chart_position_rounding_error(
+    edge: &ChartEdge,
+    parameter: f64,
+    point: Point,
+    bounds: EllipsoidMetricBounds,
+) -> Option<f64> {
+    let mut longitude_residual = ExactSum::zero();
+    let [start, end] = *edge.longitude.endpoints();
+    longitude_residual.add_product(start.get(), 1.0);
+    longitude_residual.add_product(end.get(), parameter);
+    longitude_residual.subtract_product(start.get(), parameter);
+    longitude_residual.add_scaled_product(
+        edge.frame.longitude().period(),
+        parameter,
+        edge.longitude.periods(),
+        false,
+    );
+    longitude_residual.subtract_product(point.x, 1.0);
+    let longitude_error = exact_sum_interval(&longitude_residual)?.max_abs_upper();
+
+    let mut latitude_residual = ExactSum::zero();
+    latitude_residual.add_product(edge.start_latitude, 1.0);
+    latitude_residual.add_product(edge.end_latitude, parameter);
+    latitude_residual.subtract_product(edge.start_latitude, parameter);
+    latitude_residual.subtract_product(point.y, 1.0);
+    let latitude_error = exact_sum_interval(&latitude_residual)?.max_abs_upper();
+
+    let longitude_error = CertifiedInterval::exact(longitude_error)
+        .mul(CertifiedInterval::exact(
+            edge.frame.longitude().radians_per_unit(),
+        ))
+        .upper();
+    let latitude_error = CertifiedInterval::exact(latitude_error)
+        .mul(CertifiedInterval::exact(
+            edge.frame.latitude_radians_per_unit(),
+        ))
+        .upper();
+    let position_error = CertifiedInterval::exact(bounds.prime_vertical_max)
+        .mul(CertifiedInterval::exact(longitude_error))
+        .add(
+            CertifiedInterval::exact(bounds.meridian_max)
+                .mul(CertifiedInterval::exact(latitude_error)),
+        )
+        .upper();
+    position_error.is_finite().then_some(position_error)
+}
+
+fn upper_product(left: f64, right: f64) -> f64 {
+    if left == 0.0 || right == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(left)
+            .mul(CertifiedInterval::exact(right))
+            .upper()
+    }
+}
+
+fn lower_product(left: f64, right: f64) -> f64 {
+    if left == 0.0 || right == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(left)
+            .mul(CertifiedInterval::exact(right))
+            .lower()
+    }
+}
+
+fn upper_ratio(numerator: f64, denominator: f64) -> f64 {
+    if numerator == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(numerator)
+            .div(CertifiedInterval::exact(denominator))
+            .upper()
+    }
+}
+
+fn upper_sum(left: f64, right: f64) -> f64 {
+    if left == 0.0 && right == 0.0 {
+        0.0
+    } else {
+        CertifiedInterval::exact(left)
+            .add(CertifiedInterval::exact(right))
+            .upper()
+    }
+}
+
+fn upper_hypot(left: f64, right: f64) -> f64 {
+    if left == 0.0 && right == 0.0 {
+        return 0.0;
+    }
+    let left = CertifiedInterval::exact(left).mul(CertifiedInterval::exact(left));
+    let right = CertifiedInterval::exact(right).mul(CertifiedInterval::exact(right));
+    left.add(right).sqrt().upper()
 }
 
 pub(super) fn chart_edge_differential(
@@ -1046,35 +1843,7 @@ pub(super) fn chart_edge_differential_bounds(
     edge: &ChartEdge,
     geodesic: &Geodesic,
 ) -> ChartEdgeDifferentialBounds {
-    let start = edge.derivatives(0.0, geodesic);
-    let samples = if edge.is_parallel() {
-        [start; 3]
-    } else {
-        [
-            start,
-            edge.derivatives(0.5, geodesic),
-            edge.derivatives(1.0, geodesic),
-        ]
-    };
-    let bounds = edge.sampled_derivative_bounds(geodesic, &samples);
-    let lipschitz_speed = if edge.is_parallel() {
-        // A parallel has constant speed; retain the radius-relative arithmetic
-        // allowance without the sampled-variation margin used by the Taylor bound.
-        let allowance = crate::geometry::GeodesicNumericalPolicy::new(geodesic.a)
-            .evaluation_allowance(4.0)
-            * edge.longitude_delta.abs();
-        bounds
-            .speed
-            .min((edge.parallel_length(geodesic) + allowance).next_up())
-    } else {
-        bounds.speed
-    };
-    ChartEdgeDifferentialBounds {
-        speed: bounds.speed,
-        lipschitz_speed,
-        acceleration: bounds.acceleration,
-        curvature: bounds.curvature,
-    }
+    edge.differential_bounds(geodesic)
 }
 
 fn retained_longitude_radians(
@@ -1088,7 +1857,7 @@ fn retained_longitude_radians(
     if ordinary.is_finite() {
         return ordinary;
     }
-    crate::geometry::exact_arith::retained_delta_scaled(
+    retained_delta_scaled(
         longitude.endpoints()[0].get(),
         longitude.endpoints()[1].get(),
         axis.period(),
@@ -1112,6 +1881,10 @@ impl ChartMetric for super::GeodesicMetric {
         edge.length(&self.geodesic)
     }
 
+    fn chart_edge_length_with_work<W: Work>(&self, edge: &ChartEdge, work: &mut W) -> Result<f64> {
+        edge.length_with_work(&self.geodesic, work)
+    }
+
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64> {
         edge.arclength(parameter, &self.geodesic)
     }
@@ -1123,6 +1896,16 @@ impl ChartMetric for super::GeodesicMetric {
         total_length: Option<f64>,
     ) -> Result<f64> {
         edge.arclength_fraction(parameter, total_length, &self.geodesic)
+    }
+
+    fn chart_edge_arclength_fraction_with_work<W: Work>(
+        &self,
+        edge: &ChartEdge,
+        parameter: f64,
+        total_length: Option<f64>,
+        work: &mut W,
+    ) -> Result<f64> {
+        edge.arclength_fraction_with_work(parameter, total_length, &self.geodesic, work)
     }
 
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64> {
@@ -1152,8 +1935,34 @@ impl ChartMetric for super::GeodesicMetric {
         chart_edge_differential_bounds(edge, &self.geodesic)
     }
 
-    fn chart_edge_pole_distance_upper_bound(&self, edge: &ChartEdge, target: Point) -> Option<f64> {
-        edge.parallel_pole_distance_upper_bound(&self.geodesic, self.frame, target)
+    fn chart_edge_moving_correspondence_upper(
+        &self,
+        source: &ChartEdge,
+        target: &ChartEdge,
+        source_interval: [f64; 2],
+        target_interval: [f64; 2],
+        source_points: &[Point; 2],
+        target_points: &[Point; 2],
+        endpoint_distances: [f64; 2],
+    ) -> Option<f64> {
+        source.moving_correspondence_upper(
+            target,
+            source_interval,
+            target_interval,
+            source_points,
+            target_points,
+            endpoint_distances,
+            &self.geodesic,
+        )
+    }
+
+    fn chart_edge_pole_distance_upper_bound(
+        &self,
+        edge: &ChartEdge,
+        source_interval: [f64; 2],
+        target: Point,
+    ) -> Option<f64> {
+        edge.pole_distance_upper_bound(&self.geodesic, self.frame, source_interval, target)
     }
 
     fn point_edge_query(
@@ -1193,8 +2002,16 @@ impl ChartMetric for super::GeodesicMetric {
         )
     }
 
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64 {
-        super::edge_distance::curvature_hessian_bound(&self.geodesic, lower_distance)
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64 {
+        super::edge_distance::curvature_hessian_bound(
+            &self.geodesic,
+            lower_distance,
+            upper_distance,
+        )
     }
 
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64 {
@@ -1220,16 +2037,9 @@ impl ChartMetric for super::GeodesicMetric {
 #[derive(Clone, Copy)]
 pub(super) struct ChartEdgeDerivatives {
     pub(super) speed: f64,
+    #[cfg(test)]
     pub(super) acceleration: f64,
     pub(super) azimuth: f64,
-    pub(super) geodesic_curvature: f64,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ChartEdgeDerivativeBounds {
-    pub(super) speed: f64,
-    pub(super) acceleration: f64,
-    pub(super) curvature: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -1248,12 +2058,15 @@ mod tests {
 
     use super::super::GeodesicMetric;
     use super::{AuthalicSeries, ChartEdge, ONE_DEGREE};
+    use crate::crs::geodesic::geographic_metric_frame_at;
     use crate::geographic::{
         AngularFactor, ChartStep, EdgeDirection, GeographicAxisOrientation, GeographicFrame,
-        PeriodicAxis,
+    };
+    use crate::geometry::exact_arith::{
+        retained_source_interval_initial_piece_count, retained_source_sheet_site,
     };
     use crate::geometry::types::{ChartMetric as _, GeodesicMetric as _};
-    use crate::geometry::{GeometryErrorKind, MOrdinate, Point, ZOrdinate};
+    use crate::geometry::{GeometryErrorKind, MOrdinate, Point, Work, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
         GeographicFrame::crs84()
@@ -1282,6 +2095,62 @@ mod tests {
 
     fn wgs84() -> Geodesic {
         Geodesic::new(6_378_137.0, 1.0 / 298.257_223_563)
+    }
+
+    #[derive(Default)]
+    struct CountingWork(u64);
+
+    impl Work for CountingWork {
+        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+            self.0 = self.0.wrapping_add(ticks);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn xy_witness_skips_arclength_but_ordinate_witnesses_compute_it() {
+        let edge = ChartEdge::new(
+            Point::new_raw_xy(0.0, 10.0),
+            Point::new_raw_xy(20.0, 30.0),
+            degrees(),
+        )
+        .unwrap();
+        let geodesic = wgs84();
+
+        let mut work = CountingWork::default();
+        edge.witness_with_work(
+            Point::new_raw_xy(0.0, 10.0),
+            Point::new_raw_xy(20.0, 30.0),
+            0.4,
+            None,
+            &geodesic,
+            &mut work,
+        )
+        .unwrap();
+        assert_eq!(work.0, 0);
+
+        for (start, end) in [
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(None)).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(Some(7.0)), MOrdinate(None)).unwrap(),
+            ),
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(None), MOrdinate(Some(2.0))).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(None), MOrdinate(Some(7.0))).unwrap(),
+            ),
+            (
+                Point::new_axes(0.0, 10.0, ZOrdinate(Some(2.0)), MOrdinate(Some(12.0))).unwrap(),
+                Point::new_axes(20.0, 30.0, ZOrdinate(Some(7.0)), MOrdinate(Some(17.0))).unwrap(),
+            ),
+        ] {
+            let mut work = CountingWork::default();
+            let witness = edge
+                .witness_with_work(start, end, 0.4, None, &geodesic, &mut work)
+                .unwrap();
+            assert!(work.0 > 0);
+            assert_eq!(witness.z().is_some(), start.z().is_some());
+            assert_eq!(witness.m().is_some(), start.m().is_some());
+        }
     }
 
     fn edge_length(
@@ -1429,8 +2298,8 @@ mod tests {
         ];
         for frame in frames {
             let axis = frame.longitude();
-            let start = Point::new_raw_xy(axis.from_degrees(170.0), frame.pole() * 0.6);
-            let end = Point::new_raw_xy(axis.from_degrees(-170.0), frame.pole() * 0.9);
+            let start = Point::new_raw_xy(axis.degrees_to_native(170.0), frame.pole() * 0.6);
+            let end = Point::new_raw_xy(axis.degrees_to_native(-170.0), frame.pole() * 0.9);
             let edge = ChartEdge::new(start, end, frame).unwrap();
             let bounds = edge.bounds();
             for sample in 0..=64 {
@@ -1578,13 +2447,13 @@ mod tests {
         .unwrap();
         assert_eq!(edge.chart_position(0.5).unwrap().x, 180.0);
         assert_eq!(edge.chart_position(1.0).unwrap().x, 190.0);
-        assert!(
+        drop(
             ChartEdge::new(
                 Point::new_raw_xy(0.0, 10.0),
                 Point::new_raw_xy(180.0, 20.0),
-                frame
+                frame,
             )
-            .is_err()
+            .unwrap_err(),
         );
     }
 
@@ -1607,13 +2476,12 @@ mod tests {
         )
         .unwrap();
         let state = crate::crs::runtime_state_snapshot().unwrap();
-        let proj_radian = crate::crs::geodesic::geographic_metric_frame_at(
+        let proj_radian = geographic_metric_frame_at(
             "GEOGCS[\"WGS 84 rad\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"radian\",1],AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]",
             &state,
         )
         .unwrap();
-        let proj_grad =
-            crate::crs::geodesic::geographic_metric_frame_at("EPSG:4807", &state).unwrap();
+        let proj_grad = geographic_metric_frame_at("EPSG:4807", &state).unwrap();
         let cases = [
             ("degrees", degrees(), 360.0, 10.0, 2.0),
             ("radians", radians(), std::f64::consts::TAU, 0.0, 0.5),
@@ -1682,7 +2550,7 @@ mod tests {
         assert_eq!(to_point.x, 11.5);
         assert_eq!((to_point.x - from_point.x).to_bits(), 1.0_f64.to_bits());
         let exact_interval_delta = 2.0 * (to - from);
-        assert_eq!(exact_interval_delta.to_bits(), 0x3FEFFFFFFFFFFFFE);
+        assert_eq!(exact_interval_delta.to_bits(), 0x3FEF_FFFF_FFFF_FFFE);
         assert_ne!(
             (to_point.x - from_point.x).to_bits(),
             exact_interval_delta.to_bits()
@@ -2021,7 +2889,7 @@ mod tests {
         let large_start = Point::new_raw_xy(360.0 * 2.0_f64.powi(44), 0.0);
         let large_end = Point::new_raw_xy(large_start.x + 5.0, 0.0);
         let large_edge = ChartEdge::new(large_start, large_end, degrees()).unwrap();
-        let large_site = crate::geometry::exact_arith::retained_source_sheet_site(
+        let large_site = retained_source_sheet_site(
             large_start.x,
             large_edge.retained_longitude(),
             degrees().longitude(),
@@ -2048,7 +2916,7 @@ mod tests {
         let huge_start = Point::new_raw_xy(1.0e22, 0.0);
         let huge_end = Point::new_raw_xy(1.0e22_f64.next_up(), 0.0);
         let huge = ChartEdge::new(huge_start, huge_end, degrees()).unwrap();
-        let source_sheet = crate::geometry::exact_arith::retained_source_sheet_site(
+        let source_sheet = retained_source_sheet_site(
             huge_start.x,
             huge.retained_longitude(),
             degrees().longitude(),
@@ -2056,15 +2924,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(source_sheet.to_bits(), huge_start.x.to_bits());
-        assert!(
-            crate::geometry::exact_arith::retained_source_interval_initial_piece_count(
-                huge.retained_longitude(),
-                degrees().longitude(),
-                0.0,
-                0.5,
-            )
-            .is_ok()
-        );
+        let _ = retained_source_interval_initial_piece_count(
+            huge.retained_longitude(),
+            degrees().longitude(),
+            0.0,
+            0.5,
+        )
+        .unwrap();
         let canonical = huge.chart_position(0.5).unwrap();
         let collapsed = huge
             .source_sheet_point(huge_start, huge_end, 0.5, canonical)
@@ -2176,6 +3042,86 @@ mod tests {
                 (actual - degree_length).abs() <= 2.0e-9,
                 "frame mismatch: degree={degree_length:.17}, actual={actual:.17}"
             );
+        }
+    }
+
+    #[test]
+    fn analytic_chart_differentials_contain_meridians_obliques_and_parallels() {
+        let meridian_geodesic = wgs84();
+        let meridian = ChartEdge::new(
+            Point::new_raw_xy(0.0, -72.384_836_123_684_47),
+            Point::new_raw_xy(0.0, 72.384_836_123_684_47),
+            degrees(),
+        )
+        .unwrap();
+        let meridian_bounds = meridian.differential_bounds(&meridian_geodesic);
+        for parameter in [0.125, 0.1875, 0.5, 0.8125, 0.875] {
+            let derivative = meridian.derivatives(parameter, &meridian_geodesic);
+            assert!(meridian_bounds.speed >= derivative.speed);
+            assert!(meridian_bounds.covariant_acceleration >= derivative.acceleration);
+        }
+        let peak = meridian
+            .derivatives(0.1875, &meridian_geodesic)
+            .acceleration
+            / meridian_geodesic.a;
+        assert!((peak - 0.064_216_997_824_935_52).abs() <= 2.0e-16);
+
+        for (geodesic, frame, start, end) in [
+            (
+                wgs84(),
+                degrees(),
+                Point::new_raw_xy(-70.0, 10.0),
+                Point::new_raw_xy(80.0, 55.0),
+            ),
+            (
+                Geodesic::new(6_371_000.0, 0.0),
+                degrees(),
+                Point::new_raw_xy(-70.0, 10.0),
+                Point::new_raw_xy(80.0, 55.0),
+            ),
+            (
+                Geodesic::new(6_371_000.0, -0.01),
+                degrees(),
+                Point::new_raw_xy(170.0, 88.0),
+                Point::new_raw_xy(-100.0, 87.0),
+            ),
+            (
+                wgs84(),
+                degrees(),
+                Point::new_raw_xy(-45.0, 89.999_999_999),
+                Point::new_raw_xy(45.0, 89.999_999_999),
+            ),
+            (
+                wgs84(),
+                radians(),
+                Point::new_raw_xy(-0.7, 1.2),
+                Point::new_raw_xy(0.7, 1.2),
+            ),
+            (
+                wgs84(),
+                south_axis_degrees(),
+                Point::new_raw_xy(0.0, 72.384_836_123_684_47),
+                Point::new_raw_xy(0.0, -72.384_836_123_684_47),
+            ),
+        ] {
+            let edge = ChartEdge::new(start, end, frame).unwrap();
+            let bounds = edge.differential_bounds(&geodesic);
+            for parameter in [0.0, 0.125, 0.1875, 0.5, 0.8125, 0.875, 1.0] {
+                let derivative = edge.derivatives(parameter, &geodesic);
+                assert!(
+                    bounds.speed >= derivative.speed,
+                    "speed at t={parameter}: {} < {}",
+                    bounds.speed,
+                    derivative.speed
+                );
+                assert!(
+                    bounds.covariant_acceleration
+                        >= derivative.acceleration + derivative.speed * edge.longitude_delta.abs(),
+                    "covariant acceleration at t={parameter}: {} < {}",
+                    bounds.covariant_acceleration,
+                    derivative.acceleration + derivative.speed * edge.longitude_delta.abs()
+                );
+            }
         }
     }
 
@@ -2309,7 +3255,7 @@ mod tests {
         let frames = [degrees(), grads(), radians()];
         let mut state = 0x4D59_5DF4_D0F3_3173_u64;
         for frame in frames {
-            let axis: PeriodicAxis = frame.longitude();
+            let axis = frame.longitude();
             let half = axis.half_period();
             let period = axis.period();
             for (from, to) in [

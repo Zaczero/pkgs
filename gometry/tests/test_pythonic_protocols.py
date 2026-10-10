@@ -211,11 +211,14 @@ def test_match_cells_coverages_reports_and_features() -> None:
     match bowtie.validate():
         case gm.ValidationReport(False, reason):
             assert reason is not None and 'intersection' in reason
-    features = gm.from_features({
-        'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-        'properties': {'name': 'A'},
-    })
+    features = gm.from_geojson(
+        {
+            'type': 'Feature',
+            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+            'properties': {'name': 'A'},
+        },
+        features=True,
+    )
     match features:
         case gm.Features(geometries, properties, ids):
             assert len(geometries) == 1 and properties == ({'name': 'A'},)
@@ -244,6 +247,82 @@ def test_overlay_operators_equal_named_methods() -> None:
         _ = 5 | a
     with pytest.raises(ValueError, match='matching CRS'):
         _ = a & gm.box(0, 0, 1, 1, crs=4326)
+
+
+@pytest.mark.parametrize(
+    ('method', 'expected_area'),
+    [
+        pytest.param('__rand__', 2.0, id='intersection'),
+        pytest.param('__ror__', 6.0, id='union'),
+        pytest.param('__rxor__', 4.0, id='symmetric-difference'),
+        pytest.param('__rsub__', 2.0, id='difference'),
+    ],
+)
+def test_reflected_overlay_same_family_known_answers(
+    method: str, expected_area: float
+) -> None:
+    left = gm.box(0, 0, 2, 2)
+    right = gm.box(1, 0, 3, 2)
+
+    scalar_result = getattr(left, method)(right)
+    assert isinstance(scalar_result, gm.Geometry)
+    assert scalar_result.area == expected_area
+
+    left_array = gm.GeometryArray([left, None])
+    right_array = gm.GeometryArray([right, right])
+    array_result = getattr(left_array, method)(right_array)
+    assert isinstance(array_result, gm.GeometryArray)
+    assert array_result[0].area == expected_area
+    assert array_result[1] is None
+
+
+def test_reflected_difference_uses_other_operand() -> None:
+    left = gm.box(0, 0, 2, 2)
+    right = gm.box(1, 0, 3, 2)
+    result = left.__rsub__(right)
+    assert result.bounds == (2.0, 0.0, 3.0, 2.0)
+
+    left_array = gm.GeometryArray([left, None])
+    right_array = gm.GeometryArray([right, right])
+    array_result = left_array.__rsub__(right_array)
+    assert array_result[0].bounds == (2.0, 0.0, 3.0, 2.0)
+    assert array_result[1] is None
+
+    point = gm.Point(1, 1)
+    polygon = gm.box(0, 0, 2, 2)
+    assert type(point.__rsub__(polygon)) is gm.Polygon
+    assert type(polygon.__rsub__(point)) is gm.Point
+
+
+@pytest.mark.parametrize(
+    'method',
+    [
+        pytest.param('__rand__', id='intersection'),
+        pytest.param('__ror__', id='union'),
+        pytest.param('__rsub__', id='difference'),
+        pytest.param('__rxor__', id='symmetric-difference'),
+    ],
+)
+def test_reflected_overlay_cross_family_declines(method: str) -> None:
+    geometry = gm.box(0, 0, 2, 2)
+    other_geometry = gm.box(1, 0, 3, 2)
+    geometry_array = gm.GeometryArray([other_geometry, None])
+
+    assert getattr(geometry, method)(geometry_array) is NotImplemented
+    assert getattr(geometry_array, method)(geometry) is NotImplemented
+    assert getattr(geometry, method)(7) is NotImplemented
+    assert getattr(geometry_array, method)(7) is NotImplemented
+
+
+def test_mixed_scalar_array_infix_overlay_still_broadcasts() -> None:
+    geometry = gm.box(0, 0, 2, 2)
+    other_geometry = gm.box(1, 0, 3, 2)
+    geometry_array = gm.GeometryArray([other_geometry, None])
+
+    mixed_infix = geometry & geometry_array
+    assert isinstance(mixed_infix, gm.GeometryArray)
+    assert mixed_infix[0].area == 2.0
+    assert mixed_infix[1] is None
 
 
 def test_str_is_wkt_and_repr_keeps_the_frame() -> None:
@@ -554,7 +633,7 @@ def test_geometry_groups_range_and_strided_views_preserve_value_semantics() -> N
     ]
     assert strided.nbytes == strided.values.nbytes + strided.offsets.nbytes
 
-    framed = _lib._unpickle_geometry_groups_v1(values.set_crs(4326), [0, 2, 3, 6, 8])
+    framed = _lib._unpickle_geometry_groups_v1(values.with_crs(4326), [0, 2, 3, 6, 8])
     assert groups != framed
     assert groups[0] not in framed
 
@@ -710,35 +789,36 @@ def test_pickle_round_trips_across_protocols(protocol: int) -> None:
     values = [
         gm.Point(1, 2, z=3, m=4, crs=4326),
         gm.from_wkt('SRID=3857;LINESTRING (0 0, 1 1)'),
-        gm.points([0.0, 1.0], [0.0, 1.0]).set_crs(4326),
+        gm.points([0.0, 1.0], [0.0, 1.0]).with_crs(4326),
         gm.GeometryArray([gm.Point(0, 0), gm.box(0, 0, 1, 1)]),
         gm.CRS(4326),
         coverage[0],
         gm.s2_cover(gm.box(0, 0, 1, 1, crs=4326), target_cells=4)[0],
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': {'type': 'Point', 'coordinates': [1, 2]},
-            'properties': {},
-        }),
+        gm.from_geojson(
+            {
+                'type': 'Feature',
+                'geometry': {'type': 'Point', 'coordinates': [1, 2]},
+                'properties': {},
+            },
+            features=True,
+        ),
     ]
     for value in values:
         restored = pickle.loads(pickle.dumps(value, protocol))
         assert restored == value, type(value).__name__
 
 
-def test_crs_equality_is_semantic_and_unhashable() -> None:
+def test_crs_equality_is_stored_definition_and_hashable() -> None:
     crs = gm.CRS(4326)
-    assert crs == 4326
-    assert crs == 'EPSG:4326'
     assert crs == gm.CRS('EPSG:4326')
-    assert crs == 4326
-    assert crs == 'EPSG:4326'
-    with pytest.raises(TypeError, match='unhashable'):
-        hash(crs)
-    with pytest.raises(TypeError, match='unhashable'):
-        _ = {crs: 1}
-    values = {crs.definition: 1}
-    assert values['EPSG:4326'] == 1
+    assert hash(crs) == hash(gm.CRS('EPSG:4326'))
+    assert {crs: 'stored definition'}[gm.CRS('EPSG:4326')] == 'stored definition'
+    assert crs != 4326
+    assert crs != 'EPSG:4326'
+    assert crs != 4326
+    assert crs != 'EPSG:4326'
+    assert crs != gm.CRS('OGC:CRS84')
+    assert crs.same_as('OGC:CRS84', mode='ignore_axis_order')
 
 
 def test_validation_report_is_a_value() -> None:
@@ -827,6 +907,25 @@ def test_array_getitem_mask_and_bool_error_boundaries_are_frozen() -> None:
         cells[[True]]
 
 
+def test_supports_index_selects_scalar_rows_across_array_families() -> None:
+    class RowIndex:
+        def __index__(self) -> int:
+            return 1
+
+    index = RowIndex()
+    points = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    first = gm.H3Cell(gm.Point(10, 50, crs=4326), resolution=7)
+    second = gm.H3Cell(gm.Point(11, 50, crs=4326), resolution=7)
+    cells = gm.CellArray([first, second])
+    vertices = first.vertices
+    edges = first.edges
+
+    assert points[index] == points[1]
+    assert cells[index] == second
+    assert vertices[index] == vertices[1]
+    assert edges[index] == edges[1]
+
+
 def test_copy_returns_self_for_immutable_values() -> None:
     coverage = gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=4)
     values = [
@@ -891,13 +990,29 @@ def test_engine_copy_and_pickle_contracts() -> None:
 
 
 def test_coordinates_pickle_copy_and_deepcopy_are_type_stable() -> None:
-    coords = gm.LineString([(0, 0), (1, 2)], z=[3, 4], m=[5, 6]).coords
-    expected = np.asarray(coords)
+    source = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 2)], z=[3, 4], m=[5, 6]),
+        None,
+        gm.Point(9, 10),
+    ])
+    coords = source.coords.select('XYZM')
     assert copy.copy(coords) is coords
     assert copy.deepcopy(coords) is coords
-    with pytest.raises(TypeError, match='cannot pickle Coordinates'):
-        pickle.dumps(coords)
-    np.testing.assert_allclose(np.asarray(coords), expected)
+
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        restored = pickle.loads(pickle.dumps(coords, protocol=protocol))
+
+        assert isinstance(restored, gm.Coordinates)
+        assert not isinstance(restored, np.ndarray)
+        assert restored.coordinate_axes == 'XYZM'
+        assert restored == coords
+        assert restored.row_index.tolist() == coords.row_index.tolist()
+
+        empty = pickle.loads(
+            pickle.dumps(gm.GeometryArray([]).coords, protocol=protocol)
+        )
+        assert isinstance(empty, gm.Coordinates)
+        assert len(empty) == 0
 
 
 def test_nbytes_and_sizeof_report_real_payload() -> None:
@@ -1205,7 +1320,7 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
     probed = _regular_polygon(0.0, 0.0, vertices=256)
     cold_size = sys.getsizeof(probed)
     assert cold_size > probed.nbytes
-    gm.contains_xy(probed, [0.0, 2.0], [0.0, 2.0])
+    gm.contains(probed, x=[0.0, 2.0], y=[0.0, 2.0])
     assert sys.getsizeof(probed) >= cold_size
     line = gm.LineString([(float(i), 0.0) for i in range(128)])
     line_cold_size = sys.getsizeof(line)
@@ -1253,6 +1368,31 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
         assert sys.getsizeof(cell) >= cell.nbytes
 
 
+def test_sizeof_includes_python_allocation_base_for_crs_and_cell_families() -> None:
+    h3 = gm.H3Cell(13.4, 52.5, resolution=7)
+    edge = h3.edges[0]
+    vertex = h3.vertices[0]
+    values = (
+        gm.CRS(4326),
+        h3,
+        gm.S2Cell(13.4, 52.5, level=12),
+        gm.GeohashCell(13.4, 52.5, precision=6),
+        gm.Tile(lon=13.4, lat=52.5, zoom=12),
+        edge,
+        vertex,
+    )
+
+    for value in values:
+        assert value.__sizeof__() == object.__sizeof__(value)
+
+    cell_array = gm.h3_cells([13.4], [52.5], resolution=7)
+    edge_array = h3.edges
+    vertex_array = h3.vertices
+    for value in (cell_array, edge_array, vertex_array):
+        assert value.__sizeof__() >= object.__sizeof__(value)
+        assert value.__sizeof__() > object.__sizeof__(value)
+
+
 def test_runtime_generic_subscription() -> None:
     alias = gm.GeometryArray[gm.Point]
     assert 'GeometryArray' in str(alias)
@@ -1295,7 +1435,7 @@ def test_python_result_types_pickle_preserves_fields() -> None:
     values = (
         gm.Features(gm.GeometryArray([gm.Point(2, 3)]), [{'name': 'sample'}], ['a']),
         gm.LineString([(1, 2), (4, -3), (7, 8), (-5, 6)]).extremes(),
-        gm.polygonize_full([ring, gm.LineString([(5, 6), (7, 8)])]),
+        gm.polygonize_all([ring, gm.LineString([(5, 6), (7, 8)])], diagnostics=True),
     )
     for value in values:
         restored = pickle.loads(pickle.dumps(value))

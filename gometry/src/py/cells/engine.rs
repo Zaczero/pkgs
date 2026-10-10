@@ -8,6 +8,7 @@ use crate::grid::coverer::RectCell;
 use crate::py::cells::coverage_ops::{
     GridCoverError, GridSourceAdmission, SortedCells, admit_grid_geometry,
 };
+use crate::py::cells::input::geometry_iterable_array;
 use crate::py::cells::{
     Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
     Shape,
@@ -38,10 +39,8 @@ pub(super) fn cell_items<'py>(cells: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'
     if cells.cast::<pyo3::types::PyString>().is_ok() {
         return Ok(vec![cells.clone()]);
     }
-    // Fallible growth (D10): `h3_union(itertools.repeat(cell))` etc. must
-    // MemoryError rather than hang / capacity-overflow abort. A scalar is
-    // recognized from the absence of both iterable protocols; an exception
-    // raised by a supplied protocol belongs to that provider.
+    // Only plain non-iterables are scalar singleton inputs; errors raised by
+    // a supplied iterable protocol belong to that provider.
     let iter = match cells.try_iter() {
         Ok(iter) => iter,
         Err(error)
@@ -199,10 +198,13 @@ pub(crate) fn grid_cover_dispatch<'py>(
         let coverage = result?;
         return PyCellArray::from_ids(kind, coverage).into_py_any(py);
     }
-    let Some(array) = exact_geometry_array(geom) else {
+    let array = match exact_geometry_array(geom) {
+        Some(array) => Some(array.clone()),
+        None => geometry_iterable_array(geom, false, "GeometryArray")?,
+    };
+    let Some(array) = array else {
         return Err(expected_geometry_or_array());
     };
-    let array = array.clone();
     let result = py.detach(move || {
         let admission = match GridSourceAdmission::new_for_array(&array) {
             Ok(admission) => admission,

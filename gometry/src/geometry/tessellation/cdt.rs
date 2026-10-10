@@ -127,8 +127,11 @@ struct CertifiedBoundarySplit {
 
 #[derive(Debug)]
 pub(super) enum NodeProvenance {
-    SourceSite { occurrence: usize },
-    ConstraintSplit { certificate: usize },
+    /// A vertex in the source point slice supplied to the mesh builder.
+    SourceSite,
+    ConstraintSplit {
+        certificate: usize,
+    },
     Generated,
 }
 
@@ -152,35 +155,20 @@ pub(super) struct ConstrainedMeshPlan {
 impl ConstrainedMeshPlan {
     /// Consume the retained source certificate immediately before publication.
     ///
-    /// The topology builder performs the same checks while the live mesh is
-    /// available. Rechecking the detached product prevents a future publisher
-    /// from silently dropping source intervals or selected-site provenance.
+    /// The topology builder performs these checks while the live mesh is
+    /// available. Rechecking the detached product prevents a publisher from
+    /// silently dropping source intervals or split proofs.
     pub(super) fn validate_certificate(&self) -> Result<()> {
         if self.provenance.len() != self.vertices.len() {
             return Err(GeometryErrorKind::triangulation(
                 "constrained mesh certificate has inconsistent node or edge state",
             ));
         }
-        let source_occurrence_count = self
-            .provenance
-            .iter()
-            .filter_map(|provenance| match provenance {
-                NodeProvenance::SourceSite { occurrence } => occurrence.checked_add(1),
-                NodeProvenance::ConstraintSplit { .. } | NodeProvenance::Generated => None,
-            })
-            .max()
-            .unwrap_or(0);
         let zero = exact::ExactRational::zero();
         let one = exact::ExactRational::one();
         for (site, provenance) in self.provenance.iter().enumerate() {
             match provenance {
-                NodeProvenance::SourceSite { occurrence } => {
-                    if *occurrence >= source_occurrence_count {
-                        return Err(GeometryErrorKind::triangulation(
-                            "constrained mesh certificate has an invalid source occurrence",
-                        ));
-                    }
-                },
+                NodeProvenance::SourceSite | NodeProvenance::Generated => {},
                 NodeProvenance::ConstraintSplit { certificate } => {
                     let Some(certificate) = self.split_certificates.get(*certificate) else {
                         return Err(GeometryErrorKind::triangulation(
@@ -208,7 +196,6 @@ impl ConstrainedMeshPlan {
                         ));
                     }
                 },
-                NodeProvenance::Generated => {},
             }
         }
         for (id, source) in self.source_constraints.iter().enumerate() {
@@ -369,7 +356,7 @@ fn validate_piece_endpoint(
                 ));
             }
         },
-        Some(NodeProvenance::SourceSite { .. } | NodeProvenance::Generated) => {
+        Some(NodeProvenance::SourceSite | NodeProvenance::Generated) => {
             if exact::orient2d(source.start.xy(), source.end.xy(), point) != ExactSign::Zero {
                 return Err(GeometryErrorKind::triangulation(
                     "source constraint has an off-line emitted vertex",
@@ -932,19 +919,16 @@ impl ConstrainedMesh {
                 end_site,
             })
             .collect();
-        Self::build_with_sources(
-            points,
-            &(0..points.len()).collect::<Vec<_>>(),
-            &sources,
-            vec![SourceRingStart::new(0, RingOwner::new(0, 0))],
-        )
+        Self::build_with_sources(points, &sources, vec![SourceRingStart::new(
+            0,
+            RingOwner::new(0, 0),
+        )])
         .ok()
         .flatten()
     }
 
     pub(super) fn build_with_sources(
         points: &[Point],
-        occurrences: &[usize],
         sources: &[SourceConstraint],
         source_rings: Vec<SourceRingStart>,
     ) -> Result<Option<Self>> {
@@ -955,11 +939,9 @@ impl ConstrainedMesh {
         let constrained = vec![false; mesh.edge_count()];
         let source_constraints = sources.to_vec();
         let source_pieces = SourcePieces::new(sources.len())?;
-        let provenance = occurrences
-            .iter()
-            .copied()
-            .map(|occurrence| NodeProvenance::SourceSite { occurrence })
-            .collect();
+        // Initial mesh vertices and the source marker column share this domain;
+        // refinement appends its own provenance after this admission.
+        let provenance = points.iter().map(|_| NodeProvenance::SourceSite).collect();
         let mut this = Self {
             mesh,
             constrained,
@@ -1246,10 +1228,8 @@ impl ConstrainedMesh {
                     "constraint insertion did not converge",
                 ));
             }
-            let edge = if {
-                let (start, end) = self.mesh.edge_vertices(candidate);
-                ordered(start, end) == pair
-            } {
+            let (start, end) = self.mesh.edge_vertices(candidate);
+            let edge = if ordered(start, end) == pair {
                 Some(candidate)
             } else {
                 self.mesh
@@ -1301,14 +1281,13 @@ impl ConstrainedMesh {
                 crossing.insert(0, (new_edge, ordered(new_start, new_end)));
             }
         }
-        if let Some(slot) = self.mesh.edge_slot(u, v) {
-            self.mark(slot);
-            Ok(())
-        } else {
-            Err(GeometryErrorKind::triangulation(
+        let Some(slot) = self.mesh.edge_slot(u, v) else {
+            return Err(GeometryErrorKind::triangulation(
                 "constraint insertion did not produce an edge",
-            ))
-        }
+            ));
+        };
+        self.mark(slot);
+        Ok(())
     }
 
     fn mark(&mut self, slot: HalfedgeId) {
@@ -2173,7 +2152,6 @@ mod tests {
         ]);
         let result = ConstrainedMesh::build_with_sources(
             &pts,
-            &(0..pts.len()).collect::<Vec<_>>(),
             &[[0, 1], [2, 3]]
                 .iter()
                 .enumerate()

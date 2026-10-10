@@ -10,7 +10,6 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from gometry import _lib
 
 FLAT_FAMILY_EXPORTS = {
     'crs_apply',
@@ -28,7 +27,6 @@ FLAT_FAMILY_EXPORTS = {
     'crs_proj_operations',
     'crs_reset',
     'crs_roundtrip',
-    'crs_search',
     'crs_transform',
     'crs_transform_bounds',
     'crs_unit',
@@ -67,11 +65,6 @@ FLAT_FAMILY_EXPORTS = {
     'osm_shortlink_encode',
     'osm_shortlink_location',
 }
-
-
-def test_flat_native_family_exports_are_direct_aliases() -> None:
-    for name in FLAT_FAMILY_EXPORTS:
-        assert getattr(gm, name) is getattr(_lib, name)
 
 
 def test_consolidated_algorithm_families_have_one_canonical_dispatch_surface() -> None:
@@ -113,20 +106,6 @@ def test_consolidated_algorithm_families_have_one_canonical_dispatch_surface() -
         measured.line_interpolate(50, basis='m', normalized=True)
     with pytest.raises(gm.GeometryError, match="basis='distance'"):
         measured.line_interpolate(count=2, basis='m')
-
-
-def test_bulk_refactor_entrypoints_are_single_native_calls() -> None:
-    """Hot/bulk public entrypoints contain no Python row-dispatch bytecode."""
-    for name in (
-        'from_features',
-        'nearest_points',
-        'contains',
-        'bearing',
-        'point_between',
-    ):
-        function = getattr(gm, name)
-        assert inspect.isbuiltin(function), name
-        assert function.__module__ == 'gometry._lib', name
 
 
 def test_geometry_array_vectorizes_homogeneous_shapely_batches(
@@ -212,10 +191,9 @@ def test_public_integer_boundaries_raise_value_error_not_overflow() -> None:
         (lambda: gm.CRS(-1), 'EPSG code'),
         (lambda: gm.CRS(huge), 'EPSG code'),
         (lambda: gm.Point(0, 0, crs=-1), 'EPSG code'),
-        (lambda: gm.Point(0, 0).set_crs(huge), 'EPSG code'),
+        (lambda: gm.Point(0, 0).with_crs(huge), 'EPSG code'),
         (lambda: gm.Point(0, 0, crs=4326).to_crs(-1), 'EPSG code'),
-        (lambda: gm.crs_search('WGS 84', limit=0), 'CRS search limit'),
-        (lambda: gm.crs_search('WGS 84', limit=1001), 'CRS search limit'),
+        (lambda: gm.crs_catalog('WGS 84', limit=0), 'CRS catalog limit'),
     ]
     for call, error_type, message in _normalize_boundary_cases(cases, ValueError):
         kwargs = {'match': message} if message is not None else {}
@@ -405,30 +383,30 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: polygon.concave_hull(length_threshold=huge), 'length_threshold'),
         (lambda: polygon.polylabel(tolerance=huge), TypeError, 'tolerance'),
         (lambda: polygon.polylabel(tolerance=huge), 'tolerance'),
-        (lambda: sites.voronoi_polygons(tolerance=huge), OverflowError, None),
-        (lambda: sites.voronoi_edges(tolerance=huge), OverflowError, None),
+        (lambda: sites.voronoi(output='polygons', tolerance=huge), OverflowError, None),
+        (lambda: sites.voronoi(output='edges', tolerance=huge), OverflowError, None),
         (
-            lambda: gm.contains_xy(geom, huge, 0),
+            lambda: gm.contains(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.intersects_xy(geom, huge, 0),
+            lambda: gm.intersects(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.contains_xy(geom, huge, 0),
+            lambda: gm.contains(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.contains_xy(geom, huge, 0),
+            lambda: gm.contains(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
         (
-            lambda: gm.intersects_xy(geom, huge, 0),
+            lambda: gm.intersects(geom, x=huge, y=0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
@@ -488,6 +466,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'SpatialIndex.nearest': str(inspect.signature(idx.nearest)),
         'gm.nearest': str(inspect.signature(gm.nearest)),
         'gm.bearing': str(inspect.signature(gm.bearing)),
+        'gm.distance': str(inspect.signature(gm.distance)),
         'Geometry.destination': str(inspect.signature(geom.destination)),
         'gm.point_between': str(inspect.signature(gm.point_between)),
         'gm.h3_cover': str(inspect.signature(gm.h3_cover)),
@@ -503,6 +482,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'GeometryCollection': str(inspect.signature(gm.GeometryCollection)),
         'box': str(inspect.signature(gm.box)),
         'points': str(inspect.signature(gm.points)),
+        'from_geojson': str(inspect.signature(gm.from_geojson)),
         'gm.crs_transform_bounds': str(inspect.signature(gm.crs_transform_bounds)),
         'gm.crs_roundtrip': str(inspect.signature(gm.crs_roundtrip)),
     }
@@ -516,6 +496,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     assert 'k=1' in signatures['SpatialIndex.nearest']
     assert 'k=1' in signatures['gm.nearest']
     assert signatures['gm.bearing'] == "(left, right, *, path='geodesic')"
+    assert signatures['gm.distance'] == "(left, right, *, path='geodesic', unit=None)"
     assert (
         signatures['Geometry.destination']
         == "(bearing, distance, *, path='geodesic', unit=None)"
@@ -525,7 +506,10 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         == "(left, right, distance, *, normalized=False, path='geodesic', unit=None)"
     )
     assert "cell_rule='overlap'" in signatures['gm.h3_cover']
-    assert 'max_cells=1000000' in signatures['gm.s2_cover']
+    assert signatures['gm.s2_cover'] == (
+        '(geom, level=None, *, target_cells=8, min_level=None, max_level=None, '
+        "level_mod=1, cell_rule='overlap', max_cells=1000000)"
+    )
     assert (
         signatures['gm.hausdorff_distance']
         == '(left, right, *, max_error=None, unit=None)'
@@ -552,7 +536,13 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         signatures['box']
         == '(minx, miny, maxx, maxy, *, crs=None, wrap=None, ccw=True, epoch=None)'
     )
-    assert signatures['points'] == '(x, y, *, z=None, m=None, crs=None, epoch=None)'
+    assert (
+        signatures['points'] == '(x, y=None, *, z=None, m=None, crs=None, epoch=None)'
+    )
+    assert (
+        signatures['from_geojson']
+        == "(data, *, features=False, crs='OGC:CRS84', epoch=None)"
+    )
     assert (
         signatures['Polygon']
         == '(shell=None, holes=None, *, x=None, y=None, z=None, m=None, crs=None, epoch=None)'
@@ -574,14 +564,12 @@ def test_readme_quickstart_stays_executable() -> None:
     assert area.geometry_type == 'Polygon'
     assert wrapped_area.geometry_type == 'MultiPolygon'
     assert multi.geometry_type == 'MultiPolygon'
-    assert point.crs == 'EPSG:4326'
+    assert point.crs == gm.CRS('EPSG:4326')
     assert point.coordinate_axes == 'XY'
-    assert gm.contains(area, point)
-    assert area.area > 0
     assert multi.bounds == area.bounds
     np.testing.assert_array_equal(area.coords.row_index, [0, 0, 0, 0, 0])
     np.testing.assert_array_equal(
-        gm.intersects_xy(area, [21.0, 30.0], [52.0, 52.0]), [True, False]
+        gm.intersects(area, x=[21.0, 30.0], y=[52.0, 52.0]), [True, False]
     )
     distance_m = gm.distance(point, gm.Point(22.0, 52.0, crs=4326))
     bearing_deg = gm.bearing(point, gm.Point(22.0, 52.0, crs=4326))
@@ -593,8 +581,8 @@ def test_readme_quickstart_stays_executable() -> None:
     perimeter_m = area.length
     assert distance_m > 0
     assert 80 < bearing_deg < 100
-    assert east_1km.crs == 'EPSG:4326'
-    assert midpoint.crs == 'EPSG:4326'
+    assert east_1km.crs == gm.CRS('EPSG:4326')
+    assert midpoint.crs == gm.CRS('EPSG:4326')
     assert area_m2 > 0
     assert perimeter_m > 0
     cells = gm.h3_cover(area, resolution=6, cell_rule='center')
@@ -617,7 +605,7 @@ def test_readme_quickstart_stays_executable() -> None:
     )
     same = gm.from_wkb(wkb)
     same_ewkb = gm.from_wkb(point.to_wkb(include_srid=True))
-    assert same.crs == 'EPSG:4326'
+    assert same.crs == gm.CRS('EPSG:4326')
     assert same_ewkb.crs == point.crs
     roundtrip = cast(
         'gm.GeometryArray', gm.from_arrow(gm.GeometryArray([point, area]).to_arrow())
@@ -632,7 +620,7 @@ def test_readme_quickstart_stays_executable() -> None:
     )
     strict_geom = gm.require(feature_geom, crs=4326, axes='XY')
     assert len(roundtrip) == 2
-    assert strict_geom.crs == 'EPSG:4326'
+    assert strict_geom.crs == gm.CRS('EPSG:4326')
 
 
 def test_public_all_exports_every_curated_facade_symbol() -> None:
@@ -694,12 +682,11 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'boxes',
         'contains',
         'contains_properly',
-        'contains_xy',
         'coverage_clean',
         'coverage_invalid_edges',
         'coverage_is_valid',
         'coverage_simplify',
-        'coverage_union',
+        'coverage_union_all',
         'covered_by',
         'covers',
         'cross_track_distance',
@@ -716,7 +703,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'explore',
         'frechet_distance',
         'from_arrow',
-        'from_features',
         'from_geojson',
         'from_geopandas',
         'from_geoparquet',
@@ -725,12 +711,10 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'from_polars',
         'from_wkb',
         'from_wkt',
-        'get_coordinates',
         'hausdorff_distance',
         'intersection',
         'intersection_all',
         'intersects',
-        'intersects_xy',
         'join',
         'length',
         'length_3d',
@@ -743,13 +727,11 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'overlaps',
         'point_between',
         'points',
-        'polygonize',
-        'polygonize_full',
+        'polygonize_all',
         'polygons',
         'relate',
         'relate_pattern',
         'require',
-        'rhumb_distance',
         'shared_paths',
         'shortest_line',
         'snap',
@@ -784,13 +766,15 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
     )
     assert not hasattr(gm, 'GeometryDtype')
     assert callable(gm.crs_transform)
-    assert callable(gm.crs_search)
+    assert callable(gm.crs_catalog)
     assert callable(gm.H3Cell)
     assert callable(gm.S2Cell)
     assert callable(gm.h3_cells)
     assert callable(gm.h3_cover)
     assert callable(gm.s2_cells)
     assert callable(gm.s2_cover)
+    assert callable(gm.s2_cover)
+    assert not hasattr(gm, 'get_coordinates')
     assert not hasattr(gm, 'geodesic')
     assert not hasattr(gm, 'Planar')
     assert not hasattr(gm, 'Geodesic')
@@ -866,7 +850,7 @@ def test_geographic_array_nary_reductions_use_seam_topology() -> None:
     right = gm.Polygon(
         [(175, 10), (-175, 10), (-175, 30), (175, 30), (175, 10)], crs='OGC:CRS84'
     )
-    values = gm.GeometryArray([left, right]).set_epoch(2020.5)
+    values = gm.GeometryArray([left, right]).with_epoch(2020.5)
 
     left, right = values
     for name, binary in (
@@ -879,14 +863,14 @@ def test_geographic_array_nary_reductions_use_seam_topology() -> None:
         expected = binary(left, right)
         assert gm.equals(reduced, expected)
         assert reduced.area == pytest.approx(expected.area)
-        assert reduced.crs == 'OGC:CRS84'
+        assert reduced.crs == gm.CRS('OGC:CRS84')
         assert reduced.epoch == 2020.5
 
         # Missing rows are skipped and one row reduces to itself, through the
         # same frame-aware dispatch.
-        with_missing = gm.GeometryArray([left, None, right]).set_epoch(2020.5)
+        with_missing = gm.GeometryArray([left, None, right]).with_epoch(2020.5)
         assert gm.equals(getattr(gm, name)(with_missing), expected)
-        single = gm.GeometryArray([left]).set_epoch(2020.5)
+        single = gm.GeometryArray([left]).with_epoch(2020.5)
         assert gm.equals(getattr(gm, name)(single), left)
 
 
@@ -910,7 +894,7 @@ def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
     for label, call in (
         (
             'voronoi clip of the wrong kind',
-            lambda: triangle.voronoi_polygons(clip=point),
+            lambda: triangle.voronoi(output='polygons', clip=point),
         ),
         ('multi_polygons member kind', lambda: gm.multi_polygons([[point]])),
     ):

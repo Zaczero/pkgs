@@ -693,7 +693,7 @@ fn build_area_strict_rejects_mixed_output_axes() {
     .expect("mixed-axis collection is valid");
 
     let error = source
-        .build_area(true)
+        .build_area_with_context(true, &crate::geometry::SourceArcContext::cartesian())
         .expect_err("strict ordinate carry must reject mixed output axes");
     assert!(matches!(
         error.kind(),
@@ -718,11 +718,72 @@ fn polygonize_full_strict_scopes_diagnostic_axes_to_source_rows() {
     ));
     let sources = [&z_line, &m_line];
 
-    let full = Shape::polygonize_full_all(&sources, true)
-        .expect("each diagnostic row has one source axis");
+    let full = Shape::polygonize_full_all_with_context(
+        &sources,
+        true,
+        &crate::geometry::SourceArcContext::cartesian(),
+    )
+    .expect("each diagnostic row has one source axis");
 
     assert_eq!(full.dangles[0][0].coordinate_axes(), "XYZ");
     assert_eq!(full.dangles[1][0].coordinate_axes(), "XYM");
+}
+
+#[test]
+fn polygonize_keeps_collinear_source_nodes_and_zero_ordinates() {
+    let point = |x, y, m| {
+        Point::new_axes(x, y, ZOrdinate(Some(0.0)), MOrdinate(Some(m)))
+            .expect("finite XYZM source coordinate")
+    };
+    let lower_left = point(0.0, 0.0, 10.0);
+    let forward_points = [
+        lower_left,
+        point(1.0, 0.0, 15.0),
+        point(2.0, 0.0, 20.0),
+        point(2.0, 2.0, 30.0),
+        point(0.0, 2.0, 40.0),
+        lower_left,
+    ];
+    let reverse_points = [
+        lower_left,
+        point(0.0, 2.0, 40.0),
+        point(2.0, 2.0, 30.0),
+        point(2.0, 0.0, 20.0),
+        point(1.0, 0.0, 15.0),
+        lower_left,
+    ];
+    let forward = Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_points(&forward_points).unwrap(),
+    ));
+    let reverse = Shape::LineString(LineSeq::from_proven(
+        CoordSeq::try_from_points(&reverse_points).unwrap(),
+    ));
+    for source in [&forward, &reverse] {
+        let polygons = Shape::polygonize_all(&[source], true)
+            .expect("a closed XYZM source ring polygonizes strictly");
+        assert_eq!(polygons.len(), 1);
+        let polygon = polygons
+            .first()
+            .and_then(|shape| match shape {
+                Shape::Polygon(polygon) => Some(polygon),
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => None,
+            })
+            .expect("one source ring produces one polygon");
+        assert_eq!(polygon.shell.coords().xs(), &[0.0, 1.0, 2.0, 2.0, 0.0, 0.0]);
+        assert_eq!(polygon.shell.coords().ys(), &[0.0, 0.0, 0.0, 2.0, 2.0, 0.0]);
+        assert_eq!(polygon.shell.coords().zs(), Some(&[0.0; 6][..]));
+        assert_eq!(
+            polygon.shell.coords().ms(),
+            Some(&[10.0, 15.0, 20.0, 30.0, 40.0, 10.0][..])
+        );
+        assert!(polygon.holes.is_empty());
+    }
 }
 
 #[test]
@@ -866,11 +927,11 @@ fn retained_site_mesh_keeps_adjacent_lifted_sites_and_first_source_records() {
     assert!(close_sites.next().is_none());
     let rounded_left = frame
         .longitude()
-        .lifted_site_longitude(&close_left.longitude())
+        .lifted_site_longitude(close_left.longitude())
         .unwrap();
     let rounded_right = frame
         .longitude()
-        .lifted_site_longitude(&close_right.longitude())
+        .lifted_site_longitude(close_right.longitude())
         .unwrap();
     assert_eq!(rounded_left.to_bits(), rounded_right.to_bits());
     let exact_left = retained_site_longitude(frame.longitude(), close_left.longitude()).unwrap();
@@ -1814,11 +1875,13 @@ fn earcut_sweep_preserves_box_scan_contact_decisions() {
         for step in 1..=48 {
             let t = f64::from(step) / 49.0;
             let outward = 1.0 + 0.1 * f64::from(step % 2);
-            long.push(if first.x == last.x {
-                xy(first.x - outward, last.y + (first.y - last.y) * t)
-            } else {
-                xy(last.x + (first.x - last.x) * t, first.y - outward)
-            });
+            long.push(
+                if first.x.partial_cmp(&last.x) == Some(std::cmp::Ordering::Equal) {
+                    xy(first.x - outward, last.y + (first.y - last.y) * t)
+                } else {
+                    xy(last.x + (first.x - last.x) * t, first.y - outward)
+                },
+            );
         }
         // The outer chain retains the contact under test while exercising
         // both the direct lane and the event sweep.
@@ -1884,6 +1947,37 @@ fn cleanup_constraint_lines_keeps_exact_distinct_endpoints() {
         extended
     };
     assert_eq!(cleanup_constraint_lines(with_dup).len(), 4);
+}
+
+#[test]
+fn constrained_tiny_square_keeps_its_literal_diagonal_and_source_vertices() {
+    let side = 5.0e-5;
+    let source = Shape::Polygon(polygon(
+        vec![xy(0.0, 0.0), xy(side, 0.0), xy(side, side), xy(0.0, side)],
+        Vec::new(),
+    ));
+    let triangles = source
+        .constrained_delaunay_vertices(CdtRefinement::Off)
+        .unwrap();
+
+    assert_eq!(triangles.len(), 8, "the square has two triangle cycles");
+    assert_eq!(
+        triangles
+            .iter()
+            .map(|point| (point.x.to_bits(), point.y.to_bits()))
+            .collect::<Vec<_>>(),
+        [
+            (0.0_f64.to_bits(), 0.0_f64.to_bits()),
+            (side.to_bits(), 0.0_f64.to_bits()),
+            (0.0_f64.to_bits(), side.to_bits()),
+            (0.0_f64.to_bits(), 0.0_f64.to_bits()),
+            (0.0_f64.to_bits(), side.to_bits()),
+            (side.to_bits(), 0.0_f64.to_bits()),
+            (side.to_bits(), side.to_bits()),
+            (0.0_f64.to_bits(), side.to_bits()),
+        ],
+        "the canonical cocircular diagonal joins the lower-right and upper-left corners"
+    );
 }
 
 fn convex_ring(vertex_count: usize, radius: f64) -> Vec<Point> {

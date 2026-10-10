@@ -6,8 +6,8 @@ use std::simd::{Select as _, StdFloat as _};
 
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::error::{ErrorKind, ResourceError, Result as CoreResult};
-use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactCentroidSums as FixedExactCentroidSums;
+use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio, round_sqrt_ratio};
 use crate::geometry::{
     Bounds, Component, CoordSeq, Coordinates as _, Dimension, GeometryErrorKind, Point, Polygon,
@@ -1263,11 +1263,11 @@ impl<'owner> ExactOwnerFold<'owner> {
         }
     }
 
-    fn for_point_chart(chart: crate::geographic::PointSelectionChart) -> Self {
+    fn for_point_chart(chart: &crate::geographic::PointSelectionChart) -> Self {
         Self {
             tier: CentroidDimension::Puntal,
             owners: CentroidOwnerMap::default(),
-            point_chart: Some(chart),
+            point_chart: Some(*chart),
             _owner: PhantomData,
             #[cfg(test)]
             work: CentroidWorkStats::default(),
@@ -1275,14 +1275,11 @@ impl<'owner> ExactOwnerFold<'owner> {
     }
 
     fn point_summary(&self, point: Point) -> CoreResult<GrowableCentroidSums> {
-        let Some(chart) = self.point_chart else {
+        let Some(chart) = self.point_chart.as_ref() else {
             return Ok(exact_point_summary(point));
         };
         let longitude = chart.longitude_site(point.x)?;
-        let x = crate::geometry::exact_arith::retained_site_longitude(
-            chart.frame().longitude(),
-            longitude,
-        )?;
+        let x = retained_site_longitude(chart.frame().longitude(), longitude)?;
         Ok(GrowableCentroidSums {
             measure: ExactDyadic::one(),
             moment_x: x,
@@ -1407,7 +1404,10 @@ impl<'owner> ExactOwnerFold<'owner> {
                         .entry(key)
                     {
                         std::collections::hash_map::Entry::Occupied(entry) => {
-                            &mut shared[*entry.get()].1
+                            &mut shared
+                                .get_mut(*entry.get())
+                                .expect("shared-owner entry ordinal was inserted for this vector")
+                                .1
                         },
                         std::collections::hash_map::Entry::Vacant(entry) => {
                             entry.insert(shared.len());
@@ -1549,7 +1549,7 @@ fn exact_owner_centroid(shape: &Shape, tier: CentroidDimension) -> CoreResult<Op
 
 pub(crate) fn exact_point_chart_centroid(
     shape: &Shape,
-    chart: crate::geographic::PointSelectionChart,
+    chart: &crate::geographic::PointSelectionChart,
 ) -> CoreResult<Option<(f64, f64)>> {
     let mut fold = ExactOwnerFold::for_point_chart(chart);
     exact_summary_centroid(fold.shape_summary(shape)?, CentroidDimension::Puntal)
@@ -2057,21 +2057,21 @@ fn point_set_center_columns(
 pub(crate) fn point_set_center_summary(
     shape: &Shape,
     frame: crate::geographic::GeographicFrame,
-) -> CoreResult<Option<PointSetCenter>> {
+) -> Option<PointSetCenter> {
     debug_assert!(shape.point_set_only());
     if matches!(shape, Shape::Empty(..)) {
-        return Ok(None);
+        return None;
     }
     if let Shape::Point(point) = shape {
         let bounds = (point.x.is_finite() && point.y.is_finite())
             .then(|| Bounds::new_raw(point.x, point.y, point.x, point.y));
         if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
-            return Ok(Some(PointSetCenter::Ordinary((point.x, point.y))));
+            return Some(PointSetCenter::Ordinary((point.x, point.y)));
         }
-        return Ok(Some(PointSetCenter::Chart(bounds)));
+        return Some(PointSetCenter::Chart(bounds));
     }
     if let Shape::MultiPoint(seq) = shape {
-        return Ok(point_set_center_columns(seq.xs(), seq.ys(), frame));
+        return point_set_center_columns(seq.xs(), seq.ys(), frame);
     }
 
     let mut xs = Vec::new();
@@ -2084,10 +2084,9 @@ pub(crate) fn point_set_center_summary(
         CentroidAttempt::ExactAtRoot(_) => {
             drop(xs);
             drop(ys);
-            Ok(exact_owner_centroid(shape, CentroidDimension::Puntal)?
-                .map(|_| PointSetCenter::Chart(None)))
+            (!centroid_is_empty(shape)).then_some(PointSetCenter::Chart(None))
         },
-        CentroidAttempt::Ready(()) => Ok(point_set_center_columns(&xs, &ys, frame)),
+        CentroidAttempt::Ready(()) => point_set_center_columns(&xs, &ys, frame),
     }
 }
 
@@ -2565,6 +2564,63 @@ mod owner_fold_tests {
             exact_owner_centroid_with_work(&siblings, CentroidDimension::Areal).unwrap();
         assert_eq!(centroid, Some((15.5, 0.5)));
         assert!(work.cache_hits > 0);
+    }
+
+    #[test]
+    fn exact_fold_counts_late_repeated_shared_owners_in_every_tier() {
+        let area_a = Shape::geometry_collection(vec![polygon(0.5, -0.5, 1.0)]).unwrap();
+        let area_b = Shape::geometry_collection(vec![polygon(20.5, -0.5, 1.0)]).unwrap();
+        let area_c = Shape::geometry_collection(vec![polygon(40.5, -0.5, 1.0)]).unwrap();
+        let area = Shape::geometry_collection(vec![
+            area_a.clone(),
+            area_b.clone(),
+            area_c.clone(),
+            area_b.clone(),
+            area_a,
+            area_b,
+        ])
+        .unwrap();
+
+        let line_a = Shape::geometry_collection(vec![line(&[(0.0, 0.0), (2.0, 0.0)])]).unwrap();
+        let line_b = Shape::geometry_collection(vec![line(&[(20.0, 0.0), (22.0, 0.0)])]).unwrap();
+        let line_c = Shape::geometry_collection(vec![line(&[(40.0, 0.0), (42.0, 0.0)])]).unwrap();
+        let lineal = Shape::geometry_collection(vec![
+            line_a.clone(),
+            line_b.clone(),
+            line_c.clone(),
+            line_b.clone(),
+            line_a,
+            line_b,
+        ])
+        .unwrap();
+
+        let point_a =
+            Shape::geometry_collection(vec![Shape::Point(Point::new_raw_xy(1.0, 0.0))]).unwrap();
+        let point_b =
+            Shape::geometry_collection(vec![Shape::Point(Point::new_raw_xy(21.0, 0.0))]).unwrap();
+        let point_c =
+            Shape::geometry_collection(vec![Shape::Point(Point::new_raw_xy(41.0, 0.0))]).unwrap();
+        let puntal = Shape::geometry_collection(vec![
+            point_a.clone(),
+            point_b.clone(),
+            point_c.clone(),
+            point_b.clone(),
+            point_a,
+            point_b,
+        ])
+        .unwrap();
+
+        for (shape, tier) in [
+            (&area, CentroidDimension::Areal),
+            (&lineal, CentroidDimension::Lineal),
+            (&puntal, CentroidDimension::Puntal),
+        ] {
+            let (centroid, _) = exact_owner_centroid_with_work(shape, tier).unwrap();
+            assert_eq!(centroid, Some((53.0 / 3.0, 0.0)));
+        }
+
+        // Keep the single-occurrence owners shared until every tier has folded.
+        drop((area_c, line_c, point_c));
     }
 
     #[test]

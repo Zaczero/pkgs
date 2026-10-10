@@ -395,10 +395,9 @@
   }
 }
 
-/* API signatures: show the practical call immediately and keep static-typing
-   variants one native, accessible disclosure away. No JavaScript is required,
-   so printing, indexing, keyboard navigation, and reduced-motion browsing all
-   retain the complete content. */
+/* Overload groups start with every accepted call visible. The native disclosure
+   can be collapsed without JavaScript; printing, indexing, keyboard navigation,
+   and reduced-motion browsing retain the complete content. */
 .doc-canonical-signature {
   margin: 0.45rem 0 0.35rem;
 }
@@ -456,6 +455,24 @@
 
   .doc-overloads-details:not([open]) > .doc-overloads {
     display: grid;
+  }
+  .doc-overloads-details:not([open])::details-content {
+    content-visibility: visible;
+    block-size: auto;
+  }
+  .doc-overloads-details .doc-overloads {
+    overflow: visible;
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+  }
+  .doc-overloads-details .doc-signature {
+    min-width: 0;
+    overflow: visible;
+  }
+  .doc-overloads-details .doc-signature pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   /* Ink on paper: the dash patterns and the legend keep the roles apart. */

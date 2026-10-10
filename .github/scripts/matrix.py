@@ -391,6 +391,14 @@ def resolve_matrix(
         pypy_selector=pypy_selector,
         ci_test_group=info['ci-test-group'] == 'true',
     )
+    if package == 'gometry':
+        test_matrix.append({
+            'os': 'ubuntu-24.04-arm',
+            'python-version': str(primary),
+            'freethreaded': 'false',
+            'primary': 'false',
+            'uv-sync-args': '--group ci' if info['ci-test-group'] == 'true' else '',
+        })
 
     build_runners = RUSTY_BUILD_RUNNERS if is_rusty else PURE_BUILD_RUNNERS
 

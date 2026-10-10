@@ -104,10 +104,10 @@ for catch in (TypeError, gm.GeometryTypeError):
 
 | You see | It means | Fix |
 |---|---|---|
-| `CRSMismatchError: ... CRS-free vs "EPSG:4326"` | one operand carries a CRS and the other doesn't (or they differ) | tag the bare one with `set_crs(...)`, or reproject with `to_crs(...)` — gometry never coerces frames |
-| `CRSError: set_crs would re-tag CRS ... without moving coordinates` | you asked to *relabel* a geometry that already has a CRS | `to_crs(...)` to reproject; `set_crs(..., overwrite=True)` only if the original tag was wrong |
+| `CRSMismatchError: ... CRS-free vs "EPSG:4326"` | one operand carries a CRS and the other doesn't (or they differ) | tag the bare one with `with_crs(...)`, or reproject with `to_crs(...)` — gometry never coerces frames |
+| `CRSError: with_crs would re-tag CRS ... without moving coordinates` | you asked to *relabel* a geometry that already has a CRS | `to_crs(...)` to reproject; `with_crs(..., overwrite=True)` only if the original tag was wrong |
 | `CRSError: ... epoch requires a CRS` | a coordinate epoch is meaningless without a frame | set the CRS first (or together: `Point(..., crs=..., epoch=...)`) |
-| `InvalidGeometryError: ... cannot carry Z/M` (`to_geojson` on M or `to_polyline` on Z/M) | the target format has no slot for those ordinates | use WKB/WKT/GeoArrow, or explicitly clear dimensions with `set_m(None)` / `force_2d()` when loss is intended |
+| `InvalidGeometryError: ... cannot carry Z/M` (`to_geojson` on M or `to_polyline` on Z/M) | the target format has no slot for those ordinates | use WKB/WKT/GeoArrow, or explicitly clear dimensions with `with_coordinates(m=None)` / `force_2d()` when loss is intended |
 | [`ParseError`][gometry.ParseError] with `.format` set | a serialized input (WKT/WKB/GeoJSON/cell id/quadkey) is malformed | check `e.format` for which codec rejected it; a batch fails as a unit and attaches the failing row as a note |
 | `GeometryError: values contains missing geometries` | a list/sequence was used where the operation requires dense geometry values | call [`drop_missing()`][gometry.GeometryArray.drop_missing] first or [`fill_missing(...)`][gometry.GeometryArray.fill_missing] with an explicit replacement |
 | `GeometryError: ... must be between ... got ...` | a parameter value is out of its documented range | the message names the kwarg and the valid range |
@@ -133,11 +133,12 @@ handlers act on data instead of parsing messages. Class-level defaults are
 | [`position`][gometry.ParseError.position] | `ParseError` | WKT/EWKT reports the zero-based UTF-8 byte offset where parsing detected the error, including an EWKT prefix; WKB reports its zero-based binary byte offset; other codecs report `None` when unavailable |
 | [`param`][gometry.GeometryError.param] / [`value`][gometry.GeometryError.value] | [`GeometryError`][gometry.GeometryError] (value lanes) | Offending keyword and value |
 | [`parameter`][gometry.GeometryError.parameter] / [`produced`][gometry.GeometryError.produced] / [`limit`][gometry.GeometryError.limit] | bounded-output `GeometryError` | Controlling parameter, produced count, and configured limit |
+| [`code`][gometry.GeometryError.code] | `GeometryError` (selected output refusals) | `'output_limit'`, `'output_unrepresentable'`, or `'work_limit'`; `None` for errors without a stable refusal code |
 | [`expected`][gometry.GeometryTypeError.expected] / [`got`][gometry.GeometryTypeError.got] | [`GeometryTypeError`][gometry.GeometryTypeError] | Required and received geometry kinds |
 | [`source`][gometry.TransformError.source] / [`target`][gometry.TransformError.target] | [`TransformError`][gometry.TransformError] | Source and target CRS of a failed transform |
 | [`operation`][gometry.GeometryError.operation] | [`GeometryError`][gometry.GeometryError] (bounded-output or binary64 embedding); [`InvalidGeometryError`][gometry.InvalidGeometryError] (empty sequence or invalid coverage) | Operation associated with the failure |
 | [`row`][gometry.InvalidGeometryError.row] / [`path`][gometry.InvalidGeometryError.path] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Failing array row and structural path |
-| [`code`][gometry.InvalidGeometryError.code] / [`detail`][gometry.InvalidGeometryError.detail] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Stable validity code and human-readable issue detail |
+| [`code`][gometry.InvalidGeometryError.code] / [`detail`][gometry.InvalidGeometryError.detail] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Open-string validity issue code and human-readable issue detail |
 | [`location`][gometry.InvalidGeometryError.location] | [`InvalidGeometryError`][gometry.InvalidGeometryError] (require) | Coordinate witness for the validity issue; quotient-topology issues choose a canonical coordinate of their contact set deterministically by minimum latitude then longitude |
 | [`crs`][gometry.CRSError.crs] | [`CRSError`][gometry.CRSError] | CRS involved in a unit/authority mismatch |
 
@@ -183,8 +184,8 @@ public keyword names, `repr` for user-supplied strings, no trailing period:
 - `invalid <FORMAT>: <detail>` — `invalid WKT: unbalanced parentheses`
 - `unknown <concept> <value>; expected …` — `unknown buffer cap_style "fancy"; expected 'round', 'flat', or 'square'` — with a `did you mean '<closest>'?` clause when the value looks like a typo
 
-Callers can branch on exception classes, structured attributes, and message
-shapes.
+Callers can branch on exception classes, structured attributes, and stable
+`.code` values where available.
 
 ## Pickling
 

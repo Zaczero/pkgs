@@ -24,7 +24,7 @@
 macro_rules! writer_ordinate_policy {
     () => {
         "Each writer preserves all ordinates the format supports and rejects unsupported axes; \
-         remove geometry axes with `force_2d()`, `set_z(None)`, or `set_m(None)` before writing, \
+         remove geometry axes with `force_2d()`, `with_coordinates(z=None)`, or `with_coordinates(m=None)` before writing, \
          or use `coords.select(...)` to choose a coordinate-view export layout."
     };
 }
@@ -72,6 +72,8 @@ mod error;
 mod geographic;
 mod geometry;
 #[cfg(test)]
+mod native_test_identity;
+#[cfg(test)]
 mod test_support;
 #[cfg(test)]
 #[global_allocator]
@@ -92,8 +94,8 @@ mod text;
 mod tokens;
 use measures::{
     area, area_natural_array, area_natural_scalar, bearing, bounds_array, cross_track_distance,
-    length, length_3d, length_natural_array, length_natural_scalar, point_between, rhumb_distance,
-    shared_paths, snap, split,
+    length, length_3d, length_natural_array, length_natural_scalar, point_between, shared_paths,
+    snap, split,
 };
 mod array;
 pub(crate) use array::PyGeometryArray;
@@ -113,28 +115,27 @@ mod dispatch;
 pub(crate) use py::classes::{
     PyCoordinates, PyCoordinatesIter, PyGeometry, PyGeometryCollection, PyGeometryParts,
     PyGeometryPartsIter, PyLineString, PyMultiLineString, PyMultiPoint, PyMultiPolygon, PyPoint,
-    PyPolygon, Typed, get_coordinates, map_coordinates_callback, parse_coordinate_replacement,
+    PyPolygon, Typed, map_coordinates_callback, parse_coordinate_replacement,
     replace_shape_coordinates, slice_replacement_for_shape,
 };
 use py::functions::polyline::from_polyline;
 use py::functions::{
     _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1,
     _unpickle_validation_report_v1, OverlayOp, PyValidationReport, coverage_clean,
-    coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union, difference,
-    from_features, from_geojson, from_wkb, from_wkt, intersection, intersection_all,
-    osm_shortlink_encode, osm_shortlink_location, overlay_operator, pluscode_encode,
-    pluscode_polygon, pluscode_recover, pluscode_shorten, polygonize, polygonize_full, require,
-    symmetric_difference, symmetric_difference_all, to_feature, to_feature_collection, union,
-    union_all,
+    coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union_all, difference,
+    from_geojson, from_wkb, from_wkt, intersection, intersection_all, osm_shortlink_encode,
+    osm_shortlink_location, overlay_operator, pluscode_encode, pluscode_polygon, pluscode_recover,
+    pluscode_shorten, polygonize_all, require, symmetric_difference, symmetric_difference_all,
+    to_feature, to_feature_collection, union, union_all, unpickle_coordinates_v1,
 };
 mod grid;
 mod predicates;
 pub(crate) use predicates::{
-    IndexEnvelope, Predicate, contains, contains_properly, contains_xy, covered_by, covers,
-    crosses, disjoint, distance, distance_3d, dwithin, equals, equals_exact, equals_identical,
-    frechet_distance, hausdorff_distance, intersects, intersects_xy, nearest_points, overlaps,
-    relate, relate_pattern, scalar_vs_shapes, shortest_line, topology_pair_after_gates,
-    topology_scalar_pair, touches, within,
+    IndexEnvelope, Predicate, contains, contains_properly, covered_by, covers, crosses, disjoint,
+    distance, distance_3d, dwithin, equals, equals_exact, equals_identical, frechet_distance,
+    hausdorff_distance, intersects, nearest_points, overlaps, relate, relate_pattern,
+    scalar_vs_shapes, shortest_line, topology_pair_after_gates, topology_scalar_pair, touches,
+    within,
 };
 mod py;
 mod render;
@@ -153,29 +154,29 @@ use py::arrow::ArrowEncoding;
 use py::crs::PyCrs;
 use py::errors::{CRSError, GeometryError, InvalidGeometryError, geometry_type_err};
 use py::support::{
-    _token_vocabulary, GeoJsonDecodeContext, GeometryValues, H3_MAX_RESOLUTION, InterpolatePlan,
-    NavigationPath, OwnedBytes, QUADRANT_SEGMENTS_DEFAULT_I64, SVG_ARRAY_PREVIEW, ScalarOrIterator,
-    SpatialCurve, VoronoiClipInput, Wgs84DefaultCrs, add_classes, add_functions, bounds_envelope,
+    _token_vocabulary, GeoJsonDecodeContext, H3_MAX_RESOLUTION, InterpolatePlan, NavigationPath,
+    OwnedBytes, QUADRANT_SEGMENTS_DEFAULT_I64, SVG_ARRAY_PREVIEW, ScalarOrIterator, SpatialCurve,
+    VoronoiClipInput, VoronoiOutput, Wgs84DefaultCrs, add_classes, add_functions, bounds_envelope,
     box_polygon, check_i32_min, classify_scalar_or_iterator, coerce_geojson_geometry_value,
     coerce_geojson_geometry_value_at, coerce_present_geometry_items, copy_wkb_payload,
     deserialized_epoch, ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate,
-    extract_coordinate_or_empty, extract_lines, extract_points, extract_polygons, features_type,
+    extract_coordinate_or_empty, extract_points, features_type,
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
     geometry_items, global_geographic_candidate_envelope, gometry_lib_module, guard_epoch_frame,
     index_envelopes, is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray,
     is_wgs84_family_crs, is_wkt_string, line_interpolate_coordseq,
     line_interpolate_points_coordseq, line_interpolate_points_shape, line_interpolate_shape,
-    line_interpolate_shape_m, line_locate_coordseq, line_locate_shape, line_locate_shape_m,
-    line_substring_coordseq, line_substring_shape, line_substring_shape_m, locate_query,
-    mapping_as_dict, missing_geometry_items_error, nearest_point_columns_masked, note_array_row,
-    optional_coordinates, owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds,
+    line_interpolate_shape_m, line_locate_coordseq, line_substring_coordseq, line_substring_shape,
+    line_substring_shape_m, locate_query, mapping_as_dict, missing_geometry_items_error,
+    nearest_point_columns_masked, normalize_geometry_batch, note_array_row, optional_coordinates,
+    owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds,
     parse_geojson_geometry_value, parse_geojson_slice, parse_interpolate_plan, parse_precision,
     parse_spatial_index_handle, point_from_bounds, point_xy, py_polygonize_full, py_text_borrow,
-    py_to_json_value, require_geojson_crs, resolve_line_metric, validate_buffer_miter_limit,
+    py_to_json_value, require_geojson_crs, validate_buffer_miter_limit,
     validate_buffer_quadrant_segments, validate_densify_fraction, validate_distance,
     validate_dwithin_distance, validate_dwithin_distance_arg, validate_equals_exact_tolerance,
     validate_max_segment_length, validate_nearest_k, validate_smooth_iterations,
-    voronoi_edges_flatten, voronoi_flatten, wrapped_box,
+    voronoi_edge_lines_flatten, voronoi_flatten,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -250,25 +251,25 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_functions!(m;
         snap, shared_paths,
         // Spatial predicates and pairwise measures.
-        contains, contains_properly, within, covers, covered_by, contains_xy,
-        intersects_xy, intersects, disjoint, touches, crosses, overlaps,
+        contains, contains_properly, within, covers, covered_by, intersects, disjoint, touches,
+        crosses, overlaps,
         relate, relate_pattern, equals, equals_exact, equals_identical,
         distance, distance_3d, hausdorff_distance,
         frechet_distance, nearest_points, shortest_line, split, dwithin,
-        bearing, cross_track_distance, point_between, rhumb_distance,
+        bearing, cross_track_distance, point_between,
     );
     py::index::register(m)?;
     add_functions!(m;
         intersection, union, difference, symmetric_difference, union_all,
         intersection_all, symmetric_difference_all,
         coverage_is_valid, coverage_invalid_edges, coverage_simplify, coverage_clean,
-        coverage_union, polygonize, polygonize_full,
+        coverage_union_all, polygonize_all,
         // IO, validation, and coordinate access.
-        get_coordinates,
-        from_wkt, from_wkb, from_geojson, from_features, to_feature, to_feature_collection,
+        from_wkt, from_wkb, from_geojson, to_feature, to_feature_collection,
         from_polyline, require,
         // Pickle payload rebuilders (private; see the `__reduce__` impls).
-        _unpickle_geometry_v1, _unpickle_geometry_array_v1, _unpickle_packed_array_v1,
+         _unpickle_geometry_v1, _unpickle_geometry_array_v1, _unpickle_packed_array_v1,
+         unpickle_coordinates_v1,
         _unpickle_validation_report_v1,
         // Token vocabularies for the stub-parity gate (private).
         _token_vocabulary,
@@ -418,14 +419,17 @@ mod above_gate_parity_tests {
 
     fn xy_values(
         py: Python<'_>,
-        contains_xy: &Bound<'_, PyAny>,
+        contains: &Bound<'_, PyAny>,
         geometry: &Bound<'_, PyAny>,
         xs: &[f64],
         ys: &[f64],
     ) -> PyResult<Vec<bool>> {
         let x = PyList::new(py, xs)?;
         let y = PyList::new(py, ys)?;
-        bools(&contains_xy.call1((geometry, &x, &y))?)
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("x", &x)?;
+        kwargs.set_item("y", &y)?;
+        bools(&contains.call((geometry,), Some(&kwargs))?)
     }
 
     fn packed_values(
@@ -462,19 +466,21 @@ mod above_gate_parity_tests {
         clippy::similar_names,
         reason = "xs/ys are the two coordinate lanes of one probe batch"
     )]
-    fn contains_xy_and_packed_points_match_named_indexed_cases() -> PyResult<()> {
+    fn contains_coordinates_and_packed_points_match_named_indexed_cases() -> PyResult<()> {
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let module = PyModule::new(py, "gometry._lib")?;
             lib(&module)?;
             let from_wkt = module.getattr("from_wkt")?;
             let geometry = from_wkt.call1((indexed_polygon_wkt(),))?;
-            let contains_xy = module.getattr("contains_xy")?;
             let contains = module.getattr("contains")?;
 
             for probe in NAMED_PROBES {
-                let actual = contains_xy
-                    .call1((&geometry, probe.x, probe.y))?
+                let kwargs = PyDict::new(py);
+                kwargs.set_item("x", probe.x)?;
+                kwargs.set_item("y", probe.y)?;
+                let actual = contains
+                    .call((&geometry,), Some(&kwargs))?
                     .extract::<bool>()?;
                 assert_eq!(
                     actual, probe.expected,
@@ -485,8 +491,8 @@ mod above_gate_parity_tests {
 
             let (small_xs, small_ys, small_expected) = repeated_probe_batch(1);
             assert_batch(
-                "small contains_xy batch",
-                &xy_values(py, &contains_xy, &geometry, &small_xs, &small_ys)?,
+                "small coordinate batch",
+                &xy_values(py, &contains, &geometry, &small_xs, &small_ys)?,
                 &small_expected,
             );
             assert_batch(
@@ -499,14 +505,106 @@ mod above_gate_parity_tests {
             // probe-count threshold; repetition only exercises a larger batch.
             let (large_xs, large_ys, large_expected) = repeated_probe_batch(64);
             assert_batch(
-                "large contains_xy batch",
-                &xy_values(py, &contains_xy, &geometry, &large_xs, &large_ys)?,
+                "large coordinate batch",
+                &xy_values(py, &contains, &geometry, &large_xs, &large_ys)?,
                 &large_expected,
             );
             assert_batch(
                 "large packed batch",
                 &packed_values(&contains, &geometry, &from_wkt, &large_xs, &large_ys)?,
                 &large_expected,
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions verify public predicate results and nullable row positions"
+    )]
+    fn predicate_iterables_keep_nullable_row_positions() -> PyResult<()> {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib")?;
+            lib(&module)?;
+            let polygon = module.getattr("box")?.call1((0, 0, 1, 1))?;
+            let point = module.getattr("Point")?;
+            let inside = point.call1((0.5, 0.5))?;
+            let outside = point.call1((2.0, 2.0))?;
+            let left = PyList::empty(py);
+            left.append(&polygon)?;
+            left.append(py.None())?;
+            left.append(&polygon)?;
+            let right = PyList::empty(py);
+            right.append(&inside)?;
+            right.append(&inside)?;
+            right.append(&outside)?;
+
+            let matches = module.getattr("contains")?.call1((&left, &right))?;
+            assert_eq!(bools(&matches)?, [true, false, false]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions verify SpatialIndex mapping values and unhashability"
+    )]
+    fn spatial_index_equality_compares_mapping_contents_and_disables_hashing() -> PyResult<()> {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib")?;
+            lib(&module)?;
+            let point = module.getattr("Point")?;
+            let first = point.call1((1, 2))?;
+            let second = point.call1((3, 4))?;
+            let values = PyList::new(py, [&first, &second])?;
+            let index = module.getattr("SpatialIndex")?.call1((values,))?;
+            let expected = PyDict::new(py);
+            expected.set_item(0, &first)?;
+            expected.set_item(1, &second)?;
+            assert!(index.eq(&expected)?);
+            assert!(expected.eq(&index)?);
+            let hash = py.import("builtins")?.getattr("hash")?;
+            let Err(error) = hash.call1((&index,)) else {
+                panic!("a mutable mapping cannot be hashed")
+            };
+            assert!(error.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions verify the public error type and original array row"
+    )]
+    fn distance_3d_array_missing_z_raises_on_its_logical_row() -> PyResult<()> {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let module = PyModule::new(py, "gometry._lib")?;
+            lib(&module)?;
+            let from_wkt = module.getattr("from_wkt")?;
+            let values = PyList::empty(py);
+            values.append(from_wkt.call1(("POINT Z (0 0 0)",))?)?;
+            values.append(py.None())?;
+            values.append(from_wkt.call1(("POINT (1 0)",))?)?;
+            let array = module.getattr("GeometryArray")?.call1((values,))?;
+            let target = from_wkt.call1(("POINT Z (0 0 1)",))?;
+            let distance_3d = module.getattr("distance_3d")?;
+            let Err(error) = distance_3d.call1((array, target)) else {
+                panic!("an array row without Z must fail")
+            };
+            assert!(error.is_instance_of::<InvalidGeometryError>(py));
+            let notes = error
+                .value(py)
+                .getattr("__notes__")?
+                .extract::<Vec<String>>()?;
+            assert!(
+                notes.iter().any(|note| note.contains("array element 2")),
+                "unexpected error notes: {notes:?}"
             );
             Ok(())
         })

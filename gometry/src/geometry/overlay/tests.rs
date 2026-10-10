@@ -227,7 +227,7 @@ fn contains_verbatim_test_member(shape: &Shape, retained: &Shape) -> bool {
 
 fn subdivision_wkb(shape: &Shape) -> Vec<Vec<u8>> {
     shape
-        .subdivide(8, false)
+        .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
         .expect("shared-set subdivision succeeds")
         .iter()
         .map(shape_wkb)
@@ -236,6 +236,218 @@ fn subdivision_wkb(shape: &Shape) -> Vec<Vec<u8>> {
 
 fn shapes_wkb(shapes: &[Shape]) -> Vec<Vec<u8>> {
     shapes.iter().map(shape_wkb).collect()
+}
+
+fn chain_coords(points: &[(f64, f64)]) -> CoordSeq {
+    let points: Vec<_> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+    CoordSeq::try_from_xy(&points).expect("chain test coordinates are admitted")
+}
+
+type ChainCoordinateBits = (u64, u64, Option<u64>, Option<u64>);
+
+fn chain_coordinate_bits(coords: &CoordSeq) -> Vec<ChainCoordinateBits> {
+    coords
+        .iter()
+        .map(|point| {
+            (
+                point.x.to_bits(),
+                point.y.to_bits(),
+                point.z().map(f64::to_bits),
+                point.m().map(f64::to_bits),
+            )
+        })
+        .collect()
+}
+
+fn chains_coordinate_bits(chains: &[CoordSeq]) -> Vec<Vec<ChainCoordinateBits>> {
+    chains.iter().map(chain_coordinate_bits).collect()
+}
+
+#[test]
+fn merge_chains_discards_empty_and_xy_coincident_sequences() {
+    let no_edges: [CoordSeq; 0] = [];
+    assert!(merge_chains(&no_edges).unwrap().is_empty());
+
+    let one_point = CoordSeq::try_from_points(&[Point::new_raw_xy(2.0, 3.0)]).unwrap();
+    let coincident_xy = CoordSeq::try_from_points(&[
+        Point::new_axes(7.0, 9.0, ZOrdinate(Some(1.0)), MOrdinate(Some(11.0))).unwrap(),
+        Point::new_axes(7.0, 9.0, ZOrdinate(Some(2.0)), MOrdinate(Some(22.0))).unwrap(),
+    ])
+    .unwrap();
+    let edges = [
+        CoordSeq::empty(CoordinateAxes::XY),
+        one_point,
+        coincident_xy,
+    ];
+    assert!(merge_chains(&edges).unwrap().is_empty());
+}
+
+#[test]
+fn merge_chains_keeps_a_late_single_noncoincident_closed_edge() {
+    let ignored = chain_coords(&[(7.0, 9.0), (7.0, 9.0)]);
+    let closed = chain_coords(&[(0.0, 0.0), (1.0, 0.0), (0.0, 0.0)]);
+    let edges = [CoordSeq::empty(CoordinateAxes::XY), ignored, closed];
+
+    let chains = merge_chains(&edges).unwrap();
+
+    assert_eq!(chains_coordinate_bits(&chains), [vec![
+        (0.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        (1.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        (0.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+    ]]);
+}
+
+#[test]
+fn merge_chains_preserves_reversed_path_after_filtered_input_ordinals() {
+    let edges = [
+        chain_coords(&[(9.0, 9.0), (9.0, 9.0)]),
+        chain_coords(&[(2.0, 0.0), (1.0, 0.0)]),
+        chain_coords(&[(8.0, 8.0), (8.0, 8.0)]),
+        chain_coords(&[(0.0, 0.0), (1.0, 0.0)]),
+    ];
+
+    let chains = merge_chains(&edges).unwrap();
+
+    assert_eq!(chains_coordinate_bits(&chains), [vec![
+        (2.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        (1.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        (0.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+    ]]);
+}
+
+#[test]
+fn merge_chains_turns_parallel_duplicate_edges_into_one_cycle() {
+    let edge = chain_coords(&[(0.0, 0.0), (1.0, 0.0)]);
+    let edges = [edge.clone(), edge];
+
+    let chains = merge_chains(&edges).unwrap();
+
+    assert_eq!(chains_coordinate_bits(&chains), [vec![
+        (0.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        (1.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        (0.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+    ]]);
+}
+
+#[test]
+fn merge_chains_emits_open_paths_before_lower_seed_cycles() {
+    let edges = [
+        chain_coords(&[(10.0, 0.0), (11.0, 0.0)]),
+        chain_coords(&[(11.0, 0.0), (10.0, 1.0)]),
+        chain_coords(&[(10.0, 1.0), (10.0, 0.0)]),
+        chain_coords(&[(2.0, 0.0), (1.0, 0.0)]),
+        chain_coords(&[(0.0, 0.0), (1.0, 0.0)]),
+    ];
+
+    let chains = merge_chains(&edges).unwrap();
+
+    assert_eq!(chains_coordinate_bits(&chains), [
+        vec![
+            (2.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+            (1.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+            (0.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        ],
+        vec![
+            (10.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+            (11.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+            (10.0_f64.to_bits(), 1.0_f64.to_bits(), None, None),
+            (10.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        ],
+    ]);
+}
+
+#[test]
+fn merge_chains_splits_each_arm_at_a_degree_three_junction() {
+    let edges = [
+        chain_coords(&[(0.0, 0.0), (1.0, 0.0)]),
+        chain_coords(&[(1.0, 0.0), (2.0, 0.0)]),
+        chain_coords(&[(1.0, 0.0), (1.0, 1.0)]),
+    ];
+
+    let chains = merge_chains(&edges).unwrap();
+
+    assert_eq!(chains_coordinate_bits(&chains), [
+        vec![
+            (0.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+            (1.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        ],
+        vec![
+            (1.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+            (2.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+        ],
+        vec![
+            (1.0_f64.to_bits(), 0.0_f64.to_bits(), None, None),
+            (1.0_f64.to_bits(), 1.0_f64.to_bits(), None, None),
+        ],
+    ]);
+}
+
+#[test]
+fn merge_chains_preserves_xyz_m_bits_and_signed_zero_at_reversed_joins() {
+    let point = |x_coordinate, y_coordinate, elevation, measure| {
+        Point::new_axes(
+            x_coordinate,
+            y_coordinate,
+            ZOrdinate(Some(elevation)),
+            MOrdinate(Some(measure)),
+        )
+        .unwrap()
+    };
+    let first = CoordSeq::try_from_points(&[
+        point(2.0, -0.0, 22.0, 202.0),
+        point(1.5, -0.0, 15.0, 150.0),
+        point(1.0, -0.0, 11.0, 101.0),
+    ])
+    .unwrap();
+    let second =
+        CoordSeq::try_from_points(&[point(0.0, -0.0, 0.0, 0.0), point(1.0, 0.0, 11.0, 101.0)])
+            .unwrap();
+
+    let chains = merge_chains(&[first, second]).unwrap();
+
+    assert_eq!(chains_coordinate_bits(&chains), [vec![
+        (
+            2.0_f64.to_bits(),
+            (-0.0_f64).to_bits(),
+            Some(22.0_f64.to_bits()),
+            Some(202.0_f64.to_bits()),
+        ),
+        (
+            1.5_f64.to_bits(),
+            (-0.0_f64).to_bits(),
+            Some(15.0_f64.to_bits()),
+            Some(150.0_f64.to_bits()),
+        ),
+        (
+            1.0_f64.to_bits(),
+            (-0.0_f64).to_bits(),
+            Some(11.0_f64.to_bits()),
+            Some(101.0_f64.to_bits()),
+        ),
+        (
+            0.0_f64.to_bits(),
+            (-0.0_f64).to_bits(),
+            Some(0.0_f64.to_bits()),
+            Some(0.0_f64.to_bits()),
+        ),
+    ]]);
+}
+
+#[test]
+fn merge_chains_preserves_coordinate_axis_mismatch_error() {
+    let xy = chain_coords(&[(0.0, 0.0), (1.0, 0.0)]);
+    let xyz = CoordSeq::try_from_points(&[
+        Point::new_axes(1.0, 0.0, ZOrdinate(Some(3.0)), MOrdinate(None)).unwrap(),
+        Point::new_axes(2.0, 0.0, ZOrdinate(Some(4.0)), MOrdinate(None)).unwrap(),
+    ])
+    .unwrap();
+
+    let error = merge_chains(&[xy, xyz]).unwrap_err();
+
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch { .. })
+    ));
 }
 
 #[test]
@@ -838,32 +1050,58 @@ fn assert_shared_set_overlay_identity(name: &str, depth: usize) {
     assert_eq!(
         shape_wkb(
             &shared
-                .node_with_metric::<crate::crs::GeodesicMetric>(
-                    TopologyDomain::Cartesian,
+                .node_with_context(
                     Strictness::Lenient,
-                    None,
+                    &crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap(),
         ),
         shape_wkb(
             &expanded
-                .node_with_metric::<crate::crs::GeodesicMetric>(
-                    TopologyDomain::Cartesian,
+                .node_with_context(
                     Strictness::Lenient,
-                    None,
+                    &crate::geometry::SourceArcContext::cartesian(),
                 )
                 .unwrap(),
         ),
         "node: {name}, depth {depth}"
     );
     assert_eq!(
-        shapes_wkb(&Shape::polygonize_all(&[&shared], false).unwrap()),
-        shapes_wkb(&Shape::polygonize_all(&[&expanded], false).unwrap()),
+        shapes_wkb(
+            &Shape::polygonize_all_with_context(
+                &[&shared],
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap(),
+        ),
+        shapes_wkb(
+            &Shape::polygonize_all_with_context(
+                &[&expanded],
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap(),
+        ),
         "polygonize_all: {name}, depth {depth}"
     );
     assert_eq!(
-        shapes_wkb(&Shape::build_area_all(&[&shared], false).unwrap()),
-        shapes_wkb(&Shape::build_area_all(&[&expanded], false).unwrap()),
+        shapes_wkb(
+            &Shape::build_area_all_with_context(
+                &[&shared],
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap(),
+        ),
+        shapes_wkb(
+            &Shape::build_area_all_with_context(
+                &[&expanded],
+                false,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap(),
+        ),
         "build_area_all: {name}, depth {depth}"
     );
 
@@ -928,7 +1166,7 @@ fn depth_128_shared_set_overlay_finishes_with_correct_support() {
         }
 
         let parts = shared
-            .subdivide(8, false)
+            .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
             .expect("deep subdivision succeeds");
         assert!(!parts.is_empty(), "depth {depth}");
         let area = Shape::union_all_topo(&parts, TopologyDomain::Cartesian, Strictness::Lenient)
@@ -977,6 +1215,71 @@ fn sourced_noder_orders_extreme_horizontal_cuts_and_keeps_owner() {
             assert_eq!(provenance.owners(index), &[(0, false)]);
         }
     }
+}
+
+#[test]
+fn sourced_noder_preserves_reversed_partial_overlap_atom_owners() {
+    let (atoms, provenance) = self_node_segments_sourced([
+        Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(4.0, 0.0),
+        },
+        Segment {
+            start: XY::new(3.0, 0.0),
+            end: XY::new(1.0, 0.0),
+        },
+        Segment {
+            start: XY::new(1.0, 0.0),
+            end: XY::new(3.0, 0.0),
+        },
+    ])
+    .unwrap();
+    assert_eq!(
+        atoms
+            .iter()
+            .map(|segment| [
+                segment.start.x.to_bits(),
+                segment.start.y.to_bits(),
+                segment.end.x.to_bits(),
+                segment.end.y.to_bits(),
+            ])
+            .collect::<Vec<_>>(),
+        vec![
+            [
+                0.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                1.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+            [
+                1.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                3.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+            [
+                3.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                4.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+            [
+                3.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                1.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+            ],
+        ]
+    );
+    assert_eq!(
+        provenance.iter().map(<[_]>::to_vec).collect::<Vec<_>>(),
+        vec![
+            vec![(0_u32, false)],
+            vec![(0_u32, false)],
+            vec![(0_u32, false)],
+            vec![(1_u32, false), (2_u32, true)],
+        ]
+    );
 }
 
 mod binary_areal_overlay_tests {
@@ -4005,7 +4308,14 @@ mod rectangle_clip_tests {
             .unwrap(),
         );
         let source = Shape::Polygon(polygon);
-        let expected = carry_ordinates(expected_xy, &[&source], "clip_by_rect", false).unwrap();
+        let expected = carry_ordinates(
+            expected_xy,
+            &[&source],
+            "clip_by_rect",
+            false,
+            &crate::geometry::SourceArcContext::cartesian(),
+        )
+        .unwrap();
         let actual = source.clip_by_rect(rect, false).unwrap();
         assert!(actual.equals_exact(&expected, 0.0, true, true));
         let _error = source.clip_by_rect(rect, true).unwrap_err();

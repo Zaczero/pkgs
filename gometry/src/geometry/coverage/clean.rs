@@ -4,7 +4,8 @@ use crate::geometry::coverage::{
 };
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    CoordSeq, GeometryErrorKind, OverlayOp, Shape, carry_overlay_ordinates, polygon_parts_to_shape,
+    CoordSeq, GeometryErrorKind, OverlayOp, Shape, SourceArcContext, carry_overlay_ordinates,
+    polygon_parts_to_shape,
 };
 
 // --- Cleaning ----------------------------------------------------------------
@@ -36,6 +37,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     grid_size: f64,
     gap_width: f64,
     overlaps: CoverageOverlapRule,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Vec<Shape>> {
     if !(grid_size.is_finite() && grid_size >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("grid_size", grid_size).into());
@@ -50,7 +52,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
                 (grid_size, grid_size),
                 (0.0, 0.0),
                 crate::geometry::TopologyDomain::Cartesian,
-                None,
+                context,
             )?);
         }
     } else {
@@ -89,6 +91,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         gap_width,
         overlaps,
         declared_axes,
+        context,
     )
 }
 
@@ -96,11 +99,11 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
 /// geographic frame are split before the edge inventory sees them as planar.
 pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     coverage: &[S],
-    domain: crate::geometry::TopologyDomain,
-    metric_access: Option<&crate::geometry::SourceArcMetricAccess<'_>>,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
+    let domain = context.domain();
     let crate::geometry::TopologyDomain::Geographic(frame) = domain else {
-        return coverage_union_inner(coverage);
+        return coverage_union_inner(coverage, context);
     };
     if coverage.iter().all(|row| {
         let shape = row.borrow();
@@ -108,7 +111,7 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
         })
     }) {
-        return coverage_union_inner(coverage);
+        return coverage_union_inner(coverage, context);
     }
     let mut split_owned = Vec::with_capacity(coverage.len());
     for row in coverage {
@@ -118,17 +121,20 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
         }) {
             shape.clone()
         } else {
-            shape.split_antimeridian_in_frame_with_metric(frame, metric_access)?
+            shape.split_antimeridian_in_frame_with_metric(frame, context.metric_access())?
         };
         split_owned.push(split);
     }
-    coverage_union_inner(&split_owned)
+    coverage_union_inner(&split_owned, context)
 }
 
-fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result<Shape> {
+fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
+    coverage: &[S],
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Shape> {
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
-    let prepared = valid_coverage_rows(coverage, "coverage_union")?;
+    let prepared = valid_coverage_rows(coverage, "coverage_union_all")?;
     let source_refs: Vec<_> = coverage.iter().map(|shape| shape.borrow()).collect();
     // Preserve the singleton identity path: one polygon is already the union
     // (bit-identical presentation of the input).
@@ -169,7 +175,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
         let shape = sole.map_or_else(Shape::empty_polygon, |polygon| {
             Shape::Polygon(polygon.clone())
         });
-        return carry_overlay_ordinates(shape, &source_refs, OverlayOp::Union, false);
+        return carry_overlay_ordinates(shape, &source_refs, OverlayOp::Union, false, context);
     }
     // If validation found no repeated edge, rows are pairwise disjoint except
     // for legal point touches. Their input polygon parts already are the
@@ -220,6 +226,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             &source_refs,
             OverlayOp::Union,
             false,
+            context,
         );
     }
     carry_overlay_ordinates(
@@ -227,6 +234,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
         &source_refs,
         OverlayOp::Union,
         false,
+        context,
     )
 }
 
@@ -251,10 +259,26 @@ fn dissolve_edge_incidences(
     survivors
         .sort_unstable_by_key(|segment| crate::geometry::undirected_segment_edge_key(*segment));
     let inventory = ExactSourceInventory::from_segments(&survivors)?;
-    let mut budget = crate::geometry::ExpansionBudget::new("coverage_union", "exact partition");
+    let mut budget = crate::geometry::ExpansionBudget::new("coverage_union_all", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
-    let parts = inventory.linework_polygons(&mut partition, true, "coverage_union")?;
-    Ok(polygon_parts_to_shape(parts))
+    let parts = inventory.linework_polygons(
+        &mut partition,
+        true,
+        "coverage_union_all",
+        crate::geometry::CoordinateAxes::XY,
+        false,
+        &SourceArcContext::cartesian(),
+    )?;
+    let polygons = parts
+        .into_iter()
+        .map(|part| {
+            let Shape::Polygon(polygon) = part else {
+                unreachable!("coverage union linework emits only polygons")
+            };
+            polygon
+        })
+        .collect();
+    Ok(polygon_parts_to_shape(polygons))
 }
 
 #[cfg(test)]
@@ -323,8 +347,14 @@ mod tests {
     fn coverage_clean_builds_one_partition_after_admission() {
         let rows = [rectangle(0.0, 0.0, 1.2, 1.0), rectangle(1.0, 0.0, 2.0, 1.0)];
         overlay::reset_partition_builds();
-        coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
-            .expect("coverage clean");
+        coverage_clean(
+            &rows,
+            0.0,
+            0.0,
+            CoverageOverlapRule::LongestBorder,
+            &SourceArcContext::cartesian(),
+        )
+        .expect("coverage clean");
         assert_eq!(overlay::partition_builds(), 1);
     }
 
@@ -334,8 +364,14 @@ mod tests {
             rectangle(-1.6e308, -1.7e308, 1.6e308, 1.7e308),
             rectangle(-1.7e308, 0.0, 1.7e308, 1.0e308),
         ];
-        let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
-            .expect("finite-coordinate overlap");
+        let output = coverage_clean(
+            &rows,
+            0.0,
+            0.0,
+            CoverageOverlapRule::LongestBorder,
+            &SourceArcContext::cartesian(),
+        )
+        .expect("finite-coordinate overlap");
         let overlap = Point::new_raw_xy(0.0, 0.5e308);
         assert_eq!(
             crate::geometry::cartesian_point_location(&output[0], overlap),
@@ -350,8 +386,14 @@ mod tests {
     #[test]
     fn coverage_clean_keeps_one_shared_node_coordinate_for_both_rows() {
         let rows = [rectangle(0.0, 0.0, 1.2, 1.0), rectangle(1.0, 0.0, 2.0, 1.0)];
-        let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
-            .expect("coverage clean");
+        let output = coverage_clean(
+            &rows,
+            0.0,
+            0.0,
+            CoverageOverlapRule::LongestBorder,
+            &SourceArcContext::cartesian(),
+        )
+        .expect("coverage clean");
         let shared = XY::new(1.2, 0.0);
         let mut rows_with_shared_node = Vec::new();
         for shape in &output {
@@ -379,8 +421,14 @@ mod tests {
         ];
         overlay::reset_partition_builds();
         let (output, allocations) = crate::test_support::allocation_count(|| {
-            coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
-                .expect("dense collinear coverage clean")
+            coverage_clean(
+                &rows,
+                0.0,
+                0.0,
+                CoverageOverlapRule::LongestBorder,
+                &SourceArcContext::cartesian(),
+            )
+            .expect("dense collinear coverage clean")
         });
         let metrics = overlay::partition_metrics();
         let phase_allocations = crate::test_support::allocation_phase_counts();
@@ -421,8 +469,14 @@ mod tests {
         ] {
             let left = crate::io::parse_wkt(wkt).expect("collinear traversal fixture");
             let rows = [left, other.clone()];
-            let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
-                .expect("coverage clean");
+            let output = coverage_clean(
+                &rows,
+                0.0,
+                0.0,
+                CoverageOverlapRule::LongestBorder,
+                &SourceArcContext::cartesian(),
+            )
+            .expect("coverage clean");
             assert_eq!(output.len(), 2);
             assert!(
                 (output.iter().map(Shape::area).sum::<f64>() - 24.0).abs() < 1.0e-9,
@@ -516,8 +570,14 @@ mod tests {
                 crate::geometry::coverage_is_valid(&rows, 0.0).unwrap(),
                 "{mode}"
             );
-            let cleaned =
-                coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder).unwrap();
+            let cleaned = coverage_clean(
+                &rows,
+                0.0,
+                0.0,
+                CoverageOverlapRule::LongestBorder,
+                &SourceArcContext::cartesian(),
+            )
+            .unwrap();
             assert_eq!(cleaned, rows, "{mode}");
             assert!(
                 crate::geometry::coverage_invalid_edges(&cleaned, 0.0)
@@ -530,7 +590,14 @@ mod tests {
 
         let rows = jittered_grid("independent");
         assert!(!crate::geometry::coverage_is_valid(&rows, 0.0).unwrap());
-        let cleaned = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder).unwrap();
+        let cleaned = coverage_clean(
+            &rows,
+            0.0,
+            0.0,
+            CoverageOverlapRule::LongestBorder,
+            &SourceArcContext::cartesian(),
+        )
+        .unwrap();
         assert_eq!(cleaned.len(), 144);
         assert!(crate::geometry::coverage_is_valid(&cleaned, 0.0).unwrap());
         assert!(
@@ -539,11 +606,7 @@ mod tests {
                 .iter()
                 .all(Shape::is_empty)
         );
-        crate::geometry::coverage_union_topo(
-            &cleaned,
-            crate::geometry::TopologyDomain::Cartesian,
-            None,
-        )
-        .expect("dissolve accepts the repaired jittered coverage");
+        crate::geometry::coverage_union_topo(&cleaned, &SourceArcContext::cartesian())
+            .expect("dissolve accepts the repaired jittered coverage");
     }
 }

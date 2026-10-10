@@ -9,25 +9,28 @@ use crate::py::cells::coverage_ops::{
 };
 use crate::py::cells::s2::parse::S2LevelBudget;
 use crate::py::cells::s2::{
-    PyS2Cell, cell_pole_side, parse_s2_level_budget, parse_s2_level_value, register,
-    s2_boundary_geometry, s2_cell_array, s2_cell_from_xy, s2_cell_id,
+    PyS2Cell, cell_pole_side, parse_s2_adaptive_budget, parse_s2_fixed_budget,
+    parse_s2_level_value, register, s2_boundary_geometry, s2_cell_array, s2_cell_from_xy,
+    s2_cell_id,
 };
 use crate::py::cells::{
     Bound, CellRule, GeometryError, GridKind, Py, PyAny, PyCellArray, PyErr, PyResult, Python,
     Shape, bounding_query_bounds, coverage_ops, dispatch_grid_cell_array, grid_cover_dispatch,
     parse_error, pyfunction,
 };
-/// Build S2 cells from parallel lon/lat columns.
+/// Build S2 cells from points, coordinate rows, or parallel lon/lat columns.
 ///
 /// Parameters
 /// ----------
-/// values : GeometryArray of Point, float, or sequence of float
-///     Point geometries or WGS84 longitudes. Projected point arrays are
-///     reprojected in one native batch.
+/// values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+///     Point geometries (``None`` makes a missing cell), a coordinate matrix
+///     with at least two columns, or WGS84 longitudes. Iterable points must
+///     share one CRS and epoch; projected point inputs are reprojected to
+///     WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 ///
 /// lat : float or sequence of float, optional
-///     WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-///     broadcast numpy-style; at least one coordinate column must be sequence of float.
+///     WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+///     columns broadcast numpy-style; at least one must be a sequence.
 ///
 /// level : int or sequence of int
 ///     S2 cell level (0-30; finer at higher values). A scalar broadcasts to
@@ -183,7 +186,7 @@ grid_free_functions! {
         cell_type: CellId,
         label: "S2",
         cell_doc: "S2Cell",
-        item_doc: "S2Cell, int, str, or iterable of those",
+        item_doc: "S2Cell, int, str, or iterable of those with missing values skipped",
         contract_doc: "",
         parse_error_doc: "If an id or token is not a valid S2 cell.",
         parse_cell: s2_cell_id,
@@ -289,22 +292,37 @@ impl GridDissolver for S2Dissolver {
     }
 }
 
-/// Cover a geometry with S2 cells within a level budget.
+/// Cover a geometry with fixed-level or adaptively refined S2 cells.
 ///
-/// The result is a ``CellArray`` of S2 cells selected by ``cell_rule`` within
-/// the level budget. Keep the source geometry separately and use the free
-/// ``gm.*`` predicates for exact geometry questions.
+/// Omit ``level`` to adapt refinement to ``target_cells`` and the optional
+/// level range. Supplying ``level`` fixes the output depth; non-default
+/// adaptive controls cannot be combined with it. Keep the source geometry
+/// separately and use the free ``gm.*`` predicates for exact geometry
+/// questions.
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry or GeometryArray
-///     Geometry to cover (WGS84 lon/lat or projected). An array returns one
-///     grouped cell row per input geometry.
+/// geom : Geometry, GeometryArray, or iterable of Geometry or None
+///     Geometry to cover (WGS84 lon/lat or projected). An array or iterable
+///     returns one group per input row; ``None`` and empty geometries produce
+///     empty groups.
 ///
 /// level : int, optional
-///     S2 cell level (``0``-``30``; finer at higher values). Fixes both
-///     ``min_level`` and ``max_level``. Omit for an adaptive multi-level
-///     covering guided by ``target_cells``.
+///     Fixed S2 cell level (``0``-``30``; finer at higher values). The level is
+///     never coarsened to fit the output cap. Omit it for adaptive refinement.
+///
+/// target_cells : int, default 8
+///     Approximate adaptive refinement target; the minimum admissible cover
+///     can exceed this value.
+///
+/// min_level : int or None, default None
+///     Coarsest adaptive S2 level allowed; omission uses level ``0``.
+///
+/// max_level : int or None, default None
+///     Finest adaptive S2 level allowed; omission uses level ``30``.
+///
+/// level_mod : {1, 2, 3}, default 1
+///     Restrict adaptive output levels to increments from ``min_level``.
 ///
 /// cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
 ///     Which cells to materialize, strictest to loosest. ``'within'``: only
@@ -317,24 +335,10 @@ impl GridDissolver for S2Dissolver {
 ///     The rule never affects the exact predicates.
 ///
 /// max_cells : int or None, default 1000000
-///     Hard cap on returned cells and retained result allocation. Discarded
-///     candidates do not consume it; array calls apply it cumulatively across
-///     groups. For a fixed-level cover,
-///     the level cannot be coarsened, so an insufficient cap raises. For an
-///     adaptive cover, refinement stops and coarser cells are retained when
-///     further children would exceed the cap; the result has at most
-///     ``max_cells`` cells. Pass ``None`` for an unlimited cover.
-///
-/// target_cells : int, default 8
-///     S2-idiomatic approximation target for optional adaptive refinement
-///     when ``level`` is omitted. It does not affect fixed-level coverings.
-///
-/// min_level, max_level : int, optional
-///     Coarsest/finest S2 levels allowed (default to ``level``).
-///
-/// level_mod : int, default 1
-///     Restrict cells to levels a multiple of ``level_mod`` from
-///     ``min_level``.
+///     Hard cap on returned cells, applied cumulatively across array groups.
+///     In fixed-level mode an insufficient cap raises; adaptive mode may
+///     coarsen only within its requested level range. Pass ``None`` for an
+///     unlimited cover.
 ///
 /// Returns
 /// -------
@@ -344,15 +348,16 @@ impl GridDissolver for S2Dissolver {
 /// Raises
 /// ------
 /// GeometryError
-///     If the geometry, depth, or a coverage parameter is invalid, or if a
-///     fixed-level cover exceeds ``max_cells``. An adaptive cover raises when
-///     even its admissible starting cover cannot fit within the cap.
+///     If the geometry, level, or a coverage parameter is invalid, if fixed
+///     and non-default adaptive controls are combined, or if the cover exceeds
+///     ``max_cells``.
 /// InvalidGeometryError
-///     If the geometry is empty or coordinates leave the lon/lat domain.
+///     If a scalar geometry is empty or coordinates leave the lon/lat domain.
 ///
 /// See Also
 /// --------
 /// s2_cells : Build S2 cells from lon/lat columns.
+/// s2_cover : Cover with fixed or adaptive levels.
 ///
 /// Examples
 /// --------
@@ -365,40 +370,56 @@ impl GridDissolver for S2Dissolver {
 /// (1, '8085809')
 #[pyfunction]
 #[pyo3(
-    signature = (geom, level = None, *, cell_rule = CellRule::Overlap, max_cells = Some(1_000_000), target_cells = 8, min_level = None, max_level = None, level_mod = 1),
-    text_signature = "(geom, level=None, *, cell_rule='overlap', max_cells=1000000, target_cells=8, min_level=None, max_level=None, level_mod=1)"
+    signature = (geom, level = None, *, target_cells = 8, min_level = None, max_level = None, level_mod = 1, cell_rule = CellRule::Overlap, max_cells = Some(1_000_000)),
+    text_signature = "(geom, level=None, *, target_cells=8, min_level=None, max_level=None, level_mod=1, cell_rule='overlap', max_cells=1000000)"
 )]
 pub(crate) fn s2_cover(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,
-    level: Option<&Bound<'_, PyAny>>,
+    #[pyo3(from_py_with = crate::strict_optional_i64)] level: Option<i64>,
+    #[pyo3(from_py_with = crate::strict_i64)] target_cells: i64,
+    #[pyo3(from_py_with = crate::strict_optional_i64)] min_level: Option<i64>,
+    #[pyo3(from_py_with = crate::strict_optional_i64)] max_level: Option<i64>,
+    #[pyo3(from_py_with = crate::strict_i64)] level_mod: i64,
     cell_rule: CellRule,
     #[pyo3(from_py_with = crate::strict_optional_i64)] max_cells: Option<i64>,
-    #[pyo3(from_py_with = crate::strict_i64)] target_cells: i64,
-    min_level: Option<&Bound<'_, PyAny>>,
-    max_level: Option<&Bound<'_, PyAny>>,
-    #[pyo3(from_py_with = crate::strict_i64)] level_mod: i64,
 ) -> PyResult<Py<PyAny>> {
-    let parsed = parse_s2_level_budget(
-        level,
-        max_cells,
-        target_cells,
-        min_level,
-        max_level,
-        level_mod,
-    )?;
-    let budget_cells = parsed.max_cells;
+    let budget = if let Some(level) = level {
+        if target_cells != 8 || min_level.is_some() || max_level.is_some() || level_mod != 1 {
+            return Err(GeometryError::new_err(
+                "fixed S2 level cannot be combined with adaptive cover controls",
+            ));
+        }
+        parse_s2_fixed_budget(level, max_cells)?
+    } else {
+        parse_s2_adaptive_budget(
+            target_cells,
+            min_level.unwrap_or(0),
+            max_level.unwrap_or(30),
+            level_mod,
+            max_cells,
+        )?
+    };
+    s2_cover_with_budget(py, geom, budget, cell_rule)
+}
+
+fn s2_cover_with_budget(
+    py: Python<'_>,
+    geom: &Bound<'_, PyAny>,
+    budget: S2LevelBudget,
+    cell_rule: CellRule,
+) -> PyResult<Py<PyAny>> {
     grid_cover_dispatch(
         py,
         geom,
         GridKind::S2Cell,
-        budget_cells,
+        budget.max_cells,
         |geometry, effective_max_cells| {
-            let parsed = S2LevelBudget {
+            let effective_budget = S2LevelBudget {
                 max_cells: effective_max_cells,
-                ..parsed
+                ..budget
             };
-            let cells = register::build_coverage(geometry, parsed, cell_rule)?;
+            let cells = register::build_coverage(geometry, effective_budget, cell_rule)?;
             Ok(coverage_ops::collect_cover_ids(
                 SortedCells::from_sorted(cells)
                     .into_vec()

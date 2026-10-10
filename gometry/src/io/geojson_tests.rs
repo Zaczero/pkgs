@@ -85,6 +85,51 @@ fn checked_writer_runs_when_geojson_upper_bound_exceeds_fitting_lower_bound() {
 }
 
 #[test]
+fn checked_geojson_accepts_exact_byte_limit_and_rejects_one_byte_less() {
+    let shape = Shape::Point(Point::new_raw_xy(1.5, 2.5));
+    let expected = r#"{"type":"Point","coordinates":[1.5,2.5]}"#;
+    assert_eq!(
+        to_geojson_string_with_limit(
+            &shape,
+            crate::geometry::TopologyDomain::Cartesian,
+            expected.len(),
+        )
+        .expect("exact output width fits"),
+        expected
+    );
+    let error = to_geojson_string_with_limit(
+        &shape,
+        crate::geometry::TopologyDomain::Cartesian,
+        expected.len() - 1,
+    )
+    .expect_err("one byte less than the output width fails");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(ResourceError::SizeOverflow)
+    ));
+}
+
+#[test]
+fn checked_geojson_charges_leading_comma_with_the_complete_position() {
+    let expected = "[,[-0.0,2.5,3.5]";
+    let mut too_small = super::CheckedGeoJson::with_capacity_hint(0, expected.len() - 1);
+    too_small.text.push_str("[").expect("prefix fits");
+    let error = super::GeoJsonSink::position(&mut too_small, -0.0, 2.5, Some(3.5), true)
+        .expect_err("incomplete position does not fit");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(ResourceError::SizeOverflow)
+    ));
+    assert_eq!(too_small.text.as_str(), "[");
+
+    let mut exact = super::CheckedGeoJson::with_capacity_hint(0, expected.len());
+    exact.text.push_str("[").expect("prefix fits");
+    super::GeoJsonSink::position(&mut exact, -0.0, 2.5, Some(3.5), true)
+        .expect("complete comma and position fit");
+    assert_eq!(exact.text.as_str(), expected);
+}
+
+#[test]
 fn geojson_upper_bound_covers_each_geometry_kind() {
     for source in [
         "POINT (0 0)",

@@ -1002,7 +1002,6 @@ dependencies = [
  "h3o",
  "lexical-core",
  "libc",
- "libsqlite3-sys",
  "mimalloc",
  "numpy",
  "proj-sys",

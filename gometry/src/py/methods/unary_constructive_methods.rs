@@ -132,7 +132,7 @@ GeometryArray[Point]
 ";
     tail: r"See Also
 --------
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 polylabel : Pole of inaccessibility (best label anchor).
 
 Raises
@@ -325,11 +325,6 @@ Extremes
 
 ";
     tail: r"
-Raises
-------
-InvalidGeometryError
-    If the geometry is empty.
-
 Examples
 --------
 >>> import gometry as gm
@@ -425,7 +420,7 @@ GeometryArray
 --------
 polylabel : Approximate pole-of-inaccessibility label point.
 maximum_inscribed_radius : The radius alone.
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 centroid : Area/length-weighted center (may fall outside).
 
 Raises
@@ -750,9 +745,11 @@ method_doc! {
     doc_point_on_surface;
     body: r"Representative point guaranteed to lie on the geometry. Geographic (lon/lat)
 input crossing the antimeridian is auto-split-normalized; no manual
-``split_antimeridian`` is required. Always inside (or on) the geometry,
-unlike centroid. The representative point is computed in XY and does not
-imply a source Z/M.
+``split_antimeridian`` is required. The point lies inside or on the geometry,
+unlike centroid. Polygonal scanline candidates are checked after rounding; an
+uncovered candidate falls back to a source boundary point. The representative
+is computed in XY and does not imply a source Z/M. On planar polygonal input,
+the first polygon component wins when representative chords have equal width.
 
 See Also
 --------
@@ -772,7 +769,7 @@ Point
 Returns
 -------
 GeometryArray[Point]
-    One interior point per row.
+    One point inside or on each row's geometry.
 
 ";
     tail: r"
@@ -794,7 +791,7 @@ method_doc! {
     body: r"Build polygons from a geometry's own linework, automatically noding
 crossings and overlaps. Each geometry is polygonized in isolation; to reconstruct
 polygons from a pile of edges pooled across many geometries, use free function
-``polygonize`` on an iterable of
+``polygonize_all`` on an iterable of
 values. Input ordinates are carried where possible; unsourceable noding seams
 yield XY.";
     scalar: r"
@@ -813,10 +810,14 @@ Groups of GeometryArray
     One ragged group of polygons per input geometry, in input order — each
     input's OWN linework is polygonized independently (row ``i`` is
     ``self[i].polygonize()``). To pool ALL rows' edges into one graph so a
-    ring can close across inputs, use the free function ``polygonize``.
+    ring can close across inputs, use the free function ``polygonize_all``.
 
 ";
     tail: r"
+See Also
+--------
+polygonize_all : Pool linework across all supplied geometries.
+
 Raises
 ------
 GeometryError
@@ -851,7 +852,7 @@ See Also
 --------
 maximum_inscribed_circle : Certified filled disk from its own center search.
 centroid : Area/length-weighted center (may fall outside).
-point_on_surface : A guaranteed-interior representative point.
+point_on_surface : A representative point guaranteed on the geometry.
 
 Parameters
 ----------";
@@ -932,17 +933,25 @@ Groups
 ", doc_sample_points!(@tail))
     };
     (@pre) => {
-        r"Random points on the geometry. The sample space is the geometry's highest
-dimension: uniform over area for areal input, along length for lineal input,
-and across the member points of a point set — falling back a dimension when
-the higher one is degenerate (a zero-area polygon samples its boundary),
-like centroid. Deterministic: the same input and ``seed`` always produce
-the same points (an explicit seed is required — no hidden global RNG). Array
-rows draw distinct deterministic streams derived from ``seed`` and the row
-index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
-to sample and yields no points. Sampled points are invented interior points,
-so they cannot carry the source geometry's Z/M and are returned in XY.
+        r"Random points on the geometry. The sample space is its highest
+dimension: coordinate-area weighted for areal input, coordinate-length
+weighted for lineal input, and equal weight across point atoms. Geographic
+lines follow each retained longitude branch, while geographic areas are split
+into seam- and pole-aware chart parts before sampling. Length and area weights
+use the native coordinate chart, not ellipsoidal measures; for example, a
+degree-based 170° to -170° line follows its retained +20° path, contributing
+20° rather than the raw 340° chord. Seam-crossing polygons use their seam-split
+chart area, not the complementary raw-coordinate span. Each logical
+member contributes separately, so overlapping members retain their sampling
+multiplicity. A zero-area polygon falls back to its linework, and zero-length
+linework falls back to vertices, like centroid. Deterministic: the same input
+and ``seed`` always produce the same points (an explicit seed is required —
+no hidden global RNG). Array rows draw distinct deterministic streams derived
+from ``seed`` and the row index, and a scalar geometry IS row 0 — so
+        ``arr.sample_points(n, seed=s)[0]`` and
+        ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing to
+        sample and yields no points. Results retain the input CRS and coordinate
+        epoch. Sampled points are new XY locations, so they have no source Z/M.
 
 Parameters
 ----------"
@@ -1002,16 +1011,21 @@ Groups
 
 method_doc! {
     doc_split_antimeridian;
-    body: r"Split at the antimeridian. Parts that cross come back as multiple parts
+    body: r"Split at the antimeridian. CRS-free input is treated as CRS84; a tagged
+geographic CRS supplies its own longitude frame and ellipsoid. Parts that cross
+come back as multiple parts
 whose edges follow the seam — each side keeping its own seam sign — so the
 result remains a coordinate-planar longitude/latitude chart for topology.
-Crossings are affine subdivisions of unwrapped straight chart edges; a ring
-running off the seam closes over its pole automatically. Geometries that do
-not cross are returned unchanged. A split ``LineString`` becomes a
-``MultiLineString`` and a split ``Polygon`` a ``MultiPolygon``, like repair.
-Seam vertices interpolate Z/M at the same chart fraction. On a geographic CRS,
-the split subdivides existing chart edges, so ellipsoidal area and perimeter
-are conserved to rounding.";
+Inserted seam vertices keep the affine chart crossing in X/Y; eligible Z/M
+follow ellipsoidal arclength along the retained source edge. An authored
+full-period edge is retained with quarter witnesses before its longitudes are
+canonicalized. The two seam aliases and a displacement of multiple periods do
+not imply a full-period edge. A ring running off the seam closes over its pole
+automatically. Geometries that do not cross are returned unchanged. A split
+``LineString`` becomes a ``MultiLineString`` and a split ``Polygon`` a
+``MultiPolygon``, like repair. On a geographic CRS, the split subdivides
+existing chart edges, so ellipsoidal area and perimeter are conserved to
+rounding.";
     scalar: r"
 
 Returns
@@ -1093,13 +1107,20 @@ Examples
 }
 
 method_doc! {
-    doc_voronoi_edges;
-    body: r"Voronoi diagram edges of the geometry's vertices. Operates in planar lon/lat
-space and does NOT auto-split antimeridian-crossing geographic input; call
-``split_antimeridian`` first.
+    doc_voronoi;
+    body: r"Construct a Voronoi diagram from the geometry's vertices. Operates in
+planar longitude/latitude space and does NOT auto-split antimeridian-crossing
+geographic input; call ``split_antimeridian`` first. Collinear vertices divide
+the clip region into strips at their perpendicular bisectors, and a lone
+vertex owns the whole clip polygon; the padded and envelope frames of a lone
+vertex, or the envelope of a horizontal or vertical row, bound no cells.
 
 Parameters
 ----------
+output : {'polygons', 'edges'}
+    Return clipped Voronoi cells or the internal Voronoi edges. The polygon
+    form omits ``output``; edge output requires ``output='edges'`` and excludes
+    the clip polygon's exterior boundary.
 tolerance : float, default 0.0
     Finite non-negative coordinate-space tolerance: native angular units for
     geographic CRSs, native linear units for projected CRSs, and raw coordinate
@@ -1113,24 +1134,23 @@ clip : {'padded', 'envelope'} or Polygon, default 'padded'
 
 Returns
 -------
-GeometryArray
-    The Voronoi edges of the input geometry.
-
+GeometryArray[Polygon] or GeometryArray[LineString]
+    The selected output for the scalar geometry's vertices.
 ";
     array: r"
 
 Returns
 -------
-Groups of GeometryArray
-    One ragged group of Voronoi edges per input geometry, in input order.
-
+Groups[GeometryArray[Polygon]] or Groups[GeometryArray[LineString]]
+    One ragged group of the selected output per input geometry, in input order.
 ";
     tail: r"
 Raises
 ------
 GeometryError
     If the output cannot be represented in binary64 or its embedding search
-    exhausts the budget. ``operation`` is ``'voronoi_edges'``.
+    exhausts the budget. ``operation`` is ``'voronoi_cells'`` for polygon
+    output and ``'voronoi_edge_lines'`` for edge output.
 InvalidGeometryError
     If the clip polygon is invalid or exact Voronoi construction fails.
 
@@ -1138,60 +1158,9 @@ Examples
 --------
 >>> import gometry as gm
 >>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
->>> len(sites.voronoi_edges())
-3";
-}
-
-method_doc! {
-    doc_voronoi_polygons;
-    body: r"Voronoi diagram polygons of the geometry's vertices. Operates in planar
-lon/lat space and does NOT auto-split antimeridian-crossing geographic
-input; call ``split_antimeridian`` first. Collinear vertices divide the clip
-region into strips at their perpendicular bisectors, and a lone vertex owns
-the whole clip polygon; the padded and envelope frames of a lone vertex, or
-the envelope of a horizontal or vertical row, bound no cells.
-
-Parameters
-----------
-tolerance : float, default 0.0
-    Finite non-negative coordinate-space tolerance: native angular units for
-    geographic CRSs, native linear units for projected CRSs, and raw coordinate
-    units when CRS-free.
-clip : {'padded', 'envelope'} or Polygon, default 'padded'
-    How to bound the unbounded outer cells: a padded box, the input
-    envelope, or a `Polygon` to clip the diagram to.
-    Diagram vertices are synthesized and returned in XY. Rounded clip
-    incidences need not lie on the source polygon under overlay membership.";
-    scalar: r"
-
-Returns
--------
-GeometryArray
-    The Voronoi cells of the input geometry.
-
-";
-    array: r"
-
-Returns
--------
-Groups of GeometryArray
-    One ragged group of Voronoi cells per input geometry, in input order.
-
-";
-    tail: r"
-Raises
-------
-GeometryError
-    If the output cannot be represented in binary64 or its embedding search
-    exhausts the budget. ``operation`` is ``'voronoi_polygons'``.
-InvalidGeometryError
-    If the clip polygon is invalid or exact Voronoi construction fails.
-
-Examples
---------
->>> import gometry as gm
->>> sites = gm.MultiPoint([(0, 0), (2, 0), (1, 2)])
->>> len(sites.voronoi_polygons())
+>>> len(sites.voronoi())
+3
+>>> len(sites.voronoi(output='edges'))
 3";
 }
 

@@ -17,6 +17,13 @@ from typing import Any
 
 GOMETRY_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = GOMETRY_ROOT.parent
+_TOOLS = GOMETRY_ROOT / 'tools'
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+
+from _artifact_common import SOURCE_INPUTS_FORMAT
+from artifact_content import source_input_digests
+
 LOAD_BUSY_MIN = 1.0
 LOAD_BUSY_MAX = 2.0
 PROCESS_CPU_WARN_PERCENT = 50.0
@@ -27,7 +34,6 @@ BUILD_INPUT_PATHS = (
     'Cargo.toml',
     'Cargo.lock',
 )
-SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v5'
 BUILD_INFO_SCHEMA_VERSION = 3
 BUILD_INFO_KEYS = {
     'schema_version',
@@ -42,15 +48,6 @@ BUILD_INFO_KEYS = {
     'target_arch',
     'target_features',
 }
-
-
-def _is_hidden_native_path(relative: str) -> bool:
-    parts = Path(relative).parts
-    return (
-        len(parts) >= 3
-        and parts[:2] == ('gometry', 'native')
-        and any(part.startswith('.') for part in parts[2:])
-    )
 
 
 def selected_cpu_governor(
@@ -93,48 +90,23 @@ def _git_build_inputs_dirty() -> bool | None:
     return bool(result)
 
 
-def _source_input_files(*, native_only: bool = False) -> list[tuple[str, Path]] | None:
-    files: list[tuple[str, Path]] = []
-    if not native_only:
-        files.append(('gometry/build.rs', GOMETRY_ROOT / 'build.rs'))
-    for directory in ('native',) if native_only else ('src', 'native'):
-        root = GOMETRY_ROOT / directory
-        if not root.is_dir():
-            return None
-        for path in root.rglob('*'):
-            relative = path.relative_to(REPO_ROOT).as_posix()
-            if (
-                path.name == 'Cargo.toml'
-                or _is_hidden_native_path(relative)
-                or not path.is_file()
-            ):
-                continue
-            files.append((f'gometry/{path.relative_to(GOMETRY_ROOT)}', path))
-    files.sort(key=lambda item: item[0])
-    return files
-
-
-def _digest_source_input_files(
-    files: list[tuple[str, Path]] | None,
-) -> str | None:
-    if files is None:
+def _source_input_digests() -> dict[str, str] | None:
+    """Use the artifact owner for checkout and embedded-source identities."""
+    inputs = (
+        GOMETRY_ROOT / 'build.rs',
+        GOMETRY_ROOT / 'src',
+        GOMETRY_ROOT / 'native',
+    )
+    if not any(path.exists() for path in inputs):
         return None
-    digest = hashlib.sha256()
-    for name, path in files:
-        try:
-            payload = path.read_bytes()
-        except OSError:
-            return None
-        digest.update(name.encode('utf-8'))
-        digest.update(b'\0')
-        digest.update(payload)
-        digest.update(b'\0')
-    return digest.hexdigest()
+    if not all(path.exists() for path in inputs):
+        raise AssertionError('Gometry source tree is incomplete')
+    return source_input_digests(GOMETRY_ROOT)
 
 
 def _source_inputs_digest() -> str | None:
-    """Digest inputs preserved byte-for-byte between checkout and sdist builds."""
-    return _digest_source_input_files(_source_input_files())
+    inputs = _source_input_digests()
+    return None if inputs is None else inputs['source_inputs_sha256']
 
 
 def benchmark_source_inputs_identity(
@@ -171,8 +143,8 @@ def benchmark_source_inputs_identity(
 
 
 def _native_source_inputs_digest() -> str | None:
-    """Digest native source inputs preserved byte-for-byte in the sdist."""
-    return _digest_source_input_files(_source_input_files(native_only=True))
+    inputs = _source_input_digests()
+    return None if inputs is None else inputs['native_source_inputs_sha256']
 
 
 def _uv_lock_identity() -> dict[str, Any]:
@@ -924,7 +896,12 @@ def packages_required_by_operations(operations: Any) -> set[str]:
     return required
 
 
-def collect(*, operations: Any = None) -> dict[str, Any]:
+def collect(
+    *,
+    operations: Any = None,
+    expected_source_inputs_sha256: str | None = None,
+    expected_native_source_inputs_sha256: str | None = None,
+) -> dict[str, Any]:
     required_runtime_modules = packages_required_by_operations(operations)
     for name in sorted(required_runtime_modules):
         try:
@@ -949,17 +926,46 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
     uv_lock = _uv_lock_identity()
     rustc_host_target = _rustc_host_target()
     loaded_native_libraries = _loaded_native_libraries()
+    source_digests = _source_input_digests()
+    source_inputs_sha256 = (
+        None if source_digests is None else source_digests['source_inputs_sha256']
+    )
+    native_source_inputs_sha256 = (
+        None
+        if source_digests is None
+        else source_digests['native_source_inputs_sha256']
+    )
+    build_info = extension.get('build_info')
+    if expected_source_inputs_sha256 is not None:
+        source_inputs_sha256 = benchmark_source_inputs_identity(
+            build_info,
+            source_inputs_sha256,
+            expected_source_inputs_sha256,
+        )
+    if expected_native_source_inputs_sha256 is not None:
+        if (
+            not isinstance(build_info, dict)
+            or build_info.get('native_source_inputs_sha256')
+            != expected_native_source_inputs_sha256
+        ):
+            raise ValueError(
+                'loaded extension native source identity does not match the '
+                'validated receipt'
+            )
+        native_source_inputs_sha256 = expected_native_source_inputs_sha256
     cpu_topology = parse_cpu_topology()
     numa_topology = parse_numa_topology()
     cgroup = parse_cgroup_v2()
     memory_placement = parse_memory_placement()
     metadata: dict[str, Any] = {
-        'git_commit': _run(['git', 'rev-parse', 'HEAD']),
+        'harness_commit': _run(['git', 'rev-parse', 'HEAD']),
         'git_dirty_build_inputs': _git_build_inputs_dirty(),
         'source_inputs_format': SOURCE_INPUTS_FORMAT,
-        'source_inputs_sha256': _source_inputs_digest(),
+        'source_inputs_sha256': source_inputs_sha256,
+        'native_source_inputs_sha256': native_source_inputs_sha256,
         'uv_lock': uv_lock,
         'python_executable': str(Path(sys.executable).resolve()),
+        'python_prefix': sys.prefix,
         'rustc': _run(['rustc', '--version']),
         'rustc_host_target': rustc_host_target,
         'cargo': _run(['cargo', '--version']),
@@ -969,6 +975,13 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         'python_implementation': platform.python_implementation(),
         'python_debug': bool(sysconfig.get_config_var('Py_DEBUG')),
         'python_cache_tag': getattr(sys.implementation, 'cache_tag', None),
+        'python_ext_suffix': sysconfig.get_config_var('EXT_SUFFIX'),
+        'python_gil_disabled': bool(sysconfig.get_config_var('Py_GIL_DISABLED')),
+        'python_gil_enabled': (
+            bool(sys._is_gil_enabled())
+            if callable(getattr(sys, '_is_gil_enabled', None))
+            else True
+        ),
         'platform': platform.platform(),
         'kernel': platform.release(),
         'cpu_model': _cpu_model(),
@@ -1010,7 +1023,7 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
             extension.get('build_info'),
             metadata['source_inputs_sha256'],
             rustc_host_target,
-            _native_source_inputs_digest(),
+            metadata['native_source_inputs_sha256'],
         )
     )
     non_performance = {

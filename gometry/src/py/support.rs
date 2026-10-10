@@ -1,3 +1,4 @@
+use crate::crs::frame::crs_arc;
 use crate::{
     AABB, Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CRSError, CollectRows,
     CoordSeq, CoordinateAxes, Crs, DistanceUnit, DwithinDistance, Frame, FromPyObject,
@@ -8,7 +9,7 @@ use crate::{
     PyTypeMethods, Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
     VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option, exact_geometry,
     float_values, float_values_at_most, float_values_exact, metric_nearest_points_resolved,
-    non_negative_int, py_i64_bounded, pyfunction, resolve_metric, rows_err, wgs84_crs,
+    non_negative_int, py_i64_bounded, pyfunction, rows_err, wgs84_crs,
 };
 
 pub(crate) const QUADRANT_SEGMENTS_DEFAULT_I64: i64 = 8;
@@ -23,9 +24,7 @@ pub(crate) fn geojson_domain_metric<'a>(
     crate::geometry::TopologyDomain,
     crate::dispatch::MetricCtx<'a>,
 )> {
-    let source_crs = crs
-        .map(crate::crs::frame::crs_arc)
-        .unwrap_or_else(wgs84_crs);
+    let source_crs = crs.map_or_else(wgs84_crs, crs_arc);
     let frame = Frame::new(Some(source_crs), None)?;
     crate::dispatch::MetricResolver::GeographicCarry.resolve_topology_ctx(&frame, scratch)
 }
@@ -46,7 +45,7 @@ pub(crate) fn polygonize_result_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3
 }
 
 /// Cached `gometry._types.Features` constructor returned by the native
-/// `from_features` boundary.
+/// `from_geojson(..., features=True)` boundary.
 pub(crate) fn features_type(py: Python<'_>) -> PyResult<&Bound<'_, pyo3::types::PyType>> {
     static CELL: pyo3::sync::PyOnceLock<Py<pyo3::types::PyType>> = pyo3::sync::PyOnceLock::new();
     CELL.import(py, "gometry._types", "Features")
@@ -79,14 +78,14 @@ pub(crate) use bounds_index::{
     bounds_envelope, global_geographic_candidate_envelope, index_envelopes, point_from_bounds,
 };
 pub(crate) use constructive::{
-    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edges_flatten,
+    VoronoiClipInput, owned_voronoi_boundary, py_polygonize_full, voronoi_edge_lines_flatten,
     voronoi_flatten,
 };
 pub(crate) use extract::{
-    GeometryValues, OwnedBytes, coerce_present_geometry_items, copy_wkb_payload,
-    ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate, extract_coordinate_or_empty,
-    extract_lines, extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
-    optional_coordinates, own_geometry_item, parse_owned_geometry_item, point_xy,
+    OwnedBytes, coerce_present_geometry_items, copy_wkb_payload, ensure_homogeneous_axes,
+    exact_backed_bytes, extract_coordinate, extract_coordinate_or_empty, extract_points,
+    geometry_items, missing_geometry_items_error, normalize_geometry_batch, optional_coordinates,
+    own_geometry_item, parse_owned_geometry_item, point_xy,
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,
@@ -96,17 +95,18 @@ pub(crate) use geojson::{
     GeoJsonDecodeContext, JsonValueError, MAX_JSON_NESTING, ScalarOrIterator,
     classify_scalar_or_iterator, coerce_geojson_geometry_value, coerce_geojson_geometry_value_at,
     deserialize_json, is_concrete_batch, is_mapping_like, is_py_bytes_or_bytearray,
-    is_wgs84_family_crs, is_wkt_string, mapping_as_dict, parse_geojson_geometry_value,
-    parse_geojson_slice, parse_geojson_text, py_to_geojson_data_value, py_to_geojson_json_value,
-    py_to_json_value, py_to_json_value_classified, require_geojson_crs,
-    validate_geojson_feature_side_data, validate_geojson_json_value,
+    is_wgs84_family_crs, is_wkt_string, mapping_as_dict, normalize_format_column,
+    parse_geojson_geometry_value, parse_geojson_slice, parse_geojson_text,
+    py_to_geojson_data_value, py_to_geojson_json_value, py_to_json_value,
+    py_to_json_value_classified, require_geojson_crs, validate_geojson_feature_side_data,
+    validate_geojson_json_value,
 };
-pub(crate) use io_encoders::{box_polygon, wrapped_box};
+pub(crate) use io_encoders::box_polygon;
 pub(crate) use linref::{
-    InterpolatePlan, line_interpolate_coordseq, line_interpolate_points_coordseq,
-    line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,
-    line_locate_coordseq, line_locate_shape, line_locate_shape_m, line_substring_coordseq,
-    line_substring_shape, line_substring_shape_m, parse_interpolate_plan, resolve_line_metric,
+    InterpolatePlan, PreparedLineLocate, line_interpolate_coordseq,
+    line_interpolate_points_coordseq, line_interpolate_points_shape, line_interpolate_shape,
+    line_interpolate_shape_m, line_locate_coordseq, line_substring_coordseq, line_substring_shape,
+    line_substring_shape_m, parse_interpolate_plan, prepare_line_locate,
 };
 pub(crate) use nearest::{
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
@@ -114,6 +114,7 @@ pub(crate) use nearest::{
 };
 pub(crate) use tokens::{
     _token_vocabulary, LineReferenceBasis, NavigationPath, SpatialCurve, TriangulationMethod,
+    VoronoiOutput,
 };
 pub(crate) use validate::{
     check_i32_min, note_array_row, parse_curve_bounds, parse_precision, parse_spatial_index_handle,

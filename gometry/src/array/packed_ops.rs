@@ -10,9 +10,11 @@ use crate::boundary::input;
 use crate::geographic::PeriodicAxis;
 use crate::geometry::storage::builder::PackedColumnBuilder;
 use crate::geometry::storage::gather::gather_line_columns;
+#[cfg(test)]
+use crate::geometry::storage::record_csr_size_row_visit;
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, column_window,
-    csr_value_window, line_logical_len, physical_row,
+    csr_value_range, csr_value_window, line_logical_len, physical_row,
 };
 use crate::geometry::types::ShapeHeapMemo;
 use crate::py::vectors::Groups;
@@ -21,16 +23,21 @@ fn selected_row_map_heap_bytes(
     row_map: RowSelectionRef<'_>,
     rows: std::ops::Range<usize>,
 ) -> usize {
-    let Some(first_logical) = rows.clone().next() else {
-        return 0;
-    };
-    let first_physical = physical_row(row_map, first_logical);
-    if rows.clone().enumerate().all(|(offset, logical)| {
-        first_physical.checked_add(offset) == Some(physical_row(row_map, logical))
-    }) {
-        0
-    } else {
-        rows.len().saturating_mul(std::mem::size_of::<usize>())
+    match row_map {
+        RowSelectionRef::Identity | RowSelectionRef::Window { .. } => 0,
+        RowSelectionRef::Gather(_) => {
+            let Some(first_logical) = rows.clone().next() else {
+                return 0;
+            };
+            let first_physical = physical_row(row_map, first_logical);
+            if rows.clone().enumerate().all(|(offset, logical)| {
+                first_physical.checked_add(offset) == Some(physical_row(row_map, logical))
+            }) {
+                0
+            } else {
+                rows.len().saturating_mul(std::mem::size_of::<usize>())
+            }
+        },
     }
 }
 
@@ -59,11 +66,7 @@ impl PyGeometryArray {
                 let count = if self.is_compact_nullable() {
                     self.missing().map_or_else(
                         || rows.len(),
-                        |missing| {
-                            rows.clone()
-                                .filter(|&logical| missing.is_valid(logical))
-                                .count()
-                        },
+                        |missing| missing.present_in_range(rows.clone()),
                     )
                 } else {
                     rows.len()
@@ -79,10 +82,18 @@ impl PyGeometryArray {
                 row_map,
             }) => {
                 let map = row_map.as_deref();
-                let vertices: usize = rows
-                    .clone()
-                    .map(|logical| map.csr_window(offsets, logical).len())
-                    .fold(0, usize::saturating_add);
+                let vertices = csr_value_range(offsets.as_slice(), map, rows.clone()).map_or_else(
+                    || {
+                        rows.clone()
+                            .map(|logical| {
+                                #[cfg(test)]
+                                record_csr_size_row_visit();
+                                map.csr_window(offsets, logical).len()
+                            })
+                            .fold(0, usize::saturating_add)
+                    },
+                    |vertices| vertices.len(),
+                );
                 crate::heap_size::ARC_CONTROL_BYTES
                     .saturating_add(std::mem::size_of::<CoordSeq>())
                     .saturating_add(coords.logical_heap_bytes_for_count_saturating(vertices))
@@ -98,21 +109,47 @@ impl PyGeometryArray {
                 row_map,
             }) => {
                 let map = row_map.as_deref();
-                let rings: usize = rows
-                    .clone()
-                    .map(|logical| map.csr_window(polygon_offsets, logical).len())
-                    .fold(0, usize::saturating_add);
-                let vertices: usize = rows
-                    .clone()
-                    .map(|logical| {
-                        let rings = map.csr_window(polygon_offsets, logical);
-                        if rings.is_empty() {
-                            0
-                        } else {
-                            csr_value_window(ring_offsets, rings).len()
-                        }
-                    })
-                    .fold(0, usize::saturating_add);
+                let (rings, vertices) =
+                    csr_value_range(polygon_offsets.as_slice(), map, rows.clone()).map_or_else(
+                        || {
+                            let rings = rows
+                                .clone()
+                                .map(|logical| {
+                                    #[cfg(test)]
+                                    record_csr_size_row_visit();
+                                    map.csr_window(polygon_offsets.as_slice(), logical).len()
+                                })
+                                .fold(0_usize, usize::saturating_add);
+                            let vertices = rows
+                                .clone()
+                                .map(|logical| {
+                                    #[cfg(test)]
+                                    record_csr_size_row_visit();
+                                    let rings = map.csr_window(polygon_offsets.as_slice(), logical);
+                                    if rings.is_empty() {
+                                        0
+                                    } else {
+                                        csr_value_window(ring_offsets.as_slice(), rings).len()
+                                    }
+                                })
+                                .fold(0_usize, usize::saturating_add);
+                            (rings, vertices)
+                        },
+                        |ring_range| {
+                            let vertices = if ring_range.is_empty() {
+                                0
+                            } else {
+                                csr_value_range(
+                                    ring_offsets.as_slice(),
+                                    RowSelectionRef::Identity,
+                                    ring_range.clone(),
+                                )
+                                .expect("admitted ring offsets include selected endpoints")
+                                .len()
+                            };
+                            (ring_range.len(), vertices)
+                        },
+                    );
                 crate::heap_size::ARC_CONTROL_BYTES
                     .saturating_add(std::mem::size_of::<CoordSeq>())
                     .saturating_add(coords.logical_heap_bytes_for_count_saturating(vertices))
@@ -641,7 +678,7 @@ impl PyGeometryArray {
             Shape::multi_point(coords.axes(), (**coords).clone())
         } else {
             Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(
-                Self::gather_point_coords(coords, row_map.as_deref())?,
+                self.rows.gather_point_coords()?,
             )?)
         }))
     }

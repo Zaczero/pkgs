@@ -58,7 +58,7 @@ pub(crate) fn crs_grid(py: Python<'_>, name: &str) -> PyResult<crs::GridDatabase
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 ///
 /// Returns
 /// -------
@@ -80,7 +80,7 @@ pub(crate) fn crs_operation<'py>(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 /// coord : coordinate
 ///     A coordinate as ``(x, y)``.
 ///
@@ -126,7 +126,7 @@ pub(crate) fn crs_operation_at(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 ///
 /// Returns
 /// -------
@@ -168,7 +168,7 @@ pub(crate) fn crs_operations<'py>(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and target CRS (EPSG code or authority/WKT string).
+///     Source and target CRS-like inputs.
 /// x, y : float or sequence of float
 ///     Coordinate columns (scalars transform a single point).
 /// z : float or sequence of float, optional
@@ -207,7 +207,8 @@ pub(crate) fn crs_operations<'py>(
 /// tuple or numpy.ndarray
 ///     Scalars in, scalars out: ``(x, y)`` or ``(x, y, z)``. Lane input returns
 ///     a read-only ``(N, 2)``/``(N, 3)`` ``float64`` matrix (interleaved, the
-///     same shape as `get_coordinates`), so ``result[:, 0]`` / ``result[:, 1]``
+///     same shape as a NumPy matrix exported from ``geometry.coords``), so
+///     ``result[:, 0]`` / ``result[:, 1]``
 ///     read the transformed columns directly. The input epoch ``t`` is not a
 ///     transformed spatial ordinate and is not returned (use `apply` if you
 ///     need the raw columns echoed back).
@@ -293,8 +294,9 @@ pub(crate) fn crs_transform(
 /// Returns
 /// -------
 /// tuple
-///     The transformed columns — ``(x, y)``, ``(x, y, z)``, or
-///     ``(x, y, z, t)``. Scalars in, scalars out; lane inputs return
+///     The transformed columns — ``(x, y)``, ``(x, y, z)``, ``(x, y, t)``
+///     when T is supplied without Z, or ``(x, y, z, t)``. Scalars in, scalars
+///     out; lane inputs return
 ///     read-only ``float64`` ``numpy.ndarray`` columns (``np.asarray(column)``
 ///     reads the values directly, ``list(column)`` materializes them).
 ///
@@ -303,7 +305,7 @@ pub(crate) fn crs_transform(
 /// TransformError
 ///     If no transform exists between the frames or it fails to apply.
 /// CRSError
-///     If ``source``/``target`` are unrecognized.
+///     If the operation definition is invalid.
 /// InvalidGeometryError
 ///     If coordinate columns are non-finite or differ in length.
 /// GeometryError
@@ -345,10 +347,10 @@ pub(crate) fn crs_apply(
 
 /// Rebuild the `crs_transform` result — scalars in, a scalar tuple out
 /// (`(x, y)` or `(x, y, z)`); lane input returns a frozen `(N, 2)`/`(N, 3)`
-/// `float64` matrix (interleaved, consistent with `get_coordinates` and
-/// `transform_bounds_many`). The input epoch `t` is never a transformed
-/// spatial ordinate, so it is not echoed (unlike `crs_apply`, which returns
-/// the raw columns it ran on).
+/// `float64` matrix (interleaved, consistent with the NumPy export of
+/// `geometry.coords` and `transform_bounds_many`). The input epoch `t` is never
+/// a transformed spatial ordinate, so it is not echoed (unlike `crs_apply`,
+/// which returns the raw columns it ran on).
 #[expect(
     clippy::indexing_slicing,
     reason = "CrsCoordinateArgs records scalar input before broadcasting and scalar columns contain one ordinate"
@@ -474,7 +476,7 @@ pub(crate) fn coordinates_to_py(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 /// bounds : sequence of float or iterable of sequences of float
 ///     A scalar box is a 4-value ``(minx, miny, maxx, maxy)`` sequence or a
 ///     6-value ``(minx, miny, minz, maxx, maxy, maxz)`` sequence in the source
@@ -514,6 +516,12 @@ pub(crate) fn coordinates_to_py(
 ///     wrapping into ``[-180, 180]`` (PROJ ``FORCE_OVER=YES``). Like
 ///     ``only_best``, this also collapses operation selection to a single
 ///     candidate, so enumerating surfaces return exactly one operation.
+///     Bounds use literal longitude values in this mode: geographic source
+///     bounds sample the closed numeric segment between west and east, and
+///     geographic target bounds return numeric longitude extrema rather than
+///     a periodic cover. Literal identity bounds retain out-of-period values;
+///     descending source longitudes use the segment between their sorted
+///     endpoints.
 ///
 /// Returns
 /// -------
@@ -802,7 +810,7 @@ fn classify_bounds_shape(
 /// Parameters
 /// ----------
 /// source, target : CRS-like
-///     Source and destination CRS (EPSG code or authority/WKT string).
+///     Source and destination CRS-like inputs.
 /// x, y : float or sequence of float
 ///     Coordinates, scalar or batch.
 /// z, t : float or sequence of float, optional

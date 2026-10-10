@@ -8,8 +8,8 @@ use crate::py::numpy::float64_array;
 ///
 /// Parameters
 /// ----------
-/// target : str or int
-///     Projected CRS as an EPSG code or authority/WKT string.
+/// target : CRS-like
+///     Projected CRS-like input.
 /// lon, lat : float or sequence of float
 ///     Geodetic coordinates, scalar or batch (degrees unless ``radians``).
 /// radians : bool, default False

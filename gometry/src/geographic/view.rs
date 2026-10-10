@@ -80,7 +80,9 @@ pub(crate) struct GeographicMemberPath {
 impl GeographicMemberPath {
     pub(crate) fn as_slice(&self) -> &[usize] {
         if self.len <= INLINE_MEMBER_DEPTH {
-            &self.inline[..self.len]
+            self.inline
+                .get(..self.len)
+                .expect("member path length is bounded by inline capacity")
         } else {
             &self.overflow
         }
@@ -97,7 +99,10 @@ struct MemberPathBuilder {
 impl MemberPathBuilder {
     fn push(&mut self, member: usize) {
         if self.len < INLINE_MEMBER_DEPTH {
-            self.inline[self.len] = member;
+            *self
+                .inline
+                .get_mut(self.len)
+                .expect("member slot is within inline capacity") = member;
         } else {
             if self.overflow.is_empty() {
                 self.overflow.reserve(INLINE_MEMBER_DEPTH + 1);
@@ -105,14 +110,14 @@ impl MemberPathBuilder {
             }
             self.overflow.push(member);
         }
-        self.len += 1;
+        self.len = self.len.wrapping_add(1);
     }
 
     fn pop(&mut self) {
-        self.len -= 1;
+        self.len = self.len.wrapping_sub(1);
         if self.len >= INLINE_MEMBER_DEPTH {
             self.overflow.pop();
-        } else if self.len + 1 == INLINE_MEMBER_DEPTH {
+        } else if self.len == INLINE_MEMBER_DEPTH.wrapping_sub(1) {
             self.overflow.clear();
         }
     }
@@ -415,7 +420,7 @@ pub(crate) fn ring_gate(
     location: GeographicLocation,
     native: XY,
 ) -> Result<(), GeographicViewError> {
-    if matches!(chart_turn, -1 | 1)
+    if chart_turn != 0
         && FullTurnPole::of_latitude_span(south.get(), north.get()) == FullTurnPole::Ambiguous
     {
         return Err(GeographicDiagnostic::boxed(
@@ -547,7 +552,7 @@ fn visit_ring_coordseq<const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
         let first = first.expect("polygon rings have at least four admitted coordinates");
         let span = latitude_span.expect("polygon rings have at least four admitted coordinates");
         if pending_gate.is_none()
-            && matches!(chart_turn, -1 | 1)
+            && chart_turn != 0
             && let Err(error) = ring_gate(
                 chart_turn,
                 span.south,
@@ -674,14 +679,14 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
             support_visit,
         ),
         Shape::MultiLineString(lines) => {
-            for (logical, member) in lines.members().enumerate() {
-                if let MultiMember::Value(physical) = member {
+            for (logical, member) in lines.members_with_values().enumerate() {
+                if let MultiMember::Value(line) = member {
                     if !ORDINARY_SCREEN {
                         members.push(logical);
                     }
                     visit_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                         frame,
-                        &lines.as_slice()[physical],
+                        line,
                         row,
                         members,
                         None,
@@ -716,12 +721,12 @@ fn visit_shape<'owner, const ORDINARY_SCREEN: bool, const SUPPORT_EVENTS: bool>(
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
-            for (logical, member) in polygons.members().enumerate() {
-                if let MultiMember::Value(physical) = member {
+            for (logical, member) in polygons.members_with_values().enumerate() {
+                if let MultiMember::Value(polygon) = member {
                     if !ORDINARY_SCREEN {
                         members.push(logical);
                     }
-                    for (ring, coords) in polygons.as_slice()[physical].rings().enumerate() {
+                    for (ring, coords) in polygon.rings().enumerate() {
                         visit_ring_coordseq::<ORDINARY_SCREEN, SUPPORT_EVENTS>(
                             frame,
                             coords,
@@ -1148,15 +1153,27 @@ impl<'a> GeographicRing<'a> {
     }
 
     pub(crate) fn native_xs(&self) -> &'a [f64] {
-        &self.coords.xs()[self.window.range().clone()]
+        self.coords
+            .xs()
+            .get(self.window.range().clone())
+            .expect("checked ring window is within visible X coordinates")
     }
 
     fn x(&self, index: usize) -> f64 {
-        self.native_xs()[index]
+        *self
+            .native_xs()
+            .get(index)
+            .expect("ring coordinate index is within its checked window")
     }
 
     fn y(&self, index: usize) -> f64 {
-        self.coords.ys()[self.window.range().start + index]
+        *self
+            .coords
+            .ys()
+            .get(self.window.range().clone())
+            .expect("checked ring window is within visible Y coordinates")
+            .get(index)
+            .expect("ring coordinate index is within its checked window")
     }
 }
 

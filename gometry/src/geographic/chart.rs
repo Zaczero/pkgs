@@ -33,7 +33,7 @@ impl ChartPointSite {
     }
 
     /// The west cut assigns only zero or one period; the canonical seam assigns zero.
-    pub(crate) fn displacement_to(self, end: Self) -> RetainedChartDisplacement {
+    pub(crate) const fn displacement_to(self, end: Self) -> RetainedChartDisplacement {
         RetainedChartDisplacement::from_native_endpoints(
             [*self.longitude.native(), *end.longitude.native()],
             end.longitude
@@ -105,7 +105,7 @@ impl PointSelectionChart {
         }
         let products =
             GeographicSupportProducts::try_from_shape_with_bounds(frame, shape, raw_extrema)?;
-        Ok(Self::from_products(frame, products))
+        Ok(Self::from_longitude(frame, products.support.longitude))
     }
 
     pub(crate) fn try_from_points(
@@ -113,11 +113,11 @@ impl PointSelectionChart {
         points: &[Point],
     ) -> Result<Option<Self>> {
         let products = GeographicSupportProducts::try_from_points(frame, points.iter().copied())?;
-        Ok(Self::from_products(frame, products))
+        Ok(Self::from_longitude(frame, products.support.longitude))
     }
 
-    fn from_products(frame: GeographicFrame, products: GeographicSupportProducts) -> Option<Self> {
-        let cut = match products.support.longitude {
+    const fn from_longitude(frame: GeographicFrame, longitude: CircularInterval) -> Option<Self> {
+        let cut = match longitude {
             CircularInterval::Empty => return None,
             CircularInterval::Arc { start, .. } => SelectionCut::West(start),
             CircularInterval::Full => SelectionCut::CanonicalSeam,
@@ -125,11 +125,11 @@ impl PointSelectionChart {
         Some(Self { frame, cut })
     }
 
-    pub(crate) const fn frame(self) -> GeographicFrame {
+    pub(crate) const fn frame(&self) -> GeographicFrame {
         self.frame
     }
 
-    pub(crate) fn site(self, source: Point, source_ordinal: usize) -> Result<ChartPointSite> {
+    pub(crate) fn site(&self, source: Point, source_ordinal: usize) -> Result<ChartPointSite> {
         Ok(ChartPointSite {
             longitude: self.longitude_site(source.x)?,
             source_y: source.y,
@@ -137,7 +137,7 @@ impl PointSelectionChart {
         })
     }
 
-    pub(crate) fn longitude_site(self, source_x: f64) -> Result<RetainedLongitudeSite> {
+    pub(crate) fn longitude_site(&self, source_x: f64) -> Result<RetainedLongitudeSite> {
         let axis = self.frame.longitude();
         let native = axis.canonicalize(source_x).map_err(|error| {
             crate::geometry::GeometryErrorKind::Invalid(error.to_string().into())
@@ -175,7 +175,7 @@ pub(crate) fn point_set_centroid(shape: &Shape, frame: GeographicFrame) -> Resul
     {
         return Ok(None);
     }
-    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame) else {
         return Ok(None);
     };
     let raw_extrema = match center {
@@ -190,7 +190,7 @@ pub(crate) fn point_set_centroid(shape: &Shape, frame: GeographicFrame) -> Resul
     let Some(chart) = PointSelectionChart::try_from_shape(frame, shape, raw_extrema)? else {
         return Ok(None);
     };
-    let Some((x, y)) = crate::geometry::exact_point_chart_centroid(shape, chart)? else {
+    let Some((x, y)) = crate::geometry::exact_point_chart_centroid(shape, &chart)? else {
         return Ok(None);
     };
     let point = frame
@@ -205,7 +205,7 @@ pub(crate) fn point_set_surface(shape: &Shape, frame: GeographicFrame) -> Result
     {
         return Ok(None);
     }
-    let Some(center) = crate::geometry::point_set_center_summary(shape, frame)? else {
+    let Some(center) = crate::geometry::point_set_center_summary(shape, frame) else {
         return Ok(None);
     };
     let raw_extrema = match center {
@@ -218,7 +218,7 @@ pub(crate) fn point_set_surface(shape: &Shape, frame: GeographicFrame) -> Result
     let Some(chart) = PointSelectionChart::try_from_shape(frame, shape, raw_extrema)? else {
         return Ok(None);
     };
-    let Some((center_x, center_y)) = crate::geometry::exact_point_chart_centroid(shape, chart)?
+    let Some((center_x, center_y)) = crate::geometry::exact_point_chart_centroid(shape, &chart)?
     else {
         return Ok(None);
     };
@@ -507,7 +507,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(shape, GeographicFrame::crs84())
                 .expect("center summary"),
-            Some(PointSetCenter::Chart(None))
+            PointSetCenter::Chart(None)
         ));
         let Err(centroid_error) = point_set_centroid(shape, GeographicFrame::crs84()) else {
             panic!("centroid must reject the non-finite source coordinate");
@@ -573,7 +573,7 @@ mod tests {
         );
         let frame = GeographicFrame::crs84();
 
-        let Some(PointSetCenter::Ordinary((x, y))) =
+        let PointSetCenter::Ordinary((x, y)) =
             crate::geometry::point_set_center_summary(&shape, frame)
                 .expect("ordinary point-set center")
         else {
@@ -596,7 +596,7 @@ mod tests {
         let shape = multipoint(&[point(100.0, 0.0), point(110.0, 10.0)], CoordinateAxes::XY);
         let frame = GeographicFrame::crs84();
 
-        let Some(PointSetCenter::Ordinary((x, y))) =
+        let PointSetCenter::Ordinary((x, y)) =
             crate::geometry::point_set_center_summary(&shape, frame)
                 .expect("actual bounds certify ordinary support")
         else {
@@ -624,7 +624,7 @@ mod tests {
         let shape = multipoint(&[point(1.0, 2.0), point(3.0, 4.0)], CoordinateAxes::XY);
         let frame = GeographicFrame::crs84();
 
-        let Some(PointSetCenter::Ordinary((x, y))) =
+        let PointSetCenter::Ordinary((x, y)) =
             crate::geometry::point_set_center_summary(&shape, frame)
                 .expect("finite actual bounds certify ordinary support")
         else {
@@ -649,7 +649,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&ordinary, frame)
                 .expect("ordinary grad support"),
-            Some(PointSetCenter::Ordinary((0.0, 0.0)))
+            PointSetCenter::Ordinary((0.0, 0.0))
         ));
 
         let half_period = frame.longitude().half_period();
@@ -658,7 +658,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&half_turn, frame)
                 .expect("half-turn chart support"),
-            Some(PointSetCenter::Chart(Some(bounds)))
+            PointSetCenter::Chart(Some(bounds))
                 if bounds == Bounds::new_raw(-half_period / 2.0, 0.0, half_period / 2.0, 0.0)
         ));
 
@@ -667,7 +667,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&polar, frame)
                 .expect("polar chart support"),
-            Some(PointSetCenter::Chart(Some(bounds)))
+            PointSetCenter::Chart(Some(bounds))
                 if bounds == Bounds::new_raw(0.0, 0.0, 1.0, pole)
         ));
 
@@ -675,7 +675,7 @@ mod tests {
         assert!(matches!(
             crate::geometry::point_set_center_summary(&seam, frame)
                 .expect("seam chart support"),
-            Some(PointSetCenter::Chart(Some(bounds)))
+            PointSetCenter::Chart(Some(bounds))
                 if bounds == Bounds::new_raw(-199.0, 0.0, 199.0, 0.0)
         ));
     }
@@ -750,6 +750,25 @@ mod tests {
             "member 4, coordinate 0",
             "latitude",
         );
+    }
+
+    #[test]
+    fn point_summary_uses_nonempty_admission_for_a_shared_nonfinite_dag() {
+        let mut shape = Shape::Point(point(f64::NAN, 0.0));
+        for _ in 0..8 {
+            shape = Shape::geometry_collection(vec![shape.clone(), shape])
+                .expect("shared point collection");
+        }
+
+        assert!(matches!(
+            crate::geometry::point_set_center_summary(&shape, GeographicFrame::crs84())
+                .expect("summary needs only point presence"),
+            PointSetCenter::Chart(None)
+        ));
+        let error = point_set_centroid(&shape, GeographicFrame::crs84())
+            .expect_err("the chart owner rejects the nonfinite point")
+            .to_string();
+        assert!(error.contains("longitude"), "{error}");
     }
 
     #[test]
@@ -855,7 +874,7 @@ mod tests {
             point(-170.0, 1.0),
             point(-100.0, 1.0),
             point(0.2, 1.0),
-            point(0.20000000000000004, 1.0),
+            point(0.200_000_000_000_000_04, 1.0),
             point(170.0, 1.0),
         ];
         let shape = multipoint(&points, CoordinateAxes::XY);
@@ -863,10 +882,10 @@ mod tests {
         let (_, _chart, sites) = chart_sites(&shape, frame);
         let axis = frame.longitude();
         let first_lift = axis
-            .lifted_site_longitude(&sites[2].longitude())
+            .lifted_site_longitude(sites[2].longitude())
             .expect("first translated site");
         let second_lift = axis
-            .lifted_site_longitude(&sites[3].longitude())
+            .lifted_site_longitude(sites[3].longitude())
             .expect("adjacent translated site");
         assert_eq!(first_lift.to_bits(), second_lift.to_bits());
         assert_eq!(
@@ -885,7 +904,7 @@ mod tests {
         let selected = coordinates.iter_coords().collect::<Vec<_>>();
         assert_eq!(selected, [
             point(170.0, 1.0),
-            point(0.20000000000000004, 1.0)
+            point(0.200_000_000_000_000_04, 1.0),
         ]);
     }
 
@@ -905,12 +924,12 @@ mod tests {
         let last = sites[*ordered.last().expect("nonempty sites")];
         let axis = frame.longitude();
         assert_eq!(
-            axis.lifted_site_longitude(&first.longitude())
+            axis.lifted_site_longitude(first.longitude())
                 .expect("chart west"),
             0.0
         );
         assert_eq!(
-            axis.lifted_site_longitude(&last.longitude())
+            axis.lifted_site_longitude(last.longitude())
                 .expect("chart east"),
             240.0
         );

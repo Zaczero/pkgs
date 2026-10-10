@@ -7,16 +7,20 @@ use std::sync::Arc;
 
 use smol_str::SmolStr;
 
+#[cfg(test)]
+use crate::crs::frame::crs_arc_static;
+use crate::crs::frame::{Frame, GeometryTransformFrame};
 use crate::crs::transform::{
-    BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d, canonical_identity_longitudes,
-    transform_in_core_xy_with_domains, transform_in_core_xy_with_domains_indexed,
-    transform_in_core_xy_with_domains_indexed_for_shape, transform_proj_shapes_indexed,
+    BoundsInterpretation, BoundsSamplePlan, TransformOutputPlan, TransformedBounds3d,
+    identity_bounds_2d, identity_bounds_3d, transform_in_core_xy_with_domains,
+    transform_in_core_xy_with_domains_indexed, transform_in_core_xy_with_domains_indexed_for_shape,
+    transform_proj_shapes_indexed,
 };
 use crate::crs::{
     InCoreTransform, ProjDirection, ProjPipeline, RuntimeState, Shape, TransformExecution,
     TransformFailure, TransformOptions, begin_transform_observation, coordinate_identity_crs,
     ensure_geographic_domain_in_frame, ensure_geographic_lonlat_in_frame,
-    ensure_geographic_row_in_frame, record_transform_engine, runtime_state_snapshot, transform,
+    ensure_geographic_row_in_frame, record_transform_engine, runtime_state_snapshot,
     transform_in_core_xy_batch, try_in_core_transform_with_state, validate_coordinate_lanes,
     with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
@@ -81,7 +85,27 @@ impl TransformPlan {
             options: plan_options,
             source_domain,
             target_domain,
+            geometry_frame: None,
         })
+    }
+
+    pub(crate) fn from_geometry_frame(frame: GeometryTransformFrame) -> Result<Self> {
+        let mut plan = Self::new_with_options_at(
+            frame.source.as_str(),
+            frame.target.as_str(),
+            frame.options.clone(),
+            Arc::clone(&frame.state),
+        )?;
+        plan.geometry_frame = Some(frame);
+        Ok(plan)
+    }
+
+    pub(crate) const fn output_frame(&self) -> &Frame {
+        &self
+            .geometry_frame
+            .as_ref()
+            .expect("geometry transform plans retain their admitted output frame")
+            .output
     }
 
     pub(crate) fn execution(&self) -> TransformExecution {
@@ -108,6 +132,14 @@ impl TransformPlan {
         }
     }
 
+    const fn default_proj_source_frame(&self) -> Option<crate::geographic::GeographicFrame> {
+        if self.options.force_over {
+            None
+        } else {
+            self.source_geographic_frame()
+        }
+    }
+
     pub(crate) const fn computed_geographic_frame(
         &self,
     ) -> Option<crate::geographic::GeographicFrame> {
@@ -117,6 +149,17 @@ impl TransformPlan {
         match self.target_domain {
             crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
             crate::geometry::TopologyDomain::Cartesian => None,
+        }
+    }
+
+    /// Lazily resolve the output CRS ellipsoid against this plan's runtime snapshot.
+    pub(crate) const fn target_metric_scratch(&self) -> TransformMetricScratch<'_> {
+        TransformMetricScratch {
+            frame: self
+                .geometry_frame
+                .as_ref()
+                .expect("computed geometry publication retains its admitted target frame"),
+            metric: None,
         }
     }
 
@@ -188,9 +231,17 @@ impl TransformPlan {
         let Some(frame) = self.computed_geographic_frame() else {
             return Ok(output);
         };
-        for (index, shape) in output.iter_mut().enumerate() {
-            *shape = crate::geometry::publish_transformed_shape(shape, frame, "to_crs")
-                .map_err(|error| TransformFailure::at(error, index))?;
+        let mut metric = self.target_metric_scratch();
+        for (index, (source, transformed)) in shapes.iter().zip(&mut output).enumerate() {
+            *transformed = crate::geometry::publish_transformed_shape(
+                source,
+                transformed,
+                self.source_geographic_frame(),
+                frame,
+                "to_crs",
+                &mut metric,
+            )
+            .map_err(|error| TransformFailure::at(error, index))?;
         }
         Ok(output)
     }
@@ -270,6 +321,7 @@ impl TransformPlan {
                         transformer,
                         shapes,
                         options.source_epoch,
+                        self.default_proj_source_frame(),
                         &self.execution,
                     )
                 },
@@ -349,6 +401,7 @@ impl TransformPlan {
                 target,
                 options,
             } => {
+                let source_frame = self.default_proj_source_frame();
                 with_proj_pipeline_indexed_at(
                     source,
                     target,
@@ -361,24 +414,24 @@ impl TransformPlan {
                                 // PROJ broadcasts a length-1 time lane as a constant
                                 // across every coordinate — no per-vertex epoch buffer.
                                 let mut t = [epoch];
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     None,
                                     Some(t.as_mut_slice()),
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             } else {
                                 transformer
                                     .require_epoch_lane()
                                     .map_err(TransformFailure::from)?;
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     None,
                                     None,
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             }
@@ -386,44 +439,45 @@ impl TransformPlan {
                         crate::Zt::Z(z) => {
                             if let Some(epoch) = options.source_epoch {
                                 let mut t = [epoch];
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     Some(z),
                                     Some(t.as_mut_slice()),
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             } else {
                                 transformer
                                     .require_epoch_lane()
                                     .map_err(TransformFailure::from)?;
-                                transformer.transform_lanes_indexed(
+                                transformer.transform_default_source_lanes_indexed(
+                                    source_frame,
                                     x,
                                     y,
                                     Some(z),
                                     None,
-                                    ProjDirection::Forward,
                                     &self.execution,
                                 )
                             }
                         },
-                        crate::Zt::T(t) => transformer.transform_lanes_indexed(
+                        crate::Zt::T(t) => transformer.transform_default_source_lanes_indexed(
+                            source_frame,
                             x,
                             y,
                             None,
                             Some(t),
-                            ProjDirection::Forward,
                             &self.execution,
                         ),
-                        crate::Zt::Zt { z, t } => transformer.transform_lanes_indexed(
-                            x,
-                            y,
-                            Some(z),
-                            Some(t),
-                            ProjDirection::Forward,
-                            &self.execution,
-                        ),
+                        crate::Zt::Zt { z, t } => transformer
+                            .transform_default_source_lanes_indexed(
+                                source_frame,
+                                x,
+                                y,
+                                Some(z),
+                                Some(t),
+                                &self.execution,
+                            ),
                     },
                 )?;
                 if !keep_target_chart && let Some(frame) = self.computed_geographic_frame() {
@@ -448,19 +502,14 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<(f64, f64, f64, f64)> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = if self.is_identity() {
-            if let TopologyDomain::Geographic(frame) = self.target_domain {
-                let (west, east) = canonical_identity_longitudes(bounds.0, bounds.2, frame)?;
-                let [south, north] =
-                    transform::canonical_identity_latitudes(bounds.1, bounds.3, frame)?;
-                Ok((west, south, east, north))
-            } else {
-                Ok(bounds)
-            }
+            identity_bounds_2d(bounds, self.target_domain, interpretation)
         } else {
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -477,15 +526,15 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<Vec<(f64, f64, f64, f64)>> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = self.execute_bounds_many(rows, |bounds, executor| {
-            let densify = if matches!(executor, BoundsExecutor::Identity) {
-                0
-            } else {
-                densify
-            };
+            if matches!(executor, BoundsExecutor::Identity) {
+                return identity_bounds_2d(bounds, self.target_domain, interpretation);
+            }
             let mut samples = BoundsSamplePlan::new_2d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -502,19 +551,14 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<(f64, f64, f64, f64, f64, f64)> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = if self.is_identity() {
-            if let TopologyDomain::Geographic(frame) = self.target_domain {
-                let (west, east) = canonical_identity_longitudes(bounds.0, bounds.3, frame)?;
-                let [south, north] =
-                    transform::canonical_identity_latitudes(bounds.1, bounds.4, frame)?;
-                Ok((west, south, bounds.2, east, north, bounds.5))
-            } else {
-                Ok(bounds)
-            }
+            identity_bounds_3d(bounds, self.target_domain, interpretation)
         } else {
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -531,15 +575,15 @@ impl TransformPlan {
         densify: u32,
     ) -> Result<Vec<TransformedBounds3d>> {
         self.begin_execution();
+        let interpretation = BoundsInterpretation::from_force_over(self.options.force_over);
         let result = self.execute_bounds_many(rows, |bounds, executor| {
-            let densify = if matches!(executor, BoundsExecutor::Identity) {
-                0
-            } else {
-                densify
-            };
+            if matches!(executor, BoundsExecutor::Identity) {
+                return identity_bounds_3d(bounds, self.target_domain, interpretation);
+            }
             let mut samples = BoundsSamplePlan::new_3d(
                 bounds,
                 densify,
+                interpretation,
                 self.source_domain,
                 self.target_domain,
                 self.options.source_epoch,
@@ -716,6 +760,36 @@ pub(crate) struct TransformPlan {
     options: TransformOptions,
     source_domain: TopologyDomain,
     target_domain: TopologyDomain,
+    geometry_frame: Option<GeometryTransformFrame>,
+}
+
+/// One transform's target metric, materialized only when a generated sample
+/// carries an ordinate.
+pub(crate) struct TransformMetricScratch<'a> {
+    frame: &'a GeometryTransformFrame,
+    metric: Option<crate::crs::GeodesicMetric>,
+}
+
+impl TransformMetricScratch<'_> {
+    pub(crate) fn geodesic_metric(&mut self) -> Result<&crate::crs::GeodesicMetric> {
+        if self.metric.is_none() {
+            let model =
+                crate::crs::metric_model_at(Some(self.frame.target.as_str()), &self.frame.state)?;
+            let metric = match crate::crs::ResolvedMetric::from_model(&model)? {
+                crate::crs::ResolvedMetric::Geodesic(metric) => metric,
+                crate::crs::ResolvedMetric::Planar { .. } => {
+                    return Err(crate::crs::CrsError::invalid(
+                        "geographic transform target has no ellipsoid metric",
+                    ));
+                },
+            };
+            self.metric = Some(metric);
+        }
+        Ok(self
+            .metric
+            .as_ref()
+            .expect("resolved target ellipsoid is retained in its operation scratch"))
+    }
 }
 
 #[expect(
@@ -739,6 +813,35 @@ pub(super) enum TransformOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn computed_transform_plan(
+        source: &'static str,
+        target: &'static str,
+        options: TransformOptions,
+    ) -> TransformPlan {
+        let source_frame = Frame::Crs(crs_arc_static(source));
+        let frame =
+            GeometryTransformFrame::new(&source_frame, crs_arc_static(target), None, options)
+                .unwrap();
+        TransformPlan::from_geometry_frame(frame).unwrap()
+    }
+
+    #[test]
+    fn target_metric_comes_from_the_output_frame_owned_by_the_plan() {
+        let plan = computed_transform_plan("EPSG:3857", "EPSG:4326", TransformOptions::default());
+        assert_eq!(plan.output_frame().crs_str(), Some("EPSG:4326"));
+
+        let mut metric = plan.target_metric_scratch();
+        let target_metric = metric.geodesic_metric().unwrap();
+        assert_eq!(
+            target_metric.frame,
+            plan.computed_geographic_frame().unwrap(),
+        );
+        assert_eq!(
+            target_metric.state.generation,
+            plan.geometry_frame.as_ref().unwrap().state.generation,
+        );
+    }
 
     #[test]
     fn proj_numeric_target_geographic_output_canonicalizes_only_longitude() {
@@ -766,8 +869,8 @@ mod tests {
         assert_eq!(t, [2020.0, 2021.0]);
 
         let forced = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
-            force_over: true,
             authority: Some("EPSG".into()),
+            force_over: true,
             ..TransformOptions::default()
         })
         .unwrap();
@@ -780,6 +883,103 @@ mod tests {
             .transform_coordinates(&mut x, &mut y, crate::Zt::None)
             .unwrap();
         assert_eq!(x, [180.0, 360.0]);
+    }
+
+    #[test]
+    fn default_proj_source_latitude_failure_transforms_only_its_valid_prefix() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let radians = concat!(
+            "GEOGCRS[\"WGS 84 radians\",DATUM[\"World Geodetic System 1984\",",
+            "ELLIPSOID[\"WGS 84\",6378137,298.257223563]],",
+            "PRIMEM[\"Greenwich\",0,ANGLEUNIT[\"degree\",0.017453292519943295]],",
+            "CS[ellipsoidal,2],AXIS[\"Longitude\",east,ORDER[1]],",
+            "AXIS[\"Latitude\",north,ORDER[2]],ANGLEUNIT[\"radian\",1]]",
+        );
+        let plan = TransformPlan::new_with_options("EPSG:4326", radians, TransformOptions {
+            source_epoch: Some(2020.0),
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let mut x = [10.0, 20.0, 30.0];
+        let mut y = [1.0, 91.0, 2.0];
+        let mut z = [3.0, 4.0, 5.0];
+
+        let failure = plan
+            .transform_coordinates_indexed(&mut x, &mut y, crate::Zt::Z(&mut z))
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(1));
+        assert!(
+            failure
+                .error
+                .to_string()
+                .contains("latitude 9.1e1 is outside the geographic coordinate domain")
+        );
+        assert_eq!(x[0], 10.0_f64.to_radians());
+        assert_eq!(y[0], 1.0_f64.to_radians());
+        assert_eq!(&x[1..], &[20.0, 30.0]);
+        assert_eq!(&y[1..], &[91.0, 2.0]);
+        assert_eq!(z, [3.0, 4.0, 5.0]);
+
+        let observation = crate::crs::cache_info();
+        assert_eq!(observation.last_transform_engine, Some("proj"));
+        assert_eq!(observation.transform_invocations, 1);
+    }
+
+    #[test]
+    fn default_proj_source_latitude_precedes_later_backend_failure() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:3857", TransformOptions {
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let mut x = [0.0, 0.0];
+        let mut y = [91.0, 90.0];
+
+        let failure = plan
+            .transform_coordinates_indexed(&mut x, &mut y, crate::Zt::None)
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(0));
+        assert!(
+            failure
+                .error
+                .to_string()
+                .contains("latitude 9.1e1 is outside the geographic coordinate domain")
+        );
+        assert_eq!(x, [0.0, 0.0]);
+        assert_eq!(y, [91.0, 90.0]);
+        assert_eq!(crate::crs::cache_info().transform_invocations, 0);
+    }
+
+    #[test]
+    fn earlier_proj_domain_failure_precedes_later_invalid_source_latitude() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::crs::clear_cache();
+        let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:32660", TransformOptions {
+            authority: Some("EPSG".into()),
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        let mut x = [-90.0, 0.0];
+        let mut y = [0.0, 91.0];
+
+        let failure = plan
+            .transform_coordinates_indexed(&mut x, &mut y, crate::Zt::None)
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(0));
+        assert!(
+            failure
+                .error
+                .to_string()
+                .contains("Point outside of projection domain")
+        );
+        assert_eq!(crate::crs::cache_info().transform_invocations, 1);
     }
 
     #[test]
@@ -832,6 +1032,62 @@ mod tests {
     }
 
     #[test]
+    fn identity_bounds_share_native_endpoint_intervals_for_scalar_and_bulk() {
+        let plan = TransformPlan::new("EPSG:4326", "EPSG:4326").unwrap();
+        let wide_2d = (-170.0, -1.0, 170.0, 1.0);
+        assert_eq!(plan.transform_bounds(wide_2d, 21).unwrap(), wide_2d);
+        assert_eq!(plan.transform_bounds_many(&[wide_2d], 21).unwrap(), [
+            wide_2d
+        ]);
+
+        let wide_3d = (-170.0, -1.0, 3.0, 170.0, 1.0, 4.0);
+        assert_eq!(plan.transform_bounds_3d(wide_3d, 21).unwrap(), wide_3d);
+        assert_eq!(plan.transform_bounds_3d_many(&[wide_3d], 21).unwrap(), [
+            wide_3d
+        ]);
+
+        let near_period = (-0.1, 0.0, 359.9, 1.0);
+        let scalar = plan.transform_bounds(near_period, 21).unwrap();
+        assert_ne!(scalar, (-180.0, 0.0, 180.0, 1.0));
+        assert_eq!(plan.transform_bounds_many(&[near_period], 21).unwrap(), [
+            scalar
+        ]);
+        assert_eq!(scalar.0, -0.1);
+        assert_eq!(
+            scalar.2,
+            crate::geographic::GeographicFrame::crs84()
+                .longitude()
+                .canonicalize(359.9)
+                .unwrap()
+                .get()
+        );
+    }
+
+    #[test]
+    fn force_over_identity_bounds_keep_literal_numeric_longitude_extrema() {
+        let plan = TransformPlan::new_with_options("EPSG:4326", "EPSG:4326", TransformOptions {
+            force_over: true,
+            ..TransformOptions::default()
+        })
+        .unwrap();
+        assert_eq!(
+            plan.transform_bounds((540.0, -1.0, 550.0, 1.0), 21)
+                .unwrap(),
+            (540.0, -1.0, 550.0, 1.0)
+        );
+        let descending = (170.0, -1.0, -170.0, 1.0);
+        assert_eq!(
+            plan.transform_bounds(descending, 21).unwrap(),
+            (-170.0, -1.0, 170.0, 1.0)
+        );
+        let descending_3d = (170.0, -1.0, 3.0, -170.0, 1.0, 4.0);
+        assert_eq!(
+            plan.transform_bounds_3d_many(&[descending_3d], 21).unwrap(),
+            [(-170.0, -1.0, 3.0, 170.0, 1.0, 4.0)]
+        );
+    }
+
+    #[test]
     fn pole_domain_classifier_uses_typed_projection_domain() {
         let message = "coordinate is outside the projection domain";
         let domain = GeometryErrorKind::projection_domain(message);
@@ -854,7 +1110,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let plan = TransformPlan::new("EPSG:3857", "EPSG:4326").unwrap();
+        let plan = computed_transform_plan("EPSG:3857", "EPSG:4326", TransformOptions::default());
         let output = plan.transform_shape_with_computed_edges(&source).unwrap();
         let crate::geometry::Shape::LineString(output) = output else {
             panic!("to_crs retains a linestring result");
@@ -888,11 +1144,10 @@ mod tests {
             )
             .unwrap(),
         );
-        let plan = TransformPlan::new_with_options("EPSG:3857", "EPSG:4326", TransformOptions {
+        let plan = computed_transform_plan("EPSG:3857", "EPSG:4326", TransformOptions {
             force_over: true,
             ..TransformOptions::default()
-        })
-        .unwrap();
+        });
         let raw = plan.transform_shape(&source).unwrap();
         let output = plan.transform_shape_with_computed_edges(&source).unwrap();
         assert_eq!(output, raw);

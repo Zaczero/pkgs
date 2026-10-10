@@ -1,11 +1,17 @@
+use pyo3::types::PyIterator;
+
 use crate::py::classes::coordinate_methods::{
     Bound, Point, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyResult, Python, coordinate_tuple,
     coordinates,
 };
 
 impl PyCoordinates {
-    pub const fn new(view: coordinates::CoordinateView) -> Self {
-        Self { view, layout: None }
+    pub const fn new(view: coordinates::CoordinateView, owner: Py<PyAny>) -> Self {
+        Self {
+            view,
+            owner,
+            layout: None,
+        }
     }
 
     pub(crate) fn coordinates_equal(&self, py: Python<'_>, other: &Self) -> PyResult<bool> {
@@ -17,12 +23,14 @@ impl PyCoordinates {
             .try_equal_visible(py, &other.view, self.layout, other.layout)
     }
 
-    /// Single-pass sequence equality: stream self's visible tuples against
-    /// `other`'s iterator once. Provider errors propagate (never swallowed).
-    pub(crate) fn coordinates_equal_sequence(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+    /// Single-pass sequence equality against an already-acquired iterator.
+    /// Provider errors after admission propagate unchanged.
+    pub(crate) fn coordinates_equal_iter(
+        &self,
+        mut items: Bound<'_, PyIterator>,
+    ) -> PyResult<bool> {
         use std::ops::ControlFlow;
-        let py = other.py();
-        let mut items = other.try_iter()?;
+        let py = items.py();
         let mut position = 0_usize;
         let walk = self.view.try_for_each_point(&mut |coord| {
             let current = position;

@@ -6,12 +6,14 @@ hundred real call sites become a free static-conformance corpus. An example
 that only passes with a loosened stub (or that the stub rejects) fails here,
 so docs, stubs, and runtime cannot drift apart pairwise.
 
-A second lane does the same for the NON-executed ``python`` fences in
-``docs/**/*.md`` (the ``exec="on"`` blocks already run under
-``tools/gates/_check_examples.py``): gometry-only fences join the typed corpus with a
-small prelude declaring the conventional free names docs fragments use;
+A second lane does the same for ``python`` fences without markdown-exec's
+``exec`` option in ``docs/**/*.md``. Gometry-only fences join the typed corpus
+with a small prelude declaring the conventional free names docs fragments use;
 fences demonstrating the competitor stacks (shapely/pyproj/h3/…) in the
-migration guides are out of scope by import detection.
+migration guides are out of scope by import detection. Executable fences are
+parsed by ``tools/gates/_check_examples.py``. Both gates use the configured
+Markdown/SuperFences extraction so nested and indented fences have one syntax
+owner.
 
 Mechanics: extract each docstring's example statements (outputs dropped) into
 one synthetic module — one function per docstring, labeled with its qualname —
@@ -34,7 +36,16 @@ import tempfile
 import textwrap
 from pathlib import Path
 
+from _check_examples import extract_markdown_fences
+
 _ROOT = Path(__file__).resolve().parent.parent.parent
+_TOOLS = _ROOT / 'tools'
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+from _gatelib import prepend_tools_import_paths
+from runtime_artifact import require_runtime
+
+prepend_tools_import_paths()
 # Use the interpreter running this gate so the pyright import path matches the
 # runtime that supplied gometry and its installed stubs. The project environment
 # is owned by the caller (uv, Nix, or another supported runner).
@@ -49,7 +60,6 @@ import gometry as gm
 '''
 
 _DOCS = _ROOT / 'docs'
-_FENCE = re.compile(r'```python([^\n]*)\n(.*?)```', re.DOTALL)
 #: Fences importing (or assigning through) the competitor stacks are the
 #: migration guides' "before" side — not gometry call sites.
 _FOREIGN = re.compile(
@@ -90,6 +100,7 @@ xy: npt.NDArray[np.float64]
 def _public_objects() -> list[tuple[str, object]]:
     import types
 
+    require_runtime(_ROOT)
     import gometry
 
     objects: list[tuple[str, object]] = [('gometry', gometry)]
@@ -143,19 +154,19 @@ def render_markdown_corpus() -> str:
     index = 0
     for path in sorted(_DOCS.rglob('*.md')):
         text = path.read_text(encoding='utf-8')
-        for match in _FENCE.finditer(text):
-            info, body = match.group(1), match.group(2)
-            if 'exec=' in info:
+        fences, _markdown = extract_markdown_fences(path, text)
+        for fence in fences:
+            if fence.language.casefold() != 'python' or 'exec' in fence.options:
                 continue  # executed (and thus checked) by _check_examples.py
+            body = fence.code
             if _FOREIGN.search(body) or ('gm' not in body and 'gometry' not in body):
                 continue
-            lineno = text.count('\n', 0, match.start()) + 1
             rel = path.relative_to(_ROOT).as_posix()
             fn_name = f'_fence_{index}'
             index += 1
             chunks.append(
                 f'def {fn_name}() -> None:\n'
-                f'    # from {rel}:{lineno}\n'
+                f'    # from {rel}:{fence.line}\n'
                 + textwrap.indent(body.rstrip() + '\n', '    ')
             )
     return '\n'.join(chunks)
