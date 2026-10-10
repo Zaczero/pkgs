@@ -80,7 +80,7 @@ def _wheel(
         'fixture-1.dist-info/METADATA': b'Name: gometry\nVersion: 1.0\n',
         'fixture-1.dist-info/WHEEL': (
             b'Wheel-Version: 1.0\n'
-            b'Generator: maturin (1.14.1)\n'
+            b'Generator: maturin (1.15.0)\n'
             b'Tag: cp314-cp314-manylinux_2_17_x86_64\n'
         ),
     }
@@ -114,7 +114,7 @@ def _quality_wheel(
         f'{dist_info}/METADATA': (f'Name: gometry\nVersion: {version}\n'.encode()),
         f'{dist_info}/WHEEL': (
             b'Wheel-Version: 1.0\n'
-            b'Generator: maturin (1.14.1)\n'
+            b'Generator: maturin (1.15.0)\n'
             b'Tag: cp314-cp314-manylinux_2_17_x86_64\n'
         ),
         **{
