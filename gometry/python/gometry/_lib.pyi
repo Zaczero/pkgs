@@ -384,6 +384,28 @@ _GeoJsonScalar: TypeAlias = (
     str | bytes | bytearray | memoryview | Mapping[str, Any] | SupportsGeoInterface
 )
 
+class _SupportsGeoJsonFeatureInterface(Protocol):
+    @property
+    def __geo_interface__(self) -> GeoJsonFeatureNonNull: ...
+
+_GeoJsonFeatureRow: TypeAlias = (
+    str | Buffer | GeoJsonFeatureNonNull | _SupportsGeoJsonFeatureInterface
+)
+_GeoJsonFeatureBatch: TypeAlias = (
+    Sequence[_GeoJsonFeatureRow | None]
+    | Iterator[_GeoJsonFeatureRow | None]
+    | Iterable[GeoJsonFeatureNonNull | _SupportsGeoJsonFeatureInterface | None]
+    | np.ndarray[Any, np.dtype[Any]]
+)
+_GeoJsonFeatureInput: TypeAlias = (
+    str
+    | Buffer
+    | GeoJsonFeatureNonNull
+    | GeoJsonFeatureCollection
+    | _SupportsGeoJsonFeatureInterface
+    | _GeoJsonFeatureBatch
+)
+
 # One geometry-like row accepted by the canonical collection-ingest boundary.
 # Strings deliberately stay out: text has an ambiguous WKT/GeoJSON grammar and
 # therefore goes through ``from_wkt`` / ``from_geojson`` explicitly.
@@ -21011,12 +21033,11 @@ def from_geojson(
 ) -> Geometry | GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
-    data: _GeoJsonScalar
+    data: _GeoJsonFeatureInput
     | PandasSeries
     | PolarsSeries
     | PyArrowArray
-    | PyArrowChunkedArray
-    | Iterable[_GeoJsonScalar | None],
+    | PyArrowChunkedArray,
     *,
     features: Literal[True],
     crs: CrsInput | None = 'OGC:CRS84',
@@ -21024,12 +21045,11 @@ def from_geojson(
 ) -> Features: ...
 @overload
 def from_geojson(
-    data: _GeoJsonScalar
+    data: _GeoJsonFeatureInput
     | PandasSeries
     | PolarsSeries
     | PyArrowArray
-    | PyArrowChunkedArray
-    | Iterable[_GeoJsonScalar | None],
+    | PyArrowChunkedArray,
     *,
     features: bool,
     crs: CrsInput | None = 'OGC:CRS84',

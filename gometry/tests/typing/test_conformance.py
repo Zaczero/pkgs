@@ -953,6 +953,23 @@ if TYPE_CHECKING:
     def _feature_result_for_runtime_flag(features: bool) -> None:
         reveal_type(gm.from_geojson(feature_text, features=features))
 
+    def _reveal_serialized_feature_rows() -> None:
+        serialized_text = (
+            '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]}}'
+        )
+        serialized_bytes = b'{"type":"Feature","geometry":null}'
+
+        reveal_type(gm.from_geojson([serialized_text, None], features=True))
+        reveal_type(gm.from_geojson([serialized_bytes, None], features=True))
+        assert_type(
+            gm.from_geojson([serialized_text, None], features=True),
+            gm.Features,
+        )
+        assert_type(
+            gm.from_geojson([serialized_bytes, None], features=True),
+            gm.Features,
+        )
+
     reveal_type(gm.points([(1.0, 2.0)]))
     reveal_type(gm.points(1.0, 2.0))
     reveal_type(gm.Point((1.0, 2.0)))

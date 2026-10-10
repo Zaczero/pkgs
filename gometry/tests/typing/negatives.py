@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
     # Unknown keyword arguments are rejected.
     POINT.buffer(1.0, wrong_kw=2)  # type: ignore[call-arg]
+    gm.from_geojson(POINT.__geo_interface__, features=True)  # type: ignore[arg-type]
 
     # Algorithm options are available only for the matching literal method.
     POINT.triangulate(method='delaunay', min_angle=10.0)  # type: ignore[call-overload]

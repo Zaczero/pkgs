@@ -8,6 +8,7 @@ import sys
 import types
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -241,6 +242,55 @@ def test_from_geojson_features_accepts_pandas_feature_columns() -> None:
     assert result.geometries.to_wkt() == ['POINT (1 2)', None]
     assert result.properties == ({'name': 'A'}, {'name': 'missing'})
     assert result.ids == (7, None)
+
+
+@pytest.mark.parametrize('provider', ['pandas', 'pyarrow', 'polars'])
+def test_from_geojson_features_decodes_serialized_provider_columns(
+    provider: str,
+) -> None:
+    module = pytest.importorskip(provider)
+    feature = json.dumps({
+        'type': 'Feature',
+        'geometry': gm.Point(1, 2).__geo_interface__,
+        'properties': {'name': 'A'},
+        'id': 7,
+    })
+    rows = [feature, None]
+    if provider == 'pandas':
+        column = module.Series(rows, dtype=object)
+    elif provider == 'pyarrow':
+        column = module.array(rows, type=module.string())
+    else:
+        column = module.Series('features', rows, dtype=module.String)
+
+    result = gm.from_geojson(column, features=True, crs=None)
+
+    assert result.geometries.to_wkt() == ['POINT (1 2)', None]
+    assert result.properties == ({'name': 'A'}, None)
+    assert result.ids == (7, None)
+
+
+def test_from_geojson_features_decodes_serialized_rows_and_missing_defaults() -> None:
+    rows = [
+        json.dumps({
+            'type': 'Feature',
+            'geometry': gm.Point(1, 2).__geo_interface__,
+            'properties': {'name': 'first'},
+            'id': 7,
+        }),
+        None,
+        json.dumps({
+            'type': 'Feature',
+            'geometry': gm.Point(3, 4).__geo_interface__,
+        }).encode(),
+    ]
+
+    for data in (rows, iter(rows), np.asarray(rows, dtype=object)):
+        result = gm.from_geojson(data, features=True, crs=None)
+
+        assert result.geometries.to_wkt() == ['POINT (1 2)', None, 'POINT (3 4)']
+        assert result.properties == ({'name': 'first'}, None, {})
+        assert result.ids == (7, None, None)
 
 
 def test_from_geojson_native_object_lane_preserves_python_fidelity() -> None:
