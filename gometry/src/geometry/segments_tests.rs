@@ -1,9 +1,9 @@
 use crate::error::ErrorKind;
 use crate::geometry::segments::{
-    ExactDistanceWitness, SquaredDistanceFilter, checked_normal_product,
+    ExactDistanceWitness, FilterValue, SquaredDistanceFilter, checked_normal_product,
     clearance_strip_binary64_result, clip_segment_rect_interval, compare_along_segment,
-    exact_selection_distance_cmp, segment_nearest_points, source_dot_difference_binary64,
-    source_dot_difference_exact,
+    exact_selection_distance_cmp, filter_operand, segment_nearest_points,
+    source_dot_difference_binary64, source_dot_difference_exact, source_product_sum_interval,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::*;
@@ -519,22 +519,11 @@ fn clearance_aabb_certificates_enclose_and_compare_exact_source_distances() {
     let point = XY::new(0.0, 0.0);
     let minimum = SquaredDistanceFilter::MIN_OPERAND;
     let maximum = SquaredDistanceFilter::MAX_OPERAND;
-    assert!(SquaredDistanceFilter::certified_point_pair(point, XY::new(minimum, 0.0)).is_some());
-    assert!(
-        SquaredDistanceFilter::certified_point_pair(
-            point,
-            XY::new(f64::from_bits(minimum.to_bits() - 1), 0.0),
-        )
-        .is_none()
-    );
-    assert!(SquaredDistanceFilter::certified_point_pair(point, XY::new(maximum, 0.0)).is_some());
-    assert!(
-        SquaredDistanceFilter::certified_point_pair(
-            point,
-            XY::new(f64::from_bits(maximum.to_bits() + 1), 0.0),
-        )
-        .is_none()
-    );
+    assert!(filter_operand(minimum));
+    assert!(!filter_operand(f64::from_bits(minimum.to_bits() - 1)));
+    assert!(filter_operand(maximum));
+    assert!(!filter_operand(f64::from_bits(maximum.to_bits() + 1)));
+
     let cases = [
         ([3.0, 4.0, 3.0, 4.0], XY::new(3.0, 4.0)),
         ([0.5, -0.75, 2.0, 1.25], XY::new(0.5, 0.0)),
@@ -625,6 +614,146 @@ fn binary64_filter_declines_nonzero_products_that_underflow() {
         checked_normal_product(2.0_f64.powi(-600), 2.0_f64.powi(-500)),
         None,
         "a nonzero product rounded all the way to zero must decline"
+    );
+    assert_eq!(checked_normal_product(0.0, 2.0_f64.powi(200)), Some(0.0));
+}
+
+#[test]
+fn point_segment_binary64_filters_enclose_exact_oblique_distances_and_decline_edges() {
+    POINT_SEGMENT_BINARY64_DECISIONS.with(|count| count.set(0));
+    POINT_SEGMENT_BINARY64_DECLINES.with(|count| count.set(0));
+    let cases = [
+        (XY::new(2.0, 3.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(3.0, 4.0),
+        }),
+        (XY::new(0.25, 1.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(2.0, 1.0),
+        }),
+        (XY::new(-1.0, 0.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(3.0, 4.0),
+        }),
+        (XY::new(4.0, 5.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(3.0, 4.0),
+        }),
+        (
+            XY::new(
+                f64::from_bits(0x3FF2_5843_AE08_FA60),
+                f64::from_bits(0x3FEA_C529_C8C6_C6F0),
+            ),
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(
+                    f64::from_bits(0x3FFE_BB3B_2D82_F9B6),
+                    f64::from_bits(0x3FF6_6C3E_CDB1_4CD8),
+                ),
+            },
+        ),
+    ];
+    let (cancellation_point, cancellation_segment) = cases[4];
+    let dx = FilterValue::new(cancellation_segment.end.x).unwrap();
+    let dy = FilterValue::new(cancellation_segment.end.y).unwrap();
+    let qx = FilterValue::new(cancellation_point.x).unwrap();
+    let qy = FilterValue::new(cancellation_point.y).unwrap();
+    let exact_determinant = ExactDyadic::from_f64(dx.0)
+        .try_product(&ExactDyadic::from_f64(qy.0))
+        .unwrap()
+        .try_add(
+            ExactDyadic::from_f64(-dy.0)
+                .try_product(&ExactDyadic::from_f64(qx.0))
+                .unwrap(),
+        )
+        .unwrap();
+    let (determinant_lower, determinant_upper) = source_product_sum_interval(
+        dx,
+        qy,
+        dy,
+        qx,
+        true,
+        SquaredDistanceFilter::SEGMENT_DOT_ERROR,
+    )
+    .expect("ordinary cancellation stays inside the binary64 filter band");
+    assert!(
+        !ExactDyadic::from_f64(determinant_lower)
+            .cmp(&exact_determinant)
+            .is_gt()
+            && !ExactDyadic::from_f64(determinant_upper)
+                .cmp(&exact_determinant)
+                .is_lt(),
+        "the determinant interval must contain the exact stored-double value"
+    );
+
+    for (point, segment) in cases {
+        let key = point_segment_exact_distance_key(point, segment);
+        assert!(key.is_bounded(), "point={point:?} segment={segment:?}");
+        assert!(key.contains_exact(), "point={point:?} segment={segment:?}");
+    }
+    assert_eq!(
+        POINT_SEGMENT_BINARY64_DECISIONS.with(std::cell::Cell::get),
+        cases.len(),
+        "ordinary oblique projections and endpoint classifications use the binary64 filter"
+    );
+
+    for exponent in [-180, -120, -60, 0, 60, 120, 180] {
+        let scale = 2.0_f64.powi(exponent);
+        let point = XY::new(0.375 * scale, 1.75 * scale);
+        let segment = Segment {
+            start: XY::new(-2.0 * scale, -0.75 * scale),
+            end: XY::new(3.0 * scale, 0.625 * scale),
+        };
+        let key = point_segment_exact_distance_key(point, segment);
+        assert!(key.is_bounded(), "exponent={exponent}");
+        assert!(
+            key.contains_exact(),
+            "exponent={exponent} point={point:?} segment={segment:?}"
+        );
+    }
+    for row in 0..16 {
+        let point = XY::new(7.25, 2.75);
+        let vertex = |column: i32| {
+            XY::new(
+                f64::from(column),
+                (f64::from(column) * 0.37 + f64::from(row) * 0.03125).sin()
+                    + f64::from(row) * 0.002,
+            )
+        };
+        for index in 0..8 {
+            let segment = Segment {
+                start: vertex(index),
+                end: vertex(index + 1),
+            };
+            let key = point_segment_exact_distance_key(point, segment);
+            assert!(
+                key.contains_exact(),
+                "row={row} segment={index} point={point:?} segment={segment:?}"
+            );
+        }
+    }
+    assert!(
+        POINT_SEGMENT_BINARY64_DECISIONS.with(std::cell::Cell::get) > cases.len(),
+        "the ordinary nearest-row family also uses the binary64 filter"
+    );
+
+    let boundary = point_segment_exact_distance_key(XY::new(0.0, 0.0), Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(3.0, 4.0),
+    });
+    assert!(!boundary.is_bounded());
+    assert!(boundary.contains_exact());
+
+    let tiny = 2.0_f64.powi(-700);
+    let tiny_key = point_segment_exact_distance_key(XY::new(0.0, tiny), Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(tiny, tiny),
+    });
+    assert!(!tiny_key.is_bounded());
+    assert!(tiny_key.contains_exact());
+    assert!(
+        POINT_SEGMENT_BINARY64_DECLINES.with(std::cell::Cell::get) >= 2,
+        "uncertain endpoint and out-of-band coordinates use the existing path"
     );
 }
 

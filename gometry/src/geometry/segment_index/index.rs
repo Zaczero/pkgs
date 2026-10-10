@@ -222,10 +222,10 @@ fn push_clearance_children<'a>(
         let [upper_x, upper_y] = envelope.upper();
         let (witness, filter) =
             clearance_aabb_filter(point.xy(), [lower_x, lower_y, upper_x, upper_y]);
-        if let Some(limit) = limit {
-            if filter.cmp_witness_key(witness, limit)?.is_gt() {
-                continue;
-            }
+        if let Some(limit) = limit
+            && filter.cmp_witness_key(witness, limit)?.is_gt()
+        {
+            continue;
         }
         stack.push(ClearancePointNode {
             node,
@@ -334,8 +334,8 @@ impl PointSetIndex {
 
 impl ClearancePointQuery<'_> {
     /// Nearest distinct XY source that can improve `incumbent`, ordered by
-    /// exact source distance and then by source ordinal. Node envelopes use
-    /// the exact source-coordinate distance to their clamped closest point.
+    /// exact source distance and then by source ordinal. Node envelopes use the
+    /// exact source-coordinate distance to their clamped closest point.
     pub(crate) fn nearest_clearance_neighbor(
         &mut self,
         point: Point,

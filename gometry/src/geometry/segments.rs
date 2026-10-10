@@ -1555,7 +1555,8 @@ impl SquaredDistanceFilter {
     const POINT_PAIR_UPPER_SCALE: f64 = f64::from_bits(0x3FF0_0000_0000_0005);
     const STRIP_NORM_LOWER_SCALE: f64 = f64::from_bits(0x3FEF_FFFF_FFFF_FFFC);
     const STRIP_NORM_UPPER_SCALE: f64 = f64::from_bits(0x3FF0_0000_0000_0003);
-    const DOT_ERROR: f64 = 8.0 * Self::UNIT_ROUNDOFF;
+    const DOT_ERROR: FilterValue = FilterValue(8.0 * Self::UNIT_ROUNDOFF);
+    const SEGMENT_DOT_ERROR: FilterValue = FilterValue(16.0 * Self::UNIT_ROUNDOFF);
     const SIGN_MASK: u64 = 1 << 63;
     // Keep each source operand and subtraction in [2^-200, 2^200], so
     // degree-four products stay normal and finite; unsafe stages decline.
@@ -1573,19 +1574,6 @@ impl SquaredDistanceFilter {
         const UNIT_ROUNDOFF: f64 = f64::EPSILON / 2.0;
         const GAMMA_4: f64 = 4.0 * UNIT_ROUNDOFF / (1.0 - 4.0 * UNIT_ROUNDOFF);
         Self::source_squared(squared, GAMMA_4)
-    }
-
-    fn certified_point_pair(left: XY, right: XY) -> Option<Self> {
-        let dx = filter_difference(left.x, right.x)?;
-        let dy = filter_difference(left.y, right.y)?;
-        // The admitted residual band keeps both squares and their positive sum
-        // normal and finite, including exact zero residuals.
-        let squared = dx * dx + dy * dy;
-        Self::nonnegative(
-            squared,
-            Self::POINT_PAIR_LOWER_SCALE,
-            Self::POINT_PAIR_UPPER_SCALE,
-        )
     }
 
     fn nonnegative(squared: f64, lower_scale: f64, upper_scale: f64) -> Option<Self> {
@@ -1630,7 +1618,7 @@ impl SquaredDistanceFilter {
         }
     }
 
-    pub(in crate::geometry) fn bind_witness(
+    pub(in crate::geometry) const fn bind_witness(
         self,
         witness: ExactDistanceWitness,
     ) -> SquaredDistanceKey {
@@ -1652,11 +1640,6 @@ impl SquaredDistanceFilter {
         witness: ExactDistanceWitness,
         other: &SquaredDistanceKey,
     ) -> Result<Ordering> {
-        if witness.same_distance_as(other.witness) {
-            #[cfg(test)]
-            CLEARANCE_AABB_COMPARE_DECLINES.with(|count| count.set(count.get().saturating_add(1)));
-            return Ok(Ordering::Equal);
-        }
         if let Some(order) = self.disjoint_cmp(other.filter) {
             #[cfg(test)]
             CLEARANCE_AABB_COMPARE_DECISIONS.with(|count| count.set(count.get().saturating_add(1)));
@@ -1664,18 +1647,31 @@ impl SquaredDistanceFilter {
         }
         #[cfg(test)]
         CLEARANCE_AABB_COMPARE_DECLINES.with(|count| count.set(count.get().saturating_add(1)));
+        if witness.same_distance_as(other.witness) {
+            return Ok(Ordering::Equal);
+        }
         exact_selection_distance_cmp(witness, other.witness)
     }
 }
 
-fn filter_operand(value: f64) -> bool {
+/// A finite zero or normal scalar admitted to the filter's safe exponent band.
+#[derive(Clone, Copy)]
+struct FilterValue(f64);
+
+impl FilterValue {
+    fn new(value: f64) -> Option<Self> {
+        filter_operand(value).then_some(Self(value))
+    }
+}
+
+const fn filter_operand(value: f64) -> bool {
     let magnitude = magnitude_bits(value);
     if magnitude == 0 {
         return true;
     }
     let exponent = magnitude >> 52;
     let maximum = SquaredDistanceFilter::MAX_OPERAND.to_bits();
-    exponent != 0x7ff
+    exponent != 0x7FF
         && exponent >= (SquaredDistanceFilter::MIN_OPERAND.to_bits() >> 52)
         && (exponent < (maximum >> 52) || magnitude == maximum)
 }
@@ -1710,15 +1706,42 @@ const fn are_same_finite_number(left: f64, right: f64) -> bool {
     left.to_bits() == right.to_bits() || is_zero_bits(left) && is_zero_bits(right)
 }
 
-fn filter_difference(left: f64, right: f64) -> Option<f64> {
+fn filter_difference(left: f64, right: f64) -> Option<FilterValue> {
     if !filter_operand(left) || !filter_operand(right) {
         return None;
     }
     let difference = left - right;
     if is_zero_bits(difference) {
-        return are_same_finite_number(left, right).then_some(0.0);
+        return are_same_finite_number(left, right).then_some(FilterValue(0.0));
     }
-    filter_operand(difference).then_some(difference)
+    FilterValue::new(difference)
+}
+
+fn filter_product(left: FilterValue, right: FilterValue) -> Option<f64> {
+    let product = left.0 * right.0;
+    if is_zero_bits(product) {
+        return (is_zero_bits(left.0) || is_zero_bits(right.0)).then_some(0.0);
+    }
+    is_normal_bits(product).then_some(product)
+}
+
+fn normal_product(left: f64, right: f64) -> Option<f64> {
+    // Both operands are normal-or-zero intermediates already admitted above.
+    let product = left * right;
+    if is_zero_bits(product) {
+        return (is_zero_bits(left) || is_zero_bits(right)).then_some(0.0);
+    }
+    is_normal_bits(product).then_some(product)
+}
+
+fn normal_sum(left: f64, right: f64) -> Option<f64> {
+    // Both operands are normal-or-zero intermediates already admitted above.
+    let sum = left + right;
+    if is_zero_bits(sum) {
+        let both_zero = is_zero_bits(left) && is_zero_bits(right);
+        return (both_zero || are_exact_opposites(left, right)).then_some(0.0);
+    }
+    is_normal_bits(sum).then_some(sum)
 }
 
 fn checked_normal_product(left: f64, right: f64) -> Option<f64> {
@@ -1781,26 +1804,23 @@ pub(in crate::geometry) fn clearance_aabb_filter(
             point.y
         },
     );
-    let filter = SquaredDistanceFilter::certified_point_pair(point, closest);
+    let key = point_pair_distance_key(point, closest);
     #[cfg(test)]
-    if filter.is_some() {
+    if key.filter.lo.is_finite() && key.filter.hi.is_finite() {
         CLEARANCE_AABB_FILTERS.with(|count| count.set(count.get().saturating_add(1)));
     } else {
         CLEARANCE_AABB_FILTER_DECLINES.with(|count| count.set(count.get().saturating_add(1)));
     }
-    (
-        ExactDistanceWitness::Points(point, closest),
-        filter.unwrap_or_else(SquaredDistanceFilter::unbounded),
-    )
+    (key.witness, key.filter)
 }
 
 impl SquaredDistanceKey {
     pub(in crate::geometry) fn cmp_distance(&self, other: &Self) -> Result<Ordering> {
-        if self.witness.same_distance_as(other.witness) {
-            return Ok(Ordering::Equal);
-        }
         if let Some(order) = self.filter.disjoint_cmp(other.filter) {
             return Ok(order);
+        }
+        if self.witness.same_distance_as(other.witness) {
+            return Ok(Ordering::Equal);
         }
         exact_selection_distance_cmp(self.witness, other.witness)
     }
@@ -1875,27 +1895,42 @@ fn source_dot_difference_interval(normal: [f64; 2], left: XY, right: XY) -> Opti
         .add(DdInterval::exact(ny).mul(dy)?)
 }
 
-fn source_dot_difference_binary64(normal: [f64; 2], left: XY, right: XY) -> Option<(f64, f64)> {
-    let [nx, ny] = normal;
-    if !filter_operand(nx) || !filter_operand(ny) {
-        return None;
-    }
-    let dx = filter_difference(left.x, right.x)?;
-    let dy = filter_difference(left.y, right.y)?;
-    // The admitted operand/difference band keeps each nonzero product normal.
-    let x_product = nx * dx;
-    let y_product = ny * dy;
+fn source_product_sum_interval(
+    x_left: FilterValue,
+    x_right: FilterValue,
+    y_left: FilterValue,
+    y_right: FilterValue,
+    subtract: bool,
+    error_bound: FilterValue,
+) -> Option<(f64, f64)> {
+    let x_product = filter_product(x_left, x_right)?;
+    let y_product = filter_product(y_left, y_right)?;
     if is_zero_bits(x_product) && is_zero_bits(y_product) {
         return Some((0.0, 0.0));
     }
-    let rounded = checked_normal_sum(x_product, y_product)?;
-    // Two rounded differences and products plus the final sum have absolute
-    // error below 8u times the upward sum of the rounded product magnitudes.
-    let magnitude = checked_normal_sum(x_product.abs(), y_product.abs())?.next_up();
-    let error = checked_normal_product(magnitude, SquaredDistanceFilter::DOT_ERROR)?.next_up();
-    let lower = checked_normal_sum(rounded, -error)?;
-    let upper = checked_normal_sum(rounded, error)?;
-    (lower.is_finite() && upper.is_finite()).then_some((lower.next_down(), upper.next_up()))
+    let y_term = if subtract { -y_product } else { y_product };
+    let rounded = normal_sum(x_product, y_term)?;
+    let magnitude = normal_sum(x_product.abs(), y_product.abs())?.next_up();
+    // Segment terms can each carry two rounded differences before product
+    // and sum; 16u covers that path. Dot terms have one exact coefficient and
+    // one rounded difference, so their caller uses the tighter 8u bound.
+    let error = normal_product(magnitude, error_bound.0)?.next_up();
+    if !is_normal_bits(error) {
+        return None;
+    }
+    let lower_term = -error;
+    let lower = normal_sum(rounded, lower_term)?;
+    let upper = normal_sum(rounded, error)?;
+    Some((lower.next_down(), upper.next_up()))
+}
+
+fn source_dot_difference_binary64(normal: [f64; 2], left: XY, right: XY) -> Option<(f64, f64)> {
+    let [nx, ny] = normal;
+    let nx = FilterValue::new(nx)?;
+    let ny = FilterValue::new(ny)?;
+    let dx = filter_difference(left.x, right.x)?;
+    let dy = filter_difference(left.y, right.y)?;
+    source_product_sum_interval(nx, dx, ny, dy, false, SquaredDistanceFilter::DOT_ERROR)
 }
 
 fn source_dot_difference_exact(normal: [f64; 2], left: XY, right: XY) -> Result<ExactDyadic> {
@@ -2137,6 +2172,79 @@ pub(super) fn point_pair_distance_key(left: XY, right: XY) -> SquaredDistanceKey
     }
 }
 
+fn point_segment_binary64_distance_key(point: XY, segment: Segment) -> Option<SquaredDistanceKey> {
+    let dx = filter_difference(segment.end.x, segment.start.x)?;
+    let dy = filter_difference(segment.end.y, segment.start.y)?;
+    let qx = filter_difference(point.x, segment.start.x)?;
+    let qy = filter_difference(point.y, segment.start.y)?;
+    let denominator_squared = normal_sum(filter_product(dx, dx)?, filter_product(dy, dy)?)?;
+    let denominator = SquaredDistanceFilter::nonnegative(
+        denominator_squared,
+        SquaredDistanceFilter::POINT_PAIR_LOWER_SCALE,
+        SquaredDistanceFilter::POINT_PAIR_UPPER_SCALE,
+    )?;
+    if !is_normal_bits(denominator.lo) {
+        return None;
+    }
+
+    let numerator = source_product_sum_interval(
+        qx,
+        dx,
+        qy,
+        dy,
+        false,
+        SquaredDistanceFilter::SEGMENT_DOT_ERROR,
+    )?;
+    if numerator.1 < 0.0 {
+        return Some(point_pair_distance_key(point, segment.start));
+    }
+    if numerator.0 > denominator.hi {
+        return Some(point_pair_distance_key(point, segment.end));
+    }
+    if numerator.0 <= 0.0 || numerator.1 >= denominator.lo {
+        return None;
+    }
+
+    let determinant = source_product_sum_interval(
+        dx,
+        qy,
+        dy,
+        qx,
+        true,
+        SquaredDistanceFilter::SEGMENT_DOT_ERROR,
+    )?;
+    let minimum = if determinant.0 <= 0.0 && determinant.1 >= 0.0 {
+        0.0
+    } else {
+        determinant.0.abs().min(determinant.1.abs())
+    };
+    let maximum = determinant.0.abs().max(determinant.1.abs());
+    let lower_square = if is_zero_bits(minimum) {
+        0.0
+    } else {
+        checked_normal_product(minimum, minimum)?
+            .next_down()
+            .max(0.0)
+    };
+    let upper_square = if is_zero_bits(maximum) {
+        0.0
+    } else {
+        checked_normal_product(maximum, maximum)?.next_up()
+    };
+    let lower_quotient = lower_square / denominator.hi;
+    let upper_quotient = upper_square / denominator.lo;
+    if (lower_square > 0.0 && !is_normal_bits(lower_quotient))
+        || (upper_square > 0.0 && !is_normal_bits(upper_quotient))
+    {
+        return None;
+    }
+    let lo = lower_quotient.next_down().max(0.0);
+    let hi = upper_quotient.next_up();
+    hi.is_finite().then_some(
+        SquaredDistanceFilter { lo, hi }.bind(ExactDistanceWitness::Projected(point, segment)),
+    )
+}
+
 #[expect(
     clippy::float_cmp,
     reason = "axis-aligned carriers are exact identities over stored coordinates"
@@ -2154,6 +2262,13 @@ pub(super) fn point_segment_exact_distance_key(point: XY, segment: Segment) -> S
     {
         return point_pair_distance_key(point, XY::new(segment.start.x, point.y));
     }
+    if let Some(key) = point_segment_binary64_distance_key(point, segment) {
+        #[cfg(test)]
+        POINT_SEGMENT_BINARY64_DECISIONS.with(|count| count.set(count.get().saturating_add(1)));
+        return key;
+    }
+    #[cfg(test)]
+    POINT_SEGMENT_BINARY64_DECLINES.with(|count| count.set(count.get().saturating_add(1)));
     let filtered = (|| {
         let dx = source_difference(segment.end.x, segment.start.x)?;
         let dy = source_difference(segment.end.y, segment.start.y)?;
@@ -2276,6 +2391,10 @@ std::thread_local! {
     pub(crate) static CLEARANCE_DOT_BINARY64_DECISIONS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
     pub(crate) static CLEARANCE_DOT_BINARY64_DECLINES: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static POINT_SEGMENT_BINARY64_DECISIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+    pub(crate) static POINT_SEGMENT_BINARY64_DECLINES: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
     pub(crate) static CLEARANCE_STRIP_BINARY64_DECISIONS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
