@@ -15,7 +15,6 @@ import sys
 from typing import Any, cast
 
 import gometry as gm
-import pyarrow as pa
 import pytest
 from gometry._lib import CRS as _CRS
 
@@ -27,6 +26,8 @@ from tests._support import (
     polygon_storage_twins,
     with_validity,
 )
+
+pa = pytest.importorskip('pyarrow', reason='pyarrow is an optional Arrow dependency')
 
 _WGS84_PROJJSON_METADATA = _json.dumps(
     {'crs': _CRS(4326).to_projjson(as_dict=True), 'crs_type': 'projjson'},

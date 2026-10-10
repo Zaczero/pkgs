@@ -29,13 +29,11 @@ if TYPE_CHECKING:
     H3_CELLS = gm.h3_cells([1.0], [2.0], resolution=9)
     S2_CELLS = gm.s2_cells([1.0], [2.0], level=9)
 
-    # Fixed-depth and adaptive S2 covers have disjoint signatures.
-    gm.s2_cover(POLY)  # type: ignore[call-overload]
-    gm.s2_cover(POLY, level=None)  # type: ignore[call-overload]
-    gm.s2_cover(POLY, level=8, target_cells=8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, level=8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, 8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, min_level=None)  # type: ignore[call-overload]
+    # S2 levels and adaptive controls use integer parameters.
+    gm.s2_cover(POLY, '8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, min_level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level_mod=True)  # type: ignore[call-overload]
 
     # Domain families are flat, prefix-discoverable top-level functions;
     # namespace spellings are deliberately not retained for this first release.
@@ -270,12 +268,12 @@ if TYPE_CHECKING:
     # Antimeridian splitting is explicit metadata-bearing geography.
     gm.box(170.0, -10.0, -170.0, 10.0, wrap='split')  # type: ignore[call-overload]
 
-    # Dtype families: GeometryArray/CellArray reject float dtypes statically
-    # (probe __array__/to_numpy — np.asarray erases the protocol dtype check).
-    POINTS.__array__(dtype=np.float64)  # type: ignore[arg-type]
+    # The builtin object spelling necessarily widens __array__ to type[object],
+    # so use dtype instances to probe static rejection of unsupported dtypes.
+    POINTS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
     POINTS.to_numpy(np.float64)  # type: ignore[call-arg]
-    H3_CELLS.__array__(dtype=np.float64)  # type: ignore[arg-type]
-    gm.CellArray([h3_cell, None]).__array__(dtype=np.uint64)  # type: ignore[arg-type]
+    H3_CELLS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
+    gm.CellArray([h3_cell, None]).__array__(dtype='uint64')  # type: ignore[call-overload]
     POINT.coords.__array__(dtype=np.int64)  # type: ignore[arg-type]
     # CRS kind vocabulary rejects unknown tokens.
     gm.crs_catalog('WGS', kind='not_a_kind')  # type: ignore[arg-type]

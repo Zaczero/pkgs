@@ -38,9 +38,7 @@ def from_pandas(series: pd.Series) -> GeometryArray[Geometry | None]:
     TypeError
         If a row is not a supported geometry representation.
     """
-    import pandas as pd
-
-    from gometry._pandas import GeometryExtensionArray
+    from gometry._pandas import GeometryExtensionArray, pd
 
     if not isinstance(series, pd.Series):
         raise TypeError(f'expected pandas.Series, got {type(series).__name__}')

@@ -8,7 +8,8 @@
 # pyright: reportUnnecessaryTypeIgnoreComment=false
 # Runtime dunder declarations below are intentional protocol surface, even where
 # Ruff's generic stub heuristic considers them redundant.
-# ruff: noqa: PYI029
+# Keep the builtin object class explicit: PYI055's combined form is rejected by mypy.
+# ruff: noqa: PYI029, PYI055
 # Native sequence methods keep their runtime-accurate signatures rather than
 # widening them to match collections.abc.Sequence's protocol declarations.
 # pyright: reportIncompatibleMethodOverride=false
@@ -300,7 +301,6 @@ __all__ = [
     's2_bounding_cell',
     's2_cells',
     's2_cover',
-    's2_cover_adaptive',
     's2_difference',
     's2_intersection',
     's2_union',
@@ -338,6 +338,10 @@ _IntScalarInput: TypeAlias = _IntScalar | _IntArray0D
 _IntArray1D: TypeAlias = np.ndarray[
     tuple[int], np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]]
 ]
+_IntArrayUnknownRank: TypeAlias = np.ndarray[
+    tuple[Any, ...],
+    np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]],
+]
 _BoolArray1D: TypeAlias = np.ndarray[tuple[int], np.dtype[np.bool_]]
 _FloatColumn1D: TypeAlias = FloatColumn | _FloatArray1D
 _IntInput: TypeAlias = _IntScalar | _IntArray0D | _IntArray1D | Iterable[int] | Buffer
@@ -356,6 +360,16 @@ _CoordinateMatrix: TypeAlias = (
             | np.bool_
         ],
     ]
+)
+_H3SetInput: TypeAlias = (
+    H3Cell | _IntScalarInput | str | Iterable[H3Cell | _IntScalarInput | str | None]
+)
+_S2SetInput: TypeAlias = (
+    S2Cell | _IntScalarInput | str | Iterable[S2Cell | _IntScalarInput | str | None]
+)
+_GeohashSetInput: TypeAlias = GeohashCell | str | Iterable[GeohashCell | str | None]
+_TileSetInput: TypeAlias = (
+    Tile | _IntScalarInput | str | Iterable[Tile | _IntScalarInput | str | None]
 )
 _AffineMatrix: TypeAlias = (
     tuple[float, float, float, float, float, float] | Iterable[float]
@@ -715,7 +729,7 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         [(0.0, 0.0, None), (1.0, 1.0, None)]
         """
     @property
-    def row_index(self) -> npt.NDArray[np.int64]:
+    def row_index(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-coordinate source geometry row (all ``0`` for a scalar geometry);
         the source row for each vertex of a ``GeometryArray``.
 
@@ -797,7 +811,9 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     @overload
     def to_dict(
         self, *, index: Literal[True]
-    ) -> dict[str, npt.NDArray[np.float64] | npt.NDArray[np.int64]]:
+    ) -> dict[
+        str, npt.NDArray[np.float64] | np.ndarray[tuple[int], np.dtype[np.int64]]
+    ]:
         """Return a dependency-free column dict — ``{'x': ndarray, 'y': ndarray, …}`` — ready
         for ``pandas``/``polars`` (``pd.DataFrame(coords.to_dict())``).
         ``z``/``m`` columns appear when carried by the view or selected layout,
@@ -6836,9 +6852,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         self, dtype: None = None, copy: bool | None = None
     ) -> npt.NDArray[np.object_]: ...
     @overload
+    # mypy does not treat `type[object | np.object_]` as accepting dtype=object.
     def __array__(
         self,
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol: export as an object ndarray of typed geometries.
@@ -7169,7 +7189,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One `GeometryArray` group per input row.
         """
     @property
-    def num_geometries(self) -> npt.NDArray[np.int64]:
+    def num_geometries(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry top-level part count (see `Geometry.num_geometries`):
         ``1`` for a single point/line/polygon, including a typed empty; the
         member count for a multi/collection, and ``0`` for an empty multipart
@@ -7184,7 +7204,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One count per input geometry.
         """
     @property
-    def num_coordinates(self) -> npt.NDArray[np.int64]:
+    def num_coordinates(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry coordinate count. Missing rows are ``0``.
 
         Returns
@@ -7266,7 +7286,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ['LINESTRING (1 1, 2 2)']
         """
     @property
-    def topological_dimension(self) -> npt.NDArray[np.int64]:
+    def topological_dimension(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
         areal (see `Geometry.topological_dimension`). Missing rows use
         Shapely's ``None``-geometry sentinel ``-1``; use `.is_missing` to
@@ -7439,15 +7459,19 @@ class GeometryArray(Sequence[_GeometryT_co]):
         iterator of Geometry or None
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> _GeometryT_co: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> GeometryArray[_GeometryT_co]: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> GeometryArray[_GeometryT_co]: ...
+    def __getitem__(self, index: _IntArray0D, /) -> _GeometryT_co: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> _GeometryT_co: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> GeometryArray[_GeometryT_co]: ...
+    @overload
+    def __getitem__(
+        self, index: _IntArrayUnknownRank, /
+    ) -> _GeometryT_co | GeometryArray[_GeometryT_co]: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> _GeometryT_co: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
@@ -7455,13 +7479,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> _GeometryT_co | GeometryArray[_GeometryT_co]:
         """Select rows by integer, slice, or fancy index.
@@ -11408,7 +11433,7 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
             geometry and cell payloads retain their immutable array types.
         """
     @property
-    def offsets(self) -> npt.NDArray[np.int64]:
+    def offsets(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """The `len(self) + 1` row boundaries into ``values`` (CSR offsets
         column): row ``i`` is ``values[offsets[i]:offsets[i + 1]]``.
 
@@ -11419,7 +11444,7 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
             start at zero; a slice starting after row zero owns a rebased copy.
         """
     @property
-    def counts(self) -> npt.NDArray[np.int64]:
+    def counts(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-group element counts (`offsets[i + 1] - offsets[i]`).
 
         Returns
@@ -11473,8 +11498,11 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     @overload
     def __getitem__(self, index: slice, /) -> Self: ...
     def to_pairs(
-        self: Groups[npt.NDArray[np.int64]],
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]:
         """Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
 
         The right column is a zero-copy read-only view of the flat CSR values;
@@ -11503,7 +11531,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         ([0, 0, 1], [0, 1, 2])
         """
     @overload
-    def to_list(self: Groups[npt.NDArray[np.int64]]) -> list[list[int]]: ...
+    def to_list(
+        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+    ) -> list[list[int]]: ...
     @overload
     def to_list(
         self: Groups[GeometryArray[_GeometryT_co]],
@@ -11803,7 +11833,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def query(
         self,
@@ -11812,7 +11842,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> Groups[npt.NDArray[np.int64]]: ...
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
     @overload
     def query(
         self,
@@ -11821,7 +11851,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def query(
         self,
@@ -11830,7 +11860,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> Groups[npt.NDArray[np.int64]]:
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Return exact predicate-refined matches for a query geometry or array.
 
         Candidates are refined with predicate (`'intersects'` by
@@ -11897,7 +11927,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]: ...
     @overload
     def join(
         self,
@@ -11906,7 +11939,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]:
         """Join query rows against this prebuilt index.
 
         Reuses the index instead of rebuilding the right side on every call.
@@ -11966,7 +12002,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]: ...
     @overload
     def self_join(
         self,
@@ -11974,7 +12013,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: SymmetricTopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]:
         """All index pairs ``(i, j)`` with ``i < j`` whose geometries satisfy a
         symmetric ``predicate`` — a self-join over the index.
 
@@ -12033,7 +12075,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def candidates(
         self,
@@ -12041,7 +12083,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
-    ) -> Groups[npt.NDArray[np.int64]]: ...
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
     @overload
     def candidates(
         self,
@@ -12049,7 +12091,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64] | Groups[npt.NDArray[np.int64]]:
+    ) -> (
+        np.ndarray[tuple[int], np.dtype[np.int64]]
+        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+    ):
         """Bounding-box candidate matches for a query geometry or array (not
         exact). If you refine these candidates with a directional predicate,
         evaluate it as ``predicate(query_geometry, indexed_geometry)``.
@@ -12107,7 +12152,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def nearest(
         self,
@@ -12119,7 +12164,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]: ...
     @overload
     def nearest(
         self,
@@ -12131,7 +12176,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> Groups[npt.NDArray[np.int64]]: ...
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
     @overload
     def nearest(
         self,
@@ -12143,7 +12188,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]: ...
+    ) -> tuple[
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        npt.NDArray[np.float64],
+    ]: ...
     @overload
     def nearest(
         self,
@@ -12156,10 +12204,13 @@ class SpatialIndex(Mapping[int, Geometry]):
         exclusive: bool = False,
         ties: bool = False,
     ) -> (
-        npt.NDArray[np.int64]
-        | Groups[npt.NDArray[np.int64]]
-        | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]
-        | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+        np.ndarray[tuple[int], np.dtype[np.int64]]
+        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+        | tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]
+        | tuple[
+            Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+            npt.NDArray[np.float64],
+        ]
     ):
         """Nearest indexed geometries to the query.
 
@@ -12221,12 +12272,12 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def insert(
         self, values: GeometryArray[Geometry | None] | Iterable[_GeometryLike]
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def insert(
         self,
         values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
-    ) -> int | npt.NDArray[np.int64]:
+    ) -> int | np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Insert one geometry or many geometries and return their stable handles.
 
         A single `Geometry` returns one ``int`` handle. A `GeometryArray` or
@@ -13117,6 +13168,31 @@ class _CellGeometryProjection(Protocol[_GeometryT_co]):
         value: Never,
     ) -> None: ...
 
+class _CellTokenProjection(Protocol):
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[Cell],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> list[str]: ...
+    @overload
+    def __get__(
+        self,
+        instance: CellArray[Cell | None],
+        owner: type[CellArray[Cell | None]] | None = None,
+    ) -> list[str | None]: ...
+    @overload
+    def __get__(
+        self,
+        instance: None,
+        owner: type[CellArray[Cell | None]],
+    ) -> Self: ...
+    def __set__(
+        self,
+        instance: CellArray[Cell | None],
+        value: Never,
+    ) -> None: ...
+
 @final
 class CellArrayIterator(Generic[_CellT_co]):
     """Lazy iterator over a `CellArray`'s typed cells (both directions)."""
@@ -13245,43 +13321,30 @@ class CellArray(Sequence[_CellT_co]):
         """
     @overload
     def contains(
-        self: CellArray[H3Cell], other: H3Cell | CellArray[H3Cell]
+        self: CellArray[H3Cell | None],
+        other: H3Cell | _IntScalarInput | str | CellArray[H3Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def contains(
-        self: CellArray[S2Cell], other: S2Cell | CellArray[S2Cell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[GeohashCell], other: GeohashCell | CellArray[GeohashCell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[Tile], other: Tile | CellArray[Tile]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[H3Cell | None], other: H3Cell | CellArray[H3Cell | None]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def contains(
-        self: CellArray[S2Cell | None], other: S2Cell | CellArray[S2Cell | None]
+        self: CellArray[S2Cell | None],
+        other: S2Cell | _IntScalarInput | str | CellArray[S2Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def contains(
         self: CellArray[GeohashCell | None],
-        other: GeohashCell | CellArray[GeohashCell | None],
+        other: GeohashCell | str | CellArray[GeohashCell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def contains(
-        self: CellArray[Tile | None], other: Tile | CellArray[Tile | None]
+        self: CellArray[Tile | None],
+        other: Tile | _IntScalarInput | str | CellArray[Tile | None],
     ) -> npt.NDArray[np.bool_]:
         """Test whether every row hierarchically contains the paired cell.
 
         Parameters
         ----------
-        other : cell or CellArray
-            One same-grid cell broadcast to every row, or a same-length array.
+        other : same-grid cell, integer id, string token, or CellArray
+            One identity broadcast to every row, or a same-length array.
 
         Returns
         -------
@@ -13301,36 +13364,23 @@ class CellArray(Sequence[_CellT_co]):
         """
     @overload
     def intersects(
-        self: CellArray[H3Cell], other: H3Cell | CellArray[H3Cell]
+        self: CellArray[H3Cell | None],
+        other: H3Cell | _IntScalarInput | str | CellArray[H3Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def intersects(
-        self: CellArray[S2Cell], other: S2Cell | CellArray[S2Cell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[GeohashCell], other: GeohashCell | CellArray[GeohashCell]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[Tile], other: Tile | CellArray[Tile]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[H3Cell | None], other: H3Cell | CellArray[H3Cell | None]
-    ) -> npt.NDArray[np.bool_]: ...
-    @overload
-    def intersects(
-        self: CellArray[S2Cell | None], other: S2Cell | CellArray[S2Cell | None]
+        self: CellArray[S2Cell | None],
+        other: S2Cell | _IntScalarInput | str | CellArray[S2Cell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def intersects(
         self: CellArray[GeohashCell | None],
-        other: GeohashCell | CellArray[GeohashCell | None],
+        other: GeohashCell | str | CellArray[GeohashCell | None],
     ) -> npt.NDArray[np.bool_]: ...
     @overload
     def intersects(
-        self: CellArray[Tile | None], other: Tile | CellArray[Tile | None]
+        self: CellArray[Tile | None],
+        other: Tile | _IntScalarInput | str | CellArray[Tile | None],
     ) -> npt.NDArray[np.bool_]:
         """Test whether every row hierarchically intersects the paired cell.
 
@@ -13338,8 +13388,8 @@ class CellArray(Sequence[_CellT_co]):
 
         Parameters
         ----------
-        other : cell or CellArray
-            One same-grid cell broadcast to every row, or a same-length array.
+        other : same-grid cell, integer id, string token, or CellArray
+            One identity broadcast to every row, or a same-length array.
 
         Returns
         -------
@@ -13359,7 +13409,7 @@ class CellArray(Sequence[_CellT_co]):
         """
     def value_counts(
         self: CellArray[_CellT | None],
-    ) -> tuple[CellArray[_CellT], npt.NDArray[np.int64]]:
+    ) -> tuple[CellArray[_CellT], np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Unique cells and counts, ordered by descending count (pandas
         value_counts parity), with first appearance breaking ties.
 
@@ -13381,7 +13431,7 @@ class CellArray(Sequence[_CellT_co]):
         """
     def factorize(
         self: CellArray[_CellT | None],
-    ) -> tuple[npt.NDArray[np.int64], CellArray[_CellT]]:
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], CellArray[_CellT]]:
         """Factorize cells into dense integer codes and first-seen uniques
         (pandas factorize parity).
 
@@ -13637,26 +13687,25 @@ class CellArray(Sequence[_CellT_co]):
         >>> gm.CellArray([cell]).to_polygon().geometry_type
         'Polygon'
         """
-    @property
-    def token(self) -> list[str | None]:
-        """Canonical string token of every cell, in order.
+    token: _CellTokenProjection
+    """Canonical string token of every cell, in order.
 
-        For H3, S2, and tiles this is the text form of the numeric id exposed
-        by `to_numpy()`. For Geohash it is the public string identity itself;
-        Geohash `to_numpy()` instead returns typed `GeohashCell` objects.
+    For H3, S2, and tiles this is the text form of the numeric id exposed
+    by `to_numpy()`. For Geohash it is the public string identity itself;
+    Geohash `to_numpy()` instead returns typed `GeohashCell` objects.
 
-        Returns
-        -------
-        list of str or None
-            One canonical token per logical row (H3 hex, S2 token, geohash, or
-            tile quadkey); ``None`` marks a missing row.
+    Returns
+    -------
+    list of str or None
+        One canonical token per logical row (H3 hex, S2 token, geohash, or
+        tile quadkey); ``None`` marks a missing row.
 
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> gm.CellArray([gm.GeohashCell('u33d')]).token
-        ['u33d']
-        """
+    Examples
+    --------
+    >>> import gometry as gm
+    >>> gm.CellArray([gm.GeohashCell('u33d')]).token
+    ['u33d']
+    """
     def __class_getitem__(cls, key: Any) -> types.GenericAlias:
         """See PEP 585"""
     def __len__(self) -> int:
@@ -13674,15 +13723,19 @@ class CellArray(Sequence[_CellT_co]):
         iterator of Cell or None
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> _CellT_co: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> CellArray[_CellT_co]: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> CellArray[_CellT_co]: ...
+    def __getitem__(self, index: _IntArray0D, /) -> _CellT_co: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> CellArray[_CellT_co]: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> _CellT_co: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> CellArray[_CellT_co]: ...
+    @overload
+    def __getitem__(
+        self, index: _IntArrayUnknownRank, /
+    ) -> _CellT_co | CellArray[_CellT_co]: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> _CellT_co: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> CellArray[_CellT_co]: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> CellArray[_CellT_co]: ...
     @overload
@@ -13690,13 +13743,14 @@ class CellArray(Sequence[_CellT_co]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> _CellT_co | CellArray[_CellT_co]:
         """Select logical rows by integer, slice, or fancy index.
@@ -13875,10 +13929,10 @@ class CellArray(Sequence[_CellT_co]):
     @overload
     def to_numpy(
         self: CellArray[H3Cell | S2Cell | Tile],
-    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
+    ) -> npt.NDArray[np.uint64]: ...
     @overload
     def to_numpy(
-        self: CellArray[_CellT | None],
+        self: CellArray[Cell | None],
     ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]:
         """Return a read-only NumPy identity column.
 
@@ -13910,10 +13964,10 @@ class CellArray(Sequence[_CellT_co]):
         self: CellArray[H3Cell | S2Cell | Tile],
         dtype: None = None,
         copy: bool | None = None,
-    ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
+    ) -> npt.NDArray[np.uint64]: ...
     @overload
     def __array__(
-        self: CellArray[_CellT | None], dtype: None = None, copy: bool | None = None
+        self: CellArray[Cell | None], dtype: None = None, copy: bool | None = None
     ) -> npt.NDArray[np.uint64] | npt.NDArray[np.object_]: ...
     @overload
     def __array__(
@@ -13924,7 +13978,10 @@ class CellArray(Sequence[_CellT_co]):
     @overload
     def __array__(
         self: CellArray[_CellT | None],
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol.
@@ -14064,7 +14121,10 @@ class H3VertexArray(Sequence[H3Vertex]):
     @overload
     def __array__(
         self,
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol.
@@ -14084,7 +14144,9 @@ class H3VertexArray(Sequence[H3Vertex]):
         -------
         numpy.ndarray
         """
-    def value_counts(self) -> tuple[H3VertexArray, npt.NDArray[np.int64]]:
+    def value_counts(
+        self,
+    ) -> tuple[H3VertexArray, np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Unique values and counts, ordered by descending count, with
         first appearance breaking ties.
 
@@ -14103,7 +14165,9 @@ class H3VertexArray(Sequence[H3Vertex]):
         >>> counts.tolist()
         [1, 1, 1, 1, 1, 1]
         """
-    def factorize(self) -> tuple[npt.NDArray[np.int64], H3VertexArray]:
+    def factorize(
+        self,
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], H3VertexArray]:
         """Factorize values into dense integer codes and first-seen uniques.
 
         Returns
@@ -14194,15 +14258,19 @@ class H3VertexArray(Sequence[H3Vertex]):
         iterator
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> H3Vertex: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> H3VertexArray: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> H3VertexArray: ...
+    def __getitem__(self, index: _IntArray0D, /) -> H3Vertex: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> H3VertexArray: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> H3Vertex: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> H3VertexArray: ...
+    @overload
+    def __getitem__(
+        self, index: _IntArrayUnknownRank, /
+    ) -> H3Vertex | H3VertexArray: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> H3Vertex: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> H3VertexArray: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> H3VertexArray: ...
     @overload
@@ -14210,13 +14278,14 @@ class H3VertexArray(Sequence[H3Vertex]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> H3Vertex | H3VertexArray:
         """Select by integer, slice, or fancy index.
@@ -14389,7 +14458,10 @@ class H3EdgeArray(Sequence[H3Edge]):
     @overload
     def __array__(
         self,
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol.
@@ -14409,7 +14481,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         -------
         numpy.ndarray
         """
-    def value_counts(self) -> tuple[H3EdgeArray, npt.NDArray[np.int64]]:
+    def value_counts(
+        self,
+    ) -> tuple[H3EdgeArray, np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Unique values and counts, ordered by descending count, with
         first appearance breaking ties.
 
@@ -14428,7 +14502,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         >>> counts.tolist()
         [1, 1, 1, 1, 1, 1]
         """
-    def factorize(self) -> tuple[npt.NDArray[np.int64], H3EdgeArray]:
+    def factorize(
+        self,
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], H3EdgeArray]:
         """Factorize values into dense integer codes and first-seen uniques.
 
         Returns
@@ -14519,15 +14595,17 @@ class H3EdgeArray(Sequence[H3Edge]):
         iterator
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> H3Edge: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> H3EdgeArray: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> H3EdgeArray: ...
+    def __getitem__(self, index: _IntArray0D, /) -> H3Edge: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> H3EdgeArray: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> H3Edge: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> H3EdgeArray: ...
+    @overload
+    def __getitem__(self, index: _IntArrayUnknownRank, /) -> H3Edge | H3EdgeArray: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> H3Edge: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> H3EdgeArray: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> H3EdgeArray: ...
     @overload
@@ -14535,13 +14613,14 @@ class H3EdgeArray(Sequence[H3Edge]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> H3Edge | H3EdgeArray:
         """Select by integer, slice, or fancy index.
@@ -18965,8 +19044,9 @@ def dwithin(
         infinity is accepted and matches every pair of admitted non-empty
         operands.
     CRSError
-        If geographic point-edge search reaches its 128-evaluation budget or
-        binary64 parameter precision without proving the threshold result.
+        If geographic point-edge search reaches its binary64-resolution-derived
+        work allowance or 16,384-evaluation safety ceiling, or parameter
+        precision ends without proving the threshold result.
 
     See Also
     --------
@@ -18995,7 +19075,7 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> npt.NDArray[np.int64]: ...
+) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -19007,7 +19087,7 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
+) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -19019,7 +19099,7 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> Groups[npt.NDArray[np.int64]]: ...
+) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -19031,7 +19111,10 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]: ...
+) -> tuple[
+    Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+    npt.NDArray[np.float64],
+]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -19044,10 +19127,13 @@ def nearest(
     exclusive: bool = False,
     ties: bool = False,
 ) -> (
-    npt.NDArray[np.int64]
-    | Groups[npt.NDArray[np.int64]]
-    | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]
-    | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+    np.ndarray[tuple[int], np.dtype[np.int64]]
+    | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+    | tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]
+    | tuple[
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        npt.NDArray[np.float64],
+    ]
 ):
     """Find the nearest of `values` to each query geometry (builds an index).
 
@@ -19118,7 +19204,10 @@ def join(
     predicate: Literal['dwithin'],
     distance: float,
     unit: DistanceUnit | None = None,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+) -> tuple[
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+]: ...
 @overload
 def join(
     left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
@@ -19127,7 +19216,10 @@ def join(
     predicate: TopologicalPredicate = 'intersects',
     distance: None = None,
     unit: DistanceUnit | None = None,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+) -> tuple[
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+]:
     """Perform a spatial join between two geometry collections via an internal index.
 
     Parameters
@@ -22311,7 +22403,7 @@ def crs_transform_bounds(
 
 @overload
 def geohash_cover(
-    geom: GeometryArray[Geometry | None],
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
     precision: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -22334,10 +22426,10 @@ def geohash_cover(
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
-        flat cell array; an array returns one grouped cell row per input
-        geometry, preserving source-row association.
+        flat cell array; an array or iterable returns one group per input row.
+        ``None`` and empty geometries produce empty groups.
 
     precision : int
         Geohash precision (``1``-``12``; finer at higher values).
@@ -22379,29 +22471,31 @@ def geohash_cover(
 
 @overload
 def geohash_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     precision: _IntInput,
 ) -> CellArray[GeohashCell]: ...
 @overload
 def geohash_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     precision: _IntInput,
 ) -> CellArray[GeohashCell | None]:
-    """Build geohash cells from parallel lon/lat columns.
+    """Build geohash cells from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
 
     precision : int or sequence of int
         Geohash precision (1-12 characters; finer at higher values). A scalar
@@ -22469,8 +22563,8 @@ def geohash_bounding_cell(
     """
 
 def geohash_union(
-    left: GeohashCell | str | Iterable[GeohashCell | str],
-    right: GeohashCell | str | Iterable[GeohashCell | str],
+    left: _GeohashSetInput,
+    right: _GeohashSetInput,
 ) -> CellArray[GeohashCell]:
     """Hierarchy-aware union of two geohash cell sets.
 
@@ -22481,7 +22575,7 @@ def geohash_union(
 
     Parameters
     ----------
-    left, right : GeohashCell, str, or iterable of those
+    left, right : GeohashCell, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -22505,8 +22599,8 @@ def geohash_union(
     """
 
 def geohash_intersection(
-    left: GeohashCell | str | Iterable[GeohashCell | str],
-    right: GeohashCell | str | Iterable[GeohashCell | str],
+    left: _GeohashSetInput,
+    right: _GeohashSetInput,
 ) -> CellArray[GeohashCell]:
     """Hierarchy-aware intersection of two geohash cell sets.
 
@@ -22516,7 +22610,7 @@ def geohash_intersection(
 
     Parameters
     ----------
-    left, right : GeohashCell, str, or iterable of those
+    left, right : GeohashCell, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects or tokens).
 
     Returns
@@ -22539,8 +22633,8 @@ def geohash_intersection(
     """
 
 def geohash_difference(
-    left: GeohashCell | str | Iterable[GeohashCell | str],
-    right: GeohashCell | str | Iterable[GeohashCell | str],
+    left: _GeohashSetInput,
+    right: _GeohashSetInput,
 ) -> CellArray[GeohashCell]:
     """Hierarchy-aware difference of two geohash cell sets.
 
@@ -22551,7 +22645,7 @@ def geohash_difference(
 
     Parameters
     ----------
-    left, right : GeohashCell, str, or iterable of those
+    left, right : GeohashCell, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects or tokens).
 
     Returns
@@ -22575,7 +22669,7 @@ def geohash_difference(
 
 @overload
 def tile_cover(
-    geom: GeometryArray[Geometry | None],
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
     zoom: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -22598,10 +22692,10 @@ def tile_cover(
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
-        flat cell array; an array returns one grouped cell row per input
-        geometry, preserving source-row association.
+        flat cell array; an array or iterable returns one group per input row.
+        ``None`` and empty geometries produce empty groups.
 
     zoom : int
         Tile zoom (``0``-``29``; finer at higher values).
@@ -22647,29 +22741,31 @@ def tile_cover(
 
 @overload
 def tile_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     zoom: _IntInput,
 ) -> CellArray[Tile]: ...
 @overload
 def tile_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     zoom: _IntInput,
 ) -> CellArray[Tile | None]:
-    """Build tiles from parallel lon/lat columns.
+    """Build tiles from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
         Latitudes outside the square Web Mercator tile grid (±85.051129°) raise
         ``InvalidGeometryError`` (no silent clamp).
 
@@ -22744,8 +22840,8 @@ def tile_bounding_cell(
     """
 
 def tile_union(
-    left: Tile | int | str | Iterable[Tile | int | str],
-    right: Tile | int | str | Iterable[Tile | int | str],
+    left: _TileSetInput,
+    right: _TileSetInput,
 ) -> CellArray[Tile]:
     """Hierarchy-aware union of two tile cell sets.
 
@@ -22756,7 +22852,7 @@ def tile_union(
 
     Parameters
     ----------
-    left, right : Tile, int, str, or iterable of those
+    left, right : Tile, int, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -22780,8 +22876,8 @@ def tile_union(
     """
 
 def tile_intersection(
-    left: Tile | int | str | Iterable[Tile | int | str],
-    right: Tile | int | str | Iterable[Tile | int | str],
+    left: _TileSetInput,
+    right: _TileSetInput,
 ) -> CellArray[Tile]:
     """Hierarchy-aware intersection of two tile cell sets.
 
@@ -22791,7 +22887,7 @@ def tile_intersection(
 
     Parameters
     ----------
-    left, right : Tile, int, str, or iterable of those
+    left, right : Tile, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -22814,8 +22910,8 @@ def tile_intersection(
     """
 
 def tile_difference(
-    left: Tile | int | str | Iterable[Tile | int | str],
-    right: Tile | int | str | Iterable[Tile | int | str],
+    left: _TileSetInput,
+    right: _TileSetInput,
 ) -> CellArray[Tile]:
     """Hierarchy-aware difference of two tile cell sets.
 
@@ -22826,7 +22922,7 @@ def tile_difference(
 
     Parameters
     ----------
-    left, right : Tile, int, str, or iterable of those
+    left, right : Tile, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -22849,21 +22945,30 @@ def tile_difference(
     """
 
 @overload
-def pluscode_encode(value: Point, *, length: int = 10) -> str: ...
+def pluscode_encode(
+    value: Point, lat: None = None, *, length: _IntScalar = 10
+) -> str: ...
 @overload
 def pluscode_encode(
-    value: _FloatScalarInput,
-    lat: _FloatScalarInput,
+    value: FloatScalar,
+    lat: FloatScalar,
     *,
     length: _IntScalar = 10,
 ) -> str: ...
 @overload
 def pluscode_encode(
     value: GeometryArray[Point], lat: None = None, *, length: _IntScalar = 10
+) -> list[str]: ...
+@overload
+def pluscode_encode(
+    value: GeometryArray[Point | None],
+    lat: None = None,
+    *,
+    length: _IntScalar = 10,
 ) -> list[str | None]: ...
 @overload
 def pluscode_encode(
-    value: _FloatColumn1D,
+    value: Sequence[float],
     lat: FloatInput,
     *,
     length: _IntScalar = 10,
@@ -22871,10 +22976,26 @@ def pluscode_encode(
 @overload
 def pluscode_encode(
     value: FloatInput,
-    lat: _FloatColumn1D,
+    lat: Sequence[float],
     *,
     length: _IntScalar = 10,
-) -> list[str]:
+) -> list[str]: ...
+@overload
+def pluscode_encode(
+    value: Buffer, lat: FloatInput, *, length: _IntScalar = 10
+) -> str | list[str]: ...
+@overload
+def pluscode_encode(
+    value: FloatInput, lat: Buffer, *, length: _IntScalar = 10
+) -> str | list[str]: ...
+@overload
+def pluscode_encode(
+    value: Iterable[float], lat: FloatInput, *, length: _IntScalar = 10
+) -> str | list[str]: ...
+@overload
+def pluscode_encode(
+    value: FloatInput, lat: Iterable[float], *, length: _IntScalar = 10
+) -> str | list[str]:
     """Plus code (Open Location Code) of a point.
 
     Encodes WGS84 coordinates as Google's Open Location Code — the
@@ -22950,14 +23071,40 @@ def pluscode_polygon(
     """
 
 @overload
-def pluscode_shorten(
-    code: str, reference: _FloatScalarInput, lat: _FloatScalarInput
-) -> str: ...
+def pluscode_shorten(code: str, reference: Point, lat: None = None) -> str: ...
 @overload
 def pluscode_shorten(
-    code: Iterable[str],
-    reference: FloatInput,
-    lat: FloatInput,
+    code: Iterable[str], reference: Point, lat: None = None
+) -> list[str]: ...
+@overload
+def pluscode_shorten(code: str, reference: FloatScalar, lat: FloatScalar) -> str: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: Sequence[float], lat: FloatInput
+) -> list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: FloatInput, lat: Sequence[float]
+) -> list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: Buffer, lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: FloatInput, lat: Buffer
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: Iterable[float], lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: str, reference: FloatInput, lat: Iterable[float]
+) -> str | list[str]: ...
+@overload
+def pluscode_shorten(
+    code: Iterable[str], reference: FloatInput, lat: FloatInput
 ) -> list[str]:
     """Shorten a full plus code relative to a nearby reference point.
 
@@ -22968,8 +23115,11 @@ def pluscode_shorten(
     ----------
     code : str or iterable of str
         A full, unpadded plus code with at least 6 digits.
-    reference, lat : float or sequence of float
-        The reference location(s).
+    reference : Point or float
+        A CRS-aware reference point or longitude column.
+    lat : float or sequence of float, optional
+        Latitude column when ``reference`` is a longitude. Coordinate columns
+        broadcast with one another and with a scalar code.
 
     Returns
     -------
@@ -22990,17 +23140,45 @@ def pluscode_shorten(
     >>> import gometry as gm
     >>> gm.pluscode_shorten('8FVC9G8F+6X', 8.5, 47.4)
     '9G8F+6X'
+    >>> gm.pluscode_shorten('8FVC9G8F+6X', gm.Point(8.5, 47.4, crs=4326))
+    '9G8F+6X'
     """
 
 @overload
-def pluscode_recover(
-    code: str, reference: _FloatScalarInput, lat: _FloatScalarInput
-) -> str: ...
+def pluscode_recover(code: str, reference: Point, lat: None = None) -> str: ...
 @overload
 def pluscode_recover(
-    code: Iterable[str],
-    reference: FloatInput,
-    lat: FloatInput,
+    code: Iterable[str], reference: Point, lat: None = None
+) -> list[str]: ...
+@overload
+def pluscode_recover(code: str, reference: FloatScalar, lat: FloatScalar) -> str: ...
+@overload
+def pluscode_recover(
+    code: str, reference: Sequence[float], lat: FloatInput
+) -> list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: FloatInput, lat: Sequence[float]
+) -> list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: Buffer, lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: FloatInput, lat: Buffer
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: Iterable[float], lat: FloatInput
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: str, reference: FloatInput, lat: Iterable[float]
+) -> str | list[str]: ...
+@overload
+def pluscode_recover(
+    code: Iterable[str], reference: FloatInput, lat: FloatInput
 ) -> list[str]:
     """Recover the nearest full plus code from a shortened one.
 
@@ -23009,8 +23187,11 @@ def pluscode_recover(
     code : str or iterable of str
         A short plus code (e.g. ``'9G8F+6X'``); a full code passes through
         normalized.
-    reference, lat : float or sequence of float
-        The reference location(s) the code is near.
+    reference : Point or float
+        A CRS-aware reference point or longitude column.
+    lat : float or sequence of float, optional
+        Latitude column when ``reference`` is a longitude. Coordinate columns
+        broadcast with one another and with a scalar code.
 
     Returns
     -------
@@ -23029,22 +23210,41 @@ def pluscode_recover(
     >>> import gometry as gm
     >>> gm.pluscode_recover('9G8F+6X', 8.5, 47.4)
     '8FVC9G8F+6X'
+    >>> gm.pluscode_recover('9G8F+6X', gm.Point(8.5, 47.4, crs=4326))
+    '8FVC9G8F+6X'
     """
 
 @overload
 def osm_shortlink_encode(
-    value: Point | _FloatScalarInput,
-    lat: _FloatScalarInput | None = None,
+    value: Point,
+    lat: None = None,
     *,
     zoom: _IntScalar = 16,
 ) -> str: ...
 @overload
 def osm_shortlink_encode(
-    value: GeometryArray[Point], lat: None = None, *, zoom: _IntScalar = 16
+    value: FloatScalar,
+    lat: FloatScalar,
+    *,
+    zoom: _IntScalar = 16,
+) -> str: ...
+@overload
+def osm_shortlink_encode(
+    value: GeometryArray[Point],
+    lat: None = None,
+    *,
+    zoom: _IntScalar = 16,
+) -> list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: GeometryArray[Point | None],
+    lat: None = None,
+    *,
+    zoom: _IntScalar = 16,
 ) -> list[str | None]: ...
 @overload
 def osm_shortlink_encode(
-    value: _FloatColumn1D,
+    value: Sequence[float],
     lat: FloatInput,
     *,
     zoom: _IntScalar = 16,
@@ -23052,17 +23252,26 @@ def osm_shortlink_encode(
 @overload
 def osm_shortlink_encode(
     value: FloatInput,
-    lat: _FloatColumn1D,
+    lat: Sequence[float],
     *,
     zoom: _IntScalar = 16,
 ) -> list[str]: ...
 @overload
 def osm_shortlink_encode(
-    value: Point | GeometryArray[Point] | FloatInput,
-    lat: FloatInput | None = None,
-    *,
-    zoom: _IntScalar = 16,
-) -> str | list[str | None]:
+    value: Buffer, lat: FloatInput, *, zoom: _IntScalar = 16
+) -> str | list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: FloatInput, lat: Buffer, *, zoom: _IntScalar = 16
+) -> str | list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: Iterable[float], lat: FloatInput, *, zoom: _IntScalar = 16
+) -> str | list[str]: ...
+@overload
+def osm_shortlink_encode(
+    value: FloatInput, lat: Iterable[float], *, zoom: _IntScalar = 16
+) -> str | list[str]:
     """`OpenStreetMap` shortlink code of a point.
 
     The compact location code in ``https://osm.org/go/...`` URLs (a Morton
@@ -23105,7 +23314,7 @@ def osm_shortlink_location(
 ) -> tuple[
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
-    npt.NDArray[np.int64],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
 ]:
     """Parse an OSM shortlink code back into its location and zoom.
 
@@ -23138,7 +23347,7 @@ def osm_shortlink_location(
 
 @overload
 def h3_cover(
-    geom: GeometryArray[Geometry | None],
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
     resolution: int,
     *,
     cell_rule: CellRule = 'overlap',
@@ -23160,9 +23369,10 @@ def h3_cover(
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
+        Geometry to cover (WGS84 lon/lat or projected). An array or iterable
+        returns one group per input row; ``None`` and empty geometries produce
+        empty groups.
 
     resolution : int
         H3 resolution (``0``-``15``; finer at higher values).
@@ -23212,29 +23422,31 @@ def h3_cover(
 
 @overload
 def h3_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     resolution: _IntInput,
 ) -> CellArray[H3Cell]: ...
 @overload
 def h3_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     resolution: _IntInput,
 ) -> CellArray[H3Cell | None]:
-    """Build H3 cells from parallel lon/lat columns.
+    """Build H3 cells from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
 
     resolution : int or sequence of int
         H3 resolution (0-15; finer at higher values). A scalar broadcasts to
@@ -23250,7 +23462,7 @@ def h3_cells(
     GeometryError
         If ``resolution`` is out of range or every argument is scalar.
     InvalidGeometryError
-        If a coordinate is non-finite or columns differ in length.
+        If a coordinate is non-finite or coordinate columns differ in length.
 
     See Also
     --------
@@ -23305,8 +23517,8 @@ def h3_bounding_cell(
     """
 
 def h3_union(
-    left: H3Cell | int | str | Iterable[H3Cell | int | str],
-    right: H3Cell | int | str | Iterable[H3Cell | int | str],
+    left: _H3SetInput,
+    right: _H3SetInput,
 ) -> CellArray[H3Cell]:
     """Hierarchy-aware union of two H3 cell sets.
 
@@ -23317,7 +23529,7 @@ def h3_union(
 
     Parameters
     ----------
-    left, right : H3Cell, int, str, or iterable of those
+    left, right : H3Cell, int, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -23347,8 +23559,8 @@ def h3_union(
     """
 
 def h3_intersection(
-    left: H3Cell | int | str | Iterable[H3Cell | int | str],
-    right: H3Cell | int | str | Iterable[H3Cell | int | str],
+    left: _H3SetInput,
+    right: _H3SetInput,
 ) -> CellArray[H3Cell]:
     """Hierarchy-aware intersection of two H3 cell sets.
 
@@ -23358,7 +23570,7 @@ def h3_intersection(
 
     Parameters
     ----------
-    left, right : H3Cell, int, str, or iterable of those
+    left, right : H3Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -23387,8 +23599,8 @@ def h3_intersection(
     """
 
 def h3_difference(
-    left: H3Cell | int | str | Iterable[H3Cell | int | str],
-    right: H3Cell | int | str | Iterable[H3Cell | int | str],
+    left: _H3SetInput,
+    right: _H3SetInput,
 ) -> CellArray[H3Cell]:
     """Hierarchy-aware difference of two H3 cell sets.
 
@@ -23399,7 +23611,7 @@ def h3_difference(
 
     Parameters
     ----------
-    left, right : H3Cell, int, str, or iterable of those
+    left, right : H3Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -23467,35 +23679,59 @@ def h3_base_cells() -> CellArray[H3Cell]:
 
 @overload
 def s2_cover(
-    geom: GeometryArray[Geometry | None],
-    level: int,
+    geom: GeometryArray[Geometry | None] | Iterable[Geometry | None],
+    level: int | None = None,
     *,
+    target_cells: int = 8,
+    min_level: int | None = None,
+    max_level: int | None = None,
+    level_mod: Literal[1, 2, 3] = 1,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> Groups[CellArray[S2Cell]]: ...
 @overload
 def s2_cover(
     geom: Geometry,
-    level: int,
+    level: int | None = None,
     *,
+    target_cells: int = 8,
+    min_level: int | None = None,
+    max_level: int | None = None,
+    level_mod: Literal[1, 2, 3] = 1,
     cell_rule: CellRule = 'overlap',
     max_cells: int | None = 1000000,
 ) -> CellArray[S2Cell]:
-    """Cover a geometry with S2 cells at one fixed level.
+    """Cover a geometry with fixed-level or adaptively refined S2 cells.
 
-    The result is a ``CellArray`` of S2 cells selected according to
-    ``cell_rule`` at the requested level. Keep the source geometry separately and use the free
-    ``gm.*`` predicates for exact geometry questions.
+    Omit ``level`` to adapt refinement to ``target_cells`` and the optional
+    level range. Supplying ``level`` fixes the output depth; non-default
+    adaptive controls cannot be combined with it. Keep the source geometry
+    separately and use the free ``gm.*`` predicates for exact geometry
+    questions.
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
+        Geometry to cover (WGS84 lon/lat or projected). An array or iterable
+        returns one group per input row; ``None`` and empty geometries produce
+        empty groups.
 
-    level : int
-        S2 cell level (``0``-``30``; finer at higher values). The level is
-        never coarsened to fit the output cap.
+    level : int, optional
+        Fixed S2 cell level (``0``-``30``; finer at higher values). The level is
+        never coarsened to fit the output cap. Omit it for adaptive refinement.
+
+    target_cells : int, default 8
+        Approximate adaptive refinement target; the minimum admissible cover
+        can exceed this value.
+
+    min_level : int or None, default None
+        Coarsest adaptive S2 level allowed; omission uses level ``0``.
+
+    max_level : int or None, default None
+        Finest adaptive S2 level allowed; omission uses level ``30``.
+
+    level_mod : {1, 2, 3}, default 1
+        Restrict adaptive output levels to increments from ``min_level``.
 
     cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
         Which cells to materialize, strictest to loosest. ``'within'``: only
@@ -23508,9 +23744,10 @@ def s2_cover(
         The rule never affects the exact predicates.
 
     max_cells : int or None, default 1000000
-        Hard cap on returned cells; array calls apply it cumulatively across
-        groups. An insufficient cap raises because the requested level is
-        fixed. Pass ``None`` for an unlimited cover.
+        Hard cap on returned cells, applied cumulatively across array groups.
+        In fixed-level mode an insufficient cap raises; adaptive mode may
+        coarsen only within its requested level range. Pass ``None`` for an
+        unlimited cover.
 
     Returns
     -------
@@ -23520,21 +23757,22 @@ def s2_cover(
     Raises
     ------
     GeometryError
-        If the geometry, level, or a coverage parameter is invalid, or if the
-        cover exceeds ``max_cells``.
+        If the geometry, level, or a coverage parameter is invalid, if fixed
+        and non-default adaptive controls are combined, or if the cover exceeds
+        ``max_cells``.
     InvalidGeometryError
         If a scalar geometry is empty or coordinates leave the lon/lat domain.
 
     See Also
     --------
     s2_cells : Build S2 cells from lon/lat columns.
-    s2_cover_adaptive : Cover with adaptive levels.
+    s2_cover : Cover with fixed or adaptive levels.
 
     Examples
     --------
     >>> import gometry as gm
     >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cov = gm.s2_cover(p, 12)
+    >>> cov = gm.s2_cover(p, level=12)
     >>> cell = cov[0]
     >>> assert cell is not None
     >>> (len(cov), cell.token)
@@ -23542,108 +23780,32 @@ def s2_cover(
     """
 
 @overload
-def s2_cover_adaptive(
-    geom: GeometryArray[Geometry | None],
-    *,
-    target_cells: int = 8,
-    min_level: int = 0,
-    max_level: int = 30,
-    level_mod: Literal[1, 2, 3] = 1,
-    cell_rule: CellRule = 'overlap',
-    max_cells: int | None = 1000000,
-) -> Groups[CellArray[S2Cell]]: ...
-@overload
-def s2_cover_adaptive(
-    geom: Geometry,
-    *,
-    target_cells: int = 8,
-    min_level: int = 0,
-    max_level: int = 30,
-    level_mod: Literal[1, 2, 3] = 1,
-    cell_rule: CellRule = 'overlap',
-    max_cells: int | None = 1000000,
-) -> CellArray[S2Cell]:
-    """Cover a geometry with adaptively refined S2 cells.
-
-    ``target_cells`` guides refinement but is not a hard cap. Use ``max_cells``
-    for a hard output limit. Cells are coarsened only within the requested level
-    range, and emitted levels follow ``level_mod``. Array calls retain one group
-    per input row and share the total cap.
-
-    The four ``cell_rule`` values have the same meanings as in [`s2_cover`].
-
-    Parameters
-    ----------
-    geom : Geometry or GeometryArray
-        Geometry to cover (WGS84 lon/lat or projected). An array returns one
-        grouped cell row per input geometry.
-    target_cells : int, default 8
-        Approximate refinement target; the minimum admissible cover can exceed
-        this value.
-    min_level : int, default 0
-        Coarsest S2 level allowed.
-    max_level : int, default 30
-        Finest S2 level allowed.
-    level_mod : {1, 2, 3}, default 1
-        Restrict emitted levels to increments from ``min_level``.
-    cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
-        Which cells to materialize. The rule never affects exact predicates.
-    max_cells : int or None, default 1000000
-        Hard cap on returned cells, applied cumulatively across array groups.
-        Pass ``None`` for an unlimited cover.
-
-    Returns
-    -------
-    CellArray or Groups of CellArray
-        A scalar returns its coverage; an array returns one cell group per row.
-
-    Raises
-    ------
-    GeometryError
-        If a parameter is invalid or the admissible starting cover exceeds
-        ``max_cells``.
-    InvalidGeometryError
-        If a scalar geometry is empty or coordinates leave the lon/lat domain.
-
-    See Also
-    --------
-    s2_cover : Cover at a fixed level.
-    s2_cells : Build S2 cells from lon/lat columns.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> p = gm.Point(-122.4194, 37.7749, crs=4326)
-    >>> cov = gm.s2_cover_adaptive(p, target_cells=8)
-    >>> all(0 <= cell.level <= 30 for cell in cov if cell is not None)
-    True
-    """
-
-@overload
 def s2_cells(
-    values: GeometryArray[Point] | FloatInput,
+    values: GeometryArray[Point] | Iterable[Point] | _CoordinateMatrix | FloatInput,
     lat: FloatInput | None = None,
     *,
     level: _IntInput,
 ) -> CellArray[S2Cell]: ...
 @overload
 def s2_cells(
-    values: GeometryArray[Point | None],
-    lat: FloatInput | None = None,
+    values: GeometryArray[Point | None] | Iterable[Point | None],
+    lat: None = None,
     *,
     level: _IntInput,
 ) -> CellArray[S2Cell | None]:
-    """Build S2 cells from parallel lon/lat columns.
+    """Build S2 cells from points, coordinate rows, or parallel lon/lat columns.
 
     Parameters
     ----------
-    values : GeometryArray of Point, float, or sequence of float
-        Point geometries or WGS84 longitudes. Projected point arrays are
-        reprojected in one native batch.
+    values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+        Point geometries (``None`` makes a missing cell), a coordinate matrix
+        with at least two columns, or WGS84 longitudes. Iterable points must
+        share one CRS and epoch; projected point inputs are reprojected to
+        WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 
     lat : float or sequence of float, optional
-        WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-        broadcast numpy-style; at least one coordinate column must be sequence of float.
+        WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+        columns broadcast numpy-style; at least one must be a sequence.
 
     level : int or sequence of int
         S2 cell level (0-30; finer at higher values). A scalar broadcasts to
@@ -23717,8 +23879,8 @@ def s2_bounding_cell(
     """
 
 def s2_union(
-    left: S2Cell | int | str | Iterable[S2Cell | int | str],
-    right: S2Cell | int | str | Iterable[S2Cell | int | str],
+    left: _S2SetInput,
+    right: _S2SetInput,
 ) -> CellArray[S2Cell]:
     """Hierarchy-aware union of two S2 cell sets.
 
@@ -23729,7 +23891,7 @@ def s2_union(
 
     Parameters
     ----------
-    left, right : S2Cell, int, str, or iterable of those
+    left, right : S2Cell, int, str, or iterable of those with missing values skipped
         A single cell identity or a collection on either side (any
         accepted mix of cell objects and identity values for this grid).
 
@@ -23753,8 +23915,8 @@ def s2_union(
     """
 
 def s2_intersection(
-    left: S2Cell | int | str | Iterable[S2Cell | int | str],
-    right: S2Cell | int | str | Iterable[S2Cell | int | str],
+    left: _S2SetInput,
+    right: _S2SetInput,
 ) -> CellArray[S2Cell]:
     """Hierarchy-aware intersection of two S2 cell sets.
 
@@ -23764,7 +23926,7 @@ def s2_intersection(
 
     Parameters
     ----------
-    left, right : S2Cell, int, str, or iterable of those
+    left, right : S2Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns
@@ -23787,8 +23949,8 @@ def s2_intersection(
     """
 
 def s2_difference(
-    left: S2Cell | int | str | Iterable[S2Cell | int | str],
-    right: S2Cell | int | str | Iterable[S2Cell | int | str],
+    left: _S2SetInput,
+    right: _S2SetInput,
 ) -> CellArray[S2Cell]:
     """Hierarchy-aware difference of two S2 cell sets.
 
@@ -23799,7 +23961,7 @@ def s2_difference(
 
     Parameters
     ----------
-    left, right : S2Cell, int, str, or iterable of those
+    left, right : S2Cell, int, str, or iterable of those with missing values skipped
         The two cell sets (any mix of cell objects, ids, or tokens).
 
     Returns

@@ -547,11 +547,12 @@ pub(crate) fn line_locate_coordseq(
 
 #[cfg(test)]
 mod tests {
-    use super::{InterpolatePlan, PreparedPlan, line_interpolate_points_shape};
+    use super::{
+        InterpolatePlan, PreparedPlan, line_interpolate_points_shape, linear_reference_counters,
+    };
     use crate::crs::{MetricModel, ResolvedMetric};
     use crate::dispatch::Lane;
     use crate::geometry::{ChartLineIndex, CoordSeq, FrameDependentCaches, LineSeq, Point, Shape};
-    use crate::test_support::linear_reference_counters;
 
     fn line(z: bool, m: bool) -> PreparedPlan {
         PreparedPlan::new(Shape::LineString(

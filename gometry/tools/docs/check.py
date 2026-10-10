@@ -57,7 +57,7 @@ class RenderedCallForm:
 class RenderedSignature:
     subject: str
     source: str
-    form: RenderedCallForm
+    form: RenderedCallForm | None
 
 
 @dataclass(slots=True)
@@ -245,6 +245,7 @@ class _RenderedSignatures(HTMLParser):
         self.stack: list[_HtmlElement] = []
         self.active: _SignatureText | None = None
         self.values: list[tuple[str, str]] = []
+        self.attributes: set[str] = set()
 
     def handle_starttag(
         self,
@@ -264,6 +265,8 @@ class _RenderedSignatures(HTMLParser):
                     element.subject = ident
                     subject = ident
                     break
+        if 'doc-symbol-attribute' in classes and subject:
+            self.attributes.add(subject)
         is_signature = 'doc-signature' in classes or any(
             element.is_signature for element in self.stack
         )
@@ -294,7 +297,11 @@ def rendered_call_forms(source: str) -> dict[str, tuple[RenderedSignature, ...]]
     grouped: dict[str, list[RenderedSignature]] = {}
     for subject, signature in parser.values:
         grouped.setdefault(subject, []).append(
-            RenderedSignature(subject, signature, _signature_form(signature))
+            RenderedSignature(
+                subject,
+                signature,
+                None if subject in parser.attributes else _signature_form(signature),
+            )
         )
     return {subject: tuple(signatures) for subject, signatures in grouped.items()}
 

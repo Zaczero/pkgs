@@ -8,10 +8,14 @@ import operator
 import gometry as gm
 import numpy as np
 import pytest
-import shapely
-from pyproj import Geod
 
 from tests._support import GOMETRY_ROOT, load_tool
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely is an optional oracle dependency'
+)
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+Geod = pyproj.Geod
 
 _CHART_EDGE_REFERENCE = load_tool(
     '_bench_chart_edge_reference',
@@ -402,7 +406,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
     """Adaptive bbox windows share one finite deduplicated output budget."""
     separated = gm.MultiPoint([(0.0, 0.0), (120.0, 0.0)], crs=4326)
     with pytest.raises(gm.GeometryError, match='max_cells'):
-        gm.s2_cover_adaptive(
+        gm.s2_cover(
             separated,
             cell_rule='bbox',
             min_level=0,
@@ -411,7 +415,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
             max_cells=1,
         )
 
-    covered = gm.s2_cover_adaptive(
+    covered = gm.s2_cover(
         separated,
         cell_rule='bbox',
         min_level=0,
@@ -423,7 +427,7 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
     assert [cell.id for cell in covered] == sorted({cell.id for cell in covered})
 
     same_cell = gm.MultiPoint([(-75.0, 40.0), (-74.99, 40.01)], crs=4326)
-    deduplicated = gm.s2_cover_adaptive(
+    deduplicated = gm.s2_cover(
         same_cell,
         cell_rule='bbox',
         min_level=0,
@@ -442,7 +446,7 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
     for cover, options in (
         (gm.s2_cover, {'level': 8, 'max_cells': None}),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -451,7 +455,7 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
             },
         ),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -460,7 +464,7 @@ def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
             },
         ),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -1058,7 +1062,7 @@ def test_s2_within_line_is_empty_at_every_level_mod_and_budget() -> None:
     line = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
     for level_mod in (1, 2, 3):
         for max_cells in (None, 1):
-            assert not gm.s2_cover_adaptive(
+            assert not gm.s2_cover(
                 line,
                 cell_rule='within',
                 min_level=0,

@@ -8,9 +8,9 @@ import re
 from typing import Any, cast
 
 import gometry as gm
-import pyproj
 import pytest
 
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 _WKT_4326 = gm.CRS(4326).to_wkt()
 
 

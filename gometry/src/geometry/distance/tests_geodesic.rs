@@ -5,8 +5,8 @@
 use geographiclib_rs::{Geodesic, InverseGeodesic as _};
 use pyo3::prelude::*;
 
-use crate::crs::frame::{Frame, crs_arc_static};
-use crate::crs::{PointEdgeScratch, with_ellipsoid_metric};
+use crate::crs::frame::{Frame, crs_arc, crs_arc_static};
+use crate::crs::{PointEdgeScratch, point_edge_test_counters, with_ellipsoid_metric};
 use crate::error::Result;
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::distance::frechet::frechet_dp_columns;
@@ -17,7 +17,7 @@ use crate::geometry::distance::{
 };
 use crate::geometry::{
     ChartMetric, FrameDependentCaches, GeodesicMetric, GeographicPrepared, MOrdinate, Point,
-    PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
+    PointEdgeQueryResult, PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
 };
 
 const MINIMUM_GAP_METERS: f64 = 4e-11 * 6_378_137.0;
@@ -919,7 +919,9 @@ fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
                     "outside"
                 },
                 crate::geometry::PointEdgeQueryResult::Unresolved { .. } => "unresolved",
-                other => panic!("{name}: unexpected threshold result {other:?}"),
+                other @ (PointEdgeQueryResult::Excluded | PointEdgeQueryResult::Minimum(_)) => {
+                    panic!("{name}: unexpected threshold result {other:?}")
+                },
             };
             observations.push((name, start, end, query, limit, attained, classification));
         }
@@ -955,9 +957,7 @@ fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
                     result
                         .expect_err("an unresolved threshold raises instead of returning False")
                         .to_string()
-                        .contains(
-                            "geodesic dwithin did not converge within 128 point-edge evaluations"
-                        )
+                        .contains("geodesic dwithin did not converge within its binary64 parameter-search budget")
                 ),
                 "outside" => {
                     assert!(
@@ -977,6 +977,63 @@ fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[test]
+fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
+    const MIXED_UNIT_CRS: &str = r#"GEOGCRS["West-radian south-grad WGS84",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",west,ORDER[1],ANGLEUNIT["radian",1]],
+ AXIS["Latitude",south,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"#;
+    let longitudes = (0..=8).map(|index| 170.0 + 2.5 * f64::from(index));
+    let source_points = longitudes
+        .clone()
+        .map(|longitude| p(-longitude.to_radians(), -60.0 * 10.0 / 9.0))
+        .collect();
+    let target_points = longitudes
+        .map(|longitude| p(-longitude.to_radians(), -60.01 * 10.0 / 9.0))
+        .collect();
+    let source = line(source_points);
+    let target = line(target_points);
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 180.0, 60.01, 180.0);
+
+    Python::initialize();
+    Python::attach(|py| {
+        const EDGE_SAMPLE_LIMIT: u64 = 10_000;
+        let frame =
+            Frame::new(Some(crs_arc(MIXED_UNIT_CRS)), None).expect("mixed-unit geographic CRS");
+        let source = crate::Typed(crate::PyGeometry::with_frame(source, frame.clone()))
+            .into_pyobject(py)
+            .expect("source line binds as a public typed geometry");
+        let target = crate::Typed(crate::PyGeometry::with_frame(target, frame))
+            .into_pyobject(py)
+            .expect("target line binds as a public typed geometry");
+        chart_hausdorff_counters::reset();
+        point_edge_test_counters::reset();
+        point_edge_test_counters::set_sample_limit(EDGE_SAMPLE_LIMIT);
+
+        let result = crate::hausdorff_distance(py, source.as_any(), target.as_any(), None, None);
+        let source_evaluations = chart_hausdorff_counters::source_evaluations();
+        let edge_evaluations = point_edge_test_counters::samples();
+        point_edge_test_counters::reset();
+
+        assert!(
+            source_evaluations <= 32,
+            "public Hausdorff visited {source_evaluations} source parameters"
+        );
+        assert!(
+            edge_evaluations <= EDGE_SAMPLE_LIMIT,
+            "public Hausdorff evaluated {edge_evaluations} point-edge samples"
+        );
+        let result = result.expect("public geographic Hausdorff call");
+        let actual = result
+            .bind(py)
+            .extract::<f64>()
+            .expect("Hausdorff result is a float");
+        assert!((actual - expected).abs() <= 0.01);
+    });
 }
 
 #[test]
