@@ -56,8 +56,8 @@ impl PyGeometry {
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     Target CRS (EPSG or authority/WKT), or ``None`` to clear.
+    /// crs : CRS-like
+    ///     Target CRS-like input, or ``None`` to clear.
     ///
     /// overwrite : bool, default False
     ///     Allow replacing an existing, different CRS label.
@@ -140,7 +140,7 @@ impl PyGeometry {
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int or None, optional
+    /// crs : CRS-like or None, optional
     ///     Replace or clear the CRS label.
     ///
     /// epoch : float or None, optional
@@ -179,8 +179,8 @@ impl PyGeometry {
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     Target CRS as an EPSG code or authority/WKT string.
+    /// crs : CRS-like
+    ///     Target CRS-like input.
     ///
     /// area_of_interest : sequence of float, optional
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.

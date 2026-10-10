@@ -504,7 +504,7 @@ fn public_distance_measures_a_full_turn_line_as_its_parallel() {
         .into_pyobject(py)
         .expect("linestring binds as its public typed geometry");
 
-        let distance = crate::distance(py, &point, &line, None)
+        let distance = crate::distance(py, &point, &line, crate::NavigationPath::Geodesic, None)
             .expect("public distance succeeds")
             .bind(py)
             .extract::<f64>()

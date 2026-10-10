@@ -27,7 +27,6 @@ FLAT_FAMILY_EXPORTS = {
     'crs_proj_operations',
     'crs_reset',
     'crs_roundtrip',
-    'crs_search',
     'crs_transform',
     'crs_transform_bounds',
     'crs_unit',
@@ -195,8 +194,7 @@ def test_public_integer_boundaries_raise_value_error_not_overflow() -> None:
         (lambda: gm.Point(0, 0, crs=-1), 'EPSG code'),
         (lambda: gm.Point(0, 0).set_crs(huge), 'EPSG code'),
         (lambda: gm.Point(0, 0, crs=4326).to_crs(-1), 'EPSG code'),
-        (lambda: gm.crs_search('WGS 84', limit=0), 'CRS search limit'),
-        (lambda: gm.crs_search('WGS 84', limit=1001), 'CRS search limit'),
+        (lambda: gm.crs_catalog('WGS 84', limit=0), 'CRS catalog limit'),
     ]
     for call, error_type, message in _normalize_boundary_cases(cases, ValueError):
         kwargs = {'match': message} if message is not None else {}
@@ -386,8 +384,8 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
         (lambda: polygon.concave_hull(length_threshold=huge), 'length_threshold'),
         (lambda: polygon.polylabel(tolerance=huge), TypeError, 'tolerance'),
         (lambda: polygon.polylabel(tolerance=huge), 'tolerance'),
-        (lambda: sites.voronoi_polygons(tolerance=huge), OverflowError, None),
-        (lambda: sites.voronoi_edges(tolerance=huge), OverflowError, None),
+        (lambda: sites.voronoi(output='polygons', tolerance=huge), OverflowError, None),
+        (lambda: sites.voronoi(output='edges', tolerance=huge), OverflowError, None),
         (
             lambda: gm.contains_xy(geom, huge, 0),
             gm.InvalidGeometryError,
@@ -469,6 +467,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
         'SpatialIndex.nearest': str(inspect.signature(idx.nearest)),
         'gm.nearest': str(inspect.signature(gm.nearest)),
         'gm.bearing': str(inspect.signature(gm.bearing)),
+        'gm.distance': str(inspect.signature(gm.distance)),
         'Geometry.destination': str(inspect.signature(geom.destination)),
         'gm.point_between': str(inspect.signature(gm.point_between)),
         'gm.h3_cover': str(inspect.signature(gm.h3_cover)),
@@ -498,6 +497,7 @@ def test_public_signatures_keep_pythonic_defaults_after_native_validation() -> N
     assert 'k=1' in signatures['SpatialIndex.nearest']
     assert 'k=1' in signatures['gm.nearest']
     assert signatures['gm.bearing'] == "(left, right, *, path='geodesic')"
+    assert signatures['gm.distance'] == "(left, right, *, path='geodesic', unit=None)"
     assert (
         signatures['Geometry.destination']
         == "(bearing, distance, *, path='geodesic', unit=None)"
@@ -686,7 +686,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'coverage_invalid_edges',
         'coverage_is_valid',
         'coverage_simplify',
-        'coverage_union',
+        'coverage_union_all',
         'covered_by',
         'covers',
         'cross_track_distance',
@@ -734,7 +734,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'relate',
         'relate_pattern',
         'require',
-        'rhumb_distance',
         'shared_paths',
         'shortest_line',
         'snap',
@@ -769,7 +768,7 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
     )
     assert not hasattr(gm, 'GeometryDtype')
     assert callable(gm.crs_transform)
-    assert callable(gm.crs_search)
+    assert callable(gm.crs_catalog)
     assert callable(gm.H3Cell)
     assert callable(gm.S2Cell)
     assert callable(gm.h3_cells)
@@ -897,7 +896,7 @@ def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
     for label, call in (
         (
             'voronoi clip of the wrong kind',
-            lambda: triangle.voronoi_polygons(clip=point),
+            lambda: triangle.voronoi(output='polygons', clip=point),
         ),
         ('multi_polygons member kind', lambda: gm.multi_polygons([[point]])),
     ):

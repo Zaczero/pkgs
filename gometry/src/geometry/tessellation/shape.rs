@@ -428,17 +428,17 @@ impl Shape {
     }
 
     #[cfg(test)]
-    pub(crate) fn voronoi_polygons(
+    pub(crate) fn voronoi_cells(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
     ) -> Result<Vec<Self>> {
-        let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
-        self.voronoi_polygons_budgeted(tolerance, boundary, &mut budget)
+        let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
+        self.voronoi_cells_budgeted(tolerance, boundary, &mut budget)
     }
 
     #[cfg(test)]
-    pub(crate) fn voronoi_polygons_budgeted(
+    pub(crate) fn voronoi_cells_budgeted(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
@@ -507,11 +507,11 @@ impl Shape {
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<(CoordSeq, CsrOffsetColumn)> {
-        self.voronoi_edges_raw(tolerance, boundary, budget)?
+        self.voronoi_edge_lines_raw(tolerance, boundary, budget)?
             .into_line_column()
     }
 
-    fn voronoi_edges_raw(
+    fn voronoi_edge_lines_raw(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,

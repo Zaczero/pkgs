@@ -5,10 +5,10 @@
 //! parent-`crs` helpers via `use super::*`.
 
 use crate::crs::{
-    AreaOfInterest, CString, CrsCatalogOptions, CrsComparison, CrsError, CrsObjectKind,
-    CrsProjJsonOptions, CrsProjOptions, CrsSearchOptions, CrsWktOptions, ProjDirection,
+    AreaOfInterest, CString, CrsCatalogOptions, CrsComparison, CrsError, CrsNameMatchOptions,
+    CrsObjectKind, CrsProjJsonOptions, CrsProjOptions, CrsWktOptions, ProjDirection,
     ProjStringVersion, ProjectionFactorColumns, ProjectionFactors, TransformOptions,
-    UtmCatalogOptions, WktAxisRule, WktVersion, c_char, cstring, ptr, validate_search_limit,
+    UtmCatalogOptions, WktAxisRule, WktVersion, c_char, cstring, ptr,
 };
 use crate::error::Result;
 
@@ -89,23 +89,22 @@ impl UtmCatalogOptions {
     }
 }
 
-impl CrsSearchOptions {
+impl CrsNameMatchOptions {
     pub(crate) fn validate(&self) -> Result<()> {
         if let Some(authority) = &self.authority
             && authority.is_empty()
         {
             return Err(CrsError::invalid(
-                "CRS search authority must be a non-empty string".to_owned(),
+                "CRS catalog authority must be a non-empty string".to_owned(),
             ));
         }
         if let Some(kind) = self.kind
             && !kind.is_crs()
         {
             return Err(CrsError::invalid(
-                "CRS search kind must be a CRS type".to_owned(),
+                "CRS catalog kind must be a CRS type".to_owned(),
             ));
         }
-        validate_search_limit(self.limit.get() as i64)?;
         Ok(())
     }
 }

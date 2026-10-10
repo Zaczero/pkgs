@@ -159,7 +159,7 @@ fn parse_geojson_concrete_row(
 /// data : str or mapping
 ///     A `geojson` string or mapping (Feature/FeatureCollection ok).
 ///
-/// crs : str or int, default 'OGC:CRS84'
+/// crs : CRS-like, default 'OGC:CRS84'
 ///     CRS to attach. `geojson` coordinates are WGS84 by specification, so
 ///     the default declares OGC:CRS84 (lon/lat, matching GeoParquet);
 ///     pass ``None`` for a CRS-free geometry or ``crs=4326`` for EPSG:4326.
@@ -339,7 +339,7 @@ pub(crate) fn from_geojson(
 /// features : str, bytes, mapping, or iterable of mapping
 ///     A ``FeatureCollection``/``Feature`` mapping, JSON text of one, or an
 ///     iterable of ``Feature`` mappings.
-/// crs : str or int, default 'OGC:CRS84'
+/// crs : CRS-like, default 'OGC:CRS84'
 ///     CRS to attach. GeoJSON coordinates are WGS84 by specification, so the
 ///     default declares OGC:CRS84 (lon/lat); pass ``None`` for CRS-free
 ///     geometries or ``crs=4326`` for EPSG:4326.
