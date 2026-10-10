@@ -12,17 +12,6 @@ gometry._lib.SpatialIndex.get
 # statically, a fact CPython's zero-argument constructor signature cannot say.
 gometry._lib.Geometry.__new__
 gometry._lib.Groups.__new__
-# PyO3 exposes reflected number-slot wrappers for the authored forward overlay
-# operators, but there are no separate Rust methods or signatures for them. The
-# operator expression types are carried by the forward overloads in the stub.
-gometry._lib.Geometry.__rand__
-gometry._lib.Geometry.__ror__
-gometry._lib.Geometry.__rsub__
-gometry._lib.Geometry.__rxor__
-gometry._lib.GeometryArray.__rand__
-gometry._lib.GeometryArray.__ror__
-gometry._lib.GeometryArray.__rsub__
-gometry._lib.GeometryArray.__rxor__
 # These four constructors are dependent overloads: the native parser needs
 # None sentinels for the alternate id, Point, and coordinate forms, while the
 # public overloads must keep their positive parameters required. A single

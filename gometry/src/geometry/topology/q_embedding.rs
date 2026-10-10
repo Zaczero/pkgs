@@ -58,7 +58,7 @@ use crate::geometry::overlay::{
     walk_is_shell_with_work,
 };
 use crate::geometry::segments::try_sort_by_with_work;
-use crate::geometry::tessellation::exact::{ExactRational, Interval};
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, Interval};
 use crate::geometry::{
     Bounds, ChartMetric, CoordSeq, GeometryErrorKind, Point, Ring, RingWinding, Segment, Unmetered,
     Work, XY, for_each_overlapping_bounds_cross_pair_with_work, ring_winding,
@@ -3736,6 +3736,11 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                         return Ok(None);
                     }
                 }
+                let chart_record_y = if source_record_authority {
+                    Latitude::from_admitted(self.topology.sources.frame, record.y).get()
+                } else {
+                    record.y
+                };
                 let port_id = q_source_image_port(self.topology, image)?;
                 let port = self
                     .topology
@@ -3758,7 +3763,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 };
                 let source_location = if port.cut && self.source_ports.is_some() {
                     let rounded = rounded_chart_point_with_work(expected, work)?;
-                    if record.x != rounded.x || record.y != rounded.y {
+                    if record.x != rounded.x || chart_record_y != rounded.y {
                         return Ok(None);
                     }
                     ExactChartPoint::from_rationals(
@@ -3773,7 +3778,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                     )?,
                     ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole
                 ) {
-                    if !exact_coordinate_matches_with_work(&expected.y, record.y, work)?
+                    if !exact_coordinate_matches_with_work(&expected.y, chart_record_y, work)?
                         || (!source_record_authority
                             && record.x != port.point.x.round_with_work(work)?)
                     {
@@ -3781,7 +3786,7 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                     }
                     expected.try_clone_with_work(work)?
                 } else {
-                    if !exact_coordinate_matches_with_work(&expected.y, record.y, work)? {
+                    if !exact_coordinate_matches_with_work(&expected.y, chart_record_y, work)? {
                         return Ok(None);
                     }
                     let period =
@@ -5876,6 +5881,28 @@ pub(super) fn quotient_ring_role(frame: GeographicFrame, ring: &Ring) -> Result<
     }
     let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(ring))
         .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+    if summary.exact_axis_band {
+        let south = canonical_bits(summary.south.get());
+        let mut previous: Option<Point> = None;
+        let mut south_turn = 0_i64;
+        for point in ring.coords().points() {
+            if let Some(previous) = previous
+                && canonical_bits(previous.y) == south
+                && canonical_bits(point.y) == south
+            {
+                let connection = axis
+                    .chart_connection(previous.x, point.x)
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+                south_turn = south_turn
+                    .checked_add(i64::from(connection.source_lift))
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
+            previous = Some(point);
+        }
+        if south_turn != 0 {
+            return Ok(Some(south_turn < 0));
+        }
+    }
     if summary.chart_turn == 0 {
         return Ok(None);
     }
@@ -7680,8 +7707,10 @@ pub(super) fn source_line_reuse_is_complete(
             || !samples_have_source
             || start_vertex.port.id != expected_ports[0]
             || end_vertex.port.id != expected_ports[1]
-            || start_vertex.point != source_start
-            || end_vertex.point != source_end
+            || start_vertex.point.x.to_bits() != source_start.x.to_bits()
+            || start_vertex.point.y.to_bits() != source_start.y.to_bits()
+            || end_vertex.point.x.to_bits() != source_end.x.to_bits()
+            || end_vertex.point.y.to_bits() != source_end.y.to_bits()
         {
             return Ok(false);
         }
@@ -12272,17 +12301,41 @@ fn native_port_data(
     bank: Option<super::emission::ChartSide>,
     budget: &mut impl Work,
 ) -> Result<super::emission::NativePortData> {
-    let (longitude, latitude, spelling, source_record) = if let Some(bank) = bank {
+    let longitude_axis = frame.longitude();
+    let (_, chart_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+        &source_chart_point.x,
+        longitude_axis.period(),
+        longitude_axis.half_period(),
+        budget,
+    )?;
+    let lift_delta =
+        chart_lift.try_subtract_with_work(ExactDyadic::from_i64(candidate.periods), budget)?;
+    let lift_delta = lift_delta.to_f64_exact_scaled(0).ok_or_else(|| {
+        GeometryErrorKind::Invalid("native source chart lift exceeds its assigned site".into())
+    })?;
+    if !lift_delta.is_finite()
+        || lift_delta.fract() != 0.0
+        || lift_delta < i64::MIN as f64
+        || lift_delta >= -(i64::MIN as f64)
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "native source chart lift differs by a non-integral period".into(),
+        )
+        .into());
+    }
+    let chart_periods = candidate
+        .periods
+        .checked_add(lift_delta as i64)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let (longitude, spelling, source_record) = if let Some(bank) = bank {
         let longitude = match bank {
             super::emission::ChartSide::East => frame.longitude().half_period(),
             super::emission::ChartSide::West => -frame.longitude().half_period(),
         };
-        let latitude = source_record.map_or(candidate.native.y, |record| record.y);
         let retained_record =
             source_record.filter(|record| record.x.to_bits() == longitude.to_bits());
         (
             longitude,
-            latitude,
             super::emission::PortSpelling::Seam(bank),
             retained_record,
         )
@@ -12293,7 +12346,6 @@ fn native_port_data(
         ) {
             (
                 record.x,
-                record.y,
                 super::emission::PortSpelling::Pole {
                     native_longitude: record.x,
                 },
@@ -12302,9 +12354,8 @@ fn native_port_data(
         } else {
             (
                 record.x,
-                record.y,
                 super::emission::PortSpelling::Interior {
-                    periods: candidate.periods,
+                    periods: chart_periods,
                 },
                 Some(record),
             )
@@ -12319,7 +12370,6 @@ fn native_port_data(
                 )?;
                 (
                     longitude,
-                    candidate.native.y,
                     super::emission::PortSpelling::Pole {
                         native_longitude: longitude,
                     },
@@ -12328,26 +12378,29 @@ fn native_port_data(
             },
             ExactQuotientKey::Seam(_) => (
                 -frame.longitude().half_period(),
-                candidate.native.y,
                 super::emission::PortSpelling::Seam(super::emission::ChartSide::West),
                 None,
             ),
             ExactQuotientKey::Coordinate(_) => (
                 candidate.native.x,
-                candidate.native.y,
                 super::emission::PortSpelling::Interior {
-                    periods: candidate.periods,
+                    periods: chart_periods,
                 },
                 None,
             ),
         }
     };
+    let point = if bank.is_some() {
+        ExactChartPoint::from_rationals(
+            ExactRational::from_f64(longitude),
+            source_chart_point.y.try_clone_with_work(budget)?,
+        )
+    } else {
+        source_chart_point.try_clone_with_work(budget)?
+    };
     Ok(super::emission::NativePortData {
         node,
-        point: ExactChartPoint::from_rationals(
-            ExactRational::from_f64(longitude),
-            ExactRational::from_f64(latitude),
-        ),
+        point,
         spelling,
         source_record,
         occurrences,
@@ -14319,7 +14372,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         movable = true;
                     }
                 }
-                unrepresentable |= !movable;
+                if !movable {
+                    unrepresentable = true;
+                }
             }
             group_start = group_end;
         }
@@ -14624,7 +14679,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         },
                     }
                 }
-                unrepresentable |= !has_source || computed_count > 1;
+                if !has_source || computed_count > 1 {
+                    unrepresentable = true;
+                }
             }
             start = end;
         }
@@ -15311,10 +15368,55 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                 "assigned producer fan source port has no candidate point".into(),
                             )
                         })?;
-                    if source_point != &origin {
+                    let source_key = quotient_key_for_chart_position_with_work(
+                        self.topology.sources.frame,
+                        source_point,
+                        budget,
+                    )?;
+                    let origin_key = quotient_key_for_chart_position_with_work(
+                        self.topology.sources.frame,
+                        &origin,
+                        budget,
+                    )?;
+                    if !compare_quotient_keys_with_work(&source_key, &origin_key, budget)?.is_eq() {
                         candidate_mismatch = true;
                         break;
                     }
+                    let target_dart = q.darts.get(dart.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "assigned producer fan has an unknown target dart".into(),
+                        )
+                    })?;
+                    let target_source_point = port_points
+                        .get(target_dart.to_port.0 as usize)
+                        .and_then(Option::as_ref)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "assigned producer fan target port has no candidate point".into(),
+                            )
+                        })?;
+                    let longitude = self.topology.sources.frame.longitude();
+                    let (_, source_lift) =
+                        crate::geometry::exact_arith::split_rational_native_site_with_work(
+                            &target_source_point.x,
+                            longitude.period(),
+                            longitude.half_period(),
+                            budget,
+                        )?;
+                    let (_, output_lift) =
+                        crate::geometry::exact_arith::split_rational_native_site_with_work(
+                            &target.x,
+                            longitude.period(),
+                            longitude.half_period(),
+                            budget,
+                        )?;
+                    let lift_delta = source_lift.try_subtract_with_work(output_lift, budget)?;
+                    let longitude_shift = ExactRational::from_f64(longitude.period())
+                        .try_product_with_work(&ExactRational::from_dyadic(lift_delta), budget)?;
+                    let mut aligned_target = target.clone();
+                    aligned_target.x = aligned_target
+                        .x
+                        .try_add_with_work(&longitude_shift, budget)?;
                     budget.charge(1)?;
                     let ray = rays_by_port
                         .entry(port)
@@ -15330,7 +15432,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                         .into());
                     }
-                    ray.targets.push(target.clone());
+                    ray.targets.push(aligned_target);
                 }
                 if candidate_mismatch {
                     break;
@@ -16407,12 +16509,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         let displacement = end_chart.x.try_subtract_with_work(&start_chart.x, budget)?;
         let zero = ExactRational::zero();
         let direction = displacement.try_cmp_with_work(&zero, budget)?;
-        if direction.is_eq() && !feature_indices.is_empty() {
-            return Err(GeometryErrorKind::Invalid(
-                "zero-longitude producer chord has a native cut".into(),
-            )
-            .into());
-        }
         let start_is_seam = matches!(
             quotient_key_for_chart_position_with_work(
                 self.topology.sources.frame,
@@ -16429,6 +16525,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )?,
             ExactQuotientKey::Seam(_)
         );
+        if direction.is_eq() && !feature_indices.is_empty() {
+            return Err(GeometryErrorKind::Invalid(
+                "zero-longitude producer chord has a native cut".into(),
+            )
+            .into());
+        }
         let start_bank = if !start_is_seam {
             None
         } else if direction.is_gt() {

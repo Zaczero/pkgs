@@ -266,7 +266,9 @@ def test_geographic_subdivide_keeps_seam_edge_support_in_scalar_and_array() -> N
                 elif -180 - 1e-12 <= x <= -179 + 1e-12:
                     continuous_x = x + 360
                 else:
-                    pytest.fail(f'output point {(x, y)} is outside the first source edge')
+                    pytest.fail(
+                        f'output point {(x, y)} is outside the first source edge'
+                    )
                 assert 179 - 1e-12 <= continuous_x <= 181 + 1e-12
                 assert y == pytest.approx(15 * (continuous_x - 179), abs=2e-12)
 
@@ -323,9 +325,5 @@ def test_geographic_subdivide_resolves_seam_ordinates_on_the_original_root() -> 
 
     assert seam_vertices
     for coordinate in seam_vertices:
-        assert coordinate[2] == pytest.approx(
-            10 + 200 * arclength_fraction, abs=2e-5
-        )
-        assert coordinate[3] == pytest.approx(
-            100 + 1000 * arclength_fraction, abs=1e-4
-        )
+        assert coordinate[2] == pytest.approx(10 + 200 * arclength_fraction, abs=2e-5)
+        assert coordinate[3] == pytest.approx(100 + 1000 * arclength_fraction, abs=1e-4)

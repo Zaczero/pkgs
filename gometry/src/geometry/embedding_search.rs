@@ -689,11 +689,18 @@ impl EvaluationBudget {
     }
 
     pub(in crate::geometry) fn set_constructed(&mut self, constructed: usize) -> Result<()> {
-        let constructed = u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
+        if constructed < self.constructed {
+            return Err(GeometryErrorKind::Invalid(
+                "constructed-node budget cannot decrease".into(),
+            )
+            .into());
+        }
+        let constructed_u64 =
+            u64::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
         let per_node = EVALUATIONS_PER_CONSTRUCTED_NODE
-            .checked_mul(constructed)
+            .checked_mul(constructed_u64)
             .ok_or(ResourceError::SizeOverflow)?;
-        self.constructed = usize::try_from(constructed).map_err(|_| ResourceError::SizeOverflow)?;
+        self.constructed = constructed;
         self.limit = BASE_EVALUATION_LIMIT.max(per_node);
         if self.spent_ticks > self.limit_ticks() {
             return Err(self.limit_error());

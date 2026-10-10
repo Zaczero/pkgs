@@ -1,6 +1,6 @@
 //! Exact n-ary geographic set selection and output emission over global Q.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::emission::{
     DirectedSpan, EmissionNodeRegistry, FeatureFamilyRegistry, FragmentRecipes, LiteralPoint,
@@ -25,7 +25,7 @@ use super::q_embedding::{
     node_injectivity_collisions,
 };
 use crate::error::{ResourceError, Result};
-use crate::geographic::{ChartPole, Latitude, SeamIdentity};
+use crate::geographic::{ChartPole, SeamIdentity};
 use crate::geometry::embedding_completion::{
     CheckedAssignment, FrozenLiteralBuffers, LiteralCheck, ShapeLiteralLayout, bind_literals,
 };
@@ -811,17 +811,8 @@ impl QEmissionPlan {
         let line_spans = select_line_spans(topology, &faces, row_count, operation, work)?;
         let cycles = selected_area_boundaries(q, &faces, &mut face_regions, work)?;
         let point_nodes = select_points(topology, &faces, &line_spans, row_count, operation, work)?;
-        let line_steps = line_steps(topology, &line_spans, work)?;
-        work.charge(u64::try_from(line_steps.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let line_paths: Vec<PlannedQLine> = line_steps
-            .into_iter()
-            .enumerate()
-            .map(|(index, path)| QLinePrimitive {
-                origin: QLineOrigin::Curve,
-                recipe_walk: RecipeWalkOwner::Line(index),
-                path,
-            })
-            .collect();
+        let line_paths =
+            planned_line_paths(topology, line_steps(topology, &line_spans, work)?, work)?;
         let polygons = PolygonPlan::build(topology, whole_sphere, operation, &cycles, work)?;
         let region_roots = match &polygons {
             PolygonPlan::WholeSphere(_) => Vec::new(),
@@ -1543,17 +1534,18 @@ impl QEmissionPlan {
                     let source_ring = topology.sources.rings.get(ring).ok_or_else(|| {
                         GeometryErrorKind::Invalid("source reuse ring is unknown".into())
                     })?;
+                    let source_ring_matches = source_ring_reuse_matches(
+                        topology,
+                        source_ring,
+                        reverse,
+                        &drawn.vertices,
+                        self.fragment_recipes.as_slice(),
+                        walk,
+                    )?;
                     if !matches!(drawn.origin, DrawnAreaOrigin::Source)
                         || drawn.region != region
                         || drawn.recipe_walk != RecipeWalkOwner::SourceRing(ring)
-                        || !source_ring_reuse_matches(
-                            topology,
-                            source_ring,
-                            reverse,
-                            &drawn.vertices,
-                            self.fragment_recipes.as_slice(),
-                            walk,
-                        )?
+                        || !source_ring_matches
                     {
                         return Ok(false);
                     }
@@ -2003,19 +1995,16 @@ impl PolygonPlan {
         let mut rings = Vec::new();
         work.charge(u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut emitted_cycles = vec![false; cycles.len()];
+        let source_cycles_by_ring = source_cycles_by_ring(topology, cycles, work)?;
         for (ring_index, source_ring) in topology.sources.rings.iter().enumerate() {
             work.charge(1)?;
-            if !source_ring.summary.exact_axis_band {
+            let source_cycles = source_cycles_by_ring.get(ring_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q source-ring cycle index is incomplete".into())
+            })?;
+            if source_cycles.is_empty() {
                 continue;
             }
-            let mut source_cycles = Vec::new();
-            for (cycle_index, cycle) in cycles.iter().enumerate() {
-                work.charge(1)?;
-                if cycle_belongs_to_source_ring(topology, cycle, source_ring.id, work)? {
-                    source_cycles.push(cycle_index);
-                }
-            }
-            if source_cycles.len() != 2 {
+            if source_ring.summary.exact_axis_band && source_cycles.len() != 2 {
                 continue;
             }
             let Some(&first_cycle) = source_cycles.first() else {
@@ -2023,16 +2012,16 @@ impl PolygonPlan {
             };
             let region = cycles
                 .get(first_cycle)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into()))?
+                .ok_or_else(|| GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into()))?
                 .region;
             let mut cycles_are_consistent = true;
-            for &cycle_index in &source_cycles {
+            for &cycle_index in source_cycles {
                 work.charge(1)?;
                 let cycle = cycles.get(cycle_index).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into())
+                    GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into())
                 })?;
                 let emitted = emitted_cycles.get(cycle_index).copied().ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q axis-band cycle has no emission state".into())
+                    GeometryErrorKind::Invalid("Q source-ring cycle has no emission state".into())
                 })?;
                 if cycle.region != region || emitted {
                     cycles_are_consistent = false;
@@ -2040,7 +2029,7 @@ impl PolygonPlan {
                 }
             }
             if !cycles_are_consistent
-                || !source_axis_band_cycles_cover_boundary(
+                || !source_ring_cycles_cover_boundary(
                     topology,
                     source_ring,
                     cycles,
@@ -2050,7 +2039,7 @@ impl PolygonPlan {
             {
                 continue;
             }
-            let Some(follows_source) = source_axis_band_cycles_follow_source(
+            let Some(follows_source) = source_ring_cycles_follow_source(
                 topology,
                 source_ring,
                 cycles,
@@ -2065,10 +2054,10 @@ impl PolygonPlan {
                 region,
                 reverse: !follows_source,
             });
-            for cycle_index in source_cycles {
+            for &cycle_index in source_cycles {
                 work.charge(1)?;
                 *emitted_cycles.get_mut(cycle_index).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q axis-band cycle has no emission state".into())
+                    GeometryErrorKind::Invalid("Q source-ring cycle has no emission state".into())
                 })? = true;
             }
         }
@@ -3006,6 +2995,57 @@ fn line_steps(
         }
     }
     Ok(paths)
+}
+
+fn planned_line_paths(
+    topology: &ExactGeographicTopology,
+    paths: Vec<Vec<LineStep>>,
+    work: &mut impl Work,
+) -> Result<Vec<PlannedQLine>> {
+    let mut output = Vec::new();
+    for path in paths {
+        work.charge(1)?;
+        let mut current_origin = None;
+        let mut current_steps = Vec::new();
+        for step in path {
+            work.charge(1)?;
+            let span = topology.q.spans.get(step.span).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q line step references an unknown span".into())
+            })?;
+            let owner = span.owners.get(step.owner).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q line step references an unknown owner".into())
+            })?;
+            let origin = match source_edge_at(topology, owner.source_edge)?.kind {
+                SourceEdgeKind::Line { .. }
+                | SourceEdgeKind::Ring {
+                    kind: crate::geometry::RingKind::Collapsed,
+                    ..
+                } => QLineOrigin::Curve,
+                SourceEdgeKind::Ring { .. } => QLineOrigin::ArealBoundary,
+            };
+            if let Some(previous) = current_origin
+                && previous != origin
+            {
+                let index = output.len();
+                output.push(QLinePrimitive {
+                    origin: previous,
+                    recipe_walk: RecipeWalkOwner::Line(index),
+                    path: std::mem::take(&mut current_steps),
+                });
+            }
+            current_origin = Some(origin);
+            current_steps.push(step);
+        }
+        if let Some(origin) = current_origin {
+            let index = output.len();
+            output.push(QLinePrimitive {
+                origin,
+                recipe_walk: RecipeWalkOwner::Line(index),
+                path: current_steps,
+            });
+        }
+    }
+    Ok(output)
 }
 
 fn walk_line_steps(
@@ -3998,7 +4038,64 @@ fn cycle_belongs_to_source_ring(
     Ok(true)
 }
 
-fn source_axis_band_cycles_follow_source(
+fn source_cycles_by_ring(
+    topology: &ExactGeographicTopology,
+    cycles: &[BoundaryCycle],
+    work: &mut impl Work,
+) -> Result<Vec<Vec<usize>>> {
+    let mut output = vec![Vec::new(); topology.sources.rings.len()];
+    for (cycle_index, cycle) in cycles.iter().enumerate() {
+        work.charge(1)?;
+        let mut common_rings: Option<BTreeSet<SourceRingId>> = None;
+        for &dart_id in &cycle.darts {
+            work.charge(1)?;
+            let dart =
+                topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q boundary dart is unknown".into())
+                })?;
+            let span =
+                topology.q.spans.get(dart.span.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q boundary span is unknown".into())
+                })?;
+            let mut span_rings = BTreeSet::new();
+            for owner in &span.owners {
+                work.charge(1)?;
+                if let SourceEdgeKind::Ring { ring, .. } =
+                    source_edge_at(topology, owner.source_edge)?.kind
+                {
+                    span_rings.insert(ring);
+                }
+            }
+            if let Some(common_rings) = &mut common_rings {
+                work.charge(
+                    u64::try_from(common_rings.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
+                common_rings.retain(|ring| span_rings.contains(ring));
+            } else {
+                common_rings = Some(span_rings);
+            }
+            if common_rings.as_ref().is_some_and(BTreeSet::is_empty) {
+                break;
+            }
+        }
+        if let Some(common_rings) = common_rings {
+            for ring in common_rings {
+                work.charge(1)?;
+                let ring_index =
+                    usize::try_from(ring.0).map_err(|_| ResourceError::SizeOverflow)?;
+                output
+                    .get_mut(ring_index)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q boundary ring owner is unknown".into())
+                    })?
+                    .push(cycle_index);
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn source_ring_cycles_follow_source(
     topology: &ExactGeographicTopology,
     source_ring: &ExactSourceRing,
     all_cycles: &[BoundaryCycle],
@@ -4011,7 +4108,7 @@ fn source_axis_band_cycles_follow_source(
         work.charge(1)?;
         let cycle = all_cycles
             .get(cycle_index)
-            .ok_or_else(|| GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into()))?;
         for &dart_id in &cycle.darts {
             work.charge(1)?;
             let dart = q
@@ -4050,90 +4147,141 @@ fn source_axis_band_cycles_follow_source(
     Ok(follows_source)
 }
 
-fn source_axis_band_cycles_cover_boundary(
+fn source_ring_cycles_cover_boundary(
     topology: &ExactGeographicTopology,
     source_ring: &super::exact::ExactSourceRing,
     all_cycles: &[BoundaryCycle],
     cycle_indices: &[usize],
     work: &mut impl Work,
 ) -> Result<bool> {
-    let frame = topology.sources.frame;
-    let axis = frame.longitude();
-    let south = canonical_bits(source_ring.summary.south.get());
-    let north = canonical_bits(source_ring.summary.north.get());
-    let mut parallel_edges = Vec::new();
-    let mut parallel_mask = 0_u8;
+    if source_ring.summary.exact_axis_band {
+        let axis = topology.sources.frame.longitude();
+        let south = canonical_bits(source_ring.summary.south.get());
+        let north = canonical_bits(source_ring.summary.north.get());
+        let mut parallel_edges = Vec::new();
+        let mut parallel_mask = 0_u8;
+        for edge_index in source_ring.source_edges.clone() {
+            work.charge(1)?;
+            let edge = topology.sources.edges.get(edge_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
+            })?;
+            let latitude = canonical_bits(edge.source[0].y);
+            if latitude != canonical_bits(edge.source[1].y) {
+                continue;
+            }
+            let parallel = if latitude == south {
+                1
+            } else if latitude == north {
+                2
+            } else {
+                continue;
+            };
+            let full_turn = axis
+                .chart_step(edge.source[0].x, edge.source[1].x)
+                .expect("Q source longitude was admitted")
+                .is_circle();
+            if !full_turn {
+                let start = axis
+                    .canonicalize(edge.source[0].x)
+                    .expect("source longitude was admitted")
+                    .get();
+                let end = axis
+                    .canonicalize(edge.source[1].x)
+                    .expect("source longitude was admitted")
+                    .get();
+                if start.to_bits() == end.to_bits() {
+                    continue;
+                }
+            }
+            parallel_mask |= parallel;
+            parallel_edges.push(edge.id);
+        }
+        if parallel_mask != 0b11 {
+            return Ok(false);
+        }
+        for edge_id in parallel_edges {
+            work.charge(1)?;
+            let mut ranges = Vec::new();
+            for &cycle_index in cycle_indices {
+                work.charge(1)?;
+                let cycle = all_cycles.get(cycle_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into())
+                })?;
+                for &dart_id in &cycle.darts {
+                    work.charge(1)?;
+                    let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q axis-band dart is unknown".into())
+                    })?;
+                    let span = topology.q.spans.get(dart.span.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q axis-band span is unknown".into())
+                    })?;
+                    for owner in &span.owners {
+                        work.charge(1)?;
+                        if owner.source_edge == edge_id {
+                            work.charge(1)?;
+                            ranges.push(owner.source_range.clone());
+                        }
+                    }
+                }
+            }
+            if !source_ranges_cover_unit_interval(&mut ranges, work)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+
+    let mut ranges_by_edge = BTreeMap::<SourceEdgeId, Vec<ExactSourceRange>>::new();
+    for &cycle_index in cycle_indices {
+        work.charge(1)?;
+        let cycle = all_cycles
+            .get(cycle_index)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into()))?;
+        for &dart_id in &cycle.darts {
+            work.charge(1)?;
+            let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q source-ring dart is unknown".into())
+            })?;
+            let span = topology.q.spans.get(dart.span.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q source-ring span is unknown".into())
+            })?;
+            for owner in &span.owners {
+                work.charge(1)?;
+                let edge = source_edge_at(topology, owner.source_edge)?;
+                if matches!(
+                    edge.kind,
+                    SourceEdgeKind::Ring { ring, .. } if ring == source_ring.id
+                ) {
+                    ranges_by_edge
+                        .entry(edge.id)
+                        .or_default()
+                        .push(owner.source_range.clone());
+                }
+            }
+        }
+    }
     for edge_index in source_ring.source_edges.clone() {
         work.charge(1)?;
         let edge =
             topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
             })?;
-        let latitude = canonical_bits(edge.source[0].y);
-        if latitude != canonical_bits(edge.source[1].y) {
+        if matches!(edge.kind, SourceEdgeKind::Ring {
+            kind: crate::geometry::RingKind::Collapsed,
+            ..
+        }) {
+            ranges_by_edge.remove(&edge.id);
             continue;
         }
-        let parallel = if latitude == south {
-            1
-        } else if latitude == north {
-            2
-        } else {
-            continue;
+        let Some(ranges) = ranges_by_edge.get_mut(&edge.id) else {
+            return Ok(false);
         };
-        let full_turn = axis
-            .chart_step(edge.source[0].x, edge.source[1].x)
-            .expect("Q source longitude was admitted")
-            .is_circle();
-        if !full_turn {
-            let start = axis
-                .canonicalize(edge.source[0].x)
-                .expect("source longitude was admitted")
-                .get();
-            let end = axis
-                .canonicalize(edge.source[1].x)
-                .expect("source longitude was admitted")
-                .get();
-            if start.to_bits() == end.to_bits() {
-                continue;
-            }
-        }
-        parallel_mask |= parallel;
-        parallel_edges.push(edge.id);
-    }
-    if parallel_mask != 0b11 {
-        return Ok(false);
-    }
-
-    for edge_id in parallel_edges {
-        work.charge(1)?;
-        let mut ranges = Vec::new();
-        for &cycle_index in cycle_indices {
-            work.charge(1)?;
-            let cycle = all_cycles
-                .get(cycle_index)
-                .ok_or_else(|| GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into()))?;
-            for &dart_id in &cycle.darts {
-                work.charge(1)?;
-                let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q axis-band dart is unknown".into())
-                })?;
-                let span = topology.q.spans.get(dart.span.0 as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q axis-band span is unknown".into())
-                })?;
-                for owner in &span.owners {
-                    work.charge(1)?;
-                    if owner.source_edge == edge_id {
-                        work.charge(1)?;
-                        ranges.push(owner.source_range.clone());
-                    }
-                }
-            }
-        }
-        if !source_ranges_cover_unit_interval(&mut ranges, work)? {
+        if !source_ranges_cover_unit_interval(ranges, work)? {
             return Ok(false);
         }
+        ranges_by_edge.remove(&edge.id);
     }
-    Ok(true)
+    Ok(ranges_by_edge.is_empty())
 }
 
 fn source_ranges_cover_unit_interval(
@@ -4572,8 +4720,6 @@ mod tests {
         reason = "Result-returning tests use assertions for behavior and ? for fallible setup"
     )]
 
-    use std::collections::BTreeSet;
-
     use super::*;
     use crate::geographic::{AngularFactor, GeographicFrame, GeographicInputs};
     use crate::geometry::Coordinates as _;
@@ -4967,6 +5113,32 @@ mod tests {
         .expect("Q source-only union emits")
     }
 
+    #[test]
+    fn q_intersection_classifies_a_shared_ring_edge_as_areal_linework() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let left = crate::io::parse_wkt("POLYGON ((179 0, -179 0, -179.8 -1, 179 0))")?;
+        let right = crate::io::parse_wkt("POLYGON ((-179 0, 179 0, 179.8 1, -179 0))")?;
+        let shapes = [left, right];
+        let inputs = GeographicInputs::try_from_shapes(frame, shapes.iter())
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        let topology =
+            ExactGeographicTopology::from_views_as_set(frame, inputs.views().iter().copied())?;
+        let plan = build_q_plan(&topology, OverlayOp::Intersection)?;
+        assert!(!plan.line_paths.is_empty());
+        assert!(
+            plan.line_paths
+                .iter()
+                .all(|line| line.origin == QLineOrigin::ArealBoundary)
+        );
+        assert!(
+            plan.fragment_recipes
+                .as_slice()
+                .iter()
+                .any(|recipe| recipe.use_kind == SelectedUse::ArealBoundaryLine)
+        );
+        Ok(())
+    }
+
     fn emitted_single_point(shape: &Shape) -> Point {
         match shape {
             Shape::Point(point) => *point,
@@ -5080,7 +5252,7 @@ mod tests {
             ExactGeographicTopology::from_views_as_set(frame, inputs.views().iter().copied())
                 .expect("Q topology builds");
 
-        let plan = QOverlayPlan::build(&topology, OverlayOp::Union).unwrap();
+        let plan = build_q_plan(&topology, OverlayOp::Union).expect("build Q plan");
         assert!(matches!(
             &plan.polygons,
             PolygonPlan::WholeSphere(source_polygons) if source_polygons == &[0]
