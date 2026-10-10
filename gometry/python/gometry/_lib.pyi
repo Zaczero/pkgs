@@ -7917,12 +7917,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def concat(
         self: GeometryArray[_GeometryT_co],
         other: GeometryArray[_GeometryOtherT],
+        /,
         *others: GeometryArray[_GeometryOtherT],
     ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]: ...
     @overload
     def concat(
         self: GeometryArray[_GeometryT_co],
         other: GeometryArray[_GeometryOtherT | None],
+        /,
         *others: GeometryArray[_GeometryOtherT | None],
     ) -> GeometryArray[_GeometryT_co | _GeometryOtherT | None]: ...
     @overload
@@ -7933,9 +7935,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Parameters
         ----------
-        other, *others : GeometryArray
+        others : GeometryArray
             Arrays to append in order; each must share this array's CRS and
-            epoch. The zero-argument form omits both names and returns this array.
+            epoch. The zero-argument form returns this array.
 
         Returns
         -------

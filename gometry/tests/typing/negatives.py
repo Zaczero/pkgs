@@ -174,6 +174,7 @@ if TYPE_CHECKING:
     )  # type: ignore[assignment]
     _wrong_union_rows: list[gm.Geometry | int] = [POINT, 1]
     gm.union(_wrong_union_rows, POINT)  # type: ignore[arg-type]
+    POINTS.concat(other=POINTS)  # type: ignore[call-overload]
 
     def _reject_unchecked_nullable_group(
         groups: gm.Groups[gm.GeometryArray[gm.Point | None]],

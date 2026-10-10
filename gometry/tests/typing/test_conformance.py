@@ -1995,6 +1995,15 @@ assert_type(POLY & POINTS, gm.GeometryArray[gm.Point])
 assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon])
 assert_type(POINTS[:1], gm.GeometryArray[gm.Point])
 assert_type(POINTS.concat(POINTS), gm.GeometryArray[gm.Point])
+if TYPE_CHECKING:
+
+    def _reveal_concat_positions() -> None:
+        reveal_type(POINTS.concat(POINTS))
+        reveal_type(POINTS.concat(POINTS, POINTS))
+        assert_type(POINTS.concat(POINTS), gm.GeometryArray[gm.Point])
+        assert_type(POINTS.concat(POINTS, POINTS), gm.GeometryArray[gm.Point])
+
+
 MULTI = gm.MultiPoint([(0.0, 0.0), (1.0, 1.0)])
 assert_type(MULTI.parts[0], gm.Point)
 assert_type(MULTI.parts[:1], list[gm.Point])
