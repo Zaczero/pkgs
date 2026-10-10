@@ -8,7 +8,8 @@
 # pyright: reportUnnecessaryTypeIgnoreComment=false
 # Runtime dunder declarations below are intentional protocol surface, even where
 # Ruff's generic stub heuristic considers them redundant.
-# ruff: noqa: PYI029
+# Keep the builtin object class explicit: PYI055's combined form is rejected by mypy.
+# ruff: noqa: PYI029, PYI055
 # Native sequence methods keep their runtime-accurate signatures rather than
 # widening them to match collections.abc.Sequence's protocol declarations.
 # pyright: reportIncompatibleMethodOverride=false
@@ -338,6 +339,10 @@ _IntArray0D: TypeAlias = np.ndarray[
 _IntScalarInput: TypeAlias = _IntScalar | _IntArray0D
 _IntArray1D: TypeAlias = np.ndarray[
     tuple[int], np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]]
+]
+_IntArrayUnknownRank: TypeAlias = np.ndarray[
+    tuple[Any, ...],
+    np.dtype[np.signedinteger[Any] | np.unsignedinteger[Any]],
 ]
 _BoolArray1D: TypeAlias = np.ndarray[tuple[int], np.dtype[np.bool_]]
 _FloatColumn1D: TypeAlias = FloatColumn | _FloatArray1D
@@ -716,7 +721,7 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         [(0.0, 0.0, None), (1.0, 1.0, None)]
         """
     @property
-    def row_index(self) -> npt.NDArray[np.int64]:
+    def row_index(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-coordinate source geometry row (all ``0`` for a scalar geometry);
         the source row for each vertex of a ``GeometryArray``.
 
@@ -798,7 +803,9 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
     @overload
     def to_dict(
         self, *, index: Literal[True]
-    ) -> dict[str, npt.NDArray[np.float64] | npt.NDArray[np.int64]]:
+    ) -> dict[
+        str, npt.NDArray[np.float64] | np.ndarray[tuple[int], np.dtype[np.int64]]
+    ]:
         """Return a dependency-free column dict — ``{'x': ndarray, 'y': ndarray, …}`` — ready
         for ``pandas``/``polars`` (``pd.DataFrame(coords.to_dict())``).
         ``z``/``m`` columns appear when carried by the view or selected layout,
@@ -6820,9 +6827,13 @@ class GeometryArray(Sequence[_GeometryT_co]):
         self, dtype: None = None, copy: bool | None = None
     ) -> npt.NDArray[np.object_]: ...
     @overload
+    # mypy does not treat `type[object | np.object_]` as accepting dtype=object.
     def __array__(
         self,
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol: export as an object ndarray of typed geometries.
@@ -7153,7 +7164,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One `GeometryArray` group per input row.
         """
     @property
-    def num_geometries(self) -> npt.NDArray[np.int64]:
+    def num_geometries(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry top-level part count (see `Geometry.num_geometries`):
         ``1`` for a single point/line/polygon, including a typed empty; the
         member count for a multi/collection, and ``0`` for an empty multipart
@@ -7168,7 +7179,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
             One count per input geometry.
         """
     @property
-    def num_coordinates(self) -> npt.NDArray[np.int64]:
+    def num_coordinates(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry coordinate count. Missing rows are ``0``.
 
         Returns
@@ -7250,7 +7261,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         ['LINESTRING (1 1, 2 2)']
         """
     @property
-    def topological_dimension(self) -> npt.NDArray[np.int64]:
+    def topological_dimension(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
         areal (see `Geometry.topological_dimension`). Missing rows use
         Shapely's ``None``-geometry sentinel ``-1``; use `.is_missing` to
@@ -7423,15 +7434,19 @@ class GeometryArray(Sequence[_GeometryT_co]):
         iterator of Geometry or None
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> _GeometryT_co: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> GeometryArray[_GeometryT_co]: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> GeometryArray[_GeometryT_co]: ...
+    def __getitem__(self, index: _IntArray0D, /) -> _GeometryT_co: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> _GeometryT_co: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> GeometryArray[_GeometryT_co]: ...
+    @overload
+    def __getitem__(
+        self, index: _IntArrayUnknownRank, /
+    ) -> _GeometryT_co | GeometryArray[_GeometryT_co]: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> _GeometryT_co: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> GeometryArray[_GeometryT_co]: ...
     @overload
@@ -7439,13 +7454,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> _GeometryT_co | GeometryArray[_GeometryT_co]:
         """Select rows by integer, slice, or fancy index.
@@ -11364,7 +11380,7 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
             geometry and cell payloads retain their immutable array types.
         """
     @property
-    def offsets(self) -> npt.NDArray[np.int64]:
+    def offsets(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """The `len(self) + 1` row boundaries into ``values`` (CSR offsets
         column): row ``i`` is ``values[offsets[i]:offsets[i + 1]]``.
 
@@ -11375,7 +11391,7 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
             start at zero; a slice starting after row zero owns a rebased copy.
         """
     @property
-    def counts(self) -> npt.NDArray[np.int64]:
+    def counts(self) -> np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Per-group element counts (`offsets[i + 1] - offsets[i]`).
 
         Returns
@@ -11429,8 +11445,11 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
     @overload
     def __getitem__(self, index: slice, /) -> Self: ...
     def to_pairs(
-        self: Groups[npt.NDArray[np.int64]],
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]:
         """Expand integer CSR rows into parallel ``(row_ids, values)`` columns.
 
         The right column is a zero-copy read-only view of the flat CSR values;
@@ -11459,7 +11478,9 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         ([0, 0, 1], [0, 1, 2])
         """
     @overload
-    def to_list(self: Groups[npt.NDArray[np.int64]]) -> list[list[int]]: ...
+    def to_list(
+        self: Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+    ) -> list[list[int]]: ...
     @overload
     def to_list(
         self: Groups[GeometryArray[_GeometryT_co]],
@@ -11759,7 +11780,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def query(
         self,
@@ -11768,7 +11789,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> Groups[npt.NDArray[np.int64]]: ...
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
     @overload
     def query(
         self,
@@ -11777,7 +11798,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def query(
         self,
@@ -11786,7 +11807,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> Groups[npt.NDArray[np.int64]]:
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Return exact predicate-refined matches for a query geometry or array.
 
         Candidates are refined with predicate (`'intersects'` by
@@ -11853,7 +11874,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]: ...
     @overload
     def join(
         self,
@@ -11862,7 +11886,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: TopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]:
         """Join query rows against this prebuilt index.
 
         Reuses the index instead of rebuilding the right side on every call.
@@ -11922,7 +11949,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: Literal['dwithin'],
         distance: float,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]: ...
     @overload
     def self_join(
         self,
@@ -11930,7 +11960,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         predicate: SymmetricTopologicalPredicate = 'intersects',
         distance: None = None,
         unit: DistanceUnit | None = None,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+    ) -> tuple[
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+        np.ndarray[tuple[int], np.dtype[np.int64]],
+    ]:
         """All index pairs ``(i, j)`` with ``i < j`` whose geometries satisfy a
         symmetric ``predicate`` — a self-join over the index.
 
@@ -11989,7 +12022,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def candidates(
         self,
@@ -11997,7 +12030,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
-    ) -> Groups[npt.NDArray[np.int64]]: ...
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
     @overload
     def candidates(
         self,
@@ -12005,7 +12038,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         *,
         distance: float | None = None,
         unit: DistanceUnit | None = None,
-    ) -> npt.NDArray[np.int64] | Groups[npt.NDArray[np.int64]]:
+    ) -> (
+        np.ndarray[tuple[int], np.dtype[np.int64]]
+        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+    ):
         """Bounding-box candidate matches for a query geometry or array (not
         exact). If you refine these candidates with a directional predicate,
         evaluate it as ``predicate(query_geometry, indexed_geometry)``.
@@ -12063,7 +12099,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def nearest(
         self,
@@ -12075,7 +12111,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]: ...
     @overload
     def nearest(
         self,
@@ -12087,7 +12123,7 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> Groups[npt.NDArray[np.int64]]: ...
+    ) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
     @overload
     def nearest(
         self,
@@ -12099,7 +12135,10 @@ class SpatialIndex(Mapping[int, Geometry]):
         unit: DistanceUnit | None = None,
         exclusive: bool = False,
         ties: bool = False,
-    ) -> tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]: ...
+    ) -> tuple[
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        npt.NDArray[np.float64],
+    ]: ...
     @overload
     def nearest(
         self,
@@ -12112,10 +12151,13 @@ class SpatialIndex(Mapping[int, Geometry]):
         exclusive: bool = False,
         ties: bool = False,
     ) -> (
-        npt.NDArray[np.int64]
-        | Groups[npt.NDArray[np.int64]]
-        | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]
-        | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+        np.ndarray[tuple[int], np.dtype[np.int64]]
+        | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+        | tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]
+        | tuple[
+            Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+            npt.NDArray[np.float64],
+        ]
     ):
         """Nearest indexed geometries to the query.
 
@@ -12177,12 +12219,12 @@ class SpatialIndex(Mapping[int, Geometry]):
     @overload
     def insert(
         self, values: GeometryArray[Geometry | None] | Iterable[_GeometryLike]
-    ) -> npt.NDArray[np.int64]: ...
+    ) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
     @overload
     def insert(
         self,
         values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
-    ) -> int | npt.NDArray[np.int64]:
+    ) -> int | np.ndarray[tuple[int], np.dtype[np.int64]]:
         """Insert one geometry or many geometries and return their stable handles.
 
         A single `Geometry` returns one ``int`` handle. A `GeometryArray` or
@@ -13315,7 +13357,7 @@ class CellArray(Sequence[_CellT_co]):
         """
     def value_counts(
         self: CellArray[_CellT | None],
-    ) -> tuple[CellArray[_CellT], npt.NDArray[np.int64]]:
+    ) -> tuple[CellArray[_CellT], np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Unique cells and counts, ordered by descending count (pandas
         value_counts parity), with first appearance breaking ties.
 
@@ -13337,7 +13379,7 @@ class CellArray(Sequence[_CellT_co]):
         """
     def factorize(
         self: CellArray[_CellT | None],
-    ) -> tuple[npt.NDArray[np.int64], CellArray[_CellT]]:
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], CellArray[_CellT]]:
         """Factorize cells into dense integer codes and first-seen uniques
         (pandas factorize parity).
 
@@ -13630,15 +13672,19 @@ class CellArray(Sequence[_CellT_co]):
         iterator of Cell or None
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> _CellT_co: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> CellArray[_CellT_co]: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> CellArray[_CellT_co]: ...
+    def __getitem__(self, index: _IntArray0D, /) -> _CellT_co: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> CellArray[_CellT_co]: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> _CellT_co: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> CellArray[_CellT_co]: ...
+    @overload
+    def __getitem__(
+        self, index: _IntArrayUnknownRank, /
+    ) -> _CellT_co | CellArray[_CellT_co]: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> _CellT_co: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> CellArray[_CellT_co]: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> CellArray[_CellT_co]: ...
     @overload
@@ -13646,13 +13692,14 @@ class CellArray(Sequence[_CellT_co]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> _CellT_co | CellArray[_CellT_co]:
         """Select logical rows by integer, slice, or fancy index.
@@ -13880,7 +13927,10 @@ class CellArray(Sequence[_CellT_co]):
     @overload
     def __array__(
         self: CellArray[_CellT | None],
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol.
@@ -14020,7 +14070,10 @@ class H3VertexArray(Sequence[H3Vertex]):
     @overload
     def __array__(
         self,
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol.
@@ -14040,7 +14093,9 @@ class H3VertexArray(Sequence[H3Vertex]):
         -------
         numpy.ndarray
         """
-    def value_counts(self) -> tuple[H3VertexArray, npt.NDArray[np.int64]]:
+    def value_counts(
+        self,
+    ) -> tuple[H3VertexArray, np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Unique values and counts, ordered by descending count, with
         first appearance breaking ties.
 
@@ -14059,7 +14114,9 @@ class H3VertexArray(Sequence[H3Vertex]):
         >>> counts.tolist()
         [1, 1, 1, 1, 1, 1]
         """
-    def factorize(self) -> tuple[npt.NDArray[np.int64], H3VertexArray]:
+    def factorize(
+        self,
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], H3VertexArray]:
         """Factorize values into dense integer codes and first-seen uniques.
 
         Returns
@@ -14150,15 +14207,19 @@ class H3VertexArray(Sequence[H3Vertex]):
         iterator
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> H3Vertex: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> H3VertexArray: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> H3VertexArray: ...
+    def __getitem__(self, index: _IntArray0D, /) -> H3Vertex: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> H3VertexArray: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> H3Vertex: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> H3VertexArray: ...
+    @overload
+    def __getitem__(
+        self, index: _IntArrayUnknownRank, /
+    ) -> H3Vertex | H3VertexArray: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> H3Vertex: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> H3VertexArray: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> H3VertexArray: ...
     @overload
@@ -14166,13 +14227,14 @@ class H3VertexArray(Sequence[H3Vertex]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> H3Vertex | H3VertexArray:
         """Select by integer, slice, or fancy index.
@@ -14345,7 +14407,10 @@ class H3EdgeArray(Sequence[H3Edge]):
     @overload
     def __array__(
         self,
-        dtype: type[np.object_] | np.dtype[np.object_] | Literal['O', 'object'],
+        dtype: type[object]
+        | type[np.object_]
+        | np.dtype[np.object_]
+        | Literal['O', 'object'],
         copy: bool | None = None,
     ) -> npt.NDArray[np.object_]:
         """NumPy array protocol.
@@ -14365,7 +14430,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         -------
         numpy.ndarray
         """
-    def value_counts(self) -> tuple[H3EdgeArray, npt.NDArray[np.int64]]:
+    def value_counts(
+        self,
+    ) -> tuple[H3EdgeArray, np.ndarray[tuple[int], np.dtype[np.int64]]]:
         """Unique values and counts, ordered by descending count, with
         first appearance breaking ties.
 
@@ -14384,7 +14451,9 @@ class H3EdgeArray(Sequence[H3Edge]):
         >>> counts.tolist()
         [1, 1, 1, 1, 1, 1]
         """
-    def factorize(self) -> tuple[npt.NDArray[np.int64], H3EdgeArray]:
+    def factorize(
+        self,
+    ) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], H3EdgeArray]:
         """Factorize values into dense integer codes and first-seen uniques.
 
         Returns
@@ -14475,15 +14544,17 @@ class H3EdgeArray(Sequence[H3Edge]):
         iterator
         """
     @overload
-    def __getitem__(self, index: _IntScalar, /) -> H3Edge: ...
-    @overload
-    def __getitem__(self, index: slice, /) -> H3EdgeArray: ...
-    @overload
-    def __getitem__(self, index: _BoolArray1D, /) -> H3EdgeArray: ...
+    def __getitem__(self, index: _IntArray0D, /) -> H3Edge: ...
     @overload
     def __getitem__(self, index: _IntArray1D, /) -> H3EdgeArray: ...
     @overload
-    def __getitem__(self, index: _IntArray0D, /) -> H3Edge: ...
+    def __getitem__(self, index: _BoolArray1D, /) -> H3EdgeArray: ...
+    @overload
+    def __getitem__(self, index: _IntArrayUnknownRank, /) -> H3Edge | H3EdgeArray: ...
+    @overload
+    def __getitem__(self, index: SupportsIndex, /) -> H3Edge: ...
+    @overload
+    def __getitem__(self, index: slice, /) -> H3EdgeArray: ...
     @overload
     def __getitem__(self, index: _BoolLane, /) -> H3EdgeArray: ...
     @overload
@@ -14491,13 +14562,14 @@ class H3EdgeArray(Sequence[H3Edge]):
     @overload
     def __getitem__(
         self,
-        index: _IntScalar
+        index: SupportsIndex
         | slice
         | _BoolArray1D
         | _BoolLane
         | _IndexLane
+        | _IntArray0D
         | _IntArray1D
-        | _IntArray0D,
+        | _IntArrayUnknownRank,
         /,
     ) -> H3Edge | H3EdgeArray:
         """Select by integer, slice, or fancy index.
@@ -18876,8 +18948,9 @@ def dwithin(
         infinity is accepted and matches every pair of admitted non-empty
         operands.
     CRSError
-        If geographic point-edge search reaches its 128-evaluation budget or
-        binary64 parameter precision without proving the threshold result.
+        If geographic point-edge search reaches its binary64-resolution-derived
+        work allowance or 16,384-evaluation safety ceiling, or parameter
+        precision ends without proving the threshold result.
 
     See Also
     --------
@@ -18906,7 +18979,7 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> npt.NDArray[np.int64]: ...
+) -> np.ndarray[tuple[int], np.dtype[np.int64]]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -18918,7 +18991,7 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]: ...
+) -> tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -18930,7 +19003,7 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> Groups[npt.NDArray[np.int64]]: ...
+) -> Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -18942,7 +19015,10 @@ def nearest(
     unit: DistanceUnit | None = None,
     exclusive: bool = False,
     ties: bool = False,
-) -> tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]: ...
+) -> tuple[
+    Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+    npt.NDArray[np.float64],
+]: ...
 @overload
 def nearest(
     values: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
@@ -18955,10 +19031,13 @@ def nearest(
     exclusive: bool = False,
     ties: bool = False,
 ) -> (
-    npt.NDArray[np.int64]
-    | Groups[npt.NDArray[np.int64]]
-    | tuple[npt.NDArray[np.int64], npt.NDArray[np.float64]]
-    | tuple[Groups[npt.NDArray[np.int64]], npt.NDArray[np.float64]]
+    np.ndarray[tuple[int], np.dtype[np.int64]]
+    | Groups[np.ndarray[tuple[int], np.dtype[np.int64]]]
+    | tuple[np.ndarray[tuple[int], np.dtype[np.int64]], npt.NDArray[np.float64]]
+    | tuple[
+        Groups[np.ndarray[tuple[int], np.dtype[np.int64]]],
+        npt.NDArray[np.float64],
+    ]
 ):
     """Find the nearest of `values` to each query geometry (builds an index).
 
@@ -19029,7 +19108,10 @@ def join(
     predicate: Literal['dwithin'],
     distance: float,
     unit: DistanceUnit | None = None,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]: ...
+) -> tuple[
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+]: ...
 @overload
 def join(
     left: Geometry | GeometryArray[Geometry | None] | Iterable[_GeometryLike],
@@ -19038,7 +19120,10 @@ def join(
     predicate: TopologicalPredicate = 'intersects',
     distance: None = None,
     unit: DistanceUnit | None = None,
-) -> tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]]:
+) -> tuple[
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
+]:
     """Perform a spatial join between two geometry collections via an internal index.
 
     Parameters
@@ -23001,7 +23086,7 @@ def osm_shortlink_location(
 ) -> tuple[
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
-    npt.NDArray[np.int64],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
 ]:
     """Parse an OSM shortlink code back into its location and zoom.
 

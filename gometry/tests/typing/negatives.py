@@ -270,12 +270,12 @@ if TYPE_CHECKING:
     # Antimeridian splitting is explicit metadata-bearing geography.
     gm.box(170.0, -10.0, -170.0, 10.0, wrap='split')  # type: ignore[call-overload]
 
-    # Dtype families: GeometryArray/CellArray reject float dtypes statically
-    # (probe __array__/to_numpy — np.asarray erases the protocol dtype check).
-    POINTS.__array__(dtype=np.float64)  # type: ignore[arg-type]
+    # The builtin object spelling necessarily widens __array__ to type[object],
+    # so use dtype instances to probe static rejection of unsupported dtypes.
+    POINTS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
     POINTS.to_numpy(np.float64)  # type: ignore[call-arg]
-    H3_CELLS.__array__(dtype=np.float64)  # type: ignore[arg-type]
-    gm.CellArray([h3_cell, None]).__array__(dtype=np.uint64)  # type: ignore[arg-type]
+    H3_CELLS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
+    gm.CellArray([h3_cell, None]).__array__(dtype='uint64')  # type: ignore[call-overload]
     POINT.coords.__array__(dtype=np.int64)  # type: ignore[arg-type]
     # CRS kind vocabulary rejects unknown tokens.
     gm.crs_catalog('WGS', kind='not_a_kind')  # type: ignore[arg-type]

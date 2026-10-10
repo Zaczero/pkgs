@@ -427,16 +427,19 @@ impl PyGeometryArray {
         PyCoordinates::new(self.coordinate_view())
     }
 
-    /// Select rows by integer, slice, or fancy index.
+    /// Select rows by integer-like scalar, slice, or fancy index.
     ///
-    /// An ``int`` returns one typed geometry (or raises ``IndexError``).
-    /// A ``slice`` or integer sequence / boolean mask returns a gathered
-    /// ``GeometryArray`` (missing rows stay missing).
+    /// An ``int``, object implementing ``__index__``, or zero-dimensional
+    /// integer ndarray returns one typed geometry. A ``slice``, integer
+    /// sequence, one-dimensional integer ndarray, or boolean mask returns a
+    /// gathered ``GeometryArray``; missing rows stay missing. Boolean scalars
+    /// and NumPy index arrays with rank above one raise ``TypeError``.
     ///
     /// Returns
     /// -------
-    /// Geometry or GeometryArray
-    ///     Scalar geometry for an int index; array for slice/fancy selection.
+    /// Geometry, None, or GeometryArray
+    ///     Scalar geometry for integer-like scalar selection; array for
+    ///     slice or one-dimensional fancy selection.
     pub fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         array_getitem(self, py, index)
     }
