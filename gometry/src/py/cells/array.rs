@@ -746,17 +746,17 @@ impl PyCellArray {
         })
     }
 
-    /// ``sys.getsizeof`` support: the wrapper plus this array's logical
+    /// ``sys.getsizeof`` support: Python's allocation base plus this array's logical
     /// ``uint64`` id payload, missing flags, and any row-selection map. Shared
-    /// backing buffers are reported like NumPy views, not as the full parent
-    /// allocation.
+    /// backing buffers are estimated from the selected view, not the full
+    /// parent allocation.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(size_of::<Self>(), self.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     /// Grid-system token for the stored cell type.

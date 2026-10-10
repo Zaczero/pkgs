@@ -563,7 +563,7 @@ def test_readme_quickstart_stays_executable() -> None:
     assert area.geometry_type == 'Polygon'
     assert wrapped_area.geometry_type == 'MultiPolygon'
     assert multi.geometry_type == 'MultiPolygon'
-    assert point.crs == 'EPSG:4326'
+    assert point.crs == gm.CRS('EPSG:4326')
     assert point.coordinate_axes == 'XY'
     assert multi.bounds == area.bounds
     np.testing.assert_array_equal(area.coords.row_index, [0, 0, 0, 0, 0])
@@ -580,8 +580,8 @@ def test_readme_quickstart_stays_executable() -> None:
     perimeter_m = area.length
     assert distance_m > 0
     assert 80 < bearing_deg < 100
-    assert east_1km.crs == 'EPSG:4326'
-    assert midpoint.crs == 'EPSG:4326'
+    assert east_1km.crs == gm.CRS('EPSG:4326')
+    assert midpoint.crs == gm.CRS('EPSG:4326')
     assert area_m2 > 0
     assert perimeter_m > 0
     cells = gm.h3_cover(area, resolution=6, cell_rule='center')
@@ -604,7 +604,7 @@ def test_readme_quickstart_stays_executable() -> None:
     )
     same = gm.from_wkb(wkb)
     same_ewkb = gm.from_wkb(point.to_wkb(include_srid=True))
-    assert same.crs == 'EPSG:4326'
+    assert same.crs == gm.CRS('EPSG:4326')
     assert same_ewkb.crs == point.crs
     roundtrip = cast(
         'gm.GeometryArray', gm.from_arrow(gm.GeometryArray([point, area]).to_arrow())
@@ -619,7 +619,7 @@ def test_readme_quickstart_stays_executable() -> None:
     )
     strict_geom = gm.require(feature_geom, crs=4326, axes='XY')
     assert len(roundtrip) == 2
-    assert strict_geom.crs == 'EPSG:4326'
+    assert strict_geom.crs == gm.CRS('EPSG:4326')
 
 
 def test_public_all_exports_every_curated_facade_symbol() -> None:
@@ -867,7 +867,7 @@ def test_geographic_array_nary_reductions_use_seam_topology() -> None:
         expected = binary(left, right)
         assert gm.equals(reduced, expected)
         assert reduced.area == pytest.approx(expected.area)
-        assert reduced.crs == 'OGC:CRS84'
+        assert reduced.crs == gm.CRS('OGC:CRS84')
         assert reduced.epoch == 2020.5
 
         # Missing rows are skipped and one row reduces to itself, through the

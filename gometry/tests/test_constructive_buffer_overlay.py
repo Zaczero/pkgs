@@ -55,7 +55,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     all_union = gm.union_all([left, right])
     buffered_top_level = cast('gm.Geometry', gm.Point(0, 0).buffer(1))
     assert buffered.geometry_type == 'Polygon'
-    assert buffered.crs == 'EPSG:3857'
+    assert buffered.crs == gm.CRS('EPSG:3857')
     assert buffered.area == pytest.approx(math.pi, rel=0.04)
     assert buffered_top_level.area == pytest.approx(buffered.area)
     geographic_buffer = cast('gm.Geometry', gm.Point(0, 0, crs=4326).buffer(100.0))
@@ -64,7 +64,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     assert square_line_buffer.area == pytest.approx(8)
     assert bevel_corner_buffer.area < miter_corner_buffer.area
     assert offset_curve.to_wkt() == 'LINESTRING Z (0 1 0, 1 1 2, 1 2 4)'
-    assert offset_curve.crs == 'EPSG:3857'
+    assert offset_curve.crs == gm.CRS('EPSG:3857')
     assert (
         cast('gm.Geometry', reverse_offset_curve).to_wkt()
         == 'LINESTRING (0 -1, 3 -1, 3 2)'
@@ -77,21 +77,23 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
         gm.LineString([(0, 0), (2, 0)]).offset_curve(1).to_wkt()
         == 'LINESTRING (0 1, 2 1)'
     )
-    assert gm.LineString([(0, 0), (2, 0)], crs=3857).offset_curve(1).crs == 'EPSG:3857'
+    assert gm.LineString([(0, 0), (2, 0)], crs=3857).offset_curve(1).crs == gm.CRS(
+        'EPSG:3857'
+    )
     geographic_offset = gm.LineString([(0, 0), (2, 0)], crs=4326).offset_curve(1)
-    assert geographic_offset.crs == 'EPSG:4326'
+    assert geographic_offset.crs == gm.CRS('EPSG:4326')
     assert geographic_offset.geometry_type == 'LineString'
     assert simplified.to_wkt() == 'LINESTRING (0 0, 2 0)'
     assert snapped.to_wkt() == 'LINESTRING ZM (0 0 0 10, 1 0 2 12, 2 0 4 14)'
-    assert snapped.crs == 'EPSG:3857'
+    assert snapped.crs == gm.CRS('EPSG:3857')
     assert shared.geometry_type == 'GeometryCollection'
-    assert shared.crs == 'EPSG:3857'
+    assert shared.crs == gm.CRS('EPSG:3857')
     assert [part.to_wkt() for part in shared.parts] == [
         'MULTILINESTRING ((1 0, 2 0))',
         'MULTILINESTRING ((0 0, 1 0))',
     ]
     assert merged.to_wkt() == 'LINESTRING (0 0, 1 0, 2 0)'
-    assert merged.crs == 'EPSG:3857'
+    assert merged.crs == gm.CRS('EPSG:3857')
     assert intersection.area == 1
     assert unioned.area == 7
     assert all_union.area == 7
@@ -112,7 +114,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     scalar_left_intersections = cast(
         'gm.GeometryArray', gm.intersection(left, overlay_right)
     )
-    assert overlay_intersections.crs == 'EPSG:3857'
+    assert overlay_intersections.crs == gm.CRS('EPSG:3857')
     np.testing.assert_allclose(
         [item.area for item in overlay_intersections], [1.0, 1.0]
     )
@@ -157,7 +159,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
         gm.CRSMismatchError, match='GeometryArray requires one shared CRS'
     ):
         gm.union_all([gm.box(0, 0, 1, 1), left])
-    assert gm.union_all([gm.box(0, 0, 1, 1, crs=3857), left]).crs == 'EPSG:3857'
+    assert gm.union_all([gm.box(0, 0, 1, 1, crs=3857), left]).crs == gm.CRS('EPSG:3857')
     simplified_array = cast(
         'gm.GeometryArray', gm.GeometryArray([line]).simplify(0.1, method='dp')
     )
@@ -263,7 +265,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     geographic_offset_array = gm.GeometryArray([
         gm.LineString([(0, 0), (2, 0)], crs=4326)
     ]).offset_curve(1)
-    assert geographic_offset_array.crs == 'EPSG:4326'
+    assert geographic_offset_array.crs == gm.CRS('EPSG:4326')
     assert geographic_offset_array[0].geometry_type == 'LineString'
     offset_array_from_function = cast(
         'gm.GeometryArray',
@@ -274,7 +276,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     assert merged_array[0].to_wkt() == merged.to_wkt()
     point_union = gm.union(gm.Point(0, 0, crs=3857), right)
     assert point_union.geometry_type == 'GeometryCollection'
-    assert point_union.crs == 'EPSG:3857'
+    assert point_union.crs == gm.CRS('EPSG:3857')
     with pytest.raises(TypeError, match='LineString or MultiLineString'):
         left.line_merge()
     with pytest.raises(ValueError, match='unknown buffer cap_style'):
@@ -678,13 +680,10 @@ def test_intersection_all_and_symmetric_difference_all_reductions() -> None:
         ])
     with pytest.raises(gm.CRSMismatchError):
         gm.intersection_all([gm.box(0, 0, 4, 4, crs=3857), gm.box(1, 1, 5, 5)])
-    assert (
-        gm.intersection_all([
-            gm.box(0, 0, 4, 4, crs=3857),
-            gm.box(1, 1, 5, 5, crs=3857),
-        ]).crs
-        == 'EPSG:3857'
-    )
+    assert gm.intersection_all([
+        gm.box(0, 0, 4, 4, crs=3857),
+        gm.box(1, 1, 5, 5, crs=3857),
+    ]).crs == gm.CRS('EPSG:3857')
 
 
 def test_cleanup_and_segmentize_are_rust_backed() -> None:
@@ -707,7 +706,7 @@ def test_cleanup_and_segmentize_are_rust_backed() -> None:
         gm.GeometryArray([gm.LineString([(0, 0), (2, 0)])]).segmentize(0.5),
     )
     assert cleaned.to_wkt() == 'LINESTRING ZM (0 0 0 1, 3 0 6 4)'
-    assert cleaned.crs == 'EPSG:4326'
+    assert cleaned.crs == gm.CRS('EPSG:4326')
     assert cleaned_array[0].to_wkt() == cleaned.to_wkt()
     assert cleaned_array[1].to_wkt() == 'POLYGON ((0 0, 2 0, 2 2, 0 0))'
     assert tolerant.to_wkt() == 'LINESTRING (0 0, 1 0)'
@@ -841,11 +840,11 @@ def test_minimum_clearance_line_realizes_the_clearance() -> None:
     square = gm.box(0, 0, 3, 2, crs=3857)
     line = square.minimum_clearance_line()
     assert isinstance(line, gm.LineString)
-    assert line.crs == 'EPSG:3857'
+    assert line.crs == gm.CRS('EPSG:3857')
     assert line.length == pytest.approx(square.minimum_clearance())
     geo = gm.box(13.0, 52.0, 13.1, 52.2, crs=4326)
     geo_line = geo.minimum_clearance_line()
-    assert geo_line.crs == 'EPSG:4326'
+    assert geo_line.crs == gm.CRS('EPSG:4326')
     geo_coords = np.asarray(geo_line.coords, dtype=np.float64)
     geo_witness_distance = gm.distance(
         gm.Point(*geo_coords[0][:2], crs=4326),
@@ -904,7 +903,7 @@ def test_unique_points_dedups_in_first_occurrence_order() -> None:
     unique = line.unique_points()
     assert isinstance(unique, gm.MultiPoint)
     assert unique.to_wkt() == 'MULTIPOINT ((0 0), (1 1), (2 2))'
-    assert unique.crs == 'EPSG:4326'
+    assert unique.crs == gm.CRS('EPSG:4326')
     measured = gm.LineString([(0, 0), (0, 0), (1, 0)], z=[1, 2, 3])
     assert len(cast('gm.MultiPoint', measured.unique_points()).parts) == 3
     batch = cast('gm.GeometryArray', gm.GeometryArray([line, line]).unique_points())
@@ -1020,7 +1019,7 @@ def test_reverse_and_orient_polygons_are_rust_backed() -> None:
     )
     collection = gm.GeometryCollection([line, polygon], crs=4326)
     assert line.reverse().to_wkt() == 'LINESTRING ZM (2 0 4 14, 1 0 2 12, 0 0 0 10)'
-    assert line.reverse().crs == 'EPSG:4326'
+    assert line.reverse().crs == gm.CRS('EPSG:4326')
     assert gm.Point(1, 2).reverse().to_wkt() == 'POINT (1 2)'
     assert (
         polygon.reverse().to_wkt()
@@ -1048,7 +1047,7 @@ def test_normalize_is_rust_backed() -> None:
     )
     collection = gm.GeometryCollection([gm.Point(2, 2, crs=4326), line, polygon])
     assert line.normalize().to_wkt() == 'LINESTRING ZM (0 0 4 5, 1 0 2 3)'
-    assert line.normalize().crs == 'EPSG:4326'
+    assert line.normalize().crs == gm.CRS('EPSG:4326')
     assert (
         polygon.normalize().to_wkt()
         == 'POLYGON ((0 0, 1 1, 0 1, 0 0), (0.2 0.2, 0.2 0.5, 0.5 0.2, 0.2 0.2))'
@@ -1088,7 +1087,7 @@ def test_clip_by_rect_clips_scalar_array_and_preserves_line_axes() -> None:
         gm.GeometryArray([polygon, outside]).clip_by_rect(0, 0, 2, 2),
     )
     assert clipped_polygon.area == pytest.approx(4)
-    assert clipped_polygon.crs == 'EPSG:3857'
+    assert clipped_polygon.crs == gm.CRS('EPSG:3857')
     assert clipped_line.to_wkt() == 'LINESTRING ZM (-1 0 1 11, 0 0 2 12, 1 0 3 13)'
     assert inside.clip_by_rect(0, 0, 2, 2).to_wkt() == 'POINT (0 0)'
     assert outside.clip_by_rect(0, 0, 2, 2).to_wkt() == 'POINT EMPTY'
@@ -1238,7 +1237,7 @@ def test_clip_by_rect_line_array_preserves_axes_masks_selection_and_frame() -> N
     framed = gm.GeometryArray([rows[0]], crs=4326, epoch=2020.0).clip_by_rect(
         0, 0, 1, 1
     )
-    assert framed.crs == 'EPSG:4326'
+    assert framed.crs == gm.CRS('EPSG:4326')
     assert framed.epoch == 2020.0
 
 
@@ -1248,7 +1247,7 @@ def test_clip_by_rect_packed_missing_and_gathered_rows_preserve_mask_and_frame()
     all_missing = gm.GeometryArray([None, None], crs=4326, epoch=2020.0)
     clipped_missing = all_missing.clip_by_rect(-1, -1, 1, 1)
     assert clipped_missing.is_missing.tolist() == [True, True]
-    assert clipped_missing.crs == 'EPSG:4326'
+    assert clipped_missing.crs == gm.CRS('EPSG:4326')
     assert clipped_missing.epoch == 2020.0
 
     # A geographic rectangle may cross the longitude seam.
@@ -1267,7 +1266,7 @@ def test_clip_by_rect_packed_missing_and_gathered_rows_preserve_mask_and_frame()
     clipped_mixed = mixed.clip_by_rect(-1, -1, 1, 1)
     assert clipped_mixed.is_missing.tolist() == [True, False, True]
     assert clipped_mixed[1].to_wkt(drop_epoch=True) == 'POINT (0.5 0.5)'
-    assert clipped_mixed.crs == 'EPSG:4326'
+    assert clipped_mixed.crs == gm.CRS('EPSG:4326')
     assert clipped_mixed.epoch == 2020.0
 
     mixed_storage = gm.GeometryArray(
@@ -1281,12 +1280,12 @@ def test_clip_by_rect_packed_missing_and_gathered_rows_preserve_mask_and_frame()
     )
     gathered_missing = mixed_storage[[2, 2]].clip_by_rect(-1, -1, 1, 1)
     assert gathered_missing.is_missing.tolist() == [True, True]
-    assert gathered_missing.crs == 'EPSG:4326'
+    assert gathered_missing.crs == gm.CRS('EPSG:4326')
     assert gathered_missing.epoch == 2020.0
 
     empty = gm.GeometryArray([], crs=4326, epoch=2020.0).clip_by_rect(-1, -1, 1, 1)
     assert len(empty) == 0
-    assert empty.crs == 'EPSG:4326'
+    assert empty.crs == gm.CRS('EPSG:4326')
     assert empty.epoch == 2020.0
 
 

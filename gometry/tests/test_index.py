@@ -1232,7 +1232,7 @@ def test_spatial_index_v2_pickle_keeps_high_sparse_handles() -> None:
     empty = _lib._unpickle_spatial_index_v2(framed[:0], (), large_next, True)
     empty_roundtrip = pickle.loads(pickle.dumps(empty))
     assert list(empty_roundtrip) == []
-    assert empty_roundtrip.crs == 'EPSG:4326'
+    assert empty_roundtrip.crs == gm.CRS('EPSG:4326')
     assert empty_roundtrip.epoch == 2020.0
     assert (
         empty_roundtrip.insert(gm.Point(5.0, 6.0, crs=4326, epoch=2020.0)) == large_next
@@ -1276,7 +1276,7 @@ def test_spatial_index_all_missing_compact_owner_stays_unframed_until_append() -
     assert list(index) == []
 
     assert index.insert(gm.Point(9.0, 10.0, crs=3857)) == 3
-    assert index.crs == 'EPSG:3857'
+    assert index.crs == gm.CRS('EPSG:3857')
     assert ids(index.query(gm.Point(9.0, 10.0, crs=3857))) == [3]
 
 

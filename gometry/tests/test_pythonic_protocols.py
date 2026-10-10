@@ -802,19 +802,17 @@ def test_pickle_round_trips_across_protocols(protocol: int) -> None:
         assert restored == value, type(value).__name__
 
 
-def test_crs_equality_is_semantic_and_unhashable() -> None:
+def test_crs_equality_is_stored_definition_and_hashable() -> None:
     crs = gm.CRS(4326)
-    assert crs == 4326
-    assert crs == 'EPSG:4326'
     assert crs == gm.CRS('EPSG:4326')
-    assert crs == 4326
-    assert crs == 'EPSG:4326'
-    with pytest.raises(TypeError, match='unhashable'):
-        hash(crs)
-    with pytest.raises(TypeError, match='unhashable'):
-        _ = {crs: 1}
-    values = {crs.definition: 1}
-    assert values['EPSG:4326'] == 1
+    assert hash(crs) == hash(gm.CRS('EPSG:4326'))
+    assert {crs: 'stored definition'}[gm.CRS('EPSG:4326')] == 'stored definition'
+    assert crs != 4326
+    assert crs != 'EPSG:4326'
+    assert crs != 4326
+    assert crs != 'EPSG:4326'
+    assert crs != gm.CRS('OGC:CRS84')
+    assert crs.same_as('OGC:CRS84', mode='ignore_axis_order')
 
 
 def test_validation_report_is_a_value() -> None:
@@ -967,13 +965,29 @@ def test_engine_copy_and_pickle_contracts() -> None:
 
 
 def test_coordinates_pickle_copy_and_deepcopy_are_type_stable() -> None:
-    coords = gm.LineString([(0, 0), (1, 2)], z=[3, 4], m=[5, 6]).coords
-    expected = np.asarray(coords)
+    source = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 2)], z=[3, 4], m=[5, 6]),
+        None,
+        gm.Point(9, 10),
+    ])
+    coords = source.coords.select('XYZM')
     assert copy.copy(coords) is coords
     assert copy.deepcopy(coords) is coords
-    with pytest.raises(TypeError, match='cannot pickle Coordinates'):
-        pickle.dumps(coords)
-    np.testing.assert_allclose(np.asarray(coords), expected)
+
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        restored = pickle.loads(pickle.dumps(coords, protocol=protocol))
+
+        assert isinstance(restored, gm.Coordinates)
+        assert not isinstance(restored, np.ndarray)
+        assert restored.coordinate_axes == 'XYZM'
+        assert restored == coords
+        assert restored.row_index.tolist() == coords.row_index.tolist()
+
+        empty = pickle.loads(
+            pickle.dumps(gm.GeometryArray([]).coords, protocol=protocol)
+        )
+        assert isinstance(empty, gm.Coordinates)
+        assert len(empty) == 0
 
 
 def test_nbytes_and_sizeof_report_real_payload() -> None:
@@ -1327,6 +1341,31 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
     for cell in scalar_cells:
         assert cell.nbytes == 8
         assert sys.getsizeof(cell) >= cell.nbytes
+
+
+def test_sizeof_includes_python_allocation_base_for_crs_and_cell_families() -> None:
+    h3 = gm.H3Cell(13.4, 52.5, resolution=7)
+    edge = h3.edges[0]
+    vertex = h3.vertices[0]
+    values = (
+        gm.CRS(4326),
+        h3,
+        gm.S2Cell(13.4, 52.5, level=12),
+        gm.GeohashCell(13.4, 52.5, precision=6),
+        gm.Tile(lon=13.4, lat=52.5, zoom=12),
+        edge,
+        vertex,
+    )
+
+    for value in values:
+        assert value.__sizeof__() == object.__sizeof__(value)
+
+    cell_array = gm.h3_cells([13.4], [52.5], resolution=7)
+    edge_array = h3.edges
+    vertex_array = h3.vertices
+    for value in (cell_array, edge_array, vertex_array):
+        assert value.__sizeof__() >= object.__sizeof__(value)
+        assert value.__sizeof__() > object.__sizeof__(value)
 
 
 def test_runtime_generic_subscription() -> None:

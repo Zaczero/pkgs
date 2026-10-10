@@ -18,7 +18,7 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     line = gm.LineString([(170, -10), (-170, 10)], crs=4326)
     split = line.split_antimeridian()
     assert split.to_wkt() == 'MULTILINESTRING ((170 -10, 180 0), (-180 0, -170 10))'
-    assert split.crs == 'EPSG:4326'
+    assert split.crs == gm.CRS('EPSG:4326')
     multi = gm.from_wkt(
         'MULTILINESTRING ((170 -10, -170 10), (0 0, 1 1))', crs=4326
     ).split_antimeridian()
@@ -586,7 +586,7 @@ def test_centroid_uses_native_frame_period_for_grad_seam_scalar_and_array() -> N
     # half-open canonical representative can differ in sign at the seam.
     assert abs(centroid.x * scale) == pytest.approx(180.0)
     assert centroid.y * scale == pytest.approx(0.0)
-    assert centroid.crs == 'EPSG:4807'
+    assert centroid.crs == gm.CRS('EPSG:4807')
     assert gm.equals(centroid, array_centroid)
     assert abs(array_centroid.x * scale) == pytest.approx(180.0)
 

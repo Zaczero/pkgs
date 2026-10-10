@@ -59,7 +59,7 @@ def test_geometry_array_mapping_with_crs_kwarg() -> None:
         [{'type': 'Point', 'coordinates': [1, 2]}],
         crs=4326,
     )
-    assert arr.crs == 'EPSG:4326'
+    assert arr.crs == gm.CRS('EPSG:4326')
     assert arr[0].to_wkt() == 'POINT (1 2)'
 
 
@@ -187,7 +187,7 @@ def test_from_geojson_matching_nested_crs_accepted() -> None:
     }
     g = gm.from_geojson(feature, crs=4326)
     assert g.to_wkt() == 'POINT (1 2)'
-    assert g.crs == 'EPSG:4326'
+    assert g.crs == gm.CRS('EPSG:4326')
 
     # No nested crs still works.
     plain = {
@@ -306,7 +306,7 @@ def test_geometry_array_accepts_matching_and_plain(
 ) -> None:
     """Accept matching / CRS84 semantic match / absent under crs=4326."""
     arr = gm.GeometryArray([foreign], crs=4326)
-    assert arr.crs == expected_crs
+    assert arr.crs == gm.CRS(expected_crs)
     assert arr[0].to_wkt() == 'POINT (1 2)'
 
 
@@ -325,20 +325,20 @@ def test_geometry_array_accepts_matching_and_plain(
 def test_require_accepts_matching_crs84_and_plain(foreign: object) -> None:
     """Require accepts matching, CRS84 semantic match, and plain under crs=4326."""
     g = gm.require(foreign, crs=4326)
-    assert g.crs == 'EPSG:4326'
+    assert g.crs == gm.CRS('EPSG:4326')
     assert g.to_wkt() == 'POINT (1 2)'
 
 
 def test_geometry_array_adopts_embedded_when_crs_omitted() -> None:
     """Adopt path: embedded 3857 with omitted crs → EPSG:3857."""
     arr = gm.GeometryArray([_legacy_mapping('EPSG:3857')])
-    assert arr.crs == 'EPSG:3857'
+    assert arr.crs == gm.CRS('EPSG:3857')
     assert arr[0].to_wkt() == 'POINT (1 2)'
     arr_iface = gm.GeometryArray([_Geo3857()])
-    assert arr_iface.crs == 'EPSG:3857'
+    assert arr_iface.crs == gm.CRS('EPSG:3857')
 
     req = gm.require(_legacy_mapping('EPSG:3857'))
-    assert req.crs == 'EPSG:3857'
+    assert req.crs == gm.CRS('EPSG:3857')
 
 
 def test_geojson_malformed_geometry_has_one_path_across_text_mapping_interface() -> (
@@ -502,14 +502,14 @@ def test_require_frontend_parity_text_and_bytes() -> None:
 
     for data in (match, _GeoCrs84(), text_match, text_match.encode()):
         g = gm.require(data, crs=4326)
-        assert g.crs == 'EPSG:4326'
+        assert g.crs == gm.CRS('EPSG:4326')
         assert g.to_wkt() == 'POINT (1 2)'
 
 
 def test_geometry_array_epoch_with_adopted_embedded_crs() -> None:
     """Foreign 3857 + epoch= first adopts CRS then attaches epoch."""
     arr = gm.GeometryArray([_Geo3857()], epoch=2020.0)
-    assert arr.crs == 'EPSG:3857'
+    assert arr.crs == gm.CRS('EPSG:3857')
     assert arr.epoch == 2020.0
 
 
@@ -519,14 +519,14 @@ def test_mixed_native_and_foreign_same_embedded_crs() -> None:
         gm.Point(0, 0, crs=3857),
         _legacy_mapping('EPSG:3857'),
     ])
-    assert arr.crs == 'EPSG:3857'
+    assert arr.crs == gm.CRS('EPSG:3857')
     assert arr.to_wkt() == ['POINT (0 0)', 'POINT (1 2)']
 
 
 def test_indirect_consumers_adopt_foreign_crs() -> None:
     """SpatialIndex / union_all inherit the shared adopt chokepoint."""
-    assert gm.SpatialIndex([_Geo3857()])[0].crs == 'EPSG:3857'
-    assert gm.union_all([_Geo3857()]).crs == 'EPSG:3857'
+    assert gm.SpatialIndex([_Geo3857()])[0].crs == gm.CRS('EPSG:3857')
+    assert gm.union_all([_Geo3857()]).crs == gm.CRS('EPSG:3857')
 
 
 def test_feature_valued_geo_interface_crs() -> None:
@@ -555,11 +555,11 @@ def test_feature_valued_geo_interface_crs() -> None:
         }
 
     g = gm.require(FeatureMatch(), crs=4326)
-    assert g.crs == 'EPSG:4326'
+    assert g.crs == gm.CRS('EPSG:4326')
     assert g.to_wkt() == 'POINT (1 2)'
 
     arr = gm.GeometryArray([FeatureMatch()], crs=4326)
-    assert arr.crs == 'EPSG:4326'
+    assert arr.crs == gm.CRS('EPSG:4326')
 
     with pytest.raises(gm.ParseError) as exc_info:
         gm.require(FeatureConflict(), crs=4326)
@@ -587,26 +587,20 @@ def test_from_features_nested_feature_geometry_slot_parity() -> None:
 def test_from_geojson_fixed_document_semantics() -> None:
     """Fixed policy: omitted = OGC:CRS84; CRS84 accepts; 3857 / crs=None reject."""
     plain = {'type': 'Point', 'coordinates': [1, 2]}
-    assert gm.from_geojson(plain).crs == 'OGC:CRS84'
-    assert (
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': plain,
-            'properties': {},
-        }).geometries.crs
-        == 'OGC:CRS84'
-    )
+    assert gm.from_geojson(plain).crs == gm.CRS('OGC:CRS84')
+    assert gm.from_features({
+        'type': 'Feature',
+        'geometry': plain,
+        'properties': {},
+    }).geometries.crs == gm.CRS('OGC:CRS84')
 
     crs84 = _legacy_mapping('OGC:CRS84')
-    assert gm.from_geojson(crs84).crs == 'OGC:CRS84'
-    assert (
-        gm.from_features({
-            'type': 'Feature',
-            'geometry': crs84,
-            'properties': {},
-        }).geometries.crs
-        == 'OGC:CRS84'
-    )
+    assert gm.from_geojson(crs84).crs == gm.CRS('OGC:CRS84')
+    assert gm.from_features({
+        'type': 'Feature',
+        'geometry': crs84,
+        'properties': {},
+    }).geometries.crs == gm.CRS('OGC:CRS84')
 
     conflict = _legacy_mapping('EPSG:3857')
     with pytest.raises(gm.ParseError) as exc_info:

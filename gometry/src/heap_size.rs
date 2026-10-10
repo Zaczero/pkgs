@@ -6,10 +6,6 @@ use smol_str::SmolStr;
 pub(crate) trait HeapSize {
     /// Estimated retained native heap, saturating at `usize::MAX`.
     fn heap_bytes(&self) -> usize;
-
-    fn total_size(&self) -> usize {
-        size_of_val(self).saturating_add(self.heap_bytes())
-    }
 }
 
 #[macro_export]

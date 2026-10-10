@@ -110,11 +110,13 @@ builds slow object arrays behind your back. The inverse is the
 ndarray (or any iterable) of gometry geometries **or** `__geo_interface__` objects,
 including Shapely geometries.
 
-[`Geometry`][gometry.Geometry], `GeometryArray`, and `Coordinates` set `__array_ufunc__ = None`, so
-NumPy ufuncs defer with a clear `TypeError` instead of forcing an implicit
-conversion. `GeometryArray` and `Coordinates` implement `__array__`, so
+[`Geometry`][gometry.Geometry] and `GeometryArray` set `__array_ufunc__ = None`, so
+NumPy ufuncs defer with a clear `TypeError` instead of assigning numeric meaning
+to spatial values. `GeometryArray` and `Coordinates` implement `__array__`, so
 `np.asarray(arr)` gives an `object` array and `np.asarray(coords)` gives an
-`(N, dims)` `float64` matrix.
+`(N, dims)` `float64` matrix. Coordinates therefore work directly with numeric
+ufuncs; the resulting arrays remain read-only where coordinate export is
+read-only, including as a ufunc `out=` target.
 
 ## Cell arrays
 

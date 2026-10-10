@@ -1998,14 +1998,14 @@ impl CoordinateView {
         // O(n log rows)).
         let count = right.len_for_python()?;
         let capacity =
-            checked_vector_len::<([Option<u64>; 4], usize)>(count, "coordinate equality")?;
+            checked_vector_len::<([Option<f64>; 4], usize)>(count, "coordinate equality")?;
         let mut right_visible = Vec::with_capacity(capacity);
         other.for_each_point(|coord| {
-            right_visible.push(visible_coordinate_bits(coord, other_layout));
+            right_visible.push(visible_coordinate_values(coord, other_layout));
         });
         let mut idx = 0_usize;
         let equal = self.try_for_each_point(&mut |coord| {
-            let left = visible_coordinate_bits(coord, self_layout);
+            let left = visible_coordinate_values(coord, self_layout);
             if right_visible.get(idx).copied() != Some(left) {
                 return ControlFlow::Break(false);
             }
@@ -2051,28 +2051,26 @@ fn owners_identical(left: &CoordinateOwner, right: &CoordinateOwner) -> bool {
     }
 }
 
-/// Bit-pattern column equality (NaN-stable, matching `Point`/`PartialEq`).
-fn f64_columns_bit_eq(left: &[f64], right: &[f64]) -> bool {
+/// Numeric column equality, matching Python tuple equality for visible ordinates.
+fn f64_columns_equal(left: &[f64], right: &[f64]) -> bool {
     if left.len() != right.len() {
         return false;
     }
-    left.iter()
-        .zip(right.iter())
-        .all(|(a, b)| a.to_bits() == b.to_bits())
+    left.iter().zip(right.iter()).all(|(a, b)| a == b)
 }
 
-fn coordseq_columns_bit_eq(left: &CoordSeq, right: &CoordSeq) -> bool {
+fn coordseq_columns_equal(left: &CoordSeq, right: &CoordSeq) -> bool {
     left.axes() == right.axes()
-        && f64_columns_bit_eq(left.xs(), right.xs())
-        && f64_columns_bit_eq(left.ys(), right.ys())
+        && f64_columns_equal(left.xs(), right.xs())
+        && f64_columns_equal(left.ys(), right.ys())
         && match (left.zs(), right.zs()) {
             (None, None) => true,
-            (Some(a), Some(b)) => f64_columns_bit_eq(a, b),
+            (Some(a), Some(b)) => f64_columns_equal(a, b),
             _ => false,
         }
         && match (left.ms(), right.ms()) {
             (None, None) => true,
-            (Some(a), Some(b)) => f64_columns_bit_eq(a, b),
+            (Some(a), Some(b)) => f64_columns_equal(a, b),
             _ => false,
         }
 }
@@ -2190,7 +2188,7 @@ fn packed_contiguous_coord_span(
     }
 }
 
-fn coord_views_bit_eq(
+fn coord_views_numeric_eq(
     left: &CoordSeq,
     left_span: std::ops::Range<usize>,
     right: &CoordSeq,
@@ -2198,7 +2196,7 @@ fn coord_views_bit_eq(
 ) -> bool {
     let left = left.view(CoordWindow::from_range(left_span, left.len()));
     let right = right.view(CoordWindow::from_range(right_span, right.len()));
-    coordseq_columns_bit_eq(&left, &right)
+    coordseq_columns_equal(&left, &right)
 }
 
 fn row_selection_eq(left: &storage::RowSelection, right: &storage::RowSelection) -> bool {
@@ -2231,9 +2229,9 @@ fn try_columnar_storage_equal(left: &CoordinateOwner, right: &CoordinateOwner) -
 fn shape_columnar_equal(left: &ShapeData, right: &ShapeData) -> Option<bool> {
     match (left.shape(), right.shape()) {
         (Shape::LineString(la), Shape::LineString(lb)) => {
-            Some(coordseq_columns_bit_eq(la.as_coords(), lb.as_coords()))
+            Some(coordseq_columns_equal(la.as_coords(), lb.as_coords()))
         },
-        (Shape::MultiPoint(la), Shape::MultiPoint(lb)) => Some(coordseq_columns_bit_eq(la, lb)),
+        (Shape::MultiPoint(la), Shape::MultiPoint(lb)) => Some(coordseq_columns_equal(la, lb)),
         (Shape::Point(pa), Shape::Point(pb)) => Some(pa == pb),
         (Shape::Empty(ka, aa), Shape::Empty(kb, ab)) => Some(ka == kb && aa == ab),
         // Multipart / polygon: fall back to dual stream.
@@ -2312,11 +2310,11 @@ fn packed_points_columnar_eq(
         return None;
     }
     match ma.as_deref() {
-        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_equal(ca, cb)),
         crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             let la = ca.view(CoordWindow::from_range(start..start + len, ca.len()));
             let lb = cb.view(CoordWindow::from_range(start..start + len, cb.len()));
-            Some(coordseq_columns_bit_eq(&la, &lb))
+            Some(coordseq_columns_equal(&la, &lb))
         },
         // Gathered points: physical rows may differ — stream is the safe path.
         storage::RowSelectionRef::Gather(_) => None,
@@ -2340,7 +2338,7 @@ fn packed_lines_columnar_eq(
     match ma.as_deref() {
         // Identity: flattened stream IS the coord columns (offsets only
         // partition rows; different breaks with the same verts stay equal).
-        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_equal(ca, cb)),
         crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             // Per-side absolute spans (prefixes may differ); compare only the
             // visible coordinate slices, never the absolute offset numbers.
@@ -2350,7 +2348,7 @@ fn packed_lines_columnar_eq(
             let Some(right) = line_window_coord_span(ob, cb.len(), start, len) else {
                 return Some(false);
             };
-            Some(coord_views_bit_eq(ca, left, cb, right))
+            Some(coord_views_numeric_eq(ca, left, cb, right))
         },
         storage::RowSelectionRef::Gather(_) => None,
     }
@@ -2372,7 +2370,7 @@ fn packed_polygons_columnar_eq(
     match ma.as_deref() {
         // Same as lines: flatten order is the packed coord column; CSR only
         // partitions rings/polygons.
-        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_equal(ca, cb)),
         crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             // Visible polygons start..end → ring range via polygon_offsets →
             // coord span via ring_offsets. Different absolute prefixes are fine.
@@ -2382,33 +2380,33 @@ fn packed_polygons_columnar_eq(
             let Some(right) = polygon_window_coord_span(rb, pb, cb.len(), start, len) else {
                 return Some(false);
             };
-            Some(coord_views_bit_eq(ca, left, cb, right))
+            Some(coord_views_numeric_eq(ca, left, cb, right))
         },
         storage::RowSelectionRef::Gather(_) => None,
     }
 }
 
-/// Visible ordinate fingerprint used by layout-aware equality (NaN-stable).
+/// Visible ordinates used by layout-aware equality.
 #[expect(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     reason = "the closed XY/Z/M layout has at most four slots, and n advances only for present axes"
 )]
-fn visible_coordinate_bits(
+fn visible_coordinate_values(
     point: Point,
     layout: Option<CoordinateAxes>,
-) -> ([Option<u64>; 4], usize) {
+) -> ([Option<f64>; 4], usize) {
     let axes = layout.unwrap_or_else(|| CoordinateAxes::from_point(point));
     let mut values = [None; 4];
-    values[0] = Some(point.x.to_bits());
-    values[1] = Some(point.y.to_bits());
+    values[0] = Some(point.x);
+    values[1] = Some(point.y);
     let mut n = 2;
     if axes.has_z() {
-        values[n] = point.z().map(f64::to_bits);
+        values[n] = point.z();
         n += 1;
     }
     if axes.has_m() {
-        values[n] = point.m().map(f64::to_bits);
+        values[n] = point.m();
         n += 1;
     }
     (values, n)

@@ -62,7 +62,7 @@ def test_line_strings_round_trip() -> None:
     assert len(lines) == 2
     assert (lines[0]).to_wkt() == 'LINESTRING (0 0, 1 1)'
     assert (lines[1]).to_wkt() == 'LINESTRING (2 2, 3 3)'
-    assert lines.crs == 'EPSG:4326'
+    assert lines.crs == gm.CRS('EPSG:4326')
 
 
 def test_scalar_multipoint_publishes_every_exactly_sized_member() -> None:
@@ -463,9 +463,9 @@ def test_scalar_multipart_constructors_reconcile_member_frames() -> None:
     points = [gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=4326)]
     lines = [gm.LineString([(0, 0), (1, 1)], crs=4326)]
     polygons = [gm.Polygon([(0, 0), (1, 0), (1, 1)], crs=4326)]
-    assert gm.MultiPoint(points).crs == 'EPSG:4326'
-    assert gm.MultiLineString(lines).crs == 'EPSG:4326'
-    assert gm.MultiPolygon(polygons).crs == 'EPSG:4326'
+    assert gm.MultiPoint(points).crs == gm.CRS('EPSG:4326')
+    assert gm.MultiLineString(lines).crs == gm.CRS('EPSG:4326')
+    assert gm.MultiPolygon(polygons).crs == gm.CRS('EPSG:4326')
     for constructor, values in (
         (gm.MultiPoint, points),
         (gm.MultiLineString, lines),

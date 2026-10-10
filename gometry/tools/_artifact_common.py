@@ -98,25 +98,8 @@ RELEASE_ENV_VARS = (
 
 
 def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.stdout:
-        sys.stderr.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
-    if result.returncode:
-        raise subprocess.CalledProcessError(
-            result.returncode,
-            cmd,
-            output=result.stdout,
-            stderr=result.stderr,
-        )
+    """Run a command with live output so bounded preparation can track progress."""
+    subprocess.run(cmd, cwd=cwd, env=env, check=True)
 
 
 def sha256_file(path: Path) -> str:

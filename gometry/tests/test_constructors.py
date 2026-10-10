@@ -12,7 +12,7 @@ import pytest
 def test_point_and_crs_metadata() -> None:
     point = gm.Point(21.0, 52.0, crs=4326)
     assert point.geometry_type == 'Point'
-    assert point.crs == 'EPSG:4326'
+    assert point.crs == gm.CRS('EPSG:4326')
     assert point.x == 21.0
     assert point.y == 52.0
     assert point.bounds == (21.0, 52.0, 21.0, 52.0)
@@ -31,7 +31,7 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
     wrapped = gm.box(170, -10, -170, 10, crs=4326, wrap='split')
     whole_world = gm.box(-200, -10, 200, 10, crs=4326, wrap='split')
     assert wrapped.geometry_type == 'MultiPolygon'
-    assert wrapped.crs == 'EPSG:4326'
+    assert wrapped.crs == gm.CRS('EPSG:4326')
     assert wrapped.bounds == (170.0, -10.0, -170.0, 10.0)
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
     assert gm.LineString([(170, 0), (-170, 0)], crs=4326).crosses_antimeridian
@@ -193,7 +193,7 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
     assert gm.from_wkb(wkb).coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
     ewkb = xyzm.to_wkb(include_srid=True)
     assert int.from_bytes(ewkb[1:5], 'little') == 3758096385
-    assert gm.from_wkb(ewkb).crs == 'EPSG:4326'
+    assert gm.from_wkb(ewkb).crs == gm.CRS('EPSG:4326')
     assert gm.from_wkb(ewkb).coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
     with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         xym.to_geojson()
@@ -260,7 +260,7 @@ def test_points_numpy_columns_copy_values_and_preserve_zm_axes() -> None:
     points = gm.points(x, y, z=z, m=m, crs=4326)
 
     assert points[0].coordinate_axes == 'XYZM'
-    assert points[0].crs == 'EPSG:4326'
+    assert points[0].crs == gm.CRS('EPSG:4326')
     coordinates = np.asarray(points.coords, dtype=np.float64)
     assert coordinates.shape == (2, 4)
     np.testing.assert_array_equal(coordinates, np.column_stack((x, y, z, m)))
@@ -456,4 +456,4 @@ def test_empty_multipart_sequences_construct_typed_empties() -> None:
 
     tagged = gm.MultiPoint([], crs=4326)
     assert tagged.to_wkt() == 'MULTIPOINT EMPTY'
-    assert tagged.crs == 'EPSG:4326'
+    assert tagged.crs == gm.CRS('EPSG:4326')

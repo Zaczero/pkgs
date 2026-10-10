@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import gometry as gm
 import numpy as np
 import pandas as pd
@@ -25,12 +28,46 @@ def points() -> gm.GeometryArray:
     ])
 
 
-def test_geometry_dtype_is_a_concrete_unregistered_type() -> None:
+def test_geometry_dtype_is_registered_for_string_construction() -> None:
     assert isinstance(GeometryDtype(), pd.api.extensions.ExtensionDtype)
     assert GeometryDtype.name == 'gometry.geometry'
     assert GeometryDtype.type is gm.Geometry
-    with pytest.raises(TypeError):
-        pd.api.types.pandas_dtype('gometry.geometry')
+    assert pd.api.types.pandas_dtype('gometry.geometry') == GeometryDtype()
+
+
+def test_geometry_dtype_string_series_and_astype(points: gm.GeometryArray) -> None:
+    values = [points[0], None, points[2]]
+
+    series = pd.Series(values, dtype='gometry.geometry')
+    converted = pd.Series(values).astype('gometry.geometry')
+
+    assert isinstance(series.array, GeometryExtensionArray)
+    assert series.dtype == converted.dtype == GeometryDtype()
+    assert list(series) == values
+    assert list(converted) == values
+
+
+def test_pandas_dtype_registration_stays_lazy_until_adapter_use() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            """
+import sys
+import gometry as gm
+
+assert 'pandas' not in sys.modules
+values = gm.points([1.0, 2.0], [3.0, 4.0])
+series = values.to_pandas()
+assert 'pandas' in sys.modules
+assert series.dtype.name == 'gometry.geometry'
+import pandas as pd
+assert pd.api.types.pandas_dtype('gometry.geometry') == series.dtype
+print(gm.__file__)
+""",
+        ],
+        check=True,
+    )
 
 
 def test_geometry_dtype_from_arrow_roundtrip(points: gm.GeometryArray) -> None:
@@ -38,9 +75,12 @@ def test_geometry_dtype_from_arrow_roundtrip(points: gm.GeometryArray) -> None:
     source = to_pandas(points, name='geometry')
     table = pa.Table.from_pandas(source.to_frame())
     restored = GeometryDtype().__from_arrow__(table['geometry'])
+    table_restored = table.to_pandas()['geometry']
 
     assert canon(restored.geometry_array) == canon(points)
     assert restored.geometry_array.crs.same_as(points.crs, mode='exact')
+    assert isinstance(table_restored.array, GeometryExtensionArray)
+    assert canon(table_restored.array.geometry_array) == canon(points)
 
     arrow = points.to_arrow()
     chunked = pa.chunked_array([arrow.slice(0, 1), arrow.slice(1)])
@@ -454,7 +494,7 @@ def test_extension_setitem_iterable_values() -> None:
 
     data[[0, 1]] = iter([gm.Point(9, 9, crs=4326), gm.Point(8, 8, crs=4326)])
     assert data.geometry_array.to_wkt()[:2] == ['POINT (9 9)', 'POINT (8 8)']
-    assert data.geometry_array.crs == 'EPSG:4326'
+    assert data.geometry_array.crs == gm.CRS('EPSG:4326')
 
     data[[0, 1]] = [gm.Point(3, 3, crs=4326), gm.Point(4, 4, crs=4326)]
     assert data.geometry_array.to_wkt()[:2] == ['POINT (3 3)', 'POINT (4 4)']

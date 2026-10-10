@@ -11,7 +11,7 @@ use std::sync::Arc;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyTuple};
+use pyo3::types::{PyAny, PyCapsule, PyTuple};
 
 use crate::geometry::{CoordSeq, CoordinateAxes};
 use crate::py::errors;
@@ -168,6 +168,136 @@ pub(crate) struct SchemaNode {
     metadata: Option<Vec<(String, String)>>,
     nullable: bool,
     children: Vec<Self>,
+}
+
+pub(crate) const ARROW_FLAG_NULLABLE: i64 = 2;
+
+impl SchemaNode {
+    /// Compare an Arrow C schema request without consuming the caller's capsule.
+    pub(crate) fn matches_requested_schema(
+        &self,
+        requested_schema: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<bool>> {
+        if !requested_schema.is_instance_of::<PyCapsule>()
+            || unsafe { ffi::PyCapsule_IsValid(requested_schema.as_ptr(), schema_capsule_name()) }
+                == 0
+        {
+            return Ok(None);
+        }
+        // SAFETY: the capsule name proves this is a live ArrowSchema pointer.
+        let schema = unsafe {
+            ffi::PyCapsule_GetPointer(requested_schema.as_ptr(), schema_capsule_name())
+                .cast::<ArrowSchema>()
+        };
+        if schema.is_null() {
+            return Err(PyErr::fetch(requested_schema.py()));
+        }
+        // SAFETY: the borrowed capsule remains alive and its producer schema is
+        // read-only for the duration of this comparison.
+        unsafe { self.matches_schema_node(&*schema, true) }
+    }
+
+    /// Compare every schema field and metadata entry against an exported node.
+    ///
+    /// # Safety
+    ///
+    /// The producer owns readable strings, metadata, and children for the
+    /// duration of this call, as required by the Arrow C Data Interface.
+    unsafe fn matches_schema_node(
+        &self,
+        schema: &ArrowSchema,
+        allow_missing_extension_metadata: bool,
+    ) -> PyResult<Option<bool>> {
+        if !c_schema_string_matches(schema.format, self.format)
+            || !c_schema_string_matches(schema.name, self.name)
+            || schema.flags
+                != if self.nullable {
+                    ARROW_FLAG_NULLABLE
+                } else {
+                    0
+                }
+            || !schema.dictionary.is_null()
+        {
+            return Ok(None);
+        }
+
+        let Ok(child_count) = usize::try_from(schema.n_children) else {
+            return Ok(None);
+        };
+        if child_count != self.children.len() {
+            return Ok(None);
+        }
+        let actual_metadata = unsafe { import::schema_metadata_pairs_owned(schema)? };
+        let mut actual_metadata = actual_metadata
+            .into_iter()
+            .map(|(key, value)| (key.into_vec(), value.into_vec()))
+            .collect::<Vec<_>>();
+        let mut expected_metadata = self
+            .metadata
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|(key, value)| (key.as_bytes().to_vec(), value.as_bytes().to_vec()))
+            .collect::<Vec<_>>();
+        actual_metadata.sort_unstable();
+        expected_metadata.sort_unstable();
+        // PyArrow's C schema request for a DataType carries its physical
+        // structure but omits extension metadata. Treat that as a physical
+        // schema request; when metadata is present, it must match exactly.
+        let extension_metadata_omitted = allow_missing_extension_metadata
+            && !expected_metadata.is_empty()
+            && actual_metadata.is_empty()
+            && expected_metadata
+                .iter()
+                .all(|(key, _)| key.starts_with(b"ARROW:extension:"));
+        if actual_metadata != expected_metadata && !extension_metadata_omitted {
+            return Ok(None);
+        }
+        if child_count == 0 {
+            return Ok(Some(extension_metadata_omitted));
+        }
+        if schema.children.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: the Arrow producer keeps this initialized child-pointer table
+        // alive under the borrowed schema capsule.
+        let children =
+            unsafe { std::slice::from_raw_parts(schema.children.cast_const(), child_count) };
+        let mut omit_extension_metadata = extension_metadata_omitted;
+        for (expected, &child) in self.children.iter().zip(children) {
+            if child.is_null() {
+                return Ok(None);
+            }
+            // SAFETY: each non-null child belongs to the live schema tree.
+            let Some(child_omits_metadata) =
+                (unsafe { expected.matches_schema_node(&*child, false) })?
+            else {
+                return Ok(None);
+            };
+            omit_extension_metadata |= child_omits_metadata;
+        }
+        Ok(Some(omit_extension_metadata))
+    }
+
+    pub(crate) fn without_extension_metadata(&self) -> Self {
+        let mut schema = self.clone();
+        if let Some(metadata) = &mut schema.metadata {
+            metadata.retain(|(key, _)| !key.starts_with("ARROW:extension:"));
+            if metadata.is_empty() {
+                schema.metadata = None;
+            }
+        }
+        schema
+    }
+}
+
+fn c_schema_string_matches(value: *const c_char, expected: &str) -> bool {
+    if value.is_null() {
+        return expected.is_empty();
+    }
+    // SAFETY: Arrow C schema strings are NUL-terminated and live with the
+    // producer schema for the duration of the comparison.
+    unsafe { CStr::from_ptr(value) }.to_bytes() == expected.as_bytes()
 }
 
 pub(crate) struct ExportedArray {

@@ -15,11 +15,12 @@ use crate::py::crs::{
 /// ``to_crs``. Accepts an authority string, EPSG code,
 /// authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 ///
-/// Equality is structural — a ``CRS`` compares equal only to the same
-/// stored definition (``crs == 4326`` and ``crs == 'EPSG:4326'``).
-/// Operational equivalence, including axis-order-only differences, is the
-/// explicit ``same_as(..., mode='ignore_axis_order')`` query. It is therefore
-/// unhashable; key mappings by ``crs.definition`` instead.
+/// Equality is structural between ``CRS`` instances: the stored normalized
+/// definitions must match. Other operand types do not compare equal; use
+/// ``CRS(value)`` when comparing stored identity with raw input. Operational
+/// equivalence, including axis-order-only differences, is the explicit
+/// ``same_as(..., mode='ignore_axis_order')`` query. Equal ``CRS`` values are
+/// hashable and can be used as mapping keys.
 #[pyclass(name = "CRS", frozen, immutable_type, weakref, module = "gometry")]
 pub struct PyCrs {
     pub(crate) definition: Crs,
@@ -187,13 +188,13 @@ impl PyCrs {
 
 #[pymethods]
 impl PyCrs {
-    /// ``sys.getsizeof`` support: the wrapper plus owned Rust-side CRS text
+    /// ``sys.getsizeof`` support: Python's allocation base plus owned Rust-side CRS text
     /// retained by this object. This includes the stored CRS definition when it
     /// spills out of `SmolStr` inline storage and any heap strings/vectors in
     /// the lazily cached `CrsInfo`. Opaque PROJ process-global caches are not
     /// owned by the Python object and are not counted.
-    fn __sizeof__(&self) -> usize {
-        self.total_size()
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        crate::py::sizeof::python_sizeof(slf.py(), slf.as_any(), slf.borrow().retained_heap_bytes())
     }
 }
 

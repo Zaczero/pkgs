@@ -20,15 +20,23 @@ static type.
 from __future__ import annotations
 
 import types
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar, assert_type, cast
 
 import gometry as gm
 import gometry._types as sht
 import numpy as np
 import numpy.typing as npt
+import pyarrow as pa
+
+if TYPE_CHECKING:
+    import io
 
 POINT = gm.Point(1, 1)
 LINE = gm.LineString([(0, 0), (1, 1), (2, 0)])
+METRIC_POINT = gm.Point(1, 1, crs=4326)
+METRIC_LINE = gm.LineString([(0, 0), (1, 1), (2, 0)], crs=4326)
+METRIC_LINES = gm.GeometryArray([METRIC_LINE])
 MEASURED_LINE = gm.LineString([(0, 0, 0, 0), (1, 1, 0, 10), (2, 0, 0, 20)])
 POLY = gm.box(0, 0, 2, 2)
 POINTS = gm.GeometryArray([POINT, gm.Point(2, 2)])
@@ -60,6 +68,22 @@ def _check_require_row_types(
         gm.require(foreign_rows),
         gm.GeometryArray[gm.Geometry | None],
     )
+
+
+def _check_geoparquet_binary_stream_types(
+    binary_stream: io.BytesIO,
+    arrow_file: pa.NativeFile,
+) -> None:
+    assert_type(
+        gm.from_geoparquet(binary_stream),
+        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+    )
+    assert_type(
+        gm.from_geoparquet(arrow_file),
+        tuple[gm.GeometryArray[gm.Geometry | None], pa.Table],
+    )
+    POINTS.to_geoparquet(binary_stream)
+    POINTS.to_geoparquet(arrow_file)
 
 
 def _check_cell_projection_row_types(
@@ -986,7 +1010,10 @@ assert_type(POINTS.sort_by_spatial_key(curve='morton'), gm.GeometryArray[gm.Poin
 assert_type(LINE.segmentize(0.5), gm.LineString)
 assert_type(LINE.segmentize(fraction=0.5), gm.LineString)
 assert_type(LINE.segmentize(0.5, path='geodesic'), gm.LineString)
-assert_type(LINE.segmentize(fraction=0.5, path='rhumb'), gm.LineString)
+assert_type(
+    gm.LineString([(0, 0), (1, 1)], crs=4326).segmentize(fraction=0.5, path='rhumb'),
+    gm.LineString,
+)
 assert_type(LINES.segmentize(0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(fraction=0.5), gm.GeometryArray[gm.LineString])
 assert_type(LINES.segmentize(0.5, path='geodesic'), gm.GeometryArray[gm.LineString])
@@ -1000,12 +1027,14 @@ assert_type(LINES.line_interpolate(at=0.5), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate([0.25, 0.75]), gm.GeometryArray[gm.Point])
 assert_type(LINE.line_interpolate(count=3), gm.GeometryArray[gm.Point])
 assert_type(
-    LINE.line_interpolate(count=3, unit='meters'),
+    METRIC_LINE.line_interpolate(count=3, unit='meters'),
     gm.GeometryArray[gm.Point],
 )
 assert_type(MEASURED_LINE.line_interpolate(5.0), gm.Point)
 assert_type(LINE.line_locate(POINT), float)
-assert_type(LINE.line_locate(POINT, normalized=True, unit='meters'), float)
+assert_type(
+    METRIC_LINE.line_locate(METRIC_POINT, normalized=True, unit='meters'), float
+)
 assert_type(MEASURED_LINE.line_locate(POINT), float)
 assert_type(LINE.line_substring(0.25, 0.75), gm.LineString | gm.Point)
 assert_type(
@@ -1035,7 +1064,7 @@ assert_type(
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(
-    LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
+    METRIC_LINES.line_substring(0.25, 0.75, normalized=True, unit='meters'),
     gm.GeometryArray[gm.LineString | gm.Point],
 )
 assert_type(np.asarray(POINTS.coords), npt.NDArray[np.float64])
@@ -1303,6 +1332,14 @@ assert_type(gm.MultiPoint(POINTS.coords), gm.MultiPoint)
 
 # CRS kind vocabulary.
 assert_type(gm.CRS(4326).kind, sht.CrsKind)
+assert_type(hash(gm.CRS(4326)), int)
+assert_type(
+    POINT.coords.__reduce__(), tuple[Callable[..., gm.Coordinates], tuple[Any, ...]]
+)
+assert_type(
+    POINTS.__reduce_ex__(5),
+    tuple[Callable[..., gm.GeometryArray[gm.Geometry | None]], tuple[Any, ...]],
+)
 if TYPE_CHECKING:
     _kind_ok: sht.CrsCatalogKind = 'projected'
     _db_kind_ok: sht.CrsDatabaseKind = 'ellipsoid'

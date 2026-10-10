@@ -67,6 +67,7 @@ _ExtensionArray = _pd.api.extensions.ExtensionArray
 # mypy cannot model these runtime-selected pandas extension bases. This module
 # is imported only by pandas adapter calls, so pandas remains optional to the
 # top-level package.
+@_pd.api.extensions.register_extension_dtype
 class GeometryDtype(_ExtensionDtype):  # type: ignore[valid-type, misc]
     """pandas extension dtype for gometry geometries."""
 

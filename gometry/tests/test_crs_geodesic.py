@@ -414,7 +414,7 @@ def test_geodesic_distance_and_chart_area_use_wgs84_ellipsoid() -> None:
     assert batch_destinations[0].x == pytest.approx(end.x)
     assert batch_destinations[1].y == pytest.approx(north.y)
     point_destination = start.destination(90.0, 1000.0)
-    assert point_destination.crs == 'EPSG:4326'
+    assert point_destination.crs == gm.CRS('EPSG:4326')
     midpoint = gm.point_between(start, end, 0.5, normalized=True)
     assert midpoint.x == pytest.approx(0.5)
     assert midpoint.y == pytest.approx(0.0)
@@ -460,13 +460,13 @@ def test_geodesic_distance_and_chart_area_use_wgs84_ellipsoid() -> None:
 
 def test_geodesic_buffer_uses_local_projection_and_preserves_crs() -> None:
     point = gm.Point(21.0, 52.0, crs=4326)
-    assert point.estimate_local_crs() == 'EPSG:32634'
+    assert point.estimate_local_crs() == gm.CRS('EPSG:32634')
     buffered = point.buffer(100)
     array = cast('gm.GeometryArray', gm.GeometryArray([point]).buffer(100))
     polar = gm.Point(0.0, 89.0, crs=4326)
     polar_buffered = polar.buffer(100)
     assert buffered.geometry_type == 'Polygon'
-    assert buffered.crs == 'EPSG:4326'
+    assert buffered.crs == gm.CRS('EPSG:4326')
     assert buffered.area == pytest.approx(math.pi * 100 * 100, rel=0.01)
     assert array[0].area == pytest.approx(buffered.area)
     assert polar.estimate_local_crs().is_projected
@@ -474,7 +474,7 @@ def test_geodesic_buffer_uses_local_projection_and_preserves_crs() -> None:
         gm.Point(3, 0, crs=4326).buffer(1_000_000)
     with pytest.raises(gm.CRSError, match=r'0\.1%'):
         gm.LineString([(3, 0), (3, 1)], crs=4326).offset_curve(1_000_000)
-    assert polar_buffered.crs == 'EPSG:4326'
+    assert polar_buffered.crs == gm.CRS('EPSG:4326')
     assert polar_buffered.area == pytest.approx(math.pi * 100 * 100, rel=0.02)
     eroded_point = point.buffer(-1)
     assert eroded_point.is_empty
@@ -485,11 +485,11 @@ def test_geodesic_buffer_uses_local_projection_and_preserves_crs() -> None:
 
 def test_geographic_local_certificate_supports_offset_and_minimum_clearance() -> None:
     line = gm.LineString([(21.0, 52.0), (21.01, 52.0)], crs=4326)
-    assert line.estimate_local_crs() == 'EPSG:32634'
+    assert line.estimate_local_crs() == gm.CRS('EPSG:32634')
 
     offset = line.offset_curve(50.0, unit='meters')
     assert offset.geometry_type == 'LineString'
-    assert offset.crs == 'EPSG:4326'
+    assert offset.crs == gm.CRS('EPSG:4326')
 
     polygon = gm.box(21.0, 52.0, 21.001, 52.001, crs=4326)
     clearance = polygon.minimum_clearance(unit='meters')
@@ -497,7 +497,7 @@ def test_geographic_local_certificate_supports_offset_and_minimum_clearance() ->
     assert math.isfinite(clearance)
     assert clearance > 0.0
     assert witness.geometry_type == 'LineString'
-    assert witness.crs == 'EPSG:4326'
+    assert witness.crs == gm.CRS('EPSG:4326')
     assert witness.length == pytest.approx(clearance, rel=1.0e-6)
 
 

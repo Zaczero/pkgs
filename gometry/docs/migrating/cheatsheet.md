@@ -187,7 +187,7 @@ for coordinate exports without changing the geometry.
 | `crs.axis_info` | [`gm.CRS(c).axis_order`][gometry.CRS.axis_order] | Diagnostic only; boundary stays X/Y. |
 | `crs.to_authority()` / `to_epsg()` | [`gm.CRS(c).to_authority()`][gometry.CRS.to_authority] / `.to_epsg()` | |
 | `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()` / `.to_projjson_dict()` | |
-| `crs == other` | `gm.CRS(c) == other` | `CRS` compares by code/string. |
+| `crs == other` | `gm.CRS(c) == gm.CRS(other)` | Structural equality compares stored definitions; use `same_as` for operational equivalence. |
 | `CRS.from_user_input(...)` normalize | [`gm.CRS(c).definition`][gometry.CRS.definition] / [`gm.CRS(c).identify()`][gometry.CRS.identify] | `definition` retains normalized authored text; `identify()` supplies authority metadata. |
 | `crs.to_2d()` / `to_3d()` | [`gm.CRS(c).to_2d()`][gometry.CRS.to_2d] / `.to_3d()` | Return a `CRS`. |
 | unit / factors | [`gm.crs_unit(c)`][gometry.crs_unit] / [`gm.crs_units(c)`][gometry.crs_units] / [`gm.CRS(c).factors(lon, lat)`][gometry.CRS.factors] | |

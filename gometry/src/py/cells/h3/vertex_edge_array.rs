@@ -316,8 +316,12 @@ macro_rules! h3_index_array_common {
                 })
             }
 
-            fn __sizeof__(&self) -> usize {
-                self.total_size()
+            fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+                crate::py::sizeof::python_sizeof(
+                    slf.py(),
+                    slf.as_any(),
+                    slf.borrow().heap_bytes(),
+                )
             }
 
             /// Logical id payload in bytes (``len * 8``).

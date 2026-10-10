@@ -171,9 +171,10 @@ surprises for no measurable win), `CellArray` slicing returns another
 [`CellArray`][gometry.CellArray], and `SpatialIndex` exposes mapping/iteration helpers
 but candidates vs exact answers stay named methods —
 [`candidates(...)`][gometry.SpatialIndex.candidates]/[`query(...)`][gometry.SpatialIndex.query].
-Cross-type [`CRS == 4326`][gometry.CRS] (and `CRS == "EPSG:4326"`) is supported for ergonomics,
-so `CRS` is **unhashable** (`hash(CRS(...))` raises `TypeError`). Use
-[`crs.to_authority()`][gometry.CRS.to_authority] / [`crs.to_epsg()`][gometry.CRS.to_epsg] when a dict or set key is needed.
+[`CRS`][gometry.CRS] equality compares stored definitions between `CRS`
+instances and supports hashing. Construct `CRS(value)` before comparing raw
+input when stored identity is intended; use
+[`same_as(...)`][gometry.CRS.same_as] for operational equivalence.
 
 ## CRS and candidate boundaries
 

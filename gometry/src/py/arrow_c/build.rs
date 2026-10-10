@@ -8,9 +8,9 @@ use crate::geometry::SharedSlice;
 #[cfg(test)]
 use crate::geometry::storage;
 use crate::py::arrow_c::{
-    ArrayPrivate, ArrowArray, ArrowSchema, CoordSeq, CoordinateAxes, GeometryEncoding,
-    GeometryError, NativeArrowExportError, NativeArrowExportResult, PyResult, SchemaNode,
-    SchemaPrivate, release_array, release_schema,
+    ARROW_FLAG_NULLABLE, ArrayPrivate, ArrowArray, ArrowSchema, CoordSeq, CoordinateAxes,
+    GeometryEncoding, GeometryError, NativeArrowExportError, NativeArrowExportResult, PyResult,
+    SchemaNode, SchemaPrivate, release_array, release_schema,
 };
 
 impl SchemaNode {
@@ -48,8 +48,8 @@ impl SchemaNode {
                 .metadata
                 .as_ref()
                 .map_or(ptr::null(), |metadata| metadata.as_ptr().cast()),
-            // Arrow C Data Interface nullable flag (value 2) marks a nullable field.
-            flags: if *nullable { 2 } else { 0 },
+            // The Arrow C Data Interface nullable flag marks a nullable field.
+            flags: if *nullable { ARROW_FLAG_NULLABLE } else { 0 },
             n_children: private.children.len() as i64,
             children: if private.child_ptrs.is_empty() {
                 ptr::null_mut()

@@ -54,9 +54,9 @@ impl PyH3Vertex {
         std::mem::size_of::<VertexIndex>()
     }
 
-    /// ``sys.getsizeof`` support: H3 vertices are heap-free value ids.
-    const fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>()
+    /// ``sys.getsizeof`` support for this heap-free vertex value.
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        crate::py::sizeof::python_sizeof(slf.py(), slf.as_any(), 0)
     }
 
     /// The vertex's hexadecimal token.
@@ -188,9 +188,9 @@ impl PyH3Edge {
         std::mem::size_of::<DirectedEdgeIndex>()
     }
 
-    /// ``sys.getsizeof`` support: H3 edges are heap-free value ids.
-    const fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>()
+    /// ``sys.getsizeof`` support for this heap-free edge value.
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        crate::py::sizeof::python_sizeof(slf.py(), slf.as_any(), 0)
     }
 
     /// The edge's hexadecimal token.

@@ -338,8 +338,17 @@ impl PyGeometryArray {
         unary::is_valid_array(py, self)
     }
 
+    /// Pickle durable array state; packed storage uses portable little-endian
+    /// columns and offsets, while mixed storage uses WKB rows.
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        functions::reduce_geometry_array(py, self)
+        functions::reduce_geometry_array(py, self, 4)
+    }
+
+    /// Use protocol-5 out-of-band buffers for the encoded array payload when
+    /// the pickler provides a buffer callback. The buffers are read-only.
+    #[pyo3(signature = (protocol, /))]
+    pub fn __reduce_ex__(&self, py: Python<'_>, protocol: i32) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        functions::reduce_geometry_array(py, self, protocol)
     }
 }
 

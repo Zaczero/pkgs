@@ -203,6 +203,29 @@ def test_coordinates_equality_tracks_selected_layouts() -> None:
     assert padded != xy
 
 
+def test_coordinates_equality_uses_python_float_equality_for_signed_zero() -> None:
+    positive = gm.points([0.0, 1.0], [0.0, 2.0]).coords
+    negative = gm.points([-0.0, 1.0], [0.0, 2.0]).coords
+
+    assert positive == [(0.0, 0.0), (1.0, 2.0)]
+    assert negative == positive
+    assert positive == negative
+    assert negative == [(0.0, 0.0), (1.0, 2.0)]
+
+
+def test_coordinates_support_numeric_numpy_ufuncs() -> None:
+    coords = gm.LineString([(0.0, 1.0), (2.0, 3.0)]).coords
+
+    np.testing.assert_array_equal(np.isfinite(coords), [[True, True], [True, True]])
+    np.testing.assert_array_equal(np.add(coords, 1.0), [[1.0, 2.0], [3.0, 4.0]])
+    np.testing.assert_array_equal(np.add.reduce(coords, axis=0), [2.0, 4.0])
+
+    matrix = np.asarray(coords)
+    assert matrix.flags.writeable is False
+    with pytest.raises(ValueError, match='read-only'):
+        np.add(coords, 1.0, out=matrix)
+
+
 def test_coordinates_equality_propagates_type_errors_after_iterator_admission() -> None:
     coords = gm.Point(1.0, 2.0).coords
     iteration_error = TypeError('coordinates provider failed after one row')
@@ -296,7 +319,7 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
     assert parts.offsets.tolist() == [0, 1, 2]
     assert [row.to_wkt() for row in parts[0]] == ['POINT (9 9)']
     assert [row.to_wkt() for row in parts[1]] == [values[1].to_wkt()]
-    assert [ring.crs for ring in rings] == ['EPSG:4326', 'EPSG:4326']
+    assert [ring.crs for ring in rings] == [gm.CRS('EPSG:4326')] * 2
     assert [ring.to_wkt() for ring in list(rings)] == [
         'LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)',
         'LINESTRING (1 1, 3 1, 3 3, 1 3, 1 1)',

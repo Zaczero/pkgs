@@ -75,6 +75,7 @@ if TYPE_CHECKING:
 
     PyArrowArray: TypeAlias = pa.Array | pa.ExtensionArray
     PyArrowChunkedArray: TypeAlias = pa.ChunkedArray
+    PyArrowNativeFile: TypeAlias = pa.NativeFile
     PyArrowTable: TypeAlias = pa.Table
     PyArrowRecordBatch: TypeAlias = pa.RecordBatch
     PyArrowRecordBatchReader: TypeAlias = pa.RecordBatchReader
@@ -88,6 +89,7 @@ if TYPE_CHECKING:
 else:
     PyArrowArray: TypeAlias = ForwardRef('pa.Array | pa.ExtensionArray')
     PyArrowChunkedArray: TypeAlias = ForwardRef('pa.ChunkedArray')
+    PyArrowNativeFile: TypeAlias = ForwardRef('pa.NativeFile')
     PyArrowTable: TypeAlias = ForwardRef('pa.Table')
     PyArrowRecordBatch: TypeAlias = ForwardRef('pa.RecordBatch')
     PyArrowRecordBatchReader: TypeAlias = ForwardRef('pa.RecordBatchReader')
@@ -228,6 +230,7 @@ __all__ = [
     'PyArrowArray',
     'PyArrowCapsule',
     'PyArrowChunkedArray',
+    'PyArrowNativeFile',
     'PyArrowRecordBatch',
     'PyArrowRecordBatchReader',
     'PyArrowTable',

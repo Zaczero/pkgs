@@ -417,14 +417,14 @@ def test_cell_array_outputs_preserve_nullable_reversed_duplicate_gathers() -> No
     expected = list(cells)
 
     centers = cells.center
-    assert centers.crs == 'OGC:CRS84'
+    assert centers.crs == gm.CRS('OGC:CRS84')
     assert not centers.coords.x.flags.writeable
     assert not centers.coords.y.flags.writeable
     assert centers.to_wkt() == [
         None if cell is None else cell.center.to_wkt() for cell in expected
     ]
     polygons = cells.polygon
-    assert polygons.crs == 'OGC:CRS84'
+    assert polygons.crs == gm.CRS('OGC:CRS84')
     assert polygons.to_wkt() == [
         None if cell is None else cell.polygon.to_wkt() for cell in expected
     ]

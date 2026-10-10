@@ -106,12 +106,12 @@ def test_scalar_wire_crs_reconciliation_policy() -> None:
     for from_wire, require, plain, embedded, source in wire_cases:
         assert from_wire(plain).crs is None
         assert require(plain).crs is None
-        assert from_wire(plain, crs=4326).crs == 'EPSG:4326'
-        assert require(plain, crs=4326).crs == 'EPSG:4326'
+        assert from_wire(plain, crs=4326).crs == gm.CRS('EPSG:4326')
+        assert require(plain, crs=4326).crs == gm.CRS('EPSG:4326')
 
         for parse in (from_wire, require):
-            assert parse(embedded, crs=4326).crs == 'EPSG:4326'
-            assert parse(embedded, crs='OGC:CRS84').crs == 'OGC:CRS84'
+            assert parse(embedded, crs=4326).crs == gm.CRS('EPSG:4326')
+            assert parse(embedded, crs='OGC:CRS84').crs == gm.CRS('OGC:CRS84')
             with pytest.raises(
                 gm.CRSMismatchError,
                 match=rf'crs argument .* conflicts with the embedded {source} SRID',
@@ -133,15 +133,15 @@ def test_scalar_wire_crs_reconciliation_policy() -> None:
         (gm.Point(1, 2, z=3, crs=4979).to_wkb(include_srid=True), gm.from_wkb),
     )
     for payload, from_wire in alias_h_cases:
-        assert from_wire(payload, crs='OGC:CRS84h').crs == 'OGC:CRS84h'
-        assert gm.require(payload, crs='OGC:CRS84h').crs == 'OGC:CRS84h'
+        assert from_wire(payload, crs='OGC:CRS84h').crs == gm.CRS('OGC:CRS84h')
+        assert gm.require(payload, crs='OGC:CRS84h').crs == gm.CRS('OGC:CRS84h')
 
     for parse, payload in (
         (gm.from_wkt, 'SRID=4326;POINT (1 2)'),
         (gm.from_wkb, _ewkb_point(1.0, 2.0, 4326)),
     ):
         geometry = parse(payload, epoch=2020.0)
-        assert geometry.crs == 'EPSG:4326'
+        assert geometry.crs == gm.CRS('EPSG:4326')
         assert geometry.epoch == 2020.0
 
 

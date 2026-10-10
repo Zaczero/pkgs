@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
@@ -65,6 +66,36 @@ def test_geoparquet_round_trip_preserves_native_geographic_coordinates(
     assert restored.to_wkt() == source.to_wkt()
     assert restored.crs is not None
     assert restored.crs.same_as(source.crs, mode='ignore_axis_order')
+
+
+def test_geoparquet_binary_streams_are_caller_owned() -> None:
+    pa = pytest.importorskip('pyarrow')
+    source = gm.GeometryArray([
+        gm.Point(1, 2, crs=4326),
+        gm.LineString([(2, 3), (4, 5)], crs=4326),
+    ])
+
+    stream = io.BytesIO()
+    source.to_geoparquet(stream)
+    assert not stream.closed
+    stream.seek(0)
+    restored, _ = gm.from_geoparquet(stream)
+    assert not stream.closed
+    _assert_roundtrip(source, restored)
+
+    native_output = pa.BufferOutputStream()
+    source.to_geoparquet(native_output)
+    assert not native_output.closed
+    payload = native_output.getvalue()
+    native_input = pa.BufferReader(payload)
+    native_restored, _ = gm.from_geoparquet(native_input)
+    assert not native_input.closed
+    _assert_roundtrip(source, native_restored)
+
+    with pytest.raises(TypeError, match='binary'):
+        source.to_geoparquet(io.StringIO())
+    with pytest.raises(TypeError):
+        gm.from_geoparquet(io.StringIO('not parquet'))
 
 
 @pytest.mark.parametrize(
@@ -387,7 +418,7 @@ def test_geoparquet_absent_and_null_crs_are_distinct(parquet_path: str) -> None:
     base = {'encoding': 'WKB', 'geometry_types': ['Point']}
     _write_geo_table(parquet_path, base)
     defaulted = _read_geometry(parquet_path)
-    assert defaulted.crs == 'OGC:CRS84'
+    assert defaulted.crs == gm.CRS('OGC:CRS84')
 
     _write_geo_table(parquet_path, {**base, 'crs': None})
     unframed = _read_geometry(parquet_path)

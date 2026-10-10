@@ -1,27 +1,47 @@
+use pyo3::{Borrowed, FromPyObject, Py};
+
+use crate::crs::ConfigUpdate;
 use crate::py::crs::{
-    Bound, PyAny, PyAnyMethods as _, PyErr, PyResult, PyStringMethods as _, PyTypeError, crs,
-    pyfunction,
+    Bound, PyAny, PyAnyMethods as _, PyErr, PyResult, PyStringMethods as _, PyTypeError, Python,
+    crs, pyfunction,
 };
 
-#[pyfunction(signature = (
-    *,
-    search_paths = None,
-    user_writable_directory = None
-))]
+pub(crate) enum ConfigureArgument {
+    Omitted,
+    Explicit(Py<PyAny>),
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for ConfigureArgument {
+    type Error = PyErr;
+
+    fn extract(value: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        Ok(Self::Explicit(value.to_owned().unbind()))
+    }
+}
+
+#[pyfunction(
+    signature = (
+        search_paths = ConfigureArgument::Omitted,
+        user_writable_directory = ConfigureArgument::Omitted
+    ),
+    text_signature = "($module, /, *, search_paths=..., user_writable_directory=...)"
+)]
 /// Configure local CRS engine paths.
 ///
-/// Omitted arguments keep their current value, so a call without arguments
-/// returns the current configuration unchanged. Use `crs_reset` to restore
-/// the defaults.
+/// Omitted arguments keep their current value, while explicit ``None`` restores
+/// that field's default. A call without arguments returns the current
+/// configuration unchanged; use `crs_reset` to restore both defaults.
 ///
 /// Parameters
 /// ----------
 /// search_paths : str, path, or sequence of these, optional
-///     Directories PROJ searches for its database and grids. When a named grid
-///     is absent from these directories, PROJ may also try the bare grid
-///     filename in the current working directory.
+///     Directories PROJ searches for its database and grids. ``None`` restores
+///     the default search paths. When a named grid is absent from these
+///     directories, PROJ may also try the bare grid filename in the current
+///     working directory.
 /// user_writable_directory : str or path, optional
-///     Directory PROJ includes in local grid lookup.
+///     Directory PROJ includes in local grid lookup. ``None`` restores the
+///     default writable directory.
 ///
 /// Notes
 /// -----
@@ -41,41 +61,55 @@ use crate::py::crs::{
 /// >>> isinstance(gm.crs_configure(), dict)
 /// True
 pub(crate) fn crs_configure(
-    search_paths: Option<&Bound<'_, PyAny>>,
-    user_writable_directory: Option<&Bound<'_, PyAny>>,
+    py: Python<'_>,
+    search_paths: ConfigureArgument,
+    user_writable_directory: ConfigureArgument,
 ) -> PyResult<crs::RuntimeConfig> {
     Ok(crs::configure_runtime(
-        parse_search_paths(search_paths)?,
-        parse_optional_path("user_writable_directory", user_writable_directory)?,
+        parse_search_paths(py, search_paths)?,
+        parse_optional_path(py, "user_writable_directory", user_writable_directory)?,
     )?)
 }
 
 fn parse_optional_path(
+    py: Python<'_>,
     name: &'static str,
-    value: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<String>> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if value.is_none() {
-        return Ok(None);
+    value: ConfigureArgument,
+) -> PyResult<ConfigUpdate<Option<String>>> {
+    match value {
+        ConfigureArgument::Omitted => Ok(ConfigUpdate::Keep),
+        ConfigureArgument::Explicit(value) => {
+            let value = value.bind(py);
+            if value.is_none() {
+                Ok(ConfigUpdate::Set(None))
+            } else {
+                parse_path(value, name).map(|path| ConfigUpdate::Set(Some(path)))
+            }
+        },
     }
-    parse_path(value, name).map(Some)
 }
 
-fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<String>>> {
-    let Some(value) = value else {
-        return Ok(None);
+fn parse_search_paths(
+    py: Python<'_>,
+    value: ConfigureArgument,
+) -> PyResult<ConfigUpdate<Option<Vec<String>>>> {
+    let owner = match value {
+        ConfigureArgument::Omitted => return Ok(ConfigUpdate::Keep),
+        ConfigureArgument::Explicit(value) => value,
     };
+    let value = owner.bind(py);
     if value.is_none() {
-        return Ok(None);
+        return Ok(ConfigUpdate::Set(None));
     }
     if value.cast::<pyo3::types::PyString>().is_ok()
         || value
             .getattr_opt(pyo3::intern!(value.py(), "__fspath__"))?
             .is_some()
     {
-        return Ok(Some(vec![parse_path(value, "search_paths")?]));
+        return Ok(ConfigUpdate::Set(Some(vec![parse_path(
+            value,
+            "search_paths",
+        )?])));
     }
     // Keep the specialized loop so provider exceptions remain distinguishable
     // from values that simply are not string/path-like entries.
@@ -113,7 +147,7 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
             },
         }
     }
-    Ok(Some(paths))
+    Ok(ConfigUpdate::Set(Some(paths)))
 }
 
 enum PathTakeError {

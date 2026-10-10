@@ -1,17 +1,17 @@
 ---
-description: Typed, explicit conversion between GeometryArray and pandas, Polars, or GeoPandas without global registration or import-order behavior.
+description: Typed conversion between GeometryArray and pandas, Polars, or GeoPandas, with lazy optional integrations and pandas dtype discovery.
 ---
 
 # DataFrames
 
 DataFrame integrations are explicit storage boundaries. Geometry computation
-stays on [`GeometryArray`][gometry.GeometryArray]; converting a column never
-installs accessors, mutates a framework class, or changes a process-wide dtype
-registry.
+stays on [`GeometryArray`][gometry.GeometryArray]. Importing gometry does not
+import pandas; activating the pandas adapter registers gometry's existing
+extension dtype so pandas can resolve its `gometry.geometry` name.
 
 | Extra | Storage | Into gometry | Out of gometry |
 | --- | --- | --- | --- |
-| `pandas` | `GeometryExtensionArray` | [`gm.from_pandas(series)`][gometry.from_pandas] | [`array.to_pandas()`][gometry.GeometryArray.to_pandas] |
+| `pandas` | `GeometryExtensionArray` (`gometry.geometry`) | [`gm.from_pandas(series)`][gometry.from_pandas] | [`array.to_pandas()`][gometry.GeometryArray.to_pandas] |
 | `polars` | WKB/EWKB `Binary` Series | [`gm.from_polars(series)`][gometry.from_polars] | [`array.to_polars()`][gometry.GeometryArray.to_polars] |
 | `geopandas` | Shapely geometry column | [`gm.from_geopandas(series_or_frame)`][gometry.from_geopandas] | [`array.to_geopandas()`][gometry.GeometryArray.to_geopandas] |
 
@@ -30,22 +30,25 @@ extension array. The Series and gometry array share immutable geometry storage;
 `gm.from_pandas()` returns the native column without a WKB round trip.
 
 ```python exec="on" source="block" result="text"
+import pandas as pd
+
 import gometry as gm
 
 points = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
 buffered = points.buffer(500)
 series = buffered.to_pandas(name="geometry")
 restored = gm.from_pandas(series)
+typed = pd.Series([gm.Point(23.0, 53.0, crs=4326)], dtype='gometry.geometry')
 
 print("dtype:", series.dtype)
+print("registered dtype:", typed.dtype)
 print("rows:", len(series))
 print("frame:", restored.crs.to_authority())
 ```
 
-The extension dtype reports a descriptive name, but gometry does not
-register it with pandas or expose a second construction API. Construct geometry
-columns through `array.to_pandas()`. This keeps imports and conversions free of
-global side effects.
+`GeometryDtype` registers as `gometry.geometry` when the pandas adapter is
+imported. Use that name with `pandas_dtype`, `Series(..., dtype=...)`, and
+`astype(...)`; `array.to_pandas()` remains the direct path from gometry.
 
 Missing rows are native `GeometryArray` state. `None` and
 `pd.NA` are missing; an empty geometry is a value. pandas operations such as

@@ -24,7 +24,7 @@ def test_line_interpolate_counts_distances_and_index_reuse() -> None:
     assert line.line_interpolate(at=2.5).x == 2.5
     geographic = gm.LineString([(0, 0), (1, 0)], crs=4326)
     metre_points = geographic.line_interpolate([55000.0])
-    assert metre_points.crs == 'EPSG:4326'
+    assert metre_points.crs == gm.CRS('EPSG:4326')
     assert metre_points[0].x == pytest.approx(0.494, abs=0.01)
     rows = gm.GeometryArray([line, gm.LineString([(0, 0), (4, 0)])])
     assert [point.x for point in rows.line_interpolate(at=[2.5, 1.0])] == [2.5, 1.0]
@@ -253,7 +253,7 @@ def test_extremes_picks_first_tied_vertex_and_carries_zm() -> None:
     assert (east.x, east.y) == (2.0, 3.0)
     assert (north.x, north.y) == (2.0, 3.0)
     lifted = gm.LineString([(0, 0), (1, 1)], z=[5, 6], crs=3857).extremes()
-    assert lifted.west.z == 5.0 and lifted.west.crs == 'EPSG:3857'
+    assert lifted.west.z == 5.0 and lifted.west.crs == gm.CRS('EPSG:3857')
     # An empty geometry has no extremes: `None`, like `bounds`.
     assert gm.from_wkt('POINT EMPTY').extremes() is None
     rows = gm.GeometryArray([gm.Point(1, 2), gm.box(0, 0, 5, 5)]).extremes()
@@ -339,7 +339,7 @@ def test_rhumb_trio_matches_rhumbsolve_oracles() -> None:
     tagged = gm.Point(0, 0, z=5.0, m=7.0, crs=4326).destination(
         90.0, 1000.0, path='rhumb'
     )
-    assert tagged.crs == 'EPSG:4326'
+    assert tagged.crs == gm.CRS('EPSG:4326')
     assert (tagged.z, tagged.m) == (5.0, 7.0)
 
 

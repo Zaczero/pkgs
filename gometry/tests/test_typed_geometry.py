@@ -175,7 +175,7 @@ def test_orient_polygons_ccw() -> None:
 def test_empty_polygon_shell_kwarg_spelling() -> None:
     """Unique empty-Polygon spelling: shell=[] with CRS (matrices cover bare ctors)."""
     assert gm.Polygon(shell=[], crs=4326).to_wkt() == 'POLYGON EMPTY'
-    assert gm.Polygon(shell=[], crs=4326).crs == 'EPSG:4326'
+    assert gm.Polygon(shell=[], crs=4326).crs == gm.CRS('EPSG:4326')
 
 
 _EMPTY_CTORS = [
@@ -248,7 +248,7 @@ def test_empty_constructors_carry_crs_and_epoch(
     geom = ctor(crs=4326, epoch=2020.0)
     assert geom.geometry_type == gtype
     assert geom.is_empty
-    assert geom.crs == 'EPSG:4326'
+    assert geom.crs == gm.CRS('EPSG:4326')
     assert geom.epoch == pytest.approx(2020.0)
 
 

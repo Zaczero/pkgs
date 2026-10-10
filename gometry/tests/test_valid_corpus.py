@@ -294,7 +294,7 @@ def test_corpus_ewkt_canonical_forms(wkt: str, axes: str) -> None:
     g = gm.from_wkt(wkt)
     assert g.coordinate_axes == axes
     if wkt.upper().startswith('SRID='):
-        assert g.crs == 'EPSG:4326'
+        assert g.crs == gm.CRS('EPSG:4326')
 
 
 def test_corpus_ewkt_is_wkt_routing() -> None:

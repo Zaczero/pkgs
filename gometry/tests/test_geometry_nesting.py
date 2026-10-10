@@ -200,7 +200,7 @@ assert shape.minimum_bounding_circle().geometry_type == 'Point'
 bounds = shape.bounds
 assert all(math.copysign(1.0, bounds[i]) == 1.0 for i in (0, 2))
 assert all(math.copysign(1.0, bounds[i]) == -1.0 for i in (1, 3))
-assert shape.estimate_local_crs() == 'EPSG:32631'
+assert shape.estimate_local_crs() == gm.CRS('EPSG:32631')
 print(sys.argv[1])
 """
     result = subprocess.run(
@@ -272,7 +272,7 @@ if isinstance(actual, float):
 elif operation == 'estimate_local_crs':
     assert actual == expected
 else:
-    assert actual.crs == 'EPSG:4326'
+    assert actual.crs == gm.CRS('EPSG:4326')
     assert gm.equals(actual, expected), (actual, expected)
 """
     result = subprocess.run(
@@ -560,7 +560,7 @@ for _ in range(128):
 
 hull = shape.concave_hull(concavity=10.0)
 assert hull.coordinate_axes == 'XYZM'
-assert hull.crs == 'EPSG:4326'
+assert hull.crs == gm.CRS('EPSG:4326')
 edge = next(coord for coord in hull.exterior.coords if coord[1] == 1.0)
 assert (edge[2], edge[3]) == (50.0, 5.0)
 assert math.copysign(1.0, edge[0]) == 1.0

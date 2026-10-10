@@ -117,7 +117,7 @@ def test_map_normalizes_non_wgs84_geographic_crs() -> None:
         gm.AccuracyWarning, match='us_noaa_conus[.]tif.*us_noaa_kshpgn[.]tif'
     ):
         normalized = _array_for_map(nad27)
-    assert normalized.crs == 'EPSG:4326'
+    assert normalized.crs == gm.CRS('EPSG:4326')
     assert normalized[0] != nad27[0]
 
 

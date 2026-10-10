@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::py::errors::{CRSError, GeometryError};
 use crate::{
     Crs, CrsCoordinateArgs, broadcast_coordinate_group, crs, crs_arc, finite_coordinate_required,
-    finite_f64_required, json_to_py, parse_area, parse_crs,
+    finite_f64_required, json_to_py, parse_area,
 };
 
 mod functions;
