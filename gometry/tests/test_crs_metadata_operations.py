@@ -10,9 +10,13 @@ from typing import Any, cast
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
 
 from tests._support import chart_rectangle_perimeter, chart_zone_area
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
+Geod = pyproj.Geod
 
 GEOD = Geod(ellps='WGS84')
 

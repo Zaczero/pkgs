@@ -6,12 +6,22 @@ import json
 import os
 import tempfile
 
-import geopandas as gpd
 import gometry as gm
 import pytest
-from shapely.geometry import LineString, Point, Polygon
 
 from tests._support import canon
+
+shapely_geometry = pytest.importorskip(
+    'shapely.geometry',
+    reason='shapely==2.1.2 optional GeoParquet geometry wheel is unavailable here',
+)
+gpd = pytest.importorskip(
+    'geopandas',
+    reason='geopandas==1.1.4 optional GeoParquet wheel is unavailable here',
+)
+LineString = shapely_geometry.LineString
+Point = shapely_geometry.Point
+Polygon = shapely_geometry.Polygon
 
 _RADIAN_CRS = (
     'GEOGCS["WGS 84 rad",'

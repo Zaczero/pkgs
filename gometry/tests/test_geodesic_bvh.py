@@ -7,7 +7,11 @@ import math
 
 import gometry as gm
 import pytest
-from pyproj import Geod
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
+Geod = pyproj.Geod
 
 GEOD = Geod(ellps='WGS84')
 MIN_BVH_SEGMENTS = 64

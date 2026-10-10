@@ -11,9 +11,13 @@ import sys
 
 import gometry as gm
 import numpy as np
-import pyarrow as pa
+import pytest
 
 from tests._support import with_validity
+
+pa = pytest.importorskip(
+    'pyarrow', reason='pyarrow==25.0.1 optional Arrow wheel is unavailable here'
+)
 
 
 def test_to_arrow_from_arrow_packed_points_roundtrip() -> None:

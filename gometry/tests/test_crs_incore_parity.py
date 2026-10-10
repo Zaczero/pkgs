@@ -7,11 +7,14 @@ import struct
 from typing import TYPE_CHECKING
 
 import gometry as gm
-import pyproj
 import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
 ABS_TOL_M = 1e-06
 ABS_TOL_DEG = 1e-06
 OBSERVER_TOL_M = 0.001

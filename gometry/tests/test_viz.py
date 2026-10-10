@@ -10,7 +10,10 @@ from unittest import mock
 import gometry as gm
 import pytest
 
-pytest.importorskip('lonboard')
+pytest.importorskip(
+    'lonboard',
+    reason='geoarrow-rust-core==0.6.3 has no CPython 3.14t wheel for lonboard',
+)
 
 
 def _lonboard_html_markers() -> tuple[str, ...]:

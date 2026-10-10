@@ -9,10 +9,13 @@ from typing import Literal
 
 import gometry as gm
 import numpy as np
-import pyproj
 import pytest
 
 from tests._support import canon
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
 
 RADIAN_CRS = (
     'GEOGCS["WGS 84 rad",'

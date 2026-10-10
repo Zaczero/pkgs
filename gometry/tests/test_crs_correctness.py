@@ -8,7 +8,6 @@ import math
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
 
 from tests._support import (
     EAST_DEGREE_SOUTH_LATITUDE_CRS,
@@ -20,6 +19,11 @@ from tests._support import (
     floats,
     ids,
 )
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 optional oracle wheel is unavailable here'
+)
+Geod = pyproj.Geod
 
 FOOT_CRS = 2263
 FOOT_UNIT_M = 0.3048006096012192
