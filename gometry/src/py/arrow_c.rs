@@ -352,13 +352,15 @@ pub(crate) use admitted::{
 };
 pub(crate) use build::{
     GometryArrowArray, GometryArrowSchema, OwnedBufferSlot, admitted_binary_array,
-    admitted_list_array_windowed, apply_prebuilt_top_level_validity, coordinate_array,
-    coordinate_schema, empty_array, extension_schema, list_schema, wkb_schema,
+    admitted_list_array_windowed, apply_prebuilt_top_level_validity, apply_top_level_validity,
+    coordinate_array, coordinate_schema, empty_array, extension_schema, list_schema,
+    primitive_u64_arc_array_windowed, primitive_u64_array_windowed, primitive_u64_schema,
+    utf8_array, utf8_schema, wkb_schema,
 };
 pub(crate) use capsule_lifecycle::{
-    ArrowReleaseSlot, array_to_array_capsules, array_to_schema_capsule, array_to_stream_capsule,
-    capsule_destructor, geometry_to_array_capsules, geometry_to_schema_capsule,
-    geometry_to_stream_capsule, pyarrow_array_from_export,
+    ArrowReleaseSlot, array_capsules_with_schema, array_to_array_capsules, array_to_schema_capsule,
+    array_to_stream_capsule, capsule_destructor, geometry_to_array_capsules,
+    geometry_to_schema_capsule, geometry_to_stream_capsule, pyarrow_array_from_export,
 };
 pub(crate) use export::{apply_exported_validity_plan, export_with_schema_node};
 #[cfg(test)]

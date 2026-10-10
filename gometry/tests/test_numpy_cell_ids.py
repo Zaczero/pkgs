@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -122,3 +124,125 @@ def test_h3_index_numpy_negative_id_keeps_unsigned_conversion_error(
         array_type(np.array([-1], dtype=np.int64))
 
     assert str(error.value) == f'{array_entity} ids must be unsigned 64-bit integers'
+
+
+def test_cell_array_arrow_exports_uint64_ids_and_geohash_tokens() -> None:
+    pa = pytest.importorskip('pyarrow')
+    h3 = gm.H3Cell(13.4, 52.5, resolution=7)
+    neighbor = gm.H3Cell(14.4, 52.5, resolution=7)
+
+    ids = gm.CellArray([h3, None, neighbor])
+    arrow_ids = pa.array(ids)
+    assert arrow_ids.type == pa.uint64()
+    assert arrow_ids.to_pylist() == [h3.id, None, neighbor.id]
+    assert pa.array(ids, type=pa.uint64()).to_pylist() == [h3.id, None, neighbor.id]
+
+    hashes = gm.CellArray([gm.GeohashCell('u33d'), None, gm.GeohashCell('u33dc')])
+    arrow_hashes = pa.array(hashes)
+    assert arrow_hashes.type == pa.string()
+    assert arrow_hashes.to_pylist() == ['u33d', None, 'u33dc']
+    assert pa.array(hashes, type=pa.string()).to_pylist() == ['u33d', None, 'u33dc']
+
+
+def test_cell_id_arrow_views_share_contiguous_storage_and_retain_their_owner() -> None:
+    pa = pytest.importorskip('pyarrow')
+    cells = [
+        gm.H3Cell(13.4, 52.5, resolution=7),
+        gm.H3Cell(14.4, 52.5, resolution=7),
+        gm.H3Cell(15.4, 52.5, resolution=7),
+    ]
+    source = gm.CellArray(cells)
+    source_arrow = pa.array(source)
+    source_ids = source.to_numpy()
+    assert source_arrow.buffers()[1].address == source_ids.ctypes.data
+
+    window = source[1:]
+    window_arrow = pa.array(window)
+    assert window_arrow.offset == 1
+    assert window_arrow.buffers()[1].address == source_arrow.buffers()[1].address
+    assert window_arrow.to_pylist() == [cells[1].id, cells[2].id]
+
+    gathered = source[np.array([2, 0], dtype=np.intp)]
+    gathered_arrow = pa.array(gathered)
+    assert gathered_arrow.offset == 0
+    assert gathered_arrow.buffers()[1].address != source_arrow.buffers()[1].address
+    assert gathered_arrow.to_pylist() == [cells[2].id, cells[0].id]
+
+    del source_ids
+    del source, window, gathered
+    gc.collect()
+    assert source_arrow.to_pylist() == [cell.id for cell in cells]
+    assert window_arrow.to_pylist() == [cells[1].id, cells[2].id]
+    assert gathered_arrow.to_pylist() == [cells[2].id, cells[0].id]
+
+
+@pytest.mark.parametrize(
+    ('array_type', 'index_kind'),
+    [
+        pytest.param(gm.H3VertexArray, 'vertices', id='vertices'),
+        pytest.param(gm.H3EdgeArray, 'edges', id='edges'),
+    ],
+)
+def test_h3_index_arrays_export_uint64_ids_through_arrow(
+    array_type: type, index_kind: str
+) -> None:
+    pa = pytest.importorskip('pyarrow')
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    indexes = list(cell.vertices if index_kind == 'vertices' else cell.edges)
+    values = array_type(indexes)
+
+    arrow = pa.array(values)
+
+    assert arrow.type == pa.uint64()
+    assert arrow.to_pylist() == [index.id for index in indexes]
+    assert pa.array(values, type=pa.uint64()).to_pylist() == [
+        index.id for index in indexes
+    ]
+
+
+@pytest.mark.parametrize(
+    ('array_type', 'index_kind'),
+    [
+        pytest.param(gm.H3VertexArray, 'vertices', id='vertices'),
+        pytest.param(gm.H3EdgeArray, 'edges', id='edges'),
+    ],
+)
+def test_h3_index_arrow_windows_share_and_gathers_own_their_ids(
+    array_type: type, index_kind: str
+) -> None:
+    pa = pytest.importorskip('pyarrow')
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    indexes = list(cell.vertices if index_kind == 'vertices' else cell.edges)
+    source = array_type(indexes)
+    source_arrow = pa.array(source)
+
+    window = source[1:]
+    window_arrow = pa.array(window)
+    assert window_arrow.offset == 1
+    assert window_arrow.buffers()[1].address == source_arrow.buffers()[1].address
+
+    gathered = source[np.asarray([2, 0], dtype=np.intp)]
+    gathered_arrow = pa.array(gathered)
+    assert gathered_arrow.offset == 0
+    assert gathered_arrow.buffers()[1].address != source_arrow.buffers()[1].address
+    assert gathered_arrow.to_pylist() == [indexes[2].id, indexes[0].id]
+
+    del source, window, gathered
+    gc.collect()
+    assert source_arrow.to_pylist() == [index.id for index in indexes]
+    assert window_arrow.to_pylist() == [index.id for index in indexes[1:]]
+    assert gathered_arrow.to_pylist() == [indexes[2].id, indexes[0].id]
+
+
+def test_cell_array_arrow_requested_schema_accepts_only_its_uint64_layout() -> None:
+    pa = pytest.importorskip('pyarrow')
+    cell = gm.H3Cell(13.4, 52.5, resolution=7)
+    values = gm.CellArray([cell])
+    same_schema, _ = values.__arrow_c_array__()
+
+    assert pa.array(values, type=pa.uint64()).to_pylist() == [cell.id]
+    assert len(values.__arrow_c_array__(same_schema)) == 2
+
+    different_schema = pa.array([cell.id], type=pa.int64()).__arrow_c_array__()[0]
+    with pytest.raises(TypeError, match='requested_schema does not match'):
+        values.__arrow_c_array__(different_schema)

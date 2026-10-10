@@ -237,6 +237,25 @@ pub(crate) fn array_to_array_capsules(
     array_capsules(py, export)
 }
 
+pub(crate) fn array_capsules_with_schema(
+    py: Python<'_>,
+    schema_node: crate::py::arrow_c::SchemaNode,
+    array: GometryArrowArray,
+    requested_schema: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    if let Some(requested_schema) = requested_schema.filter(|schema| !schema.is_none()) {
+        let _ = arrow::reject_requested_schema(Some(requested_schema), &schema_node)?;
+    }
+    let schema = schema_node
+        .materialize_schema()
+        .map_err(|error| error.into_py_err(py))?;
+    array_capsules(py, ExportedArray {
+        schema,
+        schema_node,
+        array,
+    })
+}
+
 pub(crate) fn geometry_to_stream_capsule(
     py: Python<'_>,
     geometry: &PyGeometry,

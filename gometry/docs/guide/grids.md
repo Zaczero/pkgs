@@ -795,6 +795,8 @@ Coming from h3-py or s2sphere? See [Migrating](../migrating/index.md#coming-from
 
 - [Spatial indexing](indexing.md) — candidate vs exact refine on geometry, and
   rebuilding an index after a spatial sort.
+- [Arrow & storage](../ecosystem/arrow.md) — exporting cell IDs and geohash tokens
+  as Arrow columns without retaining grid-kind metadata.
 - [The mental model](../get-started/mental-model.md) — the three operation models.
 - [API: h3_cover][gometry.h3_cover] · [s2_cover][gometry.s2_cover] ·
   [H3Cell][gometry.H3Cell] · [S2Cell][gometry.S2Cell] ·

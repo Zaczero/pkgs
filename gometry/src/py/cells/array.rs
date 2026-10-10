@@ -6,7 +6,7 @@
 use std::ops::Range;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyOverflowError, PyValueError};
 use pyo3::prelude::{PyResult, Python, pyclass};
 use pyo3::types::{
     PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
@@ -26,6 +26,7 @@ use crate::grid::cell_set;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
+use crate::py::arrow_c;
 use crate::py::cells::grid_kind::{
     collect_ids, collect_inferred_ids, grid_kind_from_type, grid_kind_from_value, is_raw_identity,
     membership_id,
@@ -490,6 +491,77 @@ impl PyCellArray {
         (missing, present_count)
     }
 
+    fn arrow_id_buffer(&self) -> (crate::geometry::SharedSlice<u64>, usize) {
+        if let Some(rows) = self.selection_ref().csr_rows(0..self.len()) {
+            (self.storage.ids.clone(), rows.start)
+        } else {
+            (
+                crate::geometry::SharedSlice::from_vec(self.logical_ids_vec()),
+                0,
+            )
+        }
+    }
+
+    fn arrow_missing_mask(&self) -> Option<ValidityMask> {
+        match self.selection_ref() {
+            RowSelectionRef::Identity => self.storage.missing.clone(),
+            RowSelectionRef::Window { start, len } => {
+                self.storage.missing.as_ref().map(|missing| {
+                    missing
+                        .window(start, len)
+                        .expect("selected rows are admitted")
+                })
+            },
+            RowSelectionRef::Gather(_) => self.missing_mask_and_present_count().0,
+        }
+    }
+
+    fn geohash_arrow_buffers(
+        &self,
+    ) -> PyResult<(
+        crate::geometry::SharedSlice<i32>,
+        crate::geometry::SharedSlice<u8>,
+    )> {
+        let mut total_bytes = 0_usize;
+        for row in 0..self.len() {
+            if self.is_row_missing(row) {
+                continue;
+            }
+            let cell = Geohash::from_validated_id(self.id_at(row));
+            let (_, length) = cell.token_bytes();
+            total_bytes = total_bytes.checked_add(length).ok_or_else(|| {
+                PyOverflowError::new_err("geohash tokens exceed Arrow UTF-8 size")
+            })?;
+        }
+        if i32::try_from(total_bytes).is_err() {
+            return Err(PyOverflowError::new_err(
+                "geohash tokens exceed Arrow UTF-8 offset range",
+            ));
+        }
+        let offset_count = self.len().checked_add(1).ok_or_else(|| {
+            PyOverflowError::new_err("geohash row count exceeds Arrow offset capacity")
+        })?;
+        let mut offsets = Vec::with_capacity(offset_count);
+        let mut values = Vec::with_capacity(total_bytes);
+        offsets.push(0_i32);
+        for row in 0..self.len() {
+            if !self.is_row_missing(row) {
+                let cell = Geohash::from_validated_id(self.id_at(row));
+                let (bytes, length) = cell.token_bytes();
+                values.extend_from_slice(
+                    bytes
+                        .get(..length)
+                        .expect("geohash token length fits its buffer"),
+                );
+            }
+            offsets.push(i32::try_from(values.len()).expect("reserved Arrow UTF-8 offset range"));
+        }
+        Ok((
+            crate::geometry::SharedSlice::from_vec(offsets),
+            crate::geometry::SharedSlice::from_vec(values),
+        ))
+    }
+
     fn map_logical_cells<G, T>(&self, mut f: impl FnMut(G) -> T) -> Vec<T>
     where
         G: CellArrayGrid,
@@ -699,6 +771,63 @@ impl PyCellArray {
     #[classattr]
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
+
+    /// Export cell identities through the Arrow C Data Interface.
+    ///
+    /// H3, S2, and tile arrays use nullable ``uint64`` IDs. Geohash arrays use
+    /// nullable UTF-8 tokens. Numeric columns do not retain grid kind; restore
+    /// it with ``CellArray(..., type=...)`` when importing raw IDs.
+    ///
+    /// Parameters
+    /// ----------
+    /// requested_schema : capsule or None, default None
+    ///     A matching Arrow C schema capsule. A different schema is rejected.
+    ///
+    /// Returns
+    /// -------
+    /// tuple of capsule
+    ///     The Arrow schema and array capsules. Their owners retain exported
+    ///     buffers until the consumer releases the array.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If ``requested_schema`` does not match the exported value type.
+    /// OverflowError
+    ///     If the encoded geohash tokens exceed Arrow UTF-8's 32-bit offset range.
+    #[pyo3(signature = (requested_schema=None, /))]
+    fn __arrow_c_array__(
+        &self,
+        py: Python<'_>,
+        requested_schema: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        if self.kind() == GridKind::GeohashCell {
+            let (offsets, values) = self.geohash_arrow_buffers()?;
+            let mut array = arrow_c::utf8_array(offsets, values)?;
+            if let Some(missing) = self.arrow_missing_mask() {
+                arrow_c::apply_top_level_validity(&mut array, &missing)?;
+            }
+            return arrow_c::array_capsules_with_schema(
+                py,
+                arrow_c::utf8_schema(),
+                array,
+                requested_schema,
+            );
+        }
+
+        let length = self.len();
+        let (ids, start) = self.arrow_id_buffer();
+        let mut array = arrow_c::primitive_u64_array_windowed(ids, start, length)?;
+        if let Some(missing) = self.arrow_missing_mask() {
+            arrow_c::apply_top_level_validity(&mut array, &missing)?;
+        }
+        arrow_c::array_capsules_with_schema(
+            py,
+            arrow_c::primitive_u64_schema(true),
+            array,
+            requested_schema,
+        )
+    }
 
     /// Construct a cell array from typed cells, ids, or tokens.
     ///

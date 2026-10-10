@@ -1224,6 +1224,8 @@ assert_type(
 )
 h3_vertices = h3_cell.vertices
 h3_edges = h3_cell.edges
+reveal_type(h3_vertices.__arrow_c_array__())
+reveal_type(h3_edges.__arrow_c_array__())
 assert_type(h3_vertices[row_index], gm.H3Vertex)
 assert_type(h3_vertices[integer_index_0d], gm.H3Vertex)
 assert_type(h3_vertices[integer_index_1d], gm.H3VertexArray)
@@ -1292,6 +1294,10 @@ tile_cells = gm.tile_cells(POINTS, zoom=10)
 assert_type(s2_cells, gm.CellArray[gm.S2Cell])
 assert_type(geohash_cells, gm.CellArray[gm.GeohashCell])
 assert_type(tile_cells, gm.CellArray[gm.Tile])
+reveal_type(h3_cells.__arrow_c_array__())
+reveal_type(s2_cells.__arrow_c_array__())
+reveal_type(geohash_cells.__arrow_c_array__())
+reveal_type(tile_cells.__arrow_c_array__())
 assert_type(s2_cells.contains(gm.S2Cell(POINT, level=12)), npt.NDArray[np.bool_])
 assert_type(
     geohash_cells.intersects(gm.GeohashCell(POINT, precision=7)),

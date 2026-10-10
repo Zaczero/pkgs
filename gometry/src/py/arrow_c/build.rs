@@ -1,12 +1,11 @@
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::ptr;
+use std::sync::Arc;
 
 use serde_json::Number;
 
-use crate::geometry::SharedSlice;
-#[cfg(test)]
-use crate::geometry::storage;
+use crate::geometry::{SharedSlice, storage};
 use crate::py::arrow_c::{
     ARROW_FLAG_NULLABLE, ArrayPrivate, ArrowArray, ArrowSchema, CoordSeq, CoordinateAxes,
     GeometryEncoding, GeometryError, NativeArrowExportError, NativeArrowExportResult, PyResult,
@@ -161,6 +160,8 @@ pub(crate) enum OwnedBufferSlot {
     Null,
     F64(SharedSlice<f64>),
     I32(crate::geometry::SharedSlice<i32>),
+    U64(SharedSlice<u64>),
+    U64Arc(Arc<[u64]>),
     U8(crate::geometry::SharedSlice<u8>),
 }
 
@@ -170,6 +171,8 @@ impl OwnedBufferSlot {
             Self::Null => ptr::null(),
             Self::F64(values) => values.as_ptr().cast(),
             Self::I32(values) => values.as_ptr().cast(),
+            Self::U64(values) => values.as_ptr().cast(),
+            Self::U64Arc(values) => values.as_ptr().cast(),
             Self::U8(values) => values.as_ptr().cast(),
         }
     }
@@ -217,7 +220,7 @@ impl Drop for GometryArrowArray {
 
 fn checked_i64(value: usize, what: &str) -> PyResult<i64> {
     i64::try_from(value)
-        .map_err(|_| GeometryError::new_err(format!("Arrow geometry export {what} exceeds i64")))
+        .map_err(|_| GeometryError::new_err(format!("Arrow export {what} exceeds i64")))
 }
 
 /// Ensure logical `offset`/`length` cannot address past owned primitive or
@@ -230,7 +233,7 @@ fn ensure_owned_buffer_window(
 ) -> PyResult<()> {
     let end = offset
         .checked_add(length)
-        .ok_or_else(|| GeometryError::new_err("Arrow geometry export offset+length overflows"))?;
+        .ok_or_else(|| GeometryError::new_err("Arrow array export offset+length overflows"))?;
     for slot in buffers {
         match slot {
             OwnedBufferSlot::Null | OwnedBufferSlot::U8(_) => {},
@@ -238,6 +241,20 @@ fn ensure_owned_buffer_window(
                 if end > values.len() {
                     return Err(GeometryError::new_err(
                         "Arrow geometry export window exceeds owned f64 column",
+                    ));
+                }
+            },
+            OwnedBufferSlot::U64(values) => {
+                if end > values.len() {
+                    return Err(GeometryError::new_err(
+                        "Arrow cell export window exceeds owned uint64 column",
+                    ));
+                }
+            },
+            OwnedBufferSlot::U64Arc(values) => {
+                if end > values.len() {
+                    return Err(GeometryError::new_err(
+                        "Arrow cell export window exceeds owned uint64 column",
                     ));
                 }
             },
@@ -251,7 +268,7 @@ fn ensure_owned_buffer_window(
                 };
                 if !in_range {
                     return Err(GeometryError::new_err(
-                        "Arrow geometry export window exceeds owned offsets column",
+                        "Arrow array export window exceeds owned offsets column",
                     ));
                 }
             },
@@ -333,18 +350,17 @@ fn make_array_with_offset(
 ///
 /// Accepts only [`GometryArrowArray`] so a foreign shell cannot enter. Mask
 /// length is checked in release builds (not debug-only).
-#[cfg(test)]
 pub(crate) fn apply_top_level_validity(
     array: &mut GometryArrowArray,
     mask: &storage::ValidityMask,
 ) -> PyResult<()> {
     let array = array.as_mut();
     let logical_len = usize::try_from(array.length).map_err(|_| {
-        GeometryError::new_err("Arrow geometry export length is negative or too large")
+        GeometryError::new_err("Arrow array export length is negative or too large")
     })?;
     if mask.len() != logical_len {
         return Err(GeometryError::new_err(
-            "missing mask length must match logical Arrow array length",
+            "validity mask length must match logical Arrow array length",
         ));
     }
     let null_count = mask.missing_count();
@@ -353,7 +369,7 @@ pub(crate) fn apply_top_level_validity(
     }
     if array.n_buffers < 1 {
         return Err(GeometryError::new_err(
-            "Arrow geometry export has no top-level validity buffer slot",
+            "Arrow array export has no top-level validity buffer slot",
         ));
     }
     // Arrow C Data Interface: for a non-zero array.offset, validity bit for
@@ -362,10 +378,10 @@ pub(crate) fn apply_top_level_validity(
     // via offset/length — the logical missing mask must be placed at that
     // offset, not at bit 0.
     let offset = usize::try_from(array.offset).map_err(|_| {
-        GeometryError::new_err("Arrow geometry export offset is negative or too large")
+        GeometryError::new_err("Arrow array export offset is negative or too large")
     })?;
     let total_bits = offset.checked_add(mask.len()).ok_or_else(|| {
-        GeometryError::new_err("Arrow geometry export validity span exceeds usize")
+        GeometryError::new_err("Arrow array export validity span exceeds usize")
     })?;
     let (owned, mask_offset) = mask.arrow_bitmap();
     let owned_bits = owned.len().saturating_mul(8);
@@ -384,7 +400,7 @@ pub(crate) fn apply_top_level_validity(
     let private = array.private_data.cast::<ArrayPrivate>();
     if private.is_null() {
         return Err(GeometryError::new_err(
-            "Arrow geometry export is missing private buffer ownership",
+            "Arrow array export is missing private buffer ownership",
         ));
     }
     // SAFETY: `GometryArrowArray` always carries an `ArrayPrivate` box whose
@@ -394,13 +410,13 @@ pub(crate) fn apply_top_level_validity(
         let private = &mut *private;
         if !private.replace_first_buffer(OwnedBufferSlot::U8(validity)) {
             return Err(GeometryError::new_err(
-                "Arrow geometry export has no top-level validity buffer slot",
+                "Arrow array export has no top-level validity buffer slot",
             ));
         }
         array.buffers = private.buffers.as_ptr();
     }
     array.null_count = i64::try_from(null_count)
-        .map_err(|_| GeometryError::new_err("Arrow geometry export null count exceeds i64"))?;
+        .map_err(|_| GeometryError::new_err("Arrow array export null count exceeds i64"))?;
     Ok(())
 }
 
@@ -490,6 +506,76 @@ pub(crate) fn primitive_f64_array_windowed(
         [OwnedBufferSlot::Null, OwnedBufferSlot::F64(values)],
         Vec::new(),
     )
+}
+
+pub(crate) fn primitive_u64_array_windowed(
+    values: SharedSlice<u64>,
+    start: usize,
+    len: usize,
+) -> PyResult<GometryArrowArray> {
+    make_array_with_offset(
+        len,
+        start,
+        [OwnedBufferSlot::Null, OwnedBufferSlot::U64(values)],
+        Vec::new(),
+    )
+}
+
+pub(crate) fn primitive_u64_arc_array_windowed(
+    values: Arc<[u64]>,
+    start: usize,
+    len: usize,
+) -> PyResult<GometryArrowArray> {
+    make_array_with_offset(
+        len,
+        start,
+        [OwnedBufferSlot::Null, OwnedBufferSlot::U64Arc(values)],
+        Vec::new(),
+    )
+}
+
+pub(crate) fn utf8_array(
+    offsets: SharedSlice<i32>,
+    values: SharedSlice<u8>,
+) -> PyResult<GometryArrowArray> {
+    let length = offsets.len().checked_sub(1).ok_or_else(|| {
+        GeometryError::new_err("Arrow UTF-8 offsets must contain at least one entry")
+    })?;
+    let final_offset = offsets.last().copied();
+    if final_offset.and_then(|offset| usize::try_from(offset).ok()) != Some(values.len()) {
+        return Err(GeometryError::new_err(
+            "Arrow UTF-8 offsets do not match the owned values buffer",
+        ));
+    }
+    make_array(
+        length,
+        [
+            OwnedBufferSlot::Null,
+            OwnedBufferSlot::I32(offsets),
+            OwnedBufferSlot::U8(values),
+        ],
+        Vec::new(),
+    )
+}
+
+pub(crate) const fn primitive_u64_schema(nullable: bool) -> SchemaNode {
+    SchemaNode {
+        format: "L",
+        name: "",
+        metadata: None,
+        nullable,
+        children: Vec::new(),
+    }
+}
+
+pub(crate) const fn utf8_schema() -> SchemaNode {
+    SchemaNode {
+        format: "u",
+        name: "",
+        metadata: None,
+        nullable: true,
+        children: Vec::new(),
+    }
 }
 
 pub(crate) fn coordinate_schema(axes: CoordinateAxes, nullable: bool) -> SchemaNode {
