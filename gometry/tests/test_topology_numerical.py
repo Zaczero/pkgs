@@ -27,7 +27,7 @@ def test_coverage_signed_zero_shared_edge_valid_and_union() -> None:
     b = gm.from_wkt('POLYGON ((1 -0, 2 0, 2 1, 1 1, 1 -0))')
     adj = gm.GeometryArray([a, b])
     assert gm.coverage_is_valid(adj) is True
-    u = gm.coverage_union(adj)
+    u = gm.coverage_union_all(adj)
     assert not u.is_empty
     assert u.area == pytest.approx(2.0)
 
@@ -130,11 +130,11 @@ def test_geographic_aggregate_contacts_keep_pre_quotient_locations() -> None:
         assert gm.intersects(geometry, point) is True
 
 
-def test_voronoi_edges_honors_clip() -> None:
+def test_voronoi_edge_lines_honors_clip() -> None:
     sites = gm.MultiPoint([(0.0, 0.0), (2.0, 0.0), (1.0, 2.0)])
-    pad = sites.voronoi_edges(clip='padded')
-    env = sites.voronoi_edges(clip='envelope')
-    poly = sites.voronoi_edges(clip=gm.box(0.5, 0.5, 1.5, 1.5))
+    pad = sites.voronoi(output='edges', clip='padded')
+    env = sites.voronoi(output='edges', clip='envelope')
+    poly = sites.voronoi(output='edges', clip=gm.box(0.5, 0.5, 1.5, 1.5))
     assert pad != env or pad.total_bounds != env.total_bounds
     # Polygon clip must keep edges inside the clip envelope (within float noise).
     tb = poly.total_bounds
@@ -263,7 +263,7 @@ def test_union_all_splits_antimeridian_like_binary() -> None:
     """N-ary union_all must not keep the false-middle planar box of a
     geographic antimeridian-crossing polygon; match binary overlay's split.
     """
-    cross = gm.from_wkt('POLYGON ((170 -5, -170 -5, -170 5, 170 5, 170 -5))').set_crs(
+    cross = gm.from_wkt('POLYGON ((170 -5, -170 -5, -170 5, 170 5, 170 -5))').with_crs(
         4326
     )
     other = gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], crs=4326)
@@ -544,29 +544,31 @@ def test_b10_kind_kind_distance_matrix_1e200() -> None:
     )
 
 
-def test_voronoi_edges_clip_no_degenerate_rows() -> None:
+def test_voronoi_edge_lines_clip_no_degenerate_rows() -> None:
     """B8 residual: clipped Voronoi edges must not emit zero-length rows."""
     pts = gm.MultiPoint([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.5, 0.5)])
     for clip in ('envelope', 'padded'):
-        edges = pts.voronoi_edges(clip=clip)
+        edges = pts.voronoi(output='edges', clip=clip)
         assert len(edges) > 0
         for edge in edges:
             assert edge.length > 0.0, edge.to_wkt()
             coords = list(edge.coords)
             assert coords[0] != coords[-1] or len(set(coords)) > 1
     poly_clip = gm.box(-0.1, -0.1, 1.1, 1.1)
-    edges = pts.voronoi_edges(clip=poly_clip)
+    edges = pts.voronoi(output='edges', clip=poly_clip)
     assert len(edges) > 0
     assert all(edge.length > 0.0 for edge in edges)
     # Polygons: no consecutive duplicate ring vertices after envelope clip.
-    cells = pts.voronoi_polygons(clip='envelope')
+    cells = pts.voronoi(output='polygons', clip='envelope')
     assert len(cells) == 5
     for cell in cells:
         coords = list(cell.exterior.coords)
         assert all(a != b for a, b in pairwise(coords))
         assert cell.area > 0.0
     # Ordinary mid-range stays non-empty (no over-filtering regression).
-    ordinary = gm.MultiPoint([(0.0, 0.0), (2.0, 0.0), (1.0, 2.0)]).voronoi_edges()
+    ordinary = gm.MultiPoint([(0.0, 0.0), (2.0, 0.0), (1.0, 2.0)]).voronoi(
+        output='edges',
+    )
     assert len(ordinary) == 3
     assert all(e.length > 0.0 for e in ordinary)
 

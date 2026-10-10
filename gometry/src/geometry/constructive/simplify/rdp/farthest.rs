@@ -31,7 +31,13 @@ impl Mesh {
             random = (random ^ (random >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
             random = (random ^ (random >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             random ^= random >> 31;
-            order.swap(end, (random % end.wrapping_add(1) as u64) as usize);
+            let population = end.wrapping_add(1);
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "reverse Fisher-Yates has a nonzero population bounded by the allocated sites"
+            )]
+            let site = (random % population as u64) as usize;
+            order.swap(end, site);
         }
         let mut previous: Vec<_> = (0..count)
             .map(|index| {
@@ -109,8 +115,7 @@ impl Mesh {
                 if exact::incircle(a, b, c, d)? != ExactSign::Negative {
                     continue;
                 }
-                let (left, right) = mesh.flip(edge, twin);
-                pending.extend([left, right]);
+                pending.extend(mesh.flip(edge, twin));
             }
         }
         Ok(mesh)
@@ -130,7 +135,7 @@ impl Mesh {
         }
     }
 
-    fn flip(&mut self, edge: usize, twin: usize) -> (usize, usize) {
+    fn flip(&mut self, edge: usize, twin: usize) -> [usize; 2] {
         let (en, ep) = (next_halfedge(edge), prev_halfedge(edge));
         let (tn, tp) = (next_halfedge(twin), prev_halfedge(twin));
         let (u, v, w, p) = (
@@ -154,7 +159,7 @@ impl Mesh {
         self.link(ep, vw);
         self.link(tn, wu);
         self.link(tp, up);
-        (ep, tn)
+        [ep, tn]
     }
 }
 
@@ -303,11 +308,8 @@ impl Diagram {
         let mesh = Mesh::build(sites, xs, ys, seed)?;
         let mut centres = Vec::with_capacity(sites.len().wrapping_sub(2));
         let xy = |local: usize| point(xs, ys, *sites.get(local).expect("diagram site"));
-        for face in mesh.vertices.chunks_exact(3) {
-            let [a, b, c] = face else {
-                unreachable!("triangle slot group")
-            };
-            centres.push(exact::circumcenter(xy(*a), xy(*b), xy(*c))?);
+        for &[a, b, c] in mesh.vertices.as_chunks::<3>().0 {
+            centres.push(exact::circumcenter(xy(a), xy(b), xy(c))?);
         }
         let [minimum_y, maximum_y] = y_extent;
         let low = ExactPoint::from_xy(XY::new(0.0, minimum_y));
@@ -324,7 +326,12 @@ impl Diagram {
             }
             let (u, v) = (mesh.vertex(edge), mesh.vertex(next_halfedge(edge)));
             let (a, b) = (xy(u), xy(v));
-            if a.x == b.x {
+            #[expect(
+                clippy::float_cmp,
+                reason = "equal stored X ordinates identify an exact horizontal Voronoi boundary"
+            )]
+            let same_x = a.x == b.x;
+            if same_x {
                 continue; // Horizontal Voronoi boundaries are event-height ties.
             }
             let boundary = boundaries.len();

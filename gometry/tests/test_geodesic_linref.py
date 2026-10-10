@@ -8,10 +8,12 @@ from itertools import pairwise
 from typing import Literal
 
 import gometry as gm
-import pyproj
+import numpy as np
 import pytest
 
 from tests._support import canon
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 
 RADIAN_CRS = (
     'GEOGCS["WGS 84 rad",'
@@ -205,7 +207,7 @@ def test_chart_line_cache_isolated_across_frame_retag() -> None:
     original = gm.LineString(coordinates, crs=4326)
     # Warm WGS84 before the metadata-only retag shares the immutable shape.
     original.line_interpolate(500_000.0)
-    retagged = original.set_crs(4267, overwrite=True)
+    retagged = original.with_crs(4267, overwrite=True)
     fresh = gm.LineString(coordinates, crs=4267)
     assert (
         retagged.line_interpolate(500_000.0).to_wkb()
@@ -236,6 +238,84 @@ def test_multi_line_string_chart_interpolate_locate_round_trip() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    'normalized,expected', [(False, 268178.80229270144), (True, 0.706698050287263)]
+)
+def test_geographic_witness_role_locate_uses_selected_interior_station(
+    normalized, expected
+) -> None:
+    route = gm.from_wkt(
+        'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))',
+        crs=4326,
+    )
+    point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326)
+    assert route.line_locate(point, normalized=normalized) == expected
+    assert route.line_locate(point, basis='m') == 400.0
+    rows = gm.GeometryArray([route, None, route])[[2, 0, 1, 2]]
+    values = list(rows.line_locate(point, normalized=normalized))
+    assert values[:2] == [expected, expected]
+    assert math.isnan(values[2])
+    assert values[3] == expected
+    measured = list(rows.line_locate(gm.GeometryArray([point] * 4), basis='m'))
+    assert measured[:2] == [400.0, 400.0]
+    assert math.isnan(measured[2])
+    assert measured[3] == 400.0
+
+
+@pytest.mark.parametrize(
+    'wkt,station,measure',
+    [
+        (
+            'MULTILINESTRING ZM ((0 1 10 100,0 1 10 100),(-1 1 30 300,1 1 50 500))',
+            111302.6497697324,
+            400.0,
+        ),
+        (
+            'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1.0000000000000002 30 300,1 1.0000000000000002 50 500))',
+            0.0,
+            100.0,
+        ),
+        (
+            'MULTILINESTRING ZM ((0 1 10 100,2 1 20 200),(-2 1 30 300,0 1 50 500))',
+            0.0,
+            250.0,
+        ),
+        (
+            'MULTILINESTRING ZM ((-1 1 10 100,1 1 20 200),(-1 1 30 300,1 1 50 500))',
+            111302.6497697324,
+            150.0,
+        ),
+    ],
+    ids=['degenerate', 'two-ulp-farther', 'same-endpoint-role', 'same-interior-role'],
+)
+def test_geographic_witness_role_locate_preserves_eligibility_and_source_order(
+    wkt, station, measure
+) -> None:
+    route = gm.from_wkt(wkt, crs=4326)
+    point = gm.Point(0.0, 0.0, crs=4326)
+    assert route.line_locate(point) == station
+    # M's flattened route also admits the interpart connector; its interior
+    # can win where distance-basis support contains only tied endpoints.
+    assert route.line_locate(point, basis='m') == measure
+
+
+def test_geographic_witness_role_locate_packed_connected_line() -> None:
+    route = gm.from_wkt(
+        'LINESTRING ZM (0 1 10 100,1 2 20 200,-1 1 30 300,1 1 50 500)', crs=4326
+    )
+    point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326)
+    rows = gm.GeometryArray([route, route, None])[[1, 0, 2]]
+    assert route.line_locate(point, basis='m') == 400.0
+    measured = list(rows.line_locate(point, basis='m'))
+    assert measured[:2] == [400.0, 400.0]
+    assert math.isnan(measured[2])
+    station = route.line_locate(point)
+    assert station > 111302.6497697324
+    located = list(rows.line_locate(gm.GeometryArray([point] * 3)))
+    assert located[:2] == [station, station]
+    assert math.isnan(located[2])
+
+
 def test_crs84_full_turn_parallel_locate_interpolate_round_trip() -> None:
     crs = 'OGC:CRS84'
     route = gm.LineString([(10.0, 60.0), (370.0, 60.0)], crs=crs)
@@ -255,6 +335,78 @@ def test_crs84_full_turn_parallel_locate_interpolate_round_trip() -> None:
     assert stations[0] < 0.1
     assert stations[-1] > 0.9
     assert all(left < right for left, right in pairwise(stations))
+
+
+def test_line_substring_keeps_retained_circle_intervals_representable() -> None:
+    route = gm.LineString(
+        [(10.0, 60.0, 7.0, 101.0), (370.0, 60.0, 47.0, 701.0)],
+        crs='OGC:CRS84',
+    )
+    source = route.to_wkb()
+
+    east = route.line_substring(0.25, 1.0, normalized=True)
+    west = route.line_substring(0.0, 0.75, normalized=True)
+    whole = route.line_substring(0.0, 1.0, normalized=True)
+
+    assert list(east.coords) == [
+        (100.0, 60.0, 17.0, 251.0),
+        (235.0, 60.0, 32.0, 476.0),
+        (370.0, 60.0, 47.0, 701.0),
+    ]
+    assert list(west.coords) == [
+        (10.0, 60.0, 7.0, 101.0),
+        (145.0, 60.0, 22.0, 326.0),
+        (280.0, 60.0, 37.0, 551.0),
+    ]
+    assert whole.to_wkb() == source
+    assert east.length == pytest.approx(route.length * 0.75, rel=0.0, abs=2.0e-8)
+    assert west.length == pytest.approx(route.length * 0.75, rel=0.0, abs=2.0e-8)
+    assert route.to_wkb() == source
+
+
+def test_generated_geographic_half_turns_are_refined_for_public_consumers() -> None:
+    route = gm.LineString([(10.0, 0.0), (370.0, 0.0)], crs=4326)
+
+    half = route.line_substring(0.0, 0.5, normalized=True)
+    assert list(half.coords) == [
+        (10.0, 0.0),
+        (100.0, 0.0),
+        (190.0, 0.0),
+    ]
+    assert half.length > 0.0
+
+    segmented = route.segmentize(30_000_000.0)
+    assert list(segmented.coords) == [
+        (10.0, 0.0),
+        (100.0, 0.0),
+        (190.0, 0.0),
+        (280.0, 0.0),
+        (370.0, 0.0),
+    ]
+    assert segmented.length == pytest.approx(route.length, rel=0.0, abs=2.0e-8)
+
+    literal_half_turn = gm.LineString([(10.0, 0.0), (190.0, 0.0)], crs=4326)
+    with pytest.raises(gm.GeometryError, match='exactly half the longitude period'):
+        _ = literal_half_turn.length
+
+
+@pytest.mark.parametrize(
+    'end_latitude',
+    [
+        pytest.param(math.nextafter(10.0, math.inf), id='increasing-latitude'),
+        pytest.param(math.nextafter(10.0, -math.inf), id='decreasing-latitude'),
+    ],
+)
+def test_geographic_substring_accepts_quantized_latitude_when_longitude_advances(
+    end_latitude: float,
+) -> None:
+    route = gm.LineString([(0.0, 10.0), (10.0, end_latitude)], crs=4326)
+
+    assert route.length > 1_000_000.0
+    substring = route.line_substring(0.125, 0.25, normalized=True)
+
+    assert list(substring.coords) == [(1.25, 10.0), (2.5, 10.0)]
+    assert substring.length > 0.0
 
 
 def test_array_chart_lrs_fraction_round_trip() -> None:
@@ -513,9 +665,10 @@ def test_rhumb_segmentize_matches_rhumbsolve_parallel_literal_and_array() -> Non
     # route from (-10, 45); equal rhumb arclength on this parallel is linear
     # in longitude.
     line = gm.LineString([(-10.0, 45.0), (2.682817246984, 45.0)], crs=4326)
-    rhumb_length = gm.rhumb_distance(
+    rhumb_length = gm.distance(
         gm.Point(-10.0, 45.0, crs=4326),
         gm.Point(2.682817246984, 45.0, crs=4326),
+        path='rhumb',
     )
     max_length = rhumb_length / 2.0 * (1.0 + 1e-12)
 
@@ -813,7 +966,7 @@ def test_fraction_densify_keeps_step_count_independent_of_shared_budget() -> Non
     collection = gm.GeometryCollection([line, line])
 
     refined = collection.segmentize(fraction=0.5)
-    assert gm.get_coordinates(refined).shape == (6, 2)
+    assert np.asarray(refined.coords, dtype=np.float64).shape == (6, 2)
 
 
 def test_geographic_chart_lrs_matches_independent_parallel_oracle() -> None:
@@ -928,6 +1081,21 @@ def test_geographic_chart_lrs_matches_independent_sloped_edge_values() -> None:
         expected_midpoint,
         _SLOPED_XY_BUDGETS_NATIVE[1],
     )
+    normalized_midpoint = line.line_interpolate(0.5, normalized=True, unit='meters')
+    default_normalized_midpoint = line.line_interpolate(0.5, normalized=True)
+    counted_midpoint = line.line_interpolate(count=3, unit='meters')[1]
+    default_counted_midpoint = line.line_interpolate(count=3)[1]
+    for actual in (
+        normalized_midpoint,
+        default_normalized_midpoint,
+        counted_midpoint,
+        default_counted_midpoint,
+    ):
+        _assert_xy_within_budget(
+            (actual.x, actual.y),
+            expected_midpoint,
+            _SLOPED_XY_BUDGETS_NATIVE[1],
+        )
     _assert_station_within_budget(
         line.line_locate(midpoint),
         middle_distance,
@@ -948,11 +1116,33 @@ def test_geographic_chart_lrs_matches_independent_sloped_edge_values() -> None:
         strict=True,
     ):
         _assert_xy_within_budget(tuple(actual[:2]), expected, xy_budget)
+    normalized_substring = line.line_substring(
+        0.25, 0.75, normalized=True, unit='meters'
+    )
+    default_normalized_substring = line.line_substring(0.25, 0.75, normalized=True)
+    for route in (normalized_substring, default_normalized_substring):
+        for actual, expected, xy_budget in zip(
+            route.coords,
+            expected_coordinates,
+            (_SLOPED_XY_BUDGETS_NATIVE[0], _SLOPED_XY_BUDGETS_NATIVE[2]),
+            strict=True,
+        ):
+            _assert_xy_within_budget(tuple(actual[:2]), expected, xy_budget)
     assert substring.length == pytest.approx(
         end_distance - start_distance,
         rel=0.0,
         abs=_SLOPED_SUBSTRING_LENGTH_BUDGET_M,
     )
+    oracle_point = gm.Point(*expected_midpoint, crs=4326)
+    for normalized_station in (
+        line.line_locate(oracle_point, normalized=True),
+        line.line_locate(oracle_point, normalized=True, unit='meters'),
+    ):
+        _assert_station_within_budget(
+            normalized_station * expected_length,
+            middle_distance,
+            _SLOPED_STATION_BUDGETS_M[1],
+        )
 
 
 def test_geographic_chart_lrs_preserves_lifted_370_degree_meridian() -> None:

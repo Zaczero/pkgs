@@ -1,6 +1,8 @@
 """Grid cover functions return CellArray or Groups."""
 
 import pickle
+from collections.abc import Iterable
+from typing import Any
 
 import gometry as gm
 import numpy as np
@@ -9,9 +11,18 @@ import pytest
 COVER_CASES = [
     (gm.h3_cover, {'resolution': 2}, 'H3'),
     (gm.s2_cover, {'level': 3}, 'S2'),
+    (
+        gm.s2_cover,
+        {'min_level': 3, 'max_level': 3, 'target_cells': 8},
+        'S2',
+    ),
     (gm.geohash_cover, {'precision': 3}, 'geohash'),
     (gm.tile_cover, {'zoom': 3}, 'Tile'),
 ]
+
+
+def _cell_keys(cells: Iterable[Any]) -> list[Any]:
+    return [cell.token if hasattr(cell, 'token') else cell.id for cell in cells]
 
 
 def test_empty_source_cover_requires_non_empty_geometry() -> None:
@@ -24,7 +35,9 @@ def test_empty_source_cover_requires_non_empty_geometry() -> None:
 
 
 @pytest.mark.parametrize(
-    'cover, depth, label', COVER_CASES, ids=['h3', 's2', 'geohash', 'tile']
+    'cover, depth, label',
+    COVER_CASES,
+    ids=['h3', 's2-fixed', 's2-adaptive', 'geohash', 'tile'],
 )
 def test_scalar_empty_errors_and_array_empty_is_a_group(cover, depth, label) -> None:
     empty = gm.from_wkt('POLYGON EMPTY', crs=4326)
@@ -41,7 +54,7 @@ def test_scalar_empty_errors_and_array_empty_is_a_group(cover, depth, label) -> 
 @pytest.mark.parametrize(
     'cover, depth',
     [(cover, depth) for cover, depth, _label in COVER_CASES],
-    ids=['h3', 's2', 'geohash', 'tile'],
+    ids=['h3', 's2-fixed', 's2-adaptive', 'geohash', 'tile'],
 )
 def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth) -> None:
     first = gm.box(-2, -2, 2, 2, crs=4326)
@@ -55,7 +68,7 @@ def test_array_first_row_budget_beats_later_invalid_latitude(cover, depth) -> No
 @pytest.mark.parametrize(
     'cover, depth',
     [(cover, depth) for cover, depth, _label in COVER_CASES],
-    ids=['h3', 's2', 'geohash', 'tile'],
+    ids=['h3', 's2-fixed', 's2-adaptive', 'geohash', 'tile'],
 )
 def test_array_later_row_invalid_latitude_after_successful_row(cover, depth) -> None:
     first = gm.box(-1, -1, 1, 1, crs=4326)
@@ -77,6 +90,10 @@ def test_scalar_covers_return_cell_arrays() -> None:
     cases = [
         (gm.h3_cover(polygon, resolution=7), gm.H3Cell),
         (gm.s2_cover(polygon, level=10), gm.S2Cell),
+        (
+            gm.s2_cover(polygon, min_level=8, max_level=10, target_cells=64),
+            gm.S2Cell,
+        ),
         (gm.geohash_cover(polygon, precision=6), gm.GeohashCell),
         (gm.tile_cover(polygon, zoom=10), gm.Tile),
     ]
@@ -84,6 +101,35 @@ def test_scalar_covers_return_cell_arrays() -> None:
         assert isinstance(cells, gm.CellArray)
         assert len(cells) > 0
         assert all(isinstance(cell, cell_type) for cell in cells)
+
+
+def test_s2_cover_combines_fixed_and_adaptive_refinement() -> None:
+    area = gm.box(-122.5, 37.7, -122.3, 37.85, crs=4326)
+    fixed = gm.s2_cover(area, level=10)
+    adaptive = gm.s2_cover(area)
+    one_level = gm.s2_cover(
+        gm.Point(0.0, 0.0, crs=4326),
+        target_cells=1,
+        min_level=10,
+        max_level=10,
+    )
+    assert isinstance(fixed, gm.CellArray)
+    assert isinstance(adaptive, gm.CellArray)
+    assert {cell.level for cell in one_level if cell is not None} == {10}
+    assert fixed == gm.s2_cover(area, level=10, max_cells=1_000_000)
+    assert adaptive == gm.s2_cover(
+        area,
+        target_cells=8,
+        min_level=0,
+        max_level=30,
+        level_mod=1,
+    )
+
+    with pytest.raises(
+        gm.GeometryError,
+        match='fixed S2 level cannot be combined with adaptive cover controls',
+    ):
+        gm.s2_cover(area, level=10, min_level=8)
 
 
 def test_array_covers_return_groups() -> None:
@@ -97,6 +143,7 @@ def test_array_covers_return_groups() -> None:
     cases = [
         gm.h3_cover(polygons, resolution=7),
         gm.s2_cover(polygons, level=10),
+        gm.s2_cover(polygons, min_level=8, max_level=10, target_cells=64),
         gm.geohash_cover(polygons, precision=6),
         gm.tile_cover(polygons, zoom=10),
     ]
@@ -108,12 +155,46 @@ def test_array_covers_return_groups() -> None:
         assert len(groups[1]) == 0
 
 
+@pytest.mark.parametrize(
+    ('cover', 'options'),
+    [
+        pytest.param(gm.h3_cover, {'resolution': 7}, id='h3'),
+        pytest.param(gm.s2_cover, {'level': 10}, id='s2-fixed'),
+        pytest.param(
+            gm.s2_cover,
+            {'min_level': 8, 'max_level': 10, 'target_cells': 64},
+            id='s2-adaptive',
+        ),
+        pytest.param(gm.geohash_cover, {'precision': 6}, id='geohash'),
+        pytest.param(gm.tile_cover, {'zoom': 10}, id='tiles'),
+    ],
+)
+def test_cover_accepts_geometry_iterables_and_keeps_missing_groups(
+    cover, options
+) -> None:
+    first = gm.box(-122.5, 37.7, -122.3, 37.85, crs=4326)
+    second = gm.box(-73.99, 40.72, -73.97, 40.74, crs=4326)
+    empty = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    values = (geometry for geometry in (first, None, empty, second))
+    groups = cover(values, **options)
+    assert isinstance(groups, gm.Groups)
+    assert len(groups) == 4
+    assert list(groups[0]) == list(cover(first, **options))
+    assert len(groups[1]) == 0
+    assert len(groups[2]) == 0
+    assert list(groups[3]) == list(cover(second, **options))
+
+
 def test_interleaved_missing_cover_rows_keep_logical_alignment() -> None:
     first = gm.box(-3, -3, -2, -2, crs=4326)
     second = gm.box(2, 2, 3, 3, crs=4326)
     cases = [
         (gm.h3_cover, {'resolution': 2}),
         (gm.s2_cover, {'level': 3}),
+        (
+            gm.s2_cover,
+            {'min_level': 3, 'max_level': 3, 'target_cells': 8},
+        ),
         (gm.geohash_cover, {'precision': 3}),
         (gm.tile_cover, {'zoom': 3}),
     ]
@@ -163,26 +244,72 @@ def test_public_grid_order_budget_and_array_parity(cover, depth, bounds) -> None
 
 
 @pytest.mark.parametrize(
+    'cover, depth, cell_rule',
+    [
+        (gm.geohash_cover, {'precision': 1}, 'overlap'),
+        (gm.geohash_cover, {'precision': 1}, 'bbox'),
+        (gm.geohash_cover, {'precision': 1}, 'center'),
+        (gm.geohash_cover, {'precision': 1}, 'within'),
+        (gm.s2_cover, {'level': 1}, 'overlap'),
+        (gm.s2_cover, {'level': 1}, 'bbox'),
+        (gm.s2_cover, {'level': 1}, 'center'),
+        (gm.s2_cover, {'level': 1}, 'within'),
+    ],
+    ids=[
+        'geohash-overlap',
+        'geohash-bbox',
+        'geohash-center',
+        'geohash-within',
+        's2-overlap',
+        's2-bbox',
+        's2-center',
+        's2-within',
+    ],
+)
+def test_rectangular_covers_use_xy_membership_for_mixed_ordinate_sources(
+    cover, depth, cell_rule
+) -> None:
+    xyz = gm.box(-80, -60, 80, 60, crs=4326).with_coordinates(z=1.0)
+    xy = gm.box(-40, -30, 60, 50, crs=4326)
+    source = gm.GeometryCollection([xyz, xy], crs=4326)
+    original_wkb = source.to_wkb()
+    original_axes = source.coordinate_axes
+    xy_reference = source.force_2d()
+
+    mixed_cells = cover(source, cell_rule=cell_rule, max_cells=None, **depth)
+    reference_cells = cover(xy_reference, cell_rule=cell_rule, max_cells=None, **depth)
+
+    assert _cell_keys(mixed_cells) == _cell_keys(reference_cells)
+    assert _cell_keys(mixed_cells)
+    assert source.coordinate_axes == original_axes == 'XYZ'
+    assert source.to_wkb() == original_wkb
+
+
+@pytest.mark.parametrize(
     'cover, depth',
     [
-        (gm.geohash_cover, {'precision': 1}),
-        (gm.s2_cover, {'level': 1}),
+        (gm.h3_cover, {'resolution': 1}),
+        (gm.tile_cover, {'zoom': 1}),
     ],
-    ids=['geohash', 's2'],
+    ids=['h3', 'tile'],
 )
-def test_cover_propagates_dissolved_area_error(cover, depth) -> None:
-    xyz = gm.Polygon(
-        [(0, 0, 1), (2, 0, 1), (2, 2, 1), (0, 2, 1), (0, 0, 1)],
-        crs=4326,
-    )
+def test_h3_and_tile_covers_use_xy_membership_for_mixed_ordinate_sources(
+    cover, depth
+) -> None:
+    xyz = gm.box(0, 0, 2, 2, crs=4326).with_coordinates(z=1.0)
     xy = gm.box(1, 1, 3, 3, crs=4326)
     source = gm.GeometryCollection([xyz, xy], crs=4326)
+    original_wkb = source.to_wkb()
+    original_axes = source.coordinate_axes
+    xy_reference = source.force_2d()
 
-    with pytest.raises(gm.InvalidGeometryError) as raised:
-        cover(source, **depth)
+    mixed_cells = cover(source, cell_rule='overlap', max_cells=None, **depth)
+    reference_cells = cover(xy_reference, cell_rule='overlap', max_cells=None, **depth)
 
-    assert type(raised.value) is gm.InvalidGeometryError
-    assert type(raised.value).__name__ != 'PanicException'
+    assert _cell_keys(mixed_cells) == _cell_keys(reference_cells)
+    assert _cell_keys(mixed_cells)
+    assert source.coordinate_axes == original_axes == 'XYZ'
+    assert source.to_wkb() == original_wkb
 
 
 @pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
@@ -298,9 +425,20 @@ def _tile_tokens(cells) -> set[str]:
     return {cell.token for cell in cells}
 
 
+def _tile_rectangle(tile: gm.Tile, *, crs: int | None) -> gm.Polygon:
+    polygon = tile.polygon
+    if crs == 4326:
+        return polygon
+
+    _, miny, _, maxy = polygon.bounds
+    cells = 2**tile.zoom
+    minx = tile.x / cells * 360.0 - 180.0
+    maxx = (tile.x + 1) / cells * 360.0 - 180.0
+    return gm.box(minx, miny, maxx, maxy)
+
+
 def _tile_rectangles(tiles, *, crs: int | None):
-    kwargs = {} if crs is None else {'crs': crs}
-    return [gm.box(*tile.polygon.bounds, **kwargs) for tile in tiles]
+    return [_tile_rectangle(tile, crs=crs) for tile in tiles]
 
 
 @pytest.mark.parametrize('crs', [None, 4326], ids=['crs-free', 'epsg4326'])
@@ -383,8 +521,7 @@ def test_tile_cover_pole_line_reaches_top_row(crs: int | None) -> None:
     assert _tile_tokens(overlap) == {'0103', '0110', '0112'}
     assert not within
     assert all(
-        gm.intersects(source, gm.box(*tile.polygon.bounds, **kwargs))
-        for tile in overlap
+        gm.intersects(source, _tile_rectangle(tile, crs=crs)) for tile in overlap
     )
 
 
@@ -404,8 +541,7 @@ def test_tile_cover_seam_polar_cap_keeps_both_antimeridian_sides(
     assert _tile_tokens(bbox) == _tile_tokens(overlap)
     assert not within
     assert all(
-        gm.intersects(source, gm.box(*tile.polygon.bounds, **kwargs))
-        for tile in overlap
+        gm.intersects(source, _tile_rectangle(tile, crs=crs)) for tile in overlap
     )
 
 
@@ -421,9 +557,7 @@ def test_tile_cover_pole_touching_hole_removes_middle_within_tiles(
     )
     within = gm.tile_cover(source, zoom=4, cell_rule='within', max_cells=None)
     assert _tile_tokens(within) == {'0110', '1001'}
-    assert all(
-        gm.covers(source, gm.box(*tile.polygon.bounds, **kwargs)) for tile in within
-    )
+    assert all(gm.covers(source, _tile_rectangle(tile, crs=crs)) for tile in within)
 
 
 @pytest.mark.parametrize(
@@ -649,6 +783,24 @@ def test_grouped_cover_budget_is_cumulative(factory):
     assert sum(len(group) for group in result) == total
     with pytest.raises(gm.GeometryError, match='max_cells'):
         factory(grouped, max_cells=total - 1)
+
+
+def test_s2_adaptive_array_cap_is_cumulative_for_point_rows() -> None:
+    points = gm.GeometryArray([
+        gm.Point(0.25, 0.25, crs=4326),
+        gm.Point(120.25, 0.25, crs=4326),
+        gm.Point(-120.25, -0.25, crs=4326),
+    ])
+    options = {
+        'min_level': 0,
+        'max_level': 4,
+        'target_cells': 8,
+    }
+
+    groups = gm.s2_cover(points, max_cells=3, **options)
+    assert [len(group) for group in groups] == [1, 1, 1]
+    with pytest.raises(gm.GeometryError, match='max_cells'):
+        gm.s2_cover(points, max_cells=2, **options)
 
 
 def test_s2_target_cells_quality_target_and_max_cells_ceiling():

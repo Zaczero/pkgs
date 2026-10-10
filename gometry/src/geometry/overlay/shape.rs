@@ -1,10 +1,13 @@
+use super::exact_partition::ResolvedNodePoints;
 use crate::error::Result;
+use crate::geometry::ordinates::SourceArcContext;
 use crate::geometry::overlay::{
-    ExactLineEmission, ExactSourceInventory, OverlayOp, Strictness, merge_chains, overlay_all,
+    ExactLineEmission, ExactSourceInventory, NodeId, OverlayOp, Strictness, merge_chains,
+    overlay_all,
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, Lineal,
-    PointKey, Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
+    Point, PointKey, Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
 };
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
@@ -93,6 +96,7 @@ impl Shape {
     /// overlay route; Cartesian inputs use the exact partition except for
     /// binary puntal and line/polygon combinations, which can be resolved
     /// directly.
+    #[cfg(test)]
     pub(crate) fn intersection_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
         domain: TopologyDomain,
@@ -110,6 +114,7 @@ impl Shape {
     /// Frame-aware n-ary symmetric difference. Geographic inputs use their
     /// frame-aware overlay route; binary Cartesian puntal combinations can be
     /// resolved directly.
+    #[cfg(test)]
     pub(crate) fn symmetric_difference_all_topo<S: std::borrow::Borrow<Self>>(
         geometries: &[S],
         domain: TopologyDomain,
@@ -133,14 +138,28 @@ impl Shape {
     /// (crossings and shared points) and return the noded edges as a
     /// `MultiLineString` (GEOS/PostGIS `ST_Node`). Polygon boundaries are
     /// included; point-only input yields `MULTILINESTRING EMPTY`. Z/M is
-    pub(crate) fn node(&self, strictness: Strictness) -> Result<Self> {
+    pub(crate) fn node_with_context<M: crate::geometry::ChartMetric>(
+        &self,
+        strictness: Strictness,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Self> {
         let inventory = ExactSourceInventory::from_shapes(&[self])?;
         let mut budget = crate::geometry::ExpansionBudget::new("node", "exact partition");
-        let partition = inventory.partition(&mut budget)?;
-        inventory.node_shape(&partition, self.axes(), strictness.is_strict())
+        let mut partition = inventory.partition(&mut budget)?;
+        if let TopologyDomain::Geographic(frame) = context.domain() {
+            partition.set_geographic_frame(frame);
+        }
+        inventory.node_shape(&partition, self.axes(), strictness.is_strict(), context)
     }
 
     pub fn line_merge(&self) -> Result<Self> {
+        self.line_merge_with_context(&crate::geometry::ordinates::SourceArcContext::cartesian())
+    }
+
+    pub(crate) fn line_merge_with_context(
+        &self,
+        context: &SourceArcContext<'_, '_>,
+    ) -> Result<Self> {
         let merged = match self.lineal().ok_or(GeometryErrorKind::LinealRequired)? {
             Lineal::LineString(_) | Lineal::Empty => self.clone(),
             Lineal::MultiLineString(lines) => {
@@ -161,10 +180,21 @@ impl Shape {
                 }
             },
         };
-        carry_ordinates(merged, &[self], "line_merge", false)
+        carry_ordinates(merged, &[self], "line_merge", false, context)
     }
 
     pub fn shared_paths(&self, other: &Self) -> Result<Self> {
+        self.shared_paths_with_context(
+            other,
+            &crate::geometry::ordinates::SourceArcContext::cartesian(),
+        )
+    }
+
+    pub(crate) fn shared_paths_with_context(
+        &self,
+        other: &Self,
+        context: &SourceArcContext<'_, '_>,
+    ) -> Result<Self> {
         self.linework()
             .map_err(|_| GeometryErrorKind::LinealRequired)?;
         other
@@ -172,29 +202,57 @@ impl Shape {
             .map_err(|_| GeometryErrorKind::LinealRequired)?;
         let inventory = ExactSourceInventory::from_shapes(&[self, other])?;
         let mut budget = crate::geometry::ExpansionBudget::new("shared_paths", "exact partition");
-        let partition = inventory.partition(&mut budget)?;
+        let mut partition = inventory.partition(&mut budget)?;
+        if let TopologyDomain::Geographic(frame) = context.domain() {
+            partition.set_geographic_frame(frame);
+        }
         let emission = inventory.line_emission(&partition, "shared_paths")?;
-        let (same, opposite) = shared_paths_from_exact(&emission)?;
-        let mut same_lines = Vec::with_capacity(same.len());
-        for line in same {
-            same_lines.push(LineSeq::from_proven(line));
-        }
-        let mut opposite_lines = Vec::with_capacity(opposite.len());
-        for line in opposite {
-            opposite_lines.push(LineSeq::from_proven(line));
-        }
+        let declared_axes = self.axes().union(other.axes());
+        let (same_segments, same_directions, opposite_segments, opposite_directions) =
+            shared_path_segments_from_exact(&emission)?;
+        let resolved = inventory.resolve_line_emission_points(
+            &partition,
+            &emission,
+            same_segments
+                .iter()
+                .chain(&opposite_segments)
+                .flat_map(|edge| edge.nodes),
+            declared_axes,
+            context,
+            None,
+        )?;
+        let (same_axes, same) =
+            merge_shared_path_segments(&same_segments, &resolved, declared_axes, &same_directions)?;
+        let (opposite_axes, opposite) = merge_shared_path_segments(
+            &opposite_segments,
+            &resolved,
+            declared_axes,
+            &opposite_directions,
+        )?;
         let result_parts = vec![
-            Self::multi_line_string(CoordinateAxes::XY, same_lines),
-            Self::multi_line_string(CoordinateAxes::XY, opposite_lines),
+            Self::multi_line_string(
+                same_axes,
+                same.into_iter().map(LineSeq::from_proven).collect(),
+            ),
+            Self::multi_line_string(
+                opposite_axes,
+                opposite.into_iter().map(LineSeq::from_proven).collect(),
+            ),
         ];
-        let result = Self::geometry_collection(result_parts)?;
-        carry_ordinates(result, &[self, other], "shared_paths", false)
+        Self::geometry_collection(result_parts)
     }
 }
 
-fn shared_paths_from_exact(
+type SharedPathExtraction = (
+    Vec<SharedPathSegment>,
+    HashMap<(PointKey, PointKey), Segment>,
+    Vec<SharedPathSegment>,
+    HashMap<(PointKey, PointKey), Segment>,
+);
+
+fn shared_path_segments_from_exact(
     emission: &ExactLineEmission<'_>,
-) -> Result<(Vec<CoordSeq>, Vec<CoordSeq>)> {
+) -> Result<SharedPathExtraction> {
     let mut same = Vec::new();
     let mut opposite = Vec::new();
     let mut same_path_direction =
@@ -213,7 +271,7 @@ fn shared_paths_from_exact(
         set.reserve(emission.len());
     }
 
-    for (index, segment) in emission.segments().enumerate() {
+    for (index, (nodes, segment)) in emission.segments_with_nodes().enumerate() {
         let mut left_direction = None;
         let mut left_mask = 0_u8;
         let mut right_mask = 0_u8;
@@ -240,40 +298,86 @@ fn shared_paths_from_exact(
             continue;
         }
         let key = undirected_segment_edge_key(segment);
-        let segment = if left_direction {
-            segment
+        let (nodes, segment) = if left_direction {
+            (nodes, segment)
         } else {
-            Segment {
+            ([nodes[1], nodes[0]], Segment {
                 start: segment.end,
                 end: segment.start,
-            }
+            })
         };
-        let line = CoordSeq::try_from_points(&[segment.start.point(), segment.end.point()])?;
+        let edge = SharedPathSegment { nodes, segment };
         if has_opposite_direction {
             opposite_keys.insert(key);
             opposite_path_direction.insert(key, segment);
-            opposite.push(line);
+            opposite.push(edge);
         } else {
             same_keys.insert(key);
             same_path_direction.insert(key, segment);
-            same.push(line);
+            same.push(edge);
         }
     }
-
-    same.retain(|line| {
-        let start = line.first().expect("shared path atom has a start");
-        let end = line.point_at(1);
-        !opposite_keys.contains(&undirected_segment_edge_key(Segment {
-            start: start.xy(),
-            end: end.xy(),
-        }))
-    });
+    same.retain(|edge| !opposite_keys.contains(&undirected_segment_edge_key(edge.segment)));
     same_keys.retain(|key| !opposite_keys.contains(key));
     same_path_direction.retain(|key, _| same_keys.contains(key));
 
+    Ok((same, same_path_direction, opposite, opposite_path_direction))
+}
+
+#[derive(Clone, Copy)]
+struct SharedPathSegment {
+    nodes: [NodeId; 2],
+    segment: Segment,
+}
+
+fn merge_shared_path_segments(
+    segments: &[SharedPathSegment],
+    resolved: &ResolvedNodePoints<'_, '_>,
+    declared_axes: CoordinateAxes,
+    directions: &HashMap<(PointKey, PointKey), Segment>,
+) -> Result<(CoordinateAxes, Vec<CoordSeq>)> {
+    if segments.is_empty() {
+        return Ok((declared_axes, Vec::new()));
+    }
+    let mut has_z = declared_axes.has_z();
+    let mut has_m = declared_axes.has_m();
+    for edge in segments {
+        for node in edge.nodes {
+            let (z, m) = resolved
+                .ordinates(node)
+                .expect("shared path node has resolved source ordinates");
+            has_z &= z.0.is_some();
+            has_m &= m.0.is_some();
+        }
+    }
+    let axes = CoordinateAxes::new(crate::geometry::HasZ(has_z), crate::geometry::HasM(has_m));
+    let mut lines = Vec::with_capacity(segments.len());
+    for edge in segments {
+        let point = |node: NodeId, xy: crate::geometry::XY| {
+            let point = resolved.point(node, xy);
+            Point::new_raw_axes(
+                point.x,
+                point.y,
+                crate::geometry::ZOrdinate(axes.has_z().then(|| {
+                    point
+                        .z()
+                        .expect("shared path Z is present in every selected node")
+                })),
+                crate::geometry::MOrdinate(axes.has_m().then(|| {
+                    point
+                        .m()
+                        .expect("shared path M is present in every selected node")
+                })),
+            )
+        };
+        lines.push(CoordSeq::try_from_points(&[
+            point(edge.nodes[0], edge.segment.start),
+            point(edge.nodes[1], edge.segment.end),
+        ])?);
+    }
     Ok((
-        orient_shared_paths(merge_chains(&same)?, &same_path_direction)?,
-        orient_shared_paths(merge_chains(&opposite)?, &opposite_path_direction)?,
+        axes,
+        orient_shared_paths(merge_chains(&lines)?, directions)?,
     ))
 }
 

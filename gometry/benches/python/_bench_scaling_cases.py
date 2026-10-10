@@ -328,7 +328,7 @@ def _batch_boundary_case(operation: ScalingOperation) -> PublicCase:
     sh_poly = data['sh_poly']
 
     def gometry_call() -> object:
-        return gm.contains_xy(polygon, xs, ys)
+        return gm.contains(polygon, x=xs, y=ys)
 
     def competitor_call() -> object:
         return shapely.contains_xy(sh_poly, xs, ys)

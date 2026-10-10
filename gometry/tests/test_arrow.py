@@ -15,7 +15,6 @@ import sys
 from typing import Any, cast
 
 import gometry as gm
-import pyarrow as pa
 import pytest
 from gometry._lib import CRS as _CRS
 
@@ -28,8 +27,10 @@ from tests._support import (
     with_validity,
 )
 
+pa = pytest.importorskip('pyarrow', reason='pyarrow is an optional Arrow dependency')
+
 _WGS84_PROJJSON_METADATA = _json.dumps(
-    {'crs': _CRS(4326).to_projjson_dict(), 'crs_type': 'projjson'},
+    {'crs': _CRS(4326).to_projjson(as_dict=True), 'crs_type': 'projjson'},
     separators=(',', ':'),
 ).encode()
 
@@ -74,6 +75,25 @@ _ARROW_LAYOUT_WKTS: dict[str, tuple[str, str, str]] = {
         'POLYGON ((3 3, 4 3, 4 4, 3 4, 3 3))',
     ),
 }
+
+
+def test_format_readers_normalize_arrow_scalars_and_nulls() -> None:
+    point = gm.Point(1, 2, crs=4326)
+    wkts = pa.array(['POINT (1 2)', None])
+    wkbs = pa.chunked_array([
+        pa.array([point.to_wkb()]),
+        pa.array([None], type=pa.binary()),
+    ])
+    geojson = pa.array([_json.dumps({'type': 'Point', 'coordinates': [1, 2]}), None])
+    polylines = pa.chunked_array([
+        pa.array([point.to_polyline()]),
+        pa.array([None], type=pa.string()),
+    ])
+
+    assert gm.from_wkt(wkts).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(wkbs).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_geojson(geojson).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_polyline(polylines).to_wkt() == ['POINT (1 2)', None]
 
 
 @pytest.mark.parametrize('layout', list(_ARROW_LAYOUT_WKTS))
@@ -129,7 +149,7 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
     assert (line).to_wkt() == 'LINESTRING ZM (0 0 10 20, 1 1 11 21)'
     assert gm.from_wkt((line).to_wkt()).coords.to_nested() == line.coords.to_nested()
     assert line.topological_dimension == 1
-    assert (line).set_crs(None).length == pytest.approx(2**0.5)
+    assert (line).with_crs(None).length == pytest.approx(2**0.5)
     assert list(line.coords.select('XYZM')) == [
         (0.0, 0.0, 10.0, 20.0),
         (1.0, 1.0, 11.0, 21.0),
@@ -139,15 +159,17 @@ def test_z_m_point_arrays_and_lines_preserve_axes_through_arrow() -> None:
         (1.0, 1.0, 11.0, 21.0),
     ]
     assert [
-        point.coords.to_nested() for point in ((values).set_z(None)).set_m(None)
+        point.coords.to_nested() for point in values.with_coordinates(z=None, m=None)
     ] == [[0.0, 2.0], [1.0, 3.0]]
-    assert ((line).set_z(None)).set_m(None).coords.to_nested() == [
+    assert line.with_coordinates(z=None, m=None).coords.to_nested() == [
         (0.0, 0.0),
         (1.0, 1.0),
     ]
-    assert gm.require(values, crs=4326, axes='XYZM').crs == 'EPSG:4326'
+    assert gm.require(values, crs=4326, axes='XYZM').crs == gm.CRS('EPSG:4326')
     assert (
-        gm.require(values.set_z(None).set_m(None), axes='XY').common_coordinate_axes
+        gm.require(
+            values.with_coordinates(z=None, m=None), axes='XY'
+        ).common_coordinate_axes
         == 'XY'
     )
     values_arrow = values.to_arrow()
@@ -529,7 +551,7 @@ def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
 def test_nullable_arrow_c_import_keeps_compact_native_payload(
     rows: list[object], extension_name: str, present_payload_count: int
 ) -> None:
-    values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
+    values = gm.GeometryArray(rows, crs=4326).with_epoch(2020.0)
     source = values.to_arrow()
 
     class CapsuleOnly:
@@ -827,7 +849,7 @@ def test_arrow_capsule_roundtrip_via_pyarrow_array_protocol() -> None:
             arrow.type.__arrow_ext_serialize__()
             == _json.dumps(
                 {
-                    'crs': _CRS(4326).to_projjson_dict(),
+                    'crs': _CRS(4326).to_projjson(as_dict=True),
                     'crs_type': 'projjson',
                     'epoch': 2020.0,
                 },
@@ -869,16 +891,13 @@ def test_arrow_capsules_can_be_consumed_without_pyarrow_materialization() -> Non
         lambda: pa.array(values, type=pa.binary()),
         lambda: values[0].__arrow_c_array__(pa.binary()),
     ):
-        with pytest.raises(TypeError, match='requested_schema is not supported'):
+        with pytest.raises(TypeError, match='requested_schema does not match'):
             export()
     assert pa.array(values).type.extension_name == 'geoarrow.point'
 
 
 def test_arrow_c_array_import_does_not_import_pyarrow() -> None:
-    code = "\nimport importlib.abc\nimport sys\n\nimport gometry as gm\n\nclass _CapsuleArrayOnly:\n    def __init__(self, schema, array):\n        self._schema = schema\n        self._array = array\n\n    def __arrow_c_array__(self, requested_schema=None):\n        return (self._schema, self._array)\n\nclass BlockPyArrow(importlib.abc.MetaPathFinder):\n    def find_spec(self, fullname, path=None, target=None):\n        if fullname == 'pyarrow' or fullname.startswith('pyarrow.'):\n            raise AssertionError('pyarrow import attempted')\n        return None\n\nsys.meta_path.insert(0, BlockPyArrow())\nvalues = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)\nschema, array = values.__arrow_c_array__()\nrestored = gm.from_arrow(_CapsuleArrayOnly(schema, array))\nassert 'pyarrow' not in sys.modules\nassert restored.crs == 'EPSG:4326'\nassert restored.epoch == 2020.0\nassert [str(value) for value in restored] == ['POINT (0 2)', 'POINT (1 3)']\n"
-    code = code.replace(
-        "assert restored.crs == 'EPSG:4326'", 'assert restored.crs.to_epsg() == 4326'
-    )
+    code = "\nimport importlib.abc\nimport sys\n\nimport gometry as gm\n\nclass _CapsuleArrayOnly:\n    def __init__(self, schema, array):\n        self._schema = schema\n        self._array = array\n\n    def __arrow_c_array__(self, requested_schema=None):\n        return (self._schema, self._array)\n\nclass BlockPyArrow(importlib.abc.MetaPathFinder):\n    def find_spec(self, fullname, path=None, target=None):\n        if fullname == 'pyarrow' or fullname.startswith('pyarrow.'):\n            raise AssertionError('pyarrow import attempted')\n        return None\n\nsys.meta_path.insert(0, BlockPyArrow())\nvalues = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0)\nschema, array = values.__arrow_c_array__()\nrestored = gm.from_arrow(_CapsuleArrayOnly(schema, array))\nassert 'pyarrow' not in sys.modules\nassert restored.crs.to_epsg() == 4326\nassert restored.epoch == 2020.0\nassert [str(value) for value in restored] == ['POINT (0 2)', 'POINT (1 3)']\n"
     subprocess.run([sys.executable, '-c', code], check=True)
 
 
@@ -980,6 +999,66 @@ class _CapsuleStreamOnly:
 
     def __arrow_c_stream__(self, requested_schema: Any | None = None) -> Any:
         return self._values.__arrow_c_stream__(requested_schema)
+
+
+class _ArrayCapsulesOnly:
+    def __init__(self, capsules: tuple[Any, Any]) -> None:
+        self._capsules = capsules
+
+    def __arrow_c_array__(self, requested_schema: Any | None = None) -> tuple[Any, Any]:
+        return self._capsules
+
+
+class _StreamCapsuleOnly:
+    def __init__(self, capsule: Any) -> None:
+        self._capsule = capsule
+
+    def __arrow_c_stream__(self, requested_schema: Any | None = None) -> Any:
+        return self._capsule
+
+
+@pytest.mark.parametrize(
+    'values',
+    [
+        gm.Point(0.0, 2.0, crs=4326, epoch=2020.0),
+        gm.points([0.0, 1.0], [2.0, 3.0], crs=4326, epoch=2020.0),
+    ],
+    ids=['geometry', 'geometry-array'],
+)
+def test_identical_requested_arrow_schema_is_accepted_for_array_and_stream(
+    values: gm.Geometry | gm.GeometryArray,
+) -> None:
+    expected = gm.GeometryArray([values]) if isinstance(values, gm.Geometry) else values
+    schema, _ = values.__arrow_c_array__()
+
+    array_capsules = values.__arrow_c_array__(schema)
+    restored_array = cast(
+        'gm.GeometryArray', gm.from_arrow(_ArrayCapsulesOnly(array_capsules))
+    )
+    assert restored_array.to_wkt(drop_epoch=True) == expected.to_wkt(drop_epoch=True)
+    assert restored_array.crs is not None and expected.crs is not None
+    assert restored_array.crs.same_as(expected.crs, mode='exact')
+    assert restored_array.epoch == expected.epoch
+
+    stream = values.__arrow_c_stream__(schema)
+    restored_stream = cast(
+        'gm.GeometryArray', gm.from_arrow(_StreamCapsuleOnly(stream))
+    )
+    assert restored_stream.to_wkt(drop_epoch=True) == expected.to_wkt(drop_epoch=True)
+    assert restored_stream.crs is not None and expected.crs is not None
+    assert restored_stream.crs.same_as(expected.crs, mode='exact')
+    assert restored_stream.epoch == expected.epoch
+
+    typed = pa.array(values, type=values.to_arrow().type)
+    arrow = values.to_arrow()
+    assert typed.type == arrow.type.storage_type
+    assert typed.to_pylist() == arrow.storage.to_pylist()
+
+    different_schema, _ = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 1)], crs=4326)
+    ]).__arrow_c_array__()
+    with pytest.raises(TypeError, match='requested_schema does not match'):
+        values.__arrow_c_array__(different_schema)
 
 
 class _ArrowCStreamOnly:

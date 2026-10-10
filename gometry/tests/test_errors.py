@@ -10,6 +10,7 @@ pattern). The ``match=`` patterns double as message-grammar goldens.
 from __future__ import annotations
 
 import base64
+import inspect
 import math
 import pickle
 import struct
@@ -46,6 +47,37 @@ def test_hierarchy_bases_identity_and_module() -> None:
     assert not issubclass(errors.AccuracyWarning, errors.GeometryError)
 
 
+def test_opaque_allowlist_exceptions_keep_their_inherited_constructor_family() -> None:
+    from stubconfig import UNINSPECTABLE_ALLOWLIST
+
+    def inherits_constructor(cls: type) -> bool:
+        base = cls.__base__
+        return (
+            '__init__' not in cls.__dict__
+            and '__new__' not in cls.__dict__
+            and cls.__init__ is base.__init__
+            and cls.__new__ is base.__new__
+        )
+
+    assert UNINSPECTABLE_ALLOWLIST.keys() == {*HIERARCHY, 'AccuracyWarning'}
+    for name, reason in UNINSPECTABLE_ALLOWLIST.items():
+        assert reason.strip(), name
+        assert inherits_constructor(getattr(gm, name)), name
+
+    class OpaqueSignature(type):
+        @property
+        def __signature__(cls):
+            raise ValueError('constructor signature is opaque')
+
+    class CustomOpaqueError(ValueError, metaclass=OpaqueSignature):
+        def __init__(self, message: str) -> None:
+            self.message = message
+
+    with pytest.raises(ValueError, match='constructor signature is opaque'):
+        inspect.signature(CustomOpaqueError)
+    assert not inherits_constructor(CustomOpaqueError)
+
+
 @pytest.mark.parametrize(
     ('payload', 'position'),
     [
@@ -64,6 +96,9 @@ def test_parse_position_tracks_wkb_cursor(payload: bytes, position: int) -> None
 
 
 def test_structured_error_defaults_and_parse_position() -> None:
+    assert errors.GeometryError('x').code is None
+    assert errors.InvalidGeometryError('x').code is None
+    assert errors.GeometryTypeError('x').code is None
     assert errors.ParseError('x').position is None
     assert errors.GeometryTypeError('x').expected is None
     assert errors.TransformError('x').source is None
@@ -148,7 +183,7 @@ def test_crs_error_on_invalid_crs() -> None:
     with pytest.raises(errors.CRSError, match='cannot create CRS'):
         gm.CRS('not-a-crs')
     with pytest.raises(errors.CRSError, match='re-tag'):
-        gm.Point(0, 0, crs=4326).set_crs(3857)
+        gm.Point(0, 0, crs=4326).with_crs(3857)
 
 
 def test_crs_mismatch_error_on_index_frame_guard() -> None:
@@ -200,7 +235,7 @@ def test_crs_mismatch_error_on_frame_conflicts() -> None:
 def test_epoch_without_crs_is_a_crs_error_not_a_mismatch() -> None:
     with pytest.raises(
         errors.CRSError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ) as raised:
         gm.Point(0, 0, epoch=2020.0)
     assert not isinstance(raised.value, errors.CRSMismatchError)
@@ -312,7 +347,7 @@ def test_export_srid_without_epsg_is_crs_error() -> None:
     # CRS84 is a PostGIS wire alias (encodes as SRID 4326); a truly non-EPSG
     # non-alias CRS still raises CRSError.
     ewkb = gm.Point(0, 0, crs='OGC:CRS84').to_wkb(include_srid=True)
-    assert gm.from_wkb(ewkb).crs == 'EPSG:4326'
+    assert gm.from_wkb(ewkb).crs == gm.CRS('EPSG:4326')
     with pytest.raises(
         errors.CRSError, match='EWKB SRID requires an EPSG-authority CRS'
     ):
@@ -509,7 +544,7 @@ def test_ewkt_prefix_recognition_is_shared_between_classifier_and_parser() -> No
         'srid=4326;POINT (1 2)',
         '  SrId=4326;POINT (1 2)',
     ):
-        assert gm.require(text).crs == 'EPSG:4326', text
+        assert gm.require(text).crs == gm.CRS('EPSG:4326'), text
 
     # a malformed SRID must reach the WKT parser's diagnostic, not GeoJSON
     with pytest.raises(gm.ParseError):

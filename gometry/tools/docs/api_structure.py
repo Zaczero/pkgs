@@ -86,7 +86,6 @@ PAGES: tuple[Page, ...] = (
             section(
                 'contains',
                 'contains_properly',
-                'contains_xy',
                 'covered_by',
                 'covers',
                 'crosses',
@@ -96,7 +95,6 @@ PAGES: tuple[Page, ...] = (
                 'equals_exact',
                 'equals_identical',
                 'intersects',
-                'intersects_xy',
                 'overlaps',
                 'relate',
                 'relate_pattern',
@@ -148,8 +146,7 @@ PAGES: tuple[Page, ...] = (
         'Noding, splitting, snapping, polygonization, and validation boundaries.',
         (
             section(
-                'polygonize',
-                'polygonize_full',
+                'polygonize_all',
                 'require',
                 'shared_paths',
                 'snap',
@@ -168,7 +165,7 @@ PAGES: tuple[Page, ...] = (
                 'coverage_invalid_edges',
                 'coverage_is_valid',
                 'coverage_simplify',
-                'coverage_union',
+                'coverage_union_all',
             ),
         ),
         (('Validation & repair', '../../guide/validation.md'),),
@@ -176,13 +173,12 @@ PAGES: tuple[Page, ...] = (
     Page(
         'toplevel/geodesy-navigation',
         'Geodesy & navigation',
-        'Bearings, destinations, route interpolation, cross-track distance, and rhumb distance.',
+        'Bearings, destinations, route interpolation, and cross-track distance.',
         (
             section(
                 'bearing',
                 'cross_track_distance',
                 'point_between',
-                'rhumb_distance',
             ),
         ),
         (('CRS, units & measurement', '../../guide/crs.md'),),
@@ -201,12 +197,10 @@ PAGES: tuple[Page, ...] = (
         (
             section(
                 'from_arrow',
-                'from_features',
                 'from_geojson',
                 'from_polyline',
                 'from_wkb',
                 'from_wkt',
-                'get_coordinates',
                 'to_feature',
                 'to_feature_collection',
             ),
@@ -367,4 +361,8 @@ def resolved_symbols(page: Page, exports: set[str]) -> tuple[str, ...]:
 
 
 def generated_api_nav_paths() -> frozenset[str]:
-    return frozenset({'api/index.md', *(f'api/{page.path}.md' for page in PAGES)})
+    return frozenset({
+        'api/index.md',
+        'api/types.md',
+        *(f'api/{page.path}.md' for page in PAGES),
+    })

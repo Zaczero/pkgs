@@ -5,8 +5,8 @@ use crate::crs::CrsError;
 use crate::crs::frame::Frame;
 use crate::geographic::{GeographicFrame, ScalarGeographicView, SeamIdentity};
 use crate::geometry::{
-    Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, ShapeData, TopologyDomain,
-    canonical_f64_bits, shape_has_polar_ring_in_frame,
+    Coordinates, Point, REDUCE_LANES, ReduceSimd, Shape, TopologyDomain, canonical_f64_bits,
+    shape_has_polar_ring_in_frame,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -157,13 +157,32 @@ pub(crate) fn geographic_topology_route<'a>(
 /// Resolve the complete topology domain from CRS metadata. WGS84 uses the
 /// constant native frame; other geographic CRSs use their cached native frame.
 pub(crate) fn topology_domain(frame: &Frame) -> crate::error::Result<TopologyDomain> {
+    let state = frame
+        .crs_str()
+        .filter(|crs| !crate::crs::is_wgs84_lonlat(crs))
+        .map(|_| crate::crs::runtime_state_snapshot())
+        .transpose()?;
+    topology_domain_at(frame, state.as_deref())
+}
+
+pub(crate) fn topology_domain_at(
+    frame: &Frame,
+    state: Option<&crate::crs::RuntimeState>,
+) -> crate::error::Result<TopologyDomain> {
     Ok(match frame.crs_str() {
         Some(crs) if crate::crs::is_wgs84_lonlat(crs) => {
             TopologyDomain::Geographic(GeographicFrame::crs84())
         },
-        Some(crs) => crate::crs::info(crs)?
-            .geographic_frame()
-            .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic),
+        Some(crs) => {
+            let state = state.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "a non-WGS84 topology frame requires its CRS runtime snapshot",
+                )
+            })?;
+            crate::crs::info_with_state(crs, state)?
+                .geographic_frame()
+                .map_or(TopologyDomain::Cartesian, TopologyDomain::Geographic)
+        },
         None => TopologyDomain::Cartesian,
     })
 }
@@ -179,7 +198,7 @@ pub(crate) fn antimeridian_frame(
         TopologyDomain::Geographic(frame) => Ok(frame),
         TopologyDomain::Cartesian if frame.crs_ref().is_none() => Ok(GeographicFrame::crs84()),
         TopologyDomain::Cartesian => Err(CrsError::invalid(format!(
-            "{op} requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one"
+            "{op} requires a geographic CRS; use with_crs(...) or to_crs(...) to attach one"
         ))),
     }
 }
@@ -223,27 +242,15 @@ fn inspect_seam_segment(
     start: Point,
     end: Point,
     axis: crate::geographic::PeriodicAxis,
-    half: f64,
 ) -> Option<SeamSegment> {
-    let raw_delta = (end.x - start.x).abs();
-    let (start_longitude, end_longitude) = (
-        axis.canonicalize(start.x).ok()?,
-        axis.canonicalize(end.x).ok()?,
-    );
+    let connection = axis.chart_connection(start.x, end.x).ok()?;
+    let (start_longitude, end_longitude) = (connection.start, connection.end);
     let start_side = seam_side(start, start_longitude, axis);
     let end_side = seam_side(end, end_longitude, axis);
-    let step = axis.chart_step(start.x, end.x).ok()?;
-    let crosses = if step.is_circle() {
-        true
-    } else if start_side.is_some() || end_side.is_some() {
-        raw_delta > half && raw_delta < axis.period().next_up()
-    } else {
-        (end_longitude.get() - start_longitude.get()).abs() > half
-    };
     Some(SeamSegment {
         start_side,
         end_side,
-        crosses,
+        crosses: connection.crosses_antimeridian(axis, start.x, end.x),
     })
 }
 
@@ -267,13 +274,8 @@ pub(crate) fn chain_crosses_antimeridian<C: Coordinates + ?Sized>(
             return crosses;
         }
         for (&[x0, x1], &[y0, y1]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
-            if inspect_seam_segment(
-                Point::new_raw_xy(x0, y0),
-                Point::new_raw_xy(x1, y1),
-                axis,
-                half,
-            )
-            .is_some_and(|segment| segment.crosses)
+            if inspect_seam_segment(Point::new_raw_xy(x0, y0), Point::new_raw_xy(x1, y1), axis)
+                .is_some_and(|segment| segment.crosses)
             {
                 return true;
             }
@@ -281,7 +283,7 @@ pub(crate) fn chain_crosses_antimeridian<C: Coordinates + ?Sized>(
         return false;
     }
     chain.segment_pairs().any(|[start, end]| {
-        inspect_seam_segment(start, end, axis, half).is_some_and(|segment| segment.crosses)
+        inspect_seam_segment(start, end, axis).is_some_and(|segment| segment.crosses)
     })
 }
 
@@ -412,7 +414,7 @@ where
     let mut has_segment = false;
     for [start, end] in chain.segment_pairs() {
         has_segment = true;
-        let Some(segment) = inspect_seam_segment(start, end, axis, half) else {
+        let Some(segment) = inspect_seam_segment(start, end, axis) else {
             continue;
         };
         if segment.crosses {
@@ -465,15 +467,6 @@ fn canonical_chart_crossing(xs: &[f64], limit: f64) -> Option<bool> {
         crosses |= (right - left).abs() > limit_value;
     }
     Some(crosses)
-}
-
-/// Whether a planar topology op must split-normalize ``shape`` at ±180 before
-/// evaluating. Cartesian domains skip the coordinate scan entirely.
-pub(crate) fn geographic_crossing(domain: TopologyDomain, shape: &ShapeData) -> bool {
-    match domain {
-        TopologyDomain::Cartesian => false,
-        TopologyDomain::Geographic(frame) => crosses_antimeridian_in_frame(shape.shape(), frame),
-    }
 }
 
 #[cfg(test)]

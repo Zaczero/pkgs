@@ -39,9 +39,9 @@ macro_rules! grid_cell_common_pymethods {
                 $nbytes
             }
 
-            /// `sys.getsizeof` support: scalar cells are heap-free value ids.
-            const fn __sizeof__(&self) -> usize {
-                std::mem::size_of::<Self>()
+            /// `sys.getsizeof` support for this heap-free scalar cell.
+            fn __sizeof__(slf: &pyo3::Bound<'_, Self>) -> pyo3::PyResult<isize> {
+                $crate::py::sizeof::python_sizeof(slf.py(), slf.as_any(), 0)
             }
 
             fn __hash__(&self) -> u64 {
@@ -80,7 +80,10 @@ macro_rules! grid_cell_common_pymethods {
                 cell_boundary(self.cell)
             }
 
-            /// Geodesic area of the cell in square meters.
+            /// Area of the cell in square meters.
+            ///
+            /// H3 and S2 use an authalic-sphere model; geohash and tile use
+            /// the WGS 84 ellipsoidal area of their lon/lat rectangle.
             ///
             /// Returns
             /// -------
@@ -392,13 +395,25 @@ macro_rules! grid_free_functions {
         #[doc = concat!(
                             "Collect and normalize one or an iterable of ",
                             $label,
-                            " cells (sorted, deduplicated, sibling-merged) for the set algebra."
+                            " cells (sorted, deduplicated, sibling-merged) for the set algebra. ",
+                            "Missing values inside an iterable are skipped."
                         )]
         pub(super) fn $cell_set_arg(
             cells: &pyo3::Bound<'_, pyo3::PyAny>,
         ) -> pyo3::PyResult<crate::grid::cell_set::CanonicalCellSet<$cell_type>> {
+            use pyo3::types::PyAnyMethods as _;
+
+            if cells.is_none() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "a cell set must be a cell or iterable; pass an empty iterable for an empty set",
+                ));
+            }
             let items = crate::py::cells::cell_items(cells)?;
-            let ids = items.iter().map(|cell| $parse_cell(cell)).collect::<pyo3::PyResult<Vec<_>>>()?;
+            let ids = items
+                .iter()
+                .filter(|cell| !cell.is_none())
+                .map(|cell| $parse_cell(cell))
+                .collect::<pyo3::PyResult<Vec<_>>>()?;
             Ok(crate::grid::cell_set::CanonicalCellSet::new(ids))
         }
 

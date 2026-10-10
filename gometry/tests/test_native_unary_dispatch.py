@@ -35,6 +35,15 @@ def test_native_array_unary_paths_preserve_missing_rows_and_frame() -> None:
     assert np.isnan(array.bounds[1]).all()
 
 
+def test_free_measures_normalize_nullable_native_iterables() -> None:
+    geometries = [gm.box(0, 0, 2, 2), None, gm.LineString([(0, 0), (3, 4)])]
+
+    areas = gm.area(geometries, unit='planar')
+    lengths = gm.length(iter(geometries), unit='planar')
+    assert areas[0] == 4.0 and math.isnan(areas[1]) and areas[2] == 0.0
+    assert lengths[0] == 8.0 and math.isnan(lengths[1]) and lengths[2] == 5.0
+
+
 def test_native_antimeridian_errors_match_for_scalar_and_array() -> None:
     projected = gm.LineString([(0, 0), (1, 1)], crs=3857)
     with pytest.raises(gm.CRSError, match='geographic'):

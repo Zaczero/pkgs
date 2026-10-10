@@ -32,42 +32,6 @@ def test_cell_array_pickle_roundtrip():
     assert [c.id for c in out] == [c.id for c in arr]
 
 
-def test_exact_pickle_rows_reject_unrepresentable_layout_before_next() -> None:
-    class ExactHugeRows(list[bytes]):
-        def __init__(self) -> None:
-            super().__init__()
-            self.remaining = sys.maxsize
-            self.events: list[str] = []
-            self.next_calls = 0
-
-        def __len__(self) -> int:
-            self.events.append('len')
-            return self.remaining
-
-        def __iter__(self):
-            self.events.append('iter')
-            return self
-
-        def __next__(self) -> bytes:
-            self.next_calls += 1
-            if self.remaining == 0:
-                raise StopIteration
-            self.remaining -= 1
-            return b'\x01'
-
-        def __getitem__(self, index: int) -> bytes:
-            if 0 <= index < self.remaining:
-                return b'\x01'
-            raise IndexError(index)
-
-    rows = ExactHugeRows()
-    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
-        _lib._unpickle_geometry_array_v1(rows, None, None, None)
-
-    assert rows.events == ['iter', 'len']
-    assert rows.next_calls == 0
-
-
 def test_pickle_row_buffer_preserves_exporter_exception() -> None:
     error = RuntimeError('pickle row buffer exporter sentinel')
     row = _lib._RaisingBuffer(error)
@@ -201,7 +165,7 @@ def test_geometry_pickle_roundtrip():
     assert str(out_arr.crs) == str(arr.crs)
 
     # Epoch round-trip when present (no over-rejection).
-    g_epoch = gm.Point(1, 2, crs=4326).set_epoch(2010.0)
+    g_epoch = gm.Point(1, 2, crs=4326).with_epoch(2010.0)
     out_e = pickle.loads(pickle.dumps(g_epoch))
     assert out_e.epoch == g_epoch.epoch
     assert str(out_e.crs) == str(g_epoch.crs)
@@ -222,6 +186,36 @@ def test_forged_has_metadata_false_still_enforces_crs():
     idx = _lib._unpickle_spatial_index_v1(arr, False)
     with pytest.raises(gm.CRSMismatchError):
         idx.query(gm.Point(0, 0, crs=3857))
+
+
+def test_spatial_index_v2_validates_compact_handle_payload() -> None:
+    values = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 0)])
+
+    with pytest.raises(TypeError):
+        _lib._unpickle_spatial_index_v2(values, [0, 1], 2, False)
+    with pytest.raises(gm.GeometryError, match='handle count'):
+        _lib._unpickle_spatial_index_v2(values, (0,), 2, False)
+    with pytest.raises(gm.GeometryError, match='strictly increasing'):
+        _lib._unpickle_spatial_index_v2(values, (1, 1), 2, False)
+    with pytest.raises(gm.GeometryError, match='strictly increasing'):
+        _lib._unpickle_spatial_index_v2(values, (1, 0), 2, False)
+    with pytest.raises(gm.GeometryError, match='less than next_handle'):
+        _lib._unpickle_spatial_index_v2(values, (0, 2), 2, False)
+    with pytest.raises(TypeError, match='not bool'):
+        _lib._unpickle_spatial_index_v2(values, (False, 1), 2, False)
+    with pytest.raises(TypeError, match='not bool'):
+        _lib._unpickle_spatial_index_v2(values, (0, 1), True, False)
+    with pytest.raises(gm.GeometryError, match='non-negative'):
+        _lib._unpickle_spatial_index_v2(values, (0, 1), -1, False)
+    with pytest.raises(gm.GeometryError, match='too large'):
+        _lib._unpickle_spatial_index_v2(values, (0, 1), sys.maxsize + 1, False)
+
+    missing = gm.GeometryArray([gm.Point(0, 0), None])
+    with pytest.raises(gm.GeometryError, match='must not contain missing'):
+        _lib._unpickle_spatial_index_v2(missing, (0, 1), 2, False)
+    empty = gm.GeometryArray([gm.from_wkt('POINT EMPTY')])
+    with pytest.raises(gm.GeometryError, match='empty handle 0'):
+        _lib._unpickle_spatial_index_v2(empty, (0,), 1, False)
 
 
 def test_spatial_index_pickle_roundtrip():

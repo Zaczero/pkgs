@@ -10,8 +10,9 @@ use crate::crs::in_core::params::{
     FrameSpec, MethodSpec, OperationSpec, Projected, ProjectionFrame, Requirement,
     admit_projection, epsg, param_field, set_finite, set_positive_finite,
 };
-use crate::crs::in_core::{Pole, UtmZone, adjlon};
+use crate::crs::in_core::{UtmZone, adjlon};
 use crate::error::Result;
+use crate::geographic::GeodeticPole;
 use crate::geometry::GeometryErrorKind;
 
 /// `PROJ`'s transverse-Mercator domain bound on the normalized easting
@@ -75,8 +76,8 @@ pub(super) fn wgs84_utm_projected(zone: UtmZone) -> Projected<Tmerc> {
             lon_0_rad: zone.central_meridian * DEG_TO_RAD,
             x_0: 500_000.0,
             y_0: match zone.pole {
-                Pole::North => 0.0,
-                Pole::South => 10_000_000.0,
+                GeodeticPole::North => 0.0,
+                GeodeticPole::South => 10_000_000.0,
             },
             ..ProjectionFrame::ZERO
         },

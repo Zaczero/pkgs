@@ -63,10 +63,10 @@ pub(super) fn overlapping_rings_error(left: RingOwner, right: RingOwner) -> crat
                 "polygon hole overlaps itself"
             });
         }
-        return ring_pair_intersection_error(if left.is_shell() != right.is_shell() {
-            RingPairIntersection::ShellHole
-        } else {
+        return ring_pair_intersection_error(if left.is_shell() == right.is_shell() {
             RingPairIntersection::HoleHole
+        } else {
+            RingPairIntersection::ShellHole
         });
     }
     crate::geometry::GeometryErrorKind::triangulation(if left.is_shell() && right.is_shell() {

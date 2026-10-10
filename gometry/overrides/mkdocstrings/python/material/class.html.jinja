@@ -1,0 +1,27 @@
+{% extends "_base/class.html.jinja" %}
+
+{% block signature scoped %}
+  {% set constructor = class.extra.get("gometry", {}).get("constructor") %}
+  {% if constructor and constructor.state == "renderable" and config.separate_signature %}
+    {% set call_forms = class.extra["gometry"]["ordered_call_forms"] %}
+    {% set call_name = class.name %}
+    {% set show_call_forms = true %}
+    {% include "call_forms.html.jinja" with context %}
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock signature %}
+
+{% block docstring scoped %}
+  {% set constructor = class.extra.get("gometry", {}).get("constructor") %}
+  {% if constructor and constructor.state == "renderable" %}
+    {% with
+      obj=class,
+      docstring_sections=constructor.binding.extra["gometry"]["docstring_sections"]
+    %}
+      {% include "docstring.html.jinja" with context %}
+    {% endwith %}
+  {% else %}
+    {{ super() }}
+  {% endif %}
+{% endblock docstring %}

@@ -18,7 +18,10 @@ use crate::crs::{
     transform_in_core_xy_batch, transform_in_core_xy_batch_indexed, with_proj_operation_at,
 };
 use crate::error::Result;
-use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
+use crate::geographic::{
+    CircularInterval, GeodeticPole, GeographicError, GeographicFrame, Latitude, LongitudeWindows,
+};
+use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::{
     CoordRun, CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate,
     types,
@@ -28,19 +31,37 @@ pub(crate) type TransformedBounds = (f64, f64, f64, f64);
 /// One transformed 3D bounds row: (minx, miny, minz, maxx, maxy, maxz).
 pub(crate) type TransformedBounds3d = (f64, f64, f64, f64, f64, f64);
 
-/// Backend-neutral edge samples for one bounds row. Geographic source windows
-/// are split at their native seam in visualization axis order, so neither
-/// execution backend has to interpret periodic topology.
+#[derive(Clone, Copy)]
+pub(super) enum BoundsInterpretation {
+    Periodic,
+    Literal,
+}
+
+impl BoundsInterpretation {
+    pub(super) const fn from_force_over(force_over: bool) -> Self {
+        if force_over {
+            Self::Literal
+        } else {
+            Self::Periodic
+        }
+    }
+}
+
+/// Backend-neutral edge samples for one bounds row. Periodic geographic
+/// windows are split at their native seam in visualization axis order; literal
+/// bounds retain their numeric source segment.
 pub(super) struct BoundsSamplePlan {
     pub(super) x: Vec<f64>,
     pub(super) y: Vec<f64>,
     pub(super) z: Option<Vec<f64>>,
     pub(super) epoch: Option<[f64; 1]>,
     source_windows: Vec<[f64; 2]>,
+    interpretation: BoundsInterpretation,
     source_latitude_bounds: [f64; 2],
     source_domain: TopologyDomain,
     target_domain: TopologyDomain,
     source_full_longitude: bool,
+    /// Containment of geodetic north and south poles, in that order.
     target_poles: [bool; 2],
 }
 
@@ -48,11 +69,13 @@ impl BoundsSamplePlan {
     pub(super) fn new_2d(
         bounds: (f64, f64, f64, f64),
         densify: u32,
+        interpretation: BoundsInterpretation,
         source_domain: TopologyDomain,
         target_domain: TopologyDomain,
         epoch: Option<f64>,
     ) -> Result<Self> {
-        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.2, source_domain)?;
+        let (windows, source_full_longitude) =
+            source_windows(bounds.0, bounds.2, source_domain, interpretation)?;
         let source_latitude_bounds =
             admitted_source_latitude_bounds(source_domain, bounds.1, bounds.3)?;
         let edge_points = (densify as usize).wrapping_add(2);
@@ -72,6 +95,7 @@ impl BoundsSamplePlan {
             z: None,
             epoch: epoch.map(|value| [value]),
             source_windows: windows,
+            interpretation,
             source_latitude_bounds,
             source_domain,
             target_domain,
@@ -83,11 +107,13 @@ impl BoundsSamplePlan {
     pub(super) fn new_3d(
         bounds: TransformedBounds3d,
         densify: u32,
+        interpretation: BoundsInterpretation,
         source_domain: TopologyDomain,
         target_domain: TopologyDomain,
         epoch: Option<f64>,
     ) -> Result<Self> {
-        let (windows, source_full_longitude) = source_windows(bounds.0, bounds.3, source_domain)?;
+        let (windows, source_full_longitude) =
+            source_windows(bounds.0, bounds.3, source_domain, interpretation)?;
         let source_latitude_bounds =
             admitted_source_latitude_bounds(source_domain, bounds.1, bounds.4)?;
         let edge_points = (densify as usize).wrapping_add(2);
@@ -127,6 +153,7 @@ impl BoundsSamplePlan {
             z: Some(z),
             epoch: epoch.map(|value| [value]),
             source_windows: windows,
+            interpretation,
             source_latitude_bounds,
             source_domain,
             target_domain,
@@ -139,6 +166,9 @@ impl BoundsSamplePlan {
         &mut self,
         mut inverse: impl FnMut(f64, f64) -> Result<Option<(f64, f64)>>,
     ) -> Result<()> {
+        if matches!(self.interpretation, BoundsInterpretation::Literal) {
+            return Ok(());
+        }
         // An operation may have no inverse at one physical pole (for example,
         // a north-polar projection at the south pole). The executor reports
         // that domain miss as `None`; all actual execution failures remain
@@ -147,11 +177,11 @@ impl BoundsSamplePlan {
             return Ok(());
         };
         let mut target_poles = self.target_poles;
-        for (pole_contained, latitude) in target_poles
+        for (pole_contained, pole) in target_poles
             .iter_mut()
-            .rev()
-            .zip([frame.pole(), -frame.pole()])
+            .zip([GeodeticPole::North, GeodeticPole::South])
         {
+            let latitude = frame.native_latitude_pole(pole);
             let Some((longitude, latitude)) = inverse(0.0, latitude)? else {
                 continue;
             };
@@ -194,24 +224,12 @@ impl BoundsSamplePlan {
     }
 
     pub(super) fn finish_2d(mut self) -> Result<(f64, f64, f64, f64)> {
-        let horizontal = accumulate_horizontal(
-            &mut self.x,
-            &self.y,
-            self.target_domain,
-            self.source_full_longitude,
-            self.target_poles,
-        )?;
+        let horizontal = self.finish_horizontal()?;
         Ok(horizontal.into())
     }
 
     pub(super) fn finish_3d(mut self) -> Result<TransformedBounds3d> {
-        let horizontal = accumulate_horizontal(
-            &mut self.x,
-            &self.y,
-            self.target_domain,
-            self.source_full_longitude,
-            self.target_poles,
-        )?;
+        let horizontal = self.finish_horizontal()?;
         let z = self.z.expect("3D bounds plan retains its z lane");
         let (minz, maxz) = ordered_extrema(&z);
         Ok((
@@ -222,6 +240,21 @@ impl BoundsSamplePlan {
             horizontal[3],
             maxz,
         ))
+    }
+
+    fn finish_horizontal(&mut self) -> Result<[f64; 4]> {
+        match self.interpretation {
+            BoundsInterpretation::Literal => {
+                accumulate_literal_horizontal(&self.x, &self.y, self.target_domain)
+            },
+            BoundsInterpretation::Periodic => accumulate_horizontal(
+                &mut self.x,
+                &self.y,
+                self.target_domain,
+                self.source_full_longitude,
+                self.target_poles,
+            ),
+        }
     }
 
     pub(super) fn enter_in_core(&mut self) -> Result<()> {
@@ -338,46 +371,40 @@ fn transform_in_core_xy_with_domains_indexed_mode(
     Ok(())
 }
 
-fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Error {
+pub(super) fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Error {
     match error {
         GeographicError::LatitudeOutOfRange { value } => GeometryErrorKind::projection(format!(
             "latitude {value:e} is outside the geographic coordinate domain"
         )),
         GeographicError::NonFinite { .. } => GeometryErrorKind::NonFiniteCoordinate.into(),
         other @ (GeographicError::InvalidAngularFactor { .. }
-        | GeographicError::InvalidSweep { .. }
         | GeographicError::ChartTurnOverflow
         | GeographicError::AmbiguousFullTurnRing { .. }) => CrsError::invalid(other.to_string()),
     }
 }
 
-fn source_windows(west: f64, east: f64, domain: TopologyDomain) -> Result<(Vec<[f64; 2]>, bool)> {
+fn source_windows(
+    west: f64,
+    east: f64,
+    domain: TopologyDomain,
+    interpretation: BoundsInterpretation,
+) -> Result<(Vec<[f64; 2]>, bool)> {
     let TopologyDomain::Geographic(frame) = domain else {
         return Ok((vec![[west, east]], false));
     };
+    if matches!(interpretation, BoundsInterpretation::Literal) {
+        return Ok((vec![[west.min(east), west.max(east)]], false));
+    }
     let axis = frame.longitude();
-    let raw_span = east - west;
-    let full = !raw_span.is_finite() || raw_span.abs() >= axis.period();
-    let west = axis
-        .canonicalize(west)
-        .map_err(|error| CrsError::invalid(error.to_string()))?
-        .get();
-    let east = axis
-        .canonicalize(east)
-        .map_err(|error| CrsError::invalid(error.to_string()))?
-        .get();
-    let mut windows = Vec::with_capacity(2);
-    if full {
-        windows.push([-axis.half_period(), axis.half_period()]);
-        return Ok((windows, true));
-    }
-    if west <= east {
-        windows.push([west, east]);
-    } else {
-        windows.push([west, axis.half_period()]);
-        windows.push([-axis.half_period(), east]);
-    }
-    Ok((windows, false))
+    let interval = periodic_interval(west, east, axis)?;
+    let full = matches!(interval, CircularInterval::Full);
+    let windows = match interval.windows(axis) {
+        Some(LongitudeWindows::One(window)) => vec![window],
+        Some(LongitudeWindows::Two(first, second)) => vec![first, second],
+        Some(LongitudeWindows::Full) => vec![[-axis.half_period(), axis.half_period()]],
+        None => unreachable!("bounds interval is non-empty"),
+    };
+    Ok((windows, full))
 }
 
 pub(super) fn canonical_identity_longitudes(
@@ -386,16 +413,84 @@ pub(super) fn canonical_identity_longitudes(
     frame: GeographicFrame,
 ) -> Result<(f64, f64)> {
     let axis = frame.longitude();
-    let raw_span = east - west;
-    if !raw_span.is_finite() || raw_span.abs() >= axis.period() {
-        return Ok((-axis.half_period(), axis.half_period()));
+    match periodic_interval(west, east, axis)? {
+        CircularInterval::Full => Ok((-axis.half_period(), axis.half_period())),
+        interval @ CircularInterval::Arc { .. } => Ok(interval
+            .west_east()
+            .expect("periodic bounds interval has endpoints")),
+        CircularInterval::Empty => unreachable!("periodic bounds interval is non-empty"),
+    }
+}
+
+pub(super) fn identity_bounds_2d(
+    bounds: (f64, f64, f64, f64),
+    target_domain: TopologyDomain,
+    interpretation: BoundsInterpretation,
+) -> Result<(f64, f64, f64, f64)> {
+    let TopologyDomain::Geographic(frame) = target_domain else {
+        return Ok(bounds);
+    };
+    let (west, east) = identity_longitudes(bounds.0, bounds.2, frame, interpretation)?;
+    let [south, north] = canonical_identity_latitudes(bounds.1, bounds.3, frame)?;
+    Ok((west, south, east, north))
+}
+
+pub(super) fn identity_bounds_3d(
+    bounds: TransformedBounds3d,
+    target_domain: TopologyDomain,
+    interpretation: BoundsInterpretation,
+) -> Result<TransformedBounds3d> {
+    let TopologyDomain::Geographic(frame) = target_domain else {
+        return Ok(bounds);
+    };
+    let (west, east) = identity_longitudes(bounds.0, bounds.3, frame, interpretation)?;
+    let [south, north] = canonical_identity_latitudes(bounds.1, bounds.4, frame)?;
+    Ok((west, south, bounds.2, east, north, bounds.5))
+}
+
+fn identity_longitudes(
+    west: f64,
+    east: f64,
+    frame: GeographicFrame,
+    interpretation: BoundsInterpretation,
+) -> Result<(f64, f64)> {
+    match interpretation {
+        BoundsInterpretation::Periodic => canonical_identity_longitudes(west, east, frame),
+        BoundsInterpretation::Literal => Ok((west.min(east), west.max(east))),
+    }
+}
+
+fn periodic_interval(
+    west: f64,
+    east: f64,
+    axis: crate::geographic::PeriodicAxis,
+) -> Result<CircularInterval> {
+    if span_at_least_period(west, east, axis.period()) {
+        return Ok(CircularInterval::Full);
     }
     let canonical = |value| {
         axis.canonicalize(value)
-            .map(|value| value.get())
             .map_err(|error| CrsError::invalid(error.to_string()))
     };
-    Ok((canonical(west)?, canonical(east)?))
+    Ok(CircularInterval::from_endpoints(
+        canonical(west)?,
+        canonical(east)?,
+    ))
+}
+
+fn span_at_least_period(west: f64, east: f64, period: f64) -> bool {
+    let (larger, smaller) = if west <= east {
+        (east, west)
+    } else {
+        (west, east)
+    };
+    // This boundary decision belongs to the represented endpoints, not to a
+    // rounded or overflowing `east - west` intermediate.
+    let mut difference = ExactSum::zero();
+    difference.add_product(larger, 1.0);
+    difference.subtract_product(smaller, 1.0);
+    difference.subtract_product(period, 1.0);
+    !difference.ordering().is_lt()
 }
 
 pub(super) fn canonical_identity_latitudes(
@@ -492,45 +587,51 @@ fn accumulate_horizontal(
             .map_err(|error| CrsError::invalid(error.to_string()))?
             .get();
     }
-    if target_poles[0] {
-        south = -frame.pole();
-    }
-    if target_poles[1] {
-        north = frame.pole();
+    for (contained, pole) in target_poles
+        .into_iter()
+        .zip([GeodeticPole::North, GeodeticPole::South])
+    {
+        if contained {
+            let latitude = frame.native_latitude_pole(pole);
+            south = south.min(latitude);
+            north = north.max(latitude);
+        }
     }
     let interval = if source_full_longitude || target_poles.into_iter().any(|pole| pole) {
         CircularInterval::Full
     } else {
         x.sort_unstable_by(f64::total_cmp);
-        let first = *x.first().expect("bounds sample plan is non-empty");
-        let last = *x.last().expect("bounds sample plan is non-empty");
-        let mut best_gap = -1.0;
-        let mut best_start = 0.0;
-        for &[left, right] in x.array_windows::<2>() {
-            let gap = right - left;
-            let start = right;
-            if gap > best_gap || (gap.total_cmp(&best_gap).is_eq() && start < best_start) {
-                best_gap = gap;
-                best_start = start;
-            }
-        }
-        let seam_next = axis.period() - last;
-        let seam_gap = seam_next + first;
-        if seam_gap > best_gap || (seam_gap.total_cmp(&best_gap).is_eq() && first < best_start) {
-            best_gap = seam_gap;
-            best_start = first;
-        }
-        CircularInterval::try_arc(axis, best_start, axis.period() - best_gap)
-            .map_err(|error| CrsError::invalid(error.to_string()))?
+        CircularInterval::cover_sorted_canonical_points(axis, x)
     };
     let (west, east) = match interval {
         CircularInterval::Full => (-axis.half_period(), axis.half_period()),
         CircularInterval::Arc { .. } => interval
-            .west_east(axis)
+            .west_east()
             .expect("non-empty arc has public endpoints"),
         CircularInterval::Empty => unreachable!("bounds sample plan is non-empty"),
     };
     Ok([west, south, east, north])
+}
+
+fn accumulate_literal_horizontal(
+    x: &[f64],
+    y: &[f64],
+    target_domain: TopologyDomain,
+) -> Result<[f64; 4]> {
+    let (minx, maxx) = ordered_extrema(x);
+    let TopologyDomain::Geographic(frame) = target_domain else {
+        let (miny, maxy) = ordered_extrema(y);
+        return Ok([minx, miny, maxx, maxy]);
+    };
+    let mut south = f64::INFINITY;
+    let mut north = f64::NEG_INFINITY;
+    for &latitude in y {
+        let latitude = Latitude::try_new(frame, latitude)
+            .map_err(|error| CrsError::invalid(error.to_string()))?;
+        south = south.min(latitude.get());
+        north = north.max(latitude.get());
+    }
+    Ok([minx, south, maxx, north])
 }
 
 fn ordered_extrema(values: &[f64]) -> (f64, f64) {
@@ -565,6 +666,7 @@ mod bounds_plan_tests {
         let samples = BoundsSamplePlan::new_2d(
             (170.0, -10.0, -170.0, 10.0),
             3,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Geographic(degrees),
             TopologyDomain::Cartesian,
             None,
@@ -582,11 +684,94 @@ mod bounds_plan_tests {
     }
 
     #[test]
+    fn periodic_source_full_span_uses_exact_endpoints() {
+        let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
+        let (near_period_windows, near_period_full) = source_windows(
+            -0.1,
+            359.9,
+            TopologyDomain::Geographic(degrees),
+            BoundsInterpretation::Periodic,
+        )
+        .unwrap();
+        assert!(!near_period_full);
+        assert_eq!(near_period_windows.len(), 2);
+        assert_eq!(near_period_windows[0][0], -0.1);
+        assert_eq!(
+            near_period_windows[1][1],
+            degrees.longitude().canonicalize(359.9).unwrap().get()
+        );
+
+        let (full_windows, is_full) = source_windows(
+            -0.1,
+            359.9_f64.next_up(),
+            TopologyDomain::Geographic(degrees),
+            BoundsInterpretation::Periodic,
+        )
+        .unwrap();
+        assert!(is_full);
+        assert_eq!(full_windows, vec![[-180.0, 180.0]]);
+    }
+
+    #[test]
+    fn literal_descending_geographic_source_is_a_closed_numeric_segment() {
+        let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
+        let samples = BoundsSamplePlan::new_2d(
+            (170.0, -10.0, -170.0, 10.0),
+            2,
+            BoundsInterpretation::Literal,
+            TopologyDomain::Geographic(degrees),
+            TopologyDomain::Cartesian,
+            None,
+        )
+        .unwrap();
+        assert_eq!(samples.source_windows, [[-170.0, 170.0]]);
+        assert!(!samples.source_full_longitude);
+        assert_eq!(samples.x.len(), 4 * (2 + 2));
+        assert!(!samples.x.contains(&-180.0));
+        assert!(!samples.x.contains(&180.0));
+    }
+
+    #[test]
+    fn literal_geographic_target_keeps_numeric_extrema_without_pole_probes() {
+        let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
+        let mut samples = BoundsSamplePlan::new_2d(
+            (0.0, -1.0, 1.0, 1.0),
+            2,
+            BoundsInterpretation::Literal,
+            TopologyDomain::Cartesian,
+            TopologyDomain::Geographic(degrees),
+            None,
+        )
+        .unwrap();
+        for (index, longitude) in samples.x.iter_mut().enumerate() {
+            *longitude = if index % 2 == 0 { 0.0 } else { 360.0 };
+        }
+        samples.y.fill(0.0);
+        samples
+            .include_target_poles(|_, _| panic!("literal bounds do not probe poles"))
+            .unwrap();
+        assert_eq!(samples.finish_2d().unwrap(), (0.0, 0.0, 360.0, 0.0));
+
+        let mut out_of_domain = BoundsSamplePlan::new_2d(
+            (0.0, -1.0, 1.0, 1.0),
+            2,
+            BoundsInterpretation::Literal,
+            TopologyDomain::Cartesian,
+            TopologyDomain::Geographic(degrees),
+            None,
+        )
+        .unwrap();
+        out_of_domain.y.fill(91.0);
+        out_of_domain.finish_2d().unwrap_err();
+    }
+
+    #[test]
     fn full_unwrapped_band_stays_full_in_target_native_units() {
         let grads = frame(std::f64::consts::PI / 200.0, 0.0);
         let samples = BoundsSamplePlan::new_2d(
             (0.0, -100.0, 400.0, 100.0),
             2,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Geographic(grads),
             TopologyDomain::Geographic(grads),
             None,
@@ -609,6 +794,7 @@ mod bounds_plan_tests {
         let mut samples = BoundsSamplePlan::new_2d(
             (0.0, 0.0, 1.0, 1.0),
             2,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Cartesian,
             TopologyDomain::Geographic(radians),
             None,
@@ -635,6 +821,7 @@ mod bounds_plan_tests {
         let mut samples = BoundsSamplePlan::new_2d(
             (170.0, -1.0, -170.0, 1.0),
             2,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Geographic(degrees),
             TopologyDomain::Geographic(degrees),
             None,
@@ -653,6 +840,7 @@ mod bounds_plan_tests {
         let mut boundary = BoundsSamplePlan::new_2d(
             (0.0, -1.0, 10.0, 1.0),
             2,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Geographic(degrees),
             TopologyDomain::Geographic(degrees),
             None,
@@ -666,6 +854,7 @@ mod bounds_plan_tests {
         let mut admitted_boundary = BoundsSamplePlan::new_2d(
             (0.0, -1.0, 10.0, degrees.pole().next_up()),
             2,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Geographic(degrees),
             TopologyDomain::Geographic(degrees),
             None,
@@ -678,11 +867,43 @@ mod bounds_plan_tests {
     }
 
     #[test]
+    fn target_geodetic_poles_are_probed_in_native_southward_axis_coordinates() {
+        let unit = AngularFactor::try_new("degree", std::f64::consts::PI / 180.0).unwrap();
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            crate::geographic::GeographicAxisOrientation::from_axis_directions(true, false),
+        )
+        .unwrap();
+        let mut samples = BoundsSamplePlan::new_2d(
+            (0.0, -1.0, 10.0, 1.0),
+            2,
+            BoundsInterpretation::Periodic,
+            TopologyDomain::Cartesian,
+            TopologyDomain::Geographic(frame),
+            None,
+        )
+        .unwrap();
+        let mut probed = Vec::new();
+        samples
+            .include_target_poles(|_, latitude| {
+                probed.push(latitude);
+                Ok(Some((5.0, 0.0)))
+            })
+            .unwrap();
+        assert_eq!(probed, [-90.0, 90.0]);
+        assert_eq!(samples.target_poles, [true, true]);
+        assert_eq!(samples.finish_2d().unwrap(), (-180.0, -90.0, 180.0, 90.0));
+    }
+
+    #[test]
     fn target_pole_probe_errors_are_not_treated_as_absent_poles() {
         let degrees = frame(std::f64::consts::PI / 180.0, 0.0);
         let mut samples = BoundsSamplePlan::new_2d(
             (-1.0, -1.0, 1.0, 1.0),
             2,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Cartesian,
             TopologyDomain::Geographic(degrees),
             None,
@@ -700,6 +921,7 @@ mod bounds_plan_tests {
         let mut samples = BoundsSamplePlan::new_3d(
             (-1.0, -1.0, 3.0, 1.0, 1.0, 7.0),
             2,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Cartesian,
             TopologyDomain::Geographic(degrees),
             None,
@@ -719,6 +941,7 @@ mod bounds_plan_tests {
         let samples = BoundsSamplePlan::new_3d(
             (-1.0, -2.0, 3.0, 4.0, 5.0, 6.0),
             7,
+            BoundsInterpretation::Periodic,
             TopologyDomain::Cartesian,
             TopologyDomain::Cartesian,
             Some(2020.0),
@@ -1112,6 +1335,7 @@ pub(crate) fn transform_proj_shapes_indexed(
     transformer: &ProjPipeline,
     shapes: &[&Shape],
     source_epoch: Option<f64>,
+    source_frame: Option<GeographicFrame>,
     execution: &crate::crs::TransformExecution,
 ) -> std::result::Result<Vec<Shape>, TransformFailure> {
     let mut output = TransformOutputPlan::try_new(shapes)?;
@@ -1122,12 +1346,12 @@ pub(crate) fn transform_proj_shapes_indexed(
     }
     output.execute_indexed(|x, y, z| {
         let mut epoch = source_epoch.map(|epoch| [epoch]);
-        transformer.transform_lanes_indexed(
+        transformer.transform_default_source_lanes_indexed(
+            source_frame,
             x,
             y,
             z,
             epoch.as_mut().map(<[f64; 1]>::as_mut_slice),
-            ProjDirection::Forward,
             execution,
         )
     })?;
@@ -1306,23 +1530,25 @@ impl TransformOutputPlan {
             Option<&mut [f64]>,
         ) -> std::result::Result<(), TransformFailure>,
     ) -> std::result::Result<(), TransformFailure> {
-        // Reconstruction runs XY before XYZ. If XY identifies a coordinate
-        // failure, one XYZ pass is still needed so the earliest input shape,
-        // rather than lane order, owns the displayed error.
-        match self.execute_axes_indexed(false, xy_capacity, transform) {
-            Ok(()) => self.execute_axes_indexed(true, xyz_capacity, transform),
-            Err(xy_failure) if xy_failure.coordinate.is_some() => {
-                match self.execute_axes_indexed(true, xyz_capacity, transform) {
+        match self.execute_axes_indexed(false, xy_capacity, None, transform) {
+            Ok(()) => self.execute_axes_indexed(true, xyz_capacity, None, transform),
+            Err(xy_failure) => {
+                let Some(xy_shape) = xy_failure.coordinate else {
+                    return Err(xy_failure);
+                };
+                // Only an XYZ failure on an earlier input shape can replace
+                // the XY failure. Do not execute same- or later-shape input.
+                match self.execute_axes_indexed(true, xyz_capacity, Some(xy_shape), transform) {
                     Err(xyz_failure)
-                        if xyz_failure.coordinate.is_some()
-                            && xyz_failure.coordinate < xy_failure.coordinate =>
+                        if xyz_failure
+                            .coordinate
+                            .is_some_and(|xyz_shape| xyz_shape < xy_shape) =>
                     {
                         Err(xyz_failure)
                     },
                     _ => Err(xy_failure),
                 }
             },
-            Err(failure) => Err(failure),
         }
     }
 
@@ -1330,31 +1556,43 @@ impl TransformOutputPlan {
         &mut self,
         has_z: bool,
         capacity: usize,
+        before_shape: Option<usize>,
         transform: &mut impl FnMut(
             &mut [f64],
             &mut [f64],
             Option<&mut [f64]>,
         ) -> std::result::Result<(), TransformFailure>,
     ) -> std::result::Result<(), TransformFailure> {
+        let batch = if has_z {
+            OutputBatch::Xyz
+        } else {
+            OutputBatch::Xy
+        };
+        let columns = if has_z { &self.xyz } else { &self.xy };
+        let coordinate_count = before_shape.map_or(columns.xs.len(), |shape| {
+            self.sequences
+                .iter()
+                .filter(|sequence| sequence.batch == batch && sequence.shape < shape)
+                .map(|sequence| sequence.range.end)
+                .max()
+                .unwrap_or(0)
+        });
+        debug_assert!(coordinate_count <= columns.xs.len());
         let columns = if has_z { &mut self.xyz } else { &mut self.xy };
-        execute_batch_indexed(columns, capacity, transform).map_err(|failure| {
-            let shape = failure.coordinate.and_then(|coordinate| {
-                self.sequences
-                    .iter()
-                    .find(|sequence| {
-                        sequence.batch
-                            == if has_z {
-                                OutputBatch::Xyz
-                            } else {
-                                OutputBatch::Xy
-                            }
-                            && sequence.range.contains(&coordinate)
-                    })
-                    .map(|sequence| sequence.shape)
-            });
-            debug_assert!(failure.coordinate.is_none_or(|_| shape.is_some()));
-            failure.with_coordinate(shape)
-        })
+        execute_batch_prefix_indexed(columns, coordinate_count, capacity, transform).map_err(
+            |failure| {
+                let shape = failure.coordinate.and_then(|coordinate| {
+                    self.sequences
+                        .iter()
+                        .find(|sequence| {
+                            sequence.batch == batch && sequence.range.contains(&coordinate)
+                        })
+                        .map(|sequence| sequence.shape)
+                });
+                debug_assert!(failure.coordinate.is_none_or(|_| shape.is_some()));
+                failure.with_coordinate(shape)
+            },
+        )
     }
 
     pub(crate) fn finish(self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
@@ -1395,8 +1633,9 @@ impl TransformOutputPlan {
     }
 }
 
-fn execute_batch_indexed(
+fn execute_batch_prefix_indexed(
     columns: &mut OutputColumns,
+    coordinate_count: usize,
     capacity: usize,
     transform: &mut impl FnMut(
         &mut [f64],
@@ -1411,9 +1650,19 @@ fn execute_batch_indexed(
         zs.as_ref().is_none_or(|zs| zs.len() == xs.len()),
         "XYZ output columns stay aligned",
     );
+    debug_assert!(coordinate_count <= xs.len());
+    let xs = xs
+        .get_mut(..coordinate_count)
+        .expect("the selected shape prefix fits its X column");
+    let ys = ys
+        .get_mut(..coordinate_count)
+        .expect("the selected shape prefix fits its Y column");
     let mut offset = 0_usize;
     match zs.as_mut() {
         Some(zs) => {
+            let zs = zs
+                .get_mut(..coordinate_count)
+                .expect("the selected shape prefix fits its Z column");
             for ((xs, ys), zs) in xs
                 .chunks_mut(capacity)
                 .zip(ys.chunks_mut(capacity))
@@ -1631,6 +1880,46 @@ mod lane_tests {
             (107.0, 108.0, Some(109.0)),
             (110.0, 111.0, Some(112.0)),
         ]);
+    }
+
+    #[test]
+    fn xy_failure_only_executes_xyz_shapes_before_its_shape() {
+        let shapes = [
+            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
+            Shape::Point(Point::new_raw_axes(
+                3.0,
+                4.0,
+                ZOrdinate(Some(5.0)),
+                MOrdinate(None),
+            )),
+            Shape::Point(Point::new_raw_xy(6.0, 7.0)),
+            Shape::Point(Point::new_raw_axes(
+                8.0,
+                9.0,
+                ZOrdinate(Some(10.0)),
+                MOrdinate(None),
+            )),
+        ];
+        let refs: Vec<_> = shapes.iter().collect();
+        let mut plan = TransformOutputPlan::try_new(&refs).unwrap();
+        let mut calls = Vec::new();
+
+        let failure = plan
+            .execute_with_capacities_indexed(8, 8, &mut |x, _, z| {
+                calls.push((z.is_some(), x.len()));
+                if z.is_none() {
+                    Err(TransformFailure::at(
+                        GeometryErrorKind::projection("XY source admission failed"),
+                        1,
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+
+        assert_eq!(failure.coordinate, Some(2));
+        assert_eq!(calls, [(false, 2), (true, 1)]);
     }
 
     #[test]

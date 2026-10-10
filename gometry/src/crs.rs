@@ -59,35 +59,39 @@ use cache::{
     CRS_EXPORT_CACHE_CAPACITY, CRS_FACTOR_CACHE, CRS_FACTOR_CACHE_CAPACITY, CRS_GEODESIC_CACHE,
     CRS_GEODESIC_CACHE_CAPACITY, CRS_IN_CORE_DESCRIPTOR_CACHE,
     CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY,
-    CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CRS_SEARCH_CACHE,
-    CRS_SEARCH_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedAuthorityObjects,
-    CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog, CachedCrsComparison,
-    CachedCrsExport, CachedCrsInfo, CachedCrsOperations, CachedCrsSearch, CachedGeodesicObject,
-    CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey, CrsExportKey, CrsExportKind,
-    NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation,
-    ensure_thread_caches_current, record_transform_engine, with_proj_diagnostic_pipeline_at,
-    with_proj_operation_at, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
+    CRS_NAME_MATCH_CACHE, CRS_NAME_MATCH_CACHE_CAPACITY, CRS_OPERATIONS_CACHE,
+    CRS_OPERATIONS_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY,
+    CachedAuthorityObjects, CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog,
+    CachedCrsComparison, CachedCrsExport, CachedCrsInfo, CachedCrsNameMatch, CachedCrsOperations,
+    CachedGeodesicObject, CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey,
+    CrsExportKey, CrsExportKind, NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY,
+    begin_transform_observation, ensure_thread_caches_current, record_transform_engine,
+    with_proj_diagnostic_pipeline_at, with_proj_operation_at, with_proj_pipeline_at,
+    with_proj_pipeline_indexed_at,
 };
 pub(crate) use cache::{cache_info, lru_insert, lru_promote, lru_resolve};
 pub(crate) use catalog::{
     CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT, ProjStringVersion,
-    authorities_with_state, catalog, celestial_bodies_with_state, codes, ellipsoids, geoid_models,
-    identify_with_state, non_deprecated, prime_meridians, proj_operations, same, search, to_2d,
-    to_3d, to_authority, to_cf, to_epsg, to_proj, to_projjson, to_projjson_with_options,
-    to_projjson_with_options_at, to_wkt_with_options, unit_info, units_with_state, utm_zones,
-    validate_search_limit,
+    authorities_with_state, catalog_name_matches_with_state, catalog_with_state,
+    celestial_bodies_with_state, codes, ellipsoids, geoid_models, identify_with_state,
+    non_deprecated, prime_meridians, proj_operations, same, to_2d, to_3d, to_authority, to_cf,
+    to_epsg, to_proj, to_projjson, to_projjson_with_options, to_projjson_with_options_at,
+    to_wkt_with_options, unit_info, units_with_state, utm_zones,
 };
 use context::{ProjContext, with_proj_context, with_proj_context_at};
 pub(crate) use error::{CrsError, preserve_resource_error};
 #[cfg(test)]
+pub(crate) use geodesic::point_edge_test_counters;
+#[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
     ChartEdge, DistanceMode, EllipsoidMetric, GeodesicBoxEnvelopeBound, GeodesicCalculation,
-    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel, PointEdgeScratch,
-    ResolvedMetric, chart_line_interpolate, chart_line_interpolate_coordseq,
-    chart_line_length_columns, chart_line_locate, chart_line_locate_coordseq, chart_line_substring,
-    chart_line_substring_coordseq, chart_shape_area, chart_shape_length, checked_geodesic_route,
-    ellipsoid_shape_at, ensure_3d_metric, ensure_geographic_columns_in_frame,
+    GeodesicChartBox, GeodesicEnvelopeBound, GeodesicMetric, MetricModel,
+    POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch, ResolvedMetric,
+    chart_line_interpolate_coordseq_admitted, chart_line_length_columns,
+    chart_line_locate_coordseq_admitted, chart_line_substring_coordseq_admitted, chart_shape_area,
+    chart_shape_length, checked_geodesic_route, ellipsoid_shape_at, ensure_3d_metric,
+    ensure_geographic_columns_in_frame, ensure_geographic_coordseq_in_frame,
     ensure_geographic_domain_in_frame, ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame,
     ensure_geographic_row_in_frame, finite, geodesic_bearing, geodesic_cross_track_crs_at,
     geodesic_cross_track_radius_crs_at, geodesic_cross_track_with_radius, geodesic_destination,
@@ -95,10 +99,13 @@ pub(crate) use geodesic::{
     geodesic_hausdorff_at, geodesic_interpolate_on_line, geodesic_point_between,
     geodesic_point_distances, geodesic_point_pair_distance, geodesic_point_pair_distances,
     geodesic_point_pair_dwithin, geodesic_point_pair_dwithin_one, geodesic_witness_distance_at,
-    geographic_lonlat_result, metric_interpolate_m, metric_model, metric_model_meters,
-    sincos_degrees, with_ellipsoid_metric_at, with_geodesic_cache_at,
-    with_geographic_coordseq_collect_rows_at, with_geographic_coordseq_metric_at,
-    with_resolved_ellipsoid_metric_at,
+    geographic_lonlat_result, metric_interpolate_m, metric_model, metric_model_at,
+    metric_model_meters, metric_model_meters_at, sincos_degrees, with_ellipsoid_metric_at,
+    with_geodesic_cache_at, with_geographic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
+};
+#[cfg(test)]
+pub(crate) use geodesic::{
+    QuadratureTestProgress, quadrature_test_progress, reset_quadrature_test_progress,
 };
 pub(crate) use grids::grid_info;
 use in_core::{
@@ -106,8 +113,8 @@ use in_core::{
     try_in_core_transform_with_state, utm_crs,
 };
 pub(crate) use info::{
-    AngularUnit, engine_info_with_state, factor_columns, factors, factors_at, info,
-    info_with_state, is_dynamic, is_dynamic_with_state, operation_info_at,
+    AngularUnit, admits_geometry_epoch, admits_geometry_epoch_with_state, engine_info_with_state,
+    factor_columns, factors, factors_at, info, info_with_state, operation_info_at,
     operation_info_with_state,
 };
 pub(crate) use introspect::Confidence;
@@ -129,23 +136,23 @@ use proj::{
     proj_error_message, take_proj_string_list,
 };
 #[cfg(test)]
-pub(crate) use rhumb::rhumb_distance_crs;
-pub(crate) use rhumb::{rhumb_bearing_crs_at, rhumb_destination_crs_at, rhumb_distance_crs_at};
+pub(crate) use rhumb::distance_rhumb_crs;
+pub(crate) use rhumb::{distance_rhumb_crs_at, rhumb_bearing_crs_at, rhumb_destination_crs_at};
 pub(crate) use runtime::{
-    clear_cache, configure_runtime, coordinate_identity_crs, cstring, definition, normalize,
-    normalize_pair, reset_runtime_config, runtime_state_snapshot,
+    ConfigUpdate, clear_cache, configure_runtime, coordinate_identity_crs, cstring, definition,
+    normalize, normalize_pair, reset_runtime_config, runtime_state_snapshot,
 };
 pub(crate) use transform::{
     apply_operation, coordinates_are_finite, is_wgs84_lonlat, parse_epsg, proj_transform_error,
     transform, transform_at, transform_bounds, transform_bounds_3d, transform_bounds_3d_many,
     transform_bounds_many, transform_coordinates, validate_coordinate_lanes,
 };
-pub(crate) use transformer::TransformPlan;
+pub(crate) use transformer::{TransformMetricScratch, TransformPlan};
 pub(crate) use types::{
     AreaOfInterest, AreaOfUse, AuthorityObjectInfo, AxisInfo, CacheBucketInfo, CacheInfo,
     CelestialBodyInfo, CfValue, CrsCatalogInfo, CrsCatalogOptions, CrsComparison,
-    CrsCoordinateOperationInfo, CrsInfo, CrsObjectKind, CrsProjJsonOptions, CrsProjOptions,
-    CrsSearchOptions, CrsWktOptions, DatumInfo, DomainInfo, EllipsoidCatalogInfo, EllipsoidInfo,
+    CrsCoordinateOperationInfo, CrsInfo, CrsNameMatchOptions, CrsObjectKind, CrsProjJsonOptions,
+    CrsProjOptions, CrsWktOptions, DatumInfo, DomainInfo, EllipsoidCatalogInfo, EllipsoidInfo,
     EngineInfo, GeodesicDirectInfo, GridDatabaseInfo, GridInfo, IdentifyCandidate, MethodInfo,
     OperationInfo, OperationParameterInfo, PrimeMeridianCatalogInfo, PrimeMeridianInfo,
     ProjDirection, ProjOperationCatalogInfo, ProjectionFactorColumns, ProjectionFactors,
@@ -154,8 +161,8 @@ pub(crate) use types::{
 };
 
 const WEB_MERCATOR_RADIUS: f64 = 6_378_137.0;
-const WGS84_A: f64 = 6_378_137.0;
-const WGS84_F: f64 = 1.0 / 298.257_223_563;
+pub(crate) const WGS84_A: f64 = 6_378_137.0;
+pub(crate) const WGS84_F: f64 = 1.0 / 298.257_223_563;
 const UTM_K0: f64 = 0.9996;
 const TRANSFORM_BOUNDS_MAX_DENSIFY: u32 = 10_000;
 pub(crate) const DEGREE_TO_RADIAN: f64 = std::f64::consts::PI / 180.0;

@@ -22,7 +22,9 @@ def assert_optional_float_array(actual: object, expected: list[float | None]) ->
 def test_packed_point_array_values_and_auto_packing() -> None:
     packed = gm.points([0, 1, 2], [10, 11, 12], z=[5, 6, 7], crs=4326)
     assert len(packed) == 3
-    assert (packed[1]).to_wkt() == 'POINT Z (1 11 6)' and packed[1].crs == 'EPSG:4326'
+    assert (packed[1]).to_wkt() == 'POINT Z (1 11 6)' and packed[1].crs == gm.CRS(
+        'EPSG:4326'
+    )
     assert [(g).to_wkt() for g in packed[::2]] == [
         'POINT Z (0 10 5)',
         'POINT Z (2 12 7)',
@@ -103,15 +105,15 @@ def test_geometry_array_numpy_protocol_accepts_object_dtype_spellings(
         np.asarray(array, dtype='int64')
 
 
-def test_array_set_crs_strips_and_relabels_the_whole_frame() -> None:
+def test_array_with_crs_strips_and_relabels_the_whole_frame() -> None:
     pts = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326)
-    plain = (pts).set_crs(None)
+    plain = (pts).with_crs(None)
     assert plain.crs is None and plain[0].crs is None
     with pytest.raises(ValueError, match='overwrite=True'):
-        pts.set_crs(('EPSG', 3857))
-    relabelled = pts.set_crs(('EPSG', 3857), overwrite=True)
-    assert relabelled.crs == 'EPSG:3857'
-    assert [p.crs for p in relabelled] == ['EPSG:3857', 'EPSG:3857']
+        pts.with_crs(('EPSG', 3857))
+    relabelled = pts.with_crs(('EPSG', 3857), overwrite=True)
+    assert relabelled.crs == gm.CRS('EPSG:3857')
+    assert [p.crs for p in relabelled] == [gm.CRS('EPSG:3857')] * 2
     assert relabelled.to_arrow().type.extension_name == 'geoarrow.point'
 
 
@@ -140,6 +142,15 @@ def test_mixed_axes_arrays_summarize_honestly() -> None:
     assert uniform.common_coordinate_axes == 'XYZ'
     assert gm.GeometryArray([]).coordinate_axes == []
     assert gm.GeometryArray([]).common_coordinate_axes == 'XY'
+
+
+def test_require_preserves_missing_rows_in_a_geometry_array() -> None:
+    rows = gm.GeometryArray([gm.Point(1.0, 2.0), None])
+
+    required = gm.require(rows)
+
+    assert required.is_missing.tolist() == [False, True]
+    assert required[1] is None
 
 
 @pytest.mark.parametrize(
@@ -380,9 +391,9 @@ def test_mixed_axis_geometry_collection_delaunay_triangles_does_not_panic() -> N
 
 
 def test_require_crs_reports_frames_without_debug_formatting() -> None:
-    assert gm.require(gm.GeometryArray([]), crs=4326).crs == 'EPSG:4326'
+    assert gm.require(gm.GeometryArray([]), crs=4326).crs == gm.CRS('EPSG:4326')
     tagged = gm.GeometryArray([], crs=('EPSG', 4326))
-    assert gm.require(tagged, crs=gm.CRS(4326)).crs == 'EPSG:4326'
+    assert gm.require(tagged, crs=gm.CRS(4326)).crs == gm.CRS('EPSG:4326')
     with pytest.raises(ValueError, match='expected CRS "EPSG:3857", got "EPSG:4326"'):
         gm.require(gm.Point(0, 0, crs=4326), crs=3857)
 
@@ -404,14 +415,14 @@ def test_geometry_array_selection_take_filter_concat_is_valid() -> None:
     np.testing.assert_array_equal(array.is_valid, [True, True, True])
     taken = array[[2, 0, -1]]
     assert [g.geometry_type for g in taken] == ['Polygon', 'Point', 'Polygon']
-    assert taken.crs == 'EPSG:4326'
+    assert taken.crs == gm.CRS('EPSG:4326')
     kept = array[[True, False, True]]
     assert [g.geometry_type for g in kept] == ['Point', 'Polygon']
     with pytest.raises(ValueError, match='mask length'):
         array[[True]]
     more = gm.GeometryArray([gm.Point(5, 5)], crs=4326)
     joined = array.concat(more)
-    assert len(joined) == 4 and joined.crs == 'EPSG:4326'
+    assert len(joined) == 4 and joined.crs == gm.CRS('EPSG:4326')
     with pytest.raises(ValueError, match='shared CRS'):
         array.concat(gm.GeometryArray([gm.Point(9, 9)]))
     with pytest.raises(IndexError, match='out of range'):
@@ -588,9 +599,9 @@ def test_scalar_python_index_overflow_is_an_index_error(index: int) -> None:
 
     point = gm.Point(0, 0)
     collection = gm.GeometryCollection([point])
-    coordinates, indexes = gm.get_coordinates(
-        gm.GeometryArray([point, gm.Point(1, 1)]), return_index=True
-    )
+    view = gm.GeometryArray([point, gm.Point(1, 1)]).coords
+    coordinates = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert point.coords[0] == point.coords[-1] == (0.0, 0.0)
     assert collection.parts[0] == collection.parts[-1]
     assert coordinates.tolist() == [[0.0, 0.0], [1.0, 1.0]]
@@ -825,8 +836,8 @@ def test_total_bounds_is_memoized_and_refreshes_on_frame_retag() -> None:
     assert miny == pytest.approx(40.0)
     assert maxy == pytest.approx(50.0)
 
-    # set_crs retags storage: cache must not inherit a stale geographic fold.
-    plain = seam.set_crs(None, overwrite=True)
+    # with_crs retags storage: cache must not inherit a stale geographic fold.
+    plain = seam.with_crs(None, overwrite=True)
     plain_bounds = plain.total_bounds
     fresh_plain = gm.GeometryArray([
         gm.Polygon([(170, 40), (-170, 40), (-170, 50), (170, 50), (170, 40)])

@@ -9,7 +9,6 @@ use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PySequence, PyString};
 
 use crate::boundary::buffer_endian::{buffer_item_count, get_untyped_buffer};
-use crate::error::{ResourceError, Result};
 
 /// Check pending Python signals often enough that a native loop over a Python
 /// iterator remains interruptible without paying for a signal check on every
@@ -30,8 +29,17 @@ pub(crate) fn py_iter_or_error<'py>(
     value: &Bound<'py, PyAny>,
     error: impl FnOnce() -> PyErr,
 ) -> PyResult<Bound<'py, PyIterator>> {
+    py_iter_or_none(value)?.ok_or_else(error)
+}
+
+/// Acquire a Python iterator, returning `None` only when the value has neither
+/// the iterator nor legacy sequence protocol. Errors raised by a supplied
+/// protocol are returned unchanged.
+pub(crate) fn py_iter_or_none<'py>(
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Option<Bound<'py, PyIterator>>> {
     match value.try_iter() {
-        Ok(iter) => Ok(iter),
+        Ok(iter) => Ok(Some(iter)),
         Err(protocol_error)
             if protocol_error.is_instance_of::<PyTypeError>(value.py())
                 && value
@@ -41,7 +49,7 @@ pub(crate) fn py_iter_or_error<'py>(
                     .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
                     .is_none() =>
         {
-            Err(error())
+            Ok(None)
         },
         Err(protocol_error) => Err(protocol_error),
     }
@@ -60,21 +68,6 @@ pub(crate) fn optional_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> 
     value.len().map(Some)
 }
 
-fn check_vec_capacity<T>(len: usize, additional: usize) -> Result<()> {
-    let capacity = len
-        .checked_add(additional)
-        .ok_or(ResourceError::SizeOverflow)?;
-    std::alloc::Layout::array::<T>(capacity).map_err(|_| ResourceError::SizeOverflow)?;
-    Ok(())
-}
-
-/// Reserve capacity for an exact external total after checking Rust's layout.
-pub(crate) fn try_reserve_total<T>(vec: &mut Vec<T>, additional: usize) -> PyResult<()> {
-    check_vec_capacity::<T>(vec.len(), additional).map_err(PyErr::from)?;
-    vec.reserve(additional);
-    Ok(())
-}
-
 /// Reserve from Python's exact length contract without limiting iteration.
 ///
 /// Call after acquiring the iterator so an iterator-provider exception keeps
@@ -84,7 +77,7 @@ pub(crate) fn reserve_from_py_len<T>(
     output: &mut Vec<T>,
 ) -> PyResult<()> {
     if let Some(len) = optional_len(values)? {
-        try_reserve_total(output, len)?;
+        output.reserve(len);
     }
     Ok(())
 }
@@ -357,8 +350,7 @@ pub(crate) fn collect_py_iter_exact_from_iter<'py, T>(
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<T>> {
-    let mut out = Vec::new();
-    try_reserve_total(&mut out, expected)?;
+    let mut out = Vec::with_capacity(expected);
     for index in 0..expected {
         check_python_signals(values.py(), index)?;
         let Some(item) = iter.next() else {
@@ -422,17 +414,6 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::collections::MAX_RESERVE_HINT;
-
-    #[test]
-    fn reserve_total_accepts_above_hint_cap() {
-        let mut v: Vec<u8> = Vec::new();
-        // Validated totals must not share the hint cap as a rejection.
-        // Use u8 so a count just above the hint remains a small allocation.
-        try_reserve_total(&mut v, MAX_RESERVE_HINT + 1).expect("small validated total");
-        assert!(v.capacity() > MAX_RESERVE_HINT);
-    }
-
     #[test]
     fn at_most_collector_drops_retained_values_before_excess_error() {
         crate::test_support::initialize_python();
@@ -512,31 +493,6 @@ mod tests {
             Ok(())
         })
         .expect("provider identity after cleanup");
-    }
-
-    #[test]
-    fn exact_collector_rejects_unrepresentable_expected_before_next() {
-        crate::test_support::initialize_python();
-        Python::attach(|py| -> PyResult<()> {
-            let item = pyo3::types::PyString::new(py, "item");
-            let iterator =
-                crate::test_support::native_boundary_iterator(py, item.as_any(), 1, None, None)?;
-            let values = iterator.bind(py).as_any();
-            let iter = values.try_iter()?;
-            let result = collect_py_iter_exact_from_iter(
-                values,
-                iter,
-                usize::MAX,
-                |item| item.extract::<String>(),
-                |_| PyValueError::new_err("length mismatch"),
-            );
-
-            let error = result.expect_err("unrepresentable output layout must be rejected");
-            assert!(error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py));
-            assert_eq!(iterator.bind(py).borrow().calls(), 0);
-            Ok(())
-        })
-        .expect("exact collector layout admission");
     }
 
     #[test]

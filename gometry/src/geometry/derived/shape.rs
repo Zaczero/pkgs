@@ -24,6 +24,9 @@ impl Shape {
         reason = "monotone_chain_hull returns source ordinals into this points vector"
     )]
     pub fn minimum_rotated_rectangle(&self) -> Result<Self> {
+        if let Self::Point(point) = self {
+            return Ok(Self::Point(*point));
+        }
         let points = self.first_seen_xy_vertices()?;
         // Empty input has no rectangle: `POLYGON EMPTY` (the operation's areal
         // output type), not the untyped collection the hull yields.
@@ -40,6 +43,7 @@ impl Shape {
                 &[self],
                 "minimum_rotated_rectangle",
                 false,
+                &crate::geometry::SourceArcContext::cartesian(),
             );
         }
         Ok(Self::Polygon(Polygon::new(
@@ -102,8 +106,9 @@ impl Shape {
         Ok((Self::empty_point(), bounds))
     }
 
-    /// A representative point guaranteed to lie *on* the geometry — for a
-    /// polygon an interior point, not a boundary vertex. Empty geometries
+    /// A representative point guaranteed to lie on the geometry. Polygonal
+    /// input uses an interior scanline point when its rounded coordinates are
+    /// covered; otherwise a source boundary point is returned. Empty geometries
     /// yield an empty geometry. Lineal candidates are ranked by the lineal
     /// centroid, whose exact replay can fail on resources.
     pub fn point_on_surface(&self) -> Result<Self> {
@@ -434,10 +439,7 @@ impl Shape {
         if !finite {
             return Err(GeometryErrorKind::unrepresentable_output(operation));
         }
-        let tolerance = match tolerance {
-            Some(tolerance) => tolerance,
-            None => scale_aware_default_tolerance(self) * scale,
-        };
+        let tolerance = tolerance.unwrap_or_else(|| scale_aware_default_tolerance(self) * scale);
         directed_inradius_scaled(self, tolerance, scale)
     }
 }

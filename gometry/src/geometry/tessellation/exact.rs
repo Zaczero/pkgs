@@ -16,8 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::error::{Error, ErrorKind, ResourceError};
-#[cfg(test)]
-use crate::geometry::GENERATED_ITEM_LIMIT;
+use crate::geometry::embedding_search::{Unmetered, Work};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{GeometryErrorKind, Point, Result, XY};
@@ -82,18 +81,15 @@ impl ExactSign {
 /// than multiplying equivalent denominators. Equality and hashing use the ratio
 /// value because constructors may distribute binary exponents differently.
 #[derive(Clone, Debug)]
-pub(in crate::geometry) struct ExactRational {
+pub(crate) struct ExactRational {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
 }
 
 impl PartialEq for ExactRational {
     fn eq(&self, other: &Self) -> bool {
-        let sign = self.numerator.negative ^ self.denominator.negative;
-        sign == (other.numerator.negative ^ other.denominator.negative)
-            && self.numerator.limbs.as_slice() == other.numerator.limbs.as_slice()
-            && self.denominator.limbs.as_slice() == other.denominator.limbs.as_slice()
-            && rational_exponent(self) == rational_exponent(other)
+        self.try_eq_with_work(other, &mut Unmetered)
+            .expect("unmetered rational equality cannot fail")
     }
 }
 
@@ -115,14 +111,32 @@ fn rational_exponent(value: &ExactRational) -> i128 {
         .expect("i64 dyadic exponents differ within i128")
 }
 
+fn slices_equal_with_work<W: Work>(left: &[u64], right: &[u64], work: &mut W) -> Result<bool> {
+    work.charge(1)?;
+    if left.len() != right.len() {
+        return Ok(false);
+    }
+    work.charge_product(left.len(), 1)?;
+    Ok(left == right)
+}
+
 impl ExactRational {
     pub(in crate::geometry) fn new(
         numerator: ExactDyadic,
         denominator: ExactDyadic,
     ) -> Result<Self> {
+        Self::new_with_work(numerator, denominator, &mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn new_with_work<W: Work>(
+        numerator: ExactDyadic,
+        denominator: ExactDyadic,
+        work: &mut W,
+    ) -> Result<Self> {
         if denominator.is_zero() {
             return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
         }
+        work.charge(1)?;
         if numerator.is_zero() {
             return Ok(Self {
                 numerator: ExactDyadic::zero(),
@@ -157,11 +171,48 @@ impl ExactRational {
                 denominator,
             });
         }
-        let common = numerator.gcd(&denominator);
+        let common = numerator.gcd_with_work(&denominator, work)?;
+        let numerator = numerator.try_exact_quotient_with_work(&common, work)?;
+        let denominator = denominator.try_exact_quotient_with_work(&common, work)?;
         Ok(Self {
-            numerator: numerator.try_exact_quotient(&common)?,
-            denominator: denominator.try_exact_quotient(&common)?,
+            numerator,
+            denominator,
         })
+    }
+
+    pub(in crate::geometry) fn try_clone_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
+        Ok(Self {
+            numerator: self.numerator.try_clone_with_work(work)?,
+            denominator: self.denominator.try_clone_with_work(work)?,
+        })
+    }
+
+    pub(in crate::geometry) fn try_eq_with_work<W: Work>(
+        &self,
+        other: &Self,
+        work: &mut W,
+    ) -> Result<bool> {
+        work.charge(1)?;
+        let sign = self.numerator.negative ^ self.denominator.negative;
+        if sign != (other.numerator.negative ^ other.denominator.negative) {
+            return Ok(false);
+        }
+        if !slices_equal_with_work(
+            self.numerator.limbs.as_slice(),
+            other.numerator.limbs.as_slice(),
+            work,
+        )? {
+            return Ok(false);
+        }
+        if !slices_equal_with_work(
+            self.denominator.limbs.as_slice(),
+            other.denominator.limbs.as_slice(),
+            work,
+        )? {
+            return Ok(false);
+        }
+        work.charge(1)?;
+        Ok(rational_exponent(self) == rational_exponent(other))
     }
 
     pub(in crate::geometry) fn zero() -> Self {
@@ -205,92 +256,171 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn try_add(&self, other: &Self) -> Result<Self> {
+        self.try_add_with_work(other, &mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn try_add_with_work<W: Work>(
+        &self,
+        other: &Self,
+        work: &mut W,
+    ) -> Result<Self> {
         if self.denominator.is_one() && other.denominator.is_one() {
             let numerator = if self.numerator.is_zero() {
-                other.numerator.clone()
+                other.numerator.try_clone_with_work(work)?
             } else if other.numerator.is_zero() {
-                self.numerator.clone()
+                self.numerator.try_clone_with_work(work)?
             } else {
-                ExactDyadic::try_combine_refs(&self.numerator, &other.numerator, false)?
+                ExactDyadic::try_combine_refs_with_work(
+                    &self.numerator,
+                    &other.numerator,
+                    false,
+                    work,
+                )?
             };
             return Ok(Self::from_dyadic(numerator));
         }
-        let left = self.numerator.try_product(&other.denominator)?;
-        let right = other.numerator.try_product(&self.denominator)?;
-        let numerator = left.try_add(right)?;
-        let denominator = self.denominator.try_product(&other.denominator)?;
-        Self::new(numerator, denominator)
+        let left = self
+            .numerator
+            .try_product_with_work(&other.denominator, work)?;
+        let right = other
+            .numerator
+            .try_product_with_work(&self.denominator, work)?;
+        let numerator = left.try_add_with_work(right, work)?;
+        let denominator = self
+            .denominator
+            .try_product_with_work(&other.denominator, work)?;
+        Self::new_with_work(numerator, denominator, work)
     }
 
     pub(in crate::geometry) fn try_subtract(&self, other: &Self) -> Result<Self> {
+        self.try_subtract_with_work(other, &mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn try_subtract_with_work<W: Work>(
+        &self,
+        other: &Self,
+        work: &mut W,
+    ) -> Result<Self> {
         if self.denominator.is_one() && other.denominator.is_one() {
             return Ok(Self::from_dyadic(
-                self.numerator.try_subtract_ref(&other.numerator)?,
+                self.numerator
+                    .try_subtract_ref_with_work(&other.numerator, work)?,
             ));
         }
-        let left = self.numerator.try_product(&other.denominator)?;
-        let right = other.numerator.try_product(&self.denominator)?;
-        let numerator = left.try_subtract(right)?;
-        let denominator = self.denominator.try_product(&other.denominator)?;
-        Self::new(numerator, denominator)
+        let left = self
+            .numerator
+            .try_product_with_work(&other.denominator, work)?;
+        let right = other
+            .numerator
+            .try_product_with_work(&self.denominator, work)?;
+        let numerator = left.try_subtract_with_work(right, work)?;
+        let denominator = self
+            .denominator
+            .try_product_with_work(&other.denominator, work)?;
+        Self::new_with_work(numerator, denominator, work)
     }
 
     pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
+        self.try_product_with_work(other, &mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn try_product_with_work<W: Work>(
+        &self,
+        other: &Self,
+        work: &mut W,
+    ) -> Result<Self> {
         if self.denominator.is_one() && other.denominator.is_one() {
             return Ok(Self::from_dyadic(
-                self.numerator.try_product(&other.numerator)?,
+                self.numerator
+                    .try_product_with_work(&other.numerator, work)?,
             ));
         }
-        Self::new(
-            self.numerator.try_product(&other.numerator)?,
-            self.denominator.try_product(&other.denominator)?,
-        )
+        let numerator = self
+            .numerator
+            .try_product_with_work(&other.numerator, work)?;
+        let denominator = self
+            .denominator
+            .try_product_with_work(&other.denominator, work)?;
+        Self::new_with_work(numerator, denominator, work)
     }
 
     pub(in crate::geometry) fn try_square(&self) -> Result<Self> {
+        self.try_square_with_work(&mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn try_square_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
         if self.denominator.is_one() {
             return Ok(Self::from_dyadic(
-                self.numerator.try_product(&self.numerator)?,
+                self.numerator
+                    .try_product_with_work(&self.numerator, work)?,
             ));
         }
-        self.try_product(self)
+        self.try_product_with_work(self, work)
     }
 
     pub(in crate::geometry) fn try_quotient(&self, other: &Self) -> Result<Self> {
+        self.try_quotient_with_work(other, &mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn try_quotient_with_work<W: Work>(
+        &self,
+        other: &Self,
+        work: &mut W,
+    ) -> Result<Self> {
         if other.is_one() {
-            return Ok(self.clone());
+            return self.try_clone_with_work(work);
         }
-        Self::new(
-            self.numerator.try_product(&other.denominator)?,
-            self.denominator.try_product(&other.numerator)?,
-        )
+        let numerator = self
+            .numerator
+            .try_product_with_work(&other.denominator, work)?;
+        let denominator = self
+            .denominator
+            .try_product_with_work(&other.numerator, work)?;
+        Self::new_with_work(numerator, denominator, work)
     }
 
     pub(in crate::geometry) fn try_midpoint(&self, other: &Self) -> Result<Self> {
-        let numerator = self.try_add(other)?;
-        if numerator.denominator.is_one() {
+        self.try_midpoint_with_work(other, &mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn try_midpoint_with_work<W: Work>(
+        &self,
+        other: &Self,
+        work: &mut W,
+    ) -> Result<Self> {
+        let sum = self.try_add_with_work(other, work)?;
+        if sum.denominator.is_one() {
             return Ok(Self::from_dyadic(
-                numerator
-                    .numerator
-                    .try_product(&ExactDyadic::from_f64(0.5))?,
+                sum.numerator
+                    .try_product_with_work(&ExactDyadic::from_f64(0.5), work)?,
             ));
         }
-        Self::new(
-            numerator.numerator.clone(),
-            numerator
-                .denominator
-                .try_product(&ExactDyadic::from_f64(2.0))?,
-        )
+        let numerator = sum.numerator.try_clone_with_work(work)?;
+        let denominator = sum
+            .denominator
+            .try_product_with_work(&ExactDyadic::from_f64(2.0), work)?;
+        Self::new_with_work(numerator, denominator, work)
     }
 
     pub(in crate::geometry) fn try_cmp(&self, other: &Self) -> Result<Ordering> {
+        self.try_cmp_with_work(other, &mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn try_cmp_with_work<W: Work>(
+        &self,
+        other: &Self,
+        work: &mut W,
+    ) -> Result<Ordering> {
         if self.denominator.is_one() && other.denominator.is_one() {
-            return Ok(self.numerator.cmp(&other.numerator));
+            return self.numerator.cmp_with_work(&other.numerator, work);
         }
-        Ok(self
+        let left = self
             .numerator
-            .try_product(&other.denominator)?
-            .cmp(&other.numerator.try_product(&self.denominator)?))
+            .try_product_with_work(&other.denominator, work)?;
+        let right = other
+            .numerator
+            .try_product_with_work(&self.denominator, work)?;
+        left.cmp_with_work(&right, work)
     }
 
     pub(in crate::geometry) fn parts(&self) -> (&ExactDyadic, &ExactDyadic) {
@@ -298,20 +428,35 @@ impl ExactRational {
     }
 
     pub(in crate::geometry) fn round(&self) -> Result<f64> {
-        round_ratio(&self.numerator, &self.denominator)
+        self.round_with_work(&mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn round_with_work<W: Work>(&self, work: &mut W) -> Result<f64> {
+        round_ratio_with_work(&self.numerator, &self.denominator, work)
     }
 
     pub(in crate::geometry) fn outward_bounds(&self) -> Result<(f64, f64)> {
-        outward_ratio_bounds(&self.numerator, &self.denominator)
+        self.outward_bounds_with_work(&mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn outward_bounds_with_work<W: Work>(
+        &self,
+        work: &mut W,
+    ) -> Result<(f64, f64)> {
+        outward_ratio_bounds_with_work(&self.numerator, &self.denominator, work)
     }
 
     pub(in crate::geometry) fn round_sqrt(&self) -> Result<f64> {
+        self.round_sqrt_with_work(&mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn round_sqrt_with_work<W: Work>(&self, work: &mut W) -> Result<f64> {
         if self.sign() == ExactSign::Negative {
             return Err(
                 GeometryErrorKind::Invalid("negative exact squared distance".into()).into(),
             );
         }
-        round_sqrt_ratio(&self.numerator, &self.denominator)
+        round_sqrt_ratio_with_work(&self.numerator, &self.denominator, work)
     }
 
     /// The exact parameter of `point` on the stored segment `start -> end`.
@@ -548,9 +693,33 @@ pub(in crate::geometry) fn incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactS
 }
 
 fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
-    let (adx, ady) = (try_difference(a.x, d.x)?, try_difference(a.y, d.y)?);
-    let (bdx, bdy) = (try_difference(b.x, d.x)?, try_difference(b.y, d.y)?);
-    let (cdx, cdy) = (try_difference(c.x, d.x)?, try_difference(c.y, d.y)?);
+    incircle_dyadic_points(
+        [ExactDyadic::from_f64(a.x), ExactDyadic::from_f64(a.y)],
+        [ExactDyadic::from_f64(b.x), ExactDyadic::from_f64(b.y)],
+        [ExactDyadic::from_f64(c.x), ExactDyadic::from_f64(c.y)],
+        [ExactDyadic::from_f64(d.x), ExactDyadic::from_f64(d.y)],
+    )
+}
+
+/// Exact geometric in-circle determinant over the original dyadic site
+/// coordinates. Raw XY keeps its filtered entry point; retained chart sites
+/// use this same final arithmetic after supplying native-plus-lift X.
+pub(in crate::geometry) fn incircle_dyadic_points(
+    a: [ExactDyadic; 2],
+    b: [ExactDyadic; 2],
+    c: [ExactDyadic; 2],
+    d: [ExactDyadic; 2],
+) -> Result<ExactSign> {
+    let [ax, ay] = a;
+    let [bx, by] = b;
+    let [cx, cy] = c;
+    let [dx, dy] = d;
+    let adx = ax.try_subtract(dx.clone())?;
+    let ady = ay.try_subtract(dy.clone())?;
+    let bdx = bx.try_subtract(dx.clone())?;
+    let bdy = by.try_subtract(dy.clone())?;
+    let cdx = cx.try_subtract(dx)?;
+    let cdy = cy.try_subtract(dy)?;
     let alift = adx.try_product(&adx)?.try_add(ady.try_product(&ady)?)?;
     let blift = bdx.try_product(&bdx)?.try_add(bdy.try_product(&bdy)?)?;
     let clift = cdx.try_product(&cdx)?.try_add(cdy.try_product(&cdy)?)?;
@@ -1849,26 +2018,48 @@ pub(in crate::geometry) fn compare_ratios(
     bn: &ExactDyadic,
     bd: &ExactDyadic,
 ) -> Result<Ordering> {
+    compare_ratios_with_work(an, ad, bn, bd, &mut Unmetered)
+}
+
+pub(in crate::geometry) fn compare_ratios_with_work<W: Work>(
+    an: &ExactDyadic,
+    ad: &ExactDyadic,
+    bn: &ExactDyadic,
+    bd: &ExactDyadic,
+    work: &mut W,
+) -> Result<Ordering> {
+    work.charge(1)?;
     if let Some(order) = ratio_order_filter(an, ad, bn, bd) {
         return Ok(order);
     }
-    exact_ratio_order(an, ad, bn, bd)
+    exact_ratio_order_with_work(an, ad, bn, bd, work)
 }
 
 /// The order of `an / ad` and `bn / bd` from two exact cross products.
+fn exact_ratio_order_with_work<W: Work>(
+    an: &ExactDyadic,
+    ad: &ExactDyadic,
+    bn: &ExactDyadic,
+    bd: &ExactDyadic,
+    work: &mut W,
+) -> Result<Ordering> {
+    let left = an.try_product_with_work(bd, work)?;
+    let right = bn.try_product_with_work(ad, work)?;
+    let mut order = left.cmp_with_work(&right, work)?;
+    if ad.sign().as_i8().wrapping_mul(bd.sign().as_i8()) < 0 {
+        order = order.reverse();
+    }
+    Ok(order)
+}
+
+#[cfg(test)]
 fn exact_ratio_order(
     an: &ExactDyadic,
     ad: &ExactDyadic,
     bn: &ExactDyadic,
     bd: &ExactDyadic,
 ) -> Result<Ordering> {
-    let left = an.try_product(bd)?;
-    let right = bn.try_product(ad)?;
-    let mut order = left.cmp(&right);
-    if ad.sign().as_i8().wrapping_mul(bd.sign().as_i8()) < 0 {
-        order = order.reverse();
-    }
-    Ok(order)
+    exact_ratio_order_with_work(an, ad, bn, bd, &mut Unmetered)
 }
 
 /// Relative separation two approximate ratio magnitudes need before their
@@ -2057,23 +2248,24 @@ fn approximate_sqrt_ratio(numerator: &ExactDyadic, denominator: &ExactDyadic) ->
     }
 }
 
-fn exact_ratio_bracket(
+fn exact_ratio_bracket_with_work<W: Work>(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
     proposal: f64,
     sign: ExactSign,
+    work: &mut W,
 ) -> Result<Option<(u64, u64, Option<ExactDyadic>)>> {
     const MAX_ULP_STEPS: usize = 4;
     let max_bits = f64::MAX.to_bits();
-    let compare = |bits: u64| -> Result<(Ordering, ExactDyadic)> {
+    let compare = |bits: u64, work: &mut W| -> Result<(Ordering, ExactDyadic)> {
         let magnitude = f64::from_bits(bits);
         let candidate = if sign == ExactSign::Negative {
             -magnitude
         } else {
             magnitude
         };
-        let product = ExactDyadic::from_f64(candidate).try_product(denominator)?;
-        let order = product.cmp(numerator);
+        let product = ExactDyadic::from_f64(candidate).try_product_with_work(denominator, work)?;
+        let order = product.cmp_with_work(numerator, work)?;
         Ok((
             if numerator.negative {
                 order.reverse()
@@ -2084,18 +2276,20 @@ fn exact_ratio_bracket(
         ))
     };
     let mut bits = proposal.to_bits();
-    let (order, product) = compare(bits)?;
+    work.charge(1)?;
+    let (order, product) = compare(bits, work)?;
     match order {
         Ordering::Equal => return Ok(Some((bits, bits, None))),
         Ordering::Less => {
             let mut lower_product = product;
             for _ in 0..MAX_ULP_STEPS {
+                work.charge(1)?;
                 if bits == max_bits {
                     return Ok(None);
                 }
                 let lower = bits;
                 bits = bits.wrapping_add(1);
-                let (order, product) = compare(bits)?;
+                let (order, product) = compare(bits, work)?;
                 match order {
                     Ordering::Less => lower_product = product,
                     Ordering::Equal => return Ok(Some((bits, bits, None))),
@@ -2105,12 +2299,13 @@ fn exact_ratio_bracket(
         },
         Ordering::Greater => {
             for _ in 0..MAX_ULP_STEPS {
+                work.charge(1)?;
                 if bits == 0 {
                     return Ok(None);
                 }
                 let upper = bits;
                 bits = bits.wrapping_sub(1);
-                let (order, product) = compare(bits)?;
+                let (order, product) = compare(bits, work)?;
                 match order {
                     Ordering::Greater => {},
                     Ordering::Equal => return Ok(Some((bits, bits, None))),
@@ -2122,19 +2317,23 @@ fn exact_ratio_bracket(
     Ok(None)
 }
 
-fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
+fn round_ratio_binary_with_work<W: Work>(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    work: &mut W,
+) -> Result<f64> {
     let sign = numerator.sign().quotient(denominator.sign());
-    let numerator = numerator.clone().abs();
-    let denominator = denominator.clone().abs();
+    let numerator = numerator.try_clone_with_work(work)?.abs();
+    let denominator = denominator.try_clone_with_work(work)?.abs();
     if numerator.is_zero() {
         return Ok(0.0);
     }
-    let max = ExactDyadic::from_f64(f64::MAX).try_product(&denominator)?;
-    if numerator.cmp(&max) == Ordering::Greater {
+    let max = ExactDyadic::from_f64(f64::MAX).try_product_with_work(&denominator, work)?;
+    if numerator.cmp_with_work(&max, work)? == Ordering::Greater {
         let overflow_midpoint = ExactDyadic::from_f64(f64::MAX)
-            .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))?
-            .try_product(&denominator)?;
-        if numerator.cmp(&overflow_midpoint) == Ordering::Less {
+            .try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(970)), work)?
+            .try_product_with_work(&denominator, work)?;
+        if numerator.cmp_with_work(&overflow_midpoint, work)? == Ordering::Less {
             return Ok(if sign == ExactSign::Negative {
                 -f64::MAX
             } else {
@@ -2146,9 +2345,11 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
+        work.charge(1)?;
         let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
-        let product = ExactDyadic::from_f64(f64::from_bits(mid)).try_product(&denominator)?;
-        if product.cmp(&numerator) == Ordering::Greater {
+        let product =
+            ExactDyadic::from_f64(f64::from_bits(mid)).try_product_with_work(&denominator, work)?;
+        if product.cmp_with_work(&numerator, work)? == Ordering::Greater {
             high = mid.wrapping_sub(1);
         } else {
             low = mid;
@@ -2160,11 +2361,11 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     } else {
         let upper = f64::from_bits(low.wrapping_add(1));
         // Compare 2*n/d with lower+upper. Equality is the rounding tie.
-        let twice_numerator = numerator.try_product(&ExactDyadic::from_f64(2.0))?;
+        let twice_numerator = numerator.try_product_with_work(&ExactDyadic::from_f64(2.0), work)?;
         let midpoint_scaled = ExactDyadic::from_f64(lower)
-            .try_add(ExactDyadic::from_f64(upper))?
-            .try_product(&denominator)?;
-        match twice_numerator.cmp(&midpoint_scaled) {
+            .try_add_with_work(ExactDyadic::from_f64(upper), work)?
+            .try_product_with_work(&denominator, work)?;
+        match twice_numerator.cmp_with_work(&midpoint_scaled, work)? {
             Ordering::Less => lower,
             Ordering::Greater => upper,
             Ordering::Equal => {
@@ -2183,9 +2384,22 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     })
 }
 
+#[cfg(test)]
+fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
+    round_ratio_binary_with_work(numerator, denominator, &mut Unmetered)
+}
+
 pub(in crate::geometry) fn round_ratio(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
+) -> Result<f64> {
+    round_ratio_with_work(numerator, denominator, &mut Unmetered)
+}
+
+pub(in crate::geometry) fn round_ratio_with_work<W: Work>(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    work: &mut W,
 ) -> Result<f64> {
     #[cfg(all(test, debug_assertions))]
     {
@@ -2199,16 +2413,17 @@ pub(in crate::geometry) fn round_ratio(
     if numerator.is_zero() {
         return Ok(0.0);
     }
-    if numerator.cmp_magnitude(denominator) == Ordering::Equal {
+    if numerator.cmp_magnitude_with_work(denominator, work)? == Ordering::Equal {
         return Ok(if sign == ExactSign::Negative {
             -1.0
         } else {
             1.0
         });
     }
+    work.charge(1)?;
     if let Some(proposal) = approximate_ratio(numerator, denominator)
         && let Some((low, high, lower_product)) =
-            exact_ratio_bracket(numerator, denominator, proposal, sign)?
+            exact_ratio_bracket_with_work(numerator, denominator, proposal, sign, work)?
     {
         if low == high {
             let rounded = f64::from_bits(low);
@@ -2221,7 +2436,7 @@ pub(in crate::geometry) fn round_ratio(
         let lower = f64::from_bits(low);
         let upper = f64::from_bits(high);
         let lower_product = lower_product.expect("a two-point bracket has a lower product");
-        let residual = numerator.try_subtract_ref(&lower_product)?;
+        let residual = numerator.try_subtract_ref_with_work(&lower_product, work)?;
         let spacing_exponent = {
             // The lower binade owns the gap at every power-of-two boundary.
             let encoded_exponent = (low >> 52) & 0x7FF;
@@ -2231,8 +2446,11 @@ pub(in crate::geometry) fn round_ratio(
                 (encoded_exponent as i64).wrapping_sub(1075)
             }
         };
-        let midpoint_order =
-            residual.cmp_magnitude_scaled(denominator, spacing_exponent.wrapping_sub(1));
+        let midpoint_order = residual.cmp_magnitude_scaled_with_work(
+            denominator,
+            spacing_exponent.wrapping_sub(1),
+            work,
+        )?;
         let rounded = match midpoint_order {
             Ordering::Less => lower,
             Ordering::Equal if low & 1 == 0 => lower,
@@ -2244,7 +2462,7 @@ pub(in crate::geometry) fn round_ratio(
             rounded
         });
     }
-    round_ratio_binary(numerator, denominator)
+    round_ratio_binary_with_work(numerator, denominator, work)
 }
 
 /// Return the tight binary64 interval containing an exact dyadic ratio.
@@ -2257,9 +2475,24 @@ pub(in crate::geometry) fn outward_ratio_bounds(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
 ) -> Result<(f64, f64)> {
-    let rounded = round_ratio(numerator, denominator)?;
+    outward_ratio_bounds_with_work(numerator, denominator, &mut Unmetered)
+}
+
+pub(in crate::geometry) fn outward_ratio_bounds_with_work<W: Work>(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    work: &mut W,
+) -> Result<(f64, f64)> {
+    let rounded = round_ratio_with_work(numerator, denominator, work)?;
+    work.charge(1)?;
     let rounded_exact = ExactDyadic::from_f64(rounded);
-    match compare_ratios(numerator, denominator, &rounded_exact, &ExactDyadic::one())? {
+    match compare_ratios_with_work(
+        numerator,
+        denominator,
+        &rounded_exact,
+        &ExactDyadic::one(),
+        work,
+    )? {
         Ordering::Less => Ok((rounded.next_down(), rounded)),
         Ordering::Equal => Ok((rounded, rounded)),
         Ordering::Greater => Ok((rounded, rounded.next_up())),
@@ -2275,17 +2508,28 @@ pub(in crate::geometry) fn round_sqrt_ratio(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
 ) -> Result<f64> {
+    round_sqrt_ratio_with_work(numerator, denominator, &mut Unmetered)
+}
+
+pub(in crate::geometry) fn round_sqrt_ratio_with_work<W: Work>(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    work: &mut W,
+) -> Result<f64> {
     if numerator.is_zero() {
         return Ok(0.0);
     }
+    work.charge(1)?;
     let max = ExactDyadic::from_f64(f64::MAX);
-    let overflow_midpoint = max.try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))?;
+    let overflow_midpoint =
+        max.try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(970)), work)?;
     let overflow_squared = overflow_midpoint
-        .try_product(&overflow_midpoint)?
-        .try_product(denominator)?;
-    if numerator.cmp(&overflow_squared) != Ordering::Less {
+        .try_product_with_work(&overflow_midpoint, work)?
+        .try_product_with_work(denominator, work)?;
+    if numerator.cmp_with_work(&overflow_squared, work)? != Ordering::Less {
         return Ok(f64::INFINITY);
     }
+    work.charge(1)?;
     if let Some(proposal) = approximate_sqrt_ratio(numerator, denominator)
         && proposal.is_finite()
     {
@@ -2294,7 +2538,9 @@ pub(in crate::geometry) fn round_sqrt_ratio(
         } else {
             proposal
         };
-        if let Some((low, high)) = exact_sqrt_ratio_bracket(numerator, denominator, proposal)? {
+        if let Some((low, high)) =
+            exact_sqrt_ratio_bracket_with_work(numerator, denominator, proposal, work)?
+        {
             if low == high {
                 return Ok(f64::from_bits(low));
             }
@@ -2302,54 +2548,69 @@ pub(in crate::geometry) fn round_sqrt_ratio(
             let upper = f64::from_bits(high);
             // Compare the exact squared ratio with the square of the
             // midpoint without rounding the midpoint itself.
-            let midpoint_sum =
-                ExactDyadic::from_f64(lower).try_add(ExactDyadic::from_f64(upper))?;
+            let midpoint_sum = ExactDyadic::from_f64(lower)
+                .try_add_with_work(ExactDyadic::from_f64(upper), work)?;
             let midpoint_squared = midpoint_sum
-                .try_product(&midpoint_sum)?
-                .try_product(denominator)?;
-            let four_numerator = numerator.try_product(&ExactDyadic::from_f64(4.0))?;
-            return Ok(match four_numerator.cmp(&midpoint_squared) {
-                Ordering::Less => lower,
-                Ordering::Greater => upper,
-                Ordering::Equal => {
-                    if low & 1 == 0 {
-                        lower
-                    } else {
-                        upper
-                    }
+                .try_product_with_work(&midpoint_sum, work)?
+                .try_product_with_work(denominator, work)?;
+            let four_numerator =
+                numerator.try_product_with_work(&ExactDyadic::from_f64(4.0), work)?;
+            return Ok(
+                match four_numerator.cmp_with_work(&midpoint_squared, work)? {
+                    Ordering::Less => lower,
+                    Ordering::Greater => upper,
+                    Ordering::Equal => {
+                        if low & 1 == 0 {
+                            lower
+                        } else {
+                            upper
+                        }
+                    },
                 },
-            });
+            );
         }
     }
-    round_sqrt_ratio_binary(numerator, denominator)
+    round_sqrt_ratio_binary_with_work(numerator, denominator, work)
 }
 
+#[cfg(test)]
 fn exact_sqrt_ratio_bracket(
     numerator: &ExactDyadic,
     denominator: &ExactDyadic,
     proposal: f64,
 ) -> Result<Option<(u64, u64)>> {
+    exact_sqrt_ratio_bracket_with_work(numerator, denominator, proposal, &mut Unmetered)
+}
+
+fn exact_sqrt_ratio_bracket_with_work<W: Work>(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    proposal: f64,
+    work: &mut W,
+) -> Result<Option<(u64, u64)>> {
     let max_bits = f64::MAX.to_bits();
-    let compare = |bits: u64| -> Result<Ordering> {
+    let compare = |bits: u64, work: &mut W| -> Result<Ordering> {
         let candidate = ExactDyadic::from_f64(f64::from_bits(bits));
         let square = candidate
-            .try_product(&candidate)?
-            .try_product(denominator)?;
-        Ok(square.cmp(numerator))
+            .try_product_with_work(&candidate, work)?
+            .try_product_with_work(denominator, work)?;
+        square.cmp_with_work(numerator, work)
     };
     let bits = proposal.to_bits().min(max_bits);
-    let (mut lower, mut upper) = match compare(bits)? {
+    work.charge(1)?;
+    let (mut lower, mut upper) = match compare(bits, work)? {
         Ordering::Equal => return Ok(Some((bits, bits))),
         Ordering::Less => {
             let mut lower = bits;
             let mut step = 1_u64;
             loop {
+                work.charge(1)?;
                 let distance = max_bits.wrapping_sub(lower);
                 if distance == 0 {
                     return Ok(None);
                 }
                 let candidate = lower.wrapping_add(step.min(distance));
-                match compare(candidate)? {
+                match compare(candidate, work)? {
                     Ordering::Less => {
                         lower = candidate;
                         step = step.saturating_mul(2);
@@ -2363,11 +2624,12 @@ fn exact_sqrt_ratio_bracket(
             let mut upper = bits;
             let mut step = 1_u64;
             loop {
+                work.charge(1)?;
                 if upper == 0 {
                     return Ok(None);
                 }
                 let candidate = upper.wrapping_sub(step.min(upper));
-                match compare(candidate)? {
+                match compare(candidate, work)? {
                     Ordering::Greater => {
                         upper = candidate;
                         step = step.saturating_mul(2);
@@ -2385,8 +2647,9 @@ fn exact_sqrt_ratio_bracket(
     // ordering; unlike a fixed ULP walk, this also covers both subnormal and
     // binade boundaries without an arbitrary retry limit.
     while upper.wrapping_sub(lower) > 1 {
+        work.charge(1)?;
         let middle = lower.wrapping_add(upper.wrapping_sub(lower) / 2);
-        match compare(middle)? {
+        match compare(middle, work)? {
             Ordering::Less => lower = middle,
             Ordering::Equal => return Ok(Some((middle, middle))),
             Ordering::Greater => upper = middle,
@@ -2395,16 +2658,26 @@ fn exact_sqrt_ratio_bracket(
     Ok(Some((lower, upper)))
 }
 
+#[cfg(test)]
 fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
+    round_sqrt_ratio_binary_with_work(numerator, denominator, &mut Unmetered)
+}
+
+fn round_sqrt_ratio_binary_with_work<W: Work>(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+    work: &mut W,
+) -> Result<f64> {
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
+        work.charge(1)?;
         let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
         let candidate = ExactDyadic::from_f64(f64::from_bits(mid));
         let square = candidate
-            .try_product(&candidate)?
-            .try_product(denominator)?;
-        if square.cmp(numerator) == Ordering::Greater {
+            .try_product_with_work(&candidate, work)?
+            .try_product_with_work(denominator, work)?;
+        if square.cmp_with_work(numerator, work)? == Ordering::Greater {
             high = mid.wrapping_sub(1);
         } else {
             low = mid;
@@ -2415,22 +2688,25 @@ fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -
     }
     let lower = f64::from_bits(low);
     let upper = f64::from_bits(low.wrapping_add(1));
-    let midpoint_sum = ExactDyadic::from_f64(lower).try_add(ExactDyadic::from_f64(upper))?;
+    let midpoint_sum =
+        ExactDyadic::from_f64(lower).try_add_with_work(ExactDyadic::from_f64(upper), work)?;
     let midpoint_squared = midpoint_sum
-        .try_product(&midpoint_sum)?
-        .try_product(denominator)?;
-    let four_numerator = numerator.try_product(&ExactDyadic::from_f64(4.0))?;
-    Ok(match four_numerator.cmp(&midpoint_squared) {
-        Ordering::Less => lower,
-        Ordering::Greater => upper,
-        Ordering::Equal => {
-            if low & 1 == 0 {
-                lower
-            } else {
-                upper
-            }
+        .try_product_with_work(&midpoint_sum, work)?
+        .try_product_with_work(denominator, work)?;
+    let four_numerator = numerator.try_product_with_work(&ExactDyadic::from_f64(4.0), work)?;
+    Ok(
+        match four_numerator.cmp_with_work(&midpoint_squared, work)? {
+            Ordering::Less => lower,
+            Ordering::Greater => upper,
+            Ordering::Equal => {
+                if low & 1 == 0 {
+                    lower
+                } else {
+                    upper
+                }
+            },
         },
-    })
+    )
 }
 
 #[cfg(test)]

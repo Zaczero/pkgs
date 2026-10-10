@@ -54,20 +54,25 @@ pub(crate) use frame::{
 mod area;
 pub(crate) mod exact_arith;
 pub(crate) mod expansion;
+mod geographic_area;
+pub(crate) mod interval;
 pub(crate) use access::{
     Component, CoordRun, Lineal, MetricSupportRun, PointSet, Polygonal, REDUCE_LANES,
     REDUCE_SIMD_MIN, ReduceSimd, RunIdentity, SharedShapeOwners, SupportRunKind, canonicalize_zero,
     centroid_ring_sums, column_all_finite, column_mean2, column_minmax, line_length_3d_columns,
     line_length_columns, pair_map4_guarded_f64, pair_select_mask, shape_axes_all_z,
     simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_xy_map_f64,
-    squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
+    squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns, xy_finite_bounds_columns,
 };
 #[cfg(test)]
-pub(crate) use area::{AreaSign, open_point_cycle_magnitude, open_xy_cycle_sign};
+pub(crate) use area::open_point_cycle_magnitude;
 pub(crate) use area::{
-    ExactRationalArea, RingWinding, closed_columns_winding, open_point_cycle_winding,
-    open_xy_cycle_magnitude, open_xy_cycle_winding, polygon_area_measure_columns,
-    polygon_area_measure_with, ring_winding,
+    ExactFactorialArea, ExactRationalArea, RingWinding, closed_columns_winding,
+    open_point_cycle_winding, open_xy_cycle_magnitude, open_xy_cycle_winding,
+    polygon_area_measure_columns, polygon_area_measure_with, ring_winding,
+};
+pub(crate) use geographic_area::{
+    GeographicAreaDensity, MAX_AUTHALIC_HARMONICS, polygon_area as geographic_polygon_area,
 };
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod storage;
@@ -76,13 +81,14 @@ pub(crate) use types::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, ChartBox, ChartEdgeDifferential,
     ChartEdgeDifferentialBounds, ChartMetric, ChartPointDistanceSample, CoordSeq, CoordSeqBuilder,
     CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
-    FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq, MAX_NESTING, MColumn, MOrdinate,
-    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointEdgeMinimum,
-    PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel, PolygonizeFull,
-    PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery, ShapeData,
-    ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VisiblePointRunKey,
-    VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits, coerce_to_common_axes,
+    DwithinOutcome, FrameDependentCaches, GeodesicMetric, GeodesicNumericalPolicy,
+    GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
+    MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
+    PointEdgeMinimum, PointEdgeQuery, PointEdgeQueryResult, PointKey, Polygon, PolygonLevel,
+    PolygonizeFull, PreparedPlan, RepairMethod, Ring, RingLevel, Segment, Shape, ShapeCountQuery,
+    ShapeData, ShapeOwnerKey, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue,
+    VisiblePointRunKey, VisibleXYKey, VoronoiBoundary, XY, ZOrdinate, canonical_f64_bits,
+    coerce_to_common_axes,
 };
 mod antimeridian;
 mod boundary;
@@ -92,24 +98,24 @@ pub(crate) use antimeridian::{
     DerivedPointStrategy, GeographicDerivedPointScan, GeographicTopologyRoute, UnwrapChartError,
     antimeridian_frame, chain_crosses_antimeridian, classify_geographic_chart,
     classify_geographic_validity_chart, crosses_antimeridian_in_frame, faithful_geographic_chain,
-    geographic_crossing, geographic_crossing_bounds,
-    geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
-    geographic_topology_route, is_ring_data_in_frame, is_simple_data_in_frame,
-    repair_data_in_frame, repair_shape_in_frame, self_intersections_data_in_frame, topology_domain,
+    geographic_crossing_bounds, geographic_topology_route, is_ring_data_in_frame,
+    is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
+    self_intersections_data_in_frame, topology_domain, topology_domain_at,
     unary_antimeridian_centroid, unary_antimeridian_derived, unwrap_contact_chart,
     unwrap_coordinates, validate_data_in_frame, validate_shape_in_frame,
 };
-pub(crate) use boundary::boundary;
+pub(crate) use boundary::boundary_with_metric;
 mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
-    publish_computed_point_or_raw_shape, publish_computed_polygon_rings_with_budget,
-    publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles,
-    publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
-    publish_raw_computed_shapes, publish_raw_computed_shapes_with_budget,
-    publish_stored_computed_shape, publish_transformed_shape,
-    publish_triangle_vertex_stream_budgeted, publish_voronoi_polygon_outputs,
+    publish_computed_point_or_raw_shape, publish_polygon_parts_with_edge_roles,
+    publish_polygon_with_edge_roles_and_context, publish_raw_computed_shape,
+    publish_raw_computed_shape_with_budget, publish_raw_computed_shape_with_budget_and_context,
+    publish_raw_computed_shape_with_context, publish_raw_computed_shapes_with_budget_and_context,
+    publish_raw_computed_shapes_with_context, publish_stored_computed_shape,
+    publish_transformed_chain, publish_transformed_shape, publish_triangle_vertex_stream_budgeted,
+    publish_voronoi_polygon_outputs,
 };
 mod arrangement;
 mod bvh_code;
@@ -121,27 +127,34 @@ mod dimension;
 pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
 mod derived;
 pub(crate) use derived::{
-    centroid_line_row_columns, centroid_polygon_row_columns,
-    centroid_polygon_row_columns_with_bounds, geometric_xy_cmp, native_concave_hull,
-    point_on_surface_line_columns, point_on_surface_polygon_row_columns, shape_from_selected_hull,
-    smallest_enclosing_circle,
+    PointSetCenter, centroid_line_row_columns, centroid_polygon_row_columns,
+    centroid_polygon_row_columns_with_bounds, exact_point_chart_centroid, geometric_xy_cmp,
+    minimum_area_rectangle_chart, monotone_chain_chart_hull, native_concave_hull,
+    point_on_surface_line_columns, point_on_surface_polygon_row_columns, point_set_center_summary,
+    point_set_surface_point_at, shape_from_selected_hull, smallest_enclosing_circle,
 };
 mod distance;
 pub(in crate::geometry) use distance::{ExactPoint, point_segment_distance_squared_exact};
 pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch};
 pub(crate) use types::coordinate_columns_eq;
 mod embedding_search;
+pub(crate) use embedding_search::{Unmetered, Work};
 mod facet_bvh;
 mod generated_budget;
 mod line_index;
 mod linear;
 mod linear_3d;
 mod ordinates;
+pub(crate) use ordinates::{
+    ParallelSourceArcMetricAccess, RootMetricState, SourceArcContext, SourceArcMetricAccess,
+    computed_native_sample_ordinates, source_ordinate_values_at_fraction,
+};
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
 mod overlay;
 pub(crate) use overlay::{
     occupied_cartesian_area, occupied_support_shape, overlay_all, overlay_all_geographic_chart,
+    overlay_all_with_metric,
 };
 pub(crate) mod packed_line_metrics;
 mod point_location;
@@ -152,8 +165,8 @@ mod relate;
 mod relate_pattern;
 pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
-pub(in crate::geometry) use segment_index::OrderTree;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
+pub(in crate::geometry) use segment_index::{OrderTree, PersistentOrder};
 mod segments;
 pub(crate) mod source_support;
 pub(in crate::geometry) use source_support::compare_rays;
@@ -163,8 +176,6 @@ pub(crate) use source_support::{
 };
 mod tessellation;
 mod topology;
-#[cfg(test)]
-pub(crate) use topology::TopologyGraph;
 pub(crate) use topology::{
     ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain, VertexKey,
 };
@@ -178,8 +189,6 @@ use access::{
     compare_f64, compare_point_slices, compare_points, compare_polygons, compare_shapes,
     line_length, linework_first_point, simd_reduce_f64, simd_xy_map_one_f64,
 };
-#[cfg(test)]
-pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use chart_bvh::ChartEdgeBvh;
 pub(crate) use constructive::{
@@ -194,19 +203,20 @@ use constructive::{
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
-    coverage_simplify_with_frame, coverage_union_topo,
+    coverage_simplify_with_context, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 use distance::line_length_3d;
 pub(crate) use distance::{
-    DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
+    ChartParts, DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
     ensure_geographic_hausdorff_linework, frechet_distance_line_columns,
     frechet_distance_line_columns_batch, hausdorff_distance, hausdorff_distance_line_columns,
     hausdorff_distance_line_columns_batch,
 };
 pub(crate) use facet_bvh::{
-    BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
+    BVH_MIN_INDEXED_SEGMENTS, ClearanceFacetBvh, FacetBvh, NearestCandidate, NearestTarget,
+    PreparedLinework,
 };
 pub(crate) use generated_budget::{ExpansionBudget, GENERATED_ITEM_LIMIT};
 pub(crate) use line_index::{
@@ -214,15 +224,19 @@ pub(crate) use line_index::{
 };
 use linear::normalize_line_distance;
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
+use ordinates::carry_ordinates;
 pub(crate) use ordinates::carry_overlay_ordinates;
-use ordinates::{carry_each, carry_ordinates};
 #[cfg(test)]
 pub(crate) use overlay::cartesian_support_nonempty;
 use overlay::polygon_parts_to_shape;
 pub(crate) use overlay::{OverlayOp, Strictness, exact_intersects_bounds, rect_polygon};
 pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
-pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};
-pub(in crate::geometry) use predicates::PolygonContact;
+pub(in crate::geometry) use point_location::{
+    AreaLocationLabels, ExactLocationIndex, ExactLocationPoints,
+};
+pub(crate) use point_location::{PointBatchTester, PolygonPointIndex, PreparedPointQueries};
+#[cfg(test)]
+pub(crate) use predicates::ring_bounded_pole;
 use predicates::{
     LineworkChains, TouchDirections, classify_ring_pair, classify_ring_pair_with_contacts,
     face_interior_point, polygon_rings_issue_with_contacts, ring_classify_point,
@@ -230,9 +244,10 @@ use predicates::{
     segment_intersection_is_simple, segments_are_adjacent, settle_touches, shell_is_convex,
     simplified_polygon_delta_is_simple, visit_interacting_pairs,
 };
+pub(in crate::geometry) use predicates::{PolygonContact, remove_antenna_vertices};
 pub(crate) use predicates::{
     RingClass, fan_alternations, line_is_ccw, line_is_closed_in_domain, line_is_simple,
-    line_is_valid, polygon_is_valid, ring_bounded_pole, shape_encloses_pole_in_frame,
+    line_is_valid, polygon_is_valid, ring_classify_point_columns, shape_encloses_pole_in_frame,
     shape_has_polar_ring_in_frame, shape_is_closed_in_domain,
     shape_reaches_geographic_pole_in_frame, validate_line, validate_point, validate_points,
     validate_ring,
@@ -312,28 +327,47 @@ pub(crate) use relate::{
     graph_intersects_data_geographic, graph_relate_data, graph_relate_data_geographic,
     graph_relate_shapes, is_axis_aligned_rectangle, is_axis_aligned_rectangle_row, predicate_rows,
 };
+#[cfg(test)]
+pub(crate) use segment_index::{
+    CLEARANCE_POINT_BUILD_SITES, CLEARANCE_POINT_LEAVES, CLEARANCE_POINT_NODES,
+    CLEARANCE_POINT_RECHECKS,
+};
+pub(crate) use segment_index::{
+    ClearancePointQuery, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex,
+};
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
     for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
-    for_each_overlapping_bounds_pair, sign_of, single_chain,
+    for_each_overlapping_bounds_cross_pair_with_work, for_each_overlapping_bounds_pair, sign_of,
+    single_chain,
 };
-pub(crate) use segment_index::{PointEntry, PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 #[cfg(test)]
 use segments::point_segment_distance_key;
 use segments::{
-    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SquaredDistanceKey,
+    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SquaredDistanceKey, clearance_aabb_filter,
     orientation_xy, point_pair_distance_key, point_segment_distance_and_projection,
     point_segment_distance_squared, point_segment_exact_distance_key, ray_crossing_is_right,
     segment_contact_exact, segment_contact_point, segment_cross_point, segment_envelopes_disjoint,
-    segments_intersect, shared_segment_part, try_point_distance_squared,
-    try_point_segment_distance_squared, undirected_segment_edge_key,
+    segments_intersect, shared_segment_part, undirected_segment_edge_key,
+};
+#[cfg(test)]
+pub(crate) use segments::{
+    CLEARANCE_AABB_COMPARE_DECISIONS, CLEARANCE_AABB_COMPARE_DECLINES,
+    CLEARANCE_AABB_FILTER_DECLINES, CLEARANCE_AABB_FILTERS, CLEARANCE_DOT_BINARY64_DECISIONS,
+    CLEARANCE_DOT_BINARY64_DECLINES, CLEARANCE_STRIP_BINARY64_DECISIONS,
+    CLEARANCE_STRIP_BINARY64_DECLINES, CLEARANCE_STRIP_EXACT_FALLBACKS,
+    CLEARANCE_STRIP_SUPPORT_FALLBACKS, EXACT_SELECTION_FALLBACKS, POINT_SEGMENT_BINARY64_DECISIONS,
+    POINT_SEGMENT_BINARY64_DECLINES,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).
 pub(crate) use segments::{
-    RectContact, finish_planar_squared_min, lerp_point, line_segments, point_distance,
-    point_distance_squared, point_on_segment, points_dwithin, segment_vs_rect,
-    squared_norm_is_trustworthy,
+    RectContact, WitnessRole, clearance_strip_exceeds, finish_planar_squared_min, lerp_point,
+    line_segments, point_distance, point_distance_squared, point_on_segment, points_dwithin,
+    segment_vs_rect, source_dot_cmp, squared_norm_is_trustworthy,
+};
+pub(crate) use segments::{
+    SegmentProjection, point_segment_distance, point_segment_selection, segment_projection,
 };
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
@@ -341,24 +375,14 @@ pub(crate) use segments::{
     interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
     interpolate_subdivision_ordinate,
 };
-pub(crate) use segments::{point_segment_distance, point_segment_selection, segment_projection};
-pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
+pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
+pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{CdtRefinement, VoronoiPolygonOutput, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;
 
 use crate::collections::{HashMap, HashSet};
 use crate::error::Result;
-
-/// Admit a count before a native vector must represent every output item.
-///
-/// This checks only the vector's representable layout. Allocation exhaustion
-/// remains process-fatal under the crate's allocator policy.
-pub(crate) fn admit_shape_vector_capacity<T>(capacity: usize) -> Result<usize> {
-    std::alloc::Layout::array::<T>(capacity)
-        .map(|_| capacity)
-        .map_err(|_| crate::error::ResourceError::SizeOverflow.into())
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct BulkParams;
@@ -397,7 +421,7 @@ pub(crate) fn nearest_line_with_intent(
     pair: Option<&(Point, Point)>,
     common: CoordinateAxes,
     frame: crate::geographic::GeographicFrame,
-    intent: crate::geographic::ComputedEdgeIntent,
+    intent: crate::geographic::ComputedEdgeIntent<'_>,
 ) -> Result<Shape> {
     let Some(pair) = pair else {
         return nearest_line(None, common);
@@ -913,16 +937,26 @@ impl Bounds {
         }
     }
 
-    /// Geographic clip rectangle with canonical longitudes in ``[-180, 180]``.
-    /// Finite west/east endpoints use west>east to signal an
-    /// antimeridian-crossing window; latitudes must satisfy ``south <= north``.
-    pub fn new_geographic(west: f64, south: f64, east: f64, north: f64) -> Result<Self> {
+    /// Geographic rectangle with frame-native longitude and latitude bounds.
+    /// Finite west/east endpoints use west>east to signal a seam-crossing
+    /// window; latitudes must satisfy ``south <= north``.
+    pub(crate) fn new_geographic(
+        frame: crate::geographic::GeographicFrame,
+        west: f64,
+        south: f64,
+        east: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        let pole = frame.pole();
         if west.is_finite()
             && south.is_finite()
             && east.is_finite()
             && north.is_finite()
-            && (-180.0..=180.0).contains(&west)
-            && (-180.0..=180.0).contains(&east)
+            && (-half_period..=half_period).contains(&west)
+            && (-half_period..=half_period).contains(&east)
+            && (-pole..=pole).contains(&south)
+            && (-pole..=pole).contains(&north)
             && south <= north
         {
             Ok(Self::new_raw(west, south, east, north))
@@ -931,9 +965,33 @@ impl Bounds {
         }
     }
 
+    /// The full longitude band between two frame-valid latitudes.
+    pub(crate) fn full_geographic_longitude(
+        frame: crate::geographic::GeographicFrame,
+        south: f64,
+        north: f64,
+    ) -> Result<Self> {
+        let half_period = frame.longitude().half_period();
+        Self::new_geographic(frame, -half_period, south, half_period, north)
+    }
+
     /// Whether these bounds cross the antimeridian (west longitude > east).
     pub fn crosses_antimeridian(self) -> bool {
         self.minx() > self.maxx()
+    }
+
+    /// Split a validated geographic rectangle at its frame's periodic seam.
+    pub(crate) fn split_geographic(
+        self,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Option<[Self; 2]> {
+        self.crosses_antimeridian().then(|| {
+            let half_period = frame.longitude().half_period();
+            [
+                Self::new_raw(self.minx(), self.miny(), half_period, self.maxy()),
+                Self::new_raw(-half_period, self.miny(), self.maxx(), self.maxy()),
+            ]
+        })
     }
 
     pub fn intersects(self, other: Self) -> bool {
@@ -995,7 +1053,7 @@ impl Bounds {
         ]
     }
 
-    pub(crate) fn contains_xy(self, point: XY) -> bool {
+    pub(crate) fn contains_point(self, point: XY) -> bool {
         point.x >= self.minx()
             && point.x <= self.maxx()
             && point.y >= self.miny()

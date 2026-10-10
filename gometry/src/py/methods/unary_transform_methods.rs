@@ -230,10 +230,12 @@ GeometryArray
     based (Douglas-Peucker).
 
 preserve_topology : bool, default True
-    Guarantee the output keeps the input's topology: a polygon stays valid
-    and non-collapsed, a simple line stays simple. The raw algorithm runs
-    first (the fast path); a guarded pass only kicks in when it broke
-    something. ``False`` is the raw algorithm.";
+    Preserve topology within each geometry checked: valid polygonal components
+    stay valid and non-collapsed, and simple lineal components stay simple. A
+    ``GeometryCollection`` is checked child by child; relationships between
+    separate children are not preserved. The raw algorithm runs first (the
+    fast path); a guarded pass only runs when a component fails those checks.
+    ``False`` skips the guarded check; collapsed areal rings are still removed.";
     tail: r"
 Raises
 ------
@@ -337,7 +339,7 @@ grid_size : float or tuple of float
 origin : tuple of float, default (0.0, 0.0)
     A grid node anchoring the lattice.
 
-repair : bool, default False
+repair : bool
     If ``True``, guarantee a valid result: snap, linework-repair, and re-
     snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
     snapped shell pinches splits into a ``MultiPolygon``). Geographic
@@ -526,8 +528,7 @@ method_doc! {
     body: r"Return the intersection with the closed rectangle
 ``(minx, miny, maxx, maxy)``. Its WKB is identical to
 ``intersection(self, box(minx, miny, maxx, maxy))`` when the box carries the
-same CRS and coordinate epoch. For a geographic interval crossing the
-antimeridian, use ``wrap='split'`` with a matching CRS. Point-only and edge-only
+same CRS and coordinate epoch. Point-only and edge-only
 contacts are retained; equal ``minx``/``maxx`` or ``miny``/``maxy`` select a
 closed line or point.
 
@@ -538,11 +539,13 @@ Source ordinates are carried where meaningful; synthesized clip vertices use
 the operation's natural XY result.
 
 In a geographic CRS, ``minx``/``maxx`` are the west/east longitudes and must be
-canonical endpoints in ``[-180, 180]``. ``west <= east`` selects the ordinary
+within the CRS frame's native half-period. ``west <= east`` selects the ordinary
 closed interval; ``west > east`` selects the closed interval crossing the
-antimeridian. ``west=-180`` and ``east=180`` select a full longitude band, and
-equal endpoints select a zero-width meridian. ``miny``/``maxy`` are the
-south/north latitudes and must be finite with ``south <= north``.
+longitude seam. The endpoints ``-half_period`` and ``half_period`` select a full
+longitude band, and equal endpoints select a zero-width meridian. ``miny`` and
+``maxy`` are the south/north latitudes and must lie within the frame's poles,
+with ``south <= north``. To construct a box for that interval, use :func:`box`
+with ``wrap='split'`` and the same CRS.
 
 Geographic inputs use frame-aware overlay so longitude aliases, seam crossings,
 and pole vertices follow the CRS topology. Geographic rectangle horizontal
@@ -575,9 +578,9 @@ Raises
 ------
 GeometryError
     If the rectangle coordinates are non-finite, south exceeds north, or a
-    geographic west/east endpoint is outside ``[-180, 180]``, or no adjacent
-    binary64 assignment preserves the exact clipped result or the bounded
-    embedding search is exhausted.
+    geographic endpoint is outside its CRS frame, or no adjacent binary64
+    assignment preserves the exact clipped result or the bounded embedding
+    search is exhausted.
 InvalidGeometryError
     If the input contains coordinates outside its geographic CRS domain.
 

@@ -32,7 +32,7 @@ use crate::error::ResourceError;
 use crate::geographic::{GeographicFrame, Latitude, SeamIdentity};
 use crate::geometry::arrangement::compare_departures;
 use crate::geometry::embedding_search::{
-    ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search,
+    ClassAssignment, GlobalCheck, Problem, ProximityChord, Search, SearchAccount, Work,
     build_proximity_classes as build_search_proximity_classes, exact_chord_radius,
     possible_swept_bounds, proximity_limit,
 };
@@ -58,7 +58,7 @@ impl EmbeddingDomain {
         }
         match self {
             Self::Plane => true,
-            Self::Rectangle(bounds) => bounds.contains_xy(candidate),
+            Self::Rectangle(bounds) => bounds.contains_point(candidate),
             Self::Geographic(frame) => {
                 let longitude_axis = frame.longitude();
                 let half_period = longitude_axis.half_period();
@@ -93,6 +93,10 @@ impl EmbeddingDomain {
     }
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "exact axis equality distinguishes zero offsets and degenerate intervals"
+)]
 fn axis_parameter_interval(point: f64, start: f64, end: f64, limit: f64) -> Option<(f64, f64)> {
     // Keep arithmetic uncertainty outward; overflow or an indeterminate quotient
     // retains the whole segment rather than excluding a possible close point.
@@ -178,206 +182,6 @@ pub(in crate::geometry) fn segments_within_chebyshev(
         || point_within_chebyshev_segment(right.end, left, limit)
 }
 
-#[cfg(test)]
-mod proximity_tests {
-    use super::*;
-    use crate::geometry::tessellation::exact::ExactRational;
-
-    fn segment(start: XY, end: XY) -> Segment {
-        Segment { start, end }
-    }
-
-    fn exact_axis_interval(
-        point: f64,
-        start: f64,
-        end: f64,
-        limit: f64,
-    ) -> Result<Option<(ExactRational, ExactRational)>> {
-        let point = ExactRational::from_f64(point);
-        let start = ExactRational::from_f64(start);
-        let end = ExactRational::from_f64(end);
-        let negative_limit = ExactRational::from_f64(-limit);
-        let limit = ExactRational::from_f64(limit);
-        let difference = point.try_subtract(&start)?;
-        let direction = end.try_subtract(&start)?;
-        if direction.is_zero() {
-            let upper = limit;
-            return Ok((difference.try_cmp(&negative_limit)? != Ordering::Less
-                && difference.try_cmp(&upper)? != Ordering::Greater)
-                .then_some((ExactRational::zero(), ExactRational::one())));
-        }
-        let mut lower = difference.try_subtract(&limit)?.try_quotient(&direction)?;
-        let mut upper = difference.try_add(&limit)?.try_quotient(&direction)?;
-        if lower.try_cmp(&upper)? == Ordering::Greater {
-            mem::swap(&mut lower, &mut upper);
-        }
-        let zero = ExactRational::zero();
-        let one = ExactRational::one();
-        if upper.try_cmp(&zero)? == Ordering::Less || lower.try_cmp(&one)? == Ordering::Greater {
-            return Ok(None);
-        }
-        if lower.try_cmp(&zero)? == Ordering::Less {
-            lower = zero;
-        }
-        if upper.try_cmp(&one)? == Ordering::Greater {
-            upper = one;
-        }
-        Ok(Some((lower, upper)))
-    }
-
-    fn exact_point_within_segment(point: XY, segment: Segment, limit: f64) -> Result<bool> {
-        let Some((x_low, x_high)) =
-            exact_axis_interval(point.x, segment.start.x, segment.end.x, limit)?
-        else {
-            return Ok(false);
-        };
-        let Some((y_low, y_high)) =
-            exact_axis_interval(point.y, segment.start.y, segment.end.y, limit)?
-        else {
-            return Ok(false);
-        };
-        let low = if x_low.try_cmp(&y_low)? == Ordering::Less {
-            y_low
-        } else {
-            x_low
-        };
-        let high = if x_high.try_cmp(&y_high)? == Ordering::Greater {
-            y_high
-        } else {
-            x_high
-        };
-        Ok(low.try_cmp(&high)? != Ordering::Greater)
-    }
-
-    fn exact_segments_within(left: Segment, right: Segment, limit: f64) -> Result<bool> {
-        if !matches!(segment_contact_exact(left, right), Contact::Disjoint) {
-            return Ok(true);
-        }
-        Ok(exact_point_within_segment(left.start, right, limit)?
-            || exact_point_within_segment(left.end, right, limit)?
-            || exact_point_within_segment(right.start, left, limit)?
-            || exact_point_within_segment(right.end, left, limit)?)
-    }
-
-    #[test]
-    fn chebyshev_proximity_checks_the_segment_distance_and_exact_contact() {
-        let horizontal = segment(XY::new(0.0, 0.0), XY::new(4.0, 0.0));
-        assert!(segments_within_chebyshev(
-            horizontal,
-            segment(XY::new(0.0, 1.0), XY::new(4.0, 1.0)),
-            1.0
-        ));
-        assert!(!segments_within_chebyshev(
-            horizontal,
-            segment(XY::new(0.0, 1.25), XY::new(4.0, 1.25)),
-            1.0
-        ));
-        assert!(segments_within_chebyshev(
-            segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0)),
-            segment(XY::new(0.0, 2.0), XY::new(2.0, 0.0)),
-            0.0
-        ));
-    }
-
-    #[test]
-    fn chebyshev_proximity_does_not_confuse_overlapping_boxes_with_near_segments() {
-        let diagonal = segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0));
-        let separated = segment(XY::new(0.0, 2.0), XY::new(1.0, 1.5));
-        assert!(
-            Bounds::from_xy_iter([diagonal.start, diagonal.end])
-                .intersects(Bounds::from_xy_iter([separated.start, separated.end]))
-        );
-        assert!(!segments_within_chebyshev(diagonal, separated, 0.24));
-        assert!(segments_within_chebyshev(diagonal, separated, 0.25));
-    }
-
-    #[test]
-    fn chebyshev_proximity_includes_isolated_points_and_uses_relative_slack() {
-        let point = segment(XY::new(1.0, 0.0), XY::new(1.0, 0.0));
-        let line = segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0));
-        assert!(segments_within_chebyshev(point, line, 0.0));
-
-        let limit = proximity_limit(1.0, 0.0);
-        assert!(segments_within_chebyshev(
-            segment(
-                XY::new(0.0, 1.0 + 2.0_f64.powi(-41)),
-                XY::new(2.0, 1.0 + 2.0_f64.powi(-41))
-            ),
-            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
-            limit
-        ));
-        assert!(!segments_within_chebyshev(
-            segment(
-                XY::new(0.0, 1.0 + 2.0_f64.powi(-38)),
-                XY::new(2.0, 1.0 + 2.0_f64.powi(-38))
-            ),
-            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
-            limit
-        ));
-    }
-
-    #[test]
-    fn chebyshev_distance_intervals_never_reject_an_exactly_near_pair() {
-        let minimum = f64::from_bits(1);
-        let values = [
-            -f64::MAX,
-            -2.0,
-            -1.0,
-            -minimum,
-            -0.0,
-            0.0,
-            minimum,
-            0.5,
-            1.0_f64.next_down(),
-            1.0,
-            1.0_f64.next_up(),
-            2.0,
-            f64::MAX,
-        ];
-        let limits = [0.0, minimum, 2.0_f64.powi(-52), 0.125, 0.5, 1.0, 1.0e100];
-        let mut state = 0x6A09_E667_F3BC_C909_u64;
-        let mut sample = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state as usize
-        };
-        for _ in 0..384 {
-            let point = XY::new(
-                values[sample() % values.len()],
-                values[sample() % values.len()],
-            );
-            let left = segment(
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-            );
-            let right = segment(
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-                XY::new(
-                    values[sample() % values.len()],
-                    values[sample() % values.len()],
-                ),
-            );
-            let limit = limits[sample() % limits.len()];
-            if exact_point_within_segment(point, left, limit).unwrap() {
-                assert!(point_within_chebyshev_segment(point, left, limit));
-            }
-            if exact_segments_within(left, right, limit).unwrap() {
-                assert!(segments_within_chebyshev(left, right, limit));
-            }
-        }
-    }
-}
-
 /// The coordinates used to check an emission. Nearest borrows the immutable
 /// arena table; an accepted search assignment owns a patched copy.
 #[derive(Debug)]
@@ -412,11 +216,11 @@ impl<'p> Embedding<'p> {
         clippy::indexing_slicing,
         reason = "the node ID and coordinate slice are paired from the same certified embedding"
     )]
-    pub(super) fn xy_at(coordinates: &[XY], node: NodeId) -> XY {
+    pub(super) const fn xy_at(coordinates: &[XY], node: NodeId) -> XY {
         coordinates[node.0 as usize]
     }
 
-    pub(super) fn segment_at(coordinates: &[XY], [start, end]: [NodeId; 2]) -> Segment {
+    pub(super) const fn segment_at(coordinates: &[XY], [start, end]: [NodeId; 2]) -> Segment {
         Segment {
             start: Self::xy_at(coordinates, start),
             end: Self::xy_at(coordinates, end),
@@ -481,7 +285,7 @@ pub(super) struct FirstFailure {
 }
 
 impl FirstFailure {
-    fn witness(&self) -> Witness {
+    const fn witness(&self) -> Witness {
         self.witness
             .expect("a broken certificate reports its witness")
     }
@@ -532,10 +336,7 @@ impl<'p, 'source, 'e, 'emission> Collect<'p, 'source, 'e, 'emission> {
             error,
             ..
         } = self;
-        match error {
-            Some(error) => Err(error),
-            None => Ok((seeds, movable_cache, has_unmovable_witness)),
-        }
+        error.map_or_else(|| Ok((seeds, movable_cache, has_unmovable_witness)), Err)
     }
 }
 
@@ -728,6 +529,11 @@ pub(super) struct PlanarClassState {
     fans_by_rank: Vec<Vec<usize>>,
 }
 
+struct PlanarProximity {
+    pairs: Vec<(usize, usize)>,
+    class_states: Vec<PlanarClassState>,
+}
+
 pub(super) struct PlanarProblem<'p, 's, 'e> {
     partition: &'p ExactPartition<'s>,
     emissions: Vec<&'e Emission>,
@@ -737,7 +543,7 @@ pub(super) struct PlanarProblem<'p, 's, 'e> {
     classes: Vec<Vec<NodeId>>,
     node_location: Vec<Option<(usize, usize)>>,
     fan_rows: Vec<FanRow>,
-    proximity: RefCell<Option<(Vec<(usize, usize)>, Vec<PlanarClassState>)>>,
+    proximity: RefCell<Option<PlanarProximity>>,
     radius_cache: RefCell<Vec<Option<f64>>>,
     movable_cache: RefCell<Vec<Option<bool>>>,
     initial_evaluations: u64,
@@ -788,11 +594,11 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             let emission = emissions
                 .get(emission_index)
                 .expect("emission item reference belongs to its slice");
-            let nodes = *emission
+            let [start, end] = *emission
                 .items
                 .get(item_index)
                 .expect("emission item reference belongs to its plan");
-            for node in nodes {
+            for node in [start, end] {
                 let was_live = live
                     .get_mut(node.0 as usize)
                     .expect("emitted node belongs to the partition");
@@ -800,6 +606,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                     live_nodes.push(node);
                 }
             }
+            let nodes = [start, end];
             let nearest = Embedding::segment_at(Embedding::nearest(partition).coordinates(), nodes);
             let can_move = nodes.map(|node| !partition.is_stored(node));
             let sweep_bounds = possible_swept_bounds(ProximityChord {
@@ -818,7 +625,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                 .and_then(|items| items.get_mut(item_index))
                 .expect("item-to-chord table aligns with emitted items") = chord_index;
             chord_by_nodes
-                .entry([nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0)])
+                .entry([start.0.min(end.0), start.0.max(end.0)])
                 .or_insert(chord_index);
         }
         for (emission_index, emission) in emissions.iter().enumerate() {
@@ -828,8 +635,9 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
                     .and_then(|items| items.get_mut(item_index))
                     .expect("item-to-chord table aligns with emitted items");
                 if *mapping == usize::MAX {
+                    let [start, end] = *nodes;
                     *mapping = *chord_by_nodes
-                        .get(&[nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0)])
+                        .get(&[start.0.min(end.0), start.0.max(end.0)])
                         .expect("deduplicated item has a canonical emitted chord");
                 }
             }
@@ -841,9 +649,16 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         let mut incident_chords = Vec::new();
         incident_chords.resize_with(partition.node_count(), Vec::new);
         for (chord_index, chord) in chords.iter().enumerate() {
-            incident_chords[chord.nodes[0].0 as usize].push(chord_index);
-            if chord.nodes[1] != chord.nodes[0] {
-                incident_chords[chord.nodes[1].0 as usize].push(chord_index);
+            let [start, end] = chord.nodes;
+            incident_chords
+                .get_mut(start.0 as usize)
+                .expect("emitted node belongs to the partition")
+                .push(chord_index);
+            if end != start {
+                incident_chords
+                    .get_mut(end.0 as usize)
+                    .expect("emitted node belongs to the partition")
+                    .push(chord_index);
             }
         }
         let search_chords: Vec<_> = chords
@@ -891,44 +706,40 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         class: usize,
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut impl SearchAccount,
     ) -> Result<bool> {
         let proximity = self.proximity.borrow();
         let proximity_pairs = &proximity
             .as_ref()
             .expect("proximity state was prepared before class search")
-            .0;
+            .pairs;
         for &pair_index in class_state
             .pairs_by_rank
             .get(rank)
             .expect("rank belongs to its class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let &(left, right) = proximity_pairs
                 .get(pair_index)
                 .expect("class pair index belongs to the problem");
-            let left_chord = self.chords[left];
-            let right_chord = self.chords[right];
+            let left_chord = *self
+                .chords
+                .get(left)
+                .expect("proximity pair names a chord in this problem");
+            let right_chord = *self
+                .chords
+                .get(right)
+                .expect("proximity pair names a chord in this problem");
+            let [left_start, left_end] = left_chord.nodes;
+            let [right_start, right_end] = right_chord.nodes;
             if !emitted_pair_preserves_incidence(
                 [
-                    (
-                        left_chord.nodes[0],
-                        self.local_xy(left_chord.nodes[0], class, assigned),
-                    ),
-                    (
-                        left_chord.nodes[1],
-                        self.local_xy(left_chord.nodes[1], class, assigned),
-                    ),
+                    (left_start, self.local_xy(left_start, class, assigned)),
+                    (left_end, self.local_xy(left_end, class, assigned)),
                 ],
                 [
-                    (
-                        right_chord.nodes[0],
-                        self.local_xy(right_chord.nodes[0], class, assigned),
-                    ),
-                    (
-                        right_chord.nodes[1],
-                        self.local_xy(right_chord.nodes[1], class, assigned),
-                    ),
+                    (right_start, self.local_xy(right_start, class, assigned)),
+                    (right_end, self.local_xy(right_end, class, assigned)),
                 ],
             ) {
                 return Ok(false);
@@ -943,7 +754,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         class: usize,
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut impl SearchAccount,
     ) -> Result<bool> {
         // Prune local fan inversions before G composes the candidate face table.
         for &row_index in class_state
@@ -951,7 +762,7 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             .get(rank)
             .expect("rank belongs to its class")
         {
-            budget.charge(1)?;
+            account.charge_evaluations(1)?;
             let row = self
                 .fan_rows
                 .get(row_index)
@@ -974,19 +785,19 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
     }
 
     #[cfg(test)]
-    pub(super) fn check_local_without_fans(
+    pub(super) fn check_local_without_fans<A: SearchAccount>(
         &self,
         class_state: &PlanarClassState,
         class: usize,
         _variables: &[NodeId],
         rank: usize,
         assigned: &[Option<XY>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
-        self.check_local_pairs(class_state, class, rank, assigned, budget)
+        self.check_local_pairs(class_state, class, rank, assigned, account)
     }
 
-    fn chord_has_member(&self, chord: PlanarChord) -> bool {
+    fn chord_has_member(&self, chord: &PlanarChord) -> bool {
         chord.nodes.into_iter().any(|node| {
             self.node_location
                 .get(node.0 as usize)
@@ -996,18 +807,18 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         })
     }
 
-    fn prepare_proximity(&self, budget: &mut EvaluationBudget) -> Result<()> {
+    fn prepare_proximity<A: SearchAccount>(&self, account: &mut A) -> Result<()> {
         if self.proximity.borrow().is_some() {
             return Ok(());
         }
-        budget.charge(
+        account.charge_evaluations(
             u64::try_from(self.chords.len().div_ceil(16))
                 .map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut left_indices = Vec::new();
         let mut left_bounds = Vec::new();
         let all_bounds: Vec<_> = self.chords.iter().map(|chord| chord.sweep_bounds).collect();
-        for (index, &chord) in self.chords.iter().enumerate() {
+        for (index, chord) in self.chords.iter().enumerate() {
             if self.chord_has_member(chord) {
                 left_indices.push(index);
                 left_bounds.push(chord.sweep_bounds);
@@ -1019,7 +830,9 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
         let mut callback_error = None;
         let flow =
             for_each_overlapping_bounds_cross_pair(&left_bounds, &all_bounds, |left, right| {
-                let left_index = left_indices[left];
+                let left_index = *left_indices
+                    .get(left)
+                    .expect("cross-pair left index belongs to the retained chord rows");
                 if left_index == right {
                     return ControlFlow::Continue(());
                 }
@@ -1080,7 +893,10 @@ impl<'p, 's, 'e> PlanarProblem<'p, 's, 'e> {
             &self.emissions,
             &self.fan_rows,
         );
-        *self.proximity.borrow_mut() = Some((proximity_pairs, class_states));
+        *self.proximity.borrow_mut() = Some(PlanarProximity {
+            pairs: proximity_pairs,
+            class_states,
+        });
         Ok(())
     }
 
@@ -1170,10 +986,15 @@ pub(super) fn certify<S: Sink>(
     }
 
     let contact_items = unique_emission_items(emissions)?;
-    let mut contact_segments = Vec::with_capacity(contact_items.len());
-    for &(emission_index, item_index) in &contact_items {
-        contact_segments.push(segments[emission_index][item_index]);
-    }
+    let contact_segments = if let [emission_segments] = segments {
+        Cow::Borrowed(&emission_segments[..contact_items.len()])
+    } else {
+        let mut contact_segments = Vec::with_capacity(contact_items.len());
+        for &(emission_index, item_index) in &contact_items {
+            contact_segments.push(segments[emission_index][item_index]);
+        }
+        Cow::Owned(contact_segments)
+    };
     if for_each_candidate_pair(&contact_segments, single_chain, |left, right| {
         let (left_emission, left_item) = contact_items[left];
         let (right_emission, right_item) = contact_items[right];
@@ -1307,7 +1128,8 @@ impl ExactPartition<'_> {
             {
                 let first_witness = first_failure.witness();
                 let mut collect = Collect::new(self, emissions);
-                let _ = certify(self, &embedding, emissions, &segment_views, &mut collect)?;
+                let _collection_flow =
+                    certify(self, &embedding, emissions, &segment_views, &mut collect)?;
                 let (mut seeds, movable_cache, has_unmovable_witness) =
                     collect.into_seed_state()?;
                 if has_unmovable_witness {
@@ -1423,16 +1245,31 @@ fn for_each_fan_row(
     debug_assert_eq!(items.len(), fan_spans.len());
     debug_assert!(areal_chords <= items.len());
     let mut areal_nodes = vec![false; node_count];
-    for &[start, end] in &items[..areal_chords] {
-        areal_nodes[start.0 as usize] = true;
-        areal_nodes[end.0 as usize] = true;
+    let areal_items = items
+        .get(..areal_chords)
+        .expect("areal chord prefix is within its emission");
+    for item in areal_items {
+        let [start, end] = *item;
+        *areal_nodes
+            .get_mut(start.0 as usize)
+            .expect("emitted node belongs to the partition") = true;
+        *areal_nodes
+            .get_mut(end.0 as usize)
+            .expect("emitted node belongs to the partition") = true;
     }
     let mut starts = vec![0_usize; node_count.wrapping_add(1)];
-    for &[start, end] in items {
+    for item in items {
+        let [start, end] = *item;
         let start = start.0 as usize;
         let end = end.0 as usize;
-        starts[start.wrapping_add(1)] = starts[start.wrapping_add(1)].wrapping_add(1);
-        starts[end.wrapping_add(1)] = starts[end.wrapping_add(1)].wrapping_add(1);
+        let start_count = starts
+            .get_mut(start.wrapping_add(1))
+            .expect("emitted node offset belongs to the fan-row table");
+        *start_count = start_count.wrapping_add(1);
+        let end_count = starts
+            .get_mut(end.wrapping_add(1))
+            .expect("emitted node offset belongs to the fan-row table");
+        *end_count = end_count.wrapping_add(1);
     }
     if !starts
         .iter()
@@ -1447,33 +1284,49 @@ fn for_each_fan_row(
         total = total.wrapping_add(*offset);
         *offset = total;
     }
-    let mut cursor = starts[..node_count].to_vec();
+    let mut cursor = starts
+        .get(..node_count)
+        .expect("fan offsets contain one entry per node and a terminal")
+        .to_vec();
     let mut departures = Vec::new();
     departures.resize(total, FanDeparture::default());
-    for (item, &[start, end]) in items.iter().enumerate() {
-        let [start_span, end_span] = fan_spans[item];
-        let start_position = cursor[start.0 as usize];
-        departures[start_position] = FanDeparture {
+    for (item, (endpoints, spans)) in items.iter().zip(fan_spans).enumerate() {
+        let [start, end] = *endpoints;
+        let [start_span, end_span] = *spans;
+        let start_cursor = cursor
+            .get_mut(start.0 as usize)
+            .expect("emitted node belongs to the fan cursor table");
+        let start_position = *start_cursor;
+        *departures
+            .get_mut(start_position)
+            .expect("fan cursor belongs to the counted departure table") = FanDeparture {
             span: start_span,
             item,
             at_start: true,
         };
-        cursor[start.0 as usize] = start_position.wrapping_add(1);
-        let end_position = cursor[end.0 as usize];
-        departures[end_position] = FanDeparture {
+        *start_cursor = start_position.wrapping_add(1);
+        let end_cursor = cursor
+            .get_mut(end.0 as usize)
+            .expect("emitted node belongs to the fan cursor table");
+        let end_position = *end_cursor;
+        *departures
+            .get_mut(end_position)
+            .expect("fan cursor belongs to the counted departure table") = FanDeparture {
             span: end_span,
             item,
             at_start: false,
         };
-        cursor[end.0 as usize] = end_position.wrapping_add(1);
+        *end_cursor = end_position.wrapping_add(1);
     }
-    for node in 0..node_count {
-        let range = starts[node]..starts[node.wrapping_add(1)];
-        if !areal_nodes[node] || range.len() <= 2 {
+    for (node, (offsets, &areal)) in starts.array_windows::<2>().zip(&areal_nodes).enumerate() {
+        let [row_start, row_end] = *offsets;
+        if !areal || row_end.wrapping_sub(row_start) <= 2 {
             continue;
         }
         let origin = NodeId(node as u32);
-        let row = &mut departures[range];
+        let row = departures
+            .get_mut(row_start..row_end)
+            .expect("fan offsets partition the counted departure table");
         row.sort_unstable_by(|left, right| {
             partition.compare_departures(origin, left.span as usize, right.span as usize)
         });
@@ -1570,10 +1423,6 @@ fn include_class_rank(
     }
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "class IDs and readiness ranks are derived from the same location table used to size these rows"
-)]
 fn build_class_states(
     classes: &[Vec<NodeId>],
     node_location: &[Option<(usize, usize)>],
@@ -1584,9 +1433,15 @@ fn build_class_states(
 ) -> Vec<PlanarClassState> {
     let mut states: Vec<_> = classes
         .iter()
-        .map(|members| PlanarClassState {
-            pairs_by_rank: (0..members.len()).map(|_| Vec::new()).collect(),
-            fans_by_rank: (0..members.len()).map(|_| Vec::new()).collect(),
+        .map(|members| {
+            let mut pairs_by_rank = Vec::new();
+            pairs_by_rank.resize_with(members.len(), Vec::new);
+            let mut fans_by_rank = Vec::new();
+            fans_by_rank.resize_with(members.len(), Vec::new);
+            PlanarClassState {
+                pairs_by_rank,
+                fans_by_rank,
+            }
         })
         .collect();
     for (pair_index, &(left_index, right_index)) in proximity_pairs.iter().enumerate() {
@@ -1602,7 +1457,13 @@ fn build_class_states(
             include_class_rank(node, node_location, &mut owner, &mut ready_rank);
         }
         if let Some(class) = owner {
-            states[class].pairs_by_rank[ready_rank].push(pair_index);
+            states
+                .get_mut(class)
+                .expect("pair owner belongs to the class table")
+                .pairs_by_rank
+                .get_mut(ready_rank)
+                .expect("pair readiness rank belongs to its class")
+                .push(pair_index);
         }
     }
     for (row_index, row) in fan_rows.iter().enumerate() {
@@ -1624,7 +1485,13 @@ fn build_class_states(
             include_class_rank(end, node_location, &mut owner, &mut ready_rank);
         }
         if let Some(class) = owner {
-            states[class].fans_by_rank[ready_rank].push(row_index);
+            states
+                .get_mut(class)
+                .expect("fan owner belongs to the class table")
+                .fans_by_rank
+                .get_mut(ready_rank)
+                .expect("fan readiness rank belongs to its class")
+                .push(row_index);
         }
     }
     states
@@ -1635,14 +1502,22 @@ impl Problem for PlanarProblem<'_, '_, '_> {
     type Candidate = XY;
     type Key = PointKey;
     type ClassState = PlanarClassState;
+    type Output = ();
 
     fn classes(&self) -> &[Vec<Self::Node>] {
         &self.classes
     }
 
-    fn fixed_keys(&self, class: usize, _variables: &[Self::Node]) -> Result<Vec<Self::Key>> {
+    fn fixed_keys<W: Work>(
+        &self,
+        class: usize,
+        _variables: &[Self::Node],
+        work: &mut W,
+    ) -> Result<Vec<Self::Key>> {
+        work.charge_product(self.live_nodes.len(), 1)?;
         let mut keys = Vec::with_capacity(self.live_nodes.len());
         for &node in &self.live_nodes {
+            work.charge(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -1650,6 +1525,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
+                work.charge(1)?;
                 keys.push(PointKey::new(self.partition.nearest_xy(node)));
             }
         }
@@ -1660,26 +1536,49 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         self.partition.compare_nodes(left, right)
     }
 
-    fn fill_candidates(
+    fn fill_candidates<W: Work>(
         &self,
         node: Self::Node,
         candidates: &mut Vec<Self::Candidate>,
+        work: &mut W,
     ) -> Result<()> {
         let nearest = self.partition.nearest_xy(node);
-        let x_values = [nearest.x.next_down(), nearest.x, nearest.x.next_up()];
-        let y_values = [nearest.y.next_down(), nearest.y, nearest.y.next_up()];
-        let x_count =
-            if self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal {
-                1
+        work.charge(2)?;
+        let x_exact = self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal;
+        let y_exact = self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal;
+        let x_values = [
+            if x_exact {
+                nearest.x
             } else {
-                3
-            };
-        let y_count =
-            if self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal {
-                1
+                nearest.x.next_down()
+            },
+            nearest.x,
+            if x_exact {
+                nearest.x
             } else {
-                3
-            };
+                nearest.x.next_up()
+            },
+        ];
+        let y_values = [
+            if y_exact {
+                nearest.y
+            } else {
+                nearest.y.next_down()
+            },
+            nearest.y,
+            if y_exact {
+                nearest.y
+            } else {
+                nearest.y.next_up()
+            },
+        ];
+        let x_count: usize = if x_exact { 1 } else { 3 };
+        let y_count: usize = if y_exact { 1 } else { 3 };
+        let candidate_count = x_count
+            .checked_mul(y_count)
+            .expect("candidate axis counts are each one or three");
+        work.charge_product(candidate_count, 1)?;
+        candidates.reserve(candidate_count);
         for &x in x_values
             .get(..x_count)
             .expect("candidate axis count is one or three")
@@ -1717,49 +1616,49 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         PointKey::new(candidate)
     }
 
-    fn prepare_class(
+    fn prepare_class<A: SearchAccount>(
         &self,
         class: usize,
         _variables: &[Self::Node],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<Self::ClassState> {
-        self.prepare_proximity(budget)?;
+        self.prepare_proximity(account)?;
         let prepared = self.proximity.borrow();
         Ok(prepared
             .as_ref()
             .expect("proximity state was prepared before class search")
-            .1
+            .class_states
             .get(class)
             .expect("class state belongs to the problem")
             .clone())
     }
 
-    fn check_local(
+    fn check_local<A: SearchAccount>(
         &self,
         class_state: &Self::ClassState,
         class: usize,
         _variables: &[Self::Node],
         rank: usize,
         assigned: &[Option<Self::Candidate>],
-        budget: &mut EvaluationBudget,
+        account: &mut A,
     ) -> Result<bool> {
-        if !self.check_local_pairs(class_state, class, rank, assigned, budget)? {
+        if !self.check_local_pairs(class_state, class, rank, assigned, account)? {
             return Ok(false);
         }
-        self.check_local_fans(class_state, class, rank, assigned, budget)
+        self.check_local_fans(class_state, class, rank, assigned, account)
     }
 
-    fn check_global(
-        &self,
+    fn check_global<A: SearchAccount>(
+        &mut self,
         assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
-        budget: &mut EvaluationBudget,
-    ) -> Result<GlobalCheck> {
+        account: &mut A,
+    ) -> Result<GlobalCheck<Self::Output>> {
         if self
             .emissions
             .iter()
             .all(|emission| emission.faces.is_none())
         {
-            return Ok(GlobalCheck::Pass);
+            return Ok(GlobalCheck::Pass(()));
         }
         let mut coordinates = Embedding::nearest(self.partition).coordinates().to_vec();
         for assignment in assignments {
@@ -1774,7 +1673,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
             let Some(faces) = &emission.faces else {
                 continue;
             };
-            budget.charge(
+            account.charge_evaluations(
                 u64::try_from(emission.items.len().div_ceil(16))
                     .map_err(|_| ResourceError::SizeOverflow)?,
             )?;
@@ -1796,15 +1695,27 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                     unreachable!("global face checking emits only face witnesses");
                 };
                 let mut anchors = vec![false; self.chords.len()];
+                let item_chords = self
+                    .item_chords
+                    .get(emission_index)
+                    .expect("emission item map belongs to the planar problem");
                 for (item_index, nodes) in emission.items.iter().enumerate() {
                     if nodes.contains(&root) {
-                        let chord = self.item_chords[emission_index][item_index];
-                        anchors[chord] = true;
+                        let chord = *item_chords
+                            .get(item_index)
+                            .expect("emission item belongs to its canonical chord row");
+                        *anchors
+                            .get_mut(chord)
+                            .expect("canonical chord belongs to the anchor table") = true;
                     }
                 }
                 if let Some(hit) = hit {
-                    let chord = self.item_chords[emission_index][hit];
-                    anchors[chord] = true;
+                    let chord = *item_chords
+                        .get(hit)
+                        .expect("face hit belongs to its emission item row");
+                    *anchors
+                        .get_mut(chord)
+                        .expect("canonical chord belongs to the anchor table") = true;
                 }
                 let mut blamed = vec![false; self.classes.len()];
                 for (chord, &is_anchor) in anchors.iter().enumerate() {
@@ -1816,12 +1727,18 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 let proximity_pairs = &proximity
                     .as_ref()
                     .expect("proximity state was prepared before global search")
-                    .0;
+                    .pairs;
                 for &(left, right) in proximity_pairs {
-                    if anchors[left] {
+                    if *anchors
+                        .get(left)
+                        .expect("proximity pair names a chord in this problem")
+                    {
                         self.mark_blame_for_chord(right, &mut blamed);
                     }
-                    if anchors[right] {
+                    if *anchors
+                        .get(right)
+                        .expect("proximity pair names a chord in this problem")
+                    {
                         self.mark_blame_for_chord(left, &mut blamed);
                     }
                 }
@@ -1833,7 +1750,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 return Ok(GlobalCheck::Reject(classes));
             }
         }
-        Ok(GlobalCheck::Pass)
+        Ok(GlobalCheck::Pass(()))
     }
 
     fn initial_evaluations(&self) -> u64 {
@@ -1884,8 +1801,18 @@ fn visit_faces<S: Sink>(
         &EmittedPoints(embedding.coordinates()),
         partition.node_count(),
         items.len(),
-        |index| items[index].map(|node| node.0),
-        |index| sides[index],
+        |index| {
+            items
+                .get(index)
+                .copied()
+                .expect("face item ordinal belongs to its emission")
+                .map(|node| node.0)
+        },
+        |index| {
+            *sides
+                .get(index)
+                .expect("face labels align with their emission items")
+        },
         |root, hit| {
             sink.report(Witness::Face {
                 emission,
@@ -2077,4 +2004,218 @@ fn visit_faces_legacy<S: Sink>(
         }
     }
     Ok(ControlFlow::Continue(()))
+}
+
+#[cfg(test)]
+mod proximity_tests {
+    use super::*;
+    use crate::geometry::tessellation::exact::ExactRational;
+
+    fn segment(start: XY, end: XY) -> Segment {
+        Segment { start, end }
+    }
+
+    fn exact_axis_interval(
+        point: f64,
+        start: f64,
+        end: f64,
+        limit: f64,
+    ) -> Result<Option<(ExactRational, ExactRational)>> {
+        let point = ExactRational::from_f64(point);
+        let start = ExactRational::from_f64(start);
+        let end = ExactRational::from_f64(end);
+        let negative_limit = ExactRational::from_f64(-limit);
+        let limit = ExactRational::from_f64(limit);
+        let difference = point.try_subtract(&start)?;
+        let direction = end.try_subtract(&start)?;
+        if direction.is_zero() {
+            let upper = limit;
+            return Ok((difference.try_cmp(&negative_limit)? != Ordering::Less
+                && difference.try_cmp(&upper)? != Ordering::Greater)
+                .then_some((ExactRational::zero(), ExactRational::one())));
+        }
+        let mut lower = difference.try_subtract(&limit)?.try_quotient(&direction)?;
+        let mut upper = difference.try_add(&limit)?.try_quotient(&direction)?;
+        if lower.try_cmp(&upper)? == Ordering::Greater {
+            mem::swap(&mut lower, &mut upper);
+        }
+        let zero = ExactRational::zero();
+        let one = ExactRational::one();
+        if upper.try_cmp(&zero)? == Ordering::Less || lower.try_cmp(&one)? == Ordering::Greater {
+            return Ok(None);
+        }
+        if lower.try_cmp(&zero)? == Ordering::Less {
+            lower = zero;
+        }
+        if upper.try_cmp(&one)? == Ordering::Greater {
+            upper = one;
+        }
+        Ok(Some((lower, upper)))
+    }
+
+    fn exact_point_within_segment(point: XY, segment: Segment, limit: f64) -> Result<bool> {
+        let Some((x_low, x_high)) =
+            exact_axis_interval(point.x, segment.start.x, segment.end.x, limit)?
+        else {
+            return Ok(false);
+        };
+        let Some((y_low, y_high)) =
+            exact_axis_interval(point.y, segment.start.y, segment.end.y, limit)?
+        else {
+            return Ok(false);
+        };
+        let low = if x_low.try_cmp(&y_low)? == Ordering::Less {
+            y_low
+        } else {
+            x_low
+        };
+        let high = if x_high.try_cmp(&y_high)? == Ordering::Greater {
+            y_high
+        } else {
+            x_high
+        };
+        Ok(low.try_cmp(&high)? != Ordering::Greater)
+    }
+
+    fn exact_segments_within(left: Segment, right: Segment, limit: f64) -> Result<bool> {
+        if !matches!(segment_contact_exact(left, right), Contact::Disjoint) {
+            return Ok(true);
+        }
+        Ok(exact_point_within_segment(left.start, right, limit)?
+            || exact_point_within_segment(left.end, right, limit)?
+            || exact_point_within_segment(right.start, left, limit)?
+            || exact_point_within_segment(right.end, left, limit)?)
+    }
+
+    #[test]
+    fn chebyshev_axis_interval_keeps_zero_and_degenerate_boundaries() {
+        let degenerate_zero = axis_parameter_interval(-0.0, 0.0, 0.0, 0.0)
+            .expect("zero offset lies on a degenerate axis");
+        assert_eq!(degenerate_zero.0.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(degenerate_zero.1.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(axis_parameter_interval(2.0, 0.0, 0.0, 1.0), None);
+
+        let midpoint = axis_parameter_interval(1.0, 0.0, 2.0, 0.0)
+            .expect("the point lies in the nondegenerate axis interval");
+        assert!(midpoint.0 <= 0.5);
+        assert!(midpoint.1 >= 0.5);
+    }
+
+    #[test]
+    fn chebyshev_proximity_checks_the_segment_distance_and_exact_contact() {
+        let horizontal = segment(XY::new(0.0, 0.0), XY::new(4.0, 0.0));
+        assert!(segments_within_chebyshev(
+            horizontal,
+            segment(XY::new(0.0, 1.0), XY::new(4.0, 1.0)),
+            1.0
+        ));
+        assert!(!segments_within_chebyshev(
+            horizontal,
+            segment(XY::new(0.0, 1.25), XY::new(4.0, 1.25)),
+            1.0
+        ));
+        assert!(segments_within_chebyshev(
+            segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0)),
+            segment(XY::new(0.0, 2.0), XY::new(2.0, 0.0)),
+            0.0
+        ));
+    }
+
+    #[test]
+    fn chebyshev_proximity_does_not_confuse_overlapping_boxes_with_near_segments() {
+        let diagonal = segment(XY::new(0.0, 0.0), XY::new(2.0, 2.0));
+        let separated = segment(XY::new(0.0, 2.0), XY::new(1.0, 1.5));
+        assert!(
+            Bounds::from_xy_iter([diagonal.start, diagonal.end])
+                .intersects(Bounds::from_xy_iter([separated.start, separated.end]))
+        );
+        assert!(!segments_within_chebyshev(diagonal, separated, 0.24));
+        assert!(segments_within_chebyshev(diagonal, separated, 0.25));
+    }
+
+    #[test]
+    fn chebyshev_proximity_includes_isolated_points_and_uses_relative_slack() {
+        let point = segment(XY::new(1.0, 0.0), XY::new(1.0, 0.0));
+        let line = segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0));
+        assert!(segments_within_chebyshev(point, line, 0.0));
+
+        let limit = proximity_limit(1.0, 0.0);
+        assert!(segments_within_chebyshev(
+            segment(
+                XY::new(0.0, 1.0 + 2.0_f64.powi(-41)),
+                XY::new(2.0, 1.0 + 2.0_f64.powi(-41))
+            ),
+            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+            limit
+        ));
+        assert!(!segments_within_chebyshev(
+            segment(
+                XY::new(0.0, 1.0 + 2.0_f64.powi(-38)),
+                XY::new(2.0, 1.0 + 2.0_f64.powi(-38))
+            ),
+            segment(XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+            limit
+        ));
+    }
+
+    #[test]
+    fn chebyshev_distance_intervals_never_reject_an_exactly_near_pair() {
+        let minimum = f64::from_bits(1);
+        let values = [
+            -f64::MAX,
+            -2.0,
+            -1.0,
+            -minimum,
+            -0.0,
+            0.0,
+            minimum,
+            0.5,
+            1.0_f64.next_down(),
+            1.0,
+            1.0_f64.next_up(),
+            2.0,
+            f64::MAX,
+        ];
+        let limits = [0.0, minimum, 2.0_f64.powi(-52), 0.125, 0.5, 1.0, 1.0e100];
+        let mut state = 0x6A09_E667_F3BC_C909_u64;
+        let mut sample = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state as usize
+        };
+        for _ in 0..384 {
+            let point = XY::new(
+                values[sample() % values.len()],
+                values[sample() % values.len()],
+            );
+            let left = segment(
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+            );
+            let right = segment(
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+                XY::new(
+                    values[sample() % values.len()],
+                    values[sample() % values.len()],
+                ),
+            );
+            let limit = limits[sample() % limits.len()];
+            if exact_point_within_segment(point, left, limit).unwrap() {
+                assert!(point_within_chebyshev_segment(point, left, limit));
+            }
+            if exact_segments_within(left, right, limit).unwrap() {
+                assert!(segments_within_chebyshev(left, right, limit));
+            }
+        }
+    }
 }

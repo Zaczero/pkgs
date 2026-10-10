@@ -8,16 +8,18 @@
 use std::borrow::Cow;
 
 use crate::crs::catalog::catalog_with_state;
-use crate::crs::in_core::{DatumKey, ParamUnit, Pole, datum_key, parse_param_value};
+use crate::crs::in_core::{DatumKey, ParamUnit, datum_key, parse_param_value};
 use crate::crs::{
     AreaOfInterest, CrsCatalogOptions, CrsCoordinateOperationInfo, CrsError, CrsInfo,
     CrsObjectKind, DEGREE_TO_RADIAN, MethodInfo, OperationInfo, OperationParameterInfo,
-    RuntimeState, Shape, TransformOptions, UTM_K0, factors_at, info_with_state, is_wgs84_lonlat,
-    normalize, operation_info_with_state, parse_epsg, preserve_resource_error,
+    PrimeMeridianInfo, RuntimeState, Shape, TransformOptions, UTM_K0, factors_at, info_with_state,
+    is_wgs84_lonlat, normalize, operation_info_with_state, parse_epsg, preserve_resource_error,
     to_projjson_with_options_at, transform_at, utm_crs,
 };
 use crate::error::{Error, Result};
-use crate::geometry::{ShapeCountQuery, admit_shape_vector_capacity};
+use crate::geographic::{AngularFactor, GeodeticPole};
+use crate::geometry::ShapeCountQuery;
+use crate::geometry::exact_arith::compare_three_f64_products;
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(super) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
@@ -59,7 +61,7 @@ impl LocalCrsDefinition {
     fn with_projected_pole_at(
         mut self,
         source: &str,
-        north: bool,
+        pole: GeodeticPole,
         state: &RuntimeState,
     ) -> Result<Self> {
         let frame = info_with_state(source, state)?
@@ -67,10 +69,7 @@ impl LocalCrsDefinition {
             .ok_or_else(|| {
                 CrsError::invalid("polar local frame requires geographic source coordinates")
             })?;
-        let pole = crate::geometry::Point::new_raw_xy(
-            0.0,
-            if north { frame.pole() } else { -frame.pole() },
-        );
+        let pole = crate::geometry::Point::new_raw_xy(0.0, frame.native_latitude_pole(pole));
         let Shape::Point(pole) =
             transform_at(&Shape::Point(pole), source, &self.definition, state)?
         else {
@@ -99,16 +98,16 @@ pub(super) fn estimate_local_crs_at(
     let extent =
         LocalExtent::from_shapes(shapes, source_crs, state)?.ok_or(CrsError::EmptyGeometry)?;
 
-    let pole = if extent.latitude >= 0.0 {
-        Pole::North
+    let geodetic_pole = if extent.latitude >= 0.0 {
+        GeodeticPole::North
     } else {
-        Pole::South
+        GeodeticPole::South
     };
     if extent.latitude > 84.0 || extent.latitude < -80.0 {
         if has_wgs84_datum_fast_path(source_crs) {
-            let ups = match pole {
-                Pole::North => "EPSG:5041",
-                Pole::South => "EPSG:5042",
+            let ups = match geodetic_pole {
+                GeodeticPole::North => "EPSG:5041",
+                GeodeticPole::South => "EPSG:5042",
             };
             if candidate_fits(ups, &extent.samples, state)? {
                 return validated_local_crs(
@@ -116,13 +115,13 @@ pub(super) fn estimate_local_crs_at(
                     source_crs,
                     state,
                 )?
-                .with_projected_pole_at(source_crs, extent.latitude >= 0.0, state);
+                .with_projected_pole_at(source_crs, geodetic_pole, state);
             }
         }
         let local = best_custom_candidate(source_crs, &extent, state)?;
         return validated_local_crs(local, source_crs, state)?.with_projected_pole_at(
             source_crs,
-            extent.latitude >= 0.0,
+            geodetic_pole,
             state,
         );
     }
@@ -254,12 +253,61 @@ const fn same_ellipsoid(left: &CrsInfo, right: &CrsInfo) -> bool {
 }
 
 fn same_prime_meridian(left: &CrsInfo, right: &CrsInfo) -> bool {
-    let longitude_radians = |info: &CrsInfo| {
-        info.prime_meridian.as_ref().map_or(0.0, |meridian| {
-            meridian.longitude * meridian.unit_conversion_factor
-        })
+    same_prime_meridian_values(left.prime_meridian.as_ref(), right.prime_meridian.as_ref())
+}
+
+fn same_prime_meridian_values(
+    left: Option<&PrimeMeridianInfo>,
+    right: Option<&PrimeMeridianInfo>,
+) -> bool {
+    let Some((left_value, left_factor, left_period)) = selected_prime_meridian_factors(left) else {
+        return false;
     };
-    longitude_radians(left).to_bits() == longitude_radians(right).to_bits()
+    let Some((right_value, right_factor, right_period)) = selected_prime_meridian_factors(right)
+    else {
+        return false;
+    };
+    let (left_product, right_product) = match (left_period, right_period) {
+        (Some(left_period), Some(right_period)) => {
+            ([left_value, std::f64::consts::TAU, right_period], [
+                right_value,
+                std::f64::consts::TAU,
+                left_period,
+            ])
+        },
+        (Some(left_period), None) => ([left_value, std::f64::consts::TAU, 1.0], [
+            right_value,
+            right_factor,
+            left_period,
+        ]),
+        (None, Some(right_period)) => ([left_value, left_factor, right_period], [
+            right_value,
+            std::f64::consts::TAU,
+            1.0,
+        ]),
+        (None, None) => ([left_value, left_factor, 1.0], [
+            right_value,
+            right_factor,
+            1.0,
+        ]),
+    };
+    // Compare original ordinate/unit expressions before PM phase rounding.
+    compare_three_f64_products(left_product, right_product) == std::cmp::Ordering::Equal
+}
+
+fn selected_prime_meridian_factors(
+    meridian: Option<&PrimeMeridianInfo>,
+) -> Option<(f64, f64, Option<f64>)> {
+    let Some(meridian) = meridian else {
+        return Some((0.0, 1.0, None));
+    };
+    let unit =
+        AngularFactor::try_new("prime meridian unit", meridian.unit_conversion_factor).ok()?;
+    meridian.longitude.is_finite().then_some((
+        meridian.longitude,
+        meridian.unit_conversion_factor,
+        unit.recognized_period(),
+    ))
 }
 
 fn same_datum(left: &CrsInfo, right: &CrsInfo) -> bool {
@@ -277,9 +325,6 @@ fn operation_is_datum_preserving(operation: &OperationInfo, expected_method: &st
     if operation.has_ballpark_transformation
         || operation.requires_coordinate_epoch
         || !operation.grids.is_empty()
-        || !operation_definition_is_projection_only(
-            operation.definition.as_deref().unwrap_or_default(),
-        )
     {
         return false;
     }
@@ -308,6 +353,7 @@ fn coordinate_operation_is_datum_preserving(
     if operation.has_ballpark_transformation
         || operation.requires_coordinate_epoch
         || !operation.grids.is_empty()
+        || (operation.method.is_none() && operation.steps.is_empty())
     {
         return false;
     }
@@ -353,27 +399,6 @@ fn null_geographic_3d_offsets(parameters: &[OperationParameterInfo]) -> bool {
     !parameters.is_empty() && parameters.iter().all(|parameter| parameter.value == 0.0)
 }
 
-fn operation_definition_is_projection_only(definition: &str) -> bool {
-    let mut projection_count = 0_usize;
-    for token in definition.split_ascii_whitespace() {
-        if let Some(projection) = token.strip_prefix("proj=") {
-            match projection {
-                "pipeline" | "unitconvert" | "axisswap" | "longlat" | "noop" => {},
-                "tmerc" | "utm" | "stere" => {
-                    projection_count = projection_count.wrapping_add(1);
-                },
-                _ => return false,
-            }
-        } else if token.starts_with("nadgrids=")
-            || token.starts_with("geoidgrids=")
-            || token.starts_with("towgs84=")
-        {
-            return false;
-        }
-    }
-    projection_count == 1
-}
-
 #[derive(Debug)]
 struct LocalExtent {
     longitude: f64,
@@ -406,7 +431,6 @@ impl LocalExtent {
                 .checked_add(9)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?
         };
-        let capacity = admit_shape_vector_capacity::<(f64, f64)>(capacity)?;
         let mut points = Vec::with_capacity(capacity);
         for shape in &sources {
             let shape = shape.as_ref();
@@ -613,13 +637,13 @@ fn best_utm_from_anchor(
     state: &RuntimeState,
 ) -> Result<Option<String>> {
     let zone = utm_zone(local.longitude, local.latitude);
-    let pole = if local.latitude >= 0.0 {
-        Pole::North
+    let geodetic_pole = if local.latitude >= 0.0 {
+        GeodeticPole::North
     } else {
-        Pole::South
+        GeodeticPole::South
     };
     if has_wgs84_datum_fast_path(crs) {
-        return Ok(Some(wgs84_utm_crs(zone, pole)));
+        return Ok(Some(wgs84_utm_crs(zone, geodetic_pole)));
     }
     let info = info_with_state(crs, state)?;
     let Some(source_datum) = datum_key(&info) else {
@@ -630,7 +654,7 @@ fn best_utm_from_anchor(
         local.longitude,
         local.latitude,
         zone,
-        pole,
+        geodetic_pole,
         state,
     )
 }
@@ -644,7 +668,7 @@ fn best_utm_from_catalog(
     lon: f64,
     lat: f64,
     zone: UtmZone,
-    pole: Pole,
+    pole: GeodeticPole,
     state: &RuntimeState,
 ) -> Result<Option<String>> {
     let items = catalog_with_state(
@@ -720,7 +744,7 @@ pub(super) fn is_projected_metre_cartesian_axes(info: &CrsInfo) -> bool {
     first.unit_conversion_factor == 1.0 && second.unit_conversion_factor == 1.0
 }
 
-fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: Pole) -> bool {
+fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: GeodeticPole) -> bool {
     let Some(operation) = info.coordinate_operation.as_ref() else {
         return false;
     };
@@ -732,8 +756,8 @@ fn is_utm_operation(info: &CrsInfo, zone: UtmZone, pole: Pole) -> bool {
     }
     let expected_lon0 = f64::from(zone.get()) * 6.0 - 183.0;
     let expected_northing = match pole {
-        Pole::North => 0.0,
-        Pole::South => 10_000_000.0,
+        GeodeticPole::North => 0.0,
+        GeodeticPole::South => 10_000_000.0,
     };
     angular_param_matches_degrees(operation, "8801", 0.0)
         && angular_param_matches_degrees(operation, "8802", expected_lon0)
@@ -800,10 +824,10 @@ pub(super) fn local_projection_parameter(
     parse_param_value(unique_epsg_param(operation, code)?, unit)
 }
 
-fn wgs84_utm_crs(zone: UtmZone, pole: Pole) -> String {
+fn wgs84_utm_crs(zone: UtmZone, pole: GeodeticPole) -> String {
     let base: u32 = match pole {
-        Pole::North => 32600,
-        Pole::South => 32700,
+        GeodeticPole::North => 32600,
+        GeodeticPole::South => 32700,
     };
     format!("EPSG:{}", base.wrapping_add(u32::from(zone.get())))
 }
@@ -893,6 +917,45 @@ mod metadata_tests {
         }
     }
 
+    fn operation_method(name: &str, code: &str) -> MethodInfo {
+        MethodInfo {
+            name: Some(name.to_owned()),
+            authority: Some("EPSG".to_owned()),
+            code: Some(code.to_owned()),
+        }
+    }
+
+    fn operation_info(steps: Vec<CrsCoordinateOperationInfo>) -> OperationInfo {
+        OperationInfo {
+            name: None,
+            definition: None,
+            description: None,
+            accuracy: None,
+            has_inverse: true,
+            has_ballpark_transformation: false,
+            requires_coordinate_epoch: false,
+            instantiable: true,
+            method: None,
+            parameters: Vec::new(),
+            grids: Vec::new(),
+            steps,
+            area_of_use: None,
+            source: "EPSG:4326".to_owned(),
+            target: "EPSG:32634".to_owned(),
+            source_epoch: None,
+            target_epoch: None,
+        }
+    }
+
+    fn prime_meridian(longitude: f64, unit_conversion_factor: f64) -> PrimeMeridianInfo {
+        PrimeMeridianInfo {
+            name: Some("selected prime meridian".to_owned()),
+            longitude,
+            unit_name: Some("test unit".to_owned()),
+            unit_conversion_factor,
+        }
+    }
+
     #[expect(
         clippy::float_cmp,
         reason = "the fixture hunts bit-adjacent degree spellings whose radian products collide; a tolerance would hide the identity the matcher must reject"
@@ -941,6 +1004,90 @@ mod metadata_tests {
         ]);
         assert!(unique_epsg_param(&op, "8802").is_none());
         assert!(!angular_param_matches_degrees(&op, "8802", 9.0));
+    }
+
+    #[test]
+    fn prime_meridian_comparison_uses_selected_angular_meaning() {
+        let standard_grad = std::f64::consts::TAU / 400.0;
+        let source = prime_meridian(2.0, standard_grad);
+        let target = prime_meridian(2.0_f64.next_down(), standard_grad.next_up());
+        assert_eq!(
+            source.longitude * source.unit_conversion_factor,
+            target.longitude * target.unit_conversion_factor
+        );
+        assert!(!same_prime_meridian_values(Some(&source), Some(&target)));
+
+        let same_selected_meridian = prime_meridian(2.0, standard_grad.next_up());
+        assert!(same_prime_meridian_values(
+            Some(&source),
+            Some(&same_selected_meridian)
+        ));
+        assert!(same_prime_meridian_values(
+            None,
+            Some(&prime_meridian(0.0, standard_grad))
+        ));
+
+        let unit = AngularFactor::try_new("prime meridian unit", standard_grad).unwrap();
+        let rounded_source = unit.to_radians(0.1);
+        let rounded_target = unit.to_radians(0.1_f64.next_down());
+        assert_eq!(rounded_source.to_bits(), 0x3F59_BC65_B68B_71C3);
+        assert_eq!(rounded_target.to_bits(), 0x3F59_BC65_B68B_71C3);
+        assert!(!same_prime_meridian_values(
+            Some(&prime_meridian(0.1, standard_grad)),
+            Some(&prime_meridian(0.1_f64.next_down(), standard_grad))
+        ));
+
+        assert!(same_prime_meridian_values(
+            Some(&prime_meridian(2.0, standard_grad)),
+            Some(&prime_meridian(1.5, std::f64::consts::TAU / 300.0))
+        ));
+        assert!(same_prime_meridian_values(
+            Some(&prime_meridian(2.0, 0.01)),
+            Some(&prime_meridian(1.0, 0.02))
+        ));
+        assert!(same_prime_meridian_values(
+            Some(&prime_meridian(-100.0, standard_grad)),
+            Some(&prime_meridian(-90.0, crate::crs::DEGREE_TO_RADIAN))
+        ));
+        let arbitrary_unit = prime_meridian(-16.0 * std::f64::consts::TAU, 1.0 / 256.0);
+        let selected_grad = prime_meridian(-25.0, standard_grad);
+        assert!(same_prime_meridian_values(
+            Some(&selected_grad),
+            Some(&arbitrary_unit)
+        ));
+        assert!(same_prime_meridian_values(
+            Some(&arbitrary_unit),
+            Some(&selected_grad)
+        ));
+        let negative_source = prime_meridian(-2.0, 0.01);
+        let negative_equivalent = prime_meridian(-1.0, 0.02);
+        assert!(same_prime_meridian_values(
+            Some(&negative_source),
+            Some(&negative_equivalent)
+        ));
+        assert!(!same_prime_meridian_values(
+            Some(&prime_meridian(2.0, 0.01)),
+            Some(&negative_source)
+        ));
+        assert!(same_prime_meridian_values(
+            Some(&prime_meridian(100.0, standard_grad)),
+            Some(&prime_meridian(std::f64::consts::FRAC_PI_2, 1.0))
+        ));
+    }
+
+    #[test]
+    fn datum_preservation_proves_the_typed_operation_tree_without_export_text() {
+        let mut axis_change = operation(Vec::new());
+        axis_change.method = Some(operation_method("Axis Order Reversal (2D)", "9843"));
+        let mut projection = operation(Vec::new());
+        projection.method = Some(operation_method("Transverse Mercator", "9807"));
+        let permitted = operation_info(vec![axis_change.clone(), projection.clone()]);
+        assert!(permitted.definition.is_none());
+        assert!(operation_is_datum_preserving(&permitted, "9807"));
+
+        let untyped_leaf = operation(Vec::new());
+        let unowned = operation_info(vec![axis_change, projection, untyped_leaf]);
+        assert!(!operation_is_datum_preserving(&unowned, "9807"));
     }
 
     #[test]

@@ -2,14 +2,42 @@ use crate::crs::PointEdgeScratch;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
     cached_chart_distance, cached_chart_dwithin, coordinate_squared_safe, parts_boundary_contact,
-    parts_covers_point, point_chart_distance, point_chart_dwithin, puntal_brute_distance,
+    point_chart_distance, point_chart_dwithin, puntal_brute_distance,
     puntal_brute_distance_squared, quick_area_overlap, squared_space_safe,
 };
 use crate::geometry::{
-    ChartMetric, DistanceParts, FacetBvh, FrameDependentCaches, GeodesicMetric,
-    GeographicMetricKey, GeographicPrepared, Point, PointBatchTester, PreparedPlan, Shape,
-    distance, finish_planar_squared_min, point_distance, points_dwithin,
+    ChartMetric, DistanceParts, DwithinOutcome, FacetBvh, FrameDependentCaches, GeodesicMetric,
+    GeographicMetricKey, GeographicPrepared, Point, PreparedPlan, Shape, distance,
+    finish_planar_squared_min, point_distance, points_dwithin, same_point,
 };
+
+/// Select coverage once per batch while keeping each metric loop monomorphic.
+/// Coverage errors propagate from the enclosing function through `?`.
+macro_rules! point_batch_coverage {
+    ($probes:expr, $queries:expr, $parts:expr, $bvh:expr, $stack:ident,
+     |$point:ident, $covered:ident| $body:block) => {{
+        if let Some(queries) = $queries {
+            for (x, y) in $probes {
+                let $point = Point::new_raw_xy(x, y);
+                let $covered = queries.covers($point)?;
+                $body
+            }
+        } else {
+            for (x, y) in $probes {
+                let $point = Point::new_raw_xy(x, y);
+                let $covered = $parts
+                    .point_only
+                    .iter()
+                    .any(|&other| same_point(other, $point))
+                    || $bvh.map_or_else(
+                        || $parts.linework.covers_point($point),
+                        |bvh| bvh.covers_point_with_stack(&$parts.linework, $point, &mut $stack),
+                    );
+                $body
+            }
+        }
+    }};
+}
 impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
     /// shadowing [`Shape::distance`] (which builds throwaway parts) so any
@@ -191,43 +219,40 @@ impl PreparedPlan {
         &self,
         probes: impl Iterator<Item = (f64, f64)>,
     ) -> Result<Vec<f64>> {
-        let tester = self.point_tester()?;
+        let tester = self
+            .shape()
+            .has_area_parts()
+            .then(|| self.prepare_point_queries(probes.size_hint().0))
+            .transpose()?;
         let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
         let mut stack = Vec::new();
         let mut distances = Vec::new();
-        for (x, y) in probes {
-            let distance = Self::distance_point_with_resolved(
-                self.shape(),
-                Point::new_raw_xy(x, y),
-                tester,
-                parts,
-                parts_squared_safe,
-                bvh,
-                &mut stack,
-            )?;
+        point_batch_coverage!(probes, tester, parts, bvh, stack, |point, covered| {
+            let distance = if covered {
+                0.0
+            } else {
+                Self::distance_point_with_resolved(
+                    point,
+                    parts,
+                    parts_squared_safe,
+                    bvh,
+                    &mut stack,
+                )?
+            };
             distances.push(distance);
-        }
+        });
         Ok(distances)
     }
 
     fn distance_point_with_resolved(
-        shape: &Shape,
         point: Point,
-        tester: Option<&PointBatchTester>,
         parts: &DistanceParts,
         parts_squared_safe: bool,
         bvh: Option<&FacetBvh>,
         stack: &mut Vec<u32>,
     ) -> Result<f64> {
-        let covered = tester.map_or_else(
-            || parts_covers_point(shape, parts, point),
-            |tester| tester.covers_point(point),
-        );
-        if covered {
-            return Ok(0.0);
-        }
         let safe = parts_squared_safe && coordinate_squared_safe(point);
         // Local min to linework: squared (SQUARED=true) or distance space.
         let mut min_linework = |squared: bool| -> Result<f64> {
@@ -295,52 +320,44 @@ impl PreparedPlan {
             }
             return Ok(matches);
         }
-        let tester = self.point_tester()?;
+        let tester = self
+            .shape()
+            .has_area_parts()
+            .then(|| self.prepare_point_queries(probes.size_hint().0))
+            .transpose()?;
         let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
         let mut stack = Vec::new();
         let mut matches = Vec::new();
-        for (x, y) in probes {
-            let matched = Self::dwithin_point_with_resolved(
-                self.shape(),
-                Point::new_raw_xy(x, y),
-                distance,
-                tester,
-                parts,
-                parts_squared_safe,
-                bvh,
-                &mut stack,
-            )?;
+        point_batch_coverage!(probes, tester, parts, bvh, stack, |point, covered| {
+            let matched = covered
+                || Self::dwithin_point_with_resolved(
+                    point,
+                    distance,
+                    parts,
+                    parts_squared_safe,
+                    bvh,
+                    &mut stack,
+                )?;
             matches.push(matched);
-        }
+        });
         Ok(matches)
     }
 
     fn dwithin_point_with_resolved(
-        shape: &Shape,
         point: Point,
         distance: f64,
-        tester: Option<&PointBatchTester>,
         parts: &DistanceParts,
         parts_squared_safe: bool,
         bvh: Option<&FacetBvh>,
         stack: &mut Vec<u32>,
     ) -> Result<bool> {
-        let covered = tester.map_or_else(
-            || parts_covers_point(shape, parts, point),
-            |tester| tester.covers_point(point),
-        );
-        if covered {
-            return Ok(true);
-        }
         let limit_sq = distance * distance;
         let use_sq = limit_sq.is_normal() && distance > 0.0;
         if !use_sq {
             return Ok(Self::distance_point_with_resolved(
-                shape,
                 point,
-                tester,
                 parts,
                 parts_squared_safe,
                 bvh,
@@ -451,14 +468,15 @@ impl PreparedPlan {
                 ));
             }
             let point = Point::new_raw_xy(x, y);
-            let value = if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative() {
-                false
+            let outcome = if distance < 0.0 || distance.is_infinite() && distance.is_sign_negative()
+            {
+                DwithinOutcome::Outside
             } else if prepared.point_covers(point)? {
-                true
+                DwithinOutcome::Within
             } else {
                 point_chart_dwithin(point, &parts, metric, distance, point_edge, stack)?
             };
-            values.push(value);
+            values.push(outcome.into_bool()?);
         }
         Ok(values)
     }

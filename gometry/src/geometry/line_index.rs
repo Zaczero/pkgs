@@ -25,6 +25,8 @@ use crate::geometry::{
     point_segment_distance_and_projection, point_segment_selection, push_distinct_active_position,
     segment_projection,
 };
+#[cfg(test)]
+use crate::py::support::prepare_line_locate;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum InterpolationProvenance {
@@ -54,6 +56,68 @@ pub(crate) trait SegmentMetric {
         provenance: InterpolationProvenance,
     ) -> Result<Point> {
         self.interpolate(part.start, part.end, length, fraction, provenance)
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "substring boundaries at exact prefix endpoints preserve authentic source points"
+    )]
+    fn append_embedded_interval(
+        &self,
+        start: Point,
+        end: Point,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let from = if from_fraction == 0.0 {
+            start
+        } else if from_fraction == 1.0 {
+            end
+        } else {
+            self.interpolate(
+                start,
+                end,
+                length,
+                from_fraction,
+                InterpolationProvenance::Embedded,
+            )?
+        };
+        let to = if to_fraction == 0.0 {
+            start
+        } else if to_fraction == 1.0 {
+            end
+        } else {
+            self.interpolate(
+                start,
+                end,
+                length,
+                to_fraction,
+                InterpolationProvenance::Embedded,
+            )?
+        };
+        push_distinct_active_position(output, from);
+        push_distinct_active_position(output, to);
+        Ok(())
+    }
+
+    fn append_embedded_prepared_interval(
+        &self,
+        part: &ChartEdgePart,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        self.append_embedded_interval(
+            part.start,
+            part.end,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
     }
 }
 
@@ -225,6 +289,89 @@ impl<M: ChartMetric> SegmentMetric for M {
             self, part.start, part.end, &part.edge, length, fraction, provenance,
         )
     }
+
+    fn append_embedded_interval(
+        &self,
+        start: Point,
+        end: Point,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let edge = self.chart_edge(start, end)?;
+        append_chart_embedded_interval(
+            self,
+            start,
+            end,
+            &edge,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
+    }
+
+    fn append_embedded_prepared_interval(
+        &self,
+        part: &ChartEdgePart,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        append_chart_embedded_interval(
+            self,
+            part.start,
+            part.end,
+            &part.edge,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
+    }
+}
+
+#[expect(
+    clippy::float_cmp,
+    reason = "substring endpoints at exact source parameters preserve authentic vertices"
+)]
+fn append_chart_embedded_interval<M: ChartMetric>(
+    metric: &M,
+    start: Point,
+    end: Point,
+    edge: &ChartEdge,
+    length: f64,
+    from_fraction: f64,
+    to_fraction: f64,
+    output: &mut Vec<Point>,
+) -> Result<()> {
+    let parameter_at = |fraction: f64| {
+        if fraction == 0.0 {
+            Ok(0.0)
+        } else if fraction == 1.0 {
+            Ok(1.0)
+        } else {
+            metric.chart_edge_locate_t(edge, length * fraction, length)
+        }
+    };
+
+    let from = parameter_at(from_fraction)?;
+    let to = parameter_at(to_fraction)?;
+    edge.publish_source_interval(
+        start,
+        end,
+        from,
+        to,
+        |parameter| metric.chart_edge_witness(start, end, edge, parameter, Some(length)),
+        |_, point, _| {
+            push_distinct_active_position(output, point);
+            Ok(())
+        },
+        "line_substring",
+    )?;
+    Ok(())
 }
 
 fn interpolate_chart_edge(
@@ -241,13 +388,7 @@ fn interpolate_chart_edge(
     if provenance == InterpolationProvenance::Independent {
         return Ok(point);
     }
-    let lifted_position = edge.chart_position(parameter);
-    let longitude = metric
-        .chart_frame()
-        .longitude()
-        .nearest_longitude_alias(lifted_position.x, point.x)
-        .map_err(|error| crate::crs::CrsError::message(error.to_string()))?;
-    Ok(point.with_xy_raw(longitude, point.y))
+    edge.source_sheet_point(start, end, parameter, point)
 }
 
 /// Cache slot for a built (or unbuildable) [`LineIndex`].
@@ -313,6 +454,15 @@ pub(crate) trait LineSegments: HeapSize {
         fraction: f64,
         provenance: InterpolationProvenance,
     ) -> Result<Point>;
+    fn append_embedded_interval<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()>;
 }
 
 impl LineSegments for Box<[OrdinateSegment]> {
@@ -338,6 +488,26 @@ impl LineSegments for Box<[OrdinateSegment]> {
     ) -> Result<Point> {
         let segment = self.segment(index);
         metric.interpolate(segment.start, segment.end, length, fraction, provenance)
+    }
+
+    fn append_embedded_interval<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let segment = self.segment(index);
+        metric.append_embedded_interval(
+            segment.start,
+            segment.end,
+            length,
+            from_fraction,
+            to_fraction,
+            output,
+        )
     }
 }
 
@@ -374,6 +544,22 @@ impl LineSegments for std::sync::Arc<ChartParts> {
             .get(index)
             .expect("chart-edge ordinal belongs to the route");
         metric.interpolate_prepared(part, length, fraction, provenance)
+    }
+
+    fn append_embedded_interval<M: SegmentMetric>(
+        &self,
+        index: usize,
+        metric: &M,
+        length: f64,
+        from_fraction: f64,
+        to_fraction: f64,
+        output: &mut Vec<Point>,
+    ) -> Result<()> {
+        let part = self
+            .edges
+            .get(index)
+            .expect("chart-edge ordinal belongs to the route");
+        metric.append_embedded_prepared_interval(part, length, from_fraction, to_fraction, output)
     }
 }
 
@@ -807,29 +993,14 @@ impl<S: LineSegments> LineIndex<S> {
                 }
                 continue;
             }
-            // Boundary fractions resolve to the exact stored endpoints — no
-            // metric call (the interior windows of a substring walk are all
-            // full segments, so this skips their edge evaluations). The
-            // comparisons are exact by design: `from`/`to` are clamped to
-            // the same prefix values they compare against.
-            #[expect(clippy::float_cmp, reason = "exact prefix boundary identity")]
-            let at = |target: f64| -> Result<Point> {
-                if target == segment_start {
-                    Ok(segment.start)
-                } else if target == segment_end {
-                    Ok(segment.end)
-                } else {
-                    self.segments.interpolate(
-                        index,
-                        metric,
-                        length,
-                        (target - segment_start) / length,
-                        InterpolationProvenance::Embedded,
-                    )
-                }
-            };
-            push_distinct_active_position(&mut result, at(from)?);
-            push_distinct_active_position(&mut result, at(to)?);
+            self.segments.append_embedded_interval(
+                index,
+                metric,
+                length,
+                (from - segment_start) / length,
+                (to - segment_start) / length,
+                &mut result,
+            )?;
         }
 
         Ok(match result.as_slice() {
@@ -966,6 +1137,16 @@ impl<S: LineSegments> HeapSize for LineIndex<S> {
 mod tests {
     use super::*;
 
+    fn cached_planar_locate(
+        prepared: &crate::geometry::PreparedPlan,
+        point: Point,
+        normalized: bool,
+    ) -> crate::error::Result<f64> {
+        prepared
+            .line_index()?
+            .locate_point_prepared(point, normalized, || prepared.distance_parts())
+    }
+
     #[test]
     fn planar_locate_orders_segments_by_source_distance() {
         let points = [
@@ -976,7 +1157,10 @@ mod tests {
         let line = Shape::LineString(
             LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
         );
-        assert_eq!(line.line_locate_point(points[2], true).unwrap(), 1.0);
+        assert_eq!(
+            line.line_locate_point_streaming(points[2], true).unwrap(),
+            1.0
+        );
     }
 
     #[test]
@@ -987,9 +1171,8 @@ mod tests {
         .expect("valid multipart line");
         let probe = Point::new_raw_xy(0.0, 0.0);
         let prepared = crate::geometry::PreparedPlan::new(shape);
-        let station = prepared
-            .line_locate_point(probe, false)
-            .expect("prepared nearest search");
+        let station =
+            cached_planar_locate(&prepared, probe, false).expect("prepared nearest search");
         // The nearest endpoint is the start of segment 1. Segment 0 has
         // horizontal length 1 - 2^-27, which is exactly representable.
         assert_eq!(
@@ -1018,7 +1201,9 @@ mod tests {
         let probe = Point::new_raw_xy(-1e308, 0.5);
         let prepared = crate::geometry::PreparedPlan::new(shape);
         assert_eq!(
-            prepared.line_locate_point(probe, false).unwrap().to_bits(),
+            cached_planar_locate(&prepared, probe, false)
+                .unwrap()
+                .to_bits(),
             0.5_f64.to_bits(),
         );
         assert_eq!(
@@ -1053,8 +1238,7 @@ mod tests {
         let probe = Point::new_raw_xy(0.0, 0.0);
         let prepared = crate::geometry::PreparedPlan::new(shape);
         assert_eq!(
-            prepared
-                .line_locate_point(probe, false)
+            cached_planar_locate(&prepared, probe, false)
                 .expect("exact nearest tie")
                 .to_bits(),
             2.414_213_562_373_095_f64.to_bits(),
@@ -1066,7 +1250,7 @@ mod tests {
         prepared: &crate::geometry::PreparedPlan,
         probe: Point,
     ) {
-        let station = prepared.line_locate_point(probe, false).unwrap();
+        let station = cached_planar_locate(prepared, probe, false).unwrap();
         let Shape::Point(interpolated) = prepared.line_interpolate_point(station, false).unwrap()
         else {
             unreachable!("line interpolation returns a point")
@@ -1158,8 +1342,7 @@ mod tests {
         );
         let prepared = crate::geometry::PreparedPlan::new(shape);
         assert_eq!(
-            prepared
-                .line_locate_point(Point::new_raw_xy(12.0, 1.0), false)
+            cached_planar_locate(&prepared, Point::new_raw_xy(12.0, 1.0), false)
                 .unwrap()
                 .to_bits(),
             6.0_f64.to_bits(),
@@ -1262,8 +1445,7 @@ mod tests {
                     locate_planar_route(shape.linework().unwrap().into_iter(), probe, normalized)
                         .expect("one-shot streaming reference");
                 assert_eq!(
-                    prepared
-                        .line_locate_point(probe, normalized)
+                    cached_planar_locate(&prepared, probe, normalized)
                         .expect("prepared nearest search")
                         .to_bits(),
                     expected.to_bits(),
@@ -1272,16 +1454,14 @@ mod tests {
             }
         }
         assert_eq!(
-            prepared
-                .line_locate_point(Point::new_raw_xy(0.0, 0.0), false)
+            cached_planar_locate(&prepared, Point::new_raw_xy(0.0, 0.0), false)
                 .expect("exact nearest tie")
                 .to_bits(),
             1.0_f64.to_bits(),
             "the first source segment wins an exact distance tie across multipart EMPTY members"
         );
         assert_eq!(
-            prepared
-                .line_locate_point(Point::new_raw_xy(100.0, 100.0), false)
+            cached_planar_locate(&prepared, Point::new_raw_xy(100.0, 100.0), false)
                 .expect("zero-length segment is not a locate candidate")
                 .to_bits(),
             5.0_f64.to_bits(),
@@ -1305,8 +1485,7 @@ mod tests {
             )
             .expect("packed one-shot reference");
             assert_eq!(
-                seeded_prepared
-                    .line_locate_point(probe, false)
+                cached_planar_locate(&seeded_prepared, probe, false)
                     .expect("prepared nearest search")
                     .to_bits(),
                 expected.to_bits(),
@@ -1467,6 +1646,7 @@ mod tests {
     #[test]
     fn cached_chart_locate_preserves_source_then_query_domain_error_precedence() {
         let model = crate::crs::metric_model(Some("OGC:CRS84")).unwrap();
+        let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();
         let invalid = crate::geometry::PreparedPlan::new(
             crate::io::parse_wkt("LINESTRING (0 100, 1 100)").unwrap(),
         );
@@ -1479,7 +1659,8 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(
-            crate::line_locate_shape(&model, &invalid, &cache, invalid_probe, false)
+            prepare_line_locate(&metric, &invalid, &cache, invalid_probe, false, false,)
+                .map(|(_, located)| located)
                 .unwrap_err()
                 .to_string(),
             source_error,
@@ -1496,7 +1677,8 @@ mod tests {
         .to_string();
         for _ in 0..2 {
             assert_eq!(
-                crate::line_locate_shape(&model, &valid, &cache, invalid_probe, false)
+                prepare_line_locate(&metric, &valid, &cache, invalid_probe, false, false,)
+                    .map(|(_, located)| located)
                     .unwrap_err()
                     .to_string(),
                 query_error,

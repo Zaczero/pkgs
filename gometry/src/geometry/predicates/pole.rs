@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::geographic::{
-    GeographicFrame, GeographicRing, Pole, RingSummary, RingTurn, ScalarGeographicView,
+    ChartPole, GeographicFrame, GeographicRing, RingSummary, RingTurn, ScalarGeographicView,
     SeamIdentity,
 };
 use crate::geometry::{Polygon, Ring, Shape, ShapeOwnerKey, VisibleXYKey};
@@ -10,8 +10,8 @@ fn ring_summary_in_frame(ring: &Ring, frame: GeographicFrame) -> Option<RingSumm
     RingSummary::try_new(frame, &GeographicRing::from_ring(ring)).ok()
 }
 
-fn summary_encloses_pole(summary: &RingSummary, north: bool) -> bool {
-    summary.bounded_pole() == Some(if north { Pole::North } else { Pole::South })
+fn summary_encloses_pole(summary: &RingSummary, pole: ChartPole) -> bool {
+    summary.bounded_pole() == Some(pole)
 }
 
 #[derive(Default)]
@@ -36,27 +36,33 @@ impl PoleMemo {
         }
     }
 
-    fn ring_encloses_pole(&mut self, ring: &Ring, frame: GeographicFrame, north: bool) -> bool {
+    fn ring_encloses_pole(&mut self, ring: &Ring, frame: GeographicFrame, pole: ChartPole) -> bool {
         let Some(summary) = self.ring_summary(ring, frame) else {
             return false;
         };
-        summary_encloses_pole(&summary, north)
+        summary_encloses_pole(&summary, pole)
     }
 
     fn polygon_encloses_pole(
         &mut self,
         polygon: &Polygon,
         frame: GeographicFrame,
-        north: bool,
+        pole: ChartPole,
     ) -> bool {
-        self.ring_encloses_pole(&polygon.shell, frame, north)
+        self.ring_encloses_pole(&polygon.shell, frame, pole)
             && !polygon
                 .holes
                 .iter()
-                .any(|hole| self.ring_encloses_pole(hole, frame, north))
+                .any(|hole| self.ring_encloses_pole(hole, frame, pole))
     }
 
-    fn shape_encloses_pole(&mut self, shape: &Shape, frame: GeographicFrame, north: bool) -> bool {
+    fn shape_encloses_pole(
+        &mut self,
+        shape: &Shape,
+        frame: GeographicFrame,
+        pole: ChartPole,
+    ) -> bool {
+        let north = pole == ChartPole::North;
         if let Shape::GeometryCollection(parts) = shape {
             let owner = parts
                 .members_are_shared()
@@ -73,7 +79,7 @@ impl PoleMemo {
             }
             let enclosed = parts
                 .iter()
-                .any(|part| self.shape_encloses_pole(part, frame, north));
+                .any(|part| self.shape_encloses_pole(part, frame, pole));
             if let Some(owner) = owner {
                 if north {
                     self.north_enclosure.insert(owner, enclosed);
@@ -84,10 +90,10 @@ impl PoleMemo {
             return enclosed;
         }
         match shape {
-            Shape::Polygon(polygon) => self.polygon_encloses_pole(polygon, frame, north),
+            Shape::Polygon(polygon) => self.polygon_encloses_pole(polygon, frame, pole),
             Shape::MultiPolygon(polygons) => polygons
                 .iter()
-                .any(|polygon| self.polygon_encloses_pole(polygon, frame, north)),
+                .any(|polygon| self.polygon_encloses_pole(polygon, frame, pole)),
             Shape::GeometryCollection(_) => unreachable!("handled above"),
             Shape::Point(_)
             | Shape::MultiPoint(_)
@@ -145,26 +151,26 @@ impl PoleMemo {
     }
 }
 
-/// Whether a ring encircles the north (``north == true``) or south pole via
-/// full-longitude winding at high latitude.
-pub(crate) fn ring_encloses_pole(ring: &Ring, north: bool) -> bool {
-    ring_encloses_pole_in_frame(ring, GeographicFrame::crs84(), north)
+/// Whether a ring encloses the selected native-chart pole through full-longitude winding.
+pub(crate) fn ring_encloses_pole(ring: &Ring, pole: ChartPole) -> bool {
+    ring_encloses_pole_in_frame(ring, GeographicFrame::crs84(), pole)
 }
 
-pub(crate) fn ring_bounded_pole(ring: &Ring, frame: GeographicFrame) -> Option<Pole> {
+#[cfg(test)]
+pub(crate) fn ring_bounded_pole(ring: &Ring, frame: GeographicFrame) -> Option<ChartPole> {
     ring_summary_in_frame(ring, frame).and_then(|summary| summary.bounded_pole())
 }
 
-fn ring_encloses_pole_in_frame(ring: &Ring, frame: GeographicFrame, north: bool) -> bool {
-    PoleMemo::default().ring_encloses_pole(ring, frame, north)
+fn ring_encloses_pole_in_frame(ring: &Ring, frame: GeographicFrame, pole: ChartPole) -> bool {
+    PoleMemo::default().ring_encloses_pole(ring, frame, pole)
 }
 
 pub(crate) fn shape_encloses_pole_in_frame(
     shape: &Shape,
     frame: GeographicFrame,
-    north: bool,
+    pole: ChartPole,
 ) -> bool {
-    PoleMemo::default().shape_encloses_pole(shape, frame, north)
+    PoleMemo::default().shape_encloses_pole(shape, frame, pole)
 }
 
 pub(crate) fn shape_has_polar_ring_in_frame(shape: &Shape, frame: GeographicFrame) -> bool {

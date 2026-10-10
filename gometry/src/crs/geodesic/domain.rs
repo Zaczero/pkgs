@@ -4,7 +4,7 @@ use crate::error::Result;
 use crate::geographic::lonlat::invalid_lonlat_error;
 use crate::geographic::{GeographicFrame, ScalarGeographicView, lonlat as geographic};
 use crate::geometry::storage::{PackedRow, ShapeRow};
-use crate::geometry::{CoordSeq, Coordinates, Shape};
+use crate::geometry::{CoordSeq, Coordinates as _, Shape};
 
 /// Expand one longitude/latitude domain check inside a coordinate loop. The
 /// caller can reuse its frame's longitude axis; the returned error is

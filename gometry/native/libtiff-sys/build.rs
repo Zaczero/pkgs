@@ -26,6 +26,7 @@ fn main() -> BuildResult {
         zlib_root.join("lib/libz.a")
     };
     let mut config = cmake::Config::new("libtiff");
+    cmake_flags::configure_fresh_build(&mut config);
     config
         .profile("Release")
         .define("BUILD_SHARED_LIBS", "OFF")

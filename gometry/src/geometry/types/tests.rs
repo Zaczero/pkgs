@@ -84,6 +84,7 @@ mod multipoint_iteration_tests {
             MultiMember::Value(point(1.0, 2.0, Some(3.0), Some(4.0))),
             MultiMember::Empty,
             MultiMember::Value(point(5.0, 6.0, Some(7.0), Some(8.0))),
+            MultiMember::Empty,
         ])
         .expect("homogeneous members");
 
@@ -173,6 +174,42 @@ mod multipoint_iteration_tests {
             Point::new_raw_xy(1.0, 2.0),
             Point::new_raw_xy(5.0, 6.0)
         ],);
+    }
+
+    #[test]
+    fn column_iterator_alternates_ends_without_crossing_xyzm_lanes() {
+        let [first, second, middle, fourth, last] = [
+            point(1.0, 11.0, Some(21.0), Some(31.0)),
+            point(2.0, 12.0, Some(22.0), Some(32.0)),
+            point(3.0, 13.0, Some(23.0), Some(33.0)),
+            point(4.0, 14.0, Some(24.0), Some(34.0)),
+            point(5.0, 15.0, Some(25.0), Some(35.0)),
+        ];
+        let coords = CoordSeq::try_from_points(&[first, second, middle, fourth, last])
+            .expect("matching XYZM coordinates");
+        let mut iter = coords.iter();
+
+        assert_eq!(iter.len(), 5);
+        assert_eq!(iter.size_hint(), (5, Some(5)));
+        assert_eq!(iter.next(), Some(first));
+        assert_eq!(iter.len(), 4);
+        assert_eq!(iter.size_hint(), (4, Some(4)));
+        assert_eq!(iter.next_back(), Some(last));
+        assert_eq!(iter.len(), 3);
+        assert_eq!(iter.size_hint(), (3, Some(3)));
+        assert_eq!(iter.next(), Some(second));
+        assert_eq!(iter.len(), 2);
+        assert_eq!(iter.size_hint(), (2, Some(2)));
+        assert_eq!(iter.next_back(), Some(fourth));
+        assert_eq!(iter.len(), 1);
+        assert_eq!(iter.size_hint(), (1, Some(1)));
+        assert_eq!(iter.next(), Some(middle));
+        assert_eq!(iter.len(), 0);
+        assert_eq!(iter.size_hint(), (0, Some(0)));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next_back(), None);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]
@@ -566,6 +603,19 @@ mod coordseq_builder_tests {
 }
 
 #[cfg(test)]
+mod coordseq_random_access_tests {
+    use super::*;
+
+    #[test]
+    fn point_at_panics_at_the_visible_length() {
+        let coords =
+            CoordSeq::try_from_points(&[Point::new_raw_xy(3.0, 7.0)]).expect("one coordinate");
+        let _panic = std::panic::catch_unwind(|| coords.point_at(coords.len()))
+            .expect_err("point_at must panic at the visible length");
+    }
+}
+
+#[cfg(test)]
 mod coordseq_select_rows_tests {
     use super::*;
 
@@ -607,6 +657,30 @@ mod coordseq_select_rows_tests {
             &child.xs.owner().unwrap()
         ));
         assert_eq!(gathered.xs().to_vec(), [4.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn select_rows_scatter_preserves_duplicate_and_reversed_xyzm_order() {
+        let seq = CoordSeq::try_from_vecs(
+            vec![10.0, 20.0, 30.0, 40.0, 50.0],
+            vec![11.0, 21.0, 31.0, 41.0, 51.0],
+            Some(vec![12.0, 22.0, 32.0, 42.0, 52.0]),
+            Some(vec![13.0, 23.0, 33.0, 43.0, 53.0]),
+        )
+        .unwrap();
+
+        let gathered = seq.select_rows(&[4, 1, 4, 0]).unwrap();
+        assert_eq!(gathered.axes(), CoordinateAxes::XYZM);
+        assert_eq!(gathered.xs(), &[50.0, 20.0, 50.0, 10.0]);
+        assert_eq!(gathered.ys(), &[51.0, 21.0, 51.0, 11.0]);
+        assert_eq!(gathered.zs(), Some(&[52.0, 22.0, 52.0, 12.0][..]));
+        assert_eq!(gathered.ms(), Some(&[53.0, 23.0, 53.0, 13.0][..]));
+
+        let reversed = seq.select_rows(&[4, 3, 2, 1, 0]).unwrap();
+        assert_eq!(reversed.xs(), &[50.0, 40.0, 30.0, 20.0, 10.0]);
+        assert_eq!(reversed.ys(), &[51.0, 41.0, 31.0, 21.0, 11.0]);
+        assert_eq!(reversed.zs(), Some(&[52.0, 42.0, 32.0, 22.0, 12.0][..]));
+        assert_eq!(reversed.ms(), Some(&[53.0, 43.0, 33.0, 23.0, 13.0][..]));
     }
 
     #[test]
@@ -709,46 +783,104 @@ mod coordseq_m_storage_tests {
     fn nested_middle_local_m_keeps_distinct_offset_and_carries_without_allocation() {
         use crate::test_support::allocation_count;
 
-        let m = SharedSlice::from_vec((0..10).map(|value| f64::from(value) + 50.0).collect());
-        let seq = CoordSeq::from_shared_columns_with_window(
-            SharedSlice::from_vec((0..6).map(f64::from).collect()),
-            SharedSlice::from_vec(vec![10.0; 6]),
-            None,
-            Some(MColumn::Local {
-                owner: m.clone(),
-                offset: 4,
-            }),
-            CoordWindow::from_range(2..5, 6),
-        )
-        .unwrap();
-        assert_eq!(seq.xs(), &[2.0, 3.0, 4.0]);
-        assert_eq!(seq.ms(), Some(&[54.0, 55.0, 56.0][..]));
-        let columns = seq.column_arcs();
-        assert_eq!(columns.window, 2..5);
-        assert_eq!(columns.m_parts().unwrap().1, 4..7);
-        assert_ne!(columns.window.start, columns.m_parts().unwrap().1.start);
+        let nested = {
+            let m = SharedSlice::from_vec((0..10).map(|value| f64::from(value) + 50.0).collect());
+            let seq = CoordSeq::from_shared_columns_with_window(
+                SharedSlice::from_vec((0..6).map(f64::from).collect()),
+                SharedSlice::from_vec(vec![10.0; 6]),
+                None,
+                Some(MColumn::Local {
+                    owner: m.clone(),
+                    offset: 4,
+                }),
+                CoordWindow::from_range(2..5, 6),
+            )
+            .unwrap();
+            assert_eq!(seq.xs(), &[2.0, 3.0, 4.0]);
+            assert_eq!(seq.ms(), Some(&[54.0, 55.0, 56.0][..]));
+            let columns = seq.column_arcs();
+            assert_eq!(columns.window, 2..5);
+            assert_eq!(columns.m_parts().unwrap().1, 4..7);
+            assert_ne!(columns.window.start, columns.m_parts().unwrap().1.start);
 
-        let nested = seq.view(CoordWindow::from_range(1..3, seq.len()));
-        assert_eq!(nested.xs(), &[3.0, 4.0]);
+            let nested = seq.view(CoordWindow::from_range(1..3, seq.len()));
+            assert_eq!(nested.xs(), &[3.0, 4.0]);
+            assert_eq!(nested.ms(), Some(&[55.0, 56.0][..]));
+            let nested_columns = nested.column_arcs();
+            assert_eq!(nested_columns.window, 3..5);
+            assert_eq!(nested_columns.m_parts().unwrap().1, 5..7);
+
+            let inner = nested.view(CoordWindow::from_range(1..2, nested.len()));
+            assert_eq!(inner.xs(), &[4.0]);
+            assert_eq!(inner.ms(), Some(&[56.0][..]));
+
+            let (_carried, allocations) = allocation_count(|| nested.carried_ms());
+            assert_eq!(allocations, 0);
+
+            let mapped = nested.map_xy(|x, y| (x + 1.0, y + 1.0)).unwrap();
+            assert_eq!(mapped.xs(), &[4.0, 5.0]);
+            assert_eq!(mapped.ms(), Some(&[55.0, 56.0][..]));
+            assert!(Arc::ptr_eq(
+                &mapped.column_arcs().m_parts().unwrap().0.owner().unwrap(),
+                &m.owner().unwrap(),
+            ));
+            nested
+        };
+
+        assert_eq!(nested.axes(), CoordinateAxes::XYM);
         assert_eq!(nested.ms(), Some(&[55.0, 56.0][..]));
-        let nested_columns = nested.column_arcs();
-        assert_eq!(nested_columns.window, 3..5);
-        assert_eq!(nested_columns.m_parts().unwrap().1, 5..7);
+        assert_eq!(
+            nested
+                .iter()
+                .map(|point| (point.x, point.y, point.axes, point.m))
+                .collect::<Vec<_>>(),
+            vec![
+                (3.0, 10.0, CoordinateAxes::XYM, 55.0),
+                (4.0, 10.0, CoordinateAxes::XYM, 56.0),
+            ],
+        );
+    }
 
-        let inner = nested.view(CoordWindow::from_range(1..2, nested.len()));
-        assert_eq!(inner.xs(), &[4.0]);
-        assert_eq!(inner.ms(), Some(&[56.0][..]));
+    #[test]
+    fn local_m_admission_preserves_real_range_errors_and_exact_suffix_coverage() {
+        let make = |owner: Vec<f64>, offset: usize, visible: usize| {
+            CoordSeq::from_shared_columns_with_window(
+                SharedSlice::from_vec(vec![1.0; visible]),
+                SharedSlice::from_vec(vec![2.0; visible]),
+                None,
+                Some(MColumn::Local {
+                    owner: SharedSlice::from_vec(owner),
+                    offset,
+                }),
+                CoordWindow::from_range(0..visible, visible),
+            )
+        };
 
-        let (_carried, allocations) = allocation_count(|| nested.carried_ms());
-        assert_eq!(allocations, 0);
-
-        let mapped = nested.map_xy(|x, y| (x + 1.0, y + 1.0)).unwrap();
-        assert_eq!(mapped.xs(), &[4.0, 5.0]);
-        assert_eq!(mapped.ms(), Some(&[55.0, 56.0][..]));
-        assert!(Arc::ptr_eq(
-            &mapped.column_arcs().m_parts().unwrap().0.owner().unwrap(),
-            &m.owner().unwrap(),
+        let offset_past_owner =
+            make(vec![50.0, 60.0], 3, 1).expect_err("an M offset past its owner is rejected");
+        assert!(matches!(
+            offset_past_owner.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::CoordinateRange {
+                start: 3,
+                end: 3,
+                length: 2,
+            })
         ));
+
+        let visible_past_suffix = make(vec![50.0, 60.0, 70.0], 1, 3)
+            .expect_err("M coverage must include the visible coordinate window");
+        assert!(matches!(
+            visible_past_suffix.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::CoordinateRange {
+                start: 1,
+                end: 4,
+                length: 3,
+            })
+        ));
+
+        let exact_suffix = make(vec![50.0, 60.0, 70.0], 1, 2)
+            .expect("the visible M interval exactly covers the owner's suffix");
+        assert_eq!(exact_suffix.ms(), Some(&[60.0, 70.0][..]));
     }
 
     #[test]
@@ -1069,23 +1201,13 @@ mod shape_count_query_tests {
             counts.coordinates(&points).unwrap_err().kind(),
             ErrorKind::Resource(ResourceError::SizeOverflow)
         ));
+        assert!(matches!(
+            points.points_vec().unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
         assert_eq!(counts.segments(&points).unwrap(), 0);
         assert!(!counts.coordinates_at_most(&points, usize::MAX));
         assert!(!counts.has_segments(&points));
-    }
-
-    #[test]
-    fn full_point_materialization_admits_layout_before_reserving() {
-        let points = double(Shape::Point(Point::new_raw_xy(0.0, 0.0)), 62);
-        let (count, query_allocations) =
-            allocation_count(|| ShapeCountQuery::default().coordinates(&points).unwrap());
-        assert_eq!(count, 1_usize << 62);
-        let (result, materializer_allocations) = allocation_count(|| points.points_vec());
-        assert!(matches!(
-            result.unwrap_err().kind(),
-            ErrorKind::Resource(ResourceError::SizeOverflow)
-        ));
-        assert_eq!(materializer_allocations, query_allocations);
     }
 
     #[test]

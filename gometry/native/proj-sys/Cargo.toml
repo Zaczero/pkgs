@@ -37,7 +37,7 @@ features = ["nobuild"]
 
 [features]
 buildtime_bindgen = ["dep:bindgen"]
-bundled_proj = []
+bundled_proj = ["libsqlite3-sys/bundled"]
 network = ["tiff"]
 nobuild = []
 pkg_config = []

@@ -343,8 +343,13 @@ def test_g3_interleaved_size3_rejects_noncanonical_field_name() -> None:
 
 def test_g4_wkt_empty_members_are_preserved() -> None:
     """EMPTY multipart members retain their declared positions."""
-    g = gm.from_wkt('MULTIPOINT Z ((1 2 3), EMPTY)')
-    assert g.to_wkt() == 'MULTIPOINT Z ((1 2 3), EMPTY)'
+    g = gm.from_wkt('MULTIPOINT ZM (EMPTY, (1 2 3 4), EMPTY, (5 6 7 8), EMPTY)')
+    expected = 'MULTIPOINT ZM (EMPTY, (1 2 3 4), EMPTY, (5 6 7 8), EMPTY)'
+    assert g.to_wkt() == expected
+    assert gm.from_wkb(g.to_wkb()).to_wkt() == expected
+    all_empty = gm.from_wkt('MULTIPOINT ZM (EMPTY, EMPTY)')
+    assert all_empty.to_wkt() == 'MULTIPOINT ZM (EMPTY, EMPTY)'
+    assert gm.from_wkb(all_empty.to_wkb()).to_wkt() == ('MULTIPOINT ZM (EMPTY, EMPTY)')
     g2 = gm.from_wkt('MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)')
     assert g2.to_wkt() == 'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 0)), EMPTY)'
     assert gm.MultiPoint([gm.Point(1, 2), gm.Point()]).to_wkt() == (
@@ -376,7 +381,7 @@ def test_g5_include_srid_docs_and_runtime_raise() -> None:
 def test_g6_require_feature_returns_geometry_only() -> None:
     """gm.require(Feature) returns Geometry; properties are not a projection leak.
 
-    from_features keeps properties; require/from_geojson return geometry only.
+    from_geojson keeps properties; require/from_geojson return geometry only.
     Confirmed null for "parses properties that projection discards" as a bug:
     properties are intentionally out of the Geometry return contract.
     """
@@ -389,6 +394,6 @@ def test_g6_require_feature_returns_geometry_only() -> None:
     g = gm.require(feature, crs=4326)
     assert isinstance(g, gm.Point)
     assert g.to_wkt() == 'POINT (1 2)'
-    feats = gm.from_features(feature)
+    feats = gm.from_geojson(feature, features=True)
     assert feats.properties == ({'name': 'A', 'count': 99},)
     assert feats.ids == (7,)

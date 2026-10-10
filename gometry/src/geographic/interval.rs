@@ -1,66 +1,70 @@
 use std::cmp::Ordering;
 
-use super::{CanonicalLongitude, GeographicError, PeriodicAxis};
+use super::{CanonicalLongitude, PeriodicAxis};
+#[cfg(test)]
+use super::{ChartConnection, ChartStep, EdgeDirection, TurnDirection};
+use crate::geometry::exact_arith::product_sum::ExactSum;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CircularInterval {
     Empty,
     Arc {
         start: CanonicalLongitude,
-        sweep: f64,
+        end: CanonicalLongitude,
     },
     Full,
 }
 
 impl CircularInterval {
-    pub(crate) fn try_arc(
-        axis: PeriodicAxis,
-        start: f64,
-        sweep: f64,
-    ) -> Result<Self, GeographicError> {
-        if !sweep.is_finite() || sweep < 0.0 || sweep >= axis.period() {
-            return Err(GeographicError::InvalidSweep {
-                sweep,
-                period: axis.period(),
-            });
+    pub(crate) const fn point(longitude: CanonicalLongitude) -> Self {
+        Self::Arc {
+            start: longitude,
+            end: longitude,
         }
-        Ok(Self::Arc {
-            start: axis.canonicalize(start)?,
-            sweep: if sweep == 0.0 { 0.0 } else { sweep },
-        })
     }
 
-    pub(crate) fn west_east(self, axis: PeriodicAxis) -> Option<(f64, f64)> {
+    pub(crate) const fn from_endpoints(start: CanonicalLongitude, end: CanonicalLongitude) -> Self {
+        Self::Arc { start, end }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_chart_connection(connection: ChartConnection) -> Self {
+        let reverse = match connection.step {
+            ChartStep::Circle(_) => return Self::Full,
+            ChartStep::Shortest(EdgeDirection::Minor(delta)) => delta.is_sign_negative(),
+            ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Negative)) => true,
+            ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Positive)) => false,
+        };
+        if reverse {
+            Self::from_endpoints(connection.end, connection.start)
+        } else {
+            Self::from_endpoints(connection.start, connection.end)
+        }
+    }
+
+    pub(crate) const fn west_east(self) -> Option<(f64, f64)> {
         match self {
-            Self::Arc { start, sweep } => {
-                Some((start.get(), arc_endpoint(axis, start, sweep).get()))
-            },
+            Self::Arc { start, end } => Some((start.get(), end.get())),
             Self::Empty | Self::Full => None,
         }
     }
 
     pub(crate) fn windows(self, axis: PeriodicAxis) -> Option<LongitudeWindows> {
-        let (start, sweep) = match self {
-            Self::Arc { start, sweep } => (start, sweep),
-            Self::Full => return Some(LongitudeWindows::Full),
-            Self::Empty => return None,
-        };
-        let west = start.get();
-        if sweep == 0.0 {
-            return Some(LongitudeWindows::One([west, west]));
+        match self {
+            Self::Empty => None,
+            Self::Full => Some(LongitudeWindows::Full),
+            Self::Arc { start, end } => {
+                let (first, second) = native_windows_for_arc(axis, start, end);
+                Some(second.map_or(LongitudeWindows::One(first), |second| {
+                    LongitudeWindows::Two(first, second)
+                }))
+            },
         }
-        let distance_to_seam = axis.half_period() - west;
-        if sweep <= distance_to_seam {
-            Some(LongitudeWindows::One([
-                west,
-                axis.half_period() - (distance_to_seam - sweep),
-            ]))
-        } else {
-            Some(LongitudeWindows::Two([west, axis.half_period()], [
-                -axis.half_period(),
-                -axis.half_period() + (sweep - distance_to_seam),
-            ]))
-        }
+    }
+
+    /// Cover sorted finite longitude samples that have already been canonicalized.
+    pub(crate) fn cover_sorted_canonical_points(axis: PeriodicAxis, points: &[f64]) -> Self {
+        smallest_covering_arc(axis, points.iter().copied().map(|value| [value, value]))
     }
 }
 
@@ -75,130 +79,169 @@ pub(crate) fn union_circular_intervals(
     axis: PeriodicAxis,
     intervals: &[CircularInterval],
 ) -> CircularInterval {
-    let mut iter = intervals
-        .iter()
-        .copied()
-        .filter(|value| !matches!(value, CircularInterval::Empty));
-    let Some(first) = iter.next() else {
+    let mut first = None;
+    let mut arc_count = 0_usize;
+    for interval in intervals {
+        match *interval {
+            CircularInterval::Empty => {},
+            CircularInterval::Full => return CircularInterval::Full,
+            CircularInterval::Arc { start, end } => {
+                first.get_or_insert((start, end));
+                arc_count = arc_count.wrapping_add(1);
+            },
+        }
+    }
+    let Some(first) = first else {
         return CircularInterval::Empty;
     };
-    if matches!(first, CircularInterval::Full) {
-        return CircularInterval::Full;
+    if arc_count == 1 {
+        return CircularInterval::from_endpoints(first.0, first.1);
     }
-    let Some(second) = iter.next() else {
-        return first;
-    };
-    if matches!(second, CircularInterval::Full) {
-        return CircularInterval::Full;
-    }
-    let mut segment_capacity =
-        interval_segment_count(axis, first).checked_add(interval_segment_count(axis, second));
-    for interval in iter.clone() {
-        if matches!(interval, CircularInterval::Full) {
-            return CircularInterval::Full;
+
+    let mut windows = Vec::with_capacity(arc_count.saturating_mul(2));
+    for interval in intervals {
+        if let CircularInterval::Arc { start, end } = *interval {
+            push_arc_windows(axis, start, end, &mut windows);
         }
-        segment_capacity = segment_capacity
-            .and_then(|capacity| capacity.checked_add(interval_segment_count(axis, interval)));
     }
-    let mut segments = Vec::with_capacity(segment_capacity.unwrap_or(intervals.len()));
-    add_segments(axis, first, &mut segments);
-    add_segments(axis, second, &mut segments);
-    for interval in iter {
-        add_segments(axis, interval, &mut segments);
-    }
-    segments.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]).then_with(|| a[1].total_cmp(&b[1])));
-    let mut merged: Vec<[f64; 2]> = Vec::with_capacity(segments.len());
-    for segment in segments {
-        if let Some(last) = merged.last_mut().filter(|last| segment[0] <= last[1]) {
-            last[1] = last[1].max(segment[1]);
+    windows.sort_unstable_by(|[left_start, left_end], [right_start, right_end]| {
+        left_start
+            .total_cmp(right_start)
+            .then_with(|| left_end.total_cmp(right_end))
+    });
+    windows.dedup_by(|window, previous| {
+        let [window_start, window_end] = *window;
+        let [previous_start, previous_end] = *previous;
+        if window_start <= previous_end {
+            *previous = [previous_start, previous_end.max(window_end)];
+            true
         } else {
-            merged.push(segment);
+            false
         }
-    }
-    let mut best_gap = 0.0;
-    let mut best_start = 0.0;
-    let mut merged = merged.iter().copied();
-    let [first_start, mut previous_end] = merged
-        .next()
-        .expect("nonempty intervals produce a merged segment");
-    let mut consider_gap = |gap: f64, next: f64| {
-        let candidate_start = from_zero_based(axis, next).get();
-        if gap > best_gap
-            || (gap.total_cmp(&best_gap) == Ordering::Equal && candidate_start < best_start)
-        {
-            best_gap = gap;
-            best_start = candidate_start;
-        }
-    };
-    for [next, end] in merged {
-        consider_gap(next - previous_end, next);
-        previous_end = end;
-    }
-    consider_gap((axis.period() - previous_end) + first_start, first_start);
-    if best_gap == 0.0 {
-        CircularInterval::Full
+    });
+    smallest_covering_arc(axis, windows.into_iter())
+}
+
+fn native_windows_for_arc(
+    axis: PeriodicAxis,
+    start: CanonicalLongitude,
+    end: CanonicalLongitude,
+) -> ([f64; 2], Option<[f64; 2]>) {
+    let (start, end) = (start.get(), end.get());
+    if start <= end {
+        ([start, end], None)
     } else {
-        CircularInterval::Arc {
-            start: axis
-                .canonicalize(best_start)
-                .expect("best start is canonical"),
-            sweep: axis.period() - best_gap,
-        }
+        (
+            [start, axis.half_period()],
+            Some([-axis.half_period(), end]),
+        )
     }
 }
 
-fn add_segments(axis: PeriodicAxis, interval: CircularInterval, out: &mut Vec<[f64; 2]>) {
-    let CircularInterval::Arc { start, sweep } = interval else {
-        return;
-    };
-    let zero_start = to_zero_based(axis, start);
-    let remaining = axis.period() - zero_start;
-    if sweep <= remaining {
-        out.push([zero_start, axis.period() - (remaining - sweep)]);
-    } else {
-        out.push([zero_start, axis.period()]);
-        out.push([0.0, sweep - remaining]);
+fn push_arc_windows(
+    axis: PeriodicAxis,
+    start: CanonicalLongitude,
+    end: CanonicalLongitude,
+    windows: &mut Vec<[f64; 2]>,
+) {
+    let (first, second) = native_windows_for_arc(axis, start, end);
+    windows.push(first);
+    if let Some(second) = second {
+        windows.push(second);
     }
 }
 
-fn interval_segment_count(axis: PeriodicAxis, interval: CircularInterval) -> usize {
-    match interval {
-        CircularInterval::Arc { start, sweep } => {
-            if sweep <= axis.half_period() - start.get() {
-                1
-            } else {
-                2
+#[derive(Clone, Copy)]
+struct UncoveredGap {
+    lower: f64,
+    upper: f64,
+    wraps: bool,
+}
+
+impl UncoveredGap {
+    fn compare_width(self, other: Self, axis: PeriodicAxis) -> Ordering {
+        let mut difference = ExactSum::zero();
+        self.accumulate_width(&mut difference, axis, false);
+        other.accumulate_width(&mut difference, axis, true);
+        difference.ordering()
+    }
+
+    fn is_empty(self, axis: PeriodicAxis) -> bool {
+        let mut width = ExactSum::zero();
+        self.accumulate_width(&mut width, axis, false);
+        width.ordering().is_eq()
+    }
+
+    fn accumulate_width(self, sum: &mut ExactSum, axis: PeriodicAxis, subtract: bool) {
+        if subtract {
+            sum.subtract_product(self.upper, 1.0);
+            sum.add_product(self.lower, 1.0);
+            if self.wraps {
+                sum.subtract_product(axis.period(), 1.0);
             }
+        } else {
+            sum.add_product(self.upper, 1.0);
+            sum.subtract_product(self.lower, 1.0);
+            if self.wraps {
+                sum.add_product(axis.period(), 1.0);
+            }
+        }
+    }
+}
+
+fn consider_gap(axis: PeriodicAxis, candidate: UncoveredGap, best: &mut Option<UncoveredGap>) {
+    let replace = best.is_none_or(|current| match candidate.compare_width(current, axis) {
+        Ordering::Greater => true,
+        Ordering::Less => false,
+        Ordering::Equal => candidate.upper.total_cmp(&current.upper).is_lt(),
+    });
+    if replace {
+        *best = Some(candidate);
+    }
+}
+
+fn smallest_covering_arc(
+    axis: PeriodicAxis,
+    mut windows: impl Iterator<Item = [f64; 2]>,
+) -> CircularInterval {
+    let Some([first_start, mut previous_end]) = windows.next() else {
+        return CircularInterval::Empty;
+    };
+    let mut best = None;
+    for [next_start, next_end] in windows {
+        consider_gap(
+            axis,
+            UncoveredGap {
+                lower: previous_end,
+                upper: next_start,
+                wraps: false,
+            },
+            &mut best,
+        );
+        previous_end = next_end;
+    }
+    consider_gap(
+        axis,
+        UncoveredGap {
+            lower: previous_end,
+            upper: first_start,
+            wraps: true,
         },
-        CircularInterval::Empty | CircularInterval::Full => 0,
+        &mut best,
+    );
+    let best = best.expect("a nonempty sorted window set has a seam gap");
+    if best.is_empty(axis) {
+        return CircularInterval::Full;
     }
-}
-
-fn arc_endpoint(axis: PeriodicAxis, start: CanonicalLongitude, sweep: f64) -> CanonicalLongitude {
-    let distance_to_seam = axis.half_period() - start.get();
-    let endpoint = if sweep < distance_to_seam {
-        axis.half_period() - (distance_to_seam - sweep)
+    let end = if best.lower.to_bits() == axis.half_period().to_bits() {
+        -axis.half_period()
     } else {
-        -axis.half_period() + (sweep - distance_to_seam)
+        best.lower
     };
-    axis.canonicalize(endpoint)
-        .expect("endpoint arithmetic stays finite")
-}
-
-fn to_zero_based(axis: PeriodicAxis, value: CanonicalLongitude) -> f64 {
-    if value.get().is_sign_negative() {
-        axis.half_period() - (-value.get())
-    } else {
-        axis.half_period() + value.get()
-    }
-}
-
-fn from_zero_based(axis: PeriodicAxis, value: f64) -> CanonicalLongitude {
-    let canonical = if value < axis.half_period() {
-        -(axis.half_period() - value)
-    } else {
-        value - axis.half_period()
-    };
-    axis.canonicalize(canonical)
-        .expect("zero-based coordinate is finite")
+    CircularInterval::from_endpoints(
+        axis.canonicalize(best.upper)
+            .expect("native window starts are finite"),
+        axis.canonicalize(end)
+            .expect("native window ends are finite"),
+    )
 }

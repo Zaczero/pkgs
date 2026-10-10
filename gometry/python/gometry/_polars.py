@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from gometry._lib import (
     CRSError,
@@ -14,8 +13,6 @@ from gometry._lib import (
 )
 from gometry._optional import missing_optional_dependency
 from gometry._types import CrsInput  # noqa: TC001 - required by annotations
-
-TYPE_CHECKING = False
 
 _POLARS_INSTALL = "install the 'gometry[polars]' extra"
 
@@ -32,8 +29,6 @@ def _polars() -> Any:
 
 if TYPE_CHECKING:
     import polars as pl
-else:
-    pl = SimpleNamespace(Binary=object, Series=object)
 
 
 def to_polars(
@@ -117,7 +112,8 @@ def from_polars(
         Restore CRS metadata when the binary values do not embed an EPSG SRID.
         If EWKB does carry an SRID, this value must agree with it.
     epoch : float, optional
-        Restore coordinate epoch metadata. Requires a CRS.
+        Restore coordinate epoch metadata. The CRS must admit geometry epochs
+        under gometry's frame policy.
 
     Returns
     -------
@@ -128,9 +124,9 @@ def from_polars(
     ------
     CRSError
         If crs is not a valid CRS identifier or disagrees with an embedded
-        EWKB SRID.
+        EWKB SRID, or if the CRS is absent or does not admit coordinate epochs.
     GeometryError
-        If epoch is supplied without a CRS.
+        If epoch is not a finite decimal year.
     """
     _polars()
     result = from_wkb(series, crs=crs, epoch=epoch)

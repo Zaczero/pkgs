@@ -10,9 +10,11 @@ from typing import Any, cast
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
 
 from tests._support import chart_rectangle_perimeter, chart_zone_area
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+Geod = pyproj.Geod
 
 GEOD = Geod(ellps='WGS84')
 
@@ -163,8 +165,7 @@ def test_operation_at_dynamic_epoch_matches_transform_epoch_admission() -> None:
     assert all(operation['source'] == 'EPSG:7912' for operation in operations)
     assert all(operation['target'] == 'EPSG:9989' for operation in operations)
     assert all(operation['name'] == 'pipeline' for operation in operations)
-    assert operations[0]['definition'] == operations[1]['definition']
-    assert operations[1]['definition'] == operations[2]['definition']
+    assert operations[0]['steps'] == operations[1]['steps'] == operations[2]['steps']
 
     for kwargs in ({'t': 0.0}, {'t': 2020.0}, {'source_epoch': 2020.0}):
         transformed = gm.crs_transform(source, target, *point, **kwargs)
@@ -181,7 +182,7 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     assert eastern_operation_at['target'] == 'EPSG:4326'
     assert eastern_operation_at['accuracy'] == pytest.approx(10.0)
     assert western_operation_at['accuracy'] == pytest.approx(7.0)
-    assert 'proj=pipeline' in cast('str', eastern_operation_at['definition'])
+    assert eastern_operation_at['definition'] is None
     assert [
         step['method']['name']
         for step in eastern_operation_at['steps']
@@ -308,7 +309,7 @@ def _assert_crs_namespace_operations_geodesic_and_transforms() -> None:
     ])
     operations = gm.CRS(4326).operations(3857)
     assert operations[0]['description'] == operation['description']
-    assert operations[0]['definition'] == operation['definition']
+    assert operations[0]['steps'] == operation['steps']
     assert operations[0]['instantiable'] is True
     assert isinstance(operations[0]['parameters'], list)
     local_operation = gm.CRS(2263).operation(

@@ -275,6 +275,9 @@ impl<'a> PointArena<'a> {
         point: impl Fn(T) -> u32,
         equal: impl FnMut(T, T) -> Result<()>,
     ) -> Result<()> {
+        if items.len() < 2 {
+            return Ok(());
+        }
         let (axis, increasing) = segment_axis(segment);
         RayPoints::sort_by_axis(self, items, axis, point, equal)?;
         if !increasing {
@@ -807,27 +810,19 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     )]
     for handle in 0..forest.parent.len() as u32 {
         let root = forest.find(handle);
-        if compact_of[root as usize].is_some() {
-            continue;
+        if compact_of[root as usize].is_none() {
+            let (recipe, rounded) = forest.points.take(root);
+            if !matches!(recipe, NodeRecipe::Stored)
+                && let Some(budget) = budget.as_deref_mut()
+            {
+                budget.add(1)?;
+            }
+            compact_of[root as usize] = Some(compact_count as u32);
+            forest.points.recipes[compact_count] = recipe;
+            forest.points.rounded[compact_count] = rounded;
+            compact_count = compact_count.wrapping_add(1);
         }
-        let (recipe, rounded) = forest.points.take(root);
-        if !matches!(recipe, NodeRecipe::Stored)
-            && let Some(budget) = budget.as_deref_mut()
-        {
-            budget.add(1)?;
-        }
-        compact_of[root as usize] = Some(compact_count as u32);
-        forest.points.recipes[compact_count] = recipe;
-        forest.points.rounded[compact_count] = rounded;
-        compact_count = compact_count.wrapping_add(1);
-    }
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "each forest handle and its root have entries in the compact map sized from that forest"
-    )]
-    for handle in 0..forest.parent.len() {
-        let root = forest.find(handle as u32);
-        compact_of[handle] = compact_of[root as usize];
+        compact_of[handle as usize] = compact_of[root as usize];
     }
     let Forest { mut points, parent } = forest;
     drop(parent);
@@ -861,6 +856,7 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
     };
     let mut intervals: Vec<(u32, u32, u32)> =
         Vec::with_capacity(unique.len().saturating_add(along.len()));
+    let mut baseline = 0_usize;
     for (index, (((segment, &start_handle), &end_handle), &[start_contact, end_contact])) in unique
         .iter()
         .zip(&start_handle)
@@ -872,6 +868,7 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
         if same_point(segment.start, segment.end) {
             continue;
         }
+        baseline = baseline.wrapping_add(1);
         let source = index as u32;
         #[expect(
             clippy::indexing_slicing,
@@ -936,29 +933,25 @@ fn partition_unique_segments_with_budget<'a, const ORDINATES: bool>(
 
     // The budget counts operation-wide net growth: overlap coalescing can
     // offset span growth elsewhere, while stored nodes and source atoms are free.
-    let baseline = unique
-        .iter()
-        .filter(|segment| !same_point(segment.start, segment.end))
-        .count();
     let (spans, atom_provenance) =
         aggregate_atoms(intervals, provenance, baseline, has_overlaps, budget)?;
 
-    let mut degree = vec![0_u32; node_count];
+    let mut incident = vec![false; node_count];
     #[expect(
         clippy::indexing_slicing,
-        reason = "each span endpoint is a NodeId admitted by the PointArena that sized degree"
+        reason = "each span endpoint is a NodeId admitted by the PointArena that sized incident"
     )]
     for span in &spans {
-        degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
-        degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
+        incident[span.start.0 as usize] = true;
+        incident[span.end.0 as usize] = true;
     }
     let mut isolated_nodes = Vec::new();
-    for (index, &count) in degree.iter().enumerate() {
-        if count == 0 {
+    for (index, &has_span) in incident.iter().enumerate() {
+        if !has_span {
             isolated_nodes.push(NodeId(index as u32));
         }
     }
-    drop(degree);
+    drop(incident);
 
     let mut point_nodes = Vec::with_capacity(point_handles.len());
     for handle in point_handles {
@@ -1067,7 +1060,7 @@ pub(super) fn push_point_on_source(
 ) -> Result<()> {
     if same_point(segment.start, segment.end)
         || !point_in_segment_envelope(point, segment)
-        || window.is_some_and(|bounds| !bounds.contains_xy(point))
+        || window.is_some_and(|bounds| !bounds.contains_point(point))
     {
         return Ok(());
     }
@@ -1125,7 +1118,7 @@ pub(super) fn classify_pair_into(
                 },
                 TouchLocation::Shared(_) => unreachable!("shared endpoints do not cut a segment"),
             };
-            if window.is_none_or(|bounds| bounds.contains_xy(point)) {
+            if window.is_none_or(|bounds| bounds.contains_point(point)) {
                 push_contact(contacts, index, handle)?;
             }
         }};

@@ -527,6 +527,13 @@ pub(crate) fn operations_info_uncached(
             CrsError::transform_create(source, target, error.to_string())
         })
     })?;
+    if !options.force_over {
+        super::proj_env::enable_default_angular_units(&context).map_err(|error| {
+            preserve_resource_error(error, |error| {
+                CrsError::transform_create(source, target, error.to_string())
+            })
+        })?;
+    }
     let source_object =
         create_crs_transform_object(&context, &source_crs, source, options.source_epoch)?;
     let target_object =
@@ -547,7 +554,15 @@ pub(crate) fn operations_info_uncached(
         let message = proj_context_error_message(&context);
         return Err(CrsError::transform_create(source, target, message));
     };
-    let operations = operation_infos_from_list(&context, &list, source, target, options);
+    let operations = operation_infos_from_list(
+        &context,
+        &list,
+        source,
+        target,
+        options,
+        &source_object,
+        &target_object,
+    );
     Ok(operations)
 }
 
@@ -557,6 +572,8 @@ pub(super) fn operation_infos_from_list(
     source: &str,
     target: &str,
     options: &TransformOptions,
+    source_crs: &OwnedPj,
+    target_crs: &OwnedPj,
 ) -> Vec<OperationInfo> {
     let count = list.count();
     let mut operations = Vec::with_capacity(count.max(0) as usize);
@@ -572,6 +589,18 @@ pub(super) fn operation_infos_from_list(
         // SAFETY: non-null normalized is uniquely owned; bind immediately.
         let normalized = unsafe { OwnedPj::try_from_owned(normalized) };
         let operation_for_info = normalized.as_ref().unwrap_or(&operation);
+        if !options.force_over {
+            // SAFETY: DOC-H. The candidate and endpoint CRS objects are live
+            // on the context's creating thread for this metadata query.
+            unsafe {
+                proj_sys::gometry_proj_configure_default_noop_phase(
+                    context.as_ptr(),
+                    operation_for_info.as_ptr(),
+                    source_crs.as_ptr(),
+                    target_crs.as_ptr(),
+                );
+            }
+        }
         operations.push(operation_info_from_pj(
             context,
             operation_for_info,

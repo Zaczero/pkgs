@@ -8,9 +8,9 @@ use crate::geographic::GeographicFrame;
 use crate::geometry::constructive::Result;
 use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
-    CoordSeq, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind, Point, Segment, XY,
-    axis_pow2_scale, interpolate_subdivision_ordinate, line_segments, point_distance, same_point,
-    scaled_residual,
+    CoordSeq, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind, Point,
+    Segment, XY, axis_pow2_scale, interpolate_subdivision_ordinate, line_segments, point_distance,
+    same_point, scaled_residual,
 };
 
 pub(crate) fn segmentize_points_budgeted(
@@ -168,8 +168,12 @@ trait Route {
         segment: Segment,
         solution: Self::Solution,
         pieces: usize,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
+        source: &CoordSeq,
+        source_segment: usize,
+        output: &mut OutputColumns,
+        budget: &ExpansionBudget,
+        planned_generated: usize,
+        refined_generated: &mut usize,
     ) -> Result<()>;
 
     fn measure(&self, segment: Segment) -> Result<f64>;
@@ -248,11 +252,16 @@ impl Route for Planar {
         segment: Segment,
         (): Self::Solution,
         pieces: usize,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
+        source: &CoordSeq,
+        source_segment: usize,
+        output: &mut OutputColumns,
+        _budget: &ExpansionBudget,
+        _planned_generated: usize,
+        _refined_generated: &mut usize,
     ) -> Result<()> {
-        push_interpolated(xs, segment.start.x, segment.end.x, pieces);
-        push_interpolated(ys, segment.start.y, segment.end.y, pieces);
+        push_interpolated(&mut output.xs, segment.start.x, segment.end.x, pieces);
+        push_interpolated(&mut output.ys, segment.start.y, segment.end.y, pieces);
+        output.push_ordinates(source, source_segment, pieces);
         Ok(())
     }
 
@@ -279,15 +288,30 @@ impl Route for Chart<'_> {
         segment: Segment,
         length: Self::Solution,
         pieces: usize,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
+        source: &CoordSeq,
+        source_segment: usize,
+        output: &mut OutputColumns,
+        budget: &ExpansionBudget,
+        planned_generated: usize,
+        refined_generated: &mut usize,
     ) -> Result<()> {
         let edge = crate::crs::ChartEdge::new(
             point_from_xy(segment.start),
             point_from_xy(segment.end),
             self.frame,
         )?;
-        emit_chart_plan(&edge, self.geodesic, self.frame, length, pieces, xs, ys)
+        emit_chart_plan(
+            source,
+            source_segment,
+            &edge,
+            self.geodesic,
+            length,
+            pieces,
+            output,
+            budget,
+            planned_generated,
+            refined_generated,
+        )
     }
 
     fn measure(&self, segment: Segment) -> Result<f64> {
@@ -326,8 +350,12 @@ impl Route for GeodesicRoute<'_> {
         segment: Segment,
         solution: Self::Solution,
         pieces: usize,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
+        source: &CoordSeq,
+        source_segment: usize,
+        output: &mut OutputColumns,
+        _budget: &ExpansionBudget,
+        _planned_generated: usize,
+        _refined_generated: &mut usize,
     ) -> Result<()> {
         let start = self
             .frame
@@ -345,9 +373,10 @@ impl Route for GeodesicRoute<'_> {
             end,
             solution,
             pieces,
-            xs,
-            ys,
+            &mut output.xs,
+            &mut output.ys,
         )
+        .map(|()| output.push_ordinates(source, source_segment, pieces))
     }
 
     fn measure(&self, segment: Segment) -> Result<f64> {
@@ -375,7 +404,7 @@ impl Route for Rhumb<'_> {
             .frame
             .to_geodesic_point(point_from_xy(segment.end))
             .expect("rhumb subdivision received admitted coordinates");
-        let length = crate::crs::rhumb_distance_crs_at(
+        let length = crate::crs::distance_rhumb_crs_at(
             self.crs, start.x, start.y, end.x, end.y, self.state,
         )?;
         let bearing =
@@ -392,8 +421,12 @@ impl Route for Rhumb<'_> {
         segment: Segment,
         solution: Self::Solution,
         pieces: usize,
-        xs: &mut Vec<f64>,
-        ys: &mut Vec<f64>,
+        source: &CoordSeq,
+        source_segment: usize,
+        output: &mut OutputColumns,
+        _budget: &ExpansionBudget,
+        _planned_generated: usize,
+        _refined_generated: &mut usize,
     ) -> Result<()> {
         let start = self
             .frame
@@ -429,9 +462,10 @@ impl Route for Rhumb<'_> {
                     "rhumb subdivision calculation produced a non-finite coordinate",
                 ));
             }
-            xs.push(point.x);
-            ys.push(point.y);
+            output.xs.push(point.x);
+            output.ys.push(point.y);
         }
+        output.push_ordinates(source, source_segment, pieces);
         Ok(())
     }
 
@@ -444,7 +478,7 @@ impl Route for Rhumb<'_> {
             .frame
             .to_geodesic_point(point_from_xy(segment.end))
             .expect("rhumb verification received admitted coordinates");
-        crate::crs::rhumb_distance_crs_at(self.crs, start.x, start.y, end.x, end.y, self.state)
+        crate::crs::distance_rhumb_crs_at(self.crs, start.x, start.y, end.x, end.y, self.state)
     }
 }
 
@@ -576,8 +610,8 @@ fn subdivide<R: Route>(
         Target::Fraction(_) | Target::Pieces(_) => {
             let plan = plan(route, points, target, 0)?;
             budget.check_additional(plan.generated)?;
-            let output = materialize(route, points, &plan)?;
-            budget.add(plan.generated)?;
+            let (output, generated) = materialize(route, points, &plan, budget)?;
+            budget.add(generated)?;
             Ok(output)
         },
         Target::MaxLength(max_length) => {
@@ -585,10 +619,10 @@ fn subdivide<R: Route>(
             loop {
                 let plan = plan(route, points, target, retry)?;
                 budget.check_additional(plan.generated)?;
-                let output = materialize(route, points, &plan)?;
-                match verify_segmentize_output(route, &output, &plan, max_length) {
+                let (output, generated) = materialize(route, points, &plan, budget)?;
+                match verify_segmentize_output(route, &output, &plan, generated, max_length) {
                     Ok(()) => {
-                        budget.add(plan.generated)?;
+                        budget.add(generated)?;
                         return Ok(output);
                     },
                     Err(error)
@@ -619,15 +653,16 @@ fn verify_segmentize_output<R: Route>(
     route: &R,
     points: &CoordSeq,
     plan: &Plan<R::Solution>,
+    generated: usize,
     max_segment_length: f64,
 ) -> Result<()> {
     if !max_segment_length.is_finite() || max_segment_length <= 0.0 {
         return Ok(());
     }
 
-    // If an unsplit source edge was already outside the limit, retain the
-    // ordered full scan so the same output chord determines the error.
-    if plan.source_exceeds_max_length {
+    // Refined publication can add chords outside the planned piece counts.
+    // Recheck the full chain in either case instead of trusting plan.steps.
+    if plan.source_exceeds_max_length || generated > plan.generated {
         return verify_all_segmentize_output(route, points, max_segment_length);
     }
 
@@ -702,6 +737,10 @@ pub(crate) enum SegmentPlacementOwned {
     Chart(geographiclib_rs::Geodesic, GeographicFrame),
     Geodesic(geographiclib_rs::Geodesic, GeographicFrame),
     Rhumb {
+        #[expect(
+            clippy::rc_buffer,
+            reason = "reuse the operation metric's canonical CRS allocation without copying the label"
+        )]
         crs: Arc<String>,
         state: Arc<crate::crs::RuntimeState>,
         frame: GeographicFrame,
@@ -800,6 +839,56 @@ impl OutputColumns {
         }
     }
 
+    fn push_chart_point(
+        &mut self,
+        points: &CoordSeq,
+        segment: usize,
+        point: Point,
+        fraction: f64,
+    ) -> Result<()> {
+        let length = self
+            .xs
+            .len()
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        ensure_coordseq_vertex_capacity(length)?;
+        self.xs.push(point.x);
+        self.ys.push(point.y);
+        if let (Some(output), Some(column)) = (&mut self.zs, points.zs()) {
+            let start = *column
+                .get(segment)
+                .expect("chart subdivision Z start belongs to its column");
+            let end = *column
+                .get(segment.wrapping_add(1))
+                .expect("chart subdivision Z end belongs to its column");
+            let value = interpolate_subdivision_ordinate(start, end, fraction);
+            output.push(if value.is_finite() {
+                value
+            } else if fraction <= 0.5 {
+                start
+            } else {
+                end
+            });
+        }
+        if let (Some(output), Some(column)) = (&mut self.ms, points.ms()) {
+            let start = *column
+                .get(segment)
+                .expect("chart subdivision M start belongs to its column");
+            let end = *column
+                .get(segment.wrapping_add(1))
+                .expect("chart subdivision M end belongs to its column");
+            let value = interpolate_subdivision_ordinate(start, end, fraction);
+            output.push(if value.is_finite() {
+                value
+            } else if fraction <= 0.5 {
+                start
+            } else {
+                end
+            });
+        }
+        Ok(())
+    }
+
     fn finish(self) -> Result<CoordSeq> {
         CoordSeq::try_from_vecs(self.xs, self.ys, self.zs, self.ms)
     }
@@ -863,30 +952,89 @@ fn emit_geodesic_plan(
     Ok(())
 }
 
+#[expect(
+    clippy::float_cmp,
+    reason = "source parameters are exact binary64 vertices of the emitted chain"
+)]
 fn emit_chart_plan(
+    points: &CoordSeq,
+    source_segment: usize,
     edge: &crate::crs::ChartEdge,
     geodesic: &geographiclib_rs::Geodesic,
-    frame: GeographicFrame,
     length: f64,
     pieces: usize,
-    xs: &mut Vec<f64>,
-    ys: &mut Vec<f64>,
+    output: &mut OutputColumns,
+    budget: &ExpansionBudget,
+    planned_generated: usize,
+    refined_generated: &mut usize,
 ) -> Result<()> {
-    for step in 1..pieces {
+    let source_start = points.nth_coord(source_segment);
+    let source_end = points.nth_coord(source_segment.wrapping_add(1));
+    let mut previous_parameter = 0.0;
+    let mut last_emitted_parameter = None;
+    for step in 1..=pieces {
         let fraction = step as f64 / pieces as f64;
-        let parameter = if edge.is_parallel() {
+        let parameter = if step == pieces {
+            1.0
+        } else if edge.is_parallel() {
             fraction
         } else {
-            edge.locate_t(length * fraction, length, geodesic, frame)?
+            edge.locate_t(length * fraction, length, geodesic)?
         };
-        let point = edge.chart_position(parameter);
-        if !(point.x.is_finite() && point.y.is_finite()) {
-            return Err(GeometryErrorKind::message(
-                "chart-edge subdivision calculation produced a non-finite coordinate",
-            ));
+        if parameter <= previous_parameter || (step < pieces && parameter >= 1.0) {
+            return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
         }
-        xs.push(point.x);
-        ys.push(point.y);
+        edge.publish_source_interval(
+            source_start,
+            source_end,
+            previous_parameter,
+            parameter,
+            |parameter| edge.chart_position(parameter),
+            |parameter, point, refined| {
+                if parameter == 0.0 || parameter == 1.0 || last_emitted_parameter == Some(parameter)
+                {
+                    return Ok(());
+                }
+                if !(point.x.is_finite() && point.y.is_finite()) {
+                    return Err(GeometryErrorKind::message(
+                        "chart-edge subdivision calculation produced a non-finite coordinate",
+                    ));
+                }
+                let ordinate_fraction = if refined {
+                    edge.arclength_fraction(parameter, Some(length), geodesic)?
+                } else {
+                    fraction
+                };
+                if refined {
+                    let additional = refined_generated
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    let requested = planned_generated
+                        .checked_add(additional)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    budget.check_additional(requested)?;
+                    *refined_generated = additional;
+                }
+                output.push_chart_point(points, source_segment, point, ordinate_fraction)?;
+                last_emitted_parameter = Some(parameter);
+                Ok(())
+            },
+            "segmentize",
+        )
+        .map_err(|error| {
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
+                    operation: "computed edge",
+                    ..
+                })
+            ) {
+                GeometryErrorKind::unrepresentable_output("segmentize")
+            } else {
+                error
+            }
+        })?;
+        previous_parameter = parameter;
     }
     Ok(())
 }
@@ -895,17 +1043,19 @@ fn materialize<R: Route>(
     route: &R,
     points: &CoordSeq,
     plan: &Plan<R::Solution>,
-) -> Result<CoordSeq> {
+    budget: &ExpansionBudget,
+) -> Result<(CoordSeq, usize)> {
     let total = points
         .len()
         .checked_add(plan.generated)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
     if plan.generated == 0 {
-        return Ok(points.clone());
+        return Ok((points.clone(), 0));
     }
 
     let mut output = OutputColumns::with_capacity(points, total)?;
     let mut copied = 0;
+    let mut refined_generated = 0;
     let mut solutions = plan.solutions.iter();
     for (edge, (segment, &pieces)) in line_segments(points).zip(plan.steps.iter()).enumerate() {
         if pieces < 2 {
@@ -916,14 +1066,31 @@ fn materialize<R: Route>(
         let solution = *solutions
             .next()
             .expect("every split edge has one route solution");
-        route.interior(segment, solution, pieces, &mut output.xs, &mut output.ys)?;
-        output.push_ordinates(points, edge, pieces);
+        route.interior(
+            segment,
+            solution,
+            pieces,
+            points,
+            edge,
+            &mut output,
+            budget,
+            plan.generated,
+            &mut refined_generated,
+        )?;
     }
     output.extend_sources(points, copied..points.len());
     debug_assert_eq!(solutions.len(), 0);
-    debug_assert_eq!(output.xs.len(), total);
-    debug_assert_eq!(output.ys.len(), total);
-    output.finish()
+    let generated = plan
+        .generated
+        .checked_add(refined_generated)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let expected_total = points
+        .len()
+        .checked_add(generated)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    debug_assert_eq!(output.xs.len(), expected_total);
+    debug_assert_eq!(output.ys.len(), expected_total);
+    Ok((output.finish()?, generated))
 }
 
 #[cfg(test)]
@@ -982,7 +1149,8 @@ mod tests {
             generated: i32::MAX as usize,
             source_exceeds_max_length: false,
         };
-        let error = materialize(&Planar, &points, &plan)
+        let budget = ExpansionBudget::new("segmentize", "max_length");
+        let error = materialize(&Planar, &points, &plan, &budget)
             .expect_err("unrepresentable coordinate width is rejected");
         assert!(matches!(
             error.kind(),
@@ -1178,9 +1346,12 @@ mod tests {
 
         let first = plan(&Planar, &points, Target::MaxLength(max_length), 0).unwrap();
         assert_eq!(first.steps, [3]);
-        let first_output = materialize(&Planar, &points, &first).unwrap();
+        let budget = ExpansionBudget::new("segmentize", "max_length");
+        let (first_output, first_generated) =
+            materialize(&Planar, &points, &first, &budget).unwrap();
         let first_error =
-            verify_segmentize_output(&Planar, &first_output, &first, max_length).unwrap_err();
+            verify_segmentize_output(&Planar, &first_output, &first, first_generated, max_length)
+                .unwrap_err();
         assert!(matches!(
             first_error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
@@ -1197,7 +1368,8 @@ mod tests {
         assert_eq!(output.xs(), &[0.0, 0.25, 0.5, 0.75, 1.0]);
         assert_eq!(budget.used(), output.len() - points.len());
         let accepted = plan(&Planar, &points, Target::MaxLength(max_length), 1).unwrap();
-        verify_segmentize_output(&Planar, &output, &accepted, max_length).unwrap();
+        verify_segmentize_output(&Planar, &output, &accepted, accepted.generated, max_length)
+            .unwrap();
     }
 
     #[test]
@@ -1224,8 +1396,12 @@ mod tests {
                 _segment: Segment,
                 (): Self::Solution,
                 _pieces: usize,
-                _xs: &mut Vec<f64>,
-                _ys: &mut Vec<f64>,
+                _source: &CoordSeq,
+                _source_segment: usize,
+                _output: &mut OutputColumns,
+                _budget: &ExpansionBudget,
+                _planned_generated: usize,
+                _refined_generated: &mut usize,
             ) -> Result<()> {
                 Ok(())
             }
@@ -1238,8 +1414,10 @@ mod tests {
         let points = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(2.0, 0.0)]).unwrap();
         let plan = plan(&Underplanned, &points, Target::MaxLength(1.0), 0).unwrap();
         assert!(plan.source_exceeds_max_length);
-        let output = materialize(&Underplanned, &points, &plan).unwrap();
-        let error = verify_segmentize_output(&Underplanned, &output, &plan, 1.0).unwrap_err();
+        let budget = ExpansionBudget::new("segmentize", "max_length");
+        let (output, generated) = materialize(&Underplanned, &points, &plan, &budget).unwrap();
+        let error =
+            verify_segmentize_output(&Underplanned, &output, &plan, generated, 1.0).unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {

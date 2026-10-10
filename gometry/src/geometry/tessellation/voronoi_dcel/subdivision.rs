@@ -63,7 +63,7 @@ pub(super) fn build_exact_subdivision(atoms: NodedAtoms) -> Result<ExactSubdivis
     topology.face_slots.reserve(slots);
     scratch.component_stack.reserve(vertices);
     scratch.successor.reserve(slots);
-    scratch.edge_slots.reserve(edges);
+    scratch.first_slot.reserve(edges);
     let mut edge_of_slot = Vec::with_capacity(slots);
     let mut cursors = Vec::with_capacity(vertices);
     let mut exact_vertices = Vec::with_capacity(vertices);

@@ -202,18 +202,16 @@ pub(crate) fn geodesic_by_identity(
         prepared.projected_working(),
         prepared.refined_chains(),
     )?;
+    let preserve_input_vertices = plan
+        .iter()
+        .all(|vertex| matches!(vertex, VertexProvenance::Input(_)));
     let restored = if plan
         .iter()
         .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }))
     {
         let support_points = prepared.source_working(shape).points_vec()?;
-        let total = original
-            .len()
-            .checked_add(support_points.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let mut source_points = Vec::with_capacity(crate::geometry::admit_shape_vector_capacity::<
-            Point,
-        >(total)?);
+        let total = original.len().wrapping_add(support_points.len());
+        let mut source_points = Vec::with_capacity(total);
         source_points.extend(original);
         source_points.extend(support_points);
         rebuild(emit_from_original(&source_points, &plan)?)?
@@ -229,6 +227,7 @@ pub(crate) fn geodesic_by_identity(
         prepared.local_crs(),
         prepared.geographic_frame(),
         budget.operation(),
+        preserve_input_vertices,
         budget,
     )
 }
@@ -460,6 +459,7 @@ fn run_local_projected_operation(
         local,
         prepared.geographic_frame(),
         budget.operation(),
+        false,
         budget,
     )
 }

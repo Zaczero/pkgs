@@ -383,6 +383,16 @@ mod tests {
     }
 
     #[test]
+    fn periodic_index_window_keeps_the_authentic_terminal_endpoint() {
+        let frame = frame();
+        let shape = multipoint(&[(0.1, 0.0), (0.2, 0.0)]);
+        let windows = geographic_index_envelopes(&shape, frame).unwrap();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].lower()[0].to_bits(), 0.1_f64.to_bits());
+        assert_eq!(windows[0].upper()[0].to_bits(), 0.2_f64.to_bits());
+    }
+
+    #[test]
     #[expect(
         clippy::float_cmp,
         reason = "exact canonical seam endpoints determine the mirrored candidate window"

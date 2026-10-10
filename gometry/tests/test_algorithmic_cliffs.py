@@ -247,29 +247,26 @@ _XY_PROBES = np.array(
 _INDEXED_POLYGON_EDGES = 34
 
 
-def test_contains_xy_batches_match_scalar_scans_at_every_probe_count():
+def test_coordinate_predicate_batches_match_scalar_scans_at_every_probe_count():
     """Batches of every size use the indexed plan; each answer matches a scan.
 
     A fresh polygon per scalar probe keeps the scalar side on the source scan,
     so the batch tester is compared against an independent path. The indexed
     34-edge shape keeps the production plan at 1/2/3/4 probes. Wall-clock
-    scale lives in ``benches/cases/case_prepared_contains_xy_scale.py``.
+    scale lives in ``benches/cases/case_prepared_coordinate_predicate_scale.py``.
     """
     big = _big_polygon(_INDEXED_POLYGON_EDGES)
     for n in (1, 2, 3, 4, len(_XY_PROBES)):
         xs, ys = _XY_PROBES[:n].T
-        for batch, scalar in (
-            (gm.contains_xy, gm.contains),
-            (gm.intersects_xy, gm.intersects),
-        ):
+        for predicate in (gm.contains, gm.intersects):
             expected = [
-                scalar(
+                predicate(
                     _big_polygon(_INDEXED_POLYGON_EDGES), gm.Point(float(x), float(y))
                 )
                 for x, y in zip(xs, ys, strict=True)
             ]
             np.testing.assert_array_equal(
-                batch(big, xs, ys), expected, err_msg=f'n={n}'
+                predicate(big, x=xs, y=ys), expected, err_msg=f'n={n}'
             )
 
 

@@ -1,13 +1,14 @@
 use crate::error::Result;
+use crate::geographic::chart::{point_set_centroid, point_set_surface};
 use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{
-    GeographicError, GeographicFrame, GeographicSupportEnvelope, Latitude, ScalarGeographicView,
-    SeamIdentity,
+    ChartPole, GeographicError, GeographicFrame, GeographicSupportEnvelope, Latitude,
+    ScalarGeographicView, SeamIdentity,
 };
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, ExactGeographicTopology, GeographicDerivedPointScan,
-    GeometryErrorKind, Point, Polygon, PreparedPlan, RepairMethod, Shape, TopologyDomain,
-    ValidationIssue, same_point, shape_encloses_pole_in_frame,
+    GeometryErrorKind, Point, Polygon, PreparedPlan, RepairMethod, Shape, SourceArcContext,
+    TopologyDomain, ValidationIssue, same_point, shape_encloses_pole_in_frame,
 };
 
 fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
@@ -17,10 +18,16 @@ fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
     }
 }
 
-fn split_in_domain(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
+fn split_in_domain(
+    shape: &Shape,
+    domain: TopologyDomain,
+    context: &SourceArcContext<'_, '_>,
+) -> Result<Shape> {
     match domain {
         TopologyDomain::Cartesian => Ok(shape.clone()),
-        TopologyDomain::Geographic(frame) => shape.split_antimeridian_in_frame(frame),
+        TopologyDomain::Geographic(frame) => {
+            shape.split_antimeridian_in_frame_with_metric(frame, context.metric_access())
+        },
     }
 }
 
@@ -455,7 +462,7 @@ fn geographic_admission_validation_issue(
         GeographicError::ChartTurnOverflow => {
             return Err(crate::error::ResourceError::SizeOverflow.into());
         },
-        GeographicError::InvalidAngularFactor { .. } | GeographicError::InvalidSweep { .. } => {
+        GeographicError::InvalidAngularFactor { .. } => {
             return Err(geographic_admission_error(diagnostic));
         },
     };
@@ -698,16 +705,19 @@ fn repair_invalid_shape(
     shape: &Shape,
     domain: TopologyDomain,
     method: RepairMethod,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     let repair = |shape: &Shape| match domain {
-        TopologyDomain::Cartesian => shape.repair(method, false),
-        TopologyDomain::Geographic(_) => shape.repair_preserving_source_vertices(method, false),
+        TopologyDomain::Cartesian => shape.repair_with_context(method, false, context),
+        TopologyDomain::Geographic(_) => {
+            shape.repair_preserving_source_vertices(method, false, context)
+        },
     };
     let repaired = if needs_topology_split(shape, domain) {
         // Preserve source Z/M on ordinary seam crossings. Polar closure with
         // Z/M remains an honest error: no source ordinate exists at a
         // fabricated pole vertex.
-        let split = split_in_domain(shape, domain)?;
+        let split = split_in_domain(shape, domain, context)?;
         repair(&split)
     } else {
         repair(shape)
@@ -737,12 +747,13 @@ pub(crate) fn repair_shape_in_frame(
     shape: &Shape,
     domain: TopologyDomain,
     method: RepairMethod,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Option<Shape>> {
     let Some(issue) = validate_shape_in_frame(shape, domain)? else {
         return Ok(None);
     };
     reject_ambiguous_ring_repair(&issue)?;
-    repair_invalid_shape(shape, domain, method).map(Some)
+    repair_invalid_shape(shape, domain, method, context).map(Some)
 }
 
 /// Cached-handle twin of [`repair_shape_in_frame`].
@@ -750,12 +761,13 @@ pub(crate) fn repair_data_in_frame(
     data: &PreparedPlan,
     domain: TopologyDomain,
     method: RepairMethod,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Option<Shape>> {
     let Some(issue) = validate_data_in_frame(data, domain)? else {
         return Ok(None);
     };
     reject_ambiguous_ring_repair(&issue)?;
-    repair_invalid_shape(data.shape(), domain, method).map(Some)
+    repair_invalid_shape(data.shape(), domain, method, context).map(Some)
 }
 
 /// Shift canonical western longitudes by one native full turn so a crossing
@@ -796,12 +808,12 @@ fn rewrap_point(point: Point, frame: GeographicFrame) -> Result<Point> {
 /// or seam-connected geographic geometry. Two strategies, because
 /// unwrap-rewrap cannot serve both:
 ///
-/// * `interior` callers (`point_on_surface`, which must return a point strictly
-///   inside) AND any pole-enclosing geometry route through the seam+pole SPLIT —
-///   the unwrapped form of a polar cap is a degenerate longitude sliver (a
-///   longitude shift can't reconstruct the cap), and the split's planar kernel
-///   yields a point genuinely inside the true region. The split is in the
-///   frame's canonical longitude interval, so no rewrap is needed.
+/// * `interior` callers (`point_on_surface`, which must return a point in or on
+///   the geometry) AND any pole-enclosing geometry route through the seam+pole
+///   SPLIT — the unwrapped form of a polar cap is a degenerate longitude sliver
+///   (a longitude shift can't reconstruct the cap), and the split's planar
+///   kernel yields a point in the true region. The split is in the frame's
+///   canonical longitude interval, so no rewrap is needed.
 ///   `force_2d` keeps the split infallible
 ///   (a Z/M pole closure would otherwise trip the ordinate gate).
 /// * every other crossing `centroid` uses unwrap-rewrap for the planar centroid
@@ -819,8 +831,8 @@ fn derived_point_unwrapped(
     strategy: DerivedPointStrategy,
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
-    let encloses_pole = shape_encloses_pole_in_frame(shape, frame, true)
-        || shape_encloses_pole_in_frame(shape, frame, false);
+    let encloses_pole = shape_encloses_pole_in_frame(shape, frame, ChartPole::North)
+        || shape_encloses_pole_in_frame(shape, frame, ChartPole::South);
     if matches!(strategy, DerivedPointStrategy::Interior) || encloses_pole {
         return kernel(&try_topology_split(
             shape,
@@ -875,6 +887,12 @@ pub(crate) fn unary_antimeridian_derived(
     kernel: impl FnOnce(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
     if let TopologyDomain::Geographic(frame) = domain
+        && matches!(strategy, DerivedPointStrategy::Interior)
+        && let Some(point) = point_set_surface(shape, frame)?
+    {
+        return Ok(point);
+    }
+    if let TopologyDomain::Geographic(frame) = domain
         && matches!(strategy, DerivedPointStrategy::Centroid)
         && matches!(
             shape,
@@ -901,6 +919,9 @@ pub(crate) fn unary_antimeridian_centroid(shape: &Shape, domain: TopologyDomain)
     let TopologyDomain::Geographic(frame) = domain else {
         return shape.centroid();
     };
+    if let Some(point) = point_set_centroid(shape, frame)? {
+        return Ok(point);
+    }
     if !matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)) {
         return unary_antimeridian_derived(
             shape,
@@ -946,41 +967,10 @@ pub(crate) fn unary_antimeridian_centroid(shape: &Shape, domain: TopologyDomain)
 
 /// Geographic support bounds from the shared periodic envelope owner.
 pub(crate) fn geographic_crossing_bounds(shape: &Shape) -> Option<Bounds> {
-    geographic_crossing_bounds_in_frame(shape, GeographicFrame::crs84())
-}
-
-pub(crate) fn geographic_crossing_bounds_in_frame(
-    shape: &Shape,
-    frame: GeographicFrame,
-) -> Option<Bounds> {
-    let envelope =
-        GeographicSupportEnvelope::try_from_shapes(frame, std::slice::from_ref(shape)).ok()?;
-    geographic_support_bounds(envelope, frame)
-}
-
-pub(crate) fn geographic_crossing_bounds_for_shapes_in_frame(
-    shapes: impl IntoIterator<Item = impl std::borrow::Borrow<Shape>>,
-    frame: GeographicFrame,
-) -> Option<Bounds> {
-    let shapes = shapes.into_iter().collect::<Vec<_>>();
-    let envelope = GeographicSupportEnvelope::try_from_shapes(frame, &shapes).ok()?;
-    geographic_support_bounds(envelope, frame)
-}
-
-fn geographic_support_bounds(
-    envelope: GeographicSupportEnvelope,
-    frame: GeographicFrame,
-) -> Option<Bounds> {
-    let (south, north) = envelope.latitude_bounds()?;
-    let (west, east) = match envelope.longitude.windows(frame.longitude())? {
-        crate::geographic::LongitudeWindows::Full => (
-            -frame.longitude().half_period(),
-            frame.longitude().half_period(),
-        ),
-        crate::geographic::LongitudeWindows::One([west, east])
-        | crate::geographic::LongitudeWindows::Two([west, _], [_, east]) => (west, east),
-    };
-    Some(Bounds::new_raw(west, south, east, north))
+    let frame = GeographicFrame::crs84();
+    GeographicSupportEnvelope::try_from_shape(frame, shape)
+        .ok()
+        .and_then(|support| support.bounds(frame))
 }
 
 #[cfg(test)]
@@ -1028,8 +1018,13 @@ mod validity_tests {
                 .map(|issue| issue.code),
             Some("latitude_out_of_range")
         );
-        let repair = repair_shape_in_frame(&shape, domain, RepairMethod::Linework)
-            .expect_err("geographic admission failures cannot be repaired");
+        let repair = repair_shape_in_frame(
+            &shape,
+            domain,
+            RepairMethod::Linework,
+            &SourceArcContext::new(domain, None),
+        )
+        .expect_err("geographic admission failures cannot be repaired");
         assert!(matches!(
             repair.kind(),
             ErrorKind::Geometry(GeometryErrorKind::RepairFailed(_))

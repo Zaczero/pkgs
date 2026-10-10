@@ -1,10 +1,9 @@
 use crate::array::{
-    Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryTransformFrame, Point, PointRowLayout,
-    Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
-    coordinate_epoch_option, crs, note_array_row, parse_crs, pymethods,
+    Arc, ArrayRows, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryTransformFrame, Py, PyAny,
+    PyErr, PyGeometryArray, PyResult, Python, TransformOptionArgs, coordinate_epoch_option, crs,
+    note_array_row, parse_crs, pymethods,
 };
-use crate::geometry::storage::packed_columns::resolve_packed_columns;
-use crate::geometry::storage::{GeometryArrayStorage, ShapeRow, ValidityMask};
+use crate::geometry::storage::{GeometryArrayStorage, ShapeRow};
 use crate::geometry::{OrdinateAxis, set_point_ordinate};
 use crate::predicates::unary;
 use crate::py::crs::drain_accuracy_warning;
@@ -18,30 +17,22 @@ fn transform_failure_pyerr(failure: crate::crs::TransformFailure) -> PyErr {
     }
 }
 
-fn present_rank_to_logical(mask: &ValidityMask, rank: usize) -> Option<usize> {
-    mask.iter()
-        .enumerate()
-        .filter_map(|(logical, missing)| (!missing).then_some(logical))
-        .nth(rank)
-}
-
 fn admit_identity_array_rows(
     transformer: &crs::TransformPlan,
-    storage: &GeometryArrayStorage,
-    missing: Option<&ValidityMask>,
-    point_layout: PointRowLayout,
+    rows: &ArrayRows,
 ) -> std::result::Result<(), crate::crs::TransformFailure> {
-    match storage {
+    match rows.storage() {
         GeometryArrayStorage::Mixed(shapes) => {
             for (logical, shape) in shapes.iter().enumerate() {
-                if missing.is_none_or(|mask| !mask.is_missing(logical)) {
+                if rows.missing().is_none_or(|mask| !mask.is_missing(logical)) {
                     transformer.admit_identity_shape_at(logical, shape)?;
                 }
             }
             Ok(())
         },
         GeometryArrayStorage::Packed(_) => {
-            let columns = resolve_packed_columns(storage, missing, point_layout)
+            let columns = rows
+                .packed_columns()
                 .expect("packed storage resolves to packed columns");
             columns.try_for_each_present_row(|logical, row| {
                 transformer.admit_identity_row_at(logical, ShapeRow::from_packed(row))
@@ -53,13 +44,13 @@ fn admit_identity_array_rows(
 #[pymethods]
 impl PyGeometryArray {
     /// Relabel the CRS of all geometries without moving coordinates (see
-    /// `Geometry.set_crs`; replacing a different declared CRS requires
+    /// `Geometry.with_crs`; replacing a different declared CRS requires
     /// ``overwrite=True``).
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     CRS as an EPSG code or authority/WKT string.
+    /// crs : CRS-like
+    ///     Any supported CRS-like input.
     ///
     /// overwrite : bool, default False
     ///     Allow replacing an existing, different CRS label.
@@ -77,10 +68,10 @@ impl PyGeometryArray {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.GeometryArray([gm.Point(1, 2)]).set_crs(4326).crs
+    /// >>> gm.GeometryArray([gm.Point(1, 2)]).with_crs(4326).crs
     /// CRS("EPSG:4326")
     #[pyo3(signature = (crs, *, overwrite = false))]
-    pub fn set_crs(&self, crs: &Bound<'_, PyAny>, overwrite: bool) -> PyResult<Self> {
+    pub fn with_crs(&self, crs: &Bound<'_, PyAny>, overwrite: bool) -> PyResult<Self> {
         let frame = FrameEdit::SetCrs {
             crs: parse_crs(Some(crs))?,
             overwrite,
@@ -90,8 +81,8 @@ impl PyGeometryArray {
     }
 
     /// Declare (or clear) the array's coordinate epoch (see
-    /// `Geometry.set_epoch`). ``None`` clears it; changing a present epoch
-    /// needs ``overwrite=True``.
+    /// `Geometry.with_epoch`). The CRS frame must admit an epoch. ``None``
+    /// clears it; changing a present epoch needs ``overwrite=True``.
     ///
     /// Parameters
     /// ----------
@@ -109,7 +100,8 @@ impl PyGeometryArray {
     /// Raises
     /// ------
     /// CRSError
-    ///     If a present epoch would change without ``overwrite=True``.
+    ///     If the CRS frame cannot carry an epoch or a present epoch would
+    ///     change without ``overwrite=True``.
     /// GeometryError
     ///     If ``epoch`` is not a finite decimal year.
     ///
@@ -117,10 +109,10 @@ impl PyGeometryArray {
     /// --------
     /// >>> import gometry as gm
     /// >>> arr = gm.GeometryArray([gm.Point(-122.4, 37.8, crs=4326)])
-    /// >>> arr.set_epoch(2015.0).epoch
+    /// >>> arr.with_epoch(2015.0).epoch
     /// 2015.0
     #[pyo3(signature = (epoch, *, overwrite = false))]
-    pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Self> {
+    pub fn with_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Self> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
         Ok(self.retag_frame(frame))
@@ -128,23 +120,21 @@ impl PyGeometryArray {
 
     /// Reproject all geometries to a target CRS.
     /// The source coordinate epoch is the array's own ``epoch`` metadata
-    /// (stamp it with ``set_epoch`` first to transform between dynamic
-    /// frames);
+    /// (stamp it with ``with_epoch`` first when the operation needs one);
     /// ``epoch`` here labels the *output* coordinate epoch.
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     CRS as an EPSG code or authority/WKT string.
+    /// crs : CRS-like
+    ///     Any supported CRS-like input.
     ///
     /// area_of_interest : sequence of float, optional
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.
     ///
     /// epoch : float, optional
-    ///     Output coordinate epoch (decimal year) to tag on the result, for
-    ///     dynamic frames. Omitted keeps the source epoch while it still
-    ///     means something: the CRS is unchanged, or the target CRS is
-    ///     dynamic (time-dependent). A static target clears it.
+    ///     Output coordinate epoch (decimal year) to tag on the result. Omitted
+    ///     keeps the source epoch when the CRS is unchanged or the target admits
+    ///     geometry epochs; otherwise the output has no epoch.
     ///
     /// authority : str, optional
     ///     Restrict candidate coordinate operations to this authority
@@ -182,7 +172,7 @@ impl PyGeometryArray {
     /// --------
     /// >>> import gometry as gm
     /// >>> arr = gm.GeometryArray([gm.Point(1, 2, crs=4326)])
-    /// >>> round(float(gm.get_coordinates(arr.to_crs(3857))[0][0]), 2)
+    /// >>> round(float(arr.to_crs(3857).coords.x[0]), 2)
     /// 111319.49
     #[pyo3(signature = (
         crs,
@@ -207,9 +197,7 @@ impl PyGeometryArray {
         only_best: Option<bool>,
         force_over: bool,
     ) -> PyResult<Self> {
-        if let Some(mask) = self.missing().cloned()
-            && matches!(self.storage(), GeometryArrayStorage::Mixed(_))
-        {
+        if self.missing().is_some() && matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
             let target =
                 parse_crs(Some(crs))?.ok_or_else(|| CRSError::new_err("target CRS is required"))?;
             let options = TransformOptionArgs {
@@ -229,55 +217,50 @@ impl PyGeometryArray {
                 coordinate_epoch_option("epoch", epoch)?,
                 options,
             )?;
-            let output = frame.output;
-            let transformer = crs::TransformPlan::new_with_options_at(
-                &frame.source,
-                &frame.target,
-                frame.options,
-                frame.state,
-            )?;
+            let transformer = crs::TransformPlan::from_geometry_frame(frame)?;
+            let output = transformer.output_frame().clone();
             if transformer.is_identity() {
-                let storage = Arc::clone(self.storage_arc());
-                let point_layout = self.point_row_layout();
-                py.detach(move || {
-                    admit_identity_array_rows(&transformer, &storage, Some(&mask), point_layout)
-                })
-                .map_err(transform_failure_pyerr)?;
+                let rows = self.rows.clone();
+                py.detach(move || admit_identity_array_rows(&transformer, &rows))
+                    .map_err(transform_failure_pyerr)?;
                 return Ok(self.retag_frame(output));
             }
             let execution = transformer.execution();
-            let storage = Arc::clone(self.storage_arc());
+            let rows = self.row_owner().clone();
             let converted_rows = py
                 .detach(move || {
-                    let present: Vec<_> = storage
-                        .iter_shapes()
-                        .zip(mask.iter())
-                        .filter_map(|(shape, missing)| {
-                            (!missing).then_some(shape.map(|shape| shape.into_owned()))
-                        })
-                        .collect::<crate::error::Result<Vec<_>>>()?;
-                    let borrowed: Vec<_> = present.iter().collect();
-                    let converted =
-                        transformer
-                            .transform_shapes_indexed(&borrowed)
-                            .map_err(|failure| {
-                                let coordinate = failure
-                                    .coordinate
-                                    .and_then(|rank| present_rank_to_logical(&mask, rank));
-                                failure.with_coordinate(coordinate)
-                            })?;
-                    let mut converted = converted.into_iter();
-                    let rows = mask
+                    let missing = rows
+                        .missing()
+                        .expect("mixed nullable rows carry a validity mask");
+                    let GeometryArrayStorage::Mixed(shapes) = rows.storage() else {
+                        unreachable!("this transform path handles mixed nullable rows");
+                    };
+                    let present: Vec<_> = shapes
                         .iter()
-                        .map(|missing| {
-                            if missing {
-                                Self::missing_placeholder()
-                            } else {
+                        .enumerate()
+                        .filter_map(|(row, shape)| (!missing.is_missing(row)).then_some(shape))
+                        .collect();
+                    let converted = transformer
+                        .transform_shapes_with_computed_edges_indexed(&present)
+                        .map_err(|failure| {
+                            let coordinate = failure
+                                .coordinate
+                                .and_then(|rank| rows.present_logical_indices().nth(rank));
+                            failure.with_coordinate(coordinate)
+                        })?;
+                    let mut converted = converted.into_iter();
+                    let output = rows
+                        .logical_rows()
+                        .map(|row| match row {
+                            crate::geometry::storage::LogicalRow::Missing { .. } => {
+                                ArrayRows::missing_placeholder()
+                            },
+                            crate::geometry::storage::LogicalRow::Present { .. } => {
                                 converted.next().expect("present row count is stable")
-                            }
+                            },
                         })
                         .collect();
-                    Ok::<_, crate::crs::TransformFailure>((rows, mask))
+                    Ok::<_, crate::crs::TransformFailure>((output, missing.clone()))
                 })
                 .map_err(transform_failure_pyerr)?;
             drain_accuracy_warning(py, &execution)?;
@@ -303,21 +286,12 @@ impl PyGeometryArray {
             coordinate_epoch_option("epoch", epoch)?,
             options,
         )?;
-        let output = frame.output;
-        let transformer = crs::TransformPlan::new_with_options_at(
-            &frame.source,
-            &frame.target,
-            frame.options,
-            frame.state,
-        )?;
+        let transformer = crs::TransformPlan::from_geometry_frame(frame)?;
+        let output = transformer.output_frame().clone();
         if transformer.is_identity() {
-            let storage = Arc::clone(self.storage_arc());
-            let missing = self.missing().cloned();
-            let point_layout = self.point_row_layout();
-            py.detach(move || {
-                admit_identity_array_rows(&transformer, &storage, missing.as_ref(), point_layout)
-            })
-            .map_err(transform_failure_pyerr)?;
+            let rows = self.rows.clone();
+            py.detach(move || admit_identity_array_rows(&transformer, &rows))
+                .map_err(transform_failure_pyerr)?;
             return Ok(self.retag_frame(output));
         }
         let execution = transformer.execution();
@@ -364,116 +338,51 @@ impl PyGeometryArray {
         unary::is_valid_array(py, self)
     }
 
+    /// Pickle durable array state; packed storage uses portable little-endian
+    /// columns and offsets, while mixed storage uses WKB rows.
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        functions::reduce_geometry_array(py, self)
+        functions::reduce_geometry_array(py, self, 4)
+    }
+
+    /// Use protocol-5 out-of-band buffers for the encoded array payload when
+    /// the pickler provides a buffer callback. The buffers are read-only.
+    #[pyo3(signature = (protocol, /))]
+    pub fn __reduce_ex__(&self, py: Python<'_>, protocol: i32) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+        functions::reduce_geometry_array(py, self, protocol)
     }
 }
 
 impl PyGeometryArray {
-    pub(crate) fn set_z_impl(
+    pub(crate) fn replace_z_impl(
         &self,
         py: Python<'_>,
         value: Option<f64>,
         overwrite: bool,
     ) -> PyResult<Self> {
-        self.set_ordinate_impl(py, Ordinate::Z, value, overwrite)
-    }
-
-    pub(crate) fn set_m_impl(
-        &self,
-        py: Python<'_>,
-        value: Option<f64>,
-        overwrite: bool,
-    ) -> PyResult<Self> {
-        self.set_ordinate_impl(py, Ordinate::M, value, overwrite)
-    }
-
-    fn set_ordinate_impl(
-        &self,
-        py: Python<'_>,
-        ordinate: Ordinate,
-        value: Option<f64>,
-        overwrite: bool,
-    ) -> PyResult<Self> {
-        if value.is_none() && !ordinate.array_has(self) {
+        if value.is_none() && !self.has_z() {
             // Clearing an ordinate no row carries: share the storage.
             return Ok(self.clone());
         }
-        if value.is_some()
-            && !overwrite
-            && self.uniform_axes().is_some_and(|axes| ordinate.has(axes))
-        {
+        if value.is_some() && !overwrite && self.uniform_axes().is_some_and(CoordinateAxes::has_z) {
             return Ok(self.clone());
         }
         if !self.is_compact_nullable()
             && let GeometryArrayStorage::Packed(packed) = self.storage()
         {
             let input_axes = packed.axes();
-            let output_axes = ordinate.output_axes(input_axes, value);
+            let output_axes = CoordinateAxes::new(
+                crate::geometry::HasZ(value.is_some()),
+                crate::geometry::HasM(input_axes.has_m()),
+            );
             if let Some(mapped) = self.map_packed_points_detached(
                 py,
                 self.frame.clone(),
                 output_axes,
-                move |point| Ok(ordinate.set_point(point, value, overwrite)),
+                move |point| Ok(set_point_ordinate(point, OrdinateAxis::Z, value, overwrite)),
             )? {
                 return Ok(mapped);
             }
         }
-        self.map_shapes_detached(py, move |shape| ordinate.set_shape(shape, value, overwrite))
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Ordinate {
-    Z,
-    M,
-}
-
-impl Ordinate {
-    fn array_has(self, array: &PyGeometryArray) -> bool {
-        match self {
-            Self::Z => array.has_z(),
-            Self::M => array.has_m(),
-        }
-    }
-
-    const fn has(self, axes: CoordinateAxes) -> bool {
-        match self {
-            Self::Z => axes.has_z(),
-            Self::M => axes.has_m(),
-        }
-    }
-
-    const fn output_axes(self, axes: CoordinateAxes, value: Option<f64>) -> CoordinateAxes {
-        let has = value.is_some();
-        match self {
-            Self::Z => CoordinateAxes::new(
-                crate::geometry::HasZ(has),
-                crate::geometry::HasM(axes.has_m()),
-            ),
-            Self::M => CoordinateAxes::new(
-                crate::geometry::HasZ(axes.has_z()),
-                crate::geometry::HasM(has),
-            ),
-        }
-    }
-
-    fn set_point(self, point: Point, value: Option<f64>, overwrite: bool) -> Point {
-        set_point_ordinate(
-            point,
-            match self {
-                Self::Z => OrdinateAxis::Z,
-                Self::M => OrdinateAxis::M,
-            },
-            value,
-            overwrite,
-        )
-    }
-
-    fn set_shape(self, shape: &Shape, value: Option<f64>, overwrite: bool) -> Result<Shape> {
-        match self {
-            Self::Z => shape.set_z(value, overwrite),
-            Self::M => shape.set_m(value, overwrite),
-        }
+        self.map_shapes_detached(py, move |shape| shape.replace_z(value, overwrite))
     }
 }

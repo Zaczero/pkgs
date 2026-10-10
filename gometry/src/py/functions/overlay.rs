@@ -5,6 +5,7 @@
 //! functions all share a single overlay contract. Reached from the crate root
 //! via `pub use overlay::*`.
 
+use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 pub(crate) use crate::geometry::OverlayOp;
@@ -49,23 +50,48 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
 
 /// The shared tail of the all-input overlays (`union_all`, `intersection_all`,
 /// `symmetric_difference_all`): collect the input shapes under one shared frame
-/// and assemble them with `kernel` (GIL released). Aggregates are always lenient
+/// and assemble them with the selected operation (GIL released). Aggregates are always lenient
 /// (missing rows skipped; SQL/pandas semantics). Geographic frames pass their
 /// native topology frame so seam crossing and pole equivalence match binary
 /// overlay.
 fn apply_overlay_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
-    kernel: impl FnOnce(
-        &[Shape],
-        crate::geometry::TopologyDomain,
-        crate::geometry::Strictness,
-    ) -> crate::error::Result<Shape>
-    + Send,
+    operation: OverlayOp,
 ) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
-    let domain = crate::geometry::topology_domain(&metadata)?;
-    let shape = py.detach(move || kernel(&shapes, domain, crate::geometry::Strictness::Lenient))?;
+    if shapes.is_empty() {
+        let name = match operation {
+            OverlayOp::Union => "union_all",
+            OverlayOp::Intersection => "intersection_all",
+            OverlayOp::SymmetricDifference => "symmetric_difference_all",
+            OverlayOp::Difference => "difference",
+        };
+        return Err(
+            crate::error::Error::from(GeometryErrorKind::EmptyGeometrySequence { operation: name })
+                .into(),
+        );
+    }
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let shape = py.detach(move || {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic overlay source ordinates require the operation's CRS metric",
+                )
+            })
+        };
+        crate::geometry::overlay_all_with_metric(
+            &shapes,
+            domain,
+            operation,
+            crate::geometry::Strictness::Lenient,
+            &metric_access,
+        )
+    })?;
+    drop(metric_scratch);
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
@@ -289,7 +315,9 @@ pub(crate) fn symmetric_difference(
 ///
 /// See Also
 /// --------
-/// coverage_union : Faster dissolve for a valid polygonal coverage.
+/// coverage_union_all : Faster dissolve for a valid polygonal coverage.
+/// intersection_all : Common region shared by many geometries.
+/// polygonize_all : Build polygons from pooled linework.
 ///
 /// Examples
 /// --------
@@ -309,7 +337,7 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
         })?;
         return Ok(Typed(PyGeometry::with_frame(shape, array.frame.clone())));
     }
-    apply_overlay_all(py, values, Shape::union_all_topo)
+    apply_overlay_all(py, values, OverlayOp::Union)
 }
 
 /// Union a polygonal *coverage* into one geometry by dissolving shared edges.
@@ -355,37 +383,47 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
 /// --------
 /// >>> import gometry as gm
 /// >>> tiles = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
-/// >>> merged = gm.coverage_union(tiles)
+/// >>> merged = gm.coverage_union_all(tiles)
 /// >>> (merged.geometry_type, round(merged.area, 6))
 /// ('Polygon', 2.0)
 #[pyfunction]
-pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
+pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
     let (metadata, shapes) = pooled_shapes(values)?;
     if shapes.is_empty() {
         // A coverage union requires an operand, consistent with `union_all`.
         return Err(
             crate::error::Error::from(GeometryErrorKind::EmptyGeometrySequence {
-                operation: "coverage_union",
+                operation: "coverage_union_all",
             })
             .into(),
         );
     }
-    let domain = crate::geometry::topology_domain(&metadata)?;
-    let shape = py.detach(move || crate::geometry::coverage_union_topo(&shapes, domain))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let metric_access = move || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic coverage_union_all source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    let shape = py.detach(move || {
+        let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+        crate::geometry::coverage_union_topo(&shapes, &context)
+    })?;
+    drop(metric_scratch);
     Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
-/// Build polygons from the pooled linework of many geometries.
+/// Build polygons from pooled linework, optionally returning full diagnostics.
 ///
-/// ALL inputs' edges are noded into ONE planar graph, so a ring can close from
-/// edges spread across different inputs — the canonical "reconstruct polygons
-/// from this pile of noded lines" call. Returns every enclosed face as a
-/// `GeometryArray` of polygons.
-///
-/// This is the whole-collection aggregate. To polygonize each geometry's own
-/// linework independently (one polygon set per input), use the per-element
-/// method `GeometryArray.polygonize` (which returns `Groups`) or
-/// `Geometry.polygonize` on a single geometry.
+/// All input geometries' edges are noded into one planar graph, so a ring can
+/// close across inputs. `diagnostics=False` returns the enclosed polygons;
+/// `diagnostics=True` returns those same polygons together with cut edges,
+/// dangles, and invalid rings grouped by source row. `Geometry.polygonize()`
+/// and `GeometryArray.polygonize()` instead polygonize each geometry's own
+/// linework independently.
 ///
 /// Parameters
 /// ----------
@@ -393,11 +431,18 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 ///     One geometry or linework values to node and polygonize together. Array
 ///     and iterable inputs may contain ``None`` rows; they are omitted from the
 ///     pooled linework.
+/// diagnostics : bool
+///     Return a `PolygonizeResult` containing the pooled polygons and
+///     source-row `Groups` for cut edges, dangles, and invalid rings. The
+///     diagnostic result form requires ``diagnostics=True``; the polygon-only
+///     form omits the option.
 ///
 /// Returns
 /// -------
-/// GeometryArray
-///     The polygons enclosed by the pooled linework.
+/// GeometryArray or PolygonizeResult
+///     With the default ``False``, the polygons enclosed by the pooled
+///     linework. With ``True``, the same polygons plus the leftover-linework
+///     diagnostics.
 ///
 /// Raises
 /// ------
@@ -407,67 +452,78 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 ///
 /// See Also
 /// --------
-/// polygonize_full : The same pooled aggregate plus dangles, cut edges, and invalid-ring diagnostics.
+/// Geometry.polygonize : Polygonize one geometry's own linework.
+/// GeometryArray.polygonize : Polygonize each array row independently.
+/// union_all : Union of many geometries into one.
+/// intersection_all : Common region shared by many geometries.
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
-/// >>> gm.polygonize([
+/// >>> edges = [
 /// ...     gm.LineString([(0, 0), (1, 0)]),
 /// ...     gm.LineString([(1, 0), (1, 1)]),
 /// ...     gm.LineString([(1, 1), (0, 0)]),
-/// ... ]).to_wkt()
+/// ... ]
+/// >>> gm.polygonize_all(edges).to_wkt()
 /// ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
-#[pyfunction]
-pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
-    let (metadata, shapes) = pooled_shapes(values)?;
-    let polygons = py.detach(move || Shape::polygonize_all(&shapes, false))?;
-    Ok(PyGeometryArray::from_shapes(polygons, metadata)?)
-}
-
-/// Polygonize pooled linework and return full diagnostics.
-///
-/// Like ``polygonize``, all inputs form ONE planar graph,
-/// including rings whose edges span multiple input geometries. In addition to
-/// polygons, returns cut edges, dangles, and invalid rings. Passing a
-/// `GeometryArray` pools its present rows; `array.polygonize()` remains the
-/// independent row-wise spelling.
-///
-/// Parameters
-/// ----------
-/// values : Geometry, GeometryArray, or iterable of Geometry-like values
-///     One geometry or linework values to node and polygonize together. Array
-///     and iterable inputs may contain ``None`` rows; they are omitted from the
-///     pooled linework, while diagnostic groups retain their source-row
-///     positions.
-///
-/// Returns
-/// -------
-/// PolygonizeResult
-///     Pooled polygons plus source-row ``Groups`` for cut edges, dangles, and
-///     invalid rings.
-///
-/// Raises
-/// ------
-/// GeometryError
-///     If no adjacent binary64 assignment preserves the exact polygonized
-///     output, or the bounded embedding search is exhausted.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> result = gm.polygonize_full([
-/// ...     gm.LineString([(0, 0), (1, 0)]),
-/// ...     gm.LineString([(1, 0), (1, 1)]),
-/// ...     gm.LineString([(1, 1), (0, 0)]),
-/// ... ])
+/// >>> result = gm.polygonize_all(edges, diagnostics=True)
 /// >>> result.polygons.to_wkt()
 /// ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
 #[pyfunction]
-pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (metadata, shapes) = pooled_shapes_with_rows(values)?;
-    let full = py.detach(move || Shape::polygonize_full_all(&shapes, false))?;
-    crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())
+#[pyo3(
+    signature = (values, *, diagnostics = false),
+    text_signature = "(values, *, diagnostics=False)"
+)]
+pub(crate) fn polygonize_all(
+    py: Python<'_>,
+    values: &Bound<'_, PyAny>,
+    diagnostics: bool,
+) -> PyResult<Py<PyAny>> {
+    let (metadata, shapes) = if diagnostics {
+        pooled_shapes_with_rows(values)?
+    } else {
+        pooled_shapes(values)?
+    };
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+
+    if diagnostics {
+        let full = py.detach(move || {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic polygonize_all source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
+            Shape::polygonize_full_all_with_context(
+                &shapes,
+                false,
+                &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            )
+        })?;
+        drop(metric_scratch);
+        crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())
+    } else {
+        let polygons = py.detach(move || {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic polygonize_all source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
+            Shape::polygonize_all_with_context(
+                &shapes,
+                false,
+                &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+            )
+        })?;
+        drop(metric_scratch);
+        PyGeometryArray::from_shapes(polygons, metadata)?.into_py_any(py)
+    }
 }
 
 /// Common intersection of many geometries.
@@ -500,6 +556,11 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 ///     If ``values`` is empty or contains coordinates outside its geographic CRS
 ///     domain.
 ///
+/// See Also
+/// --------
+/// union_all : Union of many geometries into one.
+/// polygonize_all : Build polygons from pooled linework.
+///
 /// Examples
 /// --------
 /// >>> import gometry as gm
@@ -508,7 +569,7 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
 /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
 #[pyfunction]
 pub(crate) fn intersection_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
-    apply_overlay_all(py, values, Shape::intersection_all_topo)
+    apply_overlay_all(py, values, OverlayOp::Intersection)
 }
 
 /// Symmetric difference of many geometries.
@@ -551,7 +612,7 @@ pub(crate) fn symmetric_difference_all(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
 ) -> PyResult<Typed> {
-    apply_overlay_all(py, values, Shape::symmetric_difference_all_topo)
+    apply_overlay_all(py, values, OverlayOp::SymmetricDifference)
 }
 
 /// Test whether geometries form a valid polygonal coverage.
@@ -742,17 +803,23 @@ pub(crate) fn coverage_simplify(
     simplify_boundary: bool,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let geographic_frame = match geometry::topology_domain(&metadata)? {
-        geometry::TopologyDomain::Geographic(frame) => Some(frame),
-        geometry::TopologyDomain::Cartesian => None,
-    };
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
     let rows = py.detach(move || {
-        geometry::coverage_simplify_with_frame(
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic coverage simplification requires the operation's CRS metric",
+                )
+            })
+        };
+        geometry::coverage_simplify_with_context(
             &shapes,
             tolerance,
             method,
             simplify_boundary,
-            geographic_frame,
+            &geometry::SourceArcContext::new(domain, Some(&metric_access)),
         )
     })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;
@@ -838,8 +905,25 @@ pub(crate) fn coverage_clean(
     overlap_rule: geometry::CoverageOverlapRule,
 ) -> PyResult<PyGeometryArray> {
     let (shapes, metadata, source) = coverage_values(values)?;
-    let rows =
-        py.detach(move || geometry::coverage_clean(&shapes, grid_size, gap_width, overlap_rule))?;
+    let mut metric_scratch = crate::dispatch::MetricScratch::default();
+    let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+        .resolve_topology_ctx(&metadata, &mut metric_scratch)?;
+    let rows = py.detach(move || {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic coverage_clean source ordinates require the operation's CRS metric",
+                )
+            })
+        };
+        geometry::coverage_clean(
+            &shapes,
+            grid_size,
+            gap_width,
+            overlap_rule,
+            &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+        )
+    })?;
     let result = PyGeometryArray::from_shapes(rows, metadata)?;
     Ok(match source {
         None => result,

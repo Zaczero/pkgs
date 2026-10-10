@@ -1,5 +1,116 @@
 use super::*;
 
+#[test]
+fn work_product_matches_the_exact_nineteen_limb_result() {
+    let left = ExactDyadic::from_parts(false, vec![u64::MAX; 9], 0);
+    let right = ExactDyadic::from_parts(false, vec![u64::MAX; 10], 0);
+    let expected = [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        u64::MAX,
+        u64::MAX - 1,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+    ];
+
+    let ordinary = left.try_product(&right).unwrap();
+    let paid = left.try_product_with_work(&right, &mut Unmetered).unwrap();
+
+    assert_eq!(paid, ordinary);
+    assert_eq!(paid.limbs.as_slice(), expected);
+}
+
+#[test]
+fn work_division_matches_the_known_algorithm_d_addback_result() {
+    const TOP: u64 = 1 << 63;
+    let dividend = [0, 0, TOP, TOP - 1];
+    let divisor = [1, 0, TOP];
+    let expected_quotient = [u64::MAX - 1];
+    let expected_remainder = [2, u64::MAX, TOP - 1];
+
+    let ordinary = ExactDyadic::div_rem_unsigned(&dividend, &divisor);
+    let paid =
+        ExactDyadic::div_rem_unsigned_with_work(&dividend, &divisor, &mut Unmetered).unwrap();
+
+    assert_eq!(paid, ordinary);
+    assert_eq!(paid.0, expected_quotient);
+    assert_eq!(paid.1, expected_remainder);
+}
+
+#[test]
+fn work_gcd_matches_the_inline_and_heap_euclid_results() {
+    const PRIME: u64 = 0xFFFF_FFFF_FFFF_FFC5;
+    let prime = u128::from(PRIME);
+    let small = |value, exponent| ExactDyadic::try_from_u128(false, value, exponent).unwrap();
+    let left = small(prime.wrapping_mul(3), 5);
+    let right = small(prime.wrapping_mul(5), -3);
+    let expected = ExactDyadic::from_parts(false, vec![PRIME], -3);
+
+    let ordinary_inline = left.gcd(&right);
+    let paid_inline = left.gcd_with_work(&right, &mut Unmetered).unwrap();
+    assert_eq!(paid_inline, ordinary_inline);
+    assert_eq!(paid_inline, expected);
+
+    let wide = left
+        .try_product(&ExactDyadic::try_from_u128(false, prime, 0).unwrap())
+        .unwrap();
+    let ordinary_heap = wide.gcd(&right);
+    let paid_heap = wide.gcd_with_work(&right, &mut Unmetered).unwrap();
+    assert_eq!(paid_heap, ordinary_heap);
+    assert_eq!(paid_heap, expected);
+}
+
+#[test]
+fn work_rational_normalization_and_identity_match_canonical_parts() {
+    let numerator = ExactDyadic::from_f64(615.0);
+    let denominator = ExactDyadic::from_f64(9.0);
+    let expected_numerator = ExactDyadic::from_f64(205.0);
+    let expected_denominator = ExactDyadic::from_f64(3.0);
+
+    let ordinary = ExactRational::new(numerator.clone(), denominator.clone()).unwrap();
+    let paid = ExactRational::new_with_work(numerator, denominator, &mut Unmetered).unwrap();
+    let cloned = paid.try_clone_with_work(&mut Unmetered).unwrap();
+
+    assert_eq!(paid.numerator, expected_numerator);
+    assert_eq!(paid.denominator, expected_denominator);
+    assert!(cloned.try_eq_with_work(&ordinary, &mut Unmetered).unwrap());
+    assert_eq!(
+        paid.try_cmp_with_work(&ordinary, &mut Unmetered).unwrap(),
+        Ordering::Equal
+    );
+}
+
+#[test]
+fn work_ratio_rounding_matches_one_third_and_an_even_midpoint() {
+    let numerator = ExactDyadic::one();
+    let denominator = ExactDyadic::from_f64(3.0);
+    let ordinary = round_ratio(&numerator, &denominator).unwrap();
+    let paid = round_ratio_with_work(&numerator, &denominator, &mut Unmetered).unwrap();
+    assert_eq!(paid.to_bits(), 0x3FD5_5555_5555_5555);
+    assert_eq!(paid.to_bits(), ordinary.to_bits());
+
+    let midpoint_numerator = ExactDyadic::try_from_u128(false, (1_u128 << 53) + 1, 0).unwrap();
+    let midpoint_denominator = ExactDyadic::from_parts(false, vec![1], 53);
+    let ordinary = round_ratio(&midpoint_numerator, &midpoint_denominator).unwrap();
+    let paid =
+        round_ratio_with_work(&midpoint_numerator, &midpoint_denominator, &mut Unmetered).unwrap();
+    assert_eq!(paid, 1.0);
+    assert_eq!(paid.to_bits(), ordinary.to_bits());
+}
+
 fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
     let difference =
         |left: f64, right: f64| ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right));
@@ -54,6 +165,24 @@ fn long_division_reconstructs_the_dividend() {
             rebuilt.cmp(&value(dividend)),
             Ordering::Equal,
             "{dividend:?} / {divisor:?}"
+        );
+    }
+}
+
+#[test]
+fn nearest_integer_dyadic_quotient_trims_aligned_words_and_rounds_ties_to_zero() {
+    let divisor = ExactDyadic::from_f64(1.0);
+    for (value, expected) in [
+        (0.5, ExactDyadic::zero()),
+        (-0.5, ExactDyadic::zero()),
+        (0.75, ExactDyadic::one()),
+        (-0.75, ExactDyadic::one().neg()),
+    ] {
+        assert_eq!(
+            ExactDyadic::from_f64(value)
+                .nearest_integer_quotient_ties_to_zero(&divisor)
+                .unwrap(),
+            expected
         );
     }
 }
@@ -502,8 +631,6 @@ fn dyadics_are_odd_low_canonical_and_exponent_capacity_is_live() {
 
     let beyond_i32 = ExactDyadic::from_parts(false, vec![1], i64::from(i32::MAX) + 1);
     assert_eq!(beyond_i32.square().exponent, 2 * (i64::from(i32::MAX) + 1));
-    let bound = 1_127_u128 * (1_u128 << 20) * (GENERATED_ITEM_LIMIT as u128 + 1);
-    assert!(bound < i64::MAX as u128);
 }
 
 #[test]
@@ -1130,6 +1257,122 @@ fn ratio_rounding_preserves_signs_subnormals_and_power_boundaries() {
                 .to_bits()
         );
     }
+}
+
+#[test]
+fn ratio_rounding_matches_literal_integer_boundary_answers() {
+    // Integer significands encode the exact boundaries without using the
+    // arithmetic or midpoint construction whose rounding this test checks.
+    let cases = [
+        ("below half-minsubnormal", 3, -1077, Some(0)),
+        ("half-minsubnormal", 1, -1075, Some(0)),
+        ("above half-minsubnormal", 5, -1077, Some(1)),
+        (
+            "below normal-transition midpoint",
+            0x003F_FFFF_FFFF_FFFD,
+            -1076,
+            Some(0x000F_FFFF_FFFF_FFFF),
+        ),
+        (
+            "normal-transition midpoint",
+            0x001F_FFFF_FFFF_FFFF,
+            -1075,
+            Some(0x0010_0000_0000_0000),
+        ),
+        (
+            "above normal-transition midpoint",
+            0x003F_FFFF_FFFF_FFFF,
+            -1076,
+            Some(0x0010_0000_0000_0000),
+        ),
+        (
+            "below even-lower midpoint",
+            0x0040_0000_0000_0001,
+            -54,
+            Some(0x3FF0_0000_0000_0000),
+        ),
+        (
+            "even-lower midpoint",
+            0x0020_0000_0000_0001,
+            -53,
+            Some(0x3FF0_0000_0000_0000),
+        ),
+        (
+            "above even-lower midpoint",
+            0x0040_0000_0000_0003,
+            -54,
+            Some(0x3FF0_0000_0000_0001),
+        ),
+        (
+            "below odd-lower midpoint",
+            0x0040_0000_0000_0005,
+            -54,
+            Some(0x3FF0_0000_0000_0001),
+        ),
+        (
+            "odd-lower midpoint",
+            0x0020_0000_0000_0003,
+            -53,
+            Some(0x3FF0_0000_0000_0002),
+        ),
+        (
+            "above odd-lower midpoint",
+            0x0040_0000_0000_0007,
+            -54,
+            Some(0x3FF0_0000_0000_0002),
+        ),
+        (
+            "below overflow midpoint",
+            0x007F_FFFF_FFFF_FFFD,
+            969,
+            Some(0x7FEF_FFFF_FFFF_FFFF),
+        ),
+        ("overflow midpoint", 0x003F_FFFF_FFFF_FFFF, 970, None),
+        ("above overflow midpoint", 0x007F_FFFF_FFFF_FFFF, 969, None),
+    ];
+    for (name, significand, exponent, expected_bits) in cases {
+        for shift in [-65_i64, 0, 65] {
+            for negative in [false, true] {
+                let numerator = ExactDyadic::from_parts(
+                    negative,
+                    vec![significand],
+                    i64::from(exponent).checked_add(shift).unwrap(),
+                );
+                let denominator = ExactDyadic::from_parts(false, vec![1], shift);
+                let actual = round_ratio(&numerator, &denominator);
+                match expected_bits {
+                    Some(bits) => {
+                        let sign = if negative { 0x8000_0000_0000_0000 } else { 0 };
+                        assert_eq!(
+                            actual.unwrap().to_bits(),
+                            bits | sign,
+                            "{name}, negative={negative}, exponent shift={shift}"
+                        );
+                    },
+                    None => {
+                        assert!(
+                            matches!(
+                                actual.unwrap_err().kind(),
+                                crate::error::ErrorKind::Geometry(
+                                    GeometryErrorKind::ExactCoordinateOutOfRange
+                                )
+                            ),
+                            "{name}, negative={negative}, exponent shift={shift}"
+                        );
+                    },
+                }
+            }
+        }
+    }
+    assert_eq!(
+        round_ratio(
+            &ExactDyadic::zero(),
+            &ExactDyadic::from_parts(true, vec![3], -65)
+        )
+        .unwrap()
+        .to_bits(),
+        0
+    );
 }
 
 #[test]

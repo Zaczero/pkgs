@@ -1,8 +1,64 @@
+use crate::error::ErrorKind;
 use crate::geometry::segments::{
-    EXACT_SELECTION_FALLBACKS, compare_along_segment, segment_nearest_points,
+    ExactDistanceWitness, FilterValue, SquaredDistanceFilter, checked_normal_product,
+    clearance_strip_binary64_result, clip_segment_rect_interval, compare_along_segment,
+    exact_selection_distance_cmp, filter_operand, segment_nearest_points,
+    source_dot_difference_binary64, source_dot_difference_exact, source_product_sum_interval,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::*;
+
+struct RemainingWork(u64);
+
+impl Work for RemainingWork {
+    fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+        let Some(remaining) = self.0.checked_sub(ticks) else {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        };
+        self.0 = remaining;
+        Ok(())
+    }
+}
+
+fn exact_clearance_strip_oracle(
+    point: XY,
+    normal: [f64; 2],
+    low: XY,
+    high: XY,
+    incumbent: &SquaredDistanceKey,
+) -> bool {
+    let low_gap = source_dot_difference_exact(normal, low, point).unwrap();
+    let high_gap = source_dot_difference_exact(normal, point, high).unwrap();
+    let gap = if low_gap.cmp(&high_gap).is_gt() {
+        low_gap
+    } else {
+        high_gap
+    };
+    let zero = ExactDyadic::zero();
+    if !gap.cmp(&zero).is_gt() {
+        return false;
+    }
+    let [nx, ny] = normal;
+    let nx = ExactDyadic::from_f64(nx);
+    let ny = ExactDyadic::from_f64(ny);
+    let norm_squared = nx
+        .try_product(&nx)
+        .unwrap()
+        .try_add(ny.try_product(&ny).unwrap())
+        .unwrap();
+    if norm_squared.cmp(&zero).is_eq() {
+        return false;
+    }
+    let exact_incumbent = incumbent.witness.squared().unwrap();
+    compare_ratios(
+        &gap.try_product(&gap).unwrap(),
+        &norm_squared,
+        &exact_incumbent.numerator,
+        &exact_incumbent.denominator,
+    )
+    .unwrap()
+    .is_gt()
+}
 
 #[test]
 fn cuts_sort_by_directed_coordinate_at_float_extremes() {
@@ -419,8 +475,7 @@ fn squared_distance_intervals_contain_the_exact_stored_double_distance() {
 
     // Generated independently with long-double screening, then adjudicated
     // with Python Fraction from these stored doubles. The correctly rounded
-    // exact square is ...a57. Replacing gamma(4) with gamma(1) raises the
-    // lower endpoint to ...a58, so this is a non-vacuous bound mutation.
+    // exact square is ...a57; the certificate must enclose its exact value.
     let mutation_left = XY::new(
         f64::from_bits(0x3FFE_A39A_E95A_135F),
         f64::from_bits(0x3FF6_DB5D_42E1_ECE2),
@@ -460,6 +515,620 @@ fn squared_distance_intervals_contain_the_exact_stored_double_distance() {
 }
 
 #[test]
+fn clearance_aabb_certificates_enclose_and_compare_exact_source_distances() {
+    let point = XY::new(0.0, 0.0);
+    let minimum = SquaredDistanceFilter::MIN_OPERAND;
+    let maximum = SquaredDistanceFilter::MAX_OPERAND;
+    assert!(filter_operand(minimum));
+    assert!(!filter_operand(f64::from_bits(minimum.to_bits() - 1)));
+    assert!(filter_operand(maximum));
+    assert!(!filter_operand(f64::from_bits(maximum.to_bits() + 1)));
+
+    let cases = [
+        ([3.0, 4.0, 3.0, 4.0], XY::new(3.0, 4.0)),
+        ([0.5, -0.75, 2.0, 1.25], XY::new(0.5, 0.0)),
+        ([-2.0, -3.0, 2.0, 3.0], XY::new(0.0, 0.0)),
+        (
+            [
+                f64::from_bits(0x3FEC_F685_D0D1_D6E4),
+                f64::from_bits(0xC08D_0425_31F4_2A4E),
+                f64::from_bits(0x3FEC_F685_D0D1_D6E4),
+                f64::from_bits(0xC08D_0425_31F4_2A4E),
+            ],
+            XY::new(
+                f64::from_bits(0x3FEC_F685_D0D1_D6E4),
+                f64::from_bits(0xC08D_0425_31F4_2A4E),
+            ),
+        ),
+    ];
+
+    for (aabb, expected_closest) in cases {
+        let (witness, filter) = clearance_aabb_filter(point, aabb);
+        assert!(filter.lo.is_finite() && filter.hi.is_finite());
+        assert!(filter.lo <= filter.hi);
+        assert!(matches!(
+            witness,
+            ExactDistanceWitness::Points(_, closest) if closest == expected_closest
+        ));
+        assert!(filter.bind(witness).contains_exact());
+
+        let exact_tie = point_pair_distance_key(point, expected_closest);
+        let exact_order = exact_selection_distance_cmp(witness, exact_tie.witness).unwrap();
+        let binary_order = filter.cmp_witness_key(witness, &exact_tie).unwrap();
+        assert_eq!(binary_order, exact_order, "aabb={aabb:?}");
+    }
+
+    CLEARANCE_AABB_FILTERS.with(|count| count.set(0));
+    CLEARANCE_AABB_FILTER_DECLINES.with(|count| count.set(0));
+    CLEARANCE_AABB_COMPARE_DECISIONS.with(|count| count.set(0));
+    CLEARANCE_AABB_COMPARE_DECLINES.with(|count| count.set(0));
+    let incumbent = point_pair_distance_key(point, XY::new(1.0, 0.0));
+    let (far_witness, far_filter) = clearance_aabb_filter(point, [3.0, 0.0, 4.0, 0.0]);
+    let far_order = far_filter.cmp_witness_key(far_witness, &incumbent).unwrap();
+    assert_eq!(
+        far_order,
+        exact_selection_distance_cmp(far_witness, incumbent.witness).unwrap()
+    );
+    assert!(far_order.is_gt());
+    assert_eq!(
+        CLEARANCE_AABB_COMPARE_DECISIONS.with(std::cell::Cell::get),
+        1
+    );
+
+    let (tie_witness, tie_filter) = clearance_aabb_filter(point, [1.0, 0.0, 1.0, 0.0]);
+    assert_eq!(
+        tie_filter.cmp_witness_key(tie_witness, &incumbent).unwrap(),
+        Ordering::Equal,
+        "an exact AABB tie must reach exact selection rather than prune"
+    );
+    assert_eq!(
+        CLEARANCE_AABB_COMPARE_DECLINES.with(std::cell::Cell::get),
+        1
+    );
+
+    let tiny = 2.0_f64.powi(-700);
+    let (tiny_witness, out_of_band_filter) = clearance_aabb_filter(point, [tiny, 0.0, tiny, 0.0]);
+    assert!(!out_of_band_filter.lo.is_finite() || !out_of_band_filter.hi.is_finite());
+    assert_eq!(CLEARANCE_AABB_FILTER_DECLINES.with(std::cell::Cell::get), 1);
+    assert!(
+        out_of_band_filter
+            .cmp_witness_key(tiny_witness, &incumbent)
+            .unwrap()
+            .is_lt(),
+        "out-of-band bounds must reach exact comparison without pruning"
+    );
+    assert_eq!(
+        CLEARANCE_AABB_COMPARE_DECLINES.with(std::cell::Cell::get),
+        2
+    );
+}
+
+#[test]
+fn binary64_filter_declines_nonzero_products_that_underflow() {
+    assert_eq!(
+        checked_normal_product(2.0_f64.powi(-600), 2.0_f64.powi(-450)),
+        None,
+        "a nonzero subnormal product is not an exact zero"
+    );
+    assert_eq!(
+        checked_normal_product(2.0_f64.powi(-600), 2.0_f64.powi(-500)),
+        None,
+        "a nonzero product rounded all the way to zero must decline"
+    );
+    assert_eq!(checked_normal_product(0.0, 2.0_f64.powi(200)), Some(0.0));
+}
+
+#[test]
+fn point_segment_binary64_filters_enclose_exact_oblique_distances_and_decline_edges() {
+    POINT_SEGMENT_BINARY64_DECISIONS.with(|count| count.set(0));
+    POINT_SEGMENT_BINARY64_DECLINES.with(|count| count.set(0));
+    let cases = [
+        (XY::new(2.0, 3.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(3.0, 4.0),
+        }),
+        (XY::new(0.25, 1.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(2.0, 1.0),
+        }),
+        (XY::new(-1.0, 0.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(3.0, 4.0),
+        }),
+        (XY::new(4.0, 5.0), Segment {
+            start: XY::new(0.0, 0.0),
+            end: XY::new(3.0, 4.0),
+        }),
+        (
+            XY::new(
+                f64::from_bits(0x3FF2_5843_AE08_FA60),
+                f64::from_bits(0x3FEA_C529_C8C6_C6F0),
+            ),
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(
+                    f64::from_bits(0x3FFE_BB3B_2D82_F9B6),
+                    f64::from_bits(0x3FF6_6C3E_CDB1_4CD8),
+                ),
+            },
+        ),
+    ];
+    let (cancellation_point, cancellation_segment) = cases[4];
+    let dx = FilterValue::new(cancellation_segment.end.x).unwrap();
+    let dy = FilterValue::new(cancellation_segment.end.y).unwrap();
+    let qx = FilterValue::new(cancellation_point.x).unwrap();
+    let qy = FilterValue::new(cancellation_point.y).unwrap();
+    let exact_determinant = ExactDyadic::from_f64(dx.0)
+        .try_product(&ExactDyadic::from_f64(qy.0))
+        .unwrap()
+        .try_add(
+            ExactDyadic::from_f64(-dy.0)
+                .try_product(&ExactDyadic::from_f64(qx.0))
+                .unwrap(),
+        )
+        .unwrap();
+    let (determinant_lower, determinant_upper) = source_product_sum_interval(
+        dx,
+        qy,
+        dy,
+        qx,
+        true,
+        SquaredDistanceFilter::SEGMENT_DOT_ERROR,
+    )
+    .expect("ordinary cancellation stays inside the binary64 filter band");
+    assert!(
+        !ExactDyadic::from_f64(determinant_lower)
+            .cmp(&exact_determinant)
+            .is_gt()
+            && !ExactDyadic::from_f64(determinant_upper)
+                .cmp(&exact_determinant)
+                .is_lt(),
+        "the determinant interval must contain the exact stored-double value"
+    );
+
+    for (point, segment) in cases {
+        let key = point_segment_exact_distance_key(point, segment);
+        assert!(key.is_bounded(), "point={point:?} segment={segment:?}");
+        assert!(key.contains_exact(), "point={point:?} segment={segment:?}");
+    }
+    assert_eq!(
+        POINT_SEGMENT_BINARY64_DECISIONS.with(std::cell::Cell::get),
+        cases.len(),
+        "ordinary oblique projections and endpoint classifications use the binary64 filter"
+    );
+
+    for exponent in [-180, -120, -60, 0, 60, 120, 180] {
+        let scale = 2.0_f64.powi(exponent);
+        let point = XY::new(0.375 * scale, 1.75 * scale);
+        let segment = Segment {
+            start: XY::new(-2.0 * scale, -0.75 * scale),
+            end: XY::new(3.0 * scale, 0.625 * scale),
+        };
+        let key = point_segment_exact_distance_key(point, segment);
+        assert!(key.is_bounded(), "exponent={exponent}");
+        assert!(
+            key.contains_exact(),
+            "exponent={exponent} point={point:?} segment={segment:?}"
+        );
+    }
+    for row in 0..16 {
+        let point = XY::new(7.25, 2.75);
+        let vertex = |column: i32| {
+            XY::new(
+                f64::from(column),
+                (f64::from(column) * 0.37 + f64::from(row) * 0.03125).sin()
+                    + f64::from(row) * 0.002,
+            )
+        };
+        for index in 0..8 {
+            let segment = Segment {
+                start: vertex(index),
+                end: vertex(index + 1),
+            };
+            let key = point_segment_exact_distance_key(point, segment);
+            assert!(
+                key.contains_exact(),
+                "row={row} segment={index} point={point:?} segment={segment:?}"
+            );
+        }
+    }
+    assert!(
+        POINT_SEGMENT_BINARY64_DECISIONS.with(std::cell::Cell::get) > cases.len(),
+        "the ordinary nearest-row family also uses the binary64 filter"
+    );
+
+    let boundary = point_segment_exact_distance_key(XY::new(0.0, 0.0), Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(3.0, 4.0),
+    });
+    assert!(!boundary.is_bounded());
+    assert!(boundary.contains_exact());
+
+    let tiny = 2.0_f64.powi(-700);
+    let tiny_key = point_segment_exact_distance_key(XY::new(0.0, tiny), Segment {
+        start: XY::new(0.0, 0.0),
+        end: XY::new(tiny, tiny),
+    });
+    assert!(!tiny_key.is_bounded());
+    assert!(tiny_key.contains_exact());
+    assert!(
+        POINT_SEGMENT_BINARY64_DECLINES.with(std::cell::Cell::get) >= 2,
+        "uncertain endpoint and out-of-band coordinates use the existing path"
+    );
+}
+
+#[test]
+fn touching_distance_intervals_defer_equal_witnesses_to_exact_selection() {
+    let left_witness = ExactDistanceWitness::Points(XY::new(0.0, 0.0), XY::new(1.0, 1.0));
+    let right_witness = ExactDistanceWitness::Points(XY::new(0.0, 0.0), XY::new(1.0, -1.0));
+    let left_filter = SquaredDistanceFilter { lo: 1.0, hi: 2.0 };
+    let right_filter = SquaredDistanceFilter { lo: 2.0, hi: 3.0 };
+    assert_eq!(
+        exact_selection_distance_cmp(left_witness, right_witness).unwrap(),
+        Ordering::Equal
+    );
+    assert_eq!(
+        left_filter.disjoint_cmp(right_filter),
+        None,
+        "touching conservative intervals do not establish strict distance order"
+    );
+    assert_eq!(
+        right_filter.disjoint_cmp(left_filter),
+        None,
+        "touching conservative intervals do not establish strict pruning order"
+    );
+}
+
+#[test]
+fn binary64_source_dot_enclosures_match_exact_dyadic_values() {
+    let cases = [
+        ([1.0, 1.0], XY::new(3.0, 4.0), XY::new(1.0, 2.0)),
+        ([0.0, 1.0], XY::new(0.0, 3.0), XY::new(8.0, 1.0)),
+        (
+            [1.0, 1.0],
+            XY::new(1.0 + f64::EPSILON, 1.0),
+            XY::new(1.0, 1.0 + f64::EPSILON),
+        ),
+        (
+            [1.0, -1.0],
+            XY::new(2.0_f64.powi(60) + 2.0_f64.powi(40), 2.0_f64.powi(60)),
+            XY::new(2.0_f64.powi(60), 2.0_f64.powi(60)),
+        ),
+    ];
+    for (normal, left, right) in cases {
+        let exact = source_dot_difference_exact(normal, left, right).unwrap();
+        assert_eq!(
+            source_dot_cmp(normal, left, right).unwrap(),
+            exact.cmp(&ExactDyadic::zero()),
+            "normal={normal:?} left={left:?} right={right:?}"
+        );
+        if let Some((lower, upper)) = source_dot_difference_binary64(normal, left, right) {
+            assert!(
+                !ExactDyadic::from_f64(lower).cmp(&exact).is_gt(),
+                "lower={lower:?} normal={normal:?} left={left:?} right={right:?}"
+            );
+            assert!(
+                !ExactDyadic::from_f64(upper).cmp(&exact).is_lt(),
+                "upper={upper:?} normal={normal:?} left={left:?} right={right:?}"
+            );
+        }
+    }
+
+    CLEARANCE_DOT_BINARY64_DECISIONS.with(|count| count.set(0));
+    CLEARANCE_DOT_BINARY64_DECLINES.with(|count| count.set(0));
+    assert_eq!(
+        source_dot_cmp([1.0, 1.0], XY::new(3.0, 4.0), XY::new(1.0, 2.0)).unwrap(),
+        Ordering::Greater
+    );
+    assert_eq!(
+        source_dot_cmp(
+            [1.0, 1.0],
+            XY::new(1.0 + f64::EPSILON, 1.0),
+            XY::new(1.0, 1.0 + f64::EPSILON),
+        )
+        .unwrap(),
+        Ordering::Equal
+    );
+    let maximum = f64::MAX;
+    assert_eq!(
+        source_dot_cmp(
+            [1.0, 1.0],
+            XY::new(maximum, maximum),
+            XY::new(-maximum, -maximum),
+        )
+        .unwrap(),
+        Ordering::Greater
+    );
+    assert!(
+        CLEARANCE_DOT_BINARY64_DECISIONS.with(std::cell::Cell::get) > 0,
+        "ordinary separated dots should use the binary64 certificate"
+    );
+    assert!(
+        CLEARANCE_DOT_BINARY64_DECLINES.with(std::cell::Cell::get) > 0,
+        "cancellation should decline to the existing DD/exact path"
+    );
+}
+
+#[test]
+fn clearance_strip_binary64_decisions_keep_ties_and_decline_extremes() {
+    CLEARANCE_STRIP_BINARY64_DECISIONS.with(|count| count.set(0));
+    CLEARANCE_STRIP_BINARY64_DECLINES.with(|count| count.set(0));
+    CLEARANCE_STRIP_EXACT_FALLBACKS.with(|count| count.set(0));
+
+    let incumbent = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(1.0, 0.0));
+    let cases = [
+        (
+            XY::new(2.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+        ),
+        (
+            XY::new(0.5, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+        ),
+        (
+            XY::new(0.875, 0.875),
+            [1.0, 1.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 0.0),
+        ),
+        (
+            XY::new(0.625, 0.625),
+            [1.0, 1.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 0.0),
+        ),
+    ];
+    for (point, normal, low, high) in cases {
+        let exact = exact_clearance_strip_oracle(point, normal, low, high, &incumbent);
+        assert_eq!(
+            clearance_strip_binary64_result(point, normal, low, high, &incumbent),
+            Some(exact),
+            "point={point:?} normal={normal:?}"
+        );
+    }
+    assert!(
+        clearance_strip_exceeds(
+            XY::new(2.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &incumbent,
+        )
+        .unwrap()
+    );
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(0.5, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &incumbent,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        clearance_strip_binary64_result(
+            XY::new(1.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &incumbent,
+        ),
+        None,
+        "the exact boundary tie must not be decided by rounded intervals"
+    );
+    assert!(
+        !exact_clearance_strip_oracle(
+            XY::new(1.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &incumbent,
+        ),
+        "the exact equality case is retain, not prune"
+    );
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(1.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &incumbent,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        1
+    );
+
+    let tiny = 2.0_f64.powi(-700);
+    let tiny_incumbent = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(tiny, 0.0));
+    assert_eq!(
+        clearance_strip_binary64_result(
+            XY::new(2.0 * tiny, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, tiny),
+            &tiny_incumbent,
+        ),
+        None,
+        "out-of-band subnormal squared products must decline"
+    );
+    assert!(
+        clearance_strip_exceeds(
+            XY::new(2.0 * tiny, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, tiny),
+            &tiny_incumbent,
+        )
+        .unwrap()
+    );
+    assert!(
+        CLEARANCE_STRIP_BINARY64_DECISIONS.with(std::cell::Cell::get) >= 2,
+        "ordinary prune and retain cases should use binary64"
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_BINARY64_DECLINES.with(std::cell::Cell::get),
+        2,
+        "the public boundary tie and tiny case should decline to the existing path"
+    );
+}
+
+#[test]
+fn clearance_strip_bounds_compare_exact_source_distances_at_all_scales() {
+    CLEARANCE_STRIP_BINARY64_DECISIONS.with(|count| count.set(0));
+    CLEARANCE_STRIP_BINARY64_DECLINES.with(|count| count.set(0));
+    CLEARANCE_STRIP_EXACT_FALLBACKS.with(|count| count.set(0));
+    let ordinary_key = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(1.0, 0.0));
+    let ordinary_fallbacks = CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get);
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(0.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, -1.0),
+            XY::new(0.0, 1.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "a point inside its source strip should certify no-prune"
+    );
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(0.5, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "a positive strip bound below the incumbent should certify no-prune"
+    );
+    assert!(
+        clearance_strip_exceeds(
+            XY::new(2.0, 0.0),
+            [1.0, 0.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 1.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "an ordinary strict strip separation should prune without exact fallback"
+    );
+    assert!(
+        !clearance_strip_exceeds(
+            XY::new(0.625, 0.625),
+            [1.0, 1.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 0.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "an oblique positive bound below the incumbent should certify no-prune"
+    );
+    assert!(
+        clearance_strip_exceeds(
+            XY::new(0.875, 0.875),
+            [1.0, 1.0],
+            XY::new(0.0, 0.0),
+            XY::new(0.0, 0.0),
+            &ordinary_key,
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get),
+        ordinary_fallbacks,
+        "an oblique strict bound above the incumbent should prune"
+    );
+    for spacing in [2.0_f64.powi(-700), 1.0, 2.0_f64.powi(600)] {
+        let low = XY::new(0.0, 0.0);
+        let high = XY::new(0.0, spacing);
+        let incumbent = point_pair_distance_key(low, XY::new(spacing, 0.0));
+        assert!(
+            clearance_strip_exceeds(
+                XY::new(2.0 * spacing, 0.0),
+                [1.0, 0.0],
+                low,
+                high,
+                &incumbent,
+            )
+            .unwrap()
+        );
+
+        let exact_tie = point_pair_distance_key(low, XY::new(spacing, 0.0));
+        assert!(
+            !clearance_strip_exceeds(XY::new(spacing, 0.0), [1.0, 0.0], low, high, &exact_tie,)
+                .unwrap()
+        );
+    }
+    assert!(
+        CLEARANCE_STRIP_EXACT_FALLBACKS.with(std::cell::Cell::get) >= 4,
+        "tiny/huge strip squares must reach the exact ratio comparison"
+    );
+    assert!(
+        CLEARANCE_STRIP_BINARY64_DECISIONS.with(std::cell::Cell::get) > 0,
+        "ordinary strip comparisons should use binary64 decisions"
+    );
+    assert!(
+        CLEARANCE_STRIP_BINARY64_DECLINES.with(std::cell::Cell::get) > 0,
+        "out-of-band strip comparisons should decline"
+    );
+
+    let origin = 2.0_f64.powi(60);
+    let translated = XY::new(origin + 2.0_f64.powi(40), origin + 3.0 * 2.0_f64.powi(12));
+    let source_origin = XY::new(origin, origin);
+    assert_eq!(
+        source_dot_cmp([1.0, -1.0], translated, source_origin).unwrap(),
+        Ordering::Greater,
+    );
+    let maximum = f64::MAX;
+    assert_eq!(
+        source_dot_cmp(
+            [1.0, 1.0],
+            XY::new(maximum, maximum),
+            XY::new(-maximum, -maximum),
+        )
+        .unwrap(),
+        Ordering::Greater,
+    );
+}
+
+#[test]
+fn certified_zero_source_dot_avoids_exact_fallback() {
+    CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(|count| count.set(0));
+    assert_eq!(
+        source_dot_cmp([1.0, 0.0], XY::new(0.0, 0.0), XY::new(0.0, 1.0)).unwrap(),
+        Ordering::Equal,
+    );
+    assert_eq!(
+        CLEARANCE_STRIP_SUPPORT_FALLBACKS.with(std::cell::Cell::get),
+        0,
+    );
+}
+
+#[test]
 fn ordinary_selection_uses_no_exact_fallback() {
     EXACT_SELECTION_FALLBACKS.with(|count| count.set(0));
     for index in -512..=512 {
@@ -484,6 +1153,22 @@ fn ordinary_selection_uses_no_exact_fallback() {
     let entries = EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get);
     eprintln!("ordinary exact-selection fallback entries: {entries}");
     assert_eq!(entries, 0);
+}
+
+#[test]
+fn clearance_distance_comparison_counts_its_exact_fallback() {
+    let tiny = 2.0_f64.powi(-700);
+    let near = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(tiny, 0.0));
+    let far = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(2.0 * tiny, 0.0));
+    EXACT_SELECTION_FALLBACKS.with(|count| count.set(0));
+    assert!(near.cmp_distance(&far).unwrap().is_lt());
+    assert_eq!(EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get), 1);
+
+    let near = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(1.0, 0.0));
+    let far = point_pair_distance_key(XY::new(0.0, 0.0), XY::new(2.0, 0.0));
+    EXACT_SELECTION_FALLBACKS.with(|count| count.set(0));
+    assert!(near.cmp_distance(&far).unwrap().is_lt());
+    assert_eq!(EXACT_SELECTION_FALLBACKS.with(std::cell::Cell::get), 0);
 }
 
 #[test]
@@ -939,6 +1624,32 @@ fn endpoint_projection_preserves_source_signed_zero_bits() {
     assert_eq!(lifted.m().unwrap().to_bits(), start.m().unwrap().to_bits());
 }
 
+#[test]
+fn clip_interval_corner_duplicates_preserve_source_endpoint_bits() {
+    let bounds = Bounds::new(0.0, 0.0, 1.0, 1.0).expect("ordered bounds");
+    let segment = Segment {
+        start: XY::new(-0.0, -0.0),
+        end: XY::new(2.0, 2.0),
+    };
+    let interval = clip_segment_rect_interval(segment, bounds)
+        .unwrap()
+        .expect("the segment crosses the rectangle");
+    assert_eq!(interval.start.point.x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(interval.start.point.y.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(interval.end.point, XY::new(1.0, 1.0));
+
+    let reversed = Segment {
+        start: segment.end,
+        end: segment.start,
+    };
+    let interval = clip_segment_rect_interval(reversed, bounds)
+        .unwrap()
+        .expect("the reversed segment crosses the rectangle");
+    assert_eq!(interval.start.point, XY::new(1.0, 1.0));
+    assert_eq!(interval.end.point.x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(interval.end.point.y.to_bits(), (-0.0_f64).to_bits());
+}
+
 fn reverse_segment(segment: Segment) -> Segment {
     Segment {
         start: segment.end,
@@ -1165,6 +1876,90 @@ fn fallible_sort_is_stable_and_matches_the_standard_sort() {
         try_sort_by(&mut sorted, |left, right| Ok(left.0.cmp(&right.0))).unwrap();
         assert_eq!(sorted, expected, "length {len}");
     }
+
+    let mut tied = [
+        (1, 'A'),
+        (1, 'B'),
+        (1, 'C'),
+        (1, 'D'),
+        (1, 'E'),
+        (1, 'F'),
+        (1, 'G'),
+        (1, 'H'),
+        (2, 'I'),
+        (2, 'J'),
+        (2, 'K'),
+        (2, 'L'),
+        (2, 'M'),
+        (2, 'N'),
+        (2, 'O'),
+        (2, 'P'),
+        (1, 'Q'),
+        (2, 'R'),
+    ];
+    try_sort_by(&mut tied, |left, right| Ok(left.0.cmp(&right.0))).unwrap();
+    assert_eq!(tied, [
+        (1, 'A'),
+        (1, 'B'),
+        (1, 'C'),
+        (1, 'D'),
+        (1, 'E'),
+        (1, 'F'),
+        (1, 'G'),
+        (1, 'H'),
+        (1, 'Q'),
+        (2, 'I'),
+        (2, 'J'),
+        (2, 'K'),
+        (2, 'L'),
+        (2, 'M'),
+        (2, 'N'),
+        (2, 'O'),
+        (2, 'P'),
+        (2, 'R'),
+    ]);
+}
+
+#[test]
+fn synthetic_work_error_precedes_a_sort_comparison() {
+    let mut items = [(2_u8, 'A'), (1, 'B')];
+    let original = items;
+    let mut comparisons = 0;
+    let mut work = RemainingWork(0);
+
+    let result = try_sort_by_with_work(&mut items, &mut work, |left, right, _work| {
+        comparisons += 1;
+        Ok(left.0.cmp(&right.0))
+    });
+
+    let error = result.unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+    ));
+    assert_eq!(comparisons, 0);
+    assert_eq!(items, original);
+}
+
+#[test]
+fn synthetic_work_error_precedes_a_sort_swap() {
+    let mut items = [(2_u8, 'A'), (1, 'B')];
+    let original = items;
+    let mut comparisons = 0;
+    let mut work = RemainingWork(1);
+
+    let result = try_sort_by_with_work(&mut items, &mut work, |left, right, _work| {
+        comparisons += 1;
+        Ok(left.0.cmp(&right.0))
+    });
+
+    let error = result.unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+    ));
+    assert_eq!(comparisons, 1);
+    assert_eq!(items, original);
 }
 
 #[test]
@@ -1180,4 +1975,124 @@ fn fallible_sort_stops_at_the_first_comparison_error() {
     });
     assert!(result.is_err());
     assert_eq!(comparisons, 40);
+}
+
+#[test]
+fn fallible_sort_stops_at_a_merge_error_with_a_valid_item_permutation() {
+    let mut items = [
+        (1_u8, 101_u16),
+        (3, 102),
+        (5, 103),
+        (7, 104),
+        (9, 105),
+        (11, 106),
+        (13, 107),
+        (15, 108),
+        (17, 109),
+        (19, 110),
+        (21, 111),
+        (23, 112),
+        (25, 113),
+        (27, 114),
+        (29, 115),
+        (31, 116),
+        (0, 201),
+        (2, 202),
+        (4, 203),
+        (6, 204),
+        (8, 205),
+        (10, 206),
+        (12, 207),
+        (14, 208),
+        (16, 209),
+        (18, 210),
+        (20, 211),
+        (22, 212),
+        (24, 213),
+        (26, 214),
+        (28, 215),
+        (30, 216),
+    ];
+    let expected_records = [
+        (1, 101),
+        (3, 102),
+        (5, 103),
+        (7, 104),
+        (9, 105),
+        (11, 106),
+        (13, 107),
+        (15, 108),
+        (17, 109),
+        (19, 110),
+        (21, 111),
+        (23, 112),
+        (25, 113),
+        (27, 114),
+        (29, 115),
+        (31, 116),
+        (0, 201),
+        (2, 202),
+        (4, 203),
+        (6, 204),
+        (8, 205),
+        (10, 206),
+        (12, 207),
+        (14, 208),
+        (16, 209),
+        (18, 210),
+        (20, 211),
+        (22, 212),
+        (24, 213),
+        (26, 214),
+        (28, 215),
+        (30, 216),
+    ];
+    let mut observed_merge_pairs = Vec::new();
+    let mut error_observed = false;
+    let mut post_error_comparisons = 0;
+
+    let result = try_sort_by(&mut items, |left, right| {
+        if error_observed {
+            post_error_comparisons += 1;
+            return Err(GeometryErrorKind::voronoi("comparison after merge error"));
+        }
+        let cross_run = (101..=116).contains(&left.1) && (201..=216).contains(&right.1);
+        if cross_run {
+            let pair = (left.1, right.1);
+            observed_merge_pairs.push(pair);
+            if (left.0, left.1, right.0, right.1) == (3, 102, 2, 202) {
+                error_observed = true;
+                return Err(GeometryErrorKind::voronoi("merge comparator stop"));
+            }
+        }
+        Ok(left.0.cmp(&right.0))
+    });
+
+    let error = result.expect_err("the selected cross-run comparison must fail");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::Voronoi(message))
+            if message.as_ref() == "merge comparator stop"
+    ));
+    assert!(
+        error_observed,
+        "the comparator must reach the merge error pair"
+    );
+    assert_eq!(observed_merge_pairs, [(101, 201), (101, 202), (102, 202)]);
+    assert_eq!(
+        post_error_comparisons, 0,
+        "the first comparator error must stop further callback calls"
+    );
+
+    assert_eq!(items.len(), expected_records.len());
+    for (key, source_tag) in expected_records {
+        assert_eq!(
+            items
+                .iter()
+                .filter(|record| **record == (key, source_tag))
+                .count(),
+            1,
+            "record ({key}, {source_tag})"
+        );
+    }
 }

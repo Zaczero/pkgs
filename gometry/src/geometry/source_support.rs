@@ -289,6 +289,15 @@ pub(crate) enum PointMembership {
     BoundaryInclusive,
 }
 
+impl PointMembership {
+    pub(crate) const fn accepts(self, location: Loc) -> bool {
+        match self {
+            Self::Strict => matches!(location, Loc::Interior),
+            Self::BoundaryInclusive => !matches!(location, Loc::Exterior),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::geometry) struct SourcePointLocation {
     pub(in crate::geometry) location: Loc,
@@ -2594,7 +2603,12 @@ mod tests {
     #[test]
     fn exact_node_keeps_node_identity_and_late_ordinate_failures() {
         let crossing = shape("MULTILINESTRING ((0 0,2 2),(0 2,2 0))");
-        let noded = crossing.node(crate::geometry::Strictness::Strict).unwrap();
+        let noded = crossing
+            .node_with_context(
+                crate::geometry::Strictness::Strict,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
+            .unwrap();
         let expected = shape("MULTILINESTRING ((0 0,1 1),(1 1,2 2),(0 2,1 1),(1 1,2 0))");
         assert!(noded.equals(&expected).unwrap(), "{noded:?}");
 
@@ -2602,7 +2616,10 @@ mod tests {
         let right = shape("LINESTRING Z (0 2 1,2 0 1)");
         let error = crate::geometry::Shape::geometry_collection(vec![left, right])
             .unwrap()
-            .node(crate::geometry::Strictness::Strict)
+            .node_with_context(
+                crate::geometry::Strictness::Strict,
+                &crate::geometry::SourceArcContext::cartesian(),
+            )
             .unwrap_err();
         assert!(
             error.to_string().contains("node cannot represent Z/M"),
@@ -2622,7 +2639,12 @@ mod tests {
             .into(),
         );
         assert!(matches!(
-            point.node(crate::geometry::Strictness::Strict).unwrap(),
+            point
+                .node_with_context(
+                    crate::geometry::Strictness::Strict,
+                    &crate::geometry::SourceArcContext::cartesian(),
+                )
+                .unwrap(),
             Shape::Empty(
                 crate::geometry::GeometryKind::MultiLineString,
                 crate::geometry::CoordinateAxes::XYZ

@@ -69,15 +69,13 @@ pub(crate) fn info_with_state(
     })
 }
 
-/// Geometry `Frame` epoch policy: the cached `admits_geometry_epoch` fact
-/// built with the CRS info snapshot. Dynamic PJ types and the EPSG:6326
-/// identity admit an epoch; ensemble members do not confer it.
-pub(crate) fn is_dynamic(value: &str) -> Result<bool> {
+/// Whether a CRS admits a coordinate epoch on a geometry frame.
+pub(crate) fn admits_geometry_epoch(value: &str) -> Result<bool> {
     let state = runtime_state_snapshot()?;
-    is_dynamic_with_state(value, &state)
+    admits_geometry_epoch_with_state(value, &state)
 }
 
-pub(crate) fn is_dynamic_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
+pub(crate) fn admits_geometry_epoch_with_state(value: &str, state: &RuntimeState) -> Result<bool> {
     Ok(info_with_state(value, state)?.admits_geometry_epoch)
 }
 
@@ -452,7 +450,7 @@ mod tests {
         assert_eq!(frame.latitude_unit().radians_per_unit(), grad_to_radian);
         assert_eq!(
             frame.prime_meridian_radians(),
-            prime.longitude * prime.unit_conversion_factor
+            prime.longitude / 400.0 * std::f64::consts::TAU
         );
         assert_eq!(frame.longitude().canonicalize(400.0).unwrap().get(), 0.0);
         // Independent worked conversion: 2.5969213 grad * pi/200.
@@ -466,19 +464,41 @@ mod tests {
     #[test]
     fn geographic_frames_cover_compound_and_exclude_nonperiodic_crs() {
         let horizontal = info("EPSG:4326").unwrap().geographic_frame().unwrap();
-        assert_eq!(
-            info("EPSG:9707").unwrap().geographic_frame(),
-            Some(horizontal)
-        );
-        for crs in ["EPSG:3857", "EPSG:4978"] {
-            assert_eq!(info(crs).unwrap().geographic_frame(), None, "{crs}");
-        }
+        let compound = info("EPSG:9707").unwrap();
+        assert!(compound.is_compound());
+        assert_eq!(compound.geographic_frame(), Some(horizontal));
+
+        let derived = info("EPSG:3857").unwrap();
+        assert!(derived.is_derived);
+        assert!(derived.is_projected());
+        assert_eq!(derived.geographic_frame(), None);
+        assert_eq!(info("EPSG:4978").unwrap().geographic_frame(), None);
+
         let bound =
             info("+proj=longlat +ellps=clrk80ign +pm=paris +towgs84=0,0,0 +type=crs").unwrap();
+        assert!(bound.is_bound());
         assert_ne!(
             bound.geographic_frame().unwrap().prime_meridian_radians(),
             0.0
         );
+    }
+
+    #[test]
+    fn numeric_unit_equality_does_not_confuse_angular_and_linear_axes() {
+        let radians = r#"GEOGCRS["Radian axes",DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0,ANGLEUNIT["radian",1]],CS[ellipsoidal,2],AXIS["longitude",east,ORDER[1],ANGLEUNIT["radian",1]],AXIS["latitude",north,ORDER[2],ANGLEUNIT["radian",1]]]"#;
+        let angular = info(radians).unwrap();
+        let angular_frame = angular.geographic_frame().unwrap();
+        assert!(angular.is_geographic());
+        assert_eq!(angular.axes[0].unit_conversion_factor, 1.0);
+        assert_eq!(angular.axes[1].unit_conversion_factor, 1.0);
+        assert_eq!(angular_frame.longitude().period(), std::f64::consts::TAU);
+        assert_eq!(angular_frame.pole(), std::f64::consts::FRAC_PI_2);
+
+        let linear = info("EPSG:3857").unwrap();
+        assert!(linear.is_projected());
+        assert_eq!(linear.axes[0].unit_conversion_factor, 1.0);
+        assert_eq!(linear.axes[1].unit_conversion_factor, 1.0);
+        assert!(linear.geographic_frame().is_none());
     }
 
     #[test]
@@ -532,8 +552,8 @@ mod tests {
         let cases = [
             ("degree database", "EPSG:4326", 90.0, 0),
             ("radian text", radian_wkt, std::f64::consts::FRAC_PI_2, 0),
-            ("grad Paris database", "EPSG:4807", 100.0, 7),
-            ("grad Paris text", grad_wkt, 100.0, 1),
+            ("grad Paris database", "EPSG:4807", 100.0, 0),
+            ("grad Paris text", grad_wkt, 100.0, 0),
         ];
         for (name, crs, nominal, expected_interior_distance) in cases {
             let pole = info(crs).unwrap().geographic_frame().unwrap().pole();
@@ -585,12 +605,26 @@ mod tests {
                 "{name}",
             );
         }
+
+        let grad_frame = info("EPSG:4807").unwrap().geographic_frame().unwrap();
+        let pole = grad_frame.pole();
+        assert_eq!(
+            crate::geographic::Latitude::try_new(grad_frame, pole.next_up())
+                .unwrap()
+                .get(),
+            pole
+        );
+        let Err(crate::geographic::GeographicError::LatitudeOutOfRange { .. }) =
+            crate::geographic::Latitude::try_new(grad_frame, pole.next_up().next_up())
+        else {
+            panic!("the second exterior grad ULP must be rejected");
+        };
     }
 
-    /// Geometry epoch policy: WGS84's 6326 identity and dynamic frames admit
-    /// an epoch; a static frame and a merely dynamic-member ensemble do not.
+    /// Geometry epoch policy: the WGS 84 ensemble and dynamic datums admit
+    /// epochs; a static datum and a merely dynamic-member ensemble do not.
     #[test]
-    fn dynamic_classification_matches_frame_physics() {
+    fn geometry_epoch_admission_matches_frame_policy() {
         for (crs, expected) in [
             ("EPSG:4326", true),  // WGS 84 ensemble of dynamic realizations
             ("EPSG:9000", true),  // ITRF2014 (dynamic reference frame)
@@ -599,9 +633,9 @@ mod tests {
             ("EPSG:3857", true),  // Web Mercator on the WGS84 ensemble
         ] {
             assert_eq!(
-                is_dynamic(crs).unwrap(),
+                admits_geometry_epoch(crs).unwrap(),
                 expected,
-                "dynamic classification for {crs}",
+                "epoch admission for {crs}",
             );
         }
     }

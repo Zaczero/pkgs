@@ -1,6 +1,7 @@
 //! Semantic values for periodic geographic coordinates.
 
 mod chain;
+pub(crate) mod chart;
 mod computed_edge;
 mod envelope;
 mod interval;
@@ -9,20 +10,24 @@ mod value;
 mod view;
 
 pub(crate) use chain::ChartSpanGuard;
+pub(crate) use chart::{ChartPointSite, PointSelectionChart};
 pub(crate) use computed_edge::{
-    ComputedEdgeIntent, ComputedEdgeInterval, ComputedVertexIntent, publish_certified_minor_chain,
-    publish_computed_chain, publish_computed_chain_with_vertex_intents,
-    publish_computed_chain_with_vertex_intents_and_intervals,
+    ComputedEdgeIntent, ComputedLongitudeRelation, ComputedSampleOrdinates, ComputedVertexIntent,
+    publish_certified_minor_chain, publish_computed_chain,
+    publish_computed_chain_with_vertex_intents,
+    publish_computed_chain_with_vertex_intents_and_samples, publish_preserved_minor_chain,
 };
-pub(crate) use envelope::GeographicSupportEnvelope;
+pub(crate) use envelope::{GeographicSupportEnvelope, GeographicSupportProducts};
 pub(crate) use interval::{CircularInterval, LongitudeWindows, union_circular_intervals};
 use thiserror::Error;
-pub(crate) use value::{
-    AngularFactor, CanonicalLongitude, ChartStep, EdgeDirection, FullTurnPole, GeographicFrame,
-    Latitude, PeriodicAxis, Pole, QuotientVertex, RingTurn, SeamIdentity, TurnDirection,
-};
 #[cfg(test)]
-pub(crate) use view::GeographicAdmissionWork;
+pub(crate) use value::source_admission_counts;
+pub(crate) use value::{
+    AngularFactor, CanonicalLongitude, ChartConnection, ChartPole, ChartStep, EdgeDirection,
+    FullTurnPole, GeodeticPole, GeographicAxisOrientation, GeographicFrame, Latitude, PeriodicAxis,
+    QuotientVertex, RetainedChartDisplacement, RetainedLongitudeClass, RetainedLongitudeSite,
+    RetainedNativeLongitude, RingTurn, SeamIdentity, TurnDirection, retained_native_private,
+};
 pub(crate) use view::{
     GeographicAdmissionError, GeographicCollectionOwners, GeographicDiagnostic, GeographicInputs,
     GeographicLocation, GeographicRing, GeographicViewError, RingDomain, RingSummary,
@@ -37,12 +42,10 @@ pub(crate) enum GeographicError {
     NonFinite { name: &'static str, value: f64 },
     #[error("latitude {value} is outside the physical axis limits")]
     LatitudeOutOfRange { value: f64 },
-    #[error("circular interval sweep {sweep} is outside [0, {period})")]
-    InvalidSweep { sweep: f64, period: f64 },
     #[error("ring chart-turn count overflowed")]
     ChartTurnOverflow,
     #[error(
-        "ring winds once around the globe and spans the equator (latitudes {south} to {north}); the pole it bounds is ambiguous. Close it explicitly through the pole line or split it"
+        "ring winds around the globe and spans the equator (latitudes {south} to {north}); the pole it bounds is ambiguous. Close it explicitly through the pole line or split it"
     )]
     AmbiguousFullTurnRing { south: f64, north: f64 },
 }

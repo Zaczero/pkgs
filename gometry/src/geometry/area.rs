@@ -4,7 +4,7 @@
 use std::simd::num::SimdFloat as _;
 
 use crate::error::Result;
-use crate::geographic::{FullTurnPole, GeographicFrame, Latitude, Pole};
+use crate::geographic::{ChartPole, FullTurnPole, GeographicFrame, Latitude};
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
@@ -114,6 +114,126 @@ impl ExactRationalArea {
     }
 }
 
+/// One polynomial integral with a shared factorial denominator.
+///
+/// Geographic density moments use `1 / (degree + 2)!` after Green integration.
+/// Keeping one numerator avoids reducing a generic rational after every degree.
+pub(crate) struct ExactFactorialArea {
+    numerator: ExactDyadic,
+    denominator: ExactDyadic,
+}
+
+impl ExactFactorialArea {
+    pub(in crate::geometry) fn dyadic_within_gamma(
+        error: &ExactDyadic,
+        norm: &ExactDyadic,
+        operation_count: u64,
+    ) -> Result<bool> {
+        let operation_count_i64 = i64::try_from(operation_count)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let denominator = (1_i64 << 53)
+            .checked_sub(operation_count_i64)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let left = error.try_product(&ExactDyadic::from_i64(denominator))?;
+        let right = norm.try_product(&ExactDyadic::from_i64(operation_count_i64))?;
+        Ok(left.cmp(&right).is_le())
+    }
+
+    pub(in crate::geometry) fn from_derivatives(
+        derivatives: &[ExactDyadic],
+        moments: &[ExactDyadic],
+    ) -> Result<Self> {
+        Self::from_products(
+            derivatives
+                .iter()
+                .zip(moments)
+                .map(|(derivative, moment)| move || derivative.try_product(moment)),
+        )
+    }
+
+    pub(in crate::geometry) fn absolute_contraction(
+        derivatives: &[ExactDyadic],
+        moments: &[ExactDyadic],
+    ) -> Result<Self> {
+        Self::from_products(derivatives.iter().zip(moments).map(|(derivative, moment)| {
+            move || derivative.try_product(moment).map(ExactDyadic::abs)
+        }))
+    }
+
+    fn from_products(
+        products: impl Iterator<Item = impl FnOnce() -> Result<ExactDyadic>>,
+    ) -> Result<Self> {
+        let mut numerator = ExactDyadic::zero();
+        let mut denominator = ExactDyadic::one();
+        for (degree, product) in products.enumerate() {
+            if degree == 0 {
+                denominator = ExactDyadic::from_i64(2);
+            } else {
+                // Both callers zip non-ZST ExactDyadic slices, so their
+                // representable lengths bound degree and prevent wrapping.
+                let factor = i64::try_from(degree.wrapping_add(2))
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+                let factor = ExactDyadic::from_i64(factor);
+                numerator = numerator.try_product(&factor)?;
+                denominator = denominator.try_product(&factor)?;
+            }
+            numerator = numerator.try_add(product()?)?;
+        }
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    pub(in crate::geometry) const fn sign(&self) -> ExactSign {
+        self.numerator.sign()
+    }
+
+    pub(in crate::geometry) fn compare_dyadic_gamma(
+        &self,
+        error: &ExactDyadic,
+        operation_count: u64,
+    ) -> Result<std::cmp::Ordering> {
+        let significand = 1_i64 << 53;
+        let denominator = significand
+            .checked_sub(
+                i64::try_from(operation_count)
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            )
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let left = error
+            .try_product(&ExactDyadic::from_i64(denominator))?
+            .try_product(&self.denominator)?;
+        let right = self.numerator.try_product(&ExactDyadic::from_i64(
+            i64::try_from(operation_count)
+                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        ))?;
+        Ok(left.cmp(&right))
+    }
+
+    pub(in crate::geometry) fn scaled_round(&self, scale: &ExactDyadic) -> Result<f64> {
+        let numerator = self.numerator.try_product(scale)?;
+        match round_ratio(&numerator, &self.denominator) {
+            Ok(value) => Ok(value),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        crate::geometry::GeometryErrorKind::ExactCoordinateOutOfRange
+                    )
+                ) =>
+            {
+                Ok(if self.sign() == ExactSign::Negative {
+                    f64::NEG_INFINITY
+                } else {
+                    f64::INFINITY
+                })
+            },
+            Err(error) => Err(error),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AreaSign {
     Negative,
@@ -140,20 +260,6 @@ impl RingWinding {
     /// Reverse the ring when its winding does not match `clockwise`.
     pub(crate) const fn reverse_for_clockwise(self, clockwise: bool) -> bool {
         matches!(self, Self::CounterClockwise) == clockwise
-    }
-}
-
-impl AreaSign {
-    #[cfg(test)]
-    /// True when a face walk with this sign is a better outer-face candidate
-    /// for its component than one with `other`. A nondegenerate component's
-    /// outer face is its negative walk; when every walk is nonnegative the
-    /// component encloses no area and a zero walk seeds it.
-    pub(crate) const fn prefers_as_outer_face_than(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Negative, Self::Zero | Self::Positive) | (Self::Zero, Self::Positive)
-        )
     }
 }
 
@@ -345,14 +451,14 @@ pub(in crate::geometry) fn lifted_ring_area_sign(
                 None => lifted_exact_ring_area_sign(frame, xs, ys)?,
             },
             -1 | 1 => match FullTurnPole::of_latitude_span(south.get(), north.get()) {
-                FullTurnPole::Bounded(Pole::North) => {
+                FullTurnPole::Bounded(ChartPole::North) => {
                     if turn > 0 {
                         1
                     } else {
                         -1
                     }
                 },
-                FullTurnPole::Bounded(Pole::South) => {
+                FullTurnPole::Bounded(ChartPole::South) => {
                     if turn > 0 {
                         -1
                     } else {
@@ -1429,15 +1535,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_ring_certificate_declines_rounded_nominal_seam_spellings() {
-        let factor = crate::geographic::AngularFactor::try_new(
-            "unit",
-            std::f64::consts::TAU / 400.0_f64.next_up(),
-        )
-        .unwrap();
+    fn raw_ring_certificate_declines_unrecognized_noninteger_period() {
+        let factor =
+            crate::geographic::AngularFactor::try_new("unit", std::f64::consts::TAU / 399.5)
+                .unwrap();
         let frame = GeographicFrame::try_new(factor, factor, 0.0).unwrap();
         let xs = [200.0, 200.0, 100.0, 100.0, 200.0, 0.0, 0.0, 200.0];
         let ys = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        assert_eq!(frame.longitude().period(), 399.5);
         assert!(raw_ring_certificate(frame, &xs, &ys).is_none());
         assert_eq!(
             exact_ring_area_sign_columns(&xs, &ys, xs.len().saturating_sub(1)),
@@ -1445,8 +1550,8 @@ mod tests {
         );
         let area = lifted_ring_area_sign(frame, &xs, &ys, true).unwrap();
         assert_eq!(area.chart_turn, 0);
-        assert_eq!(area.orientation, Some(-1));
-        assert_eq!(lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(), -1);
+        assert_eq!(area.orientation, Some(1));
+        assert_eq!(lifted_exact_ring_area_sign(frame, &xs, &ys).unwrap(), 1);
     }
 
     #[test]

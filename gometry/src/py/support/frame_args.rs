@@ -29,7 +29,7 @@ pub(crate) fn parse_crs(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Crs
 
 /// A ``crs=`` parameter whose default is gometry's WGS84 lon/lat label rather
 /// than "no CRS" — the shape every parser of an inherently-WGS84 format needs
-/// (`from_geojson`, `from_features`, `from_polyline`).
+/// (`from_geojson`, `from_polyline`).
 ///
 /// It exists as one type so the default cannot drift per parser. It did: the
 /// `geojson` lane defaulted to [`WGS84_LONLAT`] while the polyline lane
@@ -65,7 +65,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Wgs84DefaultCrs {
 
 /// Validate a coordinate epoch arriving from a serialized source (pickle /
 /// Arrow extension metadata): finite, canonical (`-0.0 → 0.0`), and present
-/// only on a dynamic CRS (the `epoch ⟹ dynamic crs` invariant). Deserialization is an
+/// only on a CRS whose geometry frame admits epochs. Deserialization is an
 /// untrusted boundary, so a tampered or foreign payload is rejected here rather
 /// than producing an incoherent in-memory geometry.
 pub(crate) fn deserialized_epoch(epoch: Option<f64>, crs: Option<&str>) -> PyResult<Option<f64>> {
@@ -90,7 +90,7 @@ pub(crate) fn guard_epoch_frame(epoch: Option<f64>, crs: Option<&Crs>) -> crate:
 }
 
 /// Parse the shared constructor `crs=`/`epoch=` arguments into a validated
-/// [`Frame`], enforcing the `epoch ⟹ dynamic crs` invariant at this Python boundary.
+/// [`Frame`], enforcing geometry epoch admission at the shared frame boundary.
 /// The epoch is canonicalized (`-0.0 → 0.0`) by [`coordinate_epoch_option`].
 pub(crate) fn parse_crs_epoch(
     crs: Option<&Bound<'_, PyAny>>,

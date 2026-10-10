@@ -2,8 +2,8 @@ use super::validate::{collapsed_line_point, validate_line};
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    CoordSeq, Coordinates as _, GeometryErrorKind, LineSeq, MultiLineString, MultiMember,
-    MultiPoint, Polygon, RepairMethod, Ring, Shape, XY, polygon_parts_to_shape, same_point,
+    GeometryErrorKind, LineSeq, MultiLineString, MultiMember, MultiPoint, Polygon, RepairMethod,
+    Shape, SourceArcContext, polygon_parts_to_shape,
 };
 
 pub(crate) fn line_repair(line: &LineSeq) -> Result<Shape> {
@@ -72,6 +72,8 @@ pub(crate) fn polygonal_repair(
     polygons: &[Polygon],
     method: RepairMethod,
     preserve_source_vertices: bool,
+    strict: bool,
+    context: &SourceArcContext<'_, '_>,
 ) -> Result<Shape> {
     let empty: &[Polygon] = &[];
     let inventory = ExactSourceInventory::from_polygon_operands(polygons, empty)?;
@@ -80,87 +82,36 @@ pub(crate) fn polygonal_repair(
     if preserve_source_vertices {
         partition.preserve_source_vertices();
     }
-    let (_, _, parts) = match method {
-        RepairMethod::Linework => inventory.repair_parts(&partition)?,
-        RepairMethod::Structure => inventory.structure_parts(&partition)?,
-    };
-    // The face walk keeps zero-area antennas (a spike that re-enters at a
-    // noded vertex is traversed once per side, leaving an `A, B, A`
-    // backtrack in the boundary) — strip them so the rebuilt rings are
-    // OGC-valid; an antenna encloses nothing, so the area is unchanged.
-    let mut cleaned = Vec::with_capacity(parts.len());
-    for polygon in parts {
-        let Some(shell) = ring_without_antennas(&polygon.shell)? else {
-            continue;
+    let declared_axes = polygons
+        .iter()
+        .fold(crate::geometry::CoordinateAxes::XY, |axes, polygon| {
+            axes.union(polygon.axes())
+        });
+    let parts = inventory.repair_polygons(&partition, method, declared_axes, strict, context)?;
+    let mut polygons = Vec::with_capacity(parts.len());
+    for part in parts {
+        let Shape::Polygon(polygon) = part else {
+            unreachable!("repair exact source emission yields polygon parts")
         };
-        let mut holes = Vec::with_capacity(polygon.holes.len());
-        for hole in polygon.holes.iter() {
-            if let Some(hole) = ring_without_antennas(hole)? {
-                holes.push(hole);
-            }
-        }
-        cleaned.push(Polygon::new(shell, holes));
+        polygons.push(polygon);
     }
-    Ok(polygon_parts_to_shape(cleaned))
+    Ok(polygon_parts_to_shape(polygons))
 }
 
-/// Strip zero-area antennas from a closed ring: any vertex whose circular
-/// neighbors coincide (`prev == next`) sits at the tip of a doubly-traversed
-/// spike — remove the tip and one duplicate, repeating until stable.
-/// Returns `None` when the ring collapses below a triangle.
-pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
-    // CLEAN fast path: a columnar circular `prev == next` sweep finds the
-    // (rare) antenna tips without materializing a `Point` per vertex; an
-    // antenna-free ring returns untouched.
-    {
-        let coords = ring.coords();
-        let (xs, ys) = (coords.xs(), coords.ys());
-        let (_, xs) = xs.split_last().expect("ring has a closing coordinate");
-        let (_, ys) = ys.split_last().expect("ring has a closing coordinate");
-        let len = xs.len();
-        let clean = (0..len).all(|index| {
-            let previous_index = if index == 0 {
-                len.wrapping_sub(1)
-            } else {
-                index.wrapping_sub(1)
-            };
-            let next_index = if index.wrapping_add(1) == len {
-                0
-            } else {
-                index.wrapping_add(1)
-            };
-            let previous = XY::new(
-                *xs.get(previous_index)
-                    .expect("ring columns share the admitted length"),
-                *ys.get(previous_index)
-                    .expect("ring columns share the admitted length"),
-            );
-            let next = XY::new(
-                *xs.get(next_index)
-                    .expect("ring columns share the admitted length"),
-                *ys.get(next_index)
-                    .expect("ring columns share the admitted length"),
-            );
-            !same_point(previous, next)
-        });
-        if clean {
-            return Ok(Some(ring.clone()));
-        }
-    }
-    let mut points = Vec::with_capacity(ring.coord_count());
-    let mut source = ring.coords().iter_coords();
-    source.next_back().expect("ring has a closing coordinate");
-    points.extend(source);
+pub(in crate::geometry) fn remove_antenna_vertices<T: Copy>(
+    mut points: Vec<T>,
+    equal: impl Fn(T, T) -> bool,
+) -> Option<Vec<T>> {
     loop {
         if points.len() < 3 {
-            return Ok(None);
+            return None;
         }
         let mut removed = false;
         let mut index = 0;
         while index < points.len() {
             let len = points.len();
             if len < 3 {
-                return Ok(None);
+                return None;
             }
             let previous_index = if index == 0 {
                 len.wrapping_sub(1)
@@ -172,13 +123,13 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
             } else {
                 index.wrapping_add(1)
             };
-            let prev = *points
+            let previous = *points
                 .get(previous_index)
                 .expect("ring vertex ordinal is within the open ring");
             let next = *points
                 .get(next_index)
                 .expect("ring vertex ordinal is within the open ring");
-            if same_point(prev, next) {
+            if equal(previous, next) {
                 let duplicate = next_index;
                 if duplicate > index {
                     points.remove(duplicate);
@@ -193,10 +144,7 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
             }
         }
         if !removed {
-            break;
+            return Some(points);
         }
     }
-    let first = *points.first().expect("surviving ring has vertices");
-    points.push(first);
-    Ok(Ring::from_closed(CoordSeq::try_from_points(&points)?))
 }

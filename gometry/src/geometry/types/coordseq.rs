@@ -71,14 +71,18 @@ impl MColumn {
     pub(crate) fn values(&self, range: Range<usize>) -> &[f64] {
         let window = self.window(range);
         match self {
-            Self::Shared(owner) | Self::Local { owner, .. } => &owner[window],
+            Self::Shared(owner) | Self::Local { owner, .. } => {
+                owner.get(window).expect("admitted M window fits its owner")
+            },
         }
     }
 
     const fn window(&self, range: Range<usize>) -> Range<usize> {
         match self {
             Self::Shared(_) => range,
-            Self::Local { offset, .. } => *offset..*offset + (range.end - range.start),
+            Self::Local { offset, .. } => {
+                *offset..offset.wrapping_add(range.end.wrapping_sub(range.start))
+            },
         }
     }
 
@@ -87,7 +91,7 @@ impl MColumn {
             Self::Shared(owner) => Self::Shared(owner.clone()),
             Self::Local { owner, offset } => Self::Local {
                 owner: owner.clone(),
-                offset: *offset + window.start,
+                offset: offset.wrapping_add(window.start),
             },
         }
     }
@@ -121,7 +125,7 @@ fn local_m_covers(owner: &SharedSlice<f64>, offset: usize, visible: usize) -> Re
     if visible > remaining {
         return Err(GeometryErrorKind::CoordinateRange {
             start: offset,
-            end: offset + visible,
+            end: offset.wrapping_add(visible),
             length: owner.len(),
         }
         .into());
@@ -166,7 +170,7 @@ impl CoordWindow {
         }
         Ok(Self {
             start: range.start,
-            len: range.end - range.start,
+            len: range.end.wrapping_sub(range.start),
         })
     }
 
@@ -182,7 +186,7 @@ impl CoordWindow {
     }
 
     pub(crate) const fn end(self) -> usize {
-        self.start + self.len
+        self.start.wrapping_add(self.len)
     }
 
     pub(crate) const fn len(self) -> usize {
@@ -261,11 +265,9 @@ impl MColumn {
     }
 
     fn logical_heap_bytes(&self, range: Range<usize>) -> usize {
+        let window = self.window(range);
         match self {
-            Self::Shared(owner) => owner.logical_heap_bytes(range),
-            Self::Local { owner, offset } => {
-                owner.logical_heap_bytes(*offset..*offset + range.len())
-            },
+            Self::Shared(owner) | Self::Local { owner, .. } => owner.logical_heap_bytes(window),
         }
     }
 
@@ -345,7 +347,7 @@ impl CoordSeq {
     pub(crate) fn logical_owner_heap_bytes(&self) -> usize {
         let column = |present: bool| {
             if present {
-                crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<Vec<f64>>()
+                crate::heap_size::ARC_CONTROL_BYTES.wrapping_add(std::mem::size_of::<Vec<f64>>())
             } else {
                 0
             }
@@ -578,8 +580,8 @@ impl CoordSeq {
     /// XY window. Local M advances `offset` by `window.start` once; Shared M
     /// stays aligned to the XY owner. Visible length is `CoordSeq::range`.
     pub fn view(&self, window: CoordWindow) -> Self {
-        let start = self.range.start + window.start() as u32;
-        let end = self.range.start + window.end() as u32;
+        let start = self.range.start.wrapping_add(window.start() as u32);
+        let end = self.range.start.wrapping_add(window.end() as u32);
         let ms = self
             .ms
             .as_ref()
@@ -650,7 +652,9 @@ impl CoordSeq {
 
     /// The window of one shared column (every accessor routes through this).
     fn window<'a>(&self, column: &'a [f64]) -> &'a [f64] {
-        &column[self.range.start as usize..self.range.end as usize]
+        column
+            .get(self.range.start as usize..self.range.end as usize)
+            .expect("coordinate window was admitted against its column")
     }
 
     /// The shared column storage + this sequence's windows — the zero-copy
@@ -704,6 +708,10 @@ impl CoordSeq {
         select_growable(xs_src, ys_src, zs_src, ms_src, rows, upper.unwrap_or(lower))
     }
 
+    #[expect(
+        clippy::or_fun_call,
+        reason = "the mask-run fallback is bounded arithmetic and remains eagerly evaluated"
+    )]
     pub(in crate::geometry) fn select_mask(&self, keep: &[bool], kept: usize) -> Self {
         debug_assert_eq!(keep.len(), self.len());
         let xs_src = self.xs();
@@ -846,6 +854,10 @@ impl CoordSeq {
     /// Reconstruct the `Point` at `index` (panics out of bounds, like slice
     /// indexing). Prefer column access in hot loops; this is for the by-value
     /// `Point` interchange paths.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "point_at deliberately keeps slice-like random access and its out-of-range panic"
+    )]
     pub fn point_at(&self, index: usize) -> Point {
         // Windowed columns: length equals `self.len()`, so `0..len` iteration
         // proves each access in range (bounds-check elision).
@@ -904,6 +916,10 @@ impl CoordSeq {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "row selection admits each gather index against these parallel coordinate columns"
+)]
 fn push_row(
     xs: &mut Vec<f64>,
     ys: &mut Vec<f64>,
@@ -986,16 +1002,46 @@ mod mask_selection_tests {
         assert_eq!(selected.xs(), &[1.0, 2.0]);
         assert_eq!(selected.ys(), &[11.0, 12.0]);
     }
+
+    #[test]
+    fn mask_selection_preserves_nan_payload_and_signed_zero_bits() {
+        let nan = f64::from_bits(0x7FF8_0000_0000_0042);
+        let source = CoordSeq::try_from_vecs(
+            vec![-0.0, nan, 3.0],
+            vec![nan, -0.0, 4.0],
+            Some(vec![nan, 5.0, -0.0]),
+            Some(vec![-0.0, 5.0, nan]),
+        )
+        .unwrap();
+
+        let selected = source.select_mask(&[true, false, true], 2);
+        let bits = |column: &[f64]| {
+            column
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(selected.xs()), vec![
+            (-0.0_f64).to_bits(),
+            3.0_f64.to_bits()
+        ]);
+        assert_eq!(bits(selected.ys()), vec![nan.to_bits(), 4.0_f64.to_bits()]);
+        assert_eq!(bits(selected.zs().unwrap()), vec![
+            nan.to_bits(),
+            (-0.0_f64).to_bits()
+        ]);
+        assert_eq!(bits(selected.ms().unwrap()), vec![
+            (-0.0_f64).to_bits(),
+            nan.to_bits()
+        ]);
+    }
 }
 
 pub struct CoordIterColumns<'a, const HAS_Z: bool, const HAS_M: bool> {
-    xs: &'a [f64],
-    ys: &'a [f64],
-    zs: &'a [f64],
-    ms: &'a [f64],
-    axes: CoordinateAxes,
-    index: usize,
-    end: usize,
+    xs: std::slice::Iter<'a, f64>,
+    ys: std::slice::Iter<'a, f64>,
+    zs: std::slice::Iter<'a, f64>,
+    ms: std::slice::Iter<'a, f64>,
 }
 
 impl<'a, const HAS_Z: bool, const HAS_M: bool> CoordIterColumns<'a, HAS_Z, HAS_M> {
@@ -1003,23 +1049,10 @@ impl<'a, const HAS_Z: bool, const HAS_M: bool> CoordIterColumns<'a, HAS_Z, HAS_M
         debug_assert!(!HAS_Z || zs.len() == xs.len());
         debug_assert!(!HAS_M || ms.len() == xs.len());
         Self {
-            xs,
-            ys,
-            zs,
-            ms,
-            axes: CoordinateAxes::new(HasZ(HAS_Z), HasM(HAS_M)),
-            index: 0,
-            end: xs.len(),
-        }
-    }
-
-    const fn point_at(&self, index: usize) -> Point {
-        Point {
-            x: self.xs[index],
-            y: self.ys[index],
-            z: if HAS_Z { self.zs[index] } else { 0.0 },
-            m: if HAS_M { self.ms[index] } else { 0.0 },
-            axes: self.axes,
+            xs: xs.iter(),
+            ys: ys.iter(),
+            zs: zs.iter(),
+            ms: ms.iter(),
         }
     }
 }
@@ -1028,15 +1061,35 @@ impl<const HAS_Z: bool, const HAS_M: bool> Iterator for CoordIterColumns<'_, HAS
     type Item = Point;
 
     fn next(&mut self) -> Option<Point> {
-        (self.index < self.end).then(|| {
-            let point = self.point_at(self.index);
-            self.index += 1;
-            point
+        let x = *self.xs.next()?;
+        Some(Point {
+            x,
+            y: *self
+                .ys
+                .next()
+                .expect("Y coordinates share the admitted X window"),
+            z: if HAS_Z {
+                *self
+                    .zs
+                    .next()
+                    .expect("Z coordinates share the admitted X window")
+            } else {
+                0.0
+            },
+            m: if HAS_M {
+                *self
+                    .ms
+                    .next()
+                    .expect("M coordinates share the admitted X window")
+            } else {
+                0.0
+            },
+            axes: CoordinateAxes::new(HasZ(HAS_Z), HasM(HAS_M)),
         })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.end - self.index;
+        let remaining = self.xs.len();
         (remaining, Some(remaining))
     }
 }
@@ -1045,9 +1098,30 @@ impl<const HAS_Z: bool, const HAS_M: bool> DoubleEndedIterator
     for CoordIterColumns<'_, HAS_Z, HAS_M>
 {
     fn next_back(&mut self) -> Option<Point> {
-        (self.index < self.end).then(|| {
-            self.end -= 1;
-            self.point_at(self.end)
+        let x = *self.xs.next_back()?;
+        Some(Point {
+            x,
+            y: *self
+                .ys
+                .next_back()
+                .expect("Y coordinates share the admitted X window"),
+            z: if HAS_Z {
+                *self
+                    .zs
+                    .next_back()
+                    .expect("Z coordinates share the admitted X window")
+            } else {
+                0.0
+            },
+            m: if HAS_M {
+                *self
+                    .ms
+                    .next_back()
+                    .expect("M coordinates share the admitted X window")
+            } else {
+                0.0
+            },
+            axes: CoordinateAxes::new(HasZ(HAS_Z), HasM(HAS_M)),
         })
     }
 }
@@ -1279,6 +1353,10 @@ impl CoordSeqBuilder {
 
     /// Append one coordinate from a [`CoordSeq`] by vertex index (gather paths).
     /// Axes and finiteness are validated on [`finish`](Self::finish).
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the gather caller admits this row; direct lane reads preserve column-wise publication and error order"
+    )]
     pub(crate) fn push_at(&mut self, coords: &CoordSeq, index: usize) {
         if self.xs.len() == self.xs.capacity() {
             self.reserve(1);
@@ -1299,6 +1377,10 @@ impl CoordSeqBuilder {
     /// Append one contiguous coordinate window column-wise. The caller owns
     /// row/CSR validation; axes and finiteness are checked when the builder is
     /// finished.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the caller admits this contiguous window against the source's parallel coordinate columns"
+    )]
     pub(crate) fn extend_window(&mut self, coords: &CoordSeq, window: Range<usize>) {
         self.reserve(window.len());
         if coords.axes() != self.axes() {

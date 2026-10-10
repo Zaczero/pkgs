@@ -6,10 +6,12 @@ import json
 import math
 
 import gometry as gm
+import numpy as np
 import pytest
-from pyproj import Geod
 
 from tests._support import (
+    EAST_DEGREE_SOUTH_LATITUDE_CRS,
+    WEST_RADIAN_SOUTH_GRAD_CRS,
     bools,
     chart_parallel_length,
     chart_rectangle_perimeter,
@@ -17,6 +19,9 @@ from tests._support import (
     floats,
     ids,
 )
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+Geod = pyproj.Geod
 
 FOOT_CRS = 2263
 FOOT_UNIT_M = 0.3048006096012192
@@ -70,7 +75,7 @@ def _physical_coordinates(box: gm.Geometry, crs: object) -> list[tuple[float, fl
     longitude_factor, latitude_factor, prime_meridian = _angular_frame_parameters(crs)
     return [
         (float(x) * longitude_factor + prime_meridian, float(y) * latitude_factor)
-        for x, y in gm.get_coordinates(box).tolist()
+        for x, y in np.asarray(box.coords, dtype=np.float64).tolist()
     ]
 
 
@@ -327,7 +332,7 @@ def test_chart_area_uses_the_chart_interior_for_large_regions() -> None:
             west, east, south, north, semi_major=GEOD.a, flattening=GEOD.f
         )
         assert expected > ellipsoid_area / 2.0
-        coordinates = gm.get_coordinates(geometry).tolist()
+        coordinates = np.asarray(geometry.coords, dtype=np.float64).tolist()
         for ring in (coordinates[:-1], list(reversed(coordinates[:-1]))):
             polygon = gm.Polygon(ring, crs=4326)
             assert gm.contains(polygon, origin)
@@ -354,9 +359,53 @@ def test_chart_polar_cap_area_is_orientation_independent() -> None:
         assert polygon.area == pytest.approx(expected, rel=3e-15)
 
 
+@pytest.mark.parametrize(
+    ('physical_latitude', 'native_latitude', 'native_pole', 'south', 'north'),
+    [
+        pytest.param(80.0, -80.0, -90.0, 80.0, 90.0, id='north-pole'),
+        pytest.param(-80.0, 80.0, 90.0, -90.0, -80.0, id='south-pole'),
+    ],
+)
+@pytest.mark.parametrize(
+    'crs',
+    [EAST_DEGREE_SOUTH_LATITUDE_CRS, WEST_RADIAN_SOUTH_GRAD_CRS],
+    ids=['east-degree-south-degree', 'west-radian-south-grad'],
+)
+def test_chart_polar_cap_area_respects_south_directed_latitude_axis(
+    physical_latitude: float,
+    native_latitude: float,
+    native_pole: float,
+    south: float,
+    north: float,
+    crs: str,
+) -> None:
+    longitudes = (0.0, 60.0, 120.0, 180.0, -120.0, -60.0)
+    standard = gm.Polygon(
+        [(longitude, physical_latitude) for longitude in longitudes], crs=4326
+    )
+    if crs == WEST_RADIAN_SOUTH_GRAD_CRS:
+        native_latitude *= 10.0 / 9.0
+        native_pole = math.copysign(100.0, native_pole)
+        native_longitudes = [-math.radians(longitude) for longitude in longitudes]
+    else:
+        native_longitudes = longitudes
+    south_axis = gm.Polygon(
+        [(longitude, native_latitude) for longitude in native_longitudes],
+        crs=crs,
+    )
+    expected = chart_zone_area(
+        -180.0, 180.0, south, north, semi_major=GEOD.a, flattening=GEOD.f
+    )
+
+    assert standard.area == pytest.approx(expected, rel=3e-15)
+    assert south_axis.area == pytest.approx(expected, rel=3e-15)
+    assert gm.contains(south_axis, gm.Point(0.0, native_pole, crs=crs))
+    assert not gm.contains(south_axis, gm.Point(0.0, -native_pole, crs=crs))
+
+
 def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
     shell = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
-    shell_coordinates = gm.get_coordinates(shell).tolist()
+    shell_coordinates = np.asarray(shell.coords, dtype=np.float64).tolist()
     hole = [
         (-10.0, -10.0),
         (10.0, -10.0),
@@ -378,7 +427,7 @@ def test_chart_area_subtracts_holes_from_a_large_chart_interior() -> None:
 
 def test_chart_area_array_matches_scalar_in_packed_and_mixed_storage() -> None:
     wide = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
-    coordinates = gm.get_coordinates(wide).tolist()
+    coordinates = np.asarray(wide.coords, dtype=np.float64).tolist()
     reversed_wide = gm.Polygon(list(reversed(coordinates[:-1])), crs=4326)
     expected = [wide.area, reversed_wide.area]
 
@@ -398,10 +447,12 @@ def test_chart_area_array_matches_scalar_in_packed_and_mixed_storage() -> None:
 
 def test_chart_area_matches_the_authalic_zone_formula_for_a_small_polygon() -> None:
     polygon = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
-    expected = chart_zone_area(
+    formula = chart_zone_area(
         2.0, 3.0, 48.0, 49.0, semi_major=GEOD.a, flattening=GEOD.f
     )
-
+    # 100-digit Decimal integral from exact binary64 ellipsoid values and true π.
+    expected = 8_217_732_076.120_943
+    assert formula == pytest.approx(expected, rel=1e-14)
     assert polygon.area == pytest.approx(expected, rel=1e-14)
 
 
@@ -781,12 +832,11 @@ def test_geometry_collection_infers_and_validates_member_metadata() -> None:
     first = gm.Point(0, 0, crs=4326, epoch=2020.0)
     second = gm.Point(1, 1, crs=4326, epoch=2020.0)
     collection = gm.GeometryCollection([first, second])
-    assert collection.crs == 'EPSG:4326'
+    assert collection.crs == gm.CRS('EPSG:4326')
     assert collection.epoch == 2020.0
-    assert [part.crs for part in collection.parts] == ['EPSG:4326', 'EPSG:4326']
-    assert (
-        gm.GeometryCollection([first, second], crs=4326, epoch=2020.0).crs
-        == 'EPSG:4326'
+    assert [part.crs for part in collection.parts] == [gm.CRS('EPSG:4326')] * 2
+    assert gm.GeometryCollection([first, second], crs=4326, epoch=2020.0).crs == gm.CRS(
+        'EPSG:4326'
     )
     with pytest.raises(ValueError, match='one shared CRS'):
         gm.GeometryCollection([first, second], crs=3857)
@@ -801,14 +851,14 @@ def test_explicit_frame_metadata_fills_missing_array_and_collection_items() -> N
     crs_only = gm.Point(1, 1, crs=4326)
     epoch_tagged = gm.Point(2, 2, crs=4326, epoch=2020.0)
     array = gm.GeometryArray([bare, crs_only], crs=4326, epoch=2020.0)
-    assert array.crs == 'EPSG:4326'
+    assert array.crs == gm.CRS('EPSG:4326')
     assert array.epoch == 2020.0
-    assert [item.crs for item in array] == ['EPSG:4326', 'EPSG:4326']
+    assert [item.crs for item in array] == [gm.CRS('EPSG:4326')] * 2
     assert [item.epoch for item in array] == [2020.0, 2020.0]
     epoch_array = gm.GeometryArray([crs_only, epoch_tagged], epoch=2020.0)
     assert [item.epoch for item in epoch_array] == [2020.0, 2020.0]
     collection = gm.GeometryCollection([bare, crs_only], crs=4326, epoch=2020.0)
-    assert collection.crs == 'EPSG:4326'
+    assert collection.crs == gm.CRS('EPSG:4326')
     assert collection.epoch == 2020.0
     assert [item.epoch for item in collection.parts] == [2020.0, 2020.0]
     epoch_collection = gm.GeometryCollection([crs_only, epoch_tagged], epoch=2020.0)
@@ -817,14 +867,14 @@ def test_explicit_frame_metadata_fills_missing_array_and_collection_items() -> N
         gm.GeometryArray([bare, crs_only])
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.GeometryArray([bare], epoch=2020.0)
     with pytest.raises(ValueError, match='one shared coordinate epoch'):
         gm.GeometryArray([epoch_tagged], epoch=2021.0)
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.GeometryCollection([bare], epoch=2020.0)
 
@@ -837,6 +887,83 @@ def test_non_degree_geographic_crs_uses_native_units_for_geodesic_metrics() -> N
     assert gm.distance(
         gm.Point(0, 0, crs=4807), gm.Point(1, 0, crs=4807)
     ) == pytest.approx(100189.3, rel=1e-6)
+
+
+def test_oriented_mixed_unit_chart_consumers_use_the_selected_frame() -> None:
+    longitudes = [170.0 + 2.5 * index for index in range(9)]
+    latitude = 60.0
+    native_line = [
+        (-math.radians(longitude), -latitude * 10.0 / 9.0) for longitude in longitudes
+    ]
+    line = gm.LineString(native_line, crs=WEST_RADIAN_SOUTH_GRAD_CRS)
+    expected_length = chart_parallel_length(
+        latitude, 20.0, semi_major=GEOD.a, flattening=GEOD.f
+    )
+    assert line.length == pytest.approx(expected_length, rel=1e-14)
+
+    midpoint = line.line_interpolate(expected_length / 2.0)
+    assert line.line_locate(midpoint) == pytest.approx(expected_length / 2.0, rel=1e-12)
+    physical_midpoint = midpoint.to_crs(4326)
+    assert abs(abs(physical_midpoint.x) - 180.0) <= 1.0e-12
+    assert physical_midpoint.y == pytest.approx(latitude, abs=2.0e-13)
+
+    query = gm.Point(-math.pi, -60.1 * 10.0 / 9.0, crs=WEST_RADIAN_SOUTH_GRAD_CRS)
+    expected_clearance = GEOD.inv(180.0, latitude, 180.0, 60.1)[2]
+    assert gm.distance(query, line) == pytest.approx(expected_clearance, rel=1e-12)
+    assert gm.dwithin(query, line, expected_clearance + 0.01)
+    assert not gm.dwithin(query, line, expected_clearance - 0.01)
+    nearest = gm.nearest_points(query, line)
+    assert gm.distance(*nearest) == pytest.approx(expected_clearance, rel=1e-12)
+
+    alias = gm.LineString(
+        [(longitude + math.tau, y) for longitude, y in native_line],
+        crs=WEST_RADIAN_SOUTH_GRAD_CRS,
+    )
+    assert gm.hausdorff_distance(line, alias) == 0.0
+    offset_parallel = gm.LineString(
+        [(-math.radians(longitude), -60.01 * 10.0 / 9.0) for longitude in longitudes],
+        crs=WEST_RADIAN_SOUTH_GRAD_CRS,
+    )
+    expected_hausdorff = GEOD.inv(180.0, latitude, 180.0, 60.01)[2]
+    assert gm.hausdorff_distance(line, offset_parallel) == pytest.approx(
+        expected_hausdorff, rel=1e-12
+    )
+
+
+def test_oriented_mixed_unit_polygon_perimeter_matches_chart_rectangle() -> None:
+    physical_ring = [
+        (10.0, 30.0),
+        (20.0, 30.0),
+        (20.0, 40.0),
+        (10.0, 40.0),
+        (10.0, 30.0),
+    ]
+    native_ring = [
+        (-math.radians(longitude), -latitude * 10.0 / 9.0)
+        for longitude, latitude in physical_ring
+    ]
+    polygon = gm.Polygon(native_ring, crs=WEST_RADIAN_SOUTH_GRAD_CRS)
+    expected = chart_rectangle_perimeter(GEOD, 10.0, 20.0, 30.0, 40.0)
+
+    assert polygon.length == pytest.approx(expected, rel=1e-12)
+
+
+def test_local_offset_certificate_uses_oriented_mixed_unit_frame() -> None:
+    crs = WEST_RADIAN_SOUTH_GRAD_CRS
+    line = gm.LineString(
+        [
+            (-math.radians(10.0), -50.0 * 10.0 / 9.0),
+            (-math.radians(10.01), -50.0 * 10.0 / 9.0),
+        ],
+        crs=crs,
+    )
+    assert line.estimate_local_crs().is_projected
+
+    midpoint = line.line_interpolate(0.5, normalized=True)
+    offset = line.offset_curve(50.0, unit='meters')
+
+    assert offset.crs == line.crs
+    assert gm.distance(midpoint, offset) == pytest.approx(50.0, rel=1.0e-3)
 
 
 @pytest.mark.parametrize(
@@ -971,14 +1098,14 @@ def test_to_wkb_wire_aliases_crs84_and_rejects_unknown() -> None:
     crs84 = gm.Point(10, 50, crs='OGC:CRS84')
     ewkb = crs84.to_wkb(include_srid=True)
     lost = gm.from_wkb(ewkb)
-    assert lost.crs == 'EPSG:4326'
+    assert lost.crs == gm.CRS('EPSG:4326')
     assert gm.equals(lost, gm.Point(10, 50, crs=4326))
-    assert gm.from_wkb(ewkb, crs='OGC:CRS84').crs == 'OGC:CRS84'
+    assert gm.from_wkb(ewkb, crs='OGC:CRS84').crs == gm.CRS('OGC:CRS84')
 
     crs84h = gm.Point(10, 50, z=0, crs='OGC:CRS84h')
     ewkb_h = crs84h.to_wkb(include_srid=True)
-    assert gm.from_wkb(ewkb_h).crs == 'EPSG:4979'
-    assert gm.from_wkb(ewkb_h, crs='OGC:CRS84h').crs == 'OGC:CRS84h'
+    assert gm.from_wkb(ewkb_h).crs == gm.CRS('EPSG:4979')
+    assert gm.from_wkb(ewkb_h, crs='OGC:CRS84h').crs == gm.CRS('OGC:CRS84h')
 
     # A genuine conflict still raises (not every CRS is a wire alias of 4326).
     with pytest.raises(gm.CRSMismatchError):
@@ -1064,7 +1191,7 @@ def test_transform_batches_with_empty_members_and_extreme_longitudes() -> None:
         crs=4326,
     )
     out = mixed.to_crs(3857)
-    assert out.crs == 'EPSG:3857'
+    assert out.crs == gm.CRS('EPSG:3857')
     with pytest.raises(ValueError):
         gm.Point(1e308, 0.0, crs=4326).to_crs(3857)
     with pytest.raises(ValueError):

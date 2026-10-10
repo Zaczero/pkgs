@@ -89,7 +89,7 @@ def test_fill_missing_accepts_row_aligned_arrays(masked: gm.GeometryArray) -> No
     with pytest.raises(ValueError, match='fill array length 1 does not match'):
         masked.fill_missing(gm.GeometryArray([gm.Point(1.0, 1.0)]))
     with pytest.raises(gm.CRSMismatchError):
-        masked.set_crs(4326).fill_missing(
+        masked.with_crs(4326).fill_missing(
             gm.GeometryArray([
                 gm.Point(0.0, 0.0, crs=3857),
                 gm.Point(1.0, 1.0, crs=3857),
@@ -582,9 +582,13 @@ def test_masked_split_skips_missing_line_rows() -> None:
 
     pieces = gm.split(rows, gm.Point(1, 0))
 
-    assert pieces.to_wkt() == [
+    assert pieces.offsets.tolist() == [0, 2, 2, 4]
+    assert pieces[0].to_wkt() == [
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
+    ]
+    assert pieces[1].to_wkt() == []
+    assert pieces[2].to_wkt() == [
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
     ]
@@ -593,10 +597,13 @@ def test_masked_split_skips_missing_line_rows() -> None:
         rows,
         gm.GeometryArray([gm.Point(1, 0), gm.Point(1, 0), None]),
     )
-    assert pairwise_pieces.to_wkt() == [
+    assert pairwise_pieces.offsets.tolist() == [0, 2, 2, 2]
+    assert pairwise_pieces[0].to_wkt() == [
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
     ]
+    assert pairwise_pieces[1].to_wkt() == []
+    assert pairwise_pieces[2].to_wkt() == []
 
 
 def test_masked_splitter_array_skips_missing_points() -> None:
@@ -662,9 +669,11 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     interpolated_m = measured_rows.line_interpolate(50.0, basis='m')
     assert interpolated_m[0].to_wkt() == 'POINT M (5 0 50)'
     assert interpolated_m[1] is None
+    assert interpolated_m.to_arrow().type.extension_name == 'geoarrow.point'
     substrings_m = measured_rows.line_substring(25.0, 75.0, basis='m')
     assert substrings_m[0].to_wkt() == 'LINESTRING M (2.5 0 25, 7.5 0 75)'
     assert substrings_m[1] is None
+    assert substrings_m.to_arrow().type.extension_name == 'geoarrow.linestring'
 
     invalid_m = gm.GeometryArray([
         measured,
@@ -683,6 +692,34 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     assert invalid_substrings[0].to_wkt() == 'LINESTRING M (2.5 0 25, 7.5 0 75)'
     assert invalid_substrings[1].is_empty
     assert invalid_substrings[2].is_empty
+
+
+def test_scalar_invalid_m_line_keeps_ownership_over_query_array() -> None:
+    invalid = gm.LineString([(0.0, 0.0), (10.0, 0.0)], crs=4326)
+    queries = gm.GeometryArray(
+        [gm.Point(2.0, 0.0, crs=4326), gm.Point(5.0, 0.0, crs=4326)],
+        crs=4326,
+    )
+
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match='measured linear referencing requires every vertex to carry an M ordinate',
+    ):
+        invalid.line_locate(queries, basis='m')
+
+    measured = gm.LineString(
+        [(0.0, 0.0), (10.0, 0.0)],
+        m=[0.0, 100.0],
+        crs=4326,
+    )
+    line_rows = gm.GeometryArray([invalid, measured], crs=4326)
+    query_rows = gm.GeometryArray(
+        [gm.Point(2.0, 0.0, crs=4326), gm.Point(5.0, 0.0, crs=4326)],
+        crs=4326,
+    )
+    located = line_rows.line_locate(query_rows, basis='m')
+    assert math.isnan(located[0])
+    assert located[1] == pytest.approx(50.0)
 
 
 def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:
@@ -704,7 +741,7 @@ def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:
 
     for op in (
         gm.bearing,
-        gm.rhumb_distance,
+        lambda left, right: gm.distance(left, right, path='rhumb'),
         lambda left, right: gm.bearing(left, right, path='rhumb'),
     ):
         left_array = op(points, target)
@@ -832,16 +869,18 @@ def test_geojson_feature_null_geometry_dict_lanes_become_missing_rows() -> None:
 
 def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
     expected = [False, True, False]
+    buffered = masked.buffer(0.1)
+    affine = masked.affine_transform([1.0, 0.0, 0.0, 1.0, 10.0, 10.0])
     survivors = [
-        masked.set_crs(4326),
-        masked.set_crs(4326).set_epoch(2020.0),
-        masked.set_crs(4326).to_crs(3857),
-        masked.set_z(1.0),
+        masked.with_crs(4326),
+        masked.with_crs(4326).with_epoch(2020.0),
+        masked.with_crs(4326).to_crs(3857),
+        masked.with_coordinates(z=1.0),
         masked.force_3d(),
         masked.reverse(),
         masked.swap_xy(),
-        masked.affine_transform([1.0, 0.0, 0.0, 1.0, 10.0, 10.0]),
-        masked.buffer(0.1),
+        affine,
+        buffered,
         masked.simplify(0.1),
         masked[:],
         masked[[0, 1, 2]],
@@ -849,8 +888,26 @@ def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
     ]
     for result in survivors:
         assert result.is_missing.tolist() == expected, repr(result)
+    assert affine.to_arrow().type.extension_name == 'geoarrow.point'
+    assert buffered.to_arrow().type.extension_name == 'geoarrow.polygon'
     assert masked[1:].is_missing.tolist() == [True, False]
     assert masked[[False, True, True]].is_missing.tolist() == [True, False]
+
+
+def test_binary_geometry_streams_homogeneous_nullable_line_results() -> None:
+    left = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(4, 4)])
+    right = gm.GeometryArray([gm.Point(1, 0), gm.Point(5, 5), None])
+
+    paired = gm.shortest_line(left, right)
+    left_scalar = gm.shortest_line(gm.Point(0, 0), right)
+    right_scalar = gm.shortest_line(left, gm.Point(1, 0))
+
+    assert paired.is_missing.tolist() == [False, True, True]
+    assert left_scalar.is_missing.tolist() == [False, False, True]
+    assert right_scalar.is_missing.tolist() == [False, True, False]
+    assert paired.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert left_scalar.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert right_scalar.to_arrow().type.extension_name == 'geoarrow.linestring'
 
 
 def test_frame_semantics_with_missing() -> None:
@@ -1044,7 +1101,9 @@ def test_masked_line_interpolate_points_missing_row_is_empty_group() -> None:
 def test_masked_voronoi_skips_missing_placeholder() -> None:
     arr = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(1, 0), gm.Point(0, 1)])
     # Per-row Groups: the missing row becomes an empty group (no NaN placeholder).
-    edges = arr.voronoi_edges()
+    edges = arr.voronoi(
+        output='edges',
+    )
     assert isinstance(edges, gm.Groups) and len(edges) == 4
     assert len(edges[1]) == 0
     for row in list(edges):
@@ -1053,7 +1112,9 @@ def test_masked_voronoi_skips_missing_placeholder() -> None:
 
 def test_masked_coordinates_skip_missing_rows(masked: gm.GeometryArray) -> None:
     assert len(masked.coords) == 2
-    coords, indexes = gm.get_coordinates(masked, return_index=True)
+    view = masked.coords
+    coords = np.asarray(view, dtype=np.float64)
+    indexes = view.row_index
     assert coords.shape == (2, 2)
     np.testing.assert_array_equal(indexes, [0, 2])
     np.testing.assert_array_equal(coords, [[0.0, 0.0], [2.0, 2.0]])
@@ -1157,11 +1218,11 @@ def test_masked_string_and_xy_predicate_surfaces() -> None:
     assert gm.relate(rows, probe)[1] is None
     assert gm.relate(probe, rows)[1] is None
     np.testing.assert_array_equal(
-        gm.contains_xy(probe, [0.0, 9.0, 2.0], [0.0, 9.0, 2.0]),
+        gm.contains(probe, x=[0.0, 9.0, 2.0], y=[0.0, 9.0, 2.0]),
         [True, False, False],
     )
     np.testing.assert_array_equal(
-        gm.intersects_xy(probe, [0.0, 9.0, 2.0], [0.0, 9.0, 2.0]),
+        gm.intersects(probe, x=[0.0, 9.0, 2.0], y=[0.0, 9.0, 2.0]),
         [True, False, False],
     )
 
@@ -1235,7 +1296,7 @@ def test_masked_vs_dense_parity_sweep() -> None:
         _assert_masked_matches_dense_scatter(masked_result, dense_result)
 
 
-def test_masked_coverage_methods_skip_and_scatter_missing() -> None:
+def test_coverage_functions_skip_and_scatter_missing_array_rows() -> None:
     coverage = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(1, 0, 2, 1)])
     assert gm.coverage_is_valid(coverage)
     invalid_edges = gm.coverage_invalid_edges(coverage)
@@ -1245,11 +1306,9 @@ def test_masked_coverage_methods_skip_and_scatter_missing() -> None:
     assert simplified.is_missing.tolist() == [False, True, False]
     cleaned = gm.coverage_clean(coverage, grid_size=0.0)
     assert cleaned.is_missing.tolist() == [False, True, False]
-    method_cleaned = gm.coverage_clean(coverage, grid_size=0.0)
-    assert method_cleaned.is_missing.tolist() == [False, True, False]
-    assert gm.coverage_union(coverage).geometry_type == 'Polygon'
+    assert gm.coverage_union_all(coverage).geometry_type == 'Polygon'
     with pytest.raises(gm.InvalidGeometryError):
-        gm.coverage_union(gm.GeometryArray([None, None]))
+        gm.coverage_union_all(gm.GeometryArray([None, None]))
 
 
 def test_free_coverage_functions_preserve_missing_iterable_rows() -> None:
@@ -1257,14 +1316,14 @@ def test_free_coverage_functions_preserve_missing_iterable_rows() -> None:
     array = gm.GeometryArray(values)
 
     assert gm.coverage_is_valid(values) == gm.coverage_is_valid(array)
-    assert gm.coverage_union(values) == gm.coverage_union(array)
-    for free, method in (
+    assert gm.coverage_union_all(values) == gm.coverage_union_all(array)
+    for iterable_result, array_result in (
         (gm.coverage_invalid_edges(values), gm.coverage_invalid_edges(array)),
         (gm.coverage_simplify(values, 0.0), gm.coverage_simplify(array, 0.0)),
         (gm.coverage_clean(values), gm.coverage_clean(array)),
     ):
-        assert free.is_missing.tolist() == [False, True, False]
-        assert free.to_wkt() == method.to_wkt()
+        assert iterable_result.is_missing.tolist() == [False, True, False]
+        assert iterable_result.to_wkt() == array_result.to_wkt()
 
 
 def test_pooled_reductions_skip_missing_iterable_rows() -> None:
@@ -1275,12 +1334,12 @@ def test_pooled_reductions_skip_missing_iterable_rows() -> None:
         assert gm.equals_exact(operation(values), operation(present))
 
     ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
-    pooled = gm.polygonize([ring, None])
-    dense = gm.polygonize([ring])
+    pooled = gm.polygonize_all([ring, None])
+    dense = gm.polygonize_all([ring])
     assert gm.equals_exact(pooled, dense).all()
     assert gm.equals_exact(
-        gm.polygonize_full([ring, None]).polygons,
-        gm.polygonize_full([ring]).polygons,
+        gm.polygonize_all([ring, None], diagnostics=True).polygons,
+        gm.polygonize_all([ring], diagnostics=True).polygons,
     ).all()
 
 

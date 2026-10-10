@@ -42,16 +42,8 @@ impl VertexKey {
 }
 
 mod exact;
-#[cfg(test)]
-mod graph;
 pub(in crate::geometry) mod overlay;
 mod q;
-#[cfg(test)]
-mod staging;
-#[cfg(test)]
-pub(crate) use graph::TopologyGraph;
-#[cfg(test)]
-pub(super) use graph::{AreaSupport, TopologyEdge, TopologyKey, TopologyLocation, TopologyNodeId};
 pub(crate) use q::{ExactGeographicRectangleLocation, ExactGeographicTopology};
 
 /// SIMD ray-crossing decision for one chunk of ring edges, or `None` when any
@@ -69,6 +61,10 @@ pub(crate) use q::{ExactGeographicRectangleLocation, ExactGeographicTopology};
 /// whole chunk to [`ray_crossing_is_right`], mirroring the guarded-sqrt
 /// chunk-rescue pattern in the length kernels. Division-free, so the fast
 /// path also drops the one `vdivpd` per chunk.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the certified Ozaki filter retains its evaluation grouping; any untrusted straddling lane demotes the whole chunk to exact scalar crossing"
+)]
 fn ray_crossing_lanes(
     ax: ReduceSimd,
     ay: ReduceSimd,
@@ -112,40 +108,76 @@ pub(super) fn ring_contains_interior_columns(xs: &[f64], ys: &[f64], point: XY) 
         (),
         0_u32,
         |(), crossings, start| {
-            let ax = ReduceSimd::from_slice(&xs[start..start + REDUCE_LANES]);
-            let ay = ReduceSimd::from_slice(&ys[start..start + REDUCE_LANES]);
-            let bx = ReduceSimd::from_slice(&xs[start + 1..start + 1 + REDUCE_LANES]);
-            let by = ReduceSimd::from_slice(&ys[start + 1..start + 1 + REDUCE_LANES]);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "simd_reduce_f64 supplies a full chunk within the admitted parallel x/y columns"
+            )]
+            let ax = ReduceSimd::from_slice(&xs[start..start.wrapping_add(REDUCE_LANES)]);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "simd_reduce_f64 supplies a full chunk within the admitted parallel x/y columns"
+            )]
+            let ay = ReduceSimd::from_slice(&ys[start..start.wrapping_add(REDUCE_LANES)]);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the shifted full chunk follows the unshifted driver range within the admitted parallel x/y columns"
+            )]
+            let bx = ReduceSimd::from_slice(
+                &xs[start.wrapping_add(1)..start.wrapping_add(1).wrapping_add(REDUCE_LANES)],
+            );
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the shifted full chunk follows the unshifted driver range within the admitted parallel x/y columns"
+            )]
+            let by = ReduceSimd::from_slice(
+                &ys[start.wrapping_add(1)..start.wrapping_add(1).wrapping_add(REDUCE_LANES)],
+            );
             ray_crossing_lanes(ax, ay, bx, by, px, py).map_or_else(
                 || {
                     (
                         (),
-                        crossings
-                            + ring_crossing_columns_scalar(
-                                xs,
-                                ys,
-                                point,
-                                start..start + REDUCE_LANES,
-                            ),
+                        crossings.wrapping_add(ring_crossing_columns_scalar(
+                            xs,
+                            ys,
+                            point,
+                            start..start.wrapping_add(REDUCE_LANES),
+                        )),
                     )
                 },
-                |crosses| ((), crossings + crosses.to_bitmask().count_ones()),
+                |crosses| {
+                    (
+                        (),
+                        crossings.wrapping_add(crosses.to_bitmask().count_ones()),
+                    )
+                },
             )
         },
-        |crossings, range| crossings + ring_crossing_columns_scalar(xs, ys, point, range),
+        |crossings, range| {
+            crossings.wrapping_add(ring_crossing_columns_scalar(xs, ys, point, range))
+        },
         |(), crossings| crossings,
     );
     crossings % 2 == 1
 }
 
+// Callers pass a range of admitted parallel CoordSeq columns. Their i32 vertex
+// bound keeps this exact crossing count below u32::MAX.
 fn ring_crossing_columns_scalar(xs: &[f64], ys: &[f64], point: XY, range: Range<usize>) -> u32 {
+    if range.is_empty() {
+        return 0;
+    }
+    let xs = xs
+        .get(range.start..=range.end)
+        .expect("ring edge range fits the x column");
+    let ys = ys
+        .get(range.start..=range.end)
+        .expect("ring edge range fits the y column");
     let mut crossings = 0_u32;
-    for i in range {
-        let (ax, ay, bx, by) = (xs[i], ys[i], xs[i + 1], ys[i + 1]);
+    for (&[ax, bx], &[ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
         if (ay > point.y) != (by > point.y)
             && ray_crossing_is_right(ax, ay, bx, by, point.x, point.y)
         {
-            crossings += 1;
+            crossings = crossings.wrapping_add(1);
         }
     }
     crossings
@@ -172,10 +204,30 @@ pub(super) fn ring_classify_crossings_columns(xs: &[f64], ys: &[f64], point: XY)
         (),
         (0_u32, false),
         |(), (crossings, candidate), start| {
-            let ax = ReduceSimd::from_slice(&xs[start..start + REDUCE_LANES]);
-            let ay = ReduceSimd::from_slice(&ys[start..start + REDUCE_LANES]);
-            let bx = ReduceSimd::from_slice(&xs[start + 1..start + 1 + REDUCE_LANES]);
-            let by = ReduceSimd::from_slice(&ys[start + 1..start + 1 + REDUCE_LANES]);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "simd_reduce_f64 supplies a full chunk within the admitted parallel x/y columns"
+            )]
+            let ax = ReduceSimd::from_slice(&xs[start..start.wrapping_add(REDUCE_LANES)]);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "simd_reduce_f64 supplies a full chunk within the admitted parallel x/y columns"
+            )]
+            let ay = ReduceSimd::from_slice(&ys[start..start.wrapping_add(REDUCE_LANES)]);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the shifted full chunk follows the unshifted driver range within the admitted parallel x/y columns"
+            )]
+            let bx = ReduceSimd::from_slice(
+                &xs[start.wrapping_add(1)..start.wrapping_add(1).wrapping_add(REDUCE_LANES)],
+            );
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "the shifted full chunk follows the unshifted driver range within the admitted parallel x/y columns"
+            )]
+            let by = ReduceSimd::from_slice(
+                &ys[start.wrapping_add(1)..start.wrapping_add(1).wrapping_add(REDUCE_LANES)],
+            );
             // Boundary candidate: point inside this edge's bbox (four packed
             // compares); collapse the `REDUCE_LANES` lanes with `.any()`.
             let in_x = px.simd_ge(ax.simd_min(bx)) & px.simd_le(ax.simd_max(bx));
@@ -184,15 +236,19 @@ pub(super) fn ring_classify_crossings_columns(xs: &[f64], ys: &[f64], point: XY)
             // Crossing parity (same sign-form decision as the scalar loop).
             ray_crossing_lanes(ax, ay, bx, by, px, py).map_or_else(
                 || {
-                    let (c, n) =
-                        ring_classify_crossings_scalar(xs, ys, point, start..start + REDUCE_LANES);
-                    ((), (crossings + c, candidate || near || n))
+                    let (c, n) = ring_classify_crossings_scalar(
+                        xs,
+                        ys,
+                        point,
+                        start..start.wrapping_add(REDUCE_LANES),
+                    );
+                    ((), (crossings.wrapping_add(c), candidate || near || n))
                 },
                 |crosses| {
                     (
                         (),
                         (
-                            crossings + crosses.to_bitmask().count_ones(),
+                            crossings.wrapping_add(crosses.to_bitmask().count_ones()),
                             candidate || near,
                         ),
                     )
@@ -201,22 +257,32 @@ pub(super) fn ring_classify_crossings_columns(xs: &[f64], ys: &[f64], point: XY)
         },
         |(crossings, candidate), range| {
             let (c, near) = ring_classify_crossings_scalar(xs, ys, point, range);
-            (crossings + c, candidate || near)
+            (crossings.wrapping_add(c), candidate || near)
         },
         |(), acc| acc,
     )
 }
 
+// The range is either the whole small ring or a disjoint driver portion of its
+// admitted parallel CoordSeq columns, so the i32 vertex bound keeps its count exact.
 fn ring_classify_crossings_scalar(
     xs: &[f64],
     ys: &[f64],
     point: XY,
     range: Range<usize>,
 ) -> (u32, bool) {
+    if range.is_empty() {
+        return (0, false);
+    }
+    let xs = xs
+        .get(range.start..=range.end)
+        .expect("ring edge range fits the x column");
+    let ys = ys
+        .get(range.start..=range.end)
+        .expect("ring edge range fits the y column");
     let mut crossings = 0_u32;
     let mut candidate = false;
-    for i in range {
-        let (ax, ay, bx, by) = (xs[i], ys[i], xs[i + 1], ys[i + 1]);
+    for (&[ax, bx], &[ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
         if point.x >= ax.min(bx)
             && point.x <= ax.max(bx)
             && point.y >= ay.min(by)
@@ -227,7 +293,7 @@ fn ring_classify_crossings_scalar(
         if (ay > point.y) != (by > point.y)
             && ray_crossing_is_right(ax, ay, bx, by, point.x, point.y)
         {
-            crossings += 1;
+            crossings = crossings.wrapping_add(1);
         }
     }
     (crossings, candidate)
@@ -236,35 +302,67 @@ fn ring_classify_crossings_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::predicates::ring_contains_interior;
-    use crate::geometry::{CoordSeq, REDUCE_SIMD_MIN};
+    use crate::geometry::CoordSeq;
+    use crate::geometry::predicates::{RingClass, ring_classify_point, ring_contains_interior};
 
     /// The closed-column membership kernel over an open ring's vertices.
     fn ring_contains_interior_open(ring: &[XY], point: XY) -> bool {
-        let closed = || ring.iter().chain(std::iter::once(&ring[0]));
-        let xs: Vec<f64> = closed().map(|vertex| vertex.x).collect();
-        let ys: Vec<f64> = closed().map(|vertex| vertex.y).collect();
+        let (xs, ys) = closed_columns(ring);
         ring_contains_interior_columns(&xs, &ys, point)
     }
 
-    fn division_reference(ring: &[XY], point: XY) -> bool {
-        let mut closed = ring.to_vec();
-        closed.push(ring[0]);
-        ring_contains_interior(&CoordSeq::try_from_xy(&closed).unwrap(), point)
+    fn closed_columns(ring: &[XY]) -> (Vec<f64>, Vec<f64>) {
+        let first = ring.first().expect("test rings are non-empty");
+        let xs = ring
+            .iter()
+            .chain(std::iter::once(first))
+            .map(|vertex| vertex.x)
+            .collect();
+        let ys = ring
+            .iter()
+            .chain(std::iter::once(first))
+            .map(|vertex| vertex.y)
+            .collect();
+        (xs, ys)
     }
 
-    fn assert_vector_matches_division_reference(ring: &[XY], probes: &[XY]) {
-        assert!(
-            ring.len() >= REDUCE_SIMD_MIN,
-            "test ring should exercise SIMD path",
-        );
+    fn scalar_reference(ring: &[XY], point: XY) -> bool {
+        let first = ring.first().expect("test rings are non-empty");
+        let closed: Vec<XY> = ring
+            .iter()
+            .copied()
+            .chain(std::iter::once(*first))
+            .collect();
+        ring_contains_interior(closed.as_slice(), point)
+    }
+
+    fn classify_columns(xs: &[f64], ys: &[f64], point: XY) -> RingClass {
+        let points: Vec<XY> = xs
+            .iter()
+            .copied()
+            .zip(ys.iter().copied())
+            .map(|(x, y)| XY::new(x, y))
+            .collect();
+        let coordinates = CoordSeq::try_from_xy(&points).expect("test columns are parallel");
+        ring_classify_point(&coordinates, point.point())
+    }
+
+    fn assert_columns_match_scalar_reference(ring: &[XY], probes: &[XY]) {
         for &point in probes {
             assert_eq!(
                 ring_contains_interior_open(ring, point),
-                division_reference(ring, point),
+                scalar_reference(ring, point),
                 "ring={ring:?} point={point:?}",
             );
         }
+    }
+
+    fn assert_simd_matches_scalar_reference(ring: &[XY], probes: &[XY]) {
+        assert!(
+            ring.len() >= RAY_CROSSING,
+            "test ring must reach the ray-crossing SIMD crossover",
+        );
+        assert_columns_match_scalar_reference(ring, probes);
     }
 
     fn edge_probes(ring: &[XY]) -> Vec<XY> {
@@ -289,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn open_ring_simd_matches_scalar_on_adversarial_rings() {
+    fn open_ring_columns_match_scalar_reference_on_adversarial_rings() {
         let rings: Vec<Vec<XY>> = vec![
             vec![
                 XY::new(0.0, 0.0),
@@ -334,12 +432,12 @@ mod tests {
                 XY::new(100.0, 0.0),
                 XY::new(-100.0, 0.0),
             ]);
-            assert_vector_matches_division_reference(&ring, &probes);
+            assert_columns_match_scalar_reference(&ring, &probes);
         }
     }
 
     #[test]
-    fn open_ring_simd_matches_division_reference_on_review_divergences() {
+    fn open_ring_columns_match_scalar_reference_on_review_divergences() {
         let huge = vec![
             XY::new(0.0, -1e155),
             XY::new(1e155, 1e155),
@@ -351,10 +449,10 @@ mod tests {
             XY::new(-1e155, -1e155),
         ];
         let huge_probe = XY::new(1e154, 0.0);
-        assert!(division_reference(&huge, huge_probe));
+        assert!(scalar_reference(&huge, huge_probe));
         assert_eq!(
             ring_contains_interior_open(&huge, huge_probe),
-            division_reference(&huge, huge_probe),
+            scalar_reference(&huge, huge_probe),
         );
 
         let on_edge = vec![
@@ -368,10 +466,10 @@ mod tests {
             XY::new(0.5, 1.0),
         ];
         let on_edge_probe = XY::new(0.0, 0.0);
-        assert!(division_reference(&on_edge, on_edge_probe));
+        assert!(scalar_reference(&on_edge, on_edge_probe));
         assert_eq!(
             ring_contains_interior_open(&on_edge, on_edge_probe),
-            division_reference(&on_edge, on_edge_probe),
+            scalar_reference(&on_edge, on_edge_probe),
         );
     }
 
@@ -414,53 +512,47 @@ mod tests {
         }
     }
 
-    /// The same overflow class through the SIMD chunk path: densify the safe
-    /// bottom edge so the ring crosses the SIMD crossover while the huge
-    /// opposite-sign diagonal lane demotes its chunk to the exact fallback.
+    /// The filter must rescue a whole chunk containing an overflowing
+    /// straddling edge, both in the first chunk and after trusted chunks.
     #[test]
-    fn ray_crossing_simd_chunks_demote_untrusted_lanes_to_exact() {
-        let n = 96_usize;
-        let mut ring = vec![XY::new(-1e308, -1.0), XY::new(1e308, 1.0)];
+    fn ray_crossing_simd_rescues_first_and_later_chunks_before_the_tail() {
+        let n = 300_usize;
+        let mut first_chunk = vec![XY::new(-1e308, -1.0), XY::new(1e308, 1.0)];
         // Bottom edge from (1e308, -1) back towards (-1e308, -1), densified.
         for i in 0..n {
             let fraction = (i as f64) / (n as f64);
-            ring.push(XY::new(1e308 * (1.0 - 2.0 * fraction), -1.0));
+            first_chunk.push(XY::new(1e308 * (1.0 - 2.0 * fraction), -1.0));
         }
-        let columns: Vec<XY> = ring.clone();
-        let xs: Vec<f64> = columns
-            .iter()
-            .map(|p| p.x)
-            .chain(std::iter::once(columns[0].x))
-            .collect();
-        let ys: Vec<f64> = columns
-            .iter()
-            .map(|p| p.y)
-            .chain(std::iter::once(columns[0].y))
-            .collect();
-        for (probe, expected) in [
-            (XY::new(0.0, 0.5), false),
-            (XY::new(5e307, 0.0), true),
+        let mut later_chunk = first_chunk.clone();
+        later_chunk.rotate_left(REDUCE_LANES.wrapping_mul(3));
+        let probes = [
+            (XY::new(0.0, 0.5), 2, true, false),
+            (XY::new(5e307, 0.0), 1, true, true),
             // Above the diagonal (its y at x = -5e307 is exactly -0.5).
-            (XY::new(-5e307, -0.25), false),
+            (XY::new(-5e307, -0.25), 2, true, false),
             // Below the diagonal, above the bottom edge.
-            (XY::new(-5e307, -0.75), true),
-        ] {
-            assert_eq!(
-                ring_contains_interior_open(&ring, probe),
-                expected,
-                "AoS SIMD path probe={probe:?}",
-            );
-            assert_eq!(
-                ring_contains_interior_columns(&xs, &ys, probe),
-                expected,
-                "columns SIMD path probe={probe:?}",
-            );
-            let (crossings, _) = ring_classify_crossings_columns(&xs, &ys, probe);
-            assert_eq!(
-                crossings % 2 == 1,
-                expected,
-                "classify columns path probe={probe:?}",
-            );
+            (XY::new(-5e307, -0.75), 1, true, true),
+            (XY::new(0.0, 2.0), 0, false, false),
+        ];
+        for (name, ring) in [("first chunk", first_chunk), ("later chunk", later_chunk)] {
+            let (xs, ys) = closed_columns(&ring);
+            let segments = xs.len().saturating_sub(1);
+            assert!(segments >= RAY_CROSSING, "{name} reaches SIMD crossover");
+            assert_ne!(segments % REDUCE_LANES, 0, "{name} has a scalar tail");
+            let reference_probes = probes.map(|(point, ..)| point);
+            assert_columns_match_scalar_reference(&ring, &reference_probes);
+            for (probe, expected_count, expected_candidate, expected_inside) in probes {
+                assert_eq!(
+                    ring_contains_interior_open(&ring, probe),
+                    expected_inside,
+                    "{name} parity probe={probe:?}",
+                );
+                assert_eq!(
+                    ring_classify_crossings_columns(&xs, &ys, probe),
+                    (expected_count, expected_candidate),
+                    "{name} crossing count and bbox probe={probe:?}",
+                );
+            }
         }
     }
 
@@ -482,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn open_ring_simd_matches_division_reference_on_curated_rings() {
+    fn open_ring_simd_matches_scalar_reference_on_curated_rings() {
         let base_ring = |n: usize| {
             (0..n)
                 .map(|i| {
@@ -560,7 +652,96 @@ mod tests {
             if vertical {
                 probes.push(XY::new(ring[0].x, ring[0].y.midpoint(ring[1].y)));
             }
-            assert_vector_matches_division_reference(&ring, &probes);
+            assert_simd_matches_scalar_reference(&ring, &probes);
+        }
+    }
+
+    #[test]
+    fn ring_columns_keep_scalar_windows_counts_and_bbox_refinement() {
+        let corners = [
+            XY::new(10.0, 20.0),
+            XY::new(17.0, 20.0),
+            XY::new(16.0, 25.0),
+            XY::new(12.0, 24.0),
+        ];
+        let probes = [
+            (XY::new(13.0, 22.0), 1, false, RingClass::Interior, true),
+            (XY::new(18.0, 22.0), 0, false, RingClass::Exterior, false),
+            (XY::new(11.5, 22.0), 1, true, RingClass::Interior, true),
+            (XY::new(11.0, 22.0), 1, true, RingClass::Boundary, true),
+            (XY::new(10.0, 22.0), 2, true, RingClass::Exterior, false),
+        ];
+
+        for vertex_count in [corners.len(), RAY_CROSSING, RAY_CROSSING.wrapping_add(3)] {
+            let padding = vertex_count.wrapping_sub(corners.len());
+            let mut ring = Vec::with_capacity(vertex_count);
+            ring.push(corners[0]);
+            ring.extend(std::iter::repeat_n(corners[0], padding));
+            ring.extend_from_slice(&corners[1..]);
+            assert_eq!(ring.len(), vertex_count);
+
+            let (xs, ys) = closed_columns(&ring);
+            for (probe, expected_count, expected_candidate, expected_class, expected_inside) in
+                probes
+            {
+                assert_eq!(
+                    ring_classify_crossings_columns(&xs, &ys, probe),
+                    (expected_count, expected_candidate),
+                    "vertices={vertex_count} probe={probe:?}",
+                );
+                assert_eq!(
+                    classify_columns(&xs, &ys, probe),
+                    expected_class,
+                    "vertices={vertex_count} probe={probe:?}",
+                );
+                assert_eq!(
+                    ring_contains_interior_open(&ring, probe),
+                    expected_inside,
+                    "vertices={vertex_count} probe={probe:?}",
+                );
+                assert_eq!(
+                    ring_contains_interior_open(&ring, probe),
+                    scalar_reference(&ring, probe),
+                    "vertices={vertex_count} scalar differential probe={probe:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ring_classify_crossings_returns_zero_for_empty_and_single_vertex_columns() {
+        for (xs, ys) in [(&[][..], &[][..]), (&[3.0][..], &[4.0][..])] {
+            let point = XY::new(0.0, 0.0);
+            assert!(!ring_contains_interior_columns(xs, ys, point));
+            assert_eq!(ring_classify_crossings_columns(xs, ys, point), (0, false),);
+            assert_eq!(ring_crossing_columns_scalar(xs, ys, point, 0..0), 0,);
+            assert_eq!(
+                ring_classify_crossings_scalar(xs, ys, point, 0..0),
+                (0, false),
+            );
+        }
+    }
+
+    #[test]
+    fn ring_classify_crossings_pins_rectangle_counts_and_inclusive_boxes() {
+        let xs = [0.0, 4.0, 4.0, 0.0, 0.0];
+        let ys = [0.0, 0.0, 4.0, 4.0, 0.0];
+        for (probe, expected_count, expected_candidate, expected_class) in [
+            (XY::new(2.0, 2.0), 1, false, RingClass::Interior),
+            (XY::new(4.0, 2.0), 0, true, RingClass::Boundary),
+            (XY::new(5.0, 2.0), 0, false, RingClass::Exterior),
+            (XY::new(4.0, 4.0), 0, true, RingClass::Boundary),
+        ] {
+            assert_eq!(
+                ring_classify_crossings_columns(&xs, &ys, probe),
+                (expected_count, expected_candidate),
+                "probe={probe:?}",
+            );
+            assert_eq!(
+                classify_columns(&xs, &ys, probe),
+                expected_class,
+                "probe={probe:?}",
+            );
         }
     }
 }

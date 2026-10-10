@@ -7,6 +7,8 @@ use crate::array::{
     Arc, BoundsSeed, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryKind, Point,
     PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, Shape, StorageLayout,
 };
+use crate::geographic::PointSelectionChart;
+use crate::geographic::chart::point_set_convex_hull_shape;
 use crate::geometry::storage::builder::PointColumnBuilder;
 use crate::geometry::storage::packed_columns::{
     PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns, XyColumns,
@@ -416,18 +418,22 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn envelope_unary_packed(&self) -> PyResult<Self> {
-        if let Some(points) = self.packed_points_xy()? {
-            return Ok(points);
-        }
         if let crate::geometry::TopologyDomain::Geographic(frame) =
             crate::geometry::topology_domain(&self.frame)?
         {
             return self.map_shapes(|shape| {
-                let envelope = shape.envelope()?;
-                Ok(crate::geometry::publish_computed_point_or_raw_shape(
-                    &envelope, frame, "envelope",
-                )?)
+                crate::geographic::GeographicSupportEnvelope::try_from_shape_with_bounds(
+                    frame,
+                    shape,
+                    shape.bounds(),
+                )
+                .map_err(crate::error::Error::from)?
+                .into_shape(frame)
+                .map_err(Into::into)
             });
+        }
+        if let Some(points) = self.packed_points_xy()? {
+            return Ok(points);
         }
         // All-rectangular fast path: when every row's box is NON-degenerate
         // (`bounds_to_shape` would make a `Polygon`, not a `Point`/`LineString`),
@@ -499,6 +505,13 @@ impl PyGeometryArray {
         }
         let domain = crate::geometry::topology_domain(&self.frame)?;
         self.map_shapes_detached(py, |shape| {
+            if let crate::geometry::TopologyDomain::Geographic(frame) = domain
+                && !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+                && PointSelectionChart::accepts_point_set(shape)
+                && let Some(hull) = point_set_convex_hull_shape(shape, frame, shape.bounds())?
+            {
+                return Ok(hull);
+            }
             let hull = shape.convex_hull()?;
             match domain {
                 crate::geometry::TopologyDomain::Cartesian => Ok(hull),

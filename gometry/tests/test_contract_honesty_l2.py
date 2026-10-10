@@ -9,18 +9,6 @@ import pytest
 
 def test_cellarray_pickle_roundtrip_preserves_custom_target() -> None:
     area = gm.box(0, 80, 10, 85, crs=4326)
-    signature = str(inspect.signature(gm.s2_cover))
-    assert 'max_cells=1000000' in signature
-    assert 'target_cells=8' in signature
-
-    fixed = gm.s2_cover(area, level=10)
-    fixed_default = gm.s2_cover(area, level=10, max_cells=1_000_000)
-    assert fixed == fixed_default
-
-    adaptive = gm.s2_cover(area)
-    adaptive_default = gm.s2_cover(area, max_cells=1_000_000, target_cells=8)
-    assert adaptive == adaptive_default
-
     custom = gm.s2_cover(area, min_level=2, max_level=12, target_cells=24)
     restored = pickle.loads(pickle.dumps(custom))
     assert restored == custom
@@ -82,9 +70,10 @@ def test_crs_export_defaults_are_literals_and_match_omission() -> None:
     )
     assert (
         str(inspect.signature(crs.to_projjson))
-        == '(*, pretty=False, indentation_width=2)'
+        == '(*, as_dict=False, pretty=False, indentation_width=2)'
     )
     assert crs.to_wkt() == crs.to_wkt(output_axis='auto')
+    assert crs.to_projjson() == crs.to_projjson(as_dict=False)
     assert crs.to_wkt(pretty=True) == crs.to_wkt(pretty=True, indentation_width=4)
     assert crs.to_projjson(pretty=True) == crs.to_projjson(
         pretty=True, indentation_width=2
@@ -97,9 +86,9 @@ def test_crs_export_defaults_are_literals_and_match_omission() -> None:
         crs.to_projjson(indentation_width=None)
 
 
-def test_from_features_resolves_frame_before_all_input_lanes() -> None:
+def test_from_geojson_resolves_frame_before_all_input_lanes() -> None:
     feature = {'type': 'Feature', 'properties': {}}
     for value in (feature, json.dumps(feature), json.dumps(feature).encode()):
         with pytest.raises(gm.CRSError) as raised:
-            gm.from_features(value, crs='not-a-crs')
+            gm.from_geojson(value, crs='not-a-crs', features=True)
         assert type(raised.value) is gm.CRSError

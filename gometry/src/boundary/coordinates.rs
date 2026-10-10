@@ -19,7 +19,7 @@ use pyo3::{Bound, PyResult, Python};
 use crate::GeometryArrayStorage;
 use crate::array::RingLevel;
 use crate::geometry::storage::{
-    PackedStorage, RowSelectionRef, ShapeRow, ValidityMask, csr_value_window,
+    ArrayRows, PackedStorage, RowSelectionRef, ShapeRow, ValidityMask, csr_value_window,
 };
 use crate::geometry::types::ShapeOwnerKey;
 use crate::geometry::{
@@ -311,15 +311,6 @@ impl<'py> CoordinateMeasure<'py> {
                 "Coordinates length exceeds the maximum Python sequence length",
             )
         })
-    }
-
-    pub(crate) fn length_hint(&self) -> usize {
-        match &self.coordinates {
-            ExactUnsigned::Small(count) => {
-                usize::try_from((*count).min(isize::MAX as u128)).expect("Python length hint fits")
-            },
-            ExactUnsigned::Big(_) => isize::MAX as usize,
-        }
     }
 
     fn has_same_count(&self, py: Python<'py>, other: &Self) -> PyResult<bool> {
@@ -921,17 +912,14 @@ pub(crate) enum CoordinateColumnRef<'a> {
 #[derive(Clone, Debug)]
 enum CoordinateOwner {
     Shape(Arc<ShapeData>),
-    Array {
-        storage: Arc<GeometryArrayStorage>,
-        missing: Option<ValidityMask>,
-    },
+    Array(ArrayRows),
 }
 
 /// The geometry source behind a view, for nested (topology-shaped) coordinate
 /// rendering that the flat columns intentionally do not preserve.
 pub(crate) enum CoordinateSource<'a> {
     Shape(&'a Shape),
-    Array(&'a GeometryArrayStorage, Option<&'a ValidityMask>),
+    Array(&'a ArrayRows),
 }
 
 /// Shape-wide coordinate access. Flattening order matches
@@ -966,8 +954,7 @@ enum CoordinateFrame {
         remaining: std::ops::Range<usize>,
     },
     ArrayRows {
-        storage: Arc<GeometryArrayStorage>,
-        missing: Option<ValidityMask>,
+        rows: ArrayRows,
         remaining: std::ops::Range<usize>,
         compact_point_rank: Option<usize>,
     },
@@ -1000,25 +987,26 @@ impl CoordinatePointCursor {
             CoordinateOwner::Shape(shape) => {
                 frames.push(CoordinateFrame::Shape(shape.shape().clone()));
             },
-            CoordinateOwner::Array { storage, missing } => {
-                let (rows, compact_point_rank) = match storage.as_ref() {
+            CoordinateOwner::Array(rows) => {
+                let (row_count, compact_point_rank) = match rows.storage() {
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-                        let rows = storage::point_logical_len(coords, row_map.as_deref());
-                        let compact = missing.as_ref().filter(|mask| mask.len() != rows);
+                        let point_rows = storage::point_logical_len(coords, row_map.as_deref());
+                        let compact = rows
+                            .is_compact_nullable()
+                            .then(|| rows.missing().expect("compact rows carry validity"));
                         (
-                            compact.map_or(rows, ValidityMask::len),
+                            compact.map_or(point_rows, ValidityMask::len),
                             compact.map(|mask| if reverse { mask.present_count() } else { 0 }),
                         )
                     },
                     GeometryArrayStorage::Mixed(_)
                     | GeometryArrayStorage::Packed(
                         PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
-                    ) => (storage.len(), None),
+                    ) => (rows.len(), None),
                 };
                 frames.push(CoordinateFrame::ArrayRows {
-                    storage: Arc::clone(storage),
-                    missing: missing.clone(),
-                    remaining: 0..rows,
+                    rows: rows.clone(),
+                    remaining: 0..row_count,
                     compact_point_rank,
                 });
             },
@@ -1189,17 +1177,16 @@ impl CoordinateFrame {
                 })
             },
             Self::ArrayRows {
-                storage,
-                missing,
+                rows,
                 remaining,
                 compact_point_rank,
             } => {
                 let Some(row) = next_index(remaining, reverse) else {
                     return CoordinateStep::Pop;
                 };
-                match storage.as_ref() {
+                match rows.storage() {
                     GeometryArrayStorage::Mixed(shapes) => {
-                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        if rows.missing().is_some_and(|mask| mask.is_missing(row)) {
                             CoordinateStep::Continue
                         } else {
                             CoordinateStep::Push(Self::Shape(
@@ -1214,7 +1201,7 @@ impl CoordinateFrame {
                     },
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         let map = row_map.as_deref();
-                        let physical_row = if let Some(mask) = missing
+                        let physical_row = if let Some(mask) = rows.missing()
                             && compact_point_rank.is_some()
                         {
                             if mask.is_missing(row) {
@@ -1236,7 +1223,7 @@ impl CoordinateFrame {
                                 present
                             }
                         } else {
-                            if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                            if rows.missing().is_some_and(|mask| mask.is_missing(row)) {
                                 return CoordinateStep::Continue;
                             }
                             row
@@ -1250,7 +1237,7 @@ impl CoordinateFrame {
                         offsets,
                         row_map,
                     }) => {
-                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        if rows.missing().is_some_and(|mask| mask.is_missing(row)) {
                             return CoordinateStep::Continue;
                         }
                         let window = row_map.as_deref().csr_window(offsets.as_slice(), row);
@@ -1267,7 +1254,7 @@ impl CoordinateFrame {
                         polygon_offsets,
                         row_map,
                     }) => {
-                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        if rows.missing().is_some_and(|mask| mask.is_missing(row)) {
                             return CoordinateStep::Continue;
                         }
                         let rings = row_map
@@ -1320,12 +1307,9 @@ impl CoordinateView {
         }
     }
 
-    pub(crate) const fn from_array_masked(
-        storage: Arc<GeometryArrayStorage>,
-        missing: Option<ValidityMask>,
-    ) -> Self {
+    pub(crate) const fn from_array_rows(rows: ArrayRows) -> Self {
         Self {
-            owner: CoordinateOwner::Array { storage, missing },
+            owner: CoordinateOwner::Array(rows),
         }
     }
 
@@ -1333,9 +1317,7 @@ impl CoordinateView {
     pub(crate) fn source(&self) -> CoordinateSource<'_> {
         match &self.owner {
             CoordinateOwner::Shape(shape) => CoordinateSource::Shape(shape),
-            CoordinateOwner::Array { storage, missing } => {
-                CoordinateSource::Array(storage, missing.as_ref())
-            },
+            CoordinateOwner::Array(rows) => CoordinateSource::Array(rows),
         }
     }
 
@@ -1365,10 +1347,13 @@ impl CoordinateView {
     {
         match &self.owner {
             CoordinateOwner::Shape(shape) => shape.for_each_coord_run(&mut |run| visit(None, run)),
-            CoordinateOwner::Array { storage, missing } => match storage.as_ref() {
+            CoordinateOwner::Array(array_rows) => match array_rows.storage() {
                 GeometryArrayStorage::Mixed(shapes) => {
                     for (row, shape) in shapes.iter().enumerate() {
-                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        if array_rows
+                            .missing()
+                            .is_some_and(|mask| mask.is_missing(row))
+                        {
                             continue;
                         }
                         shape.for_each_coord_run(&mut |run| visit(Some(row), run))?;
@@ -1379,9 +1364,10 @@ impl CoordinateView {
                 // contributes one coordinate tagged with its own row index.
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     let map = row_map.as_deref();
-                    if let Some(mask) = missing
-                        && mask.len() != storage::point_logical_len(coords, map)
-                    {
+                    if array_rows.is_compact_nullable() {
+                        let mask = array_rows
+                            .missing()
+                            .expect("compact nullable rows carry validity");
                         for (row, present) in mask.cursor() {
                             let Some(present) = present else { continue };
                             visit(
@@ -1394,7 +1380,10 @@ impl CoordinateView {
                         return ControlFlow::Continue(());
                     }
                     for row in 0..storage::point_logical_len(coords, map) {
-                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        if array_rows
+                            .missing()
+                            .is_some_and(|mask| mask.is_missing(row))
+                        {
                             continue;
                         }
                         visit(
@@ -1414,7 +1403,10 @@ impl CoordinateView {
                     let map = row_map.as_deref();
                     let rows = storage::line_logical_len(offsets.as_slice(), map);
                     for row in 0..rows {
-                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        if array_rows
+                            .missing()
+                            .is_some_and(|mask| mask.is_missing(row))
+                        {
                             continue;
                         }
                         let window = map.csr_window(offsets.as_slice(), row);
@@ -1436,7 +1428,10 @@ impl CoordinateView {
                     let ring_offsets = ring_offsets.as_slice();
                     let rows = storage::polygon_logical_len(polygon_offsets.as_slice(), map);
                     for row in 0..rows {
-                        if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+                        if array_rows
+                            .missing()
+                            .is_some_and(|mask| mask.is_missing(row))
+                        {
                             continue;
                         }
                         for physical_ring in map.csr_window(polygon_offsets.as_slice(), row) {
@@ -1455,9 +1450,7 @@ impl CoordinateView {
     pub(crate) fn exact_measure<'py>(&self, py: Python<'py>) -> PyResult<CoordinateMeasure<'py>> {
         match &self.owner {
             CoordinateOwner::Shape(shape) => measure_shape(py, shape.shape()),
-            CoordinateOwner::Array { storage, missing } => {
-                measure_storage(py, storage, missing.as_ref())
-            },
+            CoordinateOwner::Array(rows) => measure_storage(py, rows.storage(), rows.missing()),
         }
     }
 
@@ -1471,6 +1464,35 @@ impl CoordinateView {
 
     pub(crate) fn point_cursor(&self, reverse: bool) -> CoordinatePointCursor {
         CoordinatePointCursor::new(self.clone(), reverse)
+    }
+
+    pub(crate) fn iterator_length_hint(&self) -> usize {
+        let hint = self.single_seq().map_or_else(
+            || match &self.owner {
+                CoordinateOwner::Shape(shape) => match shape.shape() {
+                    Shape::Point(_) => 1,
+                    Shape::Empty(..)
+                    | Shape::MultiPoint(_)
+                    | Shape::LineString(_)
+                    | Shape::MultiLineString(_)
+                    | Shape::Polygon(_)
+                    | Shape::MultiPolygon(_)
+                    | Shape::GeometryCollection(_) => 0,
+                },
+                CoordinateOwner::Array(rows) => match rows.storage() {
+                    GeometryArrayStorage::Mixed(shapes) => shapes.len(),
+                    GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
+                        rows.storage().len()
+                    },
+                    GeometryArrayStorage::Packed(
+                        PackedStorage::Lines { coords, .. }
+                        | PackedStorage::Polygons { coords, .. },
+                    ) => coords.len(),
+                },
+            },
+            |seq| seq.len(),
+        );
+        hint.min(isize::MAX as usize)
     }
 
     #[cfg(test)]
@@ -1527,7 +1549,7 @@ impl CoordinateView {
     pub fn logical_heap_bytes(&self) -> usize {
         match &self.owner {
             CoordinateOwner::Shape(shape) => shape.shape().logical_heap_bytes(),
-            CoordinateOwner::Array { storage, .. } => storage.logical_heap_bytes(),
+            CoordinateOwner::Array(rows) => rows.storage().logical_heap_bytes(),
         }
     }
 
@@ -1541,7 +1563,7 @@ impl CoordinateView {
         let measure = self.exact_measure(py)?;
         match &self.owner {
             CoordinateOwner::Shape(_) => Ok(measure.shape_axes()),
-            CoordinateOwner::Array { .. } => Ok(measure.present_axes()),
+            CoordinateOwner::Array(_) => Ok(measure.present_axes()),
         }
     }
 
@@ -1562,11 +1584,11 @@ impl CoordinateView {
             },
             // A packed point array's coordinates are exactly its shared column,
             // so `.x`/`.y` can borrow it directly (zero-copy on the Rust side).
-            CoordinateOwner::Array { storage, missing } => {
-                if missing.is_some() {
+            CoordinateOwner::Array(rows) => {
+                if rows.missing().is_some() {
                     return None;
                 }
-                match storage.as_ref() {
+                match rows.storage() {
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                         row_map.is_identity().then_some(coords)
                     },
@@ -1595,19 +1617,17 @@ impl CoordinateView {
         py: Python<'_>,
         axis: CoordinateAxis,
     ) -> PyResult<CoordinateColumnRef<'_>> {
-        if let CoordinateOwner::Array {
-            storage,
-            missing: None,
-        } = &self.owner
-            && let GeometryArrayStorage::Packed(packed) = storage.as_ref()
+        if let CoordinateOwner::Array(rows) = &self.owner
+            && rows.missing().is_none()
+            && let GeometryArrayStorage::Packed(packed) = rows.storage()
             && let Some((coords, span)) = packed_contiguous_coord_span(packed)
         {
             return Ok(borrowed_axis(coords, span, axis));
         }
-        if let CoordinateOwner::Array { storage, missing } = &self.owner
+        if let CoordinateOwner::Array(rows) = &self.owner
             && let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
-                storage.as_ref()
-            && missing.is_none()
+                rows.storage()
+            && rows.missing().is_none()
             && let Some(map) = row_map.explicit_indices()
         {
             let capacity = checked_vector_len::<f64>(map.len(), "coordinate column")?;
@@ -1738,14 +1758,13 @@ impl CoordinateView {
 
     /// Per-coordinate geometry-row index as NumPy's `int64` lane, built at
     /// coordinate-run altitude (CSR window fills / one fill per run) rather
-    /// than per-vertex push. Mirrors [`row_index`] for the `Coordinates.index`
-    /// getter and `get_coordinates(..., return_index=True)`.
+    /// than per-vertex push. Backs the public `Coordinates.row_index` getter.
     pub(crate) fn try_row_index_i64(&self, py: Python<'_>) -> PyResult<Vec<i64>> {
         let count = self.len_for_python(py)?;
         let capacity = checked_vector_len::<i64>(count, "coordinate row index")?;
         let rows = match &self.owner {
             CoordinateOwner::Shape(_) => 1,
-            CoordinateOwner::Array { storage, .. } => storage.len(),
+            CoordinateOwner::Array(rows) => rows.len(),
         };
         if rows.saturating_sub(1) > i64::MAX as usize {
             return Err(PyOverflowError::new_err(
@@ -1765,12 +1784,10 @@ impl CoordinateView {
     fn row_index_cast<T: Copy>(&self, capacity: usize, cast: impl Fn(usize) -> T) -> Vec<T> {
         let zero = cast(0);
 
-        if let CoordinateOwner::Array {
-            storage,
-            missing: None,
-        } = &self.owner
+        if let CoordinateOwner::Array(rows) = &self.owner
+            && rows.missing().is_none()
         {
-            match storage.as_ref() {
+            match rows.storage() {
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map })
                     if row_map.is_identity() =>
                 {
@@ -1893,10 +1910,7 @@ impl CoordinateView {
                 | Shape::GeometryCollection(_)
                 | Shape::Empty(..) => None,
             },
-            CoordinateOwner::Array {
-                storage,
-                missing: None,
-            } => match storage.as_ref() {
+            CoordinateOwner::Array(rows) if rows.missing().is_none() => match rows.storage() {
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
                     let map = row_map.as_deref();
                     let len = storage::point_logical_len(coords, map);
@@ -1946,9 +1960,7 @@ impl CoordinateView {
                 // storage-shaped O(1) key — fall through to the run walker.
                 GeometryArrayStorage::Mixed(_) => None,
             },
-            CoordinateOwner::Array {
-                missing: Some(_), ..
-            } => None,
+            CoordinateOwner::Array(_) => None,
         }
     }
 
@@ -1986,14 +1998,14 @@ impl CoordinateView {
         // O(n log rows)).
         let count = right.len_for_python()?;
         let capacity =
-            checked_vector_len::<([Option<u64>; 4], usize)>(count, "coordinate equality")?;
+            checked_vector_len::<([Option<f64>; 4], usize)>(count, "coordinate equality")?;
         let mut right_visible = Vec::with_capacity(capacity);
         other.for_each_point(|coord| {
-            right_visible.push(visible_coordinate_bits(coord, other_layout));
+            right_visible.push(visible_coordinate_values(coord, other_layout));
         });
         let mut idx = 0_usize;
         let equal = self.try_for_each_point(&mut |coord| {
-            let left = visible_coordinate_bits(coord, self_layout);
+            let left = visible_coordinate_values(coord, self_layout);
             if right_visible.get(idx).copied() != Some(left) {
                 return ControlFlow::Break(false);
             }
@@ -2032,42 +2044,37 @@ impl CoordinateView {
 fn owners_identical(left: &CoordinateOwner, right: &CoordinateOwner) -> bool {
     match (left, right) {
         (CoordinateOwner::Shape(a), CoordinateOwner::Shape(b)) => Arc::ptr_eq(a, b),
-        (
-            CoordinateOwner::Array {
-                storage: sa,
-                missing: ma,
-            },
-            CoordinateOwner::Array {
-                storage: sb,
-                missing: mb,
-            },
-        ) => Arc::ptr_eq(sa, sb) && ma == mb,
+        (CoordinateOwner::Array(a), CoordinateOwner::Array(b)) => {
+            Arc::ptr_eq(a.storage_arc(), b.storage_arc()) && a.missing() == b.missing()
+        },
         _ => false,
     }
 }
 
-/// Bit-pattern column equality (NaN-stable, matching `Point`/`PartialEq`).
-fn f64_columns_bit_eq(left: &[f64], right: &[f64]) -> bool {
+/// Numeric column equality, matching Python tuple equality for visible ordinates.
+#[expect(
+    clippy::float_cmp,
+    reason = "Coordinates equality follows Python's exact numeric equality semantics"
+)]
+fn f64_columns_equal(left: &[f64], right: &[f64]) -> bool {
     if left.len() != right.len() {
         return false;
     }
-    left.iter()
-        .zip(right.iter())
-        .all(|(a, b)| a.to_bits() == b.to_bits())
+    left.iter().zip(right.iter()).all(|(a, b)| a == b)
 }
 
-fn coordseq_columns_bit_eq(left: &CoordSeq, right: &CoordSeq) -> bool {
+fn coordseq_columns_equal(left: &CoordSeq, right: &CoordSeq) -> bool {
     left.axes() == right.axes()
-        && f64_columns_bit_eq(left.xs(), right.xs())
-        && f64_columns_bit_eq(left.ys(), right.ys())
+        && f64_columns_equal(left.xs(), right.xs())
+        && f64_columns_equal(left.ys(), right.ys())
         && match (left.zs(), right.zs()) {
             (None, None) => true,
-            (Some(a), Some(b)) => f64_columns_bit_eq(a, b),
+            (Some(a), Some(b)) => f64_columns_equal(a, b),
             _ => false,
         }
         && match (left.ms(), right.ms()) {
             (None, None) => true,
-            (Some(a), Some(b)) => f64_columns_bit_eq(a, b),
+            (Some(a), Some(b)) => f64_columns_equal(a, b),
             _ => false,
         }
 }
@@ -2185,7 +2192,7 @@ fn packed_contiguous_coord_span(
     }
 }
 
-fn coord_views_bit_eq(
+fn coord_views_numeric_eq(
     left: &CoordSeq,
     left_span: std::ops::Range<usize>,
     right: &CoordSeq,
@@ -2193,7 +2200,7 @@ fn coord_views_bit_eq(
 ) -> bool {
     let left = left.view(CoordWindow::from_range(left_span, left.len()));
     let right = right.view(CoordWindow::from_range(right_span, right.len()));
-    coordseq_columns_bit_eq(&left, &right)
+    coordseq_columns_equal(&left, &right)
 }
 
 fn row_selection_eq(left: &storage::RowSelection, right: &storage::RowSelection) -> bool {
@@ -2214,16 +2221,11 @@ fn row_selection_eq(left: &storage::RowSelection, right: &storage::RowSelection)
 fn try_columnar_storage_equal(left: &CoordinateOwner, right: &CoordinateOwner) -> Option<bool> {
     match (left, right) {
         (CoordinateOwner::Shape(a), CoordinateOwner::Shape(b)) => shape_columnar_equal(a, b),
-        (
-            CoordinateOwner::Array {
-                storage: sa,
-                missing: None,
-            },
-            CoordinateOwner::Array {
-                storage: sb,
-                missing: None,
-            },
-        ) => packed_columnar_equal(sa, sb),
+        (CoordinateOwner::Array(a), CoordinateOwner::Array(b))
+            if a.missing().is_none() && b.missing().is_none() =>
+        {
+            packed_columnar_equal(a.storage(), b.storage())
+        },
         _ => None,
     }
 }
@@ -2231,9 +2233,9 @@ fn try_columnar_storage_equal(left: &CoordinateOwner, right: &CoordinateOwner) -
 fn shape_columnar_equal(left: &ShapeData, right: &ShapeData) -> Option<bool> {
     match (left.shape(), right.shape()) {
         (Shape::LineString(la), Shape::LineString(lb)) => {
-            Some(coordseq_columns_bit_eq(la.as_coords(), lb.as_coords()))
+            Some(coordseq_columns_equal(la.as_coords(), lb.as_coords()))
         },
-        (Shape::MultiPoint(la), Shape::MultiPoint(lb)) => Some(coordseq_columns_bit_eq(la, lb)),
+        (Shape::MultiPoint(la), Shape::MultiPoint(lb)) => Some(coordseq_columns_equal(la, lb)),
         (Shape::Point(pa), Shape::Point(pb)) => Some(pa == pb),
         (Shape::Empty(ka, aa), Shape::Empty(kb, ab)) => Some(ka == kb && aa == ab),
         // Multipart / polygon: fall back to dual stream.
@@ -2312,11 +2314,11 @@ fn packed_points_columnar_eq(
         return None;
     }
     match ma.as_deref() {
-        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_equal(ca, cb)),
         crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             let la = ca.view(CoordWindow::from_range(start..start + len, ca.len()));
             let lb = cb.view(CoordWindow::from_range(start..start + len, cb.len()));
-            Some(coordseq_columns_bit_eq(&la, &lb))
+            Some(coordseq_columns_equal(&la, &lb))
         },
         // Gathered points: physical rows may differ — stream is the safe path.
         storage::RowSelectionRef::Gather(_) => None,
@@ -2340,7 +2342,7 @@ fn packed_lines_columnar_eq(
     match ma.as_deref() {
         // Identity: flattened stream IS the coord columns (offsets only
         // partition rows; different breaks with the same verts stay equal).
-        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_equal(ca, cb)),
         crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             // Per-side absolute spans (prefixes may differ); compare only the
             // visible coordinate slices, never the absolute offset numbers.
@@ -2350,7 +2352,7 @@ fn packed_lines_columnar_eq(
             let Some(right) = line_window_coord_span(ob, cb.len(), start, len) else {
                 return Some(false);
             };
-            Some(coord_views_bit_eq(ca, left, cb, right))
+            Some(coord_views_numeric_eq(ca, left, cb, right))
         },
         storage::RowSelectionRef::Gather(_) => None,
     }
@@ -2372,7 +2374,7 @@ fn packed_polygons_columnar_eq(
     match ma.as_deref() {
         // Same as lines: flatten order is the packed coord column; CSR only
         // partitions rings/polygons.
-        storage::RowSelectionRef::Identity => Some(coordseq_columns_bit_eq(ca, cb)),
+        storage::RowSelectionRef::Identity => Some(coordseq_columns_equal(ca, cb)),
         crate::geometry::storage::RowSelectionRef::Window { start, len } => {
             // Visible polygons start..end → ring range via polygon_offsets →
             // coord span via ring_offsets. Different absolute prefixes are fine.
@@ -2382,33 +2384,33 @@ fn packed_polygons_columnar_eq(
             let Some(right) = polygon_window_coord_span(rb, pb, cb.len(), start, len) else {
                 return Some(false);
             };
-            Some(coord_views_bit_eq(ca, left, cb, right))
+            Some(coord_views_numeric_eq(ca, left, cb, right))
         },
         storage::RowSelectionRef::Gather(_) => None,
     }
 }
 
-/// Visible ordinate fingerprint used by layout-aware equality (NaN-stable).
+/// Visible ordinates used by layout-aware equality.
 #[expect(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     reason = "the closed XY/Z/M layout has at most four slots, and n advances only for present axes"
 )]
-fn visible_coordinate_bits(
+fn visible_coordinate_values(
     point: Point,
     layout: Option<CoordinateAxes>,
-) -> ([Option<u64>; 4], usize) {
+) -> ([Option<f64>; 4], usize) {
     let axes = layout.unwrap_or_else(|| CoordinateAxes::from_point(point));
     let mut values = [None; 4];
-    values[0] = Some(point.x.to_bits());
-    values[1] = Some(point.y.to_bits());
+    values[0] = Some(point.x);
+    values[1] = Some(point.y);
     let mut n = 2;
     if axes.has_z() {
-        values[n] = point.z().map(f64::to_bits);
+        values[n] = point.z();
         n += 1;
     }
     if axes.has_m() {
-        values[n] = point.m().map(f64::to_bits);
+        values[n] = point.m();
         n += 1;
     }
     (values, n)

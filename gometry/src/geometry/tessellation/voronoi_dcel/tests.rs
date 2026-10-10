@@ -1,3 +1,5 @@
+use crate::geometry::overlay::shoot_left;
+
 #[test]
 fn direct_dual_subnormal_admission_matches_legacy_builder() {
     for (units, admitted) in [(1_u64, false), (4, true)] {
@@ -681,7 +683,7 @@ fn arbitrary_exact_cycle_oracle_keeps_crossing_t_and_overlap_rejections() {
 }
 
 #[test]
-fn owner_ray_sort_uses_exact_order_when_a_finite_hint_is_unavailable() {
+fn owner_ray_sort_and_sweep_use_exact_order_when_a_hint_is_unavailable() {
     let zero = exact::ExactPoint::from_xy(XY::new(0.0, 0.0));
     let shallow = exact::ExactPoint::from_xy(XY::new(1.0, f64::from_bits(1)));
     let one = exact::ExactPoint::from_xy(XY::new(0.0, 1.0));
@@ -713,9 +715,9 @@ fn owner_ray_sort_uses_exact_order_when_a_finite_hint_is_unavailable() {
     let global_vertices = [VertexId(0), VertexId(1), VertexId(2)];
     let points = assembly::OwnerRayPoints::new(&exact_vertices, &global_vertices);
     assert_eq!(
-        RayPoints::rounded(&points, 0),
-        RayPoints::rounded(&points, 1),
-        "one unavailable hint makes the whole sort key constant"
+        [0_u32, 1, 2].map(|vertex| RayPoints::rounded(&points, vertex)),
+        [XY::new(0.0, 0.0); 3],
+        "one unavailable hint makes the whole key table constant"
     );
 
     let mut order = [0_u32, 1, 2];
@@ -728,6 +730,11 @@ fn owner_ray_sort_uses_exact_order_when_a_finite_hint_is_unavailable() {
     )
     .unwrap();
     assert_eq!(order, [2, 1, 0]);
+    assert_eq!(
+        shoot_left(&points, 1, |_| [0, 2], &[1]).unwrap(),
+        [Some(0)],
+        "constant hints must leave exact leftward-ray admission active"
+    );
 }
 
 #[test]
@@ -1369,9 +1376,9 @@ fn source_clip_contacts_keep_parameters_through_ring_normalization() {
             .collect::<Vec<_>>()
             .into(),
     );
-    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
         .unwrap();
     assert_eq!(cells.len(), 1);
     assert!(
@@ -1454,9 +1461,9 @@ fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
             .collect::<Vec<_>>()
             .into(),
     );
-    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
         .unwrap();
     assert_eq!(cells.len(), 2);
     assert!(
@@ -1490,7 +1497,7 @@ fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
             crate::io::to_wkb(&expected, None, false).unwrap()
         );
     }
-    let mut role_budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let mut role_budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
     let outputs = source
         .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut role_budget)
         .unwrap();
@@ -1513,7 +1520,7 @@ fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
         );
     }
 
-    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let mut edge_budget = ExpansionBudget::new("voronoi_edge_lines", "sites/clip topology");
     let (coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut edge_budget)
         .expect("clip-only shell and hole contacts do not invalidate Voronoi edges");
@@ -1730,7 +1737,7 @@ fn extreme_cluster_is_a_valid_binary64_partition() {
             .into(),
     );
     let cells = source
-        .voronoi_polygons(0.0, VoronoiBoundary::Padded)
+        .voronoi_cells(0.0, VoronoiBoundary::Padded)
         .expect("extreme cluster should be a valid partition");
     assert_eq!(cells.len(), points.len());
     assert!(cells.iter().all(|cell| {
@@ -1814,7 +1821,7 @@ fn separated_repair_classes_defer_spanning_ring_orientation_to_global_check() {
     );
     assert!(polygon_is_valid(&clip_polygon).unwrap());
 
-    let mut budget = ExpansionBudget::new("voronoi_edges", "cross-class ring regression");
+    let mut budget = ExpansionBudget::new("voronoi_edge_lines", "cross-class ring regression");
     let (coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&clip_polygon), &mut budget)
         .expect("edge embedding should defer the spanning ring to the global certificate");
@@ -1909,14 +1916,15 @@ fn thin_hole_clip_cells_cover_the_assigned_noded_boundary() {
     );
     assert!(polygon_is_valid(&clip).unwrap());
 
-    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "thin-hole embedding regression");
+    let mut edge_budget =
+        ExpansionBudget::new("voronoi_edge_lines", "thin-hole embedding regression");
     let (coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut edge_budget)
         .unwrap();
     let mut polygon_budget =
-        ExpansionBudget::new("voronoi_polygons", "thin-hole embedding regression");
+        ExpansionBudget::new("voronoi_cells", "thin-hole embedding regression");
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget)
         .unwrap();
     assert!(offsets.as_slice().len() > 1);
     assert_eq!(
@@ -1973,7 +1981,7 @@ fn five_site_binary64_reproduction_is_valid_for_polygons_and_edges() {
     );
 
     let cells = source
-        .voronoi_polygons(0.0, VoronoiBoundary::Padded)
+        .voronoi_cells(0.0, VoronoiBoundary::Padded)
         .expect("adjacent-float search should repair the public reproduction");
     assert_eq!(cells.len(), sites.len());
     assert!(
@@ -1993,7 +2001,7 @@ fn five_site_binary64_reproduction_is_valid_for_polygons_and_edges() {
         );
     }
 
-    let mut budget = ExpansionBudget::new("voronoi_edges", "five-site reproduction");
+    let mut budget = ExpansionBudget::new("voronoi_edge_lines", "five-site reproduction");
     let (coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Padded, &mut budget)
         .expect("the edge product should certify the same binary64 embedding");
@@ -2029,7 +2037,7 @@ fn near_tangent_separator_uses_the_assigned_clip_boundary() {
         ])],
     );
 
-    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "near-tangent assigned clip");
+    let mut edge_budget = ExpansionBudget::new("voronoi_edge_lines", "near-tangent assigned clip");
     let (edge_coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut edge_budget)
         .expect("the edge separator lies in the assigned noded clip");
@@ -2047,9 +2055,9 @@ fn near_tangent_separator_uses_the_assigned_clip_boundary() {
         (start == shell_hit && end == hole_hit) || (start == hole_hit && end == shell_hit)
     }));
 
-    let mut polygon_budget = ExpansionBudget::new("voronoi_polygons", "near-tangent assigned clip");
+    let mut polygon_budget = ExpansionBudget::new("voronoi_cells", "near-tangent assigned clip");
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget)
         .expect("the same selected embedding produces valid polygon cells");
     assert_eq!(cells.len(), 3);
     assert!(
@@ -2302,7 +2310,7 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
     };
 
     let seeds = [separator_only];
-    let problem = VoronoiProblem::new(&embedding, &seeds).unwrap();
+    let mut problem = VoronoiProblem::new(&embedding, &seeds).unwrap();
     assert_eq!(problem.classes, [vec![separator_only]]);
     let variables = [separator_only];
     let accepted_values = [separator_nearest];
@@ -2322,7 +2330,7 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
         problem
             .check_global(&accepted_assignment, &mut budget)
             .unwrap(),
-        GlobalCheck::Pass
+        GlobalCheck::Pass(())
     ));
 
     for (candidate, ring) in [(XY::new(12.0, 5.0), 0), (XY::new(5.0, 5.0), 1)] {
@@ -2389,7 +2397,7 @@ fn shifted_six_site_diagram_has_a_certified_binary64_partition() {
             .into(),
     );
     let cells = source
-        .voronoi_polygons(0.0, VoronoiBoundary::Envelope)
+        .voronoi_cells(0.0, VoronoiBoundary::Envelope)
         .unwrap();
     let clip = Polygon::new(
         rectangle(offset, offset, offset + 10.0, offset + 10.0),
@@ -2473,16 +2481,16 @@ fn pinned_clip_vertices_exhaust_a_constructed_nodes_adjacent_float_domain() {
             .collect::<Vec<_>>()
             .into(),
     );
-    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "pinned clip vertices");
+    let mut edge_budget = ExpansionBudget::new("voronoi_edge_lines", "pinned clip vertices");
     for (operation, result) in [
         (
-            "voronoi_polygons",
+            "voronoi_cells",
             source
-                .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+                .voronoi_cells(0.0, VoronoiBoundary::Polygon(&clip))
                 .map(|_| ()),
         ),
         (
-            "voronoi_edges",
+            "voronoi_edge_lines",
             source
                 .voronoi_edge_column_budgeted(
                     0.0,
@@ -2624,9 +2632,9 @@ fn polygon_clip_with_many_disjoint_holes_is_budgeted_by_output() {
             .collect::<Vec<_>>()
             .into(),
     );
-    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
         .expect("the 5,346-position partition is below the generated-output budget");
 
     assert_eq!(cells.len(), 2);
@@ -2695,7 +2703,7 @@ fn polygon_clip_never_publishes_separator_edges_through_holes() {
     let polygon = Polygon::new(rectangle(-10.0, -10.0, 40.0, 10.0), holes);
     assert!(polygon_is_valid(&polygon).unwrap());
 
-    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let mut edge_budget = ExpansionBudget::new("voronoi_edge_lines", "sites/clip topology");
     let (coordinates, offsets) = match source.voronoi_edge_column_budgeted(
         0.0,
         VoronoiBoundary::Polygon(&polygon),
@@ -2708,7 +2716,7 @@ fn polygon_clip_never_publishes_separator_edges_through_holes() {
                     error.kind(),
                     crate::error::ErrorKind::Geometry(
                         GeometryErrorKind::ExactEmbeddingUnrepresentable {
-                            operation: "voronoi_edges",
+                            operation: "voronoi_edge_lines",
                             ..
                         }
                     )
@@ -2724,9 +2732,9 @@ fn polygon_clip_never_publishes_separator_edges_through_holes() {
         Some(coordinates.len())
     );
 
-    let mut polygon_budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let mut polygon_budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut polygon_budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut polygon_budget)
         .expect("the same clip publishes polygon cells for the edge coverage check");
     assert_separator_chains_covered_by_cells(&coordinates, offsets.as_slice(), &cells);
 }
@@ -2755,7 +2763,7 @@ fn sparse_collinear_edges_do_not_charge_clip_scan_work() {
         .map(|index| Point::new_raw_xy(0.0, -0.5 + f64::from(index) / 800.0))
         .collect::<Vec<_>>();
     let source = Shape::MultiPoint(sites.into());
-    let mut budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let mut budget = ExpansionBudget::new("voronoi_edge_lines", "sites/clip topology");
     let (coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
         .expect("800 separator edges fit the output budget");
@@ -2961,7 +2969,7 @@ fn direct_dual_edge_budget_counts_only_the_published_line_column() {
         ]
         .into(),
     );
-    let mut budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let mut budget = ExpansionBudget::new("voronoi_edge_lines", "sites/clip topology");
     let (coordinates, offsets) = source
         .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Envelope, &mut budget)
         .unwrap();
@@ -3475,7 +3483,7 @@ fn public_noncollinear_one_owner_keeps_1334_interior_holes_and_clip_support() {
     let mut budget = ExpansionBudget::new("test", "noncollinear one-owner 1334 holes");
     assembly::reset_owner_local_work();
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
         .unwrap();
     let work = assembly::owner_local_work();
 
@@ -3502,7 +3510,7 @@ fn task163_noncollinear_public_path_retains_667_tangent_outputs() {
     let mut budget = ExpansionBudget::new("test", "667 tangent holes");
     assembly::reset_owner_local_work();
     let cells = source
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
         .unwrap();
     let work = assembly::owner_local_work();
     let mut hole_count = 0;
@@ -3574,7 +3582,7 @@ fn task163_noncollinear_1334_public_output_preserves_owner_parts_and_rings() {
     let mut budget = ExpansionBudget::new("test", "1334 tangent holes");
     assembly::reset_owner_local_work();
     let cells = site_shape(&[(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)])
-        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
+        .voronoi_cells_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
         .unwrap();
     let work = assembly::owner_local_work();
     let mut output_parts = Vec::with_capacity(cells.len());
@@ -3610,7 +3618,7 @@ fn diamond_clip_in_square_aabb_covers_clip_with_no_separator_through_contacts() 
     );
     let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
     let cells = site_shape(&sites)
-        .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&diamond))
+        .voronoi_cells(0.0, VoronoiBoundary::Polygon(&diamond))
         .unwrap();
     assert_one_cell_equals_clip(&cells, &diamond);
 }
@@ -3623,7 +3631,7 @@ fn partial_collinear_frame_overlap_covers_clip() {
     );
     let sites = [(2.0, 1.0), (1.2, 1.4), (2.4, 1.5)];
     let cells = site_shape(&sites)
-        .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+        .voronoi_cells(0.0, VoronoiBoundary::Polygon(&clip))
         .unwrap();
     assert_cells_cover_clip(&cells, &clip);
 }
@@ -3636,7 +3644,7 @@ fn cyclically_rotated_rectangle_clip_covers_clip() {
     );
     let sites = [(0.5, 0.5), (1.5, 0.5), (1.0, 1.5)];
     let cells = site_shape(&sites)
-        .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+        .voronoi_cells(0.0, VoronoiBoundary::Polygon(&clip))
         .unwrap();
     assert_cells_cover_clip(&cells, &clip);
 }
@@ -3654,7 +3662,7 @@ fn holed_diamond_clip_covers_shell_minus_hole() {
     );
     let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
     let cells = site_shape(&sites)
-        .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+        .voronoi_cells(0.0, VoronoiBoundary::Polygon(&clip))
         .unwrap();
     assert_one_cell_equals_clip(&cells, &clip);
     let Shape::Polygon(cell) = &cells[0] else {
@@ -3726,13 +3734,13 @@ fn geographic_voronoi_zero_meridian_class_preserves_clip_spelling() {
         closed_ring(&[(250.0, 0.0), (240.0, 10.0), (260.0, 10.0)]),
         Vec::new(),
     );
-    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let mut budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
     let outputs = sites
         .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut budget)
         .unwrap();
     let frame = crate::geographic::GeographicFrame::crs84();
     let axis = frame.longitude();
-    let mut edge_budget = ExpansionBudget::new("voronoi_polygons", "computed edges");
+    let mut edge_budget = ExpansionBudget::new("voronoi_cells", "computed edges");
     let published =
         crate::geometry::publish_voronoi_polygon_outputs(outputs, Some(frame), &mut edge_budget)
             .unwrap();
@@ -4181,7 +4189,7 @@ fn collinear_holed_clip_splits_each_separator_into_two_pieces() {
             .collect::<Vec<_>>()
             .into(),
     );
-    let mut polygon_budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let mut polygon_budget = ExpansionBudget::new("voronoi_cells", "sites/clip topology");
     let outputs = source
         .voronoi_polygon_outputs_budgeted(0.0, VoronoiBoundary::Polygon(&clip), &mut polygon_budget)
         .unwrap();

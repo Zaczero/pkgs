@@ -6,14 +6,21 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
+
+from tests._support import (
+    EAST_DEGREE_SOUTH_LATITUDE_CRS,
+    WEST_RADIAN_SOUTH_GRAD_CRS,
+)
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+Geod = pyproj.Geod
 
 
 def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     line = gm.LineString([(170, -10), (-170, 10)], crs=4326)
     split = line.split_antimeridian()
     assert split.to_wkt() == 'MULTILINESTRING ((170 -10, 180 0), (-180 0, -170 10))'
-    assert split.crs == 'EPSG:4326'
+    assert split.crs == gm.CRS('EPSG:4326')
     multi = gm.from_wkt(
         'MULTILINESTRING ((170 -10, -170 10), (0 0, 1 1))', crs=4326
     ).split_antimeridian()
@@ -35,7 +42,7 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
                 m=[1.0, 5.0],
                 crs=4326,
             ),
-            (15.0, 20.0, 2.0),
+            (15.0, 20.339021393918856, 2.0339021393918855),
         ),
         (
             gm.LineString(
@@ -44,7 +51,7 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
                 m=[5.0, 1.0],
                 crs=4326,
             ),
-            (15.0, 20.0, 2.0),
+            (15.0, 20.339021393918856, 2.0339021393918855),
         ),
     ):
         seam = [
@@ -53,7 +60,37 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
             for coordinate in part.coords
             if abs(coordinate[0]) == 180.0
         ]
-        assert seam == [expected, expected]
+        assert len(seam) == 2
+        for value in seam:
+            assert value == pytest.approx(expected, abs=1.0e-7)
+
+
+@pytest.mark.parametrize(
+    ('z', 'm', 'expected'),
+    [
+        ([0.0, 100.0], None, (50.43879822149836,)),
+        (None, [1000.0, 3000.0], (2008.7759644299672,)),
+        ([0.0, 100.0], [1000.0, 3000.0], (50.43879822149836, 2008.7759644299672)),
+    ],
+    ids=['xyz', 'xym', 'xyzm'],
+)
+def test_split_antimeridian_tilted_edge_ordinates_follow_ellipsoidal_arclength(
+    z: list[float] | None,
+    m: list[float] | None,
+    expected: tuple[float, ...],
+) -> None:
+    line = gm.LineString([(170.0, 0.0), (-170.0, 60.0)], z=z, m=m, crs=4326)
+    split = line.split_antimeridian()
+    seam = [
+        coordinate[2:]
+        for part in split.parts
+        for coordinate in part.coords
+        if abs(coordinate[0]) == 180.0
+    ]
+
+    assert len(seam) == 2
+    for value in seam:
+        assert value == pytest.approx(expected, abs=2.0e-9)
 
 
 def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
@@ -168,6 +205,25 @@ def test_multipolygon_perimeter_cancels_partial_periodic_seam_overlap() -> None:
     assert geometry.length == pytest.approx(expected, abs=1.0e-8)
 
 
+def test_multipolygon_perimeter_cancels_seam_overlap_with_south_axis() -> None:
+    def polygon(points: list[tuple[float, float]]) -> gm.Polygon:
+        return gm.Polygon(
+            [(x, -y) for x, y in points],
+            crs=EAST_DEGREE_SOUTH_LATITUDE_CRS,
+        )
+
+    west = polygon([(170, -10), (180, -10), (180, 10), (170, 10), (170, -10)])
+    east = polygon([(-180, 0), (-170, 0), (-170, 20), (-180, 20), (-180, 0)])
+    geometry = gm.MultiPolygon([west, east])
+    shared = gm.distance(
+        gm.Point(180, 0, crs=EAST_DEGREE_SOUTH_LATITUDE_CRS),
+        gm.Point(180, -10, crs=EAST_DEGREE_SOUTH_LATITUDE_CRS),
+    )
+
+    expected = west.length + east.length - 2.0 * shared
+    assert geometry.length == pytest.approx(expected, abs=1.0e-8)
+
+
 @pytest.mark.parametrize('seam', [180.0, -180.0])
 @pytest.mark.parametrize(
     'ring',
@@ -193,6 +249,255 @@ def test_seam_vertex_spelling_does_not_change_validity(
     polygon = gm.Polygon(spelled, crs=4326)
     assert polygon.is_valid
     assert gm.union_all([polygon]).is_valid
+
+
+def test_point_set_centroid_uses_the_common_chart_for_shifted_sites() -> None:
+    points = gm.MultiPoint([(370.0, 0.0), (380.0, 10.0)], crs=4326)
+
+    centroid = points.centroid()
+
+    assert (centroid.x, centroid.y) == (15.0, 5.0)
+
+
+def test_offcenter_ordinary_multipoint_centroid_matches_analytic_mean() -> None:
+    points = gm.MultiPoint([(100.0, 0.0), (110.0, 10.0)], crs=4326)
+
+    centroid = points.centroid()
+
+    assert (centroid.x, centroid.y) == (105.0, 5.0)
+
+
+def test_offcenter_ordinary_multipoint_surface_returns_a_source_point() -> None:
+    points = gm.MultiPoint([(100.0, 0.0), (110.0, 10.0)], crs=4326)
+
+    surface_point = points.point_on_surface()
+
+    assert (surface_point.x, surface_point.y) in {(100.0, 0.0), (110.0, 10.0)}
+
+
+@pytest.mark.parametrize(
+    'operation_name',
+    ['centroid', 'point_on_surface'],
+    ids=['centroid', 'point-on-surface'],
+)
+def test_late_nan_point_set_error_keeps_source_coordinate_index(
+    operation_name: str,
+) -> None:
+    points = gm.MultiPoint(
+        np.array(
+            [
+                [10.0, 1.0],
+                [20.0, 2.0],
+                [30.0, 3.0],
+                [40.0, 4.0],
+                [np.nan, 5.0],
+            ],
+            dtype=np.float64,
+        ),
+        crs=4326,
+    )
+
+    with pytest.raises(gm.GeometryError, match='member 4, coordinate 0') as error:
+        getattr(points, operation_name)()
+    assert 'longitude' in str(error.value)
+
+
+def test_point_set_hull_and_rectangle_use_the_common_chart() -> None:
+    points = gm.MultiPoint([(170.0, 0.0), (-170.0, 0.0), (180.0, 10.0)], crs=4326)
+
+    hull = points.convex_hull()
+    rectangle = points.minimum_rotated_rectangle()
+    rows = gm.GeometryArray([points, points])
+
+    assert list(hull.exterior.coords) == [
+        (170.0, 0.0),
+        (-170.0, 0.0),
+        (-180.0, 10.0),
+        (170.0, 0.0),
+    ]
+    assert list(rectangle.exterior.coords) == [
+        (170.0, 0.0),
+        (-170.0, 0.0),
+        (-170.0, 10.0),
+        (170.0, 10.0),
+        (170.0, 0.0),
+    ]
+    assert [list(value.exterior.coords) for value in rows.convex_hull()] == [
+        list(hull.exterior.coords),
+        list(hull.exterior.coords),
+    ]
+    assert [
+        list(value.exterior.coords) for value in rows.minimum_rotated_rectangle()
+    ] == [
+        list(rectangle.exterior.coords),
+        list(rectangle.exterior.coords),
+    ]
+
+
+def test_point_alias_hull_and_rectangle_keep_the_first_source_record() -> None:
+    points = gm.from_wkt('MULTIPOINT Z ((10 0 7), (370 0 11))', crs=4326)
+
+    hull = points.convex_hull()
+    rectangle = points.minimum_rotated_rectangle()
+    rows = gm.GeometryArray([points])
+
+    for result in (
+        hull,
+        rectangle,
+        rows.convex_hull()[0],
+        rows.minimum_rotated_rectangle()[0],
+    ):
+        assert result.geometry_type == 'Point'
+        assert (result.x, result.y, result.z) == (10.0, 0.0, 7.0)
+
+
+def test_point_hull_keeps_adjacent_native_sites_through_the_published_edge() -> None:
+    points = gm.from_wkt(
+        'MULTIPOINT Z ((-170 1 1), (-100 1 2), (0.2 1 3), '
+        '(0.20000000000000004 1 4), (170 1 5))',
+        crs=4326,
+    )
+    rows = gm.GeometryArray([points])
+
+    for result in (
+        points.convex_hull(),
+        points.minimum_rotated_rectangle(),
+        rows.convex_hull()[0],
+        rows.minimum_rotated_rectangle()[0],
+    ):
+        coordinates = list(result.coords)
+        assert result.geometry_type == 'LineString'
+        assert coordinates[0] == (170.0, 1.0, 5.0)
+        assert coordinates[-1] == (0.20000000000000004, 1.0, 4.0)
+        assert len(coordinates) == 3
+        assert coordinates[1][2] == 4.5
+
+
+def test_point_hull_and_rectangle_preserve_scalar_and_packed_point_records() -> None:
+    points = [
+        gm.Point(370.0, -0.0, z=7.0, m=11.0, crs=4326),
+        gm.Point(-170.0, 5.0, z=13.0, m=17.0, crs=4326),
+    ]
+    rows = gm.GeometryArray(points)
+
+    assert points[0].coordinate_axes == 'XYZM'
+    assert points[0].convex_hull().to_wkb() == points[0].to_wkb()
+    assert points[0].minimum_rotated_rectangle().to_wkb() == points[0].to_wkb()
+    assert [value.to_wkb() for value in rows.convex_hull()] == [
+        point.to_wkb() for point in points
+    ]
+    assert [value.to_wkb() for value in rows.minimum_rotated_rectangle()] == [
+        point.to_wkb() for point in points
+    ]
+    gathered = gm.GeometryArray([points[0], None, points[1], points[0]], crs=4326)[
+        [2, 1, 0]
+    ]
+    for result in (gathered.convex_hull(), gathered.minimum_rotated_rectangle()):
+        assert result[0].to_wkb() == points[1].to_wkb()
+        assert result[1] is None
+        assert result[2].to_wkb() == points[0].to_wkb()
+
+
+def test_point_set_surface_keeps_first_source_on_a_chart_distance_tie() -> None:
+    points = gm.MultiPoint([(370.0, 0.0), (380.0, 10.0)], crs=4326)
+
+    representative = points.point_on_surface()
+
+    assert (representative.x, representative.y) == (370.0, 0.0)
+    assert representative.coordinate_axes == 'XY'
+
+
+def test_late_nan_point_set_surface_error_keeps_source_coordinate_index() -> None:
+    points = gm.MultiPoint(
+        np.array(
+            [
+                [10.0, 1.0],
+                [20.0, 2.0],
+                [30.0, 3.0],
+                [40.0, 4.0],
+                [50.0, np.nan],
+            ],
+            dtype=np.float64,
+        ),
+        crs=4326,
+    )
+
+    with pytest.raises(gm.GeometryError, match='member 4, coordinate 0') as error:
+        points.point_on_surface()
+    assert 'latitude' in str(error.value)
+
+
+def test_point_only_collection_chart_is_shared_by_scalar_and_array_selection() -> None:
+    collection = gm.GeometryCollection(
+        [
+            gm.MultiPoint([(170.0, 0.0)], crs=4326),
+            gm.GeometryCollection([gm.Point(-170.0, 10.0, crs=4326)]),
+        ],
+        crs=4326,
+    )
+
+    centroid = collection.centroid()
+    representative = collection.point_on_surface()
+    rows = gm.GeometryArray([collection])
+
+    assert (centroid.x, centroid.y) == (-180.0, 5.0)
+    assert (representative.x, representative.y) == (170.0, 0.0)
+    assert gm.equals(rows.centroid()[0], centroid)
+    assert gm.equals(rows.point_on_surface()[0], representative)
+
+
+def test_gathered_point_sets_keep_chart_results_and_missing_alignment() -> None:
+    source = gm.GeometryArray([
+        gm.MultiPoint([(170.0, 0.0), (-170.0, 10.0)], crs=4326),
+        gm.MultiPoint([(370.0, 0.0), (380.0, 10.0)], crs=4326),
+        None,
+    ])
+    gathered = source[[1, 0, 2]]
+
+    centroids = gathered.centroid()
+    representatives = gathered.point_on_surface()
+
+    assert (centroids[0].x, centroids[0].y) == (15.0, 5.0)
+    assert (centroids[1].x, centroids[1].y) == (-180.0, 5.0)
+    assert centroids[2] is None
+    assert (representatives[0].x, representatives[0].y) == (370.0, 0.0)
+    assert (representatives[1].x, representatives[1].y) == (170.0, 0.0)
+    assert representatives[2] is None
+
+
+def test_point_only_collection_hulls_and_rectangles_keep_gathered_missing_alignment() -> (
+    None
+):
+    collection = gm.GeometryCollection(
+        [
+            gm.MultiPoint([(170.0, 0.0)], crs=4326),
+            gm.GeometryCollection([gm.Point(-170.0, 10.0, crs=4326)]),
+        ],
+        crs=4326,
+    )
+    scalar_hull = collection.convex_hull()
+    scalar_rectangle = collection.minimum_rotated_rectangle()
+    source = gm.GeometryArray([
+        gm.MultiPoint([(170.0, 0.0), (-170.0, 0.0), (180.0, 10.0)], crs=4326),
+        gm.MultiPoint([(370.0, 0.0), (380.0, 10.0), (375.0, 20.0)], crs=4326),
+        collection,
+        None,
+    ])
+    gathered = source[[1, 0, 2, 3]]
+
+    hulls = gathered.convex_hull()
+    rectangles = gathered.minimum_rotated_rectangle()
+
+    assert gm.equals(hulls[0], source[1].convex_hull())
+    assert gm.equals(hulls[1], source[0].convex_hull())
+    assert list(hulls[2].coords) == [(170.0, 0.0), (-170.0, 10.0)]
+    assert gm.equals(hulls[2], scalar_hull)
+    assert hulls[3] is None
+    assert gm.equals(rectangles[0], source[1].minimum_rotated_rectangle())
+    assert gm.equals(rectangles[1], source[0].minimum_rotated_rectangle())
+    assert list(rectangles[2].coords) == [(170.0, 0.0), (-170.0, 10.0)]
+    assert gm.equals(rectangles[2], scalar_rectangle)
+    assert rectangles[3] is None
 
 
 def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None:
@@ -313,7 +618,7 @@ def test_centroid_uses_native_frame_period_for_grad_seam_scalar_and_array() -> N
     # half-open canonical representative can differ in sign at the seam.
     assert abs(centroid.x * scale) == pytest.approx(180.0)
     assert centroid.y * scale == pytest.approx(0.0)
-    assert centroid.crs == 'EPSG:4807'
+    assert centroid.crs == gm.CRS('EPSG:4807')
     assert gm.equals(centroid, array_centroid)
     assert abs(array_centroid.x * scale) == pytest.approx(180.0)
 
@@ -408,12 +713,11 @@ def test_seam_only_bounds_use_the_canonical_seam() -> None:
     np.testing.assert_array_equal(array.bounds, [expected])
     assert array.total_bounds == expected
 
-    # A same-spelling seam line bypasses crossing reduction and keeps its raw
-    # longitude; opposite seam aliases reduce to the frame's canonical spelling.
+    # Both seam spellings denote the same periodic longitude in public bounds.
     assert gm.LineString([(180, 0), (180, 10)], crs=4326).bounds == (
-        180.0,
+        -180.0,
         0.0,
-        180.0,
+        -180.0,
         10.0,
     )
     assert gm.LineString([(-180, 0), (180, 10)], crs=4326).bounds == (
@@ -435,6 +739,47 @@ def test_seam_only_bounds_use_the_canonical_seam() -> None:
     )
     assert crossing.bounds == (170.0, 40.0, -170.0, 50.0)
     assert _pole_ring().bounds == (-180.0, 80.0, 180.0, 90.0)
+
+
+def test_ordinary_geographic_bounds_preserve_endpoint_bits_through_retagging() -> None:
+    endpoint = math.nextafter(1.0, 2.0)
+    line = gm.LineString([(-0.0, -0.0), (endpoint, endpoint)], crs=4326)
+    expected = line.bounds
+    assert [value.hex() for value in expected] == [
+        (-0.0).hex(),
+        (-0.0).hex(),
+        endpoint.hex(),
+        endpoint.hex(),
+    ]
+
+    array = gm.GeometryArray([line], crs=4326)
+    assert [float(value).hex() for value in array.bounds[0]] == [
+        value.hex() for value in expected
+    ]
+
+    untagged = gm.GeometryArray([gm.LineString([(170.0, 0.0), (-170.0, 10.0)])])
+    assert untagged.total_bounds == (-170.0, 0.0, 170.0, 10.0)
+    retagged = untagged.with_crs(4326)
+    assert tuple(retagged.bounds[0]) == (170.0, 0.0, -170.0, 10.0)
+    assert retagged.total_bounds == (170.0, 0.0, -170.0, 10.0)
+
+
+def test_geographic_bounds_keep_invalid_getter_and_empty_full_results() -> None:
+    raw = gm.LineString([(0.0, 100.0), (1.0, 100.0)], crs=4326)
+    crossing = gm.LineString([(170.0, 100.0), (-170.0, 100.0)], crs=4326)
+    assert raw.bounds == (0.0, 100.0, 1.0, 100.0)
+    assert crossing.bounds is None
+    rows = gm.GeometryArray([raw, crossing], crs=4326)
+    assert tuple(rows.bounds[0]) == raw.bounds
+    assert np.isnan(rows.bounds[1]).all()
+
+    assert gm.GeometryArray([None], crs=4326).total_bounds is None
+    assert gm.box(-180.0, -10.0, 180.0, 10.0, crs=4326).bounds == (
+        -180.0,
+        -10.0,
+        180.0,
+        10.0,
+    )
 
 
 def test_crosses_antimeridian_matches_split_frame() -> None:
@@ -464,10 +809,10 @@ def test_crosses_antimeridian_matches_split_frame() -> None:
 def test_crosses_antimeridian_agrees_across_crs_and_array_lanes(
     geometry: gm.Geometry, crs: int | None
 ) -> None:
-    geometry = geometry.set_crs(crs)
+    geometry = geometry.with_crs(crs)
     expected = geometry.crosses_antimeridian
     assert gm.GeometryArray([geometry]).crosses_antimeridian.tolist() == [expected]
-    assert geometry.set_crs(4326).crosses_antimeridian is expected
+    assert geometry.with_crs(4326).crosses_antimeridian is expected
 
 
 def test_split_antimeridian_gates() -> None:
@@ -524,6 +869,28 @@ def test_split_antimeridian_ordinate_policy(
         gm.from_wkt(pole_wkt, crs=4326).split_antimeridian()
 
 
+def test_crs_free_split_antimeridian_uses_crs84_arclength_for_zm() -> None:
+    line = gm.LineString(
+        [(170.0, 0.0), (-170.0, 60.0)],
+        z=[0.0, 100.0],
+        m=[1000.0, 3000.0],
+    )
+
+    split = line.split_antimeridian()
+
+    assert split.crs is None
+    seam = [
+        coordinate
+        for part in split.parts
+        for coordinate in part.coords
+        if abs(coordinate[0]) == 180.0
+    ]
+    assert len(seam) == 2
+    expected = (50.43879822149836, 2008.7759644299672)
+    for coordinate in seam:
+        assert coordinate[2:] == pytest.approx(expected, abs=2.0e-9)
+
+
 def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
     band = gm.Polygon([(0, -30), (360, -30), (360, 30), (0, 30)], crs=4326)
     split = band.split_antimeridian()
@@ -540,7 +907,7 @@ def test_split_antimeridian_exact_world_band_and_xy_pole() -> None:
     cap = gm.Polygon([(-45, 40), (45, 40), (135, 40), (-135, 40)], crs=4326)
     fixed = cap.split_antimeridian()
     assert gm.contains(cap, gm.Point(0, 89, crs=4326))
-    assert gm.contains(fixed.set_crs(None), gm.Point(0, 89))
+    assert gm.contains(fixed.with_crs(None), gm.Point(0, 89))
 
 
 _RADIAN_CRS = (
@@ -551,21 +918,24 @@ _RADIAN_CRS = (
 
 
 @pytest.mark.parametrize(
-    'crs',
-    [4326, _RADIAN_CRS, 4807],
+    ('crs', 'period'),
+    [(4326, 360.0), (_RADIAN_CRS, math.tau), (4807, 400.0)],
     ids=['degree', 'radian', 'grad'],
 )
-def test_split_antimeridian_affine_fraction_uses_native_units(
-    crs: int | str,
+def test_split_antimeridian_uses_selected_native_period_for_seam_coordinates(
+    crs: int | str, period: float
 ) -> None:
-    scale = math.degrees(cast('float', gm.CRS(crs).axes[0]['unit_conversion_factor']))
+    native_per_degree = period / 360.0
+    # Independent WGS84 chart-arclength fractions at t=1/4, integrated from
+    # the ellipsoid metric along the retained +40° source edge.
+    fraction = 0.25847437372344956 if crs == 4807 else 0.25847553484797166
     for coordinates, z, m in (
         ([(170.0, 10.0), (-150.0, 30.0)], [10.0, 50.0], [1.0, 5.0]),
         ([(-150.0, 30.0), (170.0, 10.0)], [50.0, 10.0], [5.0, 1.0]),
     ):
         line = gm.LineString(
             [
-                (longitude / scale, latitude / scale)
+                (longitude * native_per_degree, latitude * native_per_degree)
                 for longitude, latitude in coordinates
             ],
             z=z,
@@ -576,15 +946,23 @@ def test_split_antimeridian_affine_fraction_uses_native_units(
             coordinate
             for part in line.split_antimeridian().parts
             for coordinate in part.coords
-            if abs(coordinate[0] * scale) == 180.0
+            if abs(coordinate[0]) == period / 2.0
         ]
-        assert len(seam) == 2
-        assert all(coordinate[1] * scale == pytest.approx(15.0) for coordinate in seam)
-        assert all(coordinate[2:] == (20.0, 2.0) for coordinate in seam)
-    rotation = 360.0 / scale
+        assert sorted(coordinate[0] for coordinate in seam) == [
+            -period / 2.0,
+            period / 2.0,
+        ]
+        expected = (10.0 + 40.0 * fraction, 1.0 + 4.0 * fraction)
+        for coordinate in seam:
+            assert coordinate[1] == pytest.approx(15.0 * native_per_degree, abs=1.0e-12)
+            assert coordinate[2:] == pytest.approx(expected, abs=1.0e-7)
+    rotation = period
     polygon = gm.Polygon(
         [
-            (longitude / scale + rotation, latitude / scale)
+            (
+                longitude * native_per_degree + rotation,
+                latitude * native_per_degree,
+            )
             for longitude, latitude in (
                 (170.0, 0.0),
                 (-170.0, 0.0),
@@ -594,23 +972,63 @@ def test_split_antimeridian_affine_fraction_uses_native_units(
         ],
         crs=crs,
     )
-    point = gm.Point(175.0 / scale + rotation, 6.0 / scale, crs=crs)
+    point = gm.Point(
+        175.0 * native_per_degree + rotation,
+        6.0 * native_per_degree,
+        crs=crs,
+    )
     assert gm.contains(polygon, point)
     assert gm.contains(polygon.split_antimeridian(), point)
 
 
+def test_split_antimeridian_reexpresses_west_south_mixed_axes() -> None:
+    # The radian endpoints and grad unit factor are binary64 approximations;
+    # these direction-specific latitudes follow those exact stored values.
+    for physical, z, m, expected_latitude in (
+        (
+            [(179.0, 0.0), (-175.0, 6.0)],
+            [10.0, 50.0],
+            [2.0, 10.0],
+            0.9999999999999915,
+        ),
+        (
+            [(-175.0, 6.0), (179.0, 0.0)],
+            [50.0, 10.0],
+            [10.0, 2.0],
+            0.9999999999999919,
+        ),
+    ):
+        native = [
+            (-math.radians(longitude), -latitude * 10.0 / 9.0)
+            for longitude, latitude in physical
+        ]
+        split = gm.LineString(
+            native, z=z, m=m, crs=WEST_RADIAN_SOUTH_GRAD_CRS
+        ).split_antimeridian()
+        coordinates = np.asarray(split.to_crs(4326).coords, dtype=np.float64).tolist()
+        seam = [point for point in coordinates if abs(point[0]) == 180.0]
+
+        assert len(seam) == 2
+        latitude_tolerance = 2.0 * math.ulp(expected_latitude)
+        assert all(
+            point[1] == pytest.approx(expected_latitude, abs=latitude_tolerance)
+            for point in seam
+        )
+        expected = (16.67246866128446, 3.3344937322568917)
+        for point in seam:
+            assert point[2:] == pytest.approx(expected, abs=1.0e-7)
+
+
 @pytest.mark.parametrize(
-    'crs',
-    [4326, _RADIAN_CRS, 4807],
+    ('crs', 'period', 'pole'),
+    [(4326, 360.0, 90.0), (_RADIAN_CRS, math.tau, math.pi / 2), (4807, 400.0, 100.0)],
     ids=['degree', 'radian', 'grad'],
 )
 @pytest.mark.parametrize('north', [False, True], ids=['south', 'north'])
 def test_split_antimeridian_normalizes_only_admitted_pole_ulp_in_chart(
-    crs: int | str, *, north: bool
+    crs: int | str, period: float, pole: float, *, north: bool
 ) -> None:
-    factor = cast('float', gm.CRS(crs).axes[0]['unit_conversion_factor'])
-    half_turn = math.pi / factor
-    pole = math.pi / 2.0 / factor
+    half_turn = period / 2.0
     sign = 1.0 if north else -1.0
     exterior = math.nextafter(sign * pole, math.copysign(math.inf, sign))
     interior = sign * (pole - half_turn / 18.0)
@@ -745,11 +1163,140 @@ def test_split_antimeridian_both_poles_reverse_winding() -> None:
     assert again.to_wkt() == split.to_wkt()
 
 
+def test_split_antimeridian_tilted_full_turn_non_dyadic_ordinates() -> None:
+    line = gm.LineString(
+        [(170.0, 0.0), (530.0, 60.0)],
+        z=[0.0, 100.0],
+        m=[100.0, 1100.0],
+        crs=4326,
+    )
+    split = line.split_antimeridian()
+    coordinates = [coordinate for part in split.parts for coordinate in part.coords]
+    seam = [coordinate for coordinate in coordinates if abs(coordinate[0]) == 180.0]
+    assert len(seam) >= 2
+    assert {-180.0, 180.0} <= {coordinate[0] for coordinate in seam}
+    for coordinate in seam:
+        expected_y = 60.0 / 36.0
+        expected_z = 3.332353583809422
+        expected_m = 133.32353583809422
+        assert abs(coordinate[1] - expected_y) <= 4.0 * math.ulp(expected_y)
+        assert abs(coordinate[2] - expected_z) <= 4.0 * math.ulp(expected_z)
+        assert abs(coordinate[3] - expected_m) <= 4.0 * math.ulp(expected_m)
+    assert len({(coordinate[2], coordinate[3]) for coordinate in seam}) == 1
+    quarter = [
+        coordinate for coordinate in coordinates if coordinate[:2] == (-100.0, 15.0)
+    ]
+    assert quarter
+    expected_z = 29.665344452905156
+    expected_m = 396.6534445290516
+    assert abs(quarter[0][2] - expected_z) <= 4.0 * math.ulp(expected_z)
+    assert abs(quarter[0][3] - expected_m) <= 4.0 * math.ulp(expected_m)
+
+
+def test_split_antimeridian_reversed_grad_hole_overlay_ordinates() -> None:
+    crs = (
+        'GEOGCS["West south grad",DATUM["Custom datum",'
+        'SPHEROID["Custom",7000000,150]],PRIMEM["Greenwich",0],'
+        'UNIT["grad",0.015707963267948967],'
+        'AXIS["Longitude",WEST],AXIS["Latitude",SOUTH]]'
+    )
+    lower_owner_z = 38.36571009570337
+    lower_owner_m = 383.6571009570337
+    upper_owner_z = 76.731420191406755
+    upper_owner_m = 767.31420191406755
+    polygon = gm.from_wkt(
+        f'POLYGON ZM ('
+        '(-150 50 0 0, 150 50 0 0, 150 -80 100 1000, '
+        '-150 -80 100 1000, -150 50 0 0),'
+        f'(-160 0 {lower_owner_z!r} {lower_owner_m!r}, '
+        f'-160 -50 {upper_owner_z!r} {upper_owner_m!r}, '
+        f'-200 -50 {upper_owner_z!r} {upper_owner_m!r}, '
+        f'-200 0 {lower_owner_z!r} {lower_owner_m!r}, '
+        f'-160 0 {lower_owner_z!r} {lower_owner_m!r}))',
+        crs=crs,
+    )
+
+    split = polygon.split_antimeridian()
+    assert split.coordinate_axes == 'XYZM'
+    # The lower seam owner rounds one ULP below the compensated Simpson reference.
+    for native_latitude, owner_z, owner_m, expected_z, expected_m in (
+        (0.0, lower_owner_z, lower_owner_m, 38.365710095703378, 383.65710095703378),
+        (-50.0, upper_owner_z, upper_owner_m, 76.731420191406755, 767.31420191406755),
+    ):
+        seam = [
+            coordinate
+            for part in split.parts
+            for coordinate in part.coords
+            if abs(coordinate[0]) == 200.0 and coordinate[1] == native_latitude
+        ]
+        assert seam, f'missing final seam node at latitude {native_latitude}'
+        for coordinate in seam:
+            assert (coordinate[2].hex(), coordinate[3].hex()) == (
+                owner_z.hex(),
+                owner_m.hex(),
+            )
+            assert abs(coordinate[2] - expected_z) <= 4.0 * math.ulp(expected_z)
+            assert abs(coordinate[3] - expected_m) <= 4.0 * math.ulp(expected_m)
+        assert len({(coordinate[2], coordinate[3]) for coordinate in seam}) == 1
+
+
 def test_split_antimeridian_crs84_canonical_identity_and_full_turn_rewrite() -> None:
     half_period = gm.LineString([(180, 0), (0, 0)], crs=4326)
     assert half_period.split_antimeridian().to_wkt() == half_period.to_wkt()
     full_period = gm.LineString([(-180, 0), (180, 0)], crs=4326)
     assert full_period.split_antimeridian().to_wkt() == full_period.to_wkt()
+    two_periods = gm.LineString([(0, 0), (720, 0)], crs=4326).split_antimeridian()
+    assert two_periods.geometry_type == 'LineString'
+    assert len(two_periods.coords) == 2
+
+    circle = gm.LineString(
+        [(0, 0), (360, 0)], z=[10, 110], m=[2, 202], crs=4326
+    ).split_antimeridian()
+    assert circle.geometry_type == 'MultiLineString'
+    circle_coords = [coordinate for part in circle.parts for coordinate in part.coords]
+    assert any(coordinate[:2] == (90.0, 0.0) for coordinate in circle_coords)
+    assert any(coordinate[:2] == (-90.0, 0.0) for coordinate in circle_coords)
+    circle_seam = [
+        coordinate for coordinate in circle_coords if abs(coordinate[0]) == 180.0
+    ]
+    assert {-180.0, 180.0} <= {coordinate[0] for coordinate in circle_seam}
+    assert all(coordinate[2:] == (60.0, 102.0) for coordinate in circle_seam)
+
+    reverse_circle = gm.LineString(
+        [(0, 0), (-360, 0)], z=[10, 110], m=[2, 202], crs=4326
+    ).split_antimeridian()
+    reverse_coords = [
+        coordinate for part in reverse_circle.parts for coordinate in part.coords
+    ]
+    assert any(coordinate == (-90.0, 0.0, 35.0, 52.0) for coordinate in reverse_coords)
+    assert any(coordinate == (90.0, 0.0, 85.0, 152.0) for coordinate in reverse_coords)
+
+    band_zm = gm.Polygon(
+        [(0, -30), (360, -30), (360, 30), (0, 30)],
+        z=[0, 100, 200, 300],
+        m=[100, 500, 2000, 3000],
+        crs=4326,
+    ).split_antimeridian()
+    assert band_zm.coordinate_axes == 'XYZM'
+    band_coords = np.asarray(band_zm.coords, dtype=np.float64)
+    assert np.any(
+        np.all(
+            np.isclose(
+                band_coords,
+                [90.0, 30.0, 225.0, 2250.0],
+                rtol=0.0,
+                atol=2.0e-9,
+            ),
+            axis=1,
+        )
+    )
+    collection = gm.GeometryCollection(
+        [gm.LineString([(0, 0), (360, 0)], z=[10, 110], m=[2, 202])],
+        crs=4326,
+    ).split_antimeridian()
+    assert collection.geometry_type == 'GeometryCollection'
+    assert 'MULTILINESTRING' in collection.to_wkt()
+
     # A pole-to-pole world ring needs ordinary longitude witnesses; seam
     # aliases alone have no full-turn edge.
     world = gm.Polygon(
@@ -1083,21 +1630,17 @@ def test_geographic_clip_by_rect_resolves_longitude_and_pole_aliases() -> None:
             gm.LineString([(-175, 0), (0, 0), (175, 0)], crs=4326),
             (-190, -1, 170, 1),
         ),
-        (
-            gm.LineString([(-199, 0), (199, 0)], crs=4807),
-            (198, -1, -198, 1),
-        ),
     ],
-    ids=['ordered-alias', 'crossing-alias', 'west-out-of-domain', 'grad-native'],
+    ids=['ordered-alias', 'crossing-alias', 'west-out-of-domain'],
 )
-def test_geographic_clip_by_rect_rejects_noncanonical_longitudes(
+def test_geographic_clip_by_rect_rejects_endpoints_outside_the_frame(
     shape: gm.Geometry, rect: tuple[float, float, float, float]
 ) -> None:
     for clipped in (
         lambda: shape.clip_by_rect(*rect),
         lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
     ):
-        with pytest.raises(ValueError, match='clip rectangle bounds'):
+        with pytest.raises(ValueError, match='geographic rectangle bounds'):
             clipped()
 
 
@@ -1108,18 +1651,41 @@ def test_geographic_clip_by_rect_rejects_unordered_latitudes_scalar_and_array() 
         lambda: shape.clip_by_rect(*rect),
         lambda: gm.GeometryArray([shape]).clip_by_rect(*rect),
     ):
-        with pytest.raises(ValueError, match='clip rectangle bounds'):
+        with pytest.raises(ValueError, match='geographic rectangle bounds'):
             clipped()
 
 
-def test_packed_geographic_clip_declines_crossing_grad_rectangle() -> None:
-    grad_line = gm.LineString([(-2, 0), (2, 0)], crs=4807)
-    grad_rect = (1, -1, -1, 1)
-    grad_expected = gm.from_wkt('MULTILINESTRING ((-2 0, -1 0), (1 0, 2 0))', crs=4807)
-    assert gm.equals(grad_line.clip_by_rect(*grad_rect), grad_expected)
-    assert gm.equals(
-        gm.GeometryArray([grad_line]).clip_by_rect(*grad_rect)[0], grad_expected
-    )
+def test_grad_clip_by_rect_matches_wrapped_box_in_scalar_mixed_and_packed_paths() -> (
+    None
+):
+    point = gm.Point(195, 0, crs=4807)
+    rect = (190, -1, -190, 1)
+    wrapped = gm.box(*rect, crs=4807, wrap='split')
+    expected = gm.intersection(point, wrapped)
+
+    scalar = point.clip_by_rect(*rect)
+    assert scalar.to_wkb() == expected.to_wkb()
+    assert gm.equals(scalar, point)
+
+    mixed = gm.GeometryArray([
+        point,
+        gm.LineString([(-199, 0), (199, 0)], crs=4807),
+    ])[0:1]
+    mixed_result = mixed.clip_by_rect(*rect)[0]
+    assert mixed_result.to_wkb() == expected.to_wkb()
+
+    packed = gm.GeometryArray([point]).clip_by_rect(*rect)[0]
+    assert packed.to_wkb() == expected.to_wkb()
+
+    wrapped_rows = gm.boxes([190], [-1], [-190], [1], crs=4807, wrap='split')
+    assert gm.equals(wrapped_rows[0], wrapped)
+
+    with pytest.raises(ValueError, match='geographic rectangle bounds'):
+        point.clip_by_rect(201, -1, 190, 1)
+    with pytest.raises(ValueError, match='geographic rectangle bounds'):
+        gm.box(201, -1, 190, 1, crs=4807, wrap='split')
+    with pytest.raises(ValueError, match='geographic rectangle bounds'):
+        point.clip_by_rect(190, -1, -190, 101)
 
 
 def test_packed_geographic_clip_preserves_canonical_rows_and_missingness() -> None:
@@ -1231,9 +1797,9 @@ def test_thin_crossing_band_split_preserves_chart_area_and_support(
     assert gm.area(split, unit='planar') == unwrapped_width * represented_height
     assert polygon.bounds == (170.0, base_latitude, -170.0, base_latitude + height)
     assert split.bounds == (
-        -180.0,
+        170.0,
         base_latitude,
-        180.0,
+        -170.0,
         base_latitude + height,
     )
     for longitude in (175.0, -175.0, 180.0, -180.0):
@@ -1308,13 +1874,15 @@ def _latitude_ring(latitude: float) -> list[tuple[float, float]]:
 def test_xy_predicates_auto_split_antimeridian() -> None:
     poly = _crossing_band()
     for x, y in [(178, 0), (-178, 0), (175, 5)]:
-        assert gm.contains_xy(poly, x, y) == gm.contains(poly, gm.Point(x, y, crs=4326))
-        assert gm.intersects_xy(poly, x, y) == gm.intersects(
+        assert gm.contains(poly, x=x, y=y) == gm.contains(
             poly, gm.Point(x, y, crs=4326)
         )
-    assert not gm.contains_xy(poly, 0, 0)
-    assert list(gm.contains_xy(poly, [178, 0, -178], [0, 0, 0])) == [True, False, True]
-    assert gm.contains_xy(poly, 178, 0)
+        assert gm.intersects(poly, x=x, y=y) == gm.intersects(
+            poly, gm.Point(x, y, crs=4326)
+        )
+    assert not gm.contains(poly, x=0, y=0)
+    assert list(gm.contains(poly, x=[178, 0, -178], y=[0, 0, 0])) == [True, False, True]
+    assert gm.contains(poly, x=178, y=0)
 
 
 def test_vertex_at_pole_predicates_are_consistent() -> None:
@@ -1342,17 +1910,17 @@ def test_xy_predicates_match_full_topology_at_poles() -> None:
     cap = gm.Polygon(_latitude_ring(80), crs=4326)
     for longitude in (0.0, 180.0, -180.0):
         pole = gm.Point(longitude, 90, crs=4326)
-        assert gm.contains_xy(cap, longitude, 90) == gm.contains(cap, pole) is True
-        assert gm.intersects_xy(cap, longitude, 90) == gm.intersects(cap, pole) is True
-        assert gm.contains_xy(cap, longitude, 90) is True
-        assert gm.intersects_xy(cap, longitude, 90) is True
+        assert gm.contains(cap, x=longitude, y=90) == gm.contains(cap, pole) is True
+        assert gm.intersects(cap, x=longitude, y=90) == gm.intersects(cap, pole) is True
+        assert gm.contains(cap, x=longitude, y=90) is True
+        assert gm.intersects(cap, x=longitude, y=90) is True
 
     boundary = gm.Polygon([(-10, 80), (10, 80), (0, 90)], crs=4326)
     for longitude in (0.0, 180.0, -180.0):
-        assert gm.contains_xy(boundary, longitude, 90) is False
-        assert gm.intersects_xy(boundary, longitude, 90) is True
-        assert gm.contains_xy(boundary, longitude, 90) is False
-        assert gm.intersects_xy(boundary, longitude, 90) is True
+        assert gm.contains(boundary, x=longitude, y=90) is False
+        assert gm.intersects(boundary, x=longitude, y=90) is True
+        assert gm.contains(boundary, x=longitude, y=90) is False
+        assert gm.intersects(boundary, x=longitude, y=90) is True
 
 
 def test_polar_prepared_and_free_point_batches_keep_original_topology() -> None:
@@ -1376,18 +1944,18 @@ def test_xy_pole_broadcast_array_and_missing_rows() -> None:
     rows = gm.GeometryArray([north, south, None, annulus], crs=4326)
 
     np.testing.assert_array_equal(
-        gm.contains_xy(rows, [0, 0, 0, 180], [90, -90, 90, 75]),
+        gm.contains(rows, x=[0, 0, 0, 180], y=[90, -90, 90, 75]),
         [True, True, False, True],
     )
     np.testing.assert_array_equal(
-        gm.intersects_xy(rows, [0, 0, 0, 180], [90, -90, 90, 75]),
+        gm.intersects(rows, x=[0, 0, 0, 180], y=[90, -90, 90, 75]),
         [True, True, False, True],
     )
     np.testing.assert_array_equal(
-        gm.contains_xy(rows, 0, 90), [True, False, False, False]
+        gm.contains(rows, x=0, y=90), [True, False, False, False]
     )
     np.testing.assert_array_equal(
-        gm.contains_xy(rows, [0, 180, 0, 180], 90),
+        gm.contains(rows, x=[0, 180, 0, 180], y=90),
         [True, False, False, False],
     )
     probes = gm.GeometryArray(
@@ -1417,18 +1985,18 @@ def test_polar_annulus_split_membership_bounds_and_index() -> None:
             point = gm.Point(longitude, latitude, crs=4326)
             assert gm.contains(annulus, point) is expected
             assert gm.contains(split, point) is expected
-            assert gm.contains_xy(annulus, longitude, latitude) is expected
-            assert gm.contains_xy(split, longitude, latitude) is expected
+            assert gm.contains(annulus, x=longitude, y=latitude) is expected
+            assert gm.contains(split, x=longitude, y=latitude) is expected
         for latitude in (70.0, 80.0):
             point = gm.Point(longitude, latitude, crs=4326)
             assert not gm.contains(annulus, point)
             assert not gm.contains(split, point)
             assert gm.intersects(annulus, point)
             assert gm.intersects(split, point)
-            assert not gm.contains_xy(annulus, longitude, latitude)
-            assert not gm.contains_xy(split, longitude, latitude)
-            assert gm.intersects_xy(annulus, longitude, latitude)
-            assert gm.intersects_xy(split, longitude, latitude)
+            assert not gm.contains(annulus, x=longitude, y=latitude)
+            assert not gm.contains(split, x=longitude, y=latitude)
+            assert gm.intersects(annulus, x=longitude, y=latitude)
+            assert gm.intersects(split, x=longitude, y=latitude)
 
     index = gm.SpatialIndex([cap, annulus])
     assert list(index.query(gm.Point(180, 89, crs=4326), predicate='intersects')) == [0]
@@ -1481,8 +2049,8 @@ def test_polar_annulus_split_preserves_chart_area_length_and_membership(
             point = gm.Point(longitude, latitude, crs=4326)
             assert gm.contains(annulus, point) is expected
             assert gm.contains(split, point) is expected
-            assert gm.contains_xy(annulus, longitude, latitude) is expected
-            assert gm.contains_xy(split, longitude, latitude) is expected
+            assert gm.contains(annulus, x=longitude, y=latitude) is expected
+            assert gm.contains(split, x=longitude, y=latitude) is expected
 
 
 def test_split_seam_donut_preserves_area_and_membership() -> None:
@@ -1509,8 +2077,8 @@ def test_split_seam_donut_preserves_area_and_membership() -> None:
         point = gm.Point(longitude, latitude, crs=4326)
         assert gm.contains(donut, point) is expected
         assert gm.contains(split, point) is expected
-        assert gm.contains_xy(donut, longitude, latitude) is expected
-        assert gm.contains_xy(split, longitude, latitude) is expected
+        assert gm.contains(donut, x=longitude, y=latitude) is expected
+        assert gm.contains(split, x=longitude, y=latitude) is expected
 
 
 def test_split_polar_annulus_carries_resolvable_zm() -> None:
@@ -1519,7 +2087,7 @@ def test_split_polar_annulus_carries_resolvable_zm() -> None:
     hole = [(longitude, 80, 5, 50) for longitude in longitudes]
     annulus = gm.Polygon(shell, holes=[hole], crs=4326)
     split = annulus.split_antimeridian()
-    coordinates = gm.get_coordinates(split)
+    coordinates = np.asarray(split.coords, dtype=np.float64)
 
     assert annulus.is_valid
     assert split.is_valid
@@ -1551,11 +2119,11 @@ def test_geographic_validation_and_repair_use_normalized_topology() -> None:
 
     # CRS re-tagging shares the frozen coordinates. A cached planar verdict
     # must never leak into the geographic frame, or vice versa.
-    assert planar.set_crs(4326).is_valid
-    assert not annulus.set_crs(None).is_valid
+    assert planar.with_crs(4326).is_valid
+    assert not annulus.with_crs(None).is_valid
     planar_rows = gm.GeometryArray([planar])
     np.testing.assert_array_equal(planar_rows.is_valid, [False])
-    np.testing.assert_array_equal(planar_rows.set_crs(4326).is_valid, [True])
+    np.testing.assert_array_equal(planar_rows.with_crs(4326).is_valid, [True])
 
     repaired = annulus.repair()
     report_repaired = annulus.repair()
@@ -1653,10 +2221,10 @@ def test_artificial_seam_is_not_a_topological_boundary() -> None:
         point = gm.Point(longitude, 0, crs=4326)
         assert gm.contains(crossing, point)
         assert not gm.touches(crossing, point)
-        assert gm.contains_xy(crossing, longitude, 0)
+        assert gm.contains(crossing, x=longitude, y=0)
     assert gm.covers(endpoint, gm.Point(180, 0, crs=4326))
     assert gm.touches(endpoint, gm.Point(180, 0, crs=4326))
-    assert not gm.contains_xy(endpoint, 180, 0)
+    assert not gm.contains(endpoint, x=180, y=0)
 
 
 def test_derived_points_and_bounds_handle_pole_enclosure() -> None:

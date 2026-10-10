@@ -384,8 +384,8 @@ def test_packed_lines_row_map_equals_exact_matches_oracle() -> None:
             ('translate', (3.0, -2.0), {}),
             ('affine_transform', ([1.0, 0.25, -0.5, 1.0, 2.0, 4.0]), {}),
             ('snap_to_grid', (0.5), {}),
-            ('set_z', (7.0), {}),
-            ('set_m', (9.0), {}),
+            ('with_coordinates', (), {'z': 7.0}),
+            ('with_coordinates', (), {'m': 9.0}),
             ('rotate', (15.0), {}),
             ('scale', (2.0, 0.5), {}),
         ]
@@ -534,7 +534,11 @@ def test_packed_row_map_densify_matches_oracle(kind: RowMapKind) -> None:
 
 @pytest.mark.parametrize(
     ('method', 'args', 'kwargs'),
-    [('set_z', (7.0), {}), ('quantize', (3), {}), ('to_crs', ('EPSG:4326'), {})],
+    [
+        ('with_coordinates', (), {'z': 7.0}),
+        ('quantize', (3), {}),
+        ('to_crs', ('EPSG:4326'), {}),
+    ],
 )
 def test_packed_row_map_compact_output_after_column_maps(
     method: str, args: tuple[object, ...], kwargs: dict[str, object]

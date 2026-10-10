@@ -5,22 +5,25 @@ use pyo3::PyErr;
 use pyo3::types::{PyInt, PyList};
 
 use crate::array::{
-    ArrayRow, Bound, Bounds, CRSError, CoordSeq, Crs, CsrOffsetColumn, FrameAdoption, GeometryKind,
-    InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict,
-    PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple,
-    PyTypeError, PyTypeMethods as _, Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape,
-    bool_array, coerce_present_geometry_items, coordinate_epoch_option, crs, crs_arc,
-    exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw, line_is_simple,
-    line_is_valid, map_coordinates_callback, parse_coordinate_replacement, parse_crs,
-    polygon_is_valid, pymethods, replace_shape_coordinates, require_geojson_crs,
-    slice_replacement_for_shape,
+    ArrayRow, Bound, Bounds, CRSError, Crs, FrameAdoption, GeometryKind, Py, PyAny,
+    PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _, PyGeometry,
+    PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError, PyTypeMethods as _,
+    Python, Result, SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items,
+    coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
+    geometry_array_svg_grid_html_masked, line_is_ccw, line_is_simple, line_is_valid,
+    map_coordinates_callback, parse_coordinate_replacement, parse_crs, polygon_is_valid, pymethods,
+    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
 };
 use crate::boundary::coordinates::checked_vector_len;
 use crate::boundary::metadata;
 use crate::crs::frame;
 use crate::crs::frame::FrameError;
-use crate::geometry::storage::admission::{CheckedRingWindow, RingWindowError};
-use crate::geometry::storage::kernels::total_bounds_from_columns;
+#[cfg(test)]
+use crate::geometry::CoordSeq;
+use crate::geometry::storage::kernels::{
+    geographic_total_bounds_from_columns, raw_total_bounds_from_columns,
+};
+use crate::geometry::storage::packed_columns::validate_replacement_ring;
 use crate::geometry::storage::replacement::CoordinateReplacement;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, physical_row};
 use crate::geometry::{
@@ -30,7 +33,7 @@ use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
 use crate::py::functions::geometry_io;
 use crate::py::numpy::int64_array;
-use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
+use crate::py::support::{geojson_domain_metric, own_geometry_item, parse_owned_geometry_item};
 use crate::py::vectors::Groups;
 use crate::py::viz;
 
@@ -115,33 +118,6 @@ fn shapely_wkb_batch<'py>(
     ))
 }
 
-fn validate_packed_replacement_rings(
-    coords: &CoordSeq,
-    ring_offsets: &CsrOffsetColumn<RingLevel>,
-) -> PyResult<()> {
-    for [start, end] in ring_offsets.array_windows::<2>() {
-        let start = *start as usize;
-        let end = *end as usize;
-        match CheckedRingWindow::checked(coords, start..end) {
-            Ok(_) => {},
-            Err(RingWindowError::TooShort(len)) => {
-                let error: crate::error::Error =
-                    crate::geometry::GeometryErrorKind::RingTooShort(len).into();
-                return Err(error.into());
-            },
-            Err(RingWindowError::Open) => {
-                return Err(InvalidGeometryError::new_err("polygon ring must be closed"));
-            },
-            Err(RingWindowError::Inverted | RingWindowError::OutOfRange) => {
-                return Err(InvalidGeometryError::new_err(
-                    "polygon ring range is invalid",
-                ));
-            },
-        }
-    }
-    Ok(())
-}
-
 /// Adopt dense identity-packed replacement columns directly. Selected and
 /// masked arrays need logical-row gathering/scattering and stay on the generic
 /// packed dispatcher below.
@@ -184,7 +160,9 @@ fn replace_dense_packed_coordinates(
         }) if row_map.is_identity() => {
             debug_assert_eq!(coords.len(), replacement.len);
             let coords = replacement.apply_to_seq(coords)?;
-            validate_packed_replacement_rings(&coords, ring_offsets)?;
+            for [start, end] in ring_offsets.array_windows::<2>() {
+                validate_replacement_ring(&coords, *start as usize..*end as usize)?;
+            }
             Ok(Ok(PyGeometryArray::packed_polygons(
                 coords,
                 ring_offsets.clone(),
@@ -210,7 +188,7 @@ fn replace_array_coordinates(
         Ok(output) => return Ok(output),
         Err(replacement) => replacement,
     };
-    if !array.is_compact_nullable() && !matches!(array.storage(), GeometryArrayStorage::Mixed(_)) {
+    if !matches!(array.storage(), GeometryArrayStorage::Mixed(_)) {
         return Ok(array
             .replace_packed_coords_detached(py, array.frame.clone(), replacement)?
             .expect("non-Mixed storage has packed columns"));
@@ -223,6 +201,7 @@ fn replace_array_coordinates(
             .map_or(array.len(), storage::ValidityMask::present_count),
     );
     for row in array.row_operation().present_rows() {
+        let logical = row.logical();
         let count = row.row().coordinates(&mut counts).map_err(PyErr::from)?;
         let next_present_cursor = present_cursor
             .checked_add(count)
@@ -232,7 +211,8 @@ fn replace_array_coordinates(
         present_cursor = next_present_cursor;
         shapes.push(
             row.row()
-                .try_with_shape(|shape| replace_shape_coordinates(shape, &sub))?,
+                .try_with_shape(|shape| replace_shape_coordinates(shape, &sub))
+                .map_err(|error| crate::note_array_row(error, logical))?,
         );
     }
     debug_assert_eq!(present_cursor, replacement.len);
@@ -287,6 +267,44 @@ impl PyGeometryArray {
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
 
+    /// Construct an immutable array from geometry-like rows.
+    ///
+    /// Iterable values are consumed once in input order. ``None`` creates a
+    /// missing row. A single ``Geometry`` is not a row iterable; wrap it in a
+    /// one-item sequence. Rows may be native geometries, WKB byte buffers,
+    /// GeoJSON mappings, or objects exposing ``__geo_interface__``. ``crs=``
+    /// attaches shared metadata and never transforms coordinates.
+    ///
+    /// Parameters
+    /// ----------
+    /// values : iterable of Geometry, Buffer, Mapping, or None
+    ///     One native geometry, WKB buffer, GeoJSON mapping, or object exposing
+    ///     ``__geo_interface__`` per input position; ``None`` marks a missing
+    ///     row.
+    /// crs : CrsInput or None, optional, default None
+    ///     Shared CRS label. CRS-free rows adopt it; existing CRS values must
+    ///     be equivalent to it.
+    /// epoch : float or None, optional, default None
+    ///     Shared coordinate epoch for a CRS that admits geometry epochs.
+    ///     Existing epochs must agree with it.
+    ///
+    /// Returns
+    /// -------
+    /// GeometryArray
+    ///     An immutable, row-aligned array with missing positions preserved.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If ``values`` is a single geometry or contains an unsupported value.
+    /// CRSError
+    ///     If ``crs`` cannot be resolved or an epoch is invalid for its CRS.
+    /// CRSMismatchError
+    ///     If input CRS or epoch metadata conflicts with the shared frame.
+    /// GeometryError
+    ///     If ``epoch`` is non-finite.
+    /// ParseError
+    ///     If a WKB or GeoJSON row is malformed.
     #[new]
     #[pyo3(signature = (values, *, crs = None, epoch = None))]
     pub fn new(
@@ -452,18 +470,25 @@ impl PyGeometryArray {
             ));
         }
         let array = self.clone();
-        let domain = crate::io::geojson_domain(self.crs_str())?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = geojson_domain_metric(self.crs_str(), &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic GeoJSON source ordinates require the array CRS metric",
+                )
+            })
+        };
         let geometry_texts = py
             .detach(move || {
-                let mut texts = Vec::with_capacity(array.len());
+                let mut texts: Vec<Option<String>> = Vec::with_capacity(array.len());
                 for row in array.row_operation().rows_with_missing(|| ()) {
-                    let text =
-                        match row {
-                            ArrayRow::Missing { .. } => None,
-                            ArrayRow::Present(row) => Some(row.row().try_with_shape(|shape| {
-                                crate::io::to_geojson_string(shape, domain)
-                            })?),
-                        };
+                    let text = match row {
+                        ArrayRow::Missing { .. } => None,
+                        ArrayRow::Present(row) => Some(row.row().try_with_shape(|shape| {
+                            crate::io::to_geojson_string_with_metric(shape, domain, &metric_access)
+                        })?),
+                    };
                     texts.push(text);
                 }
                 Ok::<_, crate::error::Error>(texts)
@@ -556,6 +581,7 @@ impl PyGeometryArray {
     /// Empty rows are all-``nan`` (intentional: a fixed-width ndarray cannot
     /// hold ``None`` like a scalar geometry); missing rows are also all-``nan``
     /// and are identified by `.is_missing`.
+    /// Geographic longitude intervals may cross the seam, with ``minx > maxx``.
     ///
     /// Returns
     /// -------
@@ -566,7 +592,8 @@ impl PyGeometryArray {
         crate::bounds_array(py, self)
     }
     /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
-    /// ``None`` if every geometry is empty.
+    /// ``None`` if every geometry is empty. Geographic longitude bounds use
+    /// the CRS's periodic interval, so ``minx > maxx`` denotes a seam crossing.
     ///
     /// Returns
     /// -------
@@ -671,9 +698,8 @@ impl PyGeometryArray {
     /// ``1`` for a single point/line/polygon, including a typed empty; the
     /// member count for a multi/collection, and ``0`` for an empty multipart
     /// or collection. Explicit empty members still count in their multipart's
-    /// member count. Missing rows use Shapely's ``None``-geometry sentinel
-    /// ``0``; use `.is_missing` to distinguish them from present empty
-    /// geometries.
+    /// member count. Missing rows have count ``0``; use `.is_missing` to
+    /// distinguish them from present empty geometries.
     ///
     /// Returns
     /// -------
@@ -761,23 +787,25 @@ impl PyGeometryArray {
             int64_array(py, int64_values)
         }
     }
-    /// Return an array with the same topology and replacement coordinates.
+    /// Return an array with selected coordinate ordinates replaced.
     ///
-    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view) or
-    /// explicit ``x=`` and ``y=`` columns. Missing rows contribute no input
-    /// coordinates and remain missing in the result.
+    /// Pass one ``(N, dims)`` matrix (including a `Coordinates` view), or
+    /// replace any of ``x=``, ``y=``, ``z=``, and ``m=`` by a scalar or a
+    /// column over the flattened coordinate sequence. Omitted ordinates are
+    /// preserved. ``z=None`` and ``m=None`` remove those dimensions; X and Y
+    /// cannot be removed. Missing rows contribute no coordinates and remain
+    /// missing. Matrix and column modes cannot be mixed. Calling without
+    /// arguments returns an unchanged value.
     ///
     /// Parameters
     /// ----------
     /// coordinates : sequence of float, optional
     ///     Replacement ``(N, dims)`` coordinate matrix, including a
     ///     `Coordinates` view.
-    /// x, y : sequence of float, optional
-    ///     Replacement X and Y columns.
-    /// z, m : sequence of float, optional
-    ///     Replacement Z and M columns when the array already has those axes.
-    ///     Omitted axes are carried unchanged; ``None`` is not a clearing
-    ///     sentinel.
+    /// x, y, z, m : float, sequence of float, or None, optional
+    ///     Replace one ordinate by a scalar broadcast over vertices or a
+    ///     column with one value per coordinate. Omitted ordinates are
+    ///     preserved. ``None`` removes Z or M and is not valid for X or Y.
     ///
     /// Returns
     /// -------
@@ -787,15 +815,23 @@ impl PyGeometryArray {
     /// --------
     /// >>> import gometry as gm
     /// >>> arr = gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])])
-    /// >>> arr.set_coordinates([(5, 5), (6, 6)]).to_wkt()
+    /// >>> arr.with_coordinates([(5, 5), (6, 6)]).to_wkt()
     /// ['LINESTRING (5 5, 6 6)']
     #[pyo3(signature = (*args, **kwargs), text_signature = "($self, coordinates=None, /, *, x=..., y=..., z=..., m=...)")]
-    pub fn set_coordinates(
+    pub fn with_coordinates(
         &self,
         py: Python<'_>,
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Self> {
+        let no_matrix = match args.len()? {
+            0 => true,
+            1 => args.get_item(0)?.is_none(),
+            _ => false,
+        };
+        if no_matrix && kwargs.is_none_or(|kwargs| kwargs.is_empty()) {
+            return Ok(self.clone());
+        }
         // Union axes of the coordinate view (NaN-padded for members that lack
         // Z/M). Non-uniform arrays (mixed-axes rows, heterogeneous GC) parse
         // against that layout; replace_array_coordinates applies per-row via
@@ -831,17 +867,22 @@ impl PyGeometryArray {
     /// >>> arr = gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])])
     /// >>> arr.map_coordinates(lambda m: m + 1).to_wkt()
     /// ['LINESTRING (1 1, 2 2)']
-    pub fn map_coordinates(&self, py: Python<'_>, func: &Bound<'_, PyAny>) -> PyResult<Self> {
-        // Same union-axes + per-row replace path as set_coordinates; no early
+    pub fn map_coordinates(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        func: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        // Same union-axes + per-row replace path as with_coordinates; no early
         // reject when uniform_axes() is None.
-        let coords = PyCoordinates::new(self.coordinate_view());
+        let array = slf.borrow();
+        let coords = PyCoordinates::new(array.coordinate_view(), slf.clone().unbind().into_any());
         let replacement = map_coordinates_callback(py, coords, func)?;
-        replace_array_coordinates(self, py, replacement)
+        replace_array_coordinates(&array, py, replacement)
     }
     /// Per-geometry topological dimension — ``0`` point, ``1`` curve, ``2``
-    /// areal (see `Geometry.topological_dimension`). Missing rows use
-    /// Shapely's ``None``-geometry sentinel ``-1``; use `.is_missing` to
-    /// distinguish them from present point-like geometries.
+    /// areal (see `Geometry.topological_dimension`). Missing rows use ``-1``;
+    /// use `.is_missing` to distinguish them from present point-like
+    /// geometries.
     ///
     /// Returns
     /// -------
@@ -967,80 +1008,57 @@ impl PyGeometryArray {
     ) -> crate::error::Result<Option<(f64, f64, f64, f64)>> {
         let domain = crate::geometry::topology_domain(&self.frame).ok();
         let element_bounds = self.existing_element_bounds();
-        if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain
-            && !matches!(
-                self.storage(),
-                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            )
-        {
-            let mixed = matches!(self.storage(), GeometryArrayStorage::Mixed(_));
-            if mixed || element_bounds.is_some() {
-                // Mixed storage has no published element-bounds cache; this
-                // is its required raw-extrema fold, fused with seam admission.
-                let mut total: Option<Bounds> = None;
-                let mut crossing = false;
-                let row_operation = self.row_operation();
-                for row in row_operation.present_rows() {
-                    let logical = row.logical();
-                    let shape_row = row.row();
-                    let bounds = element_bounds.as_ref().map_or_else(
-                        || shape_row.quick_bounds(),
-                        |bounds| bounds.get(logical).copied().flatten(),
-                    );
-                    let Some(bounds) = bounds else {
-                        continue;
-                    };
-                    match &mut total {
-                        Some(current) => current.include_bounds(bounds),
-                        None => total = Some(bounds),
-                    }
-                    if frame.bounds_certify_ordinary_support(bounds) {
-                        continue;
-                    }
-                    if shape_row.with_shape(|shape| {
-                        crate::geometry::crosses_antimeridian_in_frame(shape, frame)
-                    })? {
-                        crossing = true;
-                        break;
-                    }
-                }
-                if crossing {
-                    let shapes = self
-                        .present_shape_rows()
-                        .map(|row| row.map(|(_, shape)| shape))
-                        .collect::<crate::error::Result<Vec<_>>>()?;
-                    return Ok(
-                        crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
-                            shapes, frame,
-                        )
-                        .map(Bounds::into_tuple),
-                    );
-                }
-                return Ok(total.map(Bounds::into_tuple));
+        if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
+            if element_bounds.is_none()
+                && let Ok(Some(bounds)) = Python::attach(|py| {
+                    self.reduce_packed_columns_detached(py, |columns| {
+                        Ok(geographic_total_bounds_from_columns(&columns, frame)?)
+                    })
+                })
+            {
+                return Ok(bounds.map(Bounds::into_tuple));
             }
-
-            // Only a crossing row needs the shapes; scan for one first so the
-            // uncached packed case leaves the columnar fold below its inputs.
-            let mut crossing = false;
             let row_operation = self.row_operation();
+            let mut raw: Option<Bounds> = None;
+            let mut ordinary = true;
             for row in row_operation.present_rows() {
-                if row.row().with_shape(|shape| {
-                    crate::geometry::crosses_antimeridian_in_frame(shape, frame)
-                })? {
-                    crossing = true;
+                let bounds = element_bounds.as_ref().map_or_else(
+                    || row.row().quick_bounds(),
+                    |bounds| bounds.get(row.logical()).copied().flatten(),
+                );
+                let Some(bounds) = bounds else {
+                    continue;
+                };
+                match &mut raw {
+                    Some(total) => total.include_bounds(bounds),
+                    None => raw = Some(bounds),
+                }
+                if !raw.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+                    ordinary = false;
                     break;
                 }
             }
-            if crossing {
-                let shapes = self
-                    .present_shape_rows()
-                    .map(|row| row.map(|(_, shape)| shape))
-                    .collect::<crate::error::Result<Vec<_>>>()?;
-                return Ok(
-                    crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(shapes, frame)
-                        .map(Bounds::into_tuple),
-                );
+            if ordinary {
+                return Ok(raw.map(Bounds::into_tuple));
             }
+            let shapes = row_operation
+                .present_rows()
+                .map(|row| {
+                    use crate::geometry::storage::ShapeRow;
+                    Ok(match row.row() {
+                        ShapeRow::Handle(plan) => std::borrow::Cow::Borrowed(plan.shape()),
+                        ShapeRow::Shape(shape) => std::borrow::Cow::Borrowed(shape),
+                        ShapeRow::Point(point) => std::borrow::Cow::Owned(Shape::Point(point)),
+                        ShapeRow::Packed(row) => std::borrow::Cow::Owned(row.to_shape()?),
+                    })
+                })
+                .collect::<crate::error::Result<Vec<_>>>()?;
+            return Ok(
+                crate::geographic::GeographicSupportProducts::public_bounds_for_shapes(
+                    frame, &shapes, None,
+                )
+                .map(Bounds::into_tuple),
+            );
         }
         if let Some(bounds) = element_bounds {
             return Ok(bounds
@@ -1055,7 +1073,7 @@ impl PyGeometryArray {
         }
         if let Ok(Some(Some(bounds))) = Python::attach(|py| {
             self.reduce_packed_columns_detached(py, |columns| {
-                Ok(total_bounds_from_columns(&columns))
+                Ok(raw_total_bounds_from_columns(&columns))
             })
         }) {
             return Ok(Some(bounds.into_tuple()));
@@ -1071,7 +1089,7 @@ impl PyGeometryArray {
                     total
                 })
         } else {
-            self.storage().total_bounds()
+            self.storage().raw_total_bounds()
         };
         Ok(bounds.map(Bounds::into_tuple))
     }
@@ -1299,6 +1317,7 @@ mod geographic_total_bounds_tests {
 
     #[test]
     fn mixed_total_bounds_folds_certified_rows_and_retains_alias_crossing() {
+        crate::test_support::initialize_python();
         let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("CRS84");
         let ordinary = polygon(&[
             (-10.0, -5.0),
@@ -1331,11 +1350,63 @@ mod geographic_total_bounds_tests {
             .expect("mixed alias array");
         assert_eq!(
             alias_array.compute_total_bounds().expect("total bounds"),
-            crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
-                [&alias, &point],
+            crate::geographic::GeographicSupportEnvelope::try_from_shapes(
                 crate::geographic::GeographicFrame::crs84(),
+                &[&alias, &point],
             )
+            .ok()
+            .and_then(|support| support.bounds(crate::geographic::GeographicFrame::crs84()))
             .map(Bounds::into_tuple)
         );
+    }
+}
+
+#[cfg(test)]
+mod mixed_replacement_row_note_tests {
+    use pyo3::prelude::*;
+
+    use super::{PyGeometryArray, replace_array_coordinates};
+    use crate::crs::frame::Frame;
+    use crate::geometry::storage::ValidityMask;
+    use crate::geometry::storage::replacement::{CoordinateReplacement, ReplacementAxis};
+    use crate::geometry::{CoordinateAxes, Shape, SharedSlice};
+
+    #[test]
+    fn present_empty_mixed_replacement_error_keeps_logical_row_note() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let empty = crate::io::parse_wkt("POLYGON M EMPTY").expect("typed empty polygon");
+            let polygon = crate::io::parse_wkt("POLYGON M ((0 0 11, 4 0 12, 4 4 13, 0 0 11))")
+                .expect("measured polygon");
+            let array = PyGeometryArray::mixed_shapes(
+                vec![Shape::empty_point(), empty, Shape::empty_point(), polygon],
+                Frame::None,
+            )
+            .expect("mixed geometry array")
+            .with_missing_mask(Some(
+                ValidityMask::from_vec(4, vec![true, false, true, false])
+                    .expect("logical missing mask"),
+            ))
+            .expect("missing rows attach");
+            let replacement = CoordinateReplacement {
+                xs: Some(SharedSlice::from_vec(vec![0.0, 4.0, 4.0, 0.5])),
+                ys: Some(SharedSlice::from_vec(vec![0.0, 0.0, 4.0, 0.0])),
+                zs: ReplacementAxis::Carry,
+                ms: ReplacementAxis::Carry,
+                len: 4,
+                axes: CoordinateAxes::XYM,
+                positional: false,
+            };
+
+            let error = replace_array_coordinates(&array, py, replacement)
+                .expect_err("open mixed polygon replacement fails");
+            let notes = error
+                .value(py)
+                .getattr("__notes__")
+                .expect("row error note")
+                .extract::<Vec<String>>()
+                .expect("row error notes are strings");
+            assert_eq!(notes, ["while processing array element 3"]);
+        });
     }
 }

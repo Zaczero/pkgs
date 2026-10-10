@@ -43,7 +43,7 @@ pub enum GeometryErrorKind {
     #[error("clip rectangle bounds must be finite and ordered min <= max")]
     InvalidRectangle,
     #[error(
-        "geographic clip rectangle bounds must use finite longitudes in [-180, 180] and south <= north"
+        "geographic rectangle bounds must use finite longitudes and latitudes within the CRS frame, with south <= north"
     )]
     InvalidGeographicRectangle,
     #[error("non-empty linework is required")]
@@ -100,7 +100,7 @@ pub enum GeometryErrorKind {
     AntimeridianSplitFailed(Box<str>),
     #[error(
         "split_antimeridian cannot preserve Z/M on inferred pole-closure vertices; call \
-         set_z(None).set_m(None) first"
+         with_coordinates(z=None, m=None) first"
     )]
     AntimeridianPoleOrdinates,
     #[error("{0}")]

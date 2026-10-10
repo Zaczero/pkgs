@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 
 use crate::error::Result;
+use crate::geometry::exact_arith::{ExactSign, retained_site_orientation};
 use crate::geometry::{
     CoordSeq, LineSeq, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale, orientation,
     same_topological_coordinate, scaled_residual,
@@ -108,6 +109,64 @@ pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<usize> {
     }
     hull.pop();
     hull
+}
+
+/// Monotone chain over point sites in one retained periodic chart.
+///
+/// Lexicographic X comparison uses the exact native window/lift pair and
+/// turn decisions evaluate those same retained expressions. Rounded chart X
+/// is never used to order or merge sites.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "monotone-chain indices are constructed from this admitted site slice"
+)]
+pub(crate) fn monotone_chain_chart_hull(
+    sites: &[crate::geographic::ChartPointSite],
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Vec<usize>> {
+    let mut indices = (0..sites.len()).collect::<Vec<_>>();
+    indices.sort_unstable_by(|&left, &right| sites[left].compare_chart_xy(sites[right]));
+    if indices.len() <= 2 {
+        return Ok(indices);
+    }
+
+    let mut hull: Vec<usize> = Vec::with_capacity(indices.len());
+    for &site in &indices {
+        while let Some((current, prefix)) = hull.split_last()
+            && let Some((previous, _)) = prefix.split_last()
+        {
+            let turn = retained_site_orientation(frame.longitude(), &[
+                (sites[*previous].longitude(), sites[*previous].source_y()),
+                (sites[*current].longitude(), sites[*current].source_y()),
+                (sites[site].longitude(), sites[site].source_y()),
+            ])?;
+            if turn == ExactSign::Positive {
+                break;
+            }
+            hull.pop();
+        }
+        hull.push(site);
+    }
+    let lower_len = hull.len();
+    for &site in indices.iter().rev().skip(1) {
+        while hull.len() > lower_len
+            && let Some((current, prefix)) = hull.split_last()
+            && let Some((previous, _)) = prefix.split_last()
+        {
+            let turn = retained_site_orientation(frame.longitude(), &[
+                (sites[*previous].longitude(), sites[*previous].source_y()),
+                (sites[*current].longitude(), sites[*current].source_y()),
+                (sites[site].longitude(), sites[site].source_y()),
+            ])?;
+            if turn == ExactSign::Positive {
+                break;
+            }
+            hull.pop();
+        }
+        hull.push(site);
+    }
+    hull.pop();
+    Ok(hull)
 }
 
 /// Akl–Toussaint pre-filter: points strictly inside the convex quad of the

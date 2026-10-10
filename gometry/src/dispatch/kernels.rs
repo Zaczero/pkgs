@@ -11,6 +11,10 @@ use crate::crs::{ResolvedMetric, metric_interpolate_m};
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{CachelessRowContext, GeodesicBinaryRow, LinearReferenceRow};
 use crate::error::Result;
+use crate::geographic::PointSelectionChart;
+use crate::geographic::chart::{
+    point_set_convex_hull_shape, point_set_minimum_rotated_rectangle_shape,
+};
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DerivedPointStrategy, Dimension,
     GeometryKind, MeasureRange, OriginSpec, PreparedPlan, Shape, SimplifyMethod, SmoothMethod,
@@ -59,6 +63,64 @@ fn publish_planar_geographic_edges_budgeted(
     }
 }
 
+fn publish_planar_geographic_edges_with_context(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    ctx: &CachelessRowContext<'_>,
+    operation: &'static str,
+) -> Result<Shape> {
+    match (model, ctx.domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            let metric_access = || {
+                ctx.metric
+                    .source_chart_metric(ctx.frame.crs_str())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                    })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+            crate::geometry::publish_raw_computed_shape_with_context(
+                &output,
+                frame,
+                operation,
+                &source_context,
+            )
+        },
+        _ => Ok(output),
+    }
+}
+
+fn publish_planar_geographic_edges_budgeted_with_context(
+    output: Shape,
+    model: &crate::crs::MetricModel,
+    ctx: &CachelessRowContext<'_>,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<Shape> {
+    match (model, ctx.domain) {
+        (crate::crs::MetricModel::Planar { .. }, TopologyDomain::Geographic(frame)) => {
+            let metric_access = || {
+                ctx.metric
+                    .source_chart_metric(ctx.frame.crs_str())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                    })
+            };
+            crate::geometry::publish_raw_computed_shape_with_budget_and_context(
+                &output,
+                frame,
+                &crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+                budget,
+            )
+        },
+        _ => Ok(output),
+    }
+}
+
 fn publish_planar_geographic_constructive(
     output: Shape,
     model: &crate::crs::MetricModel,
@@ -89,6 +151,15 @@ pub(crate) fn unary_centroid(data: &PreparedPlan, ctx: &CachelessRowContext<'_>)
 
 /// Envelope kernel shared by the spine-routed free function.
 pub(crate) fn unary_envelope(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
+    if let TopologyDomain::Geographic(frame) = ctx.domain {
+        return crate::geographic::GeographicSupportEnvelope::try_from_shape_with_bounds(
+            frame,
+            data.shape(),
+            data.bounds(),
+        )
+        .map_err(crate::error::Error::from)?
+        .into_shape(frame);
+    }
     let output = data.bounds().map_or_else(
         || Ok(Shape::empty_polygon()),
         crate::geometry::bounds_to_shape,
@@ -101,7 +172,15 @@ pub(crate) fn unary_convex_hull(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    publish_raw_computed_if_geographic(data.shape().convex_hull()?, ctx.domain, "convex_hull")
+    let shape = data.shape();
+    if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+        && let TopologyDomain::Geographic(frame) = ctx.domain
+        && PointSelectionChart::accepts_point_set(shape)
+        && let Some(hull) = point_set_convex_hull_shape(shape, frame, data.bounds())?
+    {
+        return Ok(hull);
+    }
+    publish_raw_computed_if_geographic(shape.convex_hull()?, ctx.domain, "convex_hull")
 }
 
 /// Simplify kernel shared by the spine-routed free function.
@@ -266,7 +345,7 @@ pub(crate) fn unary_offset_curve_budgeted(
             shape.offset_curve_budgeted(d, join_style, quadrant_segments, miter_limit, budget)
         },
     )?;
-    publish_planar_geographic_edges_budgeted(output, model, ctx.domain, budget)
+    publish_planar_geographic_edges_budgeted_with_context(output, model, ctx, budget)
 }
 
 /// Point-on-surface kernel shared by the spine-routed free function.
@@ -298,7 +377,7 @@ pub(crate) fn unary_concave_hull(
         concavity,
         length_threshold.get(ctx.lane.row()),
     )?;
-    publish_planar_geographic_edges(output, model, ctx.domain, "concave_hull")
+    publish_planar_geographic_edges_with_context(output, model, ctx, "concave_hull")
 }
 
 /// Polylabel kernel shared by the spine-routed free function.
@@ -376,8 +455,17 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
+    let shape = data.shape();
+    if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
+        && let TopologyDomain::Geographic(frame) = ctx.domain
+        && PointSelectionChart::accepts_point_set(shape)
+        && let Some(rectangle) =
+            point_set_minimum_rotated_rectangle_shape(shape, frame, data.bounds())?
+    {
+        return Ok(rectangle);
+    }
     publish_raw_computed_if_geographic(
-        data.shape().minimum_rotated_rectangle()?,
+        shape.minimum_rotated_rectangle()?,
         ctx.domain,
         "minimum_rotated_rectangle",
     )
@@ -411,7 +499,17 @@ fn publish_computed_point_or_raw_if_geographic(
 
 /// Boundary kernel shared by the spine-routed free function.
 pub(crate) fn unary_boundary(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    crate::geometry::boundary(data, ctx.domain)
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic boundary source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    crate::geometry::boundary_with_metric(
+        data,
+        &crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access)),
+    )
 }
 
 /// ``is_empty`` kernel shared by the spine-routed free function.
@@ -491,20 +589,48 @@ pub(crate) fn unary_split_antimeridian(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
-    data.shape().split_antimeridian_in_frame(frame)
+    if ctx.frame.crs_ref().is_none() {
+        return data.shape().split_antimeridian_in_frame(frame);
+    }
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic antimeridian source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    data.shape()
+        .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))
 }
 
 /// ``node`` kernel shared by the spine-routed free function.
-pub(crate) fn unary_node(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>) -> Result<Shape> {
-    data.shape().node(Strictness::Lenient)
+pub(crate) fn unary_node(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<Shape> {
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic node source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+    data.shape()
+        .node_with_context(Strictness::Lenient, &source_context)
 }
 
 /// Build-area kernel shared by the scalar and array unary method spine.
 pub(crate) fn unary_build_area(
     data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
+    ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    data.shape().build_area(false)
+    let metric_access = || {
+        ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic build_area source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+    data.shape().build_area_with_context(false, &source_context)
 }
 
 /// Smooth kernel shared by the spine-routed free function.
@@ -558,6 +684,15 @@ fn smooth_for_domain(
                 .smooth_budgeted(iterations, method, keep_endpoints, budget)
         },
         TopologyDomain::Geographic(frame) => {
+            let metric_access = || {
+                ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic computed-edge source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
             let (output, preserved_vertices) = data.shape().smooth_budgeted_with_vertex_intents(
                 iterations,
                 method,
@@ -569,6 +704,7 @@ fn smooth_for_domain(
                 &output,
                 frame,
                 &preserved_vertices,
+                &source_context,
                 budget,
             )
         },
@@ -619,7 +755,7 @@ pub(crate) fn segmentize_placement(
 
 fn segmentize_rhumb_crs_error() -> crate::error::Error {
     crate::crs::CrsError::message(
-        "segmentize path='rhumb' requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
+        "segmentize path='rhumb' requires a geographic CRS; use with_crs(...) or to_crs(...) to attach one",
     )
 }
 
@@ -839,7 +975,17 @@ pub(crate) fn unary_snap_to_grid(
     repair: bool,
 ) -> Result<Shape> {
     if repair {
-        data.shape().snap_to_grid_repaired(size, origin, ctx.domain)
+        let metric_access = || {
+            ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic snap_to_grid repair requires the operation's CRS metric",
+                )
+            })
+        };
+        let source_context =
+            crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+        data.shape()
+            .snap_to_grid_repaired(size, origin, ctx.domain, &source_context)
     } else {
         data.shape().snap_to_grid(size, origin)
     }
@@ -856,27 +1002,7 @@ pub(crate) fn unary_force_3d(
     _ctx: &CachelessRowContext<'_>,
     z: f64,
 ) -> Result<Shape> {
-    data.shape().set_z(Some(z), false)
-}
-
-/// Set-Z kernel shared by the spine-routed free function.
-pub(crate) fn unary_set_z(
-    data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
-    value: Option<f64>,
-    overwrite: bool,
-) -> Result<Shape> {
-    data.shape().set_z(value, overwrite)
-}
-
-/// Set-M kernel shared by the spine-routed free function.
-pub(crate) fn unary_set_m(
-    data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
-    value: Option<f64>,
-    overwrite: bool,
-) -> Result<Shape> {
-    data.shape().set_m(value, overwrite)
+    data.shape().replace_z(Some(z), false)
 }
 
 /// Quantize kernel shared by the spine-routed free function.
@@ -896,9 +1022,16 @@ pub(crate) fn unary_clip_by_rect(
     drop: bool,
 ) -> Result<Shape> {
     if let crate::geometry::TopologyDomain::Geographic(frame) = ctx.domain {
+        let metric_access = || {
+            ctx.metric
+                .geographic_chart_metric()?
+                .ok_or_else(|| crate::crs::CrsError::invalid(
+                    "geographic rectangle clipping requires the operation's CRS metric for source ordinates",
+                ))
+        };
         return data
             .shape()
-            .clip_by_rect_in_geographic_frame(rect, drop, frame);
+            .clip_by_rect_in_geographic_frame(rect, drop, frame, &metric_access);
     }
     data.clip_by_rect_with_bounds(rect, drop, data.bounds())
 }
@@ -914,20 +1047,13 @@ pub(crate) fn unary_bounds(
 ) -> Result<Option<Bounds>> {
     match ctx.domain {
         crate::geometry::TopologyDomain::Cartesian => Ok(data.bounds()),
-        crate::geometry::TopologyDomain::Geographic(frame) => {
-            let bounds = data.bounds();
-            if bounds.is_some_and(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
-                return Ok(bounds);
-            }
-            if crate::geometry::geographic_crossing(ctx.domain, data) {
-                Ok(crate::geometry::geographic_crossing_bounds_in_frame(
-                    data.shape(),
-                    frame,
-                ))
-            } else {
-                Ok(bounds)
-            }
-        },
+        crate::geometry::TopologyDomain::Geographic(frame) => Ok(
+            crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
+                frame,
+                data.shape(),
+                data.bounds(),
+            ),
+        ),
     }
 }
 
@@ -1000,9 +1126,6 @@ pub(crate) fn binary_distance_3d(
             to_metre,
         ));
     }
-    if ctx.lane.is_array() {
-        return Ok(f64::NAN);
-    }
     Ok(scale_length(left.distance_3d(right)?, to_metre))
 }
 
@@ -1014,7 +1137,25 @@ pub(crate) fn binary_overlay(
     op: crate::OverlayOp,
     strictness: crate::geometry::Strictness,
 ) -> Result<Shape> {
-    op.apply_in_frame(left.shape(), right.shape(), ctx.domain, strictness)
+    match ctx.domain {
+        TopologyDomain::Cartesian => op.apply(left.shape(), right.shape(), strictness),
+        TopologyDomain::Geographic(_) => {
+            let metric_access = || {
+                ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic overlay source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
+            crate::geometry::overlay_all_with_metric(
+                &[left.shape(), right.shape()],
+                ctx.domain,
+                op,
+                strictness,
+                &metric_access,
+            )
+        },
+    }
 }
 
 /// ``line_interpolate_point`` kernel shared by the spine-routed free function.
@@ -1026,13 +1167,13 @@ pub(crate) fn unary_line_interpolate_point(
 ) -> Result<Shape> {
     degrade_linref_point(
         line_interpolate_shape(
-            ctx.model,
+            ctx.metric,
             data,
             ctx.cache,
-            distance.get(ctx.op.lane.row()),
+            distance.get(ctx.lane.row()),
             normalized,
         ),
-        ctx.op.lane,
+        ctx.lane,
     )
 }
 
@@ -1045,12 +1186,12 @@ pub(crate) fn unary_line_substring(
     normalized: bool,
 ) -> Result<Shape> {
     let range = MeasureRange::substring_distance(
-        start_distance.get(ctx.op.lane.row()),
-        end_distance.get(ctx.op.lane.row()),
+        start_distance.get(ctx.lane.row()),
+        end_distance.get(ctx.lane.row()),
     )?;
     degrade_linref_linestring(
-        line_substring_shape(ctx.model, data, ctx.cache, range, normalized),
-        ctx.op.lane,
+        line_substring_shape(ctx.metric, data, ctx.cache, range, normalized),
+        ctx.lane,
     )
 }
 
@@ -1061,8 +1202,8 @@ pub(crate) fn unary_line_interpolate_point_m(
     m: &F64Param,
 ) -> Result<Shape> {
     degrade_linref_point(
-        line_interpolate_shape_m(ctx.model, data, ctx.cache, m.get(ctx.op.lane.row())),
-        ctx.op.lane,
+        line_interpolate_shape_m(ctx.metric, data, ctx.cache, m.get(ctx.lane.row())),
+        ctx.lane,
     )
 }
 
@@ -1073,13 +1214,11 @@ pub(crate) fn unary_line_substring_m(
     start_m: &F64Param,
     end_m: &F64Param,
 ) -> Result<Shape> {
-    let range = MeasureRange::substring_measure(
-        start_m.get(ctx.op.lane.row()),
-        end_m.get(ctx.op.lane.row()),
-    )?;
+    let range =
+        MeasureRange::substring_measure(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
     degrade_linref_linestring(
-        line_substring_shape_m(ctx.model, data, ctx.cache, range),
-        ctx.op.lane,
+        line_substring_shape_m(ctx.metric, data, ctx.cache, range),
+        ctx.lane,
     )
 }
 

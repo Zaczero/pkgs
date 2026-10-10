@@ -22,7 +22,11 @@ from fractions import Fraction
 
 import gometry as gm
 import pytest
-from pyproj import Geod
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 oracle wheel is unavailable for this interpreter'
+)
+Geod = pyproj.Geod
 
 
 def _endpoints(line: gm.Geometry) -> list[tuple[float, float]]:
@@ -331,9 +335,9 @@ class TestEmptyContract:
         empty = gm.from_wkt('POLYGON EMPTY', crs=3857)
         point = gm.Point(1, 1, crs=3857)
         a, b = gm.nearest_points(empty, point)
-        assert a.crs == 'EPSG:3857'
-        assert b.crs == 'EPSG:3857'
-        assert gm.shortest_line(empty, point).crs == 'EPSG:3857'
+        assert a.crs == gm.CRS('EPSG:3857')
+        assert b.crs == gm.CRS('EPSG:3857')
+        assert gm.shortest_line(empty, point).crs == gm.CRS('EPSG:3857')
 
 
 class TestSurfaceConsistency:
@@ -422,6 +426,101 @@ class TestSurfaceConsistency:
 
 class TestGeodesic:
     """Geographic CRS produces geodesic witnesses; planar override escapes."""
+
+    @pytest.mark.parametrize(
+        'source_wkt,expected_z,expected_m',
+        [
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))',
+                40.0,
+                400.0,
+            ),
+            (
+                'GEOMETRYCOLLECTION ZM (POINT ZM (0 1 10 100),LINESTRING ZM (-1 1 30 300,1 1 50 500))',
+                40.0,
+                400.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,0 1 10 100),(-1 1 30 300,1 1 50 500))',
+                40.0,
+                400.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1.0000000000000002 30 300,1 1.0000000000000002 50 500))',
+                10.0,
+                100.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((0 1 10 100,2 1 20 200),(-2 1 30 300,0 1 50 500))',
+                10.0,
+                100.0,
+            ),
+            (
+                'MULTILINESTRING ZM ((-1 1 10 100,1 1 20 200),(-1 1 30 300,1 1 50 500))',
+                15.0,
+                150.0,
+            ),
+        ],
+        ids=[
+            'mirror',
+            'isolated-point',
+            'degenerate',
+            'two-ulp-farther',
+            'same-endpoint-role',
+            'same-interior-role',
+        ],
+    )
+    @pytest.mark.parametrize('reverse', [False, True])
+    def test_geographic_witness_role_preserves_primitive_ordinates(
+        self, source_wkt, expected_z, expected_m, reverse
+    ) -> None:
+        point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326, epoch=2020.0)
+        source = gm.from_wkt(source_wkt, crs=4326, epoch=2020.0)
+        left, right = (source, point) if reverse else (point, source)
+        pair = gm.nearest_points(left, right)
+        witness = pair[0 if reverse else 1]
+        assert witness.z == pytest.approx(expected_z, rel=0.0, abs=4e-14)
+        assert witness.m == expected_m
+        assert witness.crs == source.crs
+        assert witness.epoch == 2020.0
+        assert gm.distance(left, right).hex() == '0x1.afee6378861e6p+16'
+        shortest = gm.shortest_line(left, right)
+        index = 0 if reverse else -1
+        assert shortest.coords.z[index] == pytest.approx(expected_z, rel=0.0, abs=4e-14)
+        assert shortest.coords.m[index] == expected_m
+        assert shortest.crs == source.crs
+        assert shortest.epoch == 2020.0
+
+    @pytest.mark.parametrize('reverse', [False, True])
+    @pytest.mark.parametrize('array_pair', [False, True])
+    def test_geographic_witness_role_nullable_gathered_broadcast(
+        self, reverse, array_pair
+    ) -> None:
+        point = gm.from_wkt('POINT ZM (0 0 7 70)', crs=4326, epoch=2020.0)
+        source = gm.from_wkt(
+            'MULTILINESTRING ZM ((0 1 10 100,1 2 20 200),(-1 1 30 300,1 1 50 500))',
+            crs=4326,
+            epoch=2020.0,
+        )
+        sources = gm.GeometryArray([source, None, source])[[2, 0, 1, 2]]
+        queries = gm.GeometryArray([point] * 4) if array_pair else point
+        left, right = (sources, queries) if reverse else (queries, sources)
+        pair = gm.nearest_points(left, right)
+        witnesses = pair[0 if reverse else 1]
+        for row, witness in enumerate(witnesses):
+            if row == 2:
+                assert witness is None
+            else:
+                assert witness.z == 40.0
+                assert witness.m == 400.0
+                assert witness.crs == source.crs
+                assert witness.epoch == 2020.0
+        for row, shortest in enumerate(gm.shortest_line(left, right)):
+            if row == 2:
+                assert shortest is None
+            else:
+                assert shortest.coords.z[0 if reverse else -1] == 40.0
+                assert shortest.coords.m[0 if reverse else -1] == 400.0
 
     @pytest.mark.parametrize(
         'longitude',
@@ -575,6 +674,132 @@ class TestGeodesic:
         distance = gm.distance(point, line)
         distance_floor = 32.0 * math.ulp(max(reference, distance, 1.0))
         assert abs(distance - reference) <= minimum_gap + distance_floor
+
+    @pytest.mark.parametrize(
+        'target_is_collection',
+        [
+            pytest.param(False, id='bare-point'),
+            pytest.param(True, id='collection-point'),
+        ],
+    )
+    @pytest.mark.parametrize(
+        'query_is_left',
+        [
+            pytest.param(True, id='query-left'),
+            pytest.param(False, id='query-right'),
+        ],
+    )
+    def test_geodesic_point_shortest_line_preserves_selected_source_positions(
+        self, target_is_collection: bool, query_is_left: bool
+    ) -> None:
+        query = gm.Point(-123.456789, -55.678912, crs=4326)
+        target_point = gm.Point(168.4349693, 54.4497109, crs=4326)
+        target_collection = gm.from_wkt(
+            'GEOMETRYCOLLECTION (POINT (168.4349693 54.4497109))',
+            crs=4326,
+        )
+        bare_operands = (
+            (query, target_point) if query_is_left else (target_point, query)
+        )
+        selected_target = target_collection if target_is_collection else target_point
+        operands = (
+            (query, selected_target) if query_is_left else (selected_target, query)
+        )
+        expected_endpoints = (
+            [(-123.456789, -55.678912), (168.4349693, 54.4497109)]
+            if query_is_left
+            else [(168.4349693, 54.4497109), (-123.456789, -55.678912)]
+        )
+
+        bare_nearest = gm.nearest_points(*bare_operands)
+        nearest = gm.nearest_points(*operands)
+        assert tuple(_xy(point) for point in nearest) == tuple(expected_endpoints)
+        assert tuple(_xy(point) for point in bare_nearest) == tuple(expected_endpoints)
+
+        bare_distance = gm.distance(*bare_operands)
+        distance = gm.distance(*operands)
+        assert distance.hex() == bare_distance.hex()
+
+        bare_line = gm.shortest_line(*bare_operands)
+        line = gm.shortest_line(*operands)
+        assert _endpoints(bare_line) == expected_endpoints
+        assert _endpoints(line) == expected_endpoints
+
+    def test_geodesic_shortest_line_connects_collection_interior_witness_with_zm(
+        self,
+    ) -> None:
+        query = gm.Point(5.0, 1.0, z=30.0, m=300.0, crs=4326)
+        target = gm.from_wkt(
+            'GEOMETRYCOLLECTION (LINESTRING ZM (0 0 10 100, 10 0 20 200))',
+            crs=4326,
+        )
+
+        first, second = gm.nearest_points(query, target)
+        assert first.to_wkt() == query.to_wkt()
+        assert 0.0 < second.x < 10.0
+        assert second.y == 0.0
+        assert second.z == pytest.approx(10.0 + second.x)
+        assert second.m == pytest.approx(100.0 + 10.0 * second.x)
+
+        line = gm.shortest_line(query, target)
+        assert line.coordinate_axes == 'XYZM'
+        assert list(line.coords) == [
+            next(iter(first.coords)),
+            next(iter(second.coords)),
+        ]
+
+    @pytest.mark.parametrize('layout', ['dense', 'nullable', 'gathered'])
+    @pytest.mark.parametrize(
+        'query_is_left',
+        [
+            pytest.param(True, id='query-left'),
+            pytest.param(False, id='query-right'),
+        ],
+    )
+    def test_geodesic_fixed_array_shortest_line_reads_wrapped_point_witnesses(
+        self, layout: str, query_is_left: bool
+    ) -> None:
+        query = gm.Point(-123.456789, -55.678912, crs=4326)
+        target_point = gm.Point(168.4349693, 54.4497109, crs=4326)
+        target_collection = gm.from_wkt(
+            'GEOMETRYCOLLECTION (POINT (168.4349693 54.4497109))',
+            crs=4326,
+        )
+        if layout == 'dense':
+            array = gm.GeometryArray([target_point, target_collection])
+            expected_targets = [target_point, target_collection]
+        elif layout == 'nullable':
+            array = gm.GeometryArray([None, target_collection, target_point])
+            expected_targets = [None, target_collection, target_point]
+        else:
+            source = gm.GeometryArray([
+                gm.Point(-1.0, -1.0, crs=4326),
+                target_collection,
+                None,
+                target_point,
+            ])
+            array = source[[3, 1]]
+            expected_targets = [target_point, target_collection]
+
+        result = (
+            gm.shortest_line(query, array)
+            if query_is_left
+            else gm.shortest_line(array, query)
+        )
+        assert result.is_missing.tolist() == [
+            target is None for target in expected_targets
+        ]
+        expected_endpoints = (
+            [(-123.456789, -55.678912), (168.4349693, 54.4497109)]
+            if query_is_left
+            else [(168.4349693, 54.4497109), (-123.456789, -55.678912)]
+        )
+        for index, target in enumerate(expected_targets):
+            line = result[index]
+            if target is None:
+                assert line is None
+                continue
+            assert _endpoints(line) == expected_endpoints
 
     def test_planar_override(self) -> None:
         point = gm.Point(0.5, 0.5, crs=4326)

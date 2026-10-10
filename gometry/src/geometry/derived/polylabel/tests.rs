@@ -446,6 +446,70 @@ fn minimum_circle_radius_rounds_min_subnormal_support_exactly() {
 }
 
 #[test]
+fn disk_enclosure_interval_filter_respects_overlap_and_finiteness() {
+    let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
+    let disk = smallest_enclosing_circle(&source)
+        .expect("diameter support")
+        .certified_disk(&source)
+        .expect("source-certified unit disk");
+    let coarse = DiskEnclosure {
+        x: Interval {
+            lo: -0.25,
+            hi: 0.25,
+        },
+        y: Interval {
+            lo: -0.25,
+            hi: 0.25,
+        },
+        squared_radius: Interval::exact(1.0),
+    };
+
+    // This CCW edge leaves the unit disk outside: its clearance is only 0.9.
+    // The interval lower bound overlaps the squared-radius upper bound and
+    // therefore cannot certify enclosure.
+    let unsafe_edge = (
+        Point::new_raw_xy(-2.0, -0.9).xy(),
+        Point::new_raw_xy(2.0, -0.9).xy(),
+    );
+    assert!(
+        !coarse.proves_ccw_edge_encloses(unsafe_edge.0, unsafe_edge.1),
+        "overlapping interval bounds must decline the unsafe half-plane"
+    );
+    assert!(
+        !disk
+            .ccw_edge_encloses(unsafe_edge.0, unsafe_edge.1)
+            .expect("exact unsafe-edge decision"),
+        "the exact unit disk is not enclosed by the 0.9-clearance edge"
+    );
+
+    let safe_edge = (
+        Point::new_raw_xy(-2.0, -2.0).xy(),
+        Point::new_raw_xy(2.0, -2.0).xy(),
+    );
+    assert!(coarse.proves_ccw_edge_encloses(safe_edge.0, safe_edge.1));
+    assert!(
+        disk.ccw_edge_encloses(safe_edge.0, safe_edge.1)
+            .expect("exact safe-edge decision")
+    );
+
+    let nonfinite = DiskEnclosure {
+        x: Interval {
+            lo: f64::NEG_INFINITY,
+            hi: f64::INFINITY,
+        },
+        y: Interval {
+            lo: -0.25,
+            hi: 0.25,
+        },
+        squared_radius: Interval::exact(1.0),
+    };
+    assert!(
+        !nonfinite.proves_ccw_edge_encloses(safe_edge.0, safe_edge.1),
+        "nonfinite enclosure endpoints must decline rather than prove"
+    );
+}
+
+#[test]
 fn minimum_circle_edge_certificate_rejects_an_inscribed_source_passing_ring() {
     let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
     let circle = smallest_enclosing_circle(&source).expect("diameter support");

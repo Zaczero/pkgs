@@ -1,7 +1,11 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
+use crate::crs::CrsError;
+use crate::crs::frame::WGS84_LONLAT;
+use crate::dispatch::MetricScratch;
 use crate::py::errors;
+use crate::py::support::geojson_domain_metric;
 use crate::{
     GeometryError, InvalidGeometryError, PyTypeError, Shape, exact_geometry, exact_geometry_array,
     geometry_type_err, mapping_as_dict, require_geojson_crs,
@@ -93,15 +97,23 @@ fn serialize_feature_shapes(
     py: Python<'_>,
     shapes: Vec<Option<(Shape, Option<String>)>>,
 ) -> PyResult<Vec<Option<String>>> {
+    // `to_feature_collection_impl` admits only WGS84-family geometries, and
+    // GeoJSON serializes those coordinates in CRS84 regardless of their label.
+    let mut metric_scratch = MetricScratch::default();
+    let (domain, metric) = geojson_domain_metric(Some(WGS84_LONLAT), &mut metric_scratch)?;
+    let metric_access = move || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            CrsError::invalid("GeoJSON source ordinates require the RFC 7946 CRS84 metric")
+        })
+    };
     py.detach(
         move || -> std::result::Result<_, (usize, crate::error::Error)> {
             let mut output = Vec::with_capacity(shapes.len());
             for (logical, shape) in shapes.into_iter().enumerate() {
                 output.push(
                     shape
-                        .map(|(shape, crs)| {
-                            let domain = crate::io::geojson_domain(crs.as_deref())?;
-                            crate::io::to_geojson_string(&shape, domain)
+                        .map(|(shape, _crs)| {
+                            crate::io::to_geojson_string_with_metric(&shape, domain, &metric_access)
                         })
                         .transpose()
                         .map_err(|error| (logical, error))?,
@@ -118,7 +130,15 @@ fn serialize_array_feature_shapes(
     array: crate::PyGeometryArray,
     crs: Option<String>,
 ) -> PyResult<Vec<Option<String>>> {
-    let domain = py.detach(move || crate::io::geojson_domain(crs.as_deref()))?;
+    let mut metric_scratch = MetricScratch::default();
+    let (domain, metric) = geojson_domain_metric(crs.as_deref(), &mut metric_scratch)?;
+    let metric_access = move || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            CrsError::invalid(
+                "geographic GeoJSON source ordinates require the feature array CRS metric",
+            )
+        })
+    };
     py.detach(move || {
         let mut output = Vec::with_capacity(array.len());
         for row in array.row_operation().rows_with_missing(|| ()) {
@@ -128,7 +148,13 @@ fn serialize_array_feature_shapes(
                     let logical = row.logical();
                     Some(
                         row.row()
-                            .try_with_shape(|shape| crate::io::to_geojson_string(shape, domain))
+                            .try_with_shape(|shape| {
+                                crate::io::to_geojson_string_with_metric(
+                                    shape,
+                                    domain,
+                                    &metric_access,
+                                )
+                            })
                             .map_err(|error| (logical, error))?,
                     )
                 },
@@ -234,7 +260,7 @@ enum FeatureGeometryRows {
 /// InvalidGeometryError
 ///     If the geometry has an M ordinate or coordinates outside the WGS84
 ///     longitude/latitude domain. GeoJSON Feature mappings have no
-///     representation for M; drop it with ``set_m(None)`` (or ``force_2d()``).
+///     representation for M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 /// CRSError
 ///     If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 ///
@@ -273,13 +299,18 @@ pub(crate) fn to_feature(
         errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature")?;
         require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         let shape = geometry.shape.shape().clone();
-        Some(
-            py.detach(move || {
-                let domain = crate::io::geojson_domain(crs.as_deref())?;
-                crate::io::to_geojson_string(&shape, domain)
+        let mut metric_scratch = MetricScratch::default();
+        let (domain, metric) = geojson_domain_metric(crs.as_deref(), &mut metric_scratch)?;
+        let metric_access = move || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                CrsError::invalid(
+                    "geographic GeoJSON source ordinates require the feature CRS metric",
+                )
             })
-            .map_err(PyErr::from)?,
-        )
+        };
+        Some(py.detach(move || {
+            crate::io::to_geojson_string_with_metric(&shape, domain, &metric_access)
+        })?)
     } else {
         None
     };
@@ -329,7 +360,7 @@ pub(crate) fn to_feature(
 /// InvalidGeometryError
 ///     If a geometry has an M ordinate or coordinates outside the WGS84
 ///     longitude/latitude domain. GeoJSON Feature mappings cannot represent M;
-///     drop it with ``set_m(None)`` (or ``force_2d()``).
+///     drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 /// CRSError
 ///     If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 ///

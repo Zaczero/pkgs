@@ -1,11 +1,13 @@
-"""Thin antimeridian faces keep their source-side attribution."""
+"""Geographic source intervals and seam faces retain their source attribution."""
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -20,6 +22,614 @@ def _thin_seam_polygon(west: float, east: float, height: float) -> gm.Polygon:
         ],
         crs=4326,
     )
+
+
+def _meridian_arc_length(start_latitude: float, end_latitude: float) -> float:
+    """Independent composite-Simpson integral of the authored ellipsoid."""
+    semi_major = 7_000_000.0
+    flattening = 1.0 / 150.0
+    eccentricity_squared = flattening * (2.0 - flattening)
+    start = math.radians(start_latitude)
+    end = math.radians(end_latitude)
+    intervals = 4096
+    step = (end - start) / intervals
+
+    def meridian_radius(latitude: float) -> float:
+        denominator = 1.0 - eccentricity_squared * math.sin(latitude) ** 2
+        return semi_major * (1.0 - eccentricity_squared) / denominator**1.5
+
+    weighted = [
+        (1 if index in (0, intervals) else 4 if index % 2 else 2)
+        * meridian_radius(start + index * step)
+        for index in range(intervals + 1)
+    ]
+    return abs(step * math.fsum(weighted) / 3.0)
+
+
+def _source_zm_at_latitude(latitude: float) -> tuple[float, float]:
+    fraction = _meridian_arc_length(-30.0, latitude) / _meridian_arc_length(-30.0, 70.0)
+    return 7.0 + 40.0 * fraction, 101.0 + 600.0 * fraction
+
+
+def _noded_geographic_linework(crs: str) -> gm.GeometryCollection:
+    cut_z, _ = _source_zm_at_latitude(-5.0)
+    right_z, _ = _source_zm_at_latitude(20.0)
+    return gm.GeometryCollection(
+        [
+            gm.from_wkt(
+                'LINESTRING ZM (0 -30 7 101, 0 70 47 101)',
+                crs=crs,
+            ),
+            gm.from_wkt('LINESTRING ZM (0 -30 7 101, 2 -30 7 101)', crs=crs),
+            gm.from_wkt(
+                'LINESTRING ZM '
+                f'(2 -30 7 101, 2 -5 {cut_z} 101, '
+                f'2 20 {right_z} 101, 2 70 47 101)',
+                crs=crs,
+            ),
+            gm.from_wkt('LINESTRING ZM (2 70 47 101, 0 70 47 101)', crs=crs),
+            gm.from_wkt('LINESTRING (0 -5, 2 -5)', crs=crs),
+        ],
+        crs=crs,
+    )
+
+
+def test_q_intersection_carries_zm_by_actual_non_wgs_meridian_arclength() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(
+        'LINESTRING ZM (179 -10 10 100, 179 20 70 700)',
+        crs=crs,
+    )
+    seam_crossing = gm.from_wkt('LINESTRING (170 0, -170 0)', crs=crs)
+
+    result = gm.intersection(source, seam_crossing)
+
+    fraction = _meridian_arc_length(-10.0, 0.0) / _meridian_arc_length(-10.0, 20.0)
+    assert abs(fraction - 1.0 / 3.0) > 1.0e-5
+    assert result.coordinate_axes == 'XYZM'
+    assert (result.x, result.y) == pytest.approx((179.0, 0.0), rel=0.0, abs=1.0e-12)
+    assert result.z == pytest.approx(10.0 + 60.0 * fraction, rel=0.0, abs=2.0e-9)
+    assert result.m == pytest.approx(100.0 + 600.0 * fraction, rel=0.0, abs=2.0e-8)
+    assert abs(result.z - 30.0) > 1.0e-4
+    assert abs(result.m - 300.0) > 1.0e-3
+
+
+@pytest.mark.parametrize(
+    (
+        'source_wkt',
+        'source_first',
+        'start_z',
+        'end_z',
+        'start_m',
+        'end_m',
+        'chart_parameter',
+        'fraction',
+    ),
+    [
+        pytest.param(
+            'LINESTRING ZM (0 -30 7 101, 0 70 47 701)',
+            True,
+            7.0,
+            47.0,
+            101.0,
+            701.0,
+            0.25,
+            _meridian_arc_length(-30.0, -5.0) / _meridian_arc_length(-30.0, 70.0),
+            id='forward-source-first',
+        ),
+        pytest.param(
+            'LINESTRING ZM (0 70 47 701, 0 -30 7 101)',
+            True,
+            47.0,
+            7.0,
+            701.0,
+            101.0,
+            0.75,
+            _meridian_arc_length(-5.0, 70.0) / _meridian_arc_length(-30.0, 70.0),
+            id='reverse-source-first',
+        ),
+        pytest.param(
+            'LINESTRING ZM (0 -30 7 101, 0 70 47 701)',
+            False,
+            7.0,
+            47.0,
+            101.0,
+            701.0,
+            0.25,
+            _meridian_arc_length(-30.0, -5.0) / _meridian_arc_length(-30.0, 70.0),
+            id='forward-source-second',
+        ),
+        pytest.param(
+            'LINESTRING ZM (0 70 47 701, 0 -30 7 101)',
+            False,
+            47.0,
+            7.0,
+            701.0,
+            101.0,
+            0.75,
+            _meridian_arc_length(-5.0, 70.0) / _meridian_arc_length(-30.0, 70.0),
+            id='reverse-source-second',
+        ),
+    ],
+)
+def test_ordinary_geographic_intersection_carries_zm_by_source_arclength(
+    source_wkt: str,
+    source_first: bool,
+    start_z: float,
+    end_z: float,
+    start_m: float,
+    end_m: float,
+    chart_parameter: float,
+    fraction: float,
+) -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(source_wkt, crs=crs)
+    crossing = gm.from_wkt('LINESTRING (-1 -5, 1 -5)', crs=crs)
+    operands = (source, crossing) if source_first else (crossing, source)
+
+    result = gm.intersection(*operands)
+
+    assert abs(fraction - chart_parameter) > 1.0e-5
+    assert result.geometry_type == 'Point'
+    assert result.coordinate_axes == 'XYZM'
+    assert (result.x, result.y) == pytest.approx((0.0, -5.0), rel=0.0, abs=1.0e-12)
+    assert result.z == pytest.approx(
+        start_z + (end_z - start_z) * fraction,
+        rel=0.0,
+        abs=2.0e-12,
+    )
+    assert result.m == pytest.approx(
+        start_m + (end_m - start_m) * fraction,
+        rel=0.0,
+        abs=2.0e-11,
+    )
+
+
+def test_ordinary_geographic_node_uses_the_operation_metric_for_interior_sources() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    fraction = _meridian_arc_length(-30.0, -5.0) / _meridian_arc_length(-30.0, 70.0)
+    # A point adds the intended XY cut without contributing unsourced line
+    # endpoints that would reduce the noded output axes to XY.
+    sources = gm.GeometryCollection(
+        [
+            gm.LineString([(0, -30, 7, 101), (0, 70, 47, 701)], crs=crs),
+            gm.Point(0, -5, crs=crs),
+        ],
+        crs=crs,
+    )
+
+    result = sources.node()
+
+    assert result.geometry_type == 'MultiLineString'
+    assert result.coordinate_axes == 'XYZM'
+    crossing = [
+        row
+        for row in np.asarray(result.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
+    ]
+    carried = [
+        row for row in crossing if math.isfinite(row[2]) and math.isfinite(row[3])
+    ]
+    assert len(carried) == 2
+    expected_z = 7.0 + (47.0 - 7.0) * fraction
+    expected_m = 101.0 + (701.0 - 101.0) * fraction
+    for _, _, z, m in carried:
+        assert z == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+        assert m == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
+
+
+def test_ordinary_geographic_single_cut_subdivide_carries_source_arclength_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    polygon = gm.Polygon(
+        [
+            (0, -30, 7, 101),
+            (0.25, -30, 8, 151),
+            (0.5, -30, 9, 201),
+            (0.75, -30, 10, 251),
+            (1, -30, 11, 301),
+            (1, 70, 31, 501),
+            (0.75, 70, 35, 551),
+            (0.5, 70, 39, 601),
+            (0.25, 70, 43, 651),
+            (0, 70, 47, 701),
+            (0, -30, 7, 101),
+        ],
+        crs=crs,
+    )
+
+    parts = polygon.subdivide(max_vertices=8)
+
+    fraction = _meridian_arc_length(-30.0, 20.0) / _meridian_arc_length(-30.0, 70.0)
+    assert abs(fraction - 0.5) > 1.0e-5
+    assert polygon.num_coordinates == 11
+    assert len(parts) == 2
+    assert [part.num_coordinates for part in parts] == [8, 8]
+    assert all(part.coordinate_axes == 'XYZM' for part in parts)
+    cut_nodes = [
+        row
+        for row in np.asarray(parts.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, 20.0]
+    ]
+    right_cut_nodes = [
+        row
+        for row in np.asarray(parts.coords, dtype=np.float64).tolist()
+        if row[:2] == [1.0, 20.0]
+    ]
+    assert cut_nodes and right_cut_nodes
+    for _, _, z, m in cut_nodes:
+        assert z == pytest.approx(7.0 + 40.0 * fraction, rel=0.0, abs=2.0e-9)
+        assert m == pytest.approx(101.0 + 600.0 * fraction, rel=0.0, abs=2.0e-8)
+    for _, _, z, m in right_cut_nodes:
+        assert z == pytest.approx(11.0 + 20.0 * fraction, rel=0.0, abs=2.0e-9)
+        assert m == pytest.approx(301.0 + 200.0 * fraction, rel=0.0, abs=2.0e-8)
+
+    groups = gm.GeometryArray([polygon, None, polygon]).subdivide(max_vertices=8)
+    assert len(groups) == 3
+    assert [len(groups[index]) for index in range(3)] == [2, 0, 2]
+    for index in (0, 2):
+        assert all(part.coordinate_axes == 'XYZM' for part in groups[index])
+        coordinates = np.asarray(groups[index].coords, dtype=np.float64).tolist()
+        for x, expected_z, expected_m in (
+            (0.0, 7.0 + 40.0 * fraction, 101.0 + 600.0 * fraction),
+            (1.0, 11.0 + 20.0 * fraction, 301.0 + 200.0 * fraction),
+        ):
+            cut_nodes = [row for row in coordinates if row[:2] == [x, 20.0]]
+            assert cut_nodes
+            for _, _, z, m in cut_nodes:
+                assert z == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+                assert m == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
+
+
+def test_ordinary_geographic_shared_paths_keeps_arclength_zm_at_overlap_start() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(
+        'LINESTRING ZM (0 -30 7 101, 0 70 47 701)',
+        crs=crs,
+    )
+    overlap = gm.from_wkt('LINESTRING (0 -5, 0 70)', crs=crs)
+
+    same, opposite = gm.shared_paths(source, overlap).parts
+
+    expected_z, expected_m = _source_zm_at_latitude(-5.0)
+    assert same.coordinate_axes == 'XYZM'
+    assert opposite.is_empty
+    coordinates = np.asarray(same.coords, dtype=np.float64).tolist()
+    assert coordinates[0][:2] == [0.0, -5.0]
+    assert coordinates[0][2] == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+    assert coordinates[0][3] == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
+    end = [row for row in coordinates if row[:2] == [0.0, 70.0]]
+    assert end
+    assert all((row[2], row[3]) == (47.0, 701.0) for row in end)
+
+
+def test_ordinary_geographic_nullable_shared_paths_array_uses_source_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(
+        'LINESTRING ZM (0 -30 7 101, 0 70 47 701)',
+        crs=crs,
+    )
+    overlap = gm.from_wkt('LINESTRING (0 -5, 0 70)', crs=crs)
+    rows = gm.GeometryArray([source, None, source])
+
+    shared = gm.shared_paths(rows, overlap)
+
+    assert len(shared) == 3
+    assert shared[1] is None
+    expected_z, expected_m = _source_zm_at_latitude(-5.0)
+    for row in (shared[0], shared[2]):
+        same, opposite = row.parts
+        assert same.coordinate_axes == 'XYZM'
+        assert opposite.is_empty
+        start = np.asarray(same.coords, dtype=np.float64).tolist()[0]
+        assert start[:2] == [0.0, -5.0]
+        assert start[2] == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+        assert start[3] == pytest.approx(expected_m, rel=0.0, abs=2.0e-8)
+
+
+def test_ordinary_geographic_line_merge_reconciles_a_split_source_vertex_by_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    cut_z, _ = _source_zm_at_latitude(-5.0)
+    lines = gm.from_wkt(
+        'MULTILINESTRING ZM ('
+        '(0 -30 7 101, 0 70 47 101), '
+        f'(0 -30 7 101, 0 -5 {cut_z} 101), '
+        f'(0 -5 {cut_z} 101, 0 70 47 101))',
+        crs=crs,
+    )
+
+    merged = lines.line_merge()
+
+    assert merged.coordinate_axes == 'XYZM'
+    cut_nodes = [
+        row
+        for row in np.asarray(merged.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
+    ]
+    assert cut_nodes
+    for _, _, z, m in cut_nodes:
+        assert z == pytest.approx(cut_z, rel=0.0, abs=2.0e-9)
+        assert m == 101.0
+
+
+@pytest.mark.parametrize(
+    ('conflict_axis', 'reverse_input_order', 'expected_axes'),
+    [
+        pytest.param('z', False, 'XYM', id='z-conflict'),
+        pytest.param('m', False, 'XYZ', id='m-conflict'),
+        pytest.param('z', True, 'XYM', id='z-conflict-reversed'),
+        pytest.param('m', True, 'XYZ', id='m-conflict-reversed'),
+    ],
+)
+def test_ordinary_geographic_line_merge_detects_only_conflicting_source_axis(
+    conflict_axis: str,
+    reverse_input_order: bool,
+    expected_axes: str,
+) -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    cut_z, _ = _source_zm_at_latitude(-5.0)
+    wrong_z = cut_z + 3.0 if conflict_axis == 'z' else cut_z
+    wrong_m = 131.0 if conflict_axis == 'm' else 101.0
+    members = [
+        '(0 -30 7 101, 0 70 47 101)',
+        f'(0 -30 7 101, 0 -5 {wrong_z} {wrong_m})',
+        f'(0 -5 {wrong_z} {wrong_m}, 0 70 47 101)',
+    ]
+    if reverse_input_order:
+        members.reverse()
+    lines = gm.from_wkt(f'MULTILINESTRING ZM ({", ".join(members)})', crs=crs)
+
+    merged = lines.line_merge()
+
+    assert merged.coordinate_axes == expected_axes
+    cut_nodes = [
+        row
+        for row in np.asarray(merged.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
+    ]
+    assert cut_nodes
+    if conflict_axis == 'z':
+        assert all(row[2] == 101.0 for row in cut_nodes)
+    else:
+        assert all(
+            row[2] == pytest.approx(cut_z, rel=0.0, abs=2.0e-9) for row in cut_nodes
+        )
+
+
+def test_geographic_shared_paths_conflicting_signed_zero_is_order_independent() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    positive = gm.LineString(
+        [(0.0, -30.0, 0.0, 101.0), (0.0, 70.0, 47.0, 701.0)],
+        crs=crs,
+    )
+    negative = gm.LineString(
+        [(0.0, -30.0, -0.0, 101.0), (0.0, 70.0, 47.0, 701.0)],
+        crs=crs,
+    )
+
+    for left, right in ((positive, negative), (negative, positive)):
+        same, opposite = gm.shared_paths(left, right).parts
+
+        assert same.coordinate_axes == 'XYM'
+        assert opposite.is_empty
+        start = [
+            row
+            for row in np.asarray(same.coords, dtype=np.float64).tolist()
+            if row[:2] == [0.0, -30.0]
+        ]
+        assert start
+        assert all(row[2] == 101.0 for row in start)
+
+
+def test_ordinary_geographic_polygonize_and_full_use_source_arclength_before_axes() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    linework = _noded_geographic_linework(crs)
+    expected_z, _ = _source_zm_at_latitude(-5.0)
+
+    polygons = gm.polygonize_all(linework)
+    full = gm.polygonize_all(linework, diagnostics=True)
+
+    assert len(polygons) == 2
+    assert len(full.polygons) == 2
+    assert all(polygon.coordinate_axes == 'XYZM' for polygon in polygons)
+    assert all(polygon.coordinate_axes == 'XYZM' for polygon in full.polygons)
+    cut_nodes = [
+        row
+        for row in np.asarray(full.polygons.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
+    ]
+    assert cut_nodes
+    for _, _, z, m in cut_nodes:
+        assert z == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+        assert m == 101.0
+
+
+def test_ordinary_geographic_nullable_polygonize_array_uses_source_arclength() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    linework = _noded_geographic_linework(crs)
+    groups = gm.GeometryArray([linework, None, linework]).polygonize()
+
+    assert len(groups) == 3
+    assert [len(groups[index]) for index in range(3)] == [2, 0, 2]
+    expected_z, _ = _source_zm_at_latitude(-5.0)
+    for index in (0, 2):
+        polygons = groups[index]
+        assert all(polygon.coordinate_axes == 'XYZM' for polygon in polygons)
+        cut_nodes = [
+            row
+            for row in np.asarray(polygons.coords, dtype=np.float64).tolist()
+            if row[:2] == [0.0, -5.0]
+        ]
+        assert cut_nodes
+        for _, _, z, m in cut_nodes:
+            assert z == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+            assert m == 101.0
+
+
+def test_ordinary_geographic_build_area_keeps_a_source_metric_vertex() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    linework = _noded_geographic_linework(crs)
+    expected_z, _ = _source_zm_at_latitude(-5.0)
+
+    area = linework.build_area()
+
+    assert area.coordinate_axes == 'XYZM'
+    cut_nodes = [
+        row
+        for row in np.asarray(area.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
+    ]
+    assert cut_nodes
+    for _, _, z, m in cut_nodes:
+        assert z == pytest.approx(expected_z, rel=0.0, abs=2.0e-9)
+        assert m == 101.0
+
+
+def test_ordinary_geographic_repair_uses_source_arclength_at_a_self_crossing() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    cut_z, _ = _source_zm_at_latitude(-5.0)
+    crossing = gm.from_wkt(
+        'POLYGON ZM ('
+        f'(0 -30 7 101, 0 70 47 101, 2 20 {cut_z} 101, '
+        f'-2 -30 {cut_z} 101, 0 -30 7 101))',
+        crs=crs,
+    )
+
+    repaired = crossing.repair()
+
+    assert repaired.is_valid
+    assert repaired.coordinate_axes == 'XYZM'
+    cut_nodes = [
+        row
+        for row in np.asarray(repaired.coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
+    ]
+    assert cut_nodes
+    for _, _, z, m in cut_nodes:
+        assert z == pytest.approx(cut_z, rel=0.0, abs=2.0e-9)
+        assert m == 101.0
+
+
+def test_ordinary_geographic_nullable_repair_array_uses_source_arclength() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    cut_z, _ = _source_zm_at_latitude(-5.0)
+    crossing = gm.from_wkt(
+        'POLYGON ZM ('
+        f'(0 -30 7 101, 0 70 47 101, 2 20 {cut_z} 101, '
+        f'-2 -30 {cut_z} 101, 0 -30 7 101))',
+        crs=crs,
+    )
+
+    repaired = gm.GeometryArray([crossing, None, crossing]).repair()
+
+    assert repaired[1] is None
+    for index in (0, 2):
+        assert repaired[index].is_valid
+        assert repaired[index].coordinate_axes == 'XYZM'
+        cut_nodes = [
+            row
+            for row in np.asarray(repaired[index].coords, dtype=np.float64).tolist()
+            if row[:2] == [0.0, -5.0]
+        ]
+        assert cut_nodes
+        for _, _, z, m in cut_nodes:
+            assert z == pytest.approx(cut_z, rel=0.0, abs=2.0e-9)
+            assert m == 101.0
+
+
+def test_ordinary_geographic_coverage_clean_keeps_source_arclength_at_shared_nodes() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    cut_z, cut_m = _source_zm_at_latitude(-5.0)
+    outer = gm.from_wkt(
+        'POLYGON ZM ((0 -30 7 101, 2 -30 7 101, 2 70 47 701, '
+        '0 70 47 701, 0 -30 7 101))',
+        crs=crs,
+    )
+    inner = gm.from_wkt('POLYGON ((0 -5, 1 -5, 1 20, 0 20, 0 -5))', crs=crs)
+
+    cleaned = gm.coverage_clean(
+        [outer, inner],
+        grid_size=0.0,
+        overlap_rule='min_index',
+    )
+
+    assert cleaned[0].coordinate_axes == 'XYZM'
+    cut_nodes = [
+        row
+        for row in np.asarray(cleaned[0].coords, dtype=np.float64).tolist()
+        if row[:2] == [0.0, -5.0]
+    ]
+    assert cut_nodes
+    for _, _, z, m in cut_nodes:
+        assert z == pytest.approx(cut_z, rel=0.0, abs=2.0e-9)
+        assert m == pytest.approx(cut_m, rel=0.0, abs=2.0e-8)
+
+
+def test_ordinary_geographic_nullable_line_merge_array_carries_source_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    cut_z, _ = _source_zm_at_latitude(-5.0)
+    lines = gm.from_wkt(
+        'MULTILINESTRING ZM ('
+        '(0 -30 7 101, 0 70 47 101), '
+        f'(0 -30 7 101, 0 -5 {cut_z} 101), '
+        f'(0 -5 {cut_z} 101, 0 70 47 101))',
+        crs=crs,
+    )
+    rows = gm.GeometryArray([lines, None, lines])
+
+    merged = rows.line_merge()
+
+    assert len(merged) == 3
+    assert merged[1] is None
+    for row in (merged[0], merged[2]):
+        assert row.coordinate_axes == 'XYZM'
+        cut_nodes = [
+            coordinate
+            for coordinate in np.asarray(row.coords, dtype=np.float64).tolist()
+            if coordinate[:2] == [0.0, -5.0]
+        ]
+        assert cut_nodes
+        for _, _, z, m in cut_nodes:
+            assert z == pytest.approx(cut_z, rel=0.0, abs=2.0e-9)
+            assert m == 101.0
+
+
+@pytest.mark.parametrize(
+    ('seam_latitude', 'expected'),
+    [
+        pytest.param(-10.0, (179.0, -10.0, 10.0, 100.0), id='source-t0'),
+        pytest.param(20.0, (179.0, 20.0, 70.0, 700.0), id='source-t1'),
+    ],
+)
+def test_q_intersection_keeps_the_authentic_source_endpoint_record(
+    seam_latitude: float,
+    expected: tuple[float, float, float, float],
+) -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    source = gm.from_wkt(
+        'LINESTRING ZM (179 -10 10 100, 179 20 70 700)',
+        crs=crs,
+    )
+    seam_crossing = gm.from_wkt(
+        f'LINESTRING (170 {seam_latitude}, -170 {seam_latitude})',
+        crs=crs,
+    )
+
+    result = gm.intersection(source, seam_crossing)
+
+    assert result.coordinate_axes == 'XYZM'
+    assert (result.x, result.y, result.z, result.m) == expected
 
 
 @pytest.mark.parametrize(
@@ -111,8 +721,8 @@ _URUGUAY_CLIP = (
 
 
 def test_dissolve_keeps_sliver_faces_without_representable_interior() -> None:
-    argentina = gm.from_wkt(_ARGENTINA_CLIP).set_crs(4326)
-    uruguay = gm.from_wkt(_URUGUAY_CLIP).set_crs(4326)
+    argentina = gm.from_wkt(_ARGENTINA_CLIP).with_crs(4326)
+    uruguay = gm.from_wkt(_URUGUAY_CLIP).with_crs(4326)
     # A disjoint seam member needs membership probes for faces it does not bound.
     seam = _thin_seam_polygon(179.0, -179.0, 1.0)
 

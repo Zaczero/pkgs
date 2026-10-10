@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import gometry as gm
-import polars as pl
 import pytest
 from gometry._polars import from_polars, to_polars
 
 from tests._support import canon
+
+pl = pytest.importorskip(
+    'polars',
+    reason='polars-runtime-32==1.43.2 has no CPython 3.14t wheel',
+)
 
 
 @pytest.fixture
@@ -28,10 +32,27 @@ def test_to_polars_wkb(points: gm.GeometryArray) -> None:
     assert restored.crs == points.crs
 
 
+def test_format_readers_normalize_nullable_polars_columns() -> None:
+    point = gm.Point(1, 2, crs=4326)
+    wkts = pl.Series('wkt', ['POINT (1 2)', None], dtype=pl.String)
+    wkbs = pl.Series('wkb', [point.to_wkb(), None], dtype=pl.Binary)
+    geojson = pl.Series(
+        'geojson',
+        ['{"type":"Point","coordinates":[1,2]}', None],
+        dtype=pl.String,
+    )
+    polylines = pl.Series('polyline', [point.to_polyline(), None], dtype=pl.String)
+
+    assert gm.from_wkt(wkts).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_wkb(wkbs).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_geojson(geojson).to_wkt() == ['POINT (1 2)', None]
+    assert gm.from_polyline(polylines).to_wkt() == ['POINT (1 2)', None]
+
+
 def test_to_polars_rejects_epoch_loss_without_flag(
     points: gm.GeometryArray,
 ) -> None:
-    epoch_points = points.set_epoch(2020.0)
+    epoch_points = points.with_epoch(2020.0)
     with pytest.raises(ValueError, match='drop_epoch=True'):
         epoch_points.to_polars()
     restored = from_polars(epoch_points.to_polars(drop_epoch=True))
@@ -45,11 +66,11 @@ def test_crs84_encodes_via_wire_alias_and_non_alias_needs_drop() -> None:
     points = gm.GeometryArray([gm.Point(1, 2)], crs='OGC:CRS84')
     series = to_polars(points)
     decoded = from_polars(series)
-    assert decoded.crs == 'EPSG:4326'
+    assert decoded.crs == gm.CRS('EPSG:4326')
     assert canon(decoded) == canon(gm.GeometryArray([gm.Point(1, 2)], crs=4326))
     # Explicit alias restore at decode.
     restored = from_polars(series, crs='OGC:CRS84')
-    assert restored.crs == 'OGC:CRS84'
+    assert restored.crs == gm.CRS('OGC:CRS84')
     assert canon(restored) == canon(points)
 
     # A non-alias non-EPSG CRS still requires drop_crs acknowledgement.

@@ -126,6 +126,8 @@ pub(crate) struct CoverStats {
     #[cfg(test)]
     raw_classify_calls: usize,
     #[cfg(test)]
+    candidate_preparations: usize,
+    #[cfg(test)]
     classifications_by_level: [usize; S2_LEVEL_COUNT],
     #[cfg(test)]
     visited_unique_candidates: usize,
@@ -183,6 +185,13 @@ impl CoverStats {
 
     #[cfg(not(test))]
     const fn raw_classify(&mut self, _level: u8) {}
+
+    const fn candidate_preparation(&mut self) {
+        #[cfg(test)]
+        {
+            Self::increment(&mut self.candidate_preparations);
+        }
+    }
 
     const fn unique_local_point_probe(&mut self) {
         #[cfg(test)]
@@ -339,14 +348,14 @@ impl CoverStats {
 
 /// One classified S2 candidate.  The membership facts are carried with the
 /// candidate so visibility never has to ask the source tester a second time.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CandidateCertificate {
     id: CellId,
     class: CellClass,
     membership: Option<PointMembership>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PointMembership {
     vertices: [bool; 4],
     center: bool,
@@ -505,6 +514,13 @@ impl Coverer {
         rule: CoverRule,
     ) -> Result<Covering, CoverError> {
         debug_assert_eq!(affine.target(), SphericalGridTarget::S2);
+        if rule == CoverRule::Within && !affine.has_polygon() {
+            return Ok(Covering {
+                cells: Vec::new(),
+                #[cfg(test)]
+                stats: CoverStats::default(),
+            });
+        }
         let ctx = CoverContext::prepare(working, affine, relation)?;
         self.cover_prepared(&ctx, rule)
     }
@@ -518,15 +534,24 @@ impl Coverer {
         // E = emitted cells; Q = visible phase-2 emissions. Non-visible
         // candidates use depth-first scratch and never consume max_cells.
         let mut cells: Vec<(CellId, bool)> = Vec::with_capacity(1);
+        let fixed_depth = self.min_level == self.max_level;
         // Visible phase-2 frontier (candidates already at/above min_level).
-        let mut queue: BinaryHeap<(Reverse<u8>, CellId, Candidate)> = BinaryHeap::with_capacity(6);
+        let mut queue: BinaryHeap<(Reverse<u8>, CellId, Candidate)> = if fixed_depth {
+            BinaryHeap::new()
+        } else {
+            BinaryHeap::with_capacity(6)
+        };
         // Non-visible boundary candidates can still have visible descendants.
         // Keep them depth-first so scratch scales with depth/fanout, not the
         // number of discarded candidates.
         let stack_depth_capacity = usize::from(MAX_LEVEL)
             .checked_mul(3)
             .expect("S2 stack depth capacity fits usize");
-        let mut invisible: Vec<Candidate> = Vec::with_capacity(stack_depth_capacity);
+        let mut invisible: Vec<Candidate> = if fixed_depth {
+            Vec::new()
+        } else {
+            Vec::with_capacity(stack_depth_capacity)
+        };
         // Phase-1 DFS stack: unresolved candidates still below min_level.
         // Fail-open Boundary entries may later classify Outside — do not
         // charge them until proven productive.
@@ -541,7 +566,7 @@ impl Coverer {
         self.seed_faces(
             ctx,
             rule,
-            &cells,
+            &mut cells,
             &mut dfs,
             &mut queue,
             &mut invisible,
@@ -607,7 +632,7 @@ impl Coverer {
         self,
         ctx: &CoverContext<'_>,
         rule: CoverRule,
-        cells: &[(CellId, bool)],
+        cells: &mut Vec<(CellId, bool)>,
         dfs: &mut Vec<Candidate>,
         queue: &mut BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
         invisible: &mut Vec<Candidate>,
@@ -629,10 +654,20 @@ impl Coverer {
                         };
                         candidate.productivity = Some(productivity);
                         let visible = is_visible(rule, candidate.certificate);
-                        let projected =
-                            cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
-                        ensure_cover_budget(projected, self.hard_budget())?;
-                        if visible {
+                        if self.min_level == self.max_level {
+                            if visible {
+                                admit_visible_candidate(
+                                    candidate.certificate,
+                                    cells,
+                                    queue,
+                                    self.hard_budget(),
+                                    stats,
+                                )?;
+                            }
+                        } else if visible {
+                            let projected =
+                                cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
+                            ensure_cover_budget(projected, self.hard_budget())?;
                             queue.push((
                                 Reverse(candidate.certificate.id.level()),
                                 candidate.certificate.id,
@@ -642,6 +677,9 @@ impl Coverer {
                             stats.productive_frontier(cells.len(), queue.len());
                             stats.observe_frontier(dfs, queue, invisible, &[]);
                         } else {
+                            let projected =
+                                cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
+                            ensure_cover_budget(projected, self.hard_budget())?;
                             invisible.push(candidate);
                             stats.invisible_stack_peak(invisible.len());
                             stats.observe_frontier(dfs, queue, invisible, &[]);
@@ -706,10 +744,20 @@ impl Coverer {
                         retain_productive(ctx, staged, self, stats)?;
                         for child in staged.drain(..) {
                             let visible = is_visible(rule, child.certificate);
-                            let projected =
-                                cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
-                            ensure_cover_budget(projected, self.hard_budget())?;
-                            if visible {
+                            if self.min_level == self.max_level {
+                                if visible {
+                                    admit_visible_candidate(
+                                        child.certificate,
+                                        cells,
+                                        queue,
+                                        self.hard_budget(),
+                                        stats,
+                                    )?;
+                                }
+                            } else if visible {
+                                let projected =
+                                    cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
+                                ensure_cover_budget(projected, self.hard_budget())?;
                                 queue.push((
                                     Reverse(child.certificate.id.level()),
                                     child.certificate.id,
@@ -719,6 +767,9 @@ impl Coverer {
                                 stats.productive_frontier(cells.len(), queue.len());
                                 stats.observe_frontier(dfs, queue, invisible, &[]);
                             } else {
+                                let projected =
+                                    cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
+                                ensure_cover_budget(projected, self.hard_budget())?;
                                 invisible.push(child);
                                 stats.invisible_stack_peak(invisible.len());
                                 stats.observe_frontier(dfs, queue, invisible, &[]);
@@ -861,11 +912,7 @@ impl Coverer {
         // Emit at this level (interior, max-level boundary, or unaffordable
         // split). Invisible terminal candidates drop immediately.
         if visible {
-            let projected = cover_total(&[cells.len(), queue.len(), 1]);
-            ensure_cover_budget(projected, self.hard_budget())?;
-            cells.push((certificate.id, certificate.class == CellClass::Interior));
-            stats.committed_emission();
-            stats.productive_frontier(cells.len(), queue.len());
+            admit_visible_candidate(certificate, cells, queue, self.hard_budget(), stats)?;
         }
         Ok(())
     }
@@ -879,6 +926,21 @@ impl Coverer {
         let target = level.checked_add(self.level_mod)?;
         (target <= self.max_level && target <= MAX_LEVEL).then_some(target)
     }
+}
+
+fn admit_visible_candidate(
+    certificate: CandidateCertificate,
+    cells: &mut Vec<(CellId, bool)>,
+    queue: &BinaryHeap<(Reverse<u8>, CellId, Candidate)>,
+    hard_budget: Option<usize>,
+    stats: &mut CoverStats,
+) -> Result<(), CoverError> {
+    let projected = cover_total(&[cells.len(), queue.len(), 1]);
+    ensure_cover_budget(projected, hard_budget)?;
+    cells.push((certificate.id, certificate.class == CellClass::Interior));
+    stats.committed_emission();
+    stats.productive_frontier(cells.len(), queue.len());
+    Ok(())
 }
 
 /// Keep only children that will emit ≥1 terminal under this coverer.
@@ -1106,19 +1168,38 @@ fn stage_children_at(
     out: &mut Vec<Candidate>,
     stats: &mut CoverStats,
 ) -> Result<(), CoverError> {
-    let reuse = reuse.and_then(|productivity| match productivity {
-        Productivity::Terminal => {
-            debug_assert!(false, "terminal productivity cannot refine");
-            None
-        },
-        Productivity::Children(batch) => {
+    match reuse {
+        Some(Productivity::Children(batch)) => {
+            let fan_capacity = fan_size(id.level(), target);
+            let end = id.child_end_at(target);
+            let mut expected = id.child_begin_at(target);
+            debug_assert_eq!(batch.candidates.len(), fan_capacity);
             debug_assert!(batch.candidates.iter().all(|candidate| {
-                let child = candidate.certificate.id;
-                child.level() == target && id.range_min() <= child && child <= id.range_max()
+                let matches = candidate.certificate.id == expected;
+                expected = expected.next();
+                matches
             }));
-            Some(batch.candidates)
+            debug_assert_eq!(expected, end);
+            out.clear();
+            if out.capacity() < fan_capacity {
+                out.reserve(fan_capacity);
+            }
+            for candidate in batch.candidates {
+                let level = candidate.certificate.id.level();
+                stats.carried_certificate_hit(level);
+                if candidate.productivity.is_some() {
+                    stats.productive_path_reuse(level);
+                }
+                out.push(candidate);
+            }
+            stats.observe_batch(out);
+            return Ok(());
         },
-    });
+        Some(Productivity::Terminal) => {
+            debug_assert!(false, "terminal productivity cannot refine");
+        },
+        None => {},
+    }
     let end = id.child_end_at(target);
     let mut cursor = id.child_begin_at(target);
     let ids = std::iter::from_fn(|| {
@@ -1128,15 +1209,7 @@ fn stage_children_at(
             current
         })
     });
-    classify_ids(
-        ctx,
-        ids,
-        target,
-        fan_size(id.level(), target),
-        reuse,
-        out,
-        stats,
-    )?;
+    classify_ids(ctx, ids, target, fan_size(id.level(), target), out, stats)?;
     stats.observe_batch(out);
     Ok(())
 }
@@ -1147,15 +1220,7 @@ fn classify_one(
     stats: &mut CoverStats,
 ) -> Result<Candidate, CoverError> {
     let mut out = Vec::with_capacity(1);
-    classify_ids(
-        ctx,
-        std::iter::once(id),
-        id.level(),
-        1,
-        None,
-        &mut out,
-        stats,
-    )?;
+    classify_ids(ctx, std::iter::once(id), id.level(), 1, &mut out, stats)?;
     Ok(out.pop().expect("one candidate was classified"))
 }
 
@@ -1182,7 +1247,6 @@ struct PendingCandidate {
     affine: Option<AffineRectClass>,
     probe_indices: [usize; 5],
     membership_known: bool,
-    reused: Option<Candidate>,
 }
 
 fn local_probe_index(
@@ -1219,15 +1283,12 @@ fn local_probe_index(
     index
 }
 
-/// Classify a finite fan after its local point probes have been deduplicated.
-/// `reuse` contains the parent-local fan found while proving productivity;
-/// consuming it here reuses every certificate in that finite batch.
+/// Classify a fresh finite fan after deduplicating its local point probes.
 fn classify_ids(
     ctx: &CoverContext<'_>,
     ids: impl IntoIterator<Item = CellId>,
     level: u8,
     fan_capacity: usize,
-    reuse: Option<Vec<Candidate>>,
     out: &mut Vec<Candidate>,
     stats: &mut CoverStats,
 ) -> Result<(), CoverError> {
@@ -1235,11 +1296,11 @@ fn classify_ids(
     if out.capacity() < fan_capacity {
         out.reserve(fan_capacity);
     }
-    let mut reuse = reuse;
     let mut probes = Vec::with_capacity(fan_capacity.saturating_mul(5));
     let mut pending = Vec::with_capacity(fan_capacity);
 
     for id in ids {
+        stats.candidate_preparation();
         let cell = Cell::from_id(id);
         debug_assert_eq!(id.level(), level);
         let vertices = cell.vertices_lonlat();
@@ -1252,62 +1313,27 @@ fn classify_ids(
             northwest,
             cell.center_lonlat(),
         ];
-        let reused = reuse.as_mut().and_then(|candidates| {
-            candidates
-                .iter()
-                .position(|candidate| candidate.certificate.id == id)
-                .map(|index| candidates.swap_remove(index))
-        });
-        if reused.is_some() {
-            let level = id.level();
-            stats.carried_certificate_hit(level);
-            if reused
-                .as_ref()
-                .is_some_and(|candidate| candidate.productivity.is_some())
-            {
-                stats.productive_path_reuse(level);
-            }
-        }
-        let rectangular = (reused.is_none() && ctx.point_leaves.is_none())
+        let rectangular = ctx
+            .point_leaves
+            .is_none()
             .then(|| ctx.affine.admit_rectangular_candidate(rect_bounds(rect)));
         let affine = rectangular
             .as_ref()
             .map(|candidate| ctx.affine.classify_rect(candidate))
             .transpose()?;
         let mut probe_indices = [0_usize; 5];
-        let known_membership = reused
-            .as_ref()
-            .and_then(|candidate| candidate.certificate.membership);
-        let probe_count = if known_membership.is_some()
-            || (reused.is_none() && affine.is_none_or(|class| class != AffineRectClass::Outside))
-        {
-            if ctx.point_leaves.is_some() && reused.is_none() {
-                1
-            } else {
-                5
-            }
+        let probe_count = if affine.is_none_or(|class| class != AffineRectClass::Outside) {
+            if ctx.point_leaves.is_some() { 1 } else { 5 }
         } else {
             0
         };
-        if probe_count == 1 && ctx.point_leaves.is_some() && reused.is_none() {
+        if probe_count == 1 && ctx.point_leaves.is_some() {
             let center = points.last().copied().expect("one cell center probe");
             let center_probe = probe_indices.last_mut().expect("center probe slot exists");
             *center_probe = local_probe_index(&mut probes, center, None, stats);
         } else if probe_count == 5 {
-            let known_points = known_membership.map_or([None; 5], |membership| {
-                let [southwest, southeast, northeast, northwest] = membership.vertices;
-                [
-                    Some(southwest),
-                    Some(southeast),
-                    Some(northeast),
-                    Some(northwest),
-                    Some(membership.center),
-                ]
-            });
-            for ((probe_index, point), known) in
-                probe_indices.iter_mut().zip(points).zip(known_points)
-            {
-                *probe_index = local_probe_index(&mut probes, point, known, stats);
+            for (probe_index, point) in probe_indices.iter_mut().zip(points) {
+                *probe_index = local_probe_index(&mut probes, point, None, stats);
             }
         }
         pending.push(PendingCandidate {
@@ -1317,13 +1343,8 @@ fn classify_ids(
             affine,
             probe_indices,
             membership_known: probe_count != 0,
-            reused,
         });
     }
-    debug_assert!(
-        reuse.is_none_or(|candidates| candidates.is_empty()),
-        "certificate batch did not belong to the staged descendant fan"
-    );
 
     for probe in &mut probes {
         if probe.covered.is_none() {
@@ -1333,10 +1354,6 @@ fn classify_ids(
     }
 
     for pending in pending {
-        if let Some(candidate) = pending.reused {
-            out.push(candidate);
-            continue;
-        }
         let mut membership = PointMembership {
             vertices: [false; 4],
             center: false,

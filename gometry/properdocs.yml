@@ -169,6 +169,7 @@ nav:
     - Text & binary formats: ecosystem/text-formats.md
   - API reference:
     - api/index.md
+    - Type definitions: api/types.md
     - Functions:
       - Constructors & bulk factories: api/toplevel/constructors-bulk-factories.md
       - Predicates: api/toplevel/predicates.md

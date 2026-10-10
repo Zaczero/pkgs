@@ -27,7 +27,7 @@ def test_noncollinear_tangent_hole_clip_preserves_public_output(
     )
     sites = gm.MultiPoint([(500.0, 5.0), (1500.0, 5.0), (1000.0, 7.0)])
 
-    cells = sites.voronoi_polygons(clip=clip)
+    cells = sites.voronoi(output='polygons', clip=clip)
 
     assert len(cells) == polygon_count
     assert all(cell.is_valid for cell in cells)

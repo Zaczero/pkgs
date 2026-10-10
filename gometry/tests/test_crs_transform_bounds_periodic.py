@@ -30,7 +30,7 @@ def _web_y(latitude: float) -> float:
 
 
 @pytest.mark.parametrize(
-    'options, engine', [({}, 'in_core'), ({'force_over': True}, 'proj')]
+    'options, engine', [({}, 'in_core'), ({'authority': 'EPSG'}, 'proj')]
 )
 def test_wrapped_bounds_use_one_plan_under_each_backend(
     options: dict[str, Any], engine: str
@@ -53,7 +53,7 @@ def test_wrapped_bounds_use_one_plan_under_each_backend(
 
 
 @pytest.mark.parametrize(
-    'options, engine', [({}, 'in_core'), ({'force_over': True}, 'proj')]
+    'options, engine', [({}, 'in_core'), ({'authority': 'EPSG'}, 'proj')]
 )
 def test_geographic_target_uses_minimal_wrapped_cover(
     options: dict[str, Any], engine: str
@@ -109,9 +109,14 @@ def test_web_mercator_bounds_exclude_unrepresentable_target_poles(
     ],
     ids=['north-polar', 'south-polar'],
 )
-@pytest.mark.parametrize('force_over', [False, True], ids=['in-core', 'proj'])
+@pytest.mark.parametrize(
+    'options, engine', [({}, 'in_core'), ({'authority': 'EPSG'}, 'proj')]
+)
 def test_projected_bounds_containing_a_pole_use_full_target_longitude(
-    source: int, expected: tuple[float, float, float, float], force_over: bool
+    source: int,
+    expected: tuple[float, float, float, float],
+    options: dict[str, Any],
+    engine: str,
 ) -> None:
     gm.crs_clear_cache()
     transformed = gm.crs_transform_bounds(
@@ -119,13 +124,11 @@ def test_projected_bounds_containing_a_pole_use_full_target_longitude(
         4326,
         (-500_000.0, -500_000.0, 500_000.0, 500_000.0),
         densify=21,
-        force_over=force_over,
+        **options,
     )
     assert transformed == pytest.approx(expected, abs=1e-12)
     assert transformed[0:3:2] == (-180.0, 180.0)
-    assert gm.crs_cache_info()['last_transform_engine'] == (
-        'proj' if force_over else 'in_core'
-    )
+    assert gm.crs_cache_info()['last_transform_engine'] == engine
 
 
 def test_projected_pole_bounds_match_pyproj_when_available() -> None:
@@ -141,16 +144,18 @@ def test_projected_pole_bounds_match_pyproj_when_available() -> None:
 
 
 @pytest.mark.parametrize('source', [3413, 3031], ids=['north-polar', 'south-polar'])
-@pytest.mark.parametrize('force_over', [False, True], ids=['in-core', 'proj'])
+@pytest.mark.parametrize(
+    'options, engine', [({}, 'in_core'), ({'authority': 'EPSG'}, 'proj')]
+)
 def test_pole_containment_in_three_dimensions_does_not_widen_z(
-    source: int, force_over: bool
+    source: int, options: dict[str, Any], engine: str
 ) -> None:
     transformed = gm.crs_transform_bounds(
         source,
         4326,
         (-500_000.0, -500_000.0, 7.0, 500_000.0, 500_000.0, 11.0),
         densify=21,
-        force_over=force_over,
+        **options,
     )
     assert transformed[0] == pytest.approx(-180.0)
     assert transformed[2] == pytest.approx(7.0)
@@ -163,6 +168,7 @@ def test_pole_containment_in_three_dimensions_does_not_widen_z(
     else:
         assert transformed[1] == pytest.approx(83.47926098750534, abs=1e-12)
     assert transformed[5] == pytest.approx(11.0)
+    assert gm.crs_cache_info()['last_transform_engine'] == engine
 
 
 @pytest.mark.parametrize('source', [3413, 3031], ids=['north-polar', 'south-polar'])
@@ -224,7 +230,7 @@ def test_pole_containment_uses_target_frame_units_and_prime_meridian() -> None:
 
 
 @pytest.mark.parametrize(
-    'options, engine', [({}, 'in_core'), ({'force_over': True}, 'proj')]
+    'options, engine', [({}, 'in_core'), ({'authority': 'EPSG'}, 'proj')]
 )
 def test_bulk_bounds_stream_mixed_periodic_rows_through_one_operation(
     options: dict[str, Any], engine: str
@@ -306,13 +312,173 @@ def test_identity_bounds_use_canonical_geographic_and_projected_frames() -> None
     )
 
 
+def test_identity_wide_rectangle_bounds_match_for_scalar_and_bulk_2d_and_3d() -> None:
+    bounds_2d = (-170.0, -1.0, 170.0, 1.0)
+    assert gm.crs_transform_bounds(4326, 4326, bounds_2d) == bounds_2d
+    bulk_2d = gm.crs_transform_bounds(4326, 4326, [bounds_2d])
+    assert tuple(bulk_2d[0]) == bounds_2d
+    wrapped = (170.0, -1.0, -170.0, 1.0)
+    assert gm.crs_transform_bounds(4326, 4326, wrapped) == wrapped
+    bulk_wrapped = gm.crs_transform_bounds(4326, 4326, [wrapped])
+    assert tuple(bulk_wrapped[0]) == wrapped
+
+    bounds_3d = (-170.0, -1.0, 3.0, 170.0, 1.0, 4.0)
+    assert gm.crs_transform_bounds(4979, 4979, bounds_3d) == bounds_3d
+    bulk_3d = gm.crs_transform_bounds(4979, 4979, [bounds_3d])
+    assert tuple(bulk_3d[0]) == bounds_3d
+
+
+def test_near_period_identity_bounds_keep_authentic_endpoints_without_false_full() -> (
+    None
+):
+    for east in (0.2, math.nextafter(0.2, math.inf)):
+        bounds = (-0.1, 1.0, east, 1.0)
+        assert gm.crs_transform_bounds(4326, 4326, bounds) == bounds
+        bulk = gm.crs_transform_bounds(4326, 4326, [bounds])
+        assert tuple(bulk[0]) == bounds
+
+    near_period = (-0.1, 0.0, 359.9, 1.0)
+    expected = (-0.1, 0.0, -0.10000000000002274, 1.0)
+    assert gm.crs_transform_bounds(4326, 4326, near_period) == expected
+    bulk_near_period = gm.crs_transform_bounds(4326, 4326, [near_period])
+    assert tuple(bulk_near_period[0]) == expected
+
+
+def test_force_over_identity_bounds_keep_literal_longitudes_and_sort_descending() -> (
+    None
+):
+    ordered = (540.0, -1.0, 550.0, 1.0)
+    assert gm.crs_transform_bounds(4326, 4326, ordered, force_over=True) == ordered
+    bulk_ordered = gm.crs_transform_bounds(4326, 4326, [ordered], force_over=True)
+    assert tuple(bulk_ordered[0]) == ordered
+
+    descending = (170.0, -1.0, -170.0, 1.0)
+    assert gm.crs_transform_bounds(4326, 4326, descending) == descending
+    assert gm.crs_transform_bounds(4326, 4326, descending, force_over=True) == (
+        -170.0,
+        -1.0,
+        170.0,
+        1.0,
+    )
+    descending_3d = (170.0, -1.0, 3.0, -170.0, 1.0, 4.0)
+    assert gm.crs_transform_bounds(4979, 4979, descending_3d, force_over=True) == (
+        -170.0,
+        -1.0,
+        3.0,
+        170.0,
+        1.0,
+        4.0,
+    )
+
+
+def test_force_over_geographic_source_bounds_preserve_numeric_longitude_segment() -> (
+    None
+):
+    longitudes = (540.0, 550.0)
+    transformed = gm.crs_transform_bounds(
+        4326,
+        3857,
+        (longitudes[0], -1.0, longitudes[1], 1.0),
+        densify=2,
+        force_over=True,
+    )
+    assert transformed == pytest.approx(
+        (
+            WEB_RADIUS * math.pi * longitudes[0] / 180.0,
+            _web_y(-1.0),
+            WEB_RADIUS * math.pi * longitudes[1] / 180.0,
+            _web_y(1.0),
+        ),
+        abs=1e-7,
+    )
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
+
+    transformed_3d = gm.crs_transform_bounds(
+        4979,
+        3857,
+        (540.0, -1.0, 3.0, 550.0, 1.0, 4.0),
+        densify=2,
+        force_over=True,
+    )
+    assert transformed_3d == pytest.approx(
+        (
+            WEB_RADIUS * math.pi * 540.0 / 180.0,
+            _web_y(-1.0),
+            3.0,
+            WEB_RADIUS * math.pi * 550.0 / 180.0,
+            _web_y(1.0),
+            4.0,
+        ),
+        abs=1e-7,
+    )
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
+
+    descending = gm.crs_transform_bounds(
+        4326,
+        3857,
+        (170.0, -1.0, -170.0, 1.0),
+        densify=2,
+        force_over=True,
+    )
+    assert descending == pytest.approx((
+        -WEB_RADIUS * math.radians(170.0),
+        _web_y(-1.0),
+        WEB_RADIUS * math.radians(170.0),
+        _web_y(1.0),
+    ))
+    periodic = gm.crs_transform_bounds(
+        4326, 3857, (170.0, -1.0, -170.0, 1.0), densify=2
+    )
+    assert periodic[0] == pytest.approx(-WEB_SEAM)
+    assert periodic[2] == pytest.approx(WEB_SEAM)
+    assert gm.crs_cache_info()['last_transform_engine'] == 'in_core'
+
+
+def test_force_over_geographic_target_bounds_keep_numeric_longitude_extrema() -> None:
+    projected_period = WEB_RADIUS * math.tau
+    transformed = gm.crs_transform_bounds(
+        3857,
+        4326,
+        (0.0, 0.0, projected_period, 0.0),
+        densify=2,
+        force_over=True,
+    )
+    assert transformed == pytest.approx((0.0, 0.0, 360.0, 0.0), abs=1e-12)
+    assert gm.crs_cache_info()['last_transform_engine'] == 'proj'
+
+
+def test_force_over_does_not_admit_inverted_geographic_latitude_bounds() -> None:
+    gm.crs_clear_cache()
+    with pytest.raises(ValueError, match='bounds must be finite'):
+        gm.crs_transform_bounds(
+            4326,
+            3857,
+            (0.0, 1.0, 2.0, -1.0),
+            force_over=True,
+        )
+    assert gm.crs_cache_info()['last_transform_engine'] is None
+
+
+def test_identity_full_bounds_use_the_selected_native_period() -> None:
+    assert gm.crs_transform_bounds(
+        RADIAN_WGS84,
+        RADIAN_WGS84,
+        (0.0, -math.pi / 2.0, math.tau, math.pi / 2.0),
+    ) == (-math.pi, -math.pi / 2.0, math.pi, math.pi / 2.0)
+    assert gm.crs_transform_bounds(4807, 4807, (0.0, -100.0, 400.0, 100.0)) == (
+        -200.0,
+        -100.0,
+        200.0,
+        100.0,
+    )
+
+
 def test_native_radian_and_grad_frames_are_not_double_converted() -> None:
     radians = gm.crs_transform_bounds(
         RADIAN_WGS84,
         4326,
         (-1.0, -0.5, 1.0, 0.5),
         densify=2,
-        force_over=True,
     )
     assert radians == pytest.approx(
         tuple(math.degrees(value) for value in (-1.0, -0.5, 1.0, 0.5))
@@ -379,7 +545,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
         3857,
         (10.0 + prime_meridian, 50.0, 11.0 + prime_meridian, 51.0),
         densify=2,
-        force_over=True,
+        authority='EPSG',
     )
     assert bounds == pytest.approx(expected_bounds, abs=1e-6)
 
@@ -395,7 +561,7 @@ def test_in_core_prime_meridian_covers_scalar_shape_coordinate_and_bounds_lanes(
         3857,
         (10.0 + prime_meridian, 50.0, 3.0, 11.0 + prime_meridian, 51.0, 4.0),
         densify=2,
-        force_over=True,
+        authority='EPSG',
     )
     assert bounds_3d == pytest.approx(expected_bounds_3d, abs=1e-6)
 

@@ -1,10 +1,12 @@
 use std::ops::ControlFlow;
 
+use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::segment_index::sweep::for_each_indexed_overlapping_bounds_pair_with_work;
 use crate::geometry::segment_index::{
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
     for_each_overlapping_bounds_cross_pair, for_each_overlapping_bounds_pair, single_chain,
 };
-use crate::geometry::{Bounds, Segment, XY, segments_intersect};
+use crate::geometry::{Bounds, Segment, Unmetered, XY, segments_intersect};
 
 #[test]
 fn cross_bounds_sweep_preserves_each_side_ordinal() {
@@ -207,8 +209,13 @@ mod sweep_characterization {
         });
 
         let mut runs = Vec::new();
-        super::super::sweep::monotone_runs(&pool, &single_chain, &mut runs)
-            .expect("the test runs fit their structural width");
+        super::super::sweep::monotone_runs_with_work(
+            &pool,
+            &single_chain,
+            &mut runs,
+            &mut Unmetered,
+        )
+        .expect("the test runs fit their structural width");
         let mut candidates = Vec::new();
         let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
             super::super::sweep::candidate_pairs_over_staged_runs::<true, _>(
@@ -335,6 +342,20 @@ mod indexed_bounds_characterization {
             })
             .unwrap();
         assert_eq!(pairs, [(0, 1), (1, 2)]);
+
+        let mut funded_pairs = Vec::new();
+        let mut budget = EvaluationBudget::new("sweep_test", 1).unwrap();
+        let flow = for_each_indexed_overlapping_bounds_pair_with_work(
+            &rows,
+            &mut budget,
+            |left, right, _work| {
+                funded_pairs.push((left, right));
+                Ok(ControlFlow::<std::convert::Infallible>::Continue(()))
+            },
+        )
+        .unwrap();
+        assert_eq!(flow, ControlFlow::Continue(()));
+        assert_eq!(funded_pairs, [(0, 1), (1, 2)]);
     }
 
     #[test]
@@ -404,7 +425,7 @@ mod run_collapse_dispatch {
     //! front of this (there were three, at 512, 512 and 1024) sent small smooth
     //! inputs down the flat path and cost them the entire reduction.
     use super::*;
-    use crate::geometry::segment_index::sweep::monotone_runs;
+    use crate::geometry::segment_index::sweep::monotone_runs_with_work;
 
     fn chain_of(points: &[(f64, f64)], pool: &mut Vec<Segment>) {
         for &[from, to] in points.array_windows::<2>() {
@@ -457,7 +478,13 @@ mod run_collapse_dispatch {
 
     fn runs_of(pool: &[Segment]) -> usize {
         let mut runs = Vec::new();
-        monotone_runs(pool, &single_chain, &mut runs).expect("run indexes fit u32");
+        monotone_runs_with_work(
+            pool,
+            &single_chain,
+            &mut runs,
+            &mut crate::geometry::Unmetered,
+        )
+        .expect("run indexes fit u32");
         runs.len()
     }
 

@@ -51,7 +51,7 @@ def _triangle_edges(
     return edges
 
 
-def _assert_voronoi_edges_are_source_bisectors(
+def _assert_voronoi_edge_lines_are_source_bisectors(
     edges: list[gm.Geometry],
     sites: list[tuple[float, float]],
 ) -> None:
@@ -141,7 +141,7 @@ def test_voronoi_affine_extremes_succeed() -> None:
             (0.0, side),
             (0.5 * side, 0.5 * side),
         ])
-        edges = sites.voronoi_edges(clip='envelope')
+        edges = sites.voronoi(output='edges', clip='envelope')
         assert len(edges) >= 1, f'side={side}: no edges'
 
 
@@ -153,7 +153,7 @@ def test_delaunay_and_raw_voronoi_keep_the_source_euclidean_metric() -> None:
     assert frozenset(((-5.0, 2.0), (99.0, -11.0))) in edges
 
     sites = gm.MultiPoint([(0.0, 0.0), (10.0, 0.0), (4.0, 1.0)])
-    segments = sites.voronoi_edges(clip='envelope')
+    segments = sites.voronoi(output='edges', clip='envelope')
     assert {tuple(sorted(line.coords)) for line in segments} == {
         ((1.875, 1.0), (2.125, 0.0)),
         ((6.916666666666667, 0.0), (7.083333333333333, 1.0)),
@@ -173,7 +173,7 @@ def test_native_voronoi_five_site_tiny_partition() -> None:
     """Five-site envelope Voronoi cell areas must sum to the envelope."""
     s = 1e-20
     sites = gm.MultiPoint([(0.0, 0.0), (s, 0.0), (s, s), (0.0, s), (0.5 * s, 0.5 * s)])
-    cells = sites.voronoi_polygons(clip='envelope')
+    cells = sites.voronoi(output='polygons', clip='envelope')
     total = sum(c.area for c in cells)
     envelope = s * s
     assert abs(total - envelope) / envelope < 1e-9, f'sum={total} env={envelope}'
@@ -189,7 +189,7 @@ def test_native_voronoi_polygon_clip_spans_the_requested_polygon() -> None:
     """
     sites = gm.MultiPoint([(0.0, 0.0), (2.0, 0.0), (1.0, 2.0)])
     clip = gm.box(-10.0, -10.0, 10.0, 10.0)
-    cells = sites.voronoi_polygons(clip=clip)
+    cells = sites.voronoi(output='polygons', clip=clip)
     merged = gm.union_all(gm.GeometryArray(cells))
     assert len(cells) == 3
     assert sum(cell.area for cell in cells) == clip.area == 400.0, (
@@ -249,7 +249,7 @@ def test_reciprocal_axis_delaunay_and_voronoi_stay_in_the_source_metric(
         (-large, tiny),
         (0.0, 0.0),
     ])
-    cells = sites.voronoi_polygons(clip='envelope')
+    cells = sites.voronoi(output='polygons', clip='envelope')
     assert len(cells) == 5
     assert sum((_fraction_ring_area(cell) for cell in cells), Fraction()) == exact_area
 
@@ -303,8 +303,8 @@ def test_reciprocal_tessellation_family_has_no_similarity_axis_loss(
         # Voronoi sites are the same five source vertices regardless of their
         # carrier.  Exercise every public extraction route rather than giving
         # MultiPoint a private regression lane.
-        cells = source.voronoi_polygons(clip='envelope')
-        edges = source.voronoi_edges(clip='envelope')
+        cells = source.voronoi(output='polygons', clip='envelope')
+        edges = source.voronoi(output='edges', clip='envelope')
         assert len(cells) == 5
         assert edges
         assert all(
@@ -732,17 +732,17 @@ def test_reciprocal_voronoi_polygon_clip_and_unsnapped_tolerance_share_metric_pa
                 if lone:
                     cells = 1 if kwargs['clip'] is clip else 0
                 for result in (
-                    carrier.voronoi_polygons(**kwargs),
-                    gm.GeometryArray([carrier]).voronoi_polygons(**kwargs)[0],
+                    carrier.voronoi(output='polygons', **kwargs),
+                    gm.GeometryArray([carrier]).voronoi(output='polygons', **kwargs)[0],
                 ):
                     assert len(result) == cells
                 for result in (
-                    carrier.voronoi_edges(**kwargs),
-                    gm.GeometryArray([carrier]).voronoi_edges(**kwargs)[0],
+                    carrier.voronoi(output='edges', **kwargs),
+                    gm.GeometryArray([carrier]).voronoi(output='edges', **kwargs)[0],
                 ):
                     assert len(result) == (0 if lone else 4)
                     if not lone:
-                        _assert_voronoi_edges_are_source_bisectors(result, points)
+                        _assert_voronoi_edge_lines_are_source_bisectors(result, points)
 
 
 def test_native_voronoi_affine_copies_partition_their_stored_envelope() -> None:
@@ -756,7 +756,7 @@ def test_native_voronoi_affine_copies_partition_their_stored_envelope() -> None:
             (side / 2.0, side / 2.0),
         ]
         envelope = gm.box(0.0, 0.0, side, side)
-        cells = gm.MultiPoint(points).voronoi_polygons(clip='envelope')
+        cells = gm.MultiPoint(points).voronoi(output='polygons', clip='envelope')
         exact_envelope = _stored_fraction(side) ** 2
         exact_cells = sum((_fraction_ring_area(cell) for cell in cells), Fraction())
         # Unframing one cell boundary costs at most a few stored-coordinate
@@ -1076,7 +1076,7 @@ def test_native_voronoi_shifted_six_sites_have_a_certified_partition(
         ]
     ])
     source = gm.GeometryArray([sites]) if array else sites
-    result = source.voronoi_polygons(clip='envelope')
+    result = source.voronoi(output='polygons', clip='envelope')
     cells = result[0] if array else result
     assert len(cells) == 6
     assert all(cell.is_valid for cell in cells)
@@ -1089,9 +1089,9 @@ def test_native_voronoi_shifted_six_sites_have_a_certified_partition(
 
 
 @pytest.mark.parametrize('array', [False, True], ids=['scalar', 'array'])
-@pytest.mark.parametrize('operation', ['voronoi_polygons', 'voronoi_edges'])
+@pytest.mark.parametrize('output', ['polygons', 'edges'])
 def test_native_voronoi_pinned_clip_vertices_exhaust_adjacent_coordinates(
-    array: bool, operation: str
+    array: bool, output: str
 ) -> None:
     offset = 1e16
     sites = gm.MultiPoint([
@@ -1115,6 +1115,7 @@ def test_native_voronoi_pinned_clip_vertices_exhaust_adjacent_coordinates(
     # All nine adjacent-float candidates are pinned source-clip vertices.
     assert clip.is_valid
     source = gm.GeometryArray([sites]) if array else sites
+    operation = 'voronoi_cells' if output == 'polygons' else 'voronoi_edge_lines'
     with pytest.raises(
         gm.GeometryError,
         match=(
@@ -1124,9 +1125,10 @@ def test_native_voronoi_pinned_clip_vertices_exhaust_adjacent_coordinates(
             r'cyclic order and faces$'
         ),
     ) as raised:
-        getattr(source, operation)(clip=clip)
+        source.voronoi(output=output, clip=clip)
     assert type(raised.value) is gm.GeometryError
     assert raised.value.operation == operation
+    assert raised.value.code == 'output_unrepresentable'
 
 
 def _independent_mrr_reference(
@@ -1351,9 +1353,8 @@ def test_constrained_triangle_uses_the_exact_stored_double_sign() -> None:
 def test_rhumb_adjacent_longitude_nonzero() -> None:
     lon1 = 45.0
     lon2 = math.nextafter(45.0, -math.inf)
-    d = gm.rhumb_distance(
-        gm.Point(lon1, 0.0, crs=4326),
-        gm.Point(lon2, 0.0, crs=4326),
+    d = gm.distance(
+        gm.Point(lon1, 0.0, crs=4326), gm.Point(lon2, 0.0, crs=4326), path='rhumb'
     )
     assert d > 0.0
     assert math.isfinite(d)

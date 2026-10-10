@@ -23,7 +23,7 @@ use crate::crs::in_core::kernel::{DEG_TO_RAD, Ellipsoid, ProjectionKernel, RAD_T
 use crate::crs::local::UtmZone as LocalUtmZone;
 use crate::crs::{TransformFailure, parse_epsg};
 use crate::error::Result;
-pub(in crate::crs) use crate::geographic::Pole;
+use crate::geographic::GeodeticPole;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TmercCertificateTerms {
@@ -37,7 +37,7 @@ pub(crate) struct PolarCertificateTerms {
     pub(crate) a: f64,
     pub(crate) e: f64,
     pub(crate) akm1: f64,
-    pub(crate) pole: Pole,
+    pub(crate) pole: GeodeticPole,
 }
 
 pub(crate) const fn tmerc_certificate_terms(a: f64, f: f64, k0: f64) -> TmercCertificateTerms {
@@ -345,16 +345,16 @@ fn snap_webmerc_to_utm_latitude(lat: f64) -> f64 {
     clippy::decimal_literal_representation,
     reason = "EPSG authority codes are decimal identifiers"
 )]
-pub(super) fn utm_crs(crs: &str) -> Option<(LocalUtmZone, Pole)> {
+pub(super) fn utm_crs(crs: &str) -> Option<(LocalUtmZone, GeodeticPole)> {
     let code = parse_epsg(crs)?;
     match code {
         32601..=32660 => Some((
             LocalUtmZone::try_new(code.wrapping_sub(32600)).ok()?,
-            Pole::North,
+            GeodeticPole::North,
         )),
         32701..=32760 => Some((
             LocalUtmZone::try_new(code.wrapping_sub(32700)).ok()?,
-            Pole::South,
+            GeodeticPole::South,
         )),
         _ => None,
     }
@@ -386,7 +386,7 @@ pub(super) fn adjlon(mut lon: f64) -> f64 {
 /// per-coordinate kernels never re-parse EPSG or decode zone/north.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct UtmZone {
-    pub(crate) pole: Pole,
+    pub(crate) pole: GeodeticPole,
     pub(crate) central_meridian: f64,
 }
 
@@ -474,7 +474,7 @@ mod tests {
         assert!((raw_y[0] - 45.0).abs() < 1e-12);
 
         let zone = UtmZone {
-            pole: Pole::North,
+            pole: GeodeticPole::North,
             central_meridian: 15.0,
         };
         let one = InCoreTransform::lon_lat_to_utm(zone);

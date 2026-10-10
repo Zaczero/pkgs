@@ -290,8 +290,7 @@ pub(crate) fn area_steradians(id: CellId) -> f64 {
     triangle_area_raw(a, b, c, determinant) + triangle_area_raw(a, c, d, determinant)
 }
 
-/// Exact geodesic area in square meters on the authalic sphere (the
-/// same model the H3 backend uses, so the two grids compare).
+/// Area in square meters on the authalic sphere shared with H3.
 pub(crate) fn area_m2(id: CellId) -> f64 {
     area_steradians(id) * EARTH_AUTHALIC_RADIUS_M * EARTH_AUTHALIC_RADIUS_M
 }

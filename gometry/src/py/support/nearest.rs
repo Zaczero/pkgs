@@ -1,5 +1,5 @@
 use crate::array::ArrayRow;
-use crate::geometry::storage::ValidityMask;
+use crate::geometry::storage::{ArrayRows, ValidityMask};
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, Frame, Point, PyGeometry, PyGeometryArray, PyResult, Python,
     Shape, metric_nearest_points_resolved, rows_err,
@@ -20,8 +20,8 @@ pub(crate) fn nearest_point_columns_masked(
     let mut right = Vec::with_capacity(pair_count);
     for (row, (pair, common)) in pairs.into_iter().enumerate() {
         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-            left.push(PyGeometryArray::missing_placeholder());
-            right.push(PyGeometryArray::missing_placeholder());
+            left.push(ArrayRows::missing_placeholder());
+            right.push(ArrayRows::missing_placeholder());
             continue;
         }
         let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair.as_ref(), common);
@@ -197,12 +197,20 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                         let common =
                             crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                         let line = match witness {
-                            Some((start, end, step)) => crate::geometry::nearest_line_with_intent(
-                                Some(&(start, end)),
-                                common,
-                                crate::geometry::ChartMetric::chart_frame(metric),
-                                crate::geographic::ComputedEdgeIntent::Stored(step),
-                            ),
+                            Some((start, end, step)) => {
+                                let frame = crate::geometry::ChartMetric::chart_frame(metric);
+                                crate::geometry::nearest_line_with_intent(
+                                    Some(&(start, end)),
+                                    common,
+                                    frame,
+                                    crate::geographic::ComputedEdgeIntent::retained_chart_witness(
+                                        frame,
+                                        [start.x, end.x],
+                                        step,
+                                    )
+                                    .map_err(|error| (logical, error))?,
+                                )
+                            },
                             None => crate::geometry::nearest_line(None, common),
                         }
                         .map_err(|error| (logical, error))?;

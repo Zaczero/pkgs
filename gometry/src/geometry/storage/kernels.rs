@@ -12,8 +12,7 @@ use std::num::NonZeroU32;
 use super::builder::PackedColumnBuilder;
 use super::packed_columns::{
     LineColumns, PackedColumnError, PackedColumnOutput, PackedColumnResult, PackedColumns,
-    PointColumns, PointRowLayout, PointRows, PolygonColumns, SegmentedRuns, XyColumns, batch_err,
-    row_err,
+    PointColumns, PolygonColumns, SegmentedRuns, XyColumns, batch_err, row_err,
 };
 use crate::crs;
 use crate::error::Result;
@@ -670,22 +669,16 @@ pub(crate) fn ensure_geographic_columns_present(
     })
 }
 
-/// Transform present packed points once, then rebuild the selected point
-/// column. Missing placeholders never cross the transform boundary; compact
-/// inputs return present-only coordinates and row-aligned inputs are rebuilt
-/// with their placeholders in one output allocation.
+/// Transform the present-only payload of nullable packed points. Array
+/// publication restores the logical mask after the transformed column returns.
 pub(crate) fn map_masked_point_columns_to_crs(
     transformer: &crs::TransformPlan,
-    coords: &CoordSeq,
-    selection: RowSelectionRef<'_>,
-    missing: &ValidityMask,
-    layout: PointRowLayout,
+    points: &PointColumns<'_>,
 ) -> std::result::Result<CoordSeq, crate::crs::TransformFailure> {
-    let rows = PointRows::new(coords.len(), selection, Some(missing), layout);
+    let coords = points.coords();
+    let rows = points.rows();
     let present_count = rows.present_count();
-    let compact = rows.is_compact();
-    storage::admit_packed_coord_count(if compact { present_count } else { rows.len() })
-        .map_err(crate::crs::TransformFailure::from)?;
+    storage::admit_packed_coord_count(present_count).map_err(crate::crs::TransformFailure::from)?;
     let mut xs = Vec::with_capacity(present_count);
     let mut ys = Vec::with_capacity(present_count);
     let mut zs = coords.zs().map(|_| Vec::with_capacity(present_count));
@@ -711,35 +704,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
         transformer.transform_coordinates_indexed(&mut xs, &mut ys, zt)?;
     }
 
-    if compact {
-        return Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?);
-    }
-
-    let mut output = CoordSeqBuilder::with_capacity(coords.axes(), rows.len());
-    let mut xs = xs.into_iter();
-    let mut ys = ys.into_iter();
-    let mut zs = zs.map(Vec::into_iter);
-    let mut ms = ms.map(Vec::into_iter);
-    for (_, physical) in rows.cursor() {
-        if physical.is_some() {
-            output.push_xyzm(
-                xs.next().expect("present point has transformed X"),
-                ys.next().expect("present point has transformed Y"),
-                zs.as_mut()
-                    .map(|values| values.next().expect("present point has transformed Z")),
-                ms.as_mut()
-                    .map(|values| values.next().expect("present point has transformed M")),
-            );
-        } else {
-            output.push_xyzm(
-                f64::NAN,
-                f64::NAN,
-                coords.zs().map(|_| f64::NAN),
-                coords.ms().map(|_| f64::NAN),
-            );
-        }
-    }
-    Ok(output.finish()?)
+    Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
 }
 
 /// Dispatch a packed-column reduce over line or polygon storage only — the
@@ -887,12 +852,49 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
     frame: crate::geographic::GeographicFrame,
     missing: Option<&ValidityMask>,
 ) -> Result<Vec<f64>> {
-    if let PackedColumns::Points(_) = columns {
-        return Ok(if MASKED {
-            bounds_values_from_columns_masked(columns, missing)
+    if let PackedColumns::Points(points) = columns {
+        let point_bounds = |x, y| {
+            let point = Point::new_raw_xy(x, y);
+            let shape = Shape::Point(point);
+            crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
+                frame,
+                &shape,
+                Some(Bounds::from_point(point)),
+            )
+            .map_or([x, y, x, y], Bounds::into_array)
+        };
+        let mut values = Vec::with_capacity(points.len());
+        if let Some(XyColumns { xs, ys }) = points.contiguous_xy() {
+            let bound = frame.longitude().ordinary_longitude_bound();
+            let pole = frame.pole();
+            let (xs, tail_x) = xs.as_chunks::<4>();
+            let (ys, tail_y) = ys.as_chunks::<4>();
+            for (xs, ys) in xs.iter().zip(ys) {
+                let ordinary =
+                    xs.iter().all(|x| x.abs() < bound) && ys.iter().all(|y| y.abs() < pole);
+                let [x0, x1, x2, x3] = *xs;
+                let [y0, y1, y2, y3] = *ys;
+                let rows = [(x0, y0), (x1, y1), (x2, y2), (x3, y3)].map(|(x, y)| {
+                    if ordinary {
+                        [x, y, x, y]
+                    } else {
+                        point_bounds(x, y)
+                    }
+                });
+                values.extend_from_slice(&rows);
+            }
+            for (&x, &y) in tail_x.iter().zip(tail_y) {
+                values.push(point_bounds(x, y));
+            }
         } else {
-            bounds_values_from_columns(columns)
-        });
+            for (_, physical) in points.rows().cursor() {
+                values.push(physical.map_or([f64::NAN; 4], |physical| {
+                    let (x, y) = points.physical_xy_at(physical);
+                    point_bounds(x, y)
+                }));
+            }
+        }
+        return Ok(values.into_flattened());
     }
     let mut values = Vec::with_capacity(columns.row_count());
     match columns {
@@ -906,25 +908,24 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                     continue;
                 }
                 let window = line_columns.row_window(row);
-                let raw_bounds = if window.is_empty() {
+                let bounds = if window.is_empty() {
                     [f64::NAN; 4]
                 } else {
-                    row_bounds_values(xs, ys, window.clone())
-                };
-                let bounds = if window.is_empty()
-                    || raw_bounds_certify_ordinary_support(raw_bounds, frame)
-                {
-                    raw_bounds
-                } else {
-                    let shape = Shape::LineString(LineSeq::row_view(
-                        coords,
-                        CoordWindow::from_range(window, coords.len()),
-                    ));
-                    if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
-                        crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
-                            .map_or([f64::NAN; 4], Bounds::into_array)
-                    } else {
+                    let raw_bounds = row_bounds_values(xs, ys, window.clone());
+                    if raw_bounds_certify_ordinary_support(raw_bounds, frame) {
                         raw_bounds
+                    } else {
+                        let [minx, miny, maxx, maxy] = raw_bounds;
+                        let shape = Shape::LineString(LineSeq::row_view(
+                            coords,
+                            CoordWindow::from_range(window, coords.len()),
+                        ));
+                        crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
+                            frame,
+                            &shape,
+                            Some(Bounds::new_raw(minx, miny, maxx, maxy)),
+                        )
+                        .map_or([f64::NAN; 4], Bounds::into_array)
                     }
                 };
                 values.push(bounds);
@@ -944,12 +945,13 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         raw_bounds
                     } else {
                         let shape = packed_row.to_shape()?;
-                        if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
-                            crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
-                                .map_or([f64::NAN; 4], Bounds::into_array)
-                        } else {
-                            raw_bounds
-                        }
+                        let [minx, miny, maxx, maxy] = raw_bounds;
+                        crate::geographic::GeographicSupportProducts::public_bounds_for_shape(
+                            frame,
+                            &shape,
+                            Some(Bounds::new_raw(minx, miny, maxx, maxy)),
+                        )
+                        .map_or([f64::NAN; 4], Bounds::into_array)
                     }
                 } else {
                     [f64::NAN; 4]
@@ -961,7 +963,7 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
     Ok(values.into_flattened())
 }
 
-pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<Bounds> {
+pub(crate) fn raw_total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<Bounds> {
     if let PackedColumns::Polygons(polygons) = columns {
         let coords = polygons.coords();
         let ring_offsets = polygons.ring_offsets();
@@ -999,6 +1001,43 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
         }
     });
     total
+}
+
+pub(crate) fn geographic_total_bounds_from_columns(
+    columns: &PackedColumns<'_>,
+    frame: crate::geographic::GeographicFrame,
+) -> Result<Option<Bounds>> {
+    let raw = raw_total_bounds_from_columns(columns);
+    if raw.is_none_or(|bounds| frame.bounds_certify_ordinary_support(bounds)) {
+        return Ok(raw);
+    }
+    match columns {
+        PackedColumns::Points(points) => {
+            let source = points.rows().cursor().filter_map(|(_, physical)| {
+                physical.map(|physical| {
+                    let (x, y) = points.physical_xy_at(physical);
+                    Point::new_raw_xy(x, y)
+                })
+            });
+            Ok(
+                crate::geographic::GeographicSupportProducts::public_bounds_for_points(
+                    frame, source, raw,
+                ),
+            )
+        },
+        PackedColumns::Lines(_) | PackedColumns::Polygons(_) => {
+            let shapes = columns
+                .collect_rows::<_, Vec<_>>(|row| row.map(PackedRow::to_shape))
+                .into_iter()
+                .flatten()
+                .collect::<Result<Vec<_>>>()?;
+            Ok(
+                crate::geographic::GeographicSupportProducts::public_bounds_for_shapes(
+                    frame, &shapes, raw,
+                ),
+            )
+        },
+    }
 }
 
 pub(crate) fn subdivide_line_columns(
@@ -1114,26 +1153,11 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 let transform = linear.at((pivot_x, pivot_y)).map_err(batch_err)?;
                 let rows = point_columns.rows();
                 let axes = point_columns.coords().axes();
-                let capacity = if rows.is_compact() {
-                    rows.present_count()
-                } else {
-                    rows.len()
-                };
+                let capacity = rows.present_count();
                 storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
                 let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
-                let mut has_missing = false;
                 for (logical, physical) in rows.cursor() {
                     let Some(physical) = physical else {
-                        if rows.is_compact() {
-                            continue;
-                        }
-                        has_missing = true;
-                        builder.push(Point::new_raw_axes(
-                            f64::NAN,
-                            f64::NAN,
-                            ZOrdinate(axes.has_z().then_some(f64::NAN)),
-                            MOrdinate(axes.has_m().then_some(f64::NAN)),
-                        ));
                         continue;
                     };
                     let point = point_columns.coords().point_at(physical);
@@ -1145,13 +1169,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                             .map_err(|error| row_err(logical, error))?,
                     );
                 }
-                let coords = if rows.is_compact() || !has_missing {
-                    builder.finish().map_err(batch_err)?
-                } else {
-                    builder
-                        .finish_with_missing_placeholders()
-                        .map_err(batch_err)?
-                };
+                let coords = builder.finish().map_err(batch_err)?;
                 Ok(PackedColumnOutput::Points(coords))
             },
         },

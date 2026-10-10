@@ -6,16 +6,15 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::array::{ArrayRow, ArrayRowOperation};
+use crate::array::{ArrayRow, ArrayRowOperation, StreamingShapes};
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, rows_err,
     validate_paired_arrays,
 };
 use crate::crs::frame::Frame;
-use crate::crs::{MetricModel, ResolvedMetric};
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{
-    CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricScratch,
+    CachelessRowContext, GeodesicBinaryRow, Lane, MetricCtx, MetricResolver, MetricScratch,
 };
 use crate::error::Result;
 use crate::geometry::storage::{ShapeRow, ValidityMask, validity as missing};
@@ -24,7 +23,40 @@ use crate::geometry::{PreparedPlan, Shape, ShapeData, TopologyDomain};
 use crate::test_support::binary_dispatch_counters;
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
-type FramedMaskedRows<R> = (Vec<R>, Option<ValidityMask>, Frame);
+struct FramedRows<R> {
+    values: Vec<R>,
+    missing: Option<ValidityMask>,
+    frame: Frame,
+}
+
+impl<R> FramedRows<R> {
+    fn fixed_array(values: Vec<R>, array: &PyGeometryArray, frame: &Frame) -> Self {
+        Self {
+            values,
+            missing: array.missing().cloned(),
+            frame: frame.clone(),
+        }
+    }
+
+    fn paired_arrays(
+        values: Vec<R>,
+        left: &PyGeometryArray,
+        right: &PyGeometryArray,
+        frame: &Frame,
+    ) -> Self {
+        Self {
+            values,
+            missing: missing::union_many([left.missing(), right.missing()]),
+            frame: frame.clone(),
+        }
+    }
+}
+
+impl<R: BulkElement> FramedRows<R> {
+    fn into_py(self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        R::bulk_into_py_masked(self.values, py, &self.frame, self.missing.as_ref())
+    }
+}
 
 /// Keep raw row errors until the metric scratch owner has been released.
 enum RawMetricBinary<R> {
@@ -94,64 +126,6 @@ pub(crate) fn admit_binary_inputs<'a>(
         frame,
         domain,
     })
-}
-
-/// Optional binary array-lane fast path: run BEFORE the generic per-row kernel
-/// when packed-column or other batch engines apply.
-pub(crate) trait BinaryArrayFastPath<R>: Send + Sync {
-    /// Decide whether this path is worth entering without acquiring metric
-    /// scratch. The decision may inspect only already-admitted inputs and
-    /// metadata; it must not execute a Python callback.
-    fn is_eligible(
-        &self,
-        left: &PyGeometryArray,
-        right: GeometryInput<'_>,
-        op_name: &str,
-        frame: &Frame,
-    ) -> bool;
-
-    fn try_dispatch(
-        &self,
-        py: Python<'_>,
-        left: &PyGeometryArray,
-        right: GeometryInput<'_>,
-        op_name: &str,
-        frame: &Frame,
-        domain: TopologyDomain,
-        missing: Option<&ValidityMask>,
-        model: Option<&MetricModel>,
-        metric: Option<&ResolvedMetric>,
-    ) -> Option<PyResult<Py<PyAny>>>;
-}
-
-/// No-op fast path — generic per-row lane only.
-pub(crate) struct NoBinaryFastPath;
-
-impl<R: BulkElement> BinaryArrayFastPath<R> for NoBinaryFastPath {
-    fn is_eligible(
-        &self,
-        _left: &PyGeometryArray,
-        _right: GeometryInput<'_>,
-        _op_name: &str,
-        _frame: &Frame,
-    ) -> bool {
-        false
-    }
-
-    fn try_dispatch(
-        &self,
-        _py: Python<'_>,
-        _left: &PyGeometryArray,
-        _right: GeometryInput<'_>,
-        _op_name: &str,
-        _frame: &Frame,
-        _domain: TopologyDomain,
-        _missing: Option<&ValidityMask>,
-        _model: Option<&MetricModel>,
-        _metric: Option<&ResolvedMetric>,
-    ) -> Option<PyResult<Py<PyAny>>> {
-        None
-    }
 }
 
 fn run_array_rows<R, K>(
@@ -253,6 +227,113 @@ where
     })
 }
 
+fn run_array_shape_rows<K>(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<StreamingShapes, (usize, crate::error::Error)>
+where
+    K: for<'row, 'ctx> Fn(
+            usize,
+            ShapeRow<'row>,
+            &CachelessRowContext<'ctx>,
+            &mut ArrayRowOperation<'row>,
+        ) -> Result<Shape>
+        + Send
+        + Sync,
+{
+    let array = array.clone();
+    py.detach(move || {
+        let mut rows = array.row_operation();
+        let mut output = StreamingShapes::with_capacity(0, array.len());
+        for row in rows.rows_with_missing(Shape::empty_point) {
+            let (logical, result) = match row {
+                ArrayRow::Missing { logical, .. } => (logical, output.try_push_missing()),
+                ArrayRow::Present(present) => {
+                    let row_index = present.logical();
+                    let shape_row = present.row();
+                    let ctx = CachelessRowContext {
+                        frame,
+                        domain,
+                        metric,
+                        lane: Lane::Array(row_index),
+                    };
+                    let result = kernel(row_index, shape_row, &ctx, &mut rows)
+                        .and_then(|shape| output.try_push(shape));
+                    (row_index, result)
+                },
+            };
+            result.map_err(|error| (logical, error))?;
+        }
+        Ok(output)
+    })
+}
+
+fn run_paired_shape_rows<K>(
+    py: Python<'_>,
+    left: &PyGeometryArray,
+    right: &PyGeometryArray,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<StreamingShapes, (usize, crate::error::Error)>
+where
+    K: for<'left, 'right, 'ctx> Fn(
+            usize,
+            ShapeRow<'left>,
+            ShapeRow<'right>,
+            &CachelessRowContext<'ctx>,
+            &mut ArrayRowOperation<'left>,
+            &mut ArrayRowOperation<'right>,
+        ) -> Result<Shape>
+        + Send
+        + Sync,
+{
+    let left_array = left.clone();
+    let right_array = right.clone();
+    py.detach(move || {
+        let mut left_rows = left_array.row_operation();
+        let mut right_rows = right_array.row_operation();
+        let mut output = StreamingShapes::with_capacity(0, left_array.len());
+        let left_iter = left_rows.rows_with_missing(Shape::empty_point);
+        let right_iter = right_rows.rows_with_missing(Shape::empty_point);
+        for (left, right) in left_iter.zip(right_iter) {
+            let (logical, result) = match (left, right) {
+                (ArrayRow::Present(left), ArrayRow::Present(right)) => {
+                    let row_index = left.logical();
+                    let left_row = left.row();
+                    let right_row = right.row();
+                    let ctx = CachelessRowContext {
+                        frame,
+                        domain,
+                        metric,
+                        lane: Lane::Array(row_index),
+                    };
+                    let result = kernel(
+                        row_index,
+                        left_row,
+                        right_row,
+                        &ctx,
+                        &mut left_rows,
+                        &mut right_rows,
+                    )
+                    .and_then(|shape| output.try_push(shape));
+                    (row_index, result)
+                },
+                (ArrayRow::Missing { logical, .. }, _) | (_, ArrayRow::Missing { logical, .. }) => {
+                    (logical, output.try_push_missing())
+                },
+            };
+            result.map_err(|error| (logical, error))?;
+        }
+        Ok(output)
+    })
+}
+
 fn run_binary_fixed_array_rows<R, K>(
     py: Python<'_>,
     array: &PyGeometryArray,
@@ -262,12 +343,30 @@ fn run_binary_fixed_array_rows<R, K>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> Result<(Vec<R>, Frame), (usize, crate::error::Error)>
+) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
-    let output_frame = frame.clone();
+    let values =
+        run_binary_fixed_array_values(py, array, fixed, side, frame, domain, metric, kernel)?;
+    Ok(FramedRows::fixed_array(values, array, frame))
+}
+
+fn run_binary_fixed_array_values<R, K>(
+    py: Python<'_>,
+    array: &PyGeometryArray,
+    fixed: &PyGeometry,
+    side: ArrayOperandSide,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<Vec<R>, (usize, crate::error::Error)>
+where
+    R: BulkElement,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+{
     let fixed_plan = fixed.prepared_plan();
     // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
     // frame caches are derived from MetricCtx. Never demote these kernels to
@@ -286,26 +385,40 @@ where
             }
         },
     )
-    .map(|values| (values, output_frame))
 }
 
 fn run_binary_array_array_rows<R, K>(
     py: Python<'_>,
     left: &PyGeometryArray,
     right: &PyGeometryArray,
-    missing: Option<ValidityMask>,
     frame: &Frame,
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> Result<FramedMaskedRows<R>, (usize, crate::error::Error)>
+) -> Result<FramedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
-    let output_frame = frame.clone();
+    let values = run_binary_array_array_values(py, left, right, frame, domain, metric, kernel)?;
+    Ok(FramedRows::paired_arrays(values, left, right, frame))
+}
+
+fn run_binary_array_array_values<R, K>(
+    py: Python<'_>,
+    left: &PyGeometryArray,
+    right: &PyGeometryArray,
+    frame: &Frame,
+    domain: TopologyDomain,
+    metric: MetricCtx<'_>,
+    kernel: K,
+) -> Result<Vec<R>, (usize, crate::error::Error)>
+where
+    R: BulkElement,
+    K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
+{
     // Prepared handles; frame caches derived from MetricCtx.
-    let values = run_paired_rows(
+    run_paired_rows(
         py,
         left,
         right,
@@ -317,8 +430,7 @@ where
             let right_data = right_products.prepared_at(row, right_row)?;
             kernel(&left_data, &right_data, ctx)
         },
-    )?;
-    Ok((values, missing, output_frame))
+    )
 }
 
 /// Binary scalar/array dispatch (four scalar×array shapes).
@@ -327,34 +439,31 @@ where
 /// once per operand pair-set, runs the kernel inside one ``py.detach``, uses
 /// caching prepared rows for array lanes, and bulk-converts via
 /// [`BulkElement`].
-pub(crate) fn dispatch_binary<R, F>(
+pub(crate) fn dispatch_binary<R>(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
     resolver: super::metric::MetricResolver,
-    fast_path: &F,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
-    F: BinaryArrayFastPath<R>,
 {
-    let admission = admit_binary(left, right, op_name)?;
-    dispatch_binary_admitted(py, &admission, op_name, resolver, fast_path, kernel)
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let admission = admit_binary(&left, &right, op_name)?;
+    dispatch_binary_admitted(py, &admission, resolver, kernel)
 }
 
-pub(crate) fn dispatch_binary_admitted<R, F>(
+pub(crate) fn dispatch_binary_admitted<R>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
-    op_name: &str,
     resolver: super::metric::MetricResolver,
-    fast_path: &F,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
-    F: BinaryArrayFastPath<R>,
 {
     use GeometryInput::{Many, One};
     match (admission.left, admission.right) {
@@ -382,9 +491,7 @@ where
             right,
             One(left),
             ArrayOperandSide::Right,
-            op_name,
             resolver,
-            fast_path,
             kernel,
         ),
         (Many(left), One(right)) => dispatch_binary_array_admitted(
@@ -393,9 +500,7 @@ where
             left,
             One(right),
             ArrayOperandSide::Left,
-            op_name,
             resolver,
-            fast_path,
             kernel,
         ),
         (Many(left), Many(right)) => dispatch_binary_array_admitted(
@@ -404,60 +509,26 @@ where
             left,
             Many(right),
             ArrayOperandSide::Left,
-            op_name,
             resolver,
-            fast_path,
             kernel,
         ),
     }
 }
 
-fn dispatch_binary_array_admitted<R, F>(
+fn dispatch_binary_array_admitted<R>(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
     array: &PyGeometryArray,
     other: GeometryInput<'_>,
     side: ArrayOperandSide,
-    op_name: &str,
     resolver: super::metric::MetricResolver,
-    fast_path: &F,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>>
 where
     R: BulkElement,
-    F: BinaryArrayFastPath<R>,
 {
-    let eligible = fast_path.is_eligible(array, other, op_name, &admission.frame);
-    let pair_missing = match other {
-        GeometryInput::Many(right) => missing::union_many([array.missing(), right.missing()]),
-        GeometryInput::One(_) => None,
-    };
     let mut scratch = MetricScratch::default();
     let metric = resolver.resolve_ctx(&admission.frame, &mut scratch)?;
-
-    if eligible {
-        #[cfg(test)]
-        binary_dispatch_counters::fast_path_attempt();
-        let fast_result = fast_path.try_dispatch(
-            py,
-            array,
-            other,
-            op_name,
-            &admission.frame,
-            admission.domain,
-            pair_missing.as_ref(),
-            metric.model(),
-            metric.resolved(),
-        );
-        if let Some(result) = fast_result {
-            #[cfg(test)]
-            binary_dispatch_counters::fast_path_taken();
-            drop(scratch);
-            return result;
-        }
-        #[cfg(test)]
-        binary_dispatch_counters::fast_path_declined();
-    }
 
     #[cfg(test)]
     binary_dispatch_counters::general_lane();
@@ -471,13 +542,11 @@ where
             admission.domain,
             metric,
             kernel,
-        )
-        .map(|(values, _)| (values, None, admission.frame.clone())),
+        ),
         GeometryInput::Many(right) => run_binary_array_array_rows(
             py,
             array,
             right,
-            pair_missing,
             &admission.frame,
             admission.domain,
             metric,
@@ -485,8 +554,7 @@ where
         ),
     };
     drop(scratch);
-    let (values, missing, frame) = result.map_err(rows_err)?;
-    R::bulk_into_py_masked(values, py, &frame, missing.as_ref())
+    result.map_err(rows_err)?.into_py(py)
 }
 
 pub(crate) fn dispatch_typed_metric_binary<R>(
@@ -740,17 +808,13 @@ where
         classify_required(right)?,
         op_name,
     )?;
-    let missing = match admission.right {
-        One(_) => None,
-        Many(right) => missing::union_many([left.missing(), right.missing()]),
-    };
     let mut scratch = MetricScratch::default();
     let result = {
         let metric = resolver.resolve_ctx(&admission.frame, &mut scratch)?;
         #[cfg(test)]
         binary_dispatch_counters::general_lane();
         match admission.right {
-            One(right) => run_binary_fixed_array_rows(
+            One(right) => run_binary_fixed_array_values(
                 py,
                 left,
                 right,
@@ -759,19 +823,16 @@ where
                 admission.domain,
                 metric,
                 kernel,
-            )
-            .map(|(values, _)| values),
-            Many(right) => run_binary_array_array_rows(
+            ),
+            Many(right) => run_binary_array_array_values(
                 py,
                 left,
                 right,
-                missing,
                 &admission.frame,
                 admission.domain,
                 metric,
                 kernel,
-            )
-            .map(|(values, ..)| values),
+            ),
         }
     };
     drop(scratch);
@@ -783,13 +844,22 @@ where
 fn split_operand_arc_for_topology(
     domain: TopologyDomain,
     geometry: &PyGeometry,
+    metric: MetricCtx<'_>,
 ) -> Result<Arc<PreparedPlan>> {
     let plan = geometry.prepared_plan();
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
     {
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic topology split source ordinates require the operation's CRS metric",
+                )
+            })
+        };
         Ok(Arc::new(PreparedPlan::new(ShapeData::from(
-            plan.shape().split_antimeridian_in_frame(frame)?,
+            plan.shape()
+                .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))?,
         ))))
     } else {
         Ok(plan)
@@ -799,6 +869,7 @@ fn split_operand_arc_for_topology(
 /// The shared antimeridian gate for geometry-returning binary lanes.
 fn invoke_topology_geometry_kernel<K>(
     domain: TopologyDomain,
+    metric: MetricCtx<'_>,
     left: &PreparedPlan,
     right: &PreparedPlan,
     kernel: &K,
@@ -818,15 +889,32 @@ where
             unreachable!("Cartesian topology cannot cross the antimeridian")
         };
         let left_split = if left_crosses {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic topology split source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
             Some(PreparedPlan::new(ShapeData::from(
-                left.shape().split_antimeridian_in_frame(frame)?,
+                left.shape()
+                    .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))?,
             )))
         } else {
             None
         };
         let right_split = if right_crosses {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic topology split source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
             Some(PreparedPlan::new(ShapeData::from(
-                right.shape().split_antimeridian_in_frame(frame)?,
+                right
+                    .shape()
+                    .split_antimeridian_in_frame_with_metric(frame, Some(&metric_access))?,
             )))
         } else {
             None
@@ -841,51 +929,45 @@ where
 }
 
 /// Geometry-returning binary dispatch with topology split.
-pub(crate) fn dispatch_binary_geometry<F>(
+pub(crate) fn dispatch_binary_geometry(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
     op_name: &str,
-    fast_path: &F,
+    resolver: MetricResolver,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
     + Send
     + Sync,
-) -> PyResult<Py<PyAny>>
-where
-    F: BinaryArrayFastPath<Shape>,
-{
-    let admission = admit_binary(left, right, op_name)?;
-    dispatch_binary_geometry_admitted(py, &admission, op_name, fast_path, kernel)
+) -> PyResult<Py<PyAny>> {
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let admission = admit_binary(&left, &right, op_name)?;
+    dispatch_binary_geometry_admitted_with_resolver(py, &admission, resolver, kernel)
 }
 
-pub(crate) fn dispatch_binary_geometry_admitted<F>(
+pub(crate) fn dispatch_binary_geometry_admitted_with_resolver(
     py: Python<'_>,
     admission: &BinaryAdmission<'_>,
-    op_name: &str,
-    fast_path: &F,
+    resolver: MetricResolver,
     kernel: impl Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape>
     + Send
     + Sync,
-) -> PyResult<Py<PyAny>>
-where
-    F: BinaryArrayFastPath<Shape>,
-{
+) -> PyResult<Py<PyAny>> {
     use GeometryInput::{Many, One};
-    let resolver = super::metric::MetricResolver::None;
 
     match (admission.left, admission.right) {
         (One(left), One(right)) => {
             let frame = admission.frame.clone();
-            let domain = admission.domain;
             let mut metric_scratch = MetricScratch::default();
             let result = {
-                let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
-                    Ok(metric) => metric,
-                    Err(error) => {
-                        drop(metric_scratch);
-                        return Err(error);
-                    },
-                };
+                let (domain, metric) =
+                    match resolver.resolve_topology_ctx(&frame, &mut metric_scratch) {
+                        Ok(context) => context,
+                        Err(error) => {
+                            drop(metric_scratch);
+                            return Err(error);
+                        },
+                    };
                 let ctx = CachelessRowContext {
                     frame: &frame,
                     domain,
@@ -894,9 +976,13 @@ where
                 };
                 let left_shape = left.prepared_plan();
                 let right_shape = right.prepared_plan();
-                invoke_topology_geometry_kernel(domain, &left_shape, &right_shape, &|l, r| {
-                    kernel(l, r, &ctx)
-                })
+                invoke_topology_geometry_kernel(
+                    domain,
+                    metric,
+                    &left_shape,
+                    &right_shape,
+                    &|l, r| kernel(l, r, &ctx),
+                )
             };
             drop(metric_scratch);
             let shape = result?;
@@ -906,42 +992,27 @@ where
         },
         (One(left), Many(right)) => {
             let frame = admission.frame.clone();
-            let domain = admission.domain;
-            if fast_path.is_eligible(right, GeometryInput::One(left), op_name, &frame)
-                && let Some(result) = fast_path.try_dispatch(
-                    py,
-                    right,
-                    GeometryInput::One(left),
-                    op_name,
-                    &frame,
-                    domain,
-                    None,
-                    None,
-                    None,
-                )
-            {
-                return result;
-            }
             let output_frame = frame.clone();
             let mut metric_scratch = MetricScratch::default();
             let result = {
-                let metric = match resolver.resolve_ctx(&frame, &mut metric_scratch) {
-                    Ok(metric) => metric,
-                    Err(error) => {
-                        drop(metric_scratch);
-                        return Err(error);
-                    },
-                };
-                let left_fixed = match split_operand_arc_for_topology(domain, left) {
+                let (domain, metric) =
+                    match resolver.resolve_topology_ctx(&frame, &mut metric_scratch) {
+                        Ok(context) => context,
+                        Err(error) => {
+                            drop(metric_scratch);
+                            return Err(error);
+                        },
+                    };
+                let left_fixed = match split_operand_arc_for_topology(domain, left, metric) {
                     Ok(left_fixed) => left_fixed,
                     Err(error) => {
                         drop(metric_scratch);
                         return Err(PyErr::from(error));
                     },
                 };
-                // Overlay rows use transient plans only; MetricCtx is None so
-                // no frame-dependent cache is retained.
-                run_array_rows(
+                // Overlay rows use transient plans and retain no frame cache;
+                // geographic carry keeps its lazy metric scratch call-local.
+                run_array_shape_rows(
                     py,
                     right,
                     &frame,
@@ -952,6 +1023,7 @@ where
                         let right_data = products.warm_prepared_at(row, right_row, known_bounds)?;
                         invoke_topology_geometry_kernel(
                             domain,
+                            metric,
                             &left_fixed,
                             &right_data,
                             &|l, r| kernel(l, r, ctx),
@@ -960,22 +1032,15 @@ where
                 )
             };
             drop(metric_scratch);
-            let shapes = result.map_err(rows_err)?;
-            Shape::bulk_into_py_masked(shapes, py, &output_frame, right.missing())
+            let rows = result.map_err(rows_err)?;
+            let output = rows.finish(output_frame)?;
+            Ok(output.into_pyobject(py)?.unbind().into())
         },
         (Many(left), right_in) => {
             let frame = admission.frame.clone();
-            let domain = admission.domain;
-            if fast_path.is_eligible(left, right_in, op_name, &frame)
-                && let Some(result) = fast_path.try_dispatch(
-                    py, left, right_in, op_name, &frame, domain, None, None, None,
-                )
-            {
-                return result;
-            }
             let mut scratch = MetricScratch::default();
             let result = {
-                let metric = resolver.resolve_ctx(&frame, &mut scratch)?;
+                let (domain, metric) = resolver.resolve_topology_ctx(&frame, &mut scratch)?;
                 geometry_kernel_over_array_admitted(
                     py, left, right_in, &frame, domain, metric, kernel,
                 )
@@ -1011,12 +1076,13 @@ where
     let left_bounds = left.existing_element_bounds();
     let result = match right {
         One(right) => {
-            let right_shape = match split_operand_arc_for_topology(domain, right) {
+            let right_shape = match split_operand_arc_for_topology(domain, right, metric) {
                 Ok(right_shape) => right_shape,
                 Err(error) => return Err(PyErr::from(error)),
             };
-            // Pure topology overlay: MetricCtx is None → no frame caches.
-            run_array_rows(
+            // Transient row plans retain no frame caches; any geographic carry
+            // metric scratch belongs only to this operation.
+            run_array_shape_rows(
                 py,
                 left,
                 frame,
@@ -1025,15 +1091,19 @@ where
                 move |row, left_row, ctx, products| {
                     let left_box = row_box(&left_bounds, row).or_else(|| left_row.quick_bounds());
                     let left_data = products.warm_prepared_at(row, left_row, left_box)?;
-                    invoke_topology_geometry_kernel(domain, &left_data, &right_shape, &|l, r| {
-                        kernel(l, r, ctx)
-                    })
+                    invoke_topology_geometry_kernel(
+                        domain,
+                        metric,
+                        &left_data,
+                        &right_shape,
+                        &|l, r| kernel(l, r, ctx),
+                    )
                 },
             )
         },
         Many(right) => {
             let right_bounds = right.existing_element_bounds();
-            run_paired_rows(
+            run_paired_shape_rows(
                 py,
                 left,
                 right,
@@ -1046,19 +1116,19 @@ where
                         row_box(&right_bounds, row).or_else(|| right_row.quick_bounds());
                     let left_data = left_products.warm_prepared_at(row, left_row, left_box)?;
                     let right_data = right_products.warm_prepared_at(row, right_row, right_box)?;
-                    invoke_topology_geometry_kernel(domain, &left_data, &right_data, &|l, r| {
-                        kernel(l, r, ctx)
-                    })
+                    invoke_topology_geometry_kernel(
+                        domain,
+                        metric,
+                        &left_data,
+                        &right_data,
+                        &|l, r| kernel(l, r, ctx),
+                    )
                 },
             )
         },
     };
-    let shapes = result.map_err(rows_err)?;
-    let output_missing = match right {
-        One(_) => left.missing().cloned(),
-        Many(right) => missing::union_many([left.missing(), right.missing()]),
-    };
-    Ok(PyGeometryArray::from_shapes(shapes, frame.clone())?.with_missing_mask(output_missing)?)
+    let rows = result.map_err(rows_err)?;
+    rows.finish(frame.clone()).map_err(PyErr::from)
 }
 
 pub(crate) fn geometry_kernel_over_array<K>(
@@ -1094,98 +1164,11 @@ where
 mod tests {
     use super::*;
     use crate::crs::RUNTIME_STATE_TEST_LOCK;
-    use crate::dispatch::{MetricResolver, kernels};
+    use crate::dispatch::kernels;
     use crate::geometry::Point;
+    use crate::geometry::storage::{GeometryArrayStorage, PackedStorage};
     use crate::py::errors::CRSError;
-    use crate::py::numpy::bool_array;
     use crate::test_support::binary_dispatch_counters::Snapshot;
-
-    struct RejectingFastPath;
-
-    impl BinaryArrayFastPath<bool> for RejectingFastPath {
-        fn is_eligible(
-            &self,
-            _left: &PyGeometryArray,
-            _right: GeometryInput<'_>,
-            _op_name: &str,
-            _frame: &Frame,
-        ) -> bool {
-            true
-        }
-
-        fn try_dispatch(
-            &self,
-            _py: Python<'_>,
-            _left: &PyGeometryArray,
-            _right: GeometryInput<'_>,
-            _op_name: &str,
-            _frame: &Frame,
-            _domain: TopologyDomain,
-            _missing: Option<&ValidityMask>,
-            _model: Option<&MetricModel>,
-            _metric: Option<&ResolvedMetric>,
-        ) -> Option<PyResult<Py<PyAny>>> {
-            panic!("fast path must not run after metric resolution fails");
-        }
-    }
-
-    struct TakingFastPath;
-
-    impl BinaryArrayFastPath<bool> for TakingFastPath {
-        fn is_eligible(
-            &self,
-            _left: &PyGeometryArray,
-            _right: GeometryInput<'_>,
-            _op_name: &str,
-            _frame: &Frame,
-        ) -> bool {
-            true
-        }
-
-        fn try_dispatch(
-            &self,
-            py: Python<'_>,
-            _left: &PyGeometryArray,
-            _right: GeometryInput<'_>,
-            _op_name: &str,
-            _frame: &Frame,
-            _domain: TopologyDomain,
-            _missing: Option<&ValidityMask>,
-            _model: Option<&MetricModel>,
-            _metric: Option<&ResolvedMetric>,
-        ) -> Option<PyResult<Py<PyAny>>> {
-            Some(bool_array(py, vec![true]))
-        }
-    }
-
-    struct DecliningFastPath;
-
-    impl BinaryArrayFastPath<bool> for DecliningFastPath {
-        fn is_eligible(
-            &self,
-            _left: &PyGeometryArray,
-            _right: GeometryInput<'_>,
-            _op_name: &str,
-            _frame: &Frame,
-        ) -> bool {
-            true
-        }
-
-        fn try_dispatch(
-            &self,
-            _py: Python<'_>,
-            _left: &PyGeometryArray,
-            _right: GeometryInput<'_>,
-            _op_name: &str,
-            _frame: &Frame,
-            _domain: TopologyDomain,
-            _missing: Option<&ValidityMask>,
-            _model: Option<&MetricModel>,
-            _metric: Option<&ResolvedMetric>,
-        ) -> Option<PyResult<Py<PyAny>>> {
-            None
-        }
-    }
 
     fn metric_resolver() -> MetricResolver {
         MetricResolver::Metric {
@@ -1214,45 +1197,124 @@ mod tests {
         )
     }
 
+    fn nullable_measured_lines(missing: [bool; 3]) -> PyGeometryArray {
+        let present = PyGeometryArray::from_shapes(
+            vec![
+                crate::io::parse_wkt("LINESTRING M (0 0 10, 1 0 20, 2 0 30)")
+                    .expect("first measured line"),
+                crate::io::parse_wkt("LINESTRING M (3 0 40, 4 0 50, 5 0 60)")
+                    .expect("second measured line"),
+            ],
+            Frame::None,
+        )
+        .expect("homogeneous lines pack");
+        PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(3, missing.to_vec()).expect("mask"),
+        )
+        .expect("nullable lines admit")
+    }
+
+    fn assert_packed_measured_lines(array: &PyGeometryArray, offsets: &[i32], measures: &[f64]) {
+        let GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords,
+            offsets: actual_offsets,
+            ..
+        }) = array.storage()
+        else {
+            panic!("homogeneous nullable lines stay packed");
+        };
+        assert_eq!(coords.ms(), Some(measures));
+        assert_eq!(actual_offsets.as_slice(), offsets);
+    }
+
     #[test]
-    fn fast_path_admission_counters_are_single_pass_when_taken() {
+    fn binary_geometry_scalar_array_stream_keeps_nullable_lines_packed() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
         Python::attach(|py| {
-            let (left, right) = point_array_pair(py, &Frame::Crs("EPSG:3857".into()));
-            binary_dispatch_counters::reset();
-            let result = dispatch_binary(
+            let fixed = PyGeometry::with_frame(
+                crate::io::parse_wkt("LINESTRING M (10 0 70, 11 0 80, 12 0 90)")
+                    .expect("fixed measured line"),
+                Frame::None,
+            );
+            let array = nullable_measured_lines([false, true, false]);
+            let left = Bound::new(py, fixed).unwrap().into_any();
+            let right = Bound::new(py, array).unwrap().into_any();
+            let result = dispatch_binary_geometry(
                 py,
                 &left,
                 &right,
-                "distance",
-                metric_resolver(),
-                &TakingFastPath,
-                |_left, _right, _ctx| Ok(false),
+                "test binary geometry",
+                MetricResolver::None,
+                |left, _, _| Ok(left.shape().clone()),
             )
-            .expect("taken fast path")
-            .bind(py)
-            .extract::<Vec<bool>>()
-            .expect("fast path bool array");
-            assert_eq!(result, [true]);
-            assert_eq!(binary_dispatch_counters::snapshot(), Snapshot {
-                classifications: 2,
-                paired_array_validations: 1,
-                frame_resolutions: 1,
-                metric_context_acquisitions: 1,
-                runtime_state_snapshots: 2,
-                fast_path_attempts: 1,
-                fast_path_taken: 1,
-                fast_path_declines: 0,
-                general_lane_runs: 0,
-                #[cfg(debug_assertions)]
-                point_predicate_dispatches: 0,
-            });
+            .expect("scalar/array geometry stream");
+            let result = result.bind(py);
+            let array = crate::broadcast::exact_geometry_array(result)
+                .expect("geometry dispatch returns GeometryArray");
+
+            assert_packed_measured_lines(array, &[0, 3, 3, 6], &[
+                70.0, 80.0, 90.0, 70.0, 80.0, 90.0,
+            ]);
+            assert!(array.is_row_missing(1));
         });
     }
 
     #[test]
-    fn disabled_fast_path_preserves_values_in_the_general_array_lane() {
+    fn binary_geometry_array_scalar_stream_keeps_nullable_lines_packed() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let array = nullable_measured_lines([false, true, false]);
+            let fixed = PyGeometry::with_frame(
+                crate::io::parse_wkt("LINESTRING M (10 0 70, 11 0 80, 12 0 90)")
+                    .expect("fixed measured line"),
+                Frame::None,
+            );
+            let output = geometry_kernel_over_array(
+                py,
+                &array,
+                GeometryInput::One(&fixed),
+                "test binary geometry",
+                MetricResolver::None,
+                |left, _, _| Ok(left.shape().clone()),
+            )
+            .expect("array/scalar geometry stream");
+
+            assert_packed_measured_lines(&output, &[0, 3, 3, 6], &[
+                10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+            ]);
+            assert!(output.is_row_missing(1));
+        });
+    }
+
+    #[test]
+    fn binary_geometry_array_pair_stream_unions_missing_rows() {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let left = nullable_measured_lines([false, true, false]);
+            let right = nullable_measured_lines([true, false, false]);
+            let output = geometry_kernel_over_array(
+                py,
+                &left,
+                GeometryInput::Many(&right),
+                "test binary geometry",
+                MetricResolver::None,
+                |left, _, _| Ok(left.shape().clone()),
+            )
+            .expect("array-pair geometry stream");
+
+            assert_packed_measured_lines(&output, &[0, 0, 0, 3], &[40.0, 50.0, 60.0]);
+            assert!(output.is_row_missing(0));
+            assert!(output.is_row_missing(1));
+            assert!(!output.is_row_missing(2));
+        });
+    }
+
+    #[test]
+    fn binary_array_rows_preserve_values_and_admission_counts() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -1264,13 +1326,12 @@ mod tests {
                 &right,
                 "distance",
                 metric_resolver(),
-                &DecliningFastPath,
                 |left, right, ctx| {
-                    assert!(ctx.metric.resolved().is_some());
+                    let _resolved = ctx.metric.require_resolved(MetricOp::Distance)?;
                     Ok(left.shape() != right.shape())
                 },
             )
-            .expect("general lane after fast-path decline");
+            .expect("binary array row lane");
             assert_eq!(
                 result
                     .bind(py)
@@ -1284,9 +1345,6 @@ mod tests {
                 frame_resolutions: 1,
                 metric_context_acquisitions: 1,
                 runtime_state_snapshots: 2,
-                fast_path_attempts: 1,
-                fast_path_taken: 0,
-                fast_path_declines: 1,
                 general_lane_runs: 1,
                 #[cfg(debug_assertions)]
                 point_predicate_dispatches: 0,
@@ -1295,7 +1353,7 @@ mod tests {
     }
 
     #[test]
-    fn three_d_no_fast_lane_resolves_once_without_attempting_a_fast_path() {
+    fn three_d_binary_array_resolves_metric_once() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
         Python::attach(|py| {
@@ -1316,10 +1374,9 @@ mod tests {
                     op: MetricOp::Distance3d,
                     unit: None,
                 },
-                &NoBinaryFastPath,
                 kernels::binary_distance_3d,
             )
-            .expect("3D general lane");
+            .expect("3D binary array lane");
             assert_eq!(
                 result
                     .bind(py)
@@ -1333,9 +1390,6 @@ mod tests {
                 frame_resolutions: 1,
                 metric_context_acquisitions: 1,
                 runtime_state_snapshots: 2,
-                fast_path_attempts: 0,
-                fast_path_taken: 0,
-                fast_path_declines: 0,
                 general_lane_runs: 1,
                 #[cfg(debug_assertions)]
                 point_predicate_dispatches: 0,
@@ -1344,26 +1398,25 @@ mod tests {
     }
 
     #[test]
-    fn declined_fast_path_preserves_the_general_error_after_context_release() {
+    fn binary_array_kernel_error_is_propagated() {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let (left, right) = point_array_pair(py, &Frame::Crs("EPSG:3857".into()));
             binary_dispatch_counters::reset();
-            let error = dispatch_binary(
+            let error = dispatch_binary::<bool>(
                 py,
                 &left,
                 &right,
                 "distance",
                 metric_resolver(),
-                &DecliningFastPath,
                 |_left, _right, _ctx| {
                     Err(crate::geometry::GeometryErrorKind::message(
                         "general lane error",
                     ))
                 },
             )
-            .expect_err("the disabled fast lane must expose the general error");
+            .expect_err("the array kernel error must be returned");
             assert!(error.to_string().contains("general lane error"));
             let counters = binary_dispatch_counters::snapshot();
             assert_eq!(counters.classifications, 2);
@@ -1371,9 +1424,6 @@ mod tests {
             assert_eq!(counters.frame_resolutions, 1);
             assert_eq!(counters.metric_context_acquisitions, 1);
             assert_eq!(counters.runtime_state_snapshots, 2);
-            assert_eq!(counters.fast_path_attempts, 1);
-            assert_eq!(counters.fast_path_taken, 0);
-            assert_eq!(counters.fast_path_declines, 1);
             assert_eq!(counters.general_lane_runs, 1);
         });
     }
@@ -1400,15 +1450,12 @@ mod tests {
             assert_eq!(counters.frame_resolutions, 1);
             assert_eq!(counters.metric_context_acquisitions, 1);
             assert_eq!(counters.runtime_state_snapshots, 2);
-            assert_eq!(counters.fast_path_attempts, 0);
-            assert_eq!(counters.fast_path_taken, 0);
-            assert_eq!(counters.fast_path_declines, 0);
             assert_eq!(counters.general_lane_runs, 0);
         });
     }
 
     #[test]
-    fn fast_path_returns_metric_resolution_error_before_dispatch() {
+    fn metric_resolution_error_precedes_binary_kernel() {
         Python::initialize();
         Python::attach(|py| {
             let frame = Frame::Crs("EPSG:4326".into());
@@ -1420,7 +1467,7 @@ mod tests {
             let right = PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 0.0)), frame);
             let array = Bound::new(py, array).unwrap().into_any();
             let right = Bound::new(py, right).unwrap().into_any();
-            let result = dispatch_binary(
+            let result = dispatch_binary::<bool>(
                 py,
                 &array,
                 &right,
@@ -1429,11 +1476,10 @@ mod tests {
                     op: MetricOp::Distance3d,
                     unit: None,
                 },
-                &RejectingFastPath,
-                |_left, _right, _ctx| Ok(false),
+                |_left, _right, _ctx| panic!("metric resolution must fail before the row kernel"),
             );
             let Err(error) = result else {
-                panic!("metric resolution failure must be returned by the fast-path gate");
+                panic!("the metric resolver must reject 2D inputs before row execution");
             };
             assert!(error.is_instance_of::<CRSError>(py));
         });

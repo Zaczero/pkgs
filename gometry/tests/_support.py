@@ -6,12 +6,27 @@ import importlib.util
 import itertools
 import math
 import sys
+import sysconfig
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import gometry as gm
 import numpy as np
 import numpy.typing as npt
+import pytest
+
+WEST_RADIAN_SOUTH_GRAD_CRS = """GEOGCRS["West-radian south-grad WGS84",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",west,ORDER[1],ANGLEUNIT["radian",1]],
+ AXIS["Latitude",south,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"""
+EAST_DEGREE_SOUTH_LATITUDE_CRS = """GEOGCRS["WGS 84 south latitude",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",east,ORDER[1],ANGLEUNIT["degree",0.017453292519943295]],
+ AXIS["Latitude",south,ORDER[2],ANGLEUNIT["degree",0.017453292519943295]]]"""
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -25,6 +40,15 @@ TOOL_IMPORT_DIRS = (
 )
 
 
+def h3_oracle() -> Any:
+    if sysconfig.get_config_var('Py_GIL_DISABLED'):
+        pytest.skip(
+            'H3 has no GIL-free wheel for CPython free-threading; its available '
+            'extension enables the GIL'
+        )
+    return pytest.importorskip('h3', reason='H3 is an optional external oracle')
+
+
 def chart_zone_area(
     west: float,
     east: float,
@@ -35,28 +59,49 @@ def chart_zone_area(
     flattening: float,
 ) -> float:
     """Closed-form ellipsoidal area between chart parallels."""
-    eccentricity_squared = flattening * (2.0 - flattening)
+    es = flattening * (2.0 - flattening)
+    sine_north = math.sin(math.radians(north))
+    sine_south = math.sin(math.radians(south))
+    if south >= 0.0 and north >= 0.0:
+        cosine_midpoint = math.sin(
+            math.radians(((90.0 - north) + (90.0 - south)) / 2.0)
+        )
+    elif south <= 0.0 and north <= 0.0:
+        cosine_midpoint = math.sin(
+            math.radians(((90.0 + north) + (90.0 + south)) / 2.0)
+        )
+    else:
+        cosine_midpoint = math.cos(math.radians((north + south) / 2.0))
 
-    def authalic_q(latitude: float) -> float:
-        sine = math.sin(math.radians(latitude))
-        if eccentricity_squared == 0.0:
-            return 2.0 * sine
-        if eccentricity_squared > 0.0:
-            eccentricity = math.sqrt(eccentricity_squared)
-            inverse = math.atanh(eccentricity * sine)
+    sine_difference = (
+        2.0 * math.sin(math.radians((north - south) / 2.0)) * cosine_midpoint
+    )
+    if es == 0.0:
+        authalic_difference = 2.0 * sine_difference
+    else:
+        rational_difference = (
+            sine_difference
+            * (1.0 + es * sine_north * sine_south)
+            / (
+                (1.0 - es * sine_north * sine_north)
+                * (1.0 - es * sine_south * sine_south)
+            )
+        )
+        eccentricity = math.sqrt(abs(es))
+        if es > 0.0:
+            inverse_difference = math.atanh(
+                eccentricity * sine_difference / (1.0 - es * sine_north * sine_south)
+            )
         else:
-            eccentricity = math.sqrt(-eccentricity_squared)
-            inverse = math.atan(eccentricity * sine)
-        return (1.0 - eccentricity_squared) * (
-            sine / (1.0 - eccentricity_squared * sine * sine) + inverse / eccentricity
+            inverse_difference = math.atan2(
+                eccentricity * sine_difference,
+                1.0 - es * sine_north * sine_south,
+            )
+        authalic_difference = (1.0 - es) * (
+            rational_difference + inverse_difference / eccentricity
         )
 
-    return (
-        semi_major**2
-        / 2.0
-        * math.radians(east - west)
-        * (authalic_q(north) - authalic_q(south))
-    )
+    return semi_major**2 / 2.0 * math.radians(east - west) * authalic_difference
 
 
 def chart_parallel_length(

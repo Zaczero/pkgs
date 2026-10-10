@@ -1,6 +1,6 @@
 //! Constructive/editing transforms on `Shape`: buffer, offset, simplify,
 //! snap, segmentize, reverse, orient, normalize, clip — and (below) quantize,
-//! the `set_z`/`set_m` ordinate setters, `force_2d`, and the affine family.
+//! coordinate-ordinate replacement, `force_2d`, and the affine family.
 
 use crate::error::Result;
 mod buffer;

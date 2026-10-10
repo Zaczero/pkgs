@@ -122,6 +122,14 @@ gometry (or another reader that understands this extension). Other producers may
 omit `epoch` entirely. WKB/EWKB and GeoJSON still cannot carry epoch — only this
 gometry GeoArrow extension field and GeoParquet column metadata do.
 
+## Requested C schemas
+
+The Arrow C array and stream exporters accept a request matching their default
+physical schema and reject a different layout. Some PyArrow `DataType` requests
+carry only that physical schema and omit the GeoArrow extension metadata; those
+exports use the requested physical type. Use `GeometryArray.to_arrow()` when the
+result must itself remain a GeoArrow extension array with CRS and epoch metadata.
+
 ## Capsule consumers without pyarrow
 
 For dependency-free producers, pass the gometry object itself to any consumer that
@@ -150,6 +158,11 @@ encoding (the GeoParquet 1.1 default), and gometry's missing rows travel as Arro
 validity bits instead of sentinel geometries. GeoParquet builds on pyarrow (the
 `arrow` extra provides it); for an in-memory handoff without a file, use
 `to_arrow`.
+
+The GeoParquet reader and writer also accept binary streams, including
+`io.BytesIO` and `pyarrow.NativeFile`. Readers require a seekable binary source;
+writers require a writable binary sink. Both leave caller-owned streams open.
+Text streams are unsupported.
 
 ```python exec="on" source="block" result="text"
 import tempfile

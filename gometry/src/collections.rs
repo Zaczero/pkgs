@@ -16,8 +16,12 @@
 //! `RandomState` SipHash of the index cost about a tenth of a scalar predicate
 //! call. H3 `CellIndex` stays on `ahash`: it is a foreign `NonZero` wrapper.
 
+use std::convert::Infallible;
 use std::hash::{BuildHasher as _, BuildHasherDefault, Hash, Hasher};
+use std::ops::ControlFlow;
 use std::sync::{LazyLock, OnceLock};
+
+use crate::geometry::Work;
 
 pub(crate) mod csr;
 
@@ -153,13 +157,39 @@ impl UnionFind {
         }
     }
 
-    pub(crate) fn find(&mut self, mut node: usize) -> usize {
+    pub(crate) fn new_with_work<W: Work>(nodes: usize, work: &mut W) -> crate::error::Result<Self> {
+        work.charge_product(nodes, 2)?;
+        Ok(Self::new(nodes))
+    }
+
+    pub(crate) fn find_with_work<W: Work>(
+        &mut self,
+        node: usize,
+        work: &mut W,
+    ) -> crate::error::Result<usize> {
+        let mut charge = |ticks| match work.charge(ticks) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(error),
+        };
+        match self.find_with_charge(node, &mut charge) {
+            ControlFlow::Continue(root) => Ok(root),
+            ControlFlow::Break(error) => Err(error),
+        }
+    }
+
+    fn find_with_charge<E>(
+        &mut self,
+        mut node: usize,
+        charge: &mut impl FnMut(u64) -> ControlFlow<E, ()>,
+    ) -> ControlFlow<E, usize> {
         loop {
+            charge(1)?;
             let parent = *self.parent.get(node).expect("union-find node exists");
             if parent == node {
-                return node;
+                return ControlFlow::Continue(node);
             }
             let grandparent = *self.parent.get(parent).expect("union-find parent exists");
+            charge(1)?;
             *self.parent.get_mut(node).expect("union-find node exists") = grandparent;
             node = grandparent;
         }
@@ -176,9 +206,42 @@ impl UnionFind {
     /// Join `a` and `b`; `true` when they were ALREADY connected — adding
     /// such an edge closes a cycle.
     pub(crate) fn union(&mut self, a: usize, b: usize) -> bool {
-        let (root_a, root_b) = (self.find(a), self.find(b));
+        let mut charge = |_: u64| ControlFlow::<Infallible, ()>::Continue(());
+        match self.union_with_charge(a, b, &mut charge) {
+            ControlFlow::Continue(already_connected) => already_connected,
+            ControlFlow::Break(never) => match never {},
+        }
+    }
+
+    /// Join `a` and `b` while charging path-halving visits and root updates
+    /// before the corresponding union-find progress.
+    pub(crate) fn union_with_work<W: Work>(
+        &mut self,
+        a: usize,
+        b: usize,
+        work: &mut W,
+    ) -> crate::error::Result<bool> {
+        let mut charge = |ticks| match work.charge(ticks) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(error),
+        };
+        match self.union_with_charge(a, b, &mut charge) {
+            ControlFlow::Continue(already_connected) => Ok(already_connected),
+            ControlFlow::Break(error) => Err(error),
+        }
+    }
+
+    fn union_with_charge<E>(
+        &mut self,
+        a: usize,
+        b: usize,
+        charge: &mut impl FnMut(u64) -> ControlFlow<E, ()>,
+    ) -> ControlFlow<E, bool> {
+        let root_a = self.find_with_charge(a, charge)?;
+        let root_b = self.find_with_charge(b, charge)?;
+        charge(1)?;
         if root_a == root_b {
-            return true;
+            return ControlFlow::Continue(true);
         }
         let rank_a = *self.rank.get(root_a).expect("union-find root exists");
         let rank_b = *self.rank.get(root_b).expect("union-find root exists");
@@ -187,12 +250,13 @@ impl UnionFind {
         } else {
             (root_b, root_a)
         };
+        charge(if rank_a == rank_b { 2 } else { 1 })?;
         *self.parent.get_mut(small).expect("union-find root exists") = big;
         if rank_a == rank_b {
             // Rank r requires at least 2^r nodes, so rank is below usize::BITS.
             *self.rank.get_mut(big).expect("union-find root exists") = rank_a.wrapping_add(1);
         }
-        false
+        ControlFlow::Continue(false)
     }
 }
 
@@ -233,6 +297,27 @@ pub(crate) fn sort_unique_row_ids(ids: &mut Vec<usize>, start: usize, universe: 
 
 #[cfg(test)]
 mod row_id_sort_tests {
+    use crate::error::{ErrorKind, ResourceError};
+    use crate::geometry::Work;
+
+    struct TickLimit {
+        limit: u64,
+        spent: u64,
+    }
+
+    impl Work for TickLimit {
+        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+            let next = self
+                .spent
+                .checked_add(ticks)
+                .ok_or(ResourceError::SizeOverflow)?;
+            if next > self.limit {
+                return Err(ResourceError::SizeOverflow.into());
+            }
+            self.spent = next;
+            Ok(())
+        }
+    }
 
     #[test]
     fn union_find_detects_cycles_after_merging_and_appending_components() {
@@ -245,6 +330,38 @@ mod row_id_sort_tests {
         assert!(!graph.union(appended, 3));
         assert!(graph.union(5, appended));
         assert!(graph.union(appended, appended));
+    }
+
+    #[test]
+    fn synthetic_work_error_precedes_union_find_path_halving() {
+        let mut graph = super::UnionFind::new(4);
+        assert!(!graph.union(0, 1));
+        assert!(!graph.union(2, 3));
+        assert!(!graph.union(0, 2));
+        assert_eq!(graph.parent, [0, 0, 0, 2]);
+
+        let mut work = TickLimit { limit: 1, spent: 0 };
+        let error = graph.find_with_work(3, &mut work).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+        assert_eq!(work.spent, 1);
+        assert_eq!(graph.parent, [0, 0, 0, 2]);
+    }
+
+    #[test]
+    fn synthetic_work_error_precedes_union_find_parent_and_rank_updates() {
+        let mut graph = super::UnionFind::new(2);
+        let mut work = TickLimit { limit: 3, spent: 0 };
+        let error = graph.union_with_work(0, 1, &mut work).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+        assert_eq!(work.spent, 3);
+        assert_eq!(graph.parent, [0, 1]);
+        assert_eq!(graph.rank, [0, 0]);
     }
 
     #[test]

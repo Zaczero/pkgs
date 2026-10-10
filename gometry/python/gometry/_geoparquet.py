@@ -9,7 +9,7 @@ import numbers
 import os  # noqa: TC003 - required by runtime get_type_hints
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal
 
 from gometry._lib import (
     CRS,
@@ -20,9 +20,10 @@ from gometry._lib import (
     _GeoParquetPhysicalLayout,
 )
 from gometry._optional import missing_optional_dependency
-from gometry._types import PyArrowTable, mapping_as_dict
+from gometry._types import mapping_as_dict
 
-TYPE_CHECKING = False
+if TYPE_CHECKING:
+    import pyarrow as pa
 
 GEOARROW_ENCODINGS = frozenset({
     'point',
@@ -290,9 +291,9 @@ def _attributes_table(pa: Any, attributes: Any, row_count: int) -> Any | None:
 
 def to_geoparquet(
     values: Geometry | GeometryArray[Geometry | None],
-    path: str | os.PathLike[str],
+    path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
-    attributes: PyArrowTable | Mapping[str, Any] | None = None,
+    attributes: pa.Table | Mapping[str, Any] | None = None,
     encoding: Literal['wkb', 'native'] = 'wkb',
     **kwargs: Any,
 ) -> None:
@@ -302,9 +303,10 @@ def to_geoparquet(
     ----------
     values : Geometry or GeometryArray
         Geometry rows. A scalar is stored as a single-row table.
-        Serialization describes the receiver CRS (use ``set_crs`` first).
-    path : path-like
-        Output Parquet path.
+        Serialization describes the receiver CRS (use ``with_crs`` first).
+    path : str, path-like, or binary stream
+        Output Parquet path or caller-owned binary writable stream. Text
+        streams are not supported; the writer leaves streams open.
     attributes : pyarrow.Table or mapping, optional
         Aligned non-geometry columns to preserve beside the geometry column.
     encoding : {'wkb', 'native'}, default 'wkb'
@@ -329,7 +331,7 @@ def to_geoparquet(
     # empty; native encoding writes that axis and the reader rejects it.
     if 'M' in (arr.common_coordinate_axes or '') or arr.has_m.any():
         raise GeometryError(
-            'geoparquet 1.x does not support M ordinates; use force_2d() or set_m(None)'
+            'geoparquet 1.x does not support M ordinates; use force_2d() or with_coordinates(m=None)'
         )
     if encoding not in {'wkb', 'native'}:
         raise GeometryError(
@@ -759,7 +761,7 @@ def _decode_geometry_column(
     # OR structural native storage (empty/all-null native XYM must not slip).
     if storage_has_m or result.has_m.any():
         raise _metadata_error(
-            'geoparquet 1.x does not support M ordinates; use force_2d() or set_m(None)'
+            'geoparquet 1.x does not support M ordinates; use force_2d() or with_coordinates(m=None)'
         )
 
     declared = column_metadata['geometry_types']
@@ -938,7 +940,7 @@ def _attribute_result(table: Any) -> Any:
 
 
 def from_geoparquet(
-    path: str | os.PathLike[str],
+    path: str | os.PathLike[str] | BinaryIO | pa.NativeFile,
     *,
     geometry: str | None = None,
     columns: Iterable[str] | None = None,
@@ -946,13 +948,14 @@ def from_geoparquet(
     row_groups: Iterable[int] | None = None,
     filesystem: Any = None,
     **kwargs: Any,
-) -> tuple[GeometryArray[Geometry | None], PyArrowTable]:
+) -> tuple[GeometryArray[Geometry | None], pa.Table]:
     """Read a GeoParquet geometry column and its aligned attributes.
 
     Parameters
     ----------
-    path : path-like
-        GeoParquet file to read.
+    path : str, path-like, or binary stream
+        GeoParquet file or caller-owned binary seekable stream. Text streams
+        are not supported; the reader leaves streams open.
     geometry : str, optional
         Geometry column to decode; the primary column is used by default.
     columns : iterable of str, optional

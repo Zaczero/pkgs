@@ -1606,7 +1606,11 @@ fn validate_owned_null_count(array: &CaptureLayout, buffers: &OwnedBufferSlots) 
 
 /// Checked byte span for every `from_raw_parts` length: reject `usize`
 /// overflow and any result greater than `isize::MAX` (Rust slice UB).
-fn checked_byte_span(count: usize, width: usize, overflow: &'static str) -> PyResult<usize> {
+pub(super) fn checked_byte_span(
+    count: usize,
+    width: usize,
+    overflow: &'static str,
+) -> PyResult<usize> {
     let bytes = count
         .checked_mul(width)
         .ok_or_else(|| PyOverflowError::new_err(overflow))?;

@@ -27,7 +27,9 @@ use std::collections::{BinaryHeap, VecDeque};
 use rstar::{AABB, RTree, RTreeObject};
 
 use super::super::RingOwner;
-use super::exact_delaunay::{EMPTY, FaceId, FaceSide, HalfedgeId, Located, Mesh, site_xy};
+use super::exact_delaunay::{
+    EMPTY, FaceId, FaceSide, HalfedgeId, Located, LocationOutcome, Mesh, site_xy,
+};
 use crate::collections::{HashMap, HashSet};
 use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::ExactSign;
@@ -125,8 +127,11 @@ struct CertifiedBoundarySplit {
 
 #[derive(Debug)]
 pub(super) enum NodeProvenance {
-    SourceSite { occurrence: usize },
-    ConstraintSplit { certificate: usize },
+    /// A vertex in the source point slice supplied to the mesh builder.
+    SourceSite,
+    ConstraintSplit {
+        certificate: usize,
+    },
     Generated,
 }
 
@@ -150,35 +155,20 @@ pub(super) struct ConstrainedMeshPlan {
 impl ConstrainedMeshPlan {
     /// Consume the retained source certificate immediately before publication.
     ///
-    /// The topology builder performs the same checks while the live mesh is
-    /// available. Rechecking the detached product prevents a future publisher
-    /// from silently dropping source intervals or selected-site provenance.
+    /// The topology builder performs these checks while the live mesh is
+    /// available. Rechecking the detached product prevents a publisher from
+    /// silently dropping source intervals or split proofs.
     pub(super) fn validate_certificate(&self) -> Result<()> {
         if self.provenance.len() != self.vertices.len() {
             return Err(GeometryErrorKind::triangulation(
                 "constrained mesh certificate has inconsistent node or edge state",
             ));
         }
-        let source_occurrence_count = self
-            .provenance
-            .iter()
-            .filter_map(|provenance| match provenance {
-                NodeProvenance::SourceSite { occurrence } => occurrence.checked_add(1),
-                NodeProvenance::ConstraintSplit { .. } | NodeProvenance::Generated => None,
-            })
-            .max()
-            .unwrap_or(0);
         let zero = exact::ExactRational::zero();
         let one = exact::ExactRational::one();
         for (site, provenance) in self.provenance.iter().enumerate() {
             match provenance {
-                NodeProvenance::SourceSite { occurrence } => {
-                    if *occurrence >= source_occurrence_count {
-                        return Err(GeometryErrorKind::triangulation(
-                            "constrained mesh certificate has an invalid source occurrence",
-                        ));
-                    }
-                },
+                NodeProvenance::SourceSite | NodeProvenance::Generated => {},
                 NodeProvenance::ConstraintSplit { certificate } => {
                     let Some(certificate) = self.split_certificates.get(*certificate) else {
                         return Err(GeometryErrorKind::triangulation(
@@ -206,7 +196,6 @@ impl ConstrainedMeshPlan {
                         ));
                     }
                 },
-                NodeProvenance::Generated => {},
             }
         }
         for (id, source) in self.source_constraints.iter().enumerate() {
@@ -367,7 +356,7 @@ fn validate_piece_endpoint(
                 ));
             }
         },
-        Some(NodeProvenance::SourceSite { .. } | NodeProvenance::Generated) => {
+        Some(NodeProvenance::SourceSite | NodeProvenance::Generated) => {
             if exact::orient2d(source.start.xy(), source.end.xy(), point) != ExactSign::Zero {
                 return Err(GeometryErrorKind::triangulation(
                     "source constraint has an off-line emitted vertex",
@@ -853,7 +842,6 @@ impl ConstraintIndex {
                     })
             })
             .transpose()
-            .map_err(Into::into)
     }
 
     fn remove(&mut self, points: &[Point], piece: &SourcePiece) {
@@ -931,33 +919,29 @@ impl ConstrainedMesh {
                 end_site,
             })
             .collect();
-        Self::build_with_sources(
-            points,
-            &(0..points.len()).collect::<Vec<_>>(),
-            &sources,
-            vec![SourceRingStart::new(0, RingOwner::new(0, 0))],
-        )
+        Self::build_with_sources(points, &sources, vec![SourceRingStart::new(
+            0,
+            RingOwner::new(0, 0),
+        )])
         .ok()
         .flatten()
     }
 
     pub(super) fn build_with_sources(
         points: &[Point],
-        occurrences: &[usize],
         sources: &[SourceConstraint],
         source_rings: Vec<SourceRingStart>,
     ) -> Result<Option<Self>> {
-        let Some(mesh) = Mesh::try_delaunay(points)? else {
+        let xy = |site| site_xy(points, site);
+        let Some(mesh) = Mesh::try_delaunay(&xy, points.len())? else {
             return Ok(None);
         };
         let constrained = vec![false; mesh.edge_count()];
         let source_constraints = sources.to_vec();
         let source_pieces = SourcePieces::new(sources.len())?;
-        let provenance = occurrences
-            .iter()
-            .copied()
-            .map(|occurrence| NodeProvenance::SourceSite { occurrence })
-            .collect();
+        // Initial mesh vertices and the source marker column share this domain;
+        // refinement appends its own provenance after this admission.
+        let provenance = points.iter().map(|_| NodeProvenance::SourceSite).collect();
         let mut this = Self {
             mesh,
             constrained,
@@ -967,7 +951,6 @@ impl ConstrainedMesh {
             provenance,
             split_certificates: Vec::new(),
         };
-        let xy = |site| site_xy(points, site);
         for source in sources {
             this.insert_constraint(
                 &xy,
@@ -1206,7 +1189,7 @@ impl ConstrainedMesh {
 
     fn source(&self, id: usize) -> Result<&SourceConstraint> {
         self.source_constraints.get(id).ok_or_else(|| {
-            GeometryErrorKind::triangulation("constraint references a missing source").into()
+            GeometryErrorKind::triangulation("constraint references a missing source")
         })
     }
 
@@ -1245,10 +1228,8 @@ impl ConstrainedMesh {
                     "constraint insertion did not converge",
                 ));
             }
-            let edge = if {
-                let (start, end) = self.mesh.edge_vertices(candidate);
-                ordered(start, end) == pair
-            } {
+            let (start, end) = self.mesh.edge_vertices(candidate);
+            let edge = if ordered(start, end) == pair {
                 Some(candidate)
             } else {
                 self.mesh
@@ -1300,14 +1281,13 @@ impl ConstrainedMesh {
                 crossing.insert(0, (new_edge, ordered(new_start, new_end)));
             }
         }
-        if let Some(slot) = self.mesh.edge_slot(u, v) {
-            self.mark(slot);
-            Ok(())
-        } else {
-            Err(GeometryErrorKind::triangulation(
+        let Some(slot) = self.mesh.edge_slot(u, v) else {
+            return Err(GeometryErrorKind::triangulation(
                 "constraint insertion did not produce an edge",
-            ))
-        }
+            ));
+        };
+        self.mark(slot);
+        Ok(())
     }
 
     fn mark(&mut self, slot: HalfedgeId) {
@@ -1420,17 +1400,21 @@ impl ConstrainedMesh {
             } else {
                 match self
                     .mesh
-                    .locate_bounded(&xy_now, face, center, &self.constrained)
+                    .locate_bounded(&xy_now, face, center, &self.constrained)?
                 {
-                    Ok(Located::OnEdge(edge)) if self.is_constrained(edge) => {
+                    LocationOutcome::Located(Located::OnEdge(edge))
+                        if self.is_constrained(edge) =>
+                    {
                         self.prepare_split(&xy_now, points, &circles, edge)?
                     },
-                    Ok(located) => Some(PreparedSplit {
+                    LocationOutcome::Located(located) => Some(PreparedSplit {
                         candidate: center,
                         located,
                         source: None,
                     }),
-                    Err(edge) => self.prepare_split(&xy_now, points, &circles, edge)?,
+                    LocationOutcome::Blocked(edge) => {
+                        self.prepare_split(&xy_now, points, &circles, edge)?
+                    },
                 }
             };
             let Some(PreparedSplit {
@@ -1597,13 +1581,18 @@ impl ConstrainedMesh {
         let midpoint = XY::new(f64::midpoint(ps.x, pt.x), f64::midpoint(ps.y, pt.y));
         let located = match self
             .mesh
-            .locate_bounded(xy, e.face(), midpoint, &self.constrained)
+            .locate_bounded(xy, e.face(), midpoint, &self.constrained)?
         {
-            Ok(Located::OnEdge(slot)) if slot == e || slot.index() == self.mesh.twin(e) => {
+            LocationOutcome::Located(Located::OnEdge(slot))
+                if slot == e || slot.index() == self.mesh.twin(e) =>
+            {
                 Located::OnEdge(e)
             },
-            Ok(Located::Inside(face)) => Located::Inside(face),
-            Ok(Located::OnVertex | Located::OnEdge(_) | Located::Outside(_)) | Err(_) => {
+            LocationOutcome::Located(Located::Inside(face)) => Located::Inside(face),
+            LocationOutcome::Located(
+                Located::OnVertex | Located::OnEdge(_) | Located::Outside(_),
+            )
+            | LocationOutcome::Blocked(_) => {
                 return Err(GeometryErrorKind::unrepresentable_output("triangulate"));
             },
         };
@@ -1709,20 +1698,22 @@ impl ConstrainedMesh {
     ) -> Result<Located> {
         let twin = self.mesh.twin(e);
         let twin = (twin != EMPTY).then(|| HalfedgeId::from_index(twin));
-        match self.mesh.locate_bounded(xy, e.face(), point, &[]) {
-            Ok(Located::OnVertex | Located::Outside(_)) => {
+        match self.mesh.locate_bounded(xy, e.face(), point, &[])? {
+            LocationOutcome::Located(Located::OnVertex | Located::Outside(_)) => {
                 Err(GeometryErrorKind::unrepresentable_output("triangulate"))
             },
-            Ok(Located::Inside(face)) => Ok(Located::Inside(face)),
-            Ok(Located::OnEdge(slot)) if slot == e || twin == Some(slot) => Ok(Located::OnEdge(e)),
-            Ok(Located::OnEdge(slot)) if self.is_constrained(slot) => {
+            LocationOutcome::Located(Located::Inside(face)) => Ok(Located::Inside(face)),
+            LocationOutcome::Located(Located::OnEdge(slot)) if slot == e || twin == Some(slot) => {
+                Ok(Located::OnEdge(e))
+            },
+            LocationOutcome::Located(Located::OnEdge(slot)) if self.is_constrained(slot) => {
                 Err(GeometryErrorKind::unrepresentable_output("triangulate"))
             },
-            Ok(Located::OnEdge(slot)) => Ok(Located::OnEdge(slot)),
-            Err(edge) => {
+            LocationOutcome::Located(Located::OnEdge(slot)) => Ok(Located::OnEdge(slot)),
+            LocationOutcome::Blocked(edge) => {
                 if self.mesh.twin(edge) == EMPTY {
                     Ok(Located::Outside(edge))
-                } else if let Some(edge) = self.mesh.outside_edge(xy, point) {
+                } else if let Some(edge) = self.mesh.outside_edge(xy, point)? {
                     Ok(Located::Outside(edge))
                 } else {
                     Err(GeometryErrorKind::unrepresentable_output("triangulate"))
@@ -1875,7 +1866,8 @@ impl ConstrainedMesh {
                 faces.push(self.mesh.triangle(face));
             }
         }
-        super::exact_delaunay::canonicalize_triangles(&mut faces, |site| site_xy(&points, site));
+        let xy = |site| site_xy(&points, site);
+        super::exact_delaunay::canonicalize_triangles(&xy, &mut faces);
         Ok(ConstrainedMeshPlan {
             vertices: points,
             faces,
@@ -2160,7 +2152,6 @@ mod tests {
         ]);
         let result = ConstrainedMesh::build_with_sources(
             &pts,
-            &(0..pts.len()).collect::<Vec<_>>(),
             &[[0, 1], [2, 3]]
                 .iter()
                 .enumerate()

@@ -56,8 +56,8 @@ impl PyGeometry {
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     Target CRS (EPSG or authority/WKT), or ``None`` to clear.
+    /// crs : CRS-like
+    ///     Target CRS-like input, or ``None`` to clear.
     ///
     /// overwrite : bool, default False
     ///     Allow replacing an existing, different CRS label.
@@ -80,10 +80,10 @@ impl PyGeometry {
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.Point(1, 2).set_crs(4326).crs
+    /// >>> gm.Point(1, 2).with_crs(4326).crs
     /// CRS("EPSG:4326")
     #[pyo3(signature = (crs, *, overwrite = false))]
-    pub fn set_crs(&self, crs: &Bound<'_, PyAny>, overwrite: bool) -> PyResult<Typed> {
+    pub fn with_crs(&self, crs: &Bound<'_, PyAny>, overwrite: bool) -> PyResult<Typed> {
         let frame = FrameEdit::SetCrs {
             crs: parse_crs(Some(crs))?,
             overwrite,
@@ -93,11 +93,12 @@ impl PyGeometry {
     }
 
     /// Declare (or clear) the coordinate epoch without moving coordinates.
-    /// The epoch is the decimal year a dynamic-frame coordinate set was
-    /// observed (e.g. ``2020.0``), metadata for transforms between dynamic and
-    /// static datums. ``set_epoch(None)`` clears it. Changing a present epoch
-    /// to a different value requires ``overwrite=True`` (the
-    /// silent-frame-change guard, like ``set_crs``).
+    /// The epoch is the decimal year the coordinate set was observed
+    /// (e.g. ``2020.0``). It supplies metadata to operations that use
+    /// coordinate epochs; the CRS frame must admit an epoch.
+    /// ``with_epoch(None)`` clears it. Changing a present epoch to a different
+    /// value requires ``overwrite=True`` (the silent-frame-change guard, like
+    /// ``with_crs``).
     ///
     /// Parameters
     /// ----------
@@ -115,17 +116,18 @@ impl PyGeometry {
     /// Raises
     /// ------
     /// CRSError
-    ///     If a present epoch would change without ``overwrite=True``.
+    ///     If the CRS frame cannot carry an epoch or a present epoch would
+    ///     change without ``overwrite=True``.
     /// GeometryError
     ///     If ``epoch`` is not a finite decimal year.
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
-    /// >>> gm.Point(-122.4, 37.8, crs=4326).set_epoch(2020.0).epoch
+    /// >>> gm.Point(-122.4, 37.8, crs=4326).with_epoch(2020.0).epoch
     /// 2020.0
     #[pyo3(signature = (epoch, *, overwrite = false))]
-    pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Typed> {
+    pub fn with_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Typed> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
         Ok(Typed(self.retag_frame(frame)))
@@ -138,7 +140,7 @@ impl PyGeometry {
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int or None, optional
+    /// crs : CRS-like or None, optional
     ///     Replace or clear the CRS label.
     ///
     /// epoch : float or None, optional
@@ -172,23 +174,21 @@ impl PyGeometry {
 
     /// Reproject coordinates to a target CRS.
     /// The source coordinate epoch is this geometry's own ``epoch`` metadata;
-    /// transform between dynamic frames by stamping the source with
-    /// ``set_epoch`` first. ``epoch`` here labels the *output* coordinate
-    /// epoch.
+    /// assign it with ``with_epoch`` when the coordinate operation needs one.
+    /// ``epoch`` here labels the *output* coordinate epoch.
     ///
     /// Parameters
     /// ----------
-    /// crs : str or int
-    ///     Target CRS as an EPSG code or authority/WKT string.
+    /// crs : CRS-like
+    ///     Target CRS-like input.
     ///
     /// area_of_interest : sequence of float, optional
     ///     Bounding ``(west, south, east, north)`` to pick the best transform.
     ///
     /// epoch : float, optional
-    ///     Output coordinate epoch (decimal year) to tag on the result, for
-    ///     dynamic frames. Omitted keeps the source epoch while it still
-    ///     means something: the CRS is unchanged, or the target CRS is
-    ///     dynamic (time-dependent). A static target clears it.
+    ///     Output coordinate epoch (decimal year) to tag on the result. Omitted
+    ///     keeps the source epoch when the CRS is unchanged or the target admits
+    ///     geometry epochs; otherwise the output has no epoch.
     ///
     /// authority : str, optional
     ///     Restrict candidate coordinate operations to this authority
@@ -225,7 +225,7 @@ impl PyGeometry {
     ///
     /// See Also
     /// --------
-    /// set_crs : Declare/relabel the CRS *without* moving coordinates.
+    /// with_crs : Declare/relabel the CRS *without* moving coordinates.
     ///
     /// Examples
     /// --------
@@ -274,15 +274,10 @@ impl PyGeometry {
             coordinate_epoch_option("epoch", epoch)?,
             options,
         )?;
-        let output = frame.output;
-        let transformer = crs::TransformPlan::new_with_options_at(
-            &frame.source,
-            &frame.target,
-            frame.options,
-            frame.state,
-        )?;
+        let transformer = crs::TransformPlan::from_geometry_frame(frame)?;
+        let output = transformer.output_frame().clone();
         if transformer.is_identity() {
-            transformer.admit_identity_shape(self.shape.shape())?;
+            py.detach(|| transformer.admit_identity_shape(self.shape.shape()))?;
             return Ok(Typed(self.retag_frame(output)));
         }
         let shape =

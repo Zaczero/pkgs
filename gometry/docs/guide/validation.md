@@ -132,8 +132,8 @@ print("valid:", polygon.is_valid)
 
 ## Fixing: `repair`
 
-`repair` returns a valid copy. It
-offers two strategies via `method`:
+When repair succeeds, it returns a valid geometry; it can refuse input it
+cannot reconstruct. It offers two strategies via `method`:
 
 | `method` | Strategy |
 |----------|----------|
@@ -261,7 +261,7 @@ import gometry as gm
 
 raw = "POLYGON ((2 48, 3 48, 3 49, 2 49, 2 48))"
 area = gm.require(raw, crs=4326, axes="XY")
-print("meets contract:", area.crs == 4326, area.coordinate_axes)
+print("meets contract:", area.crs == gm.CRS(4326), area.coordinate_axes)
 
 ```
 

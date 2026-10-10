@@ -126,7 +126,10 @@ def test_to_geojson_always_rejects_m():
         (xym).to_geojson()
     with pytest.raises(gm.InvalidGeometryError, match='GeoJSON cannot represent M'):
         (gm.from_wkt(['POINT M (1 2 3)'], crs=4326)).to_geojson()
-    assert xym.set_m(None).to_geojson() == '{"type":"Point","coordinates":[1.0,2.0]}'
+    assert (
+        xym.with_coordinates(m=None).to_geojson()
+        == '{"type":"Point","coordinates":[1.0,2.0]}'
+    )
     assert '9' in (gm.from_wkt('POINT Z (1 2 9)', crs=4326)).to_geojson()
 
 

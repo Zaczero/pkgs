@@ -1,4 +1,4 @@
-use crate::geometry::relate::matrix_predicates::{self, Decided, Tri};
+use crate::geometry::relate::matrix_predicates::{self, Cell as MatrixCell, Decided, Tri};
 use crate::geometry::{CompiledPattern, Dimension};
 use crate::predicates::Predicate;
 
@@ -21,16 +21,12 @@ impl De9im {
     }
 
     pub(crate) const fn set_at_least(&mut self, row: Loc, col: Loc, dim: Dimension) {
-        let index = row as usize * 3 + col as usize;
         let value = super::dimension_entry(dim);
-        if self.0[index] == b'F' || self.0[index] < value {
-            self.0[index] = value;
+        let entry =
+            matrix_predicates::matrix_cell_mut(&mut self.0, MatrixCell::from_locations(row, col));
+        if *entry == b'F' || *entry < value {
+            *entry = value;
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn clear(&mut self, row: Loc, col: Loc) {
-        self.0[row as usize * 3 + col as usize] = b'F';
     }
 
     pub(crate) fn text(self) -> String {
@@ -83,5 +79,80 @@ impl De9im {
 
     pub(crate) fn is_equal_topo(self) -> bool {
         matrix_predicates::decided(Predicate::Equals, self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn one_cell_matrix(row: Loc, col: Loc, dimension: Dimension) -> [u8; 9] {
+        let mut matrix = De9im([b'F'; 9]);
+        matrix.set_at_least(row, col, dimension);
+        matrix.0
+    }
+
+    #[test]
+    fn set_at_least_maps_all_location_pairs_to_their_de9im_cells() {
+        let cases = [
+            (
+                "II",
+                one_cell_matrix(Loc::Interior, Loc::Interior, Dimension::Point),
+                *b"0FFFFFFFF",
+            ),
+            (
+                "IB",
+                one_cell_matrix(Loc::Interior, Loc::Boundary, Dimension::Curve),
+                *b"F1FFFFFFF",
+            ),
+            (
+                "IE",
+                one_cell_matrix(Loc::Interior, Loc::Exterior, Dimension::Surface),
+                *b"FF2FFFFFF",
+            ),
+            (
+                "BI",
+                one_cell_matrix(Loc::Boundary, Loc::Interior, Dimension::Point),
+                *b"FFF0FFFFF",
+            ),
+            (
+                "BB",
+                one_cell_matrix(Loc::Boundary, Loc::Boundary, Dimension::Curve),
+                *b"FFFF1FFFF",
+            ),
+            (
+                "BE",
+                one_cell_matrix(Loc::Boundary, Loc::Exterior, Dimension::Surface),
+                *b"FFFFF2FFF",
+            ),
+            (
+                "EI",
+                one_cell_matrix(Loc::Exterior, Loc::Interior, Dimension::Point),
+                *b"FFFFFF0FF",
+            ),
+            (
+                "EB",
+                one_cell_matrix(Loc::Exterior, Loc::Boundary, Dimension::Curve),
+                *b"FFFFFFF1F",
+            ),
+            (
+                "EE",
+                one_cell_matrix(Loc::Exterior, Loc::Exterior, Dimension::Surface),
+                *b"FFFFFFFF2",
+            ),
+        ];
+        assert!(
+            cases.iter().all(|(_, actual, expected)| actual == expected),
+            "incorrect DE-9IM cell addresses: {cases:?}",
+        );
+    }
+
+    #[test]
+    fn set_at_least_keeps_the_largest_witnessed_dimension() {
+        let mut matrix = De9im([b'F'; 9]);
+        matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Point);
+        matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Surface);
+        matrix.set_at_least(Loc::Interior, Loc::Interior, Dimension::Point);
+        assert_eq!(matrix.0, *b"2FFFFFFFF");
     }
 }

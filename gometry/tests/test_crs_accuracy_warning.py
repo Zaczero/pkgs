@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import math
+import queue
 import shutil
 import sys
 import threading
+import time
+import traceback
 import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import gometry as gm
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from types import TracebackType
 
 
 @pytest.fixture(autouse=True)
@@ -220,9 +228,15 @@ def test_internal_transform_error_preserves_error_and_consumes_diagnostic() -> N
     ])
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter('always')
-        with pytest.raises(gm.InvalidGeometryError, match='invalid longitude/latitude'):
+        with pytest.raises(gm.TransformError) as error:
             gm.tile_cells(values, zoom=5)
         gm.Point(0.0, 0.0, crs=4326).to_crs(3857)
+    assert error.value.source == 'EPSG:4267'
+    assert error.value.target == 'EPSG:4326'
+    assert 'while processing array element 1' in error.value.__notes__
+    assert 'latitude 9.1e1 is outside the geographic coordinate domain' in str(
+        error.value
+    )
     assert not [item for item in seen if item.category is gm.AccuracyWarning]
 
 
@@ -364,18 +378,106 @@ def test_operation_enumeration_keeps_unavailable_best_candidate() -> None:
     assert any(grid['available'] is False for grid in operations[0]['grids'])
 
 
+_FREE_THREADED_WORKER_COUNT = 8
+_FREE_THREADED_BARRIER_TIMEOUT_SECONDS = 30.0
+_FREE_THREADED_JOIN_TIMEOUT_SECONDS = 60.0
+
+
+def _run_free_threaded_workers(
+    scenario: str,
+    worker: Callable[[int, threading.Barrier], None],
+) -> None:
+    barrier = threading.Barrier(_FREE_THREADED_WORKER_COUNT)
+    failures: queue.Queue[tuple[int, BaseException, TracebackType | None]] = (
+        queue.Queue()
+    )
+
+    def record_failure(
+        index: int,
+        error: BaseException,
+        error_traceback: TracebackType | None,
+    ) -> None:
+        # Queue before abort wakes peers, and preserve this error ahead of the
+        # BrokenBarrierError failures the abort causes.
+        failures.put((index, error, error_traceback))
+        barrier.abort()
+
+    def run_worker(index: int) -> None:
+        try:
+            worker(index, barrier)
+        except BaseException as error:
+            record_failure(index, error, error.__traceback__)
+
+    # Python cannot cancel a worker wedged in native code; the focused gate
+    # owns process-level termination after this helper reports survivors.
+    threads = [
+        threading.Thread(
+            target=run_worker,
+            args=(index,),
+            name=f'{scenario} worker {index}',
+            daemon=True,
+        )
+        for index in range(_FREE_THREADED_WORKER_COUNT)
+    ]
+    deadline = time.monotonic() + _FREE_THREADED_JOIN_TIMEOUT_SECONDS
+    started: list[threading.Thread] = []
+    for index, thread in enumerate(threads):
+        try:
+            thread.start()
+        except BaseException as error:
+            record_failure(index, error, error.__traceback__)
+            break
+        started.append(thread)
+
+    for thread in started:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    worker_failures: list[tuple[int, BaseException, TracebackType | None]] = []
+    while True:
+        try:
+            worker_failures.append(failures.get_nowait())
+        except queue.Empty:
+            break
+
+    alive = [index for index, thread in enumerate(threads) if thread.is_alive()]
+    failure_details = '\n'.join(
+        f'{scenario}: worker {index} raised {type(error).__name__}\n'
+        + ''.join(traceback.format_exception(type(error), error, error_traceback))
+        for index, error, error_traceback in worker_failures
+    )
+    if alive:
+        failure_details += (
+            f'\n{scenario}: worker indexes {alive} remained alive after the shared '
+            f'{_FREE_THREADED_JOIN_TIMEOUT_SECONDS:.0f}-second join deadline'
+        )
+
+    if worker_failures:
+        primary_failure = next(
+            (
+                failure
+                for failure in worker_failures
+                if not isinstance(failure[1], threading.BrokenBarrierError)
+            ),
+            worker_failures[0],
+        )
+        _, primary_error, primary_traceback = primary_failure
+        primary_error.add_note(failure_details)
+        raise primary_error.with_traceback(primary_traceback)
+    if alive:
+        raise AssertionError(failure_details)
+
+
 @pytest.mark.skipif(
     not hasattr(sys, '_is_gil_enabled') or sys._is_gil_enabled(),
     reason='requires free-threaded CPython',
 )
 def test_free_threaded_grid_diagnostics_do_not_cross_threads() -> None:
     assert sys._is_gil_enabled() is False
-    barrier = threading.Barrier(8)
-    messages: list[str | None] = [None] * 8
+    messages: list[str | None] = [None] * _FREE_THREADED_WORKER_COUNT
 
-    def worker(index: int) -> None:
+    def worker(index: int, barrier: threading.Barrier) -> None:
         point = (-104.0, 40.0) if index % 2 == 0 else (-100.0, 55.0)
-        barrier.wait()
+        barrier.wait(timeout=_FREE_THREADED_BARRIER_TIMEOUT_SECONDS)
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter('always')
             gm.crs_transform(4267, 4326, *point)
@@ -385,11 +487,7 @@ def test_free_threaded_grid_diagnostics_do_not_cross_threads() -> None:
         assert len(diagnostic) == 1
         messages[index] = diagnostic[0]
 
-    threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _run_free_threaded_workers('grid diagnostics', worker)
 
     for index, message in enumerate(messages):
         assert message is not None
@@ -403,16 +501,15 @@ def test_free_threaded_grid_diagnostics_do_not_cross_threads() -> None:
 )
 def test_free_threaded_internal_grid_diagnostics_stay_owned() -> None:
     assert sys._is_gil_enabled() is False
-    barrier = threading.Barrier(8)
-    warning_counts: list[int | None] = [None] * 8
+    warning_counts: list[int | None] = [None] * _FREE_THREADED_WORKER_COUNT
 
-    def worker(index: int) -> None:
+    def worker(index: int, barrier: threading.Barrier) -> None:
         point = gm.Point(
             -104.0 if index % 2 == 0 else -100.0,
             40.0 if index % 2 == 0 else 55.0,
             crs=4267,
         )
-        barrier.wait()
+        barrier.wait(timeout=_FREE_THREADED_BARRIER_TIMEOUT_SECONDS)
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter('always')
             if index % 2 == 0:
@@ -424,10 +521,6 @@ def test_free_threaded_internal_grid_diagnostics_stay_owned() -> None:
             item.category is gm.AccuracyWarning for item in seen
         )
 
-    threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _run_free_threaded_workers('internal grid diagnostics', worker)
 
-    assert warning_counts == [0] * 8
+    assert warning_counts == [0] * _FREE_THREADED_WORKER_COUNT

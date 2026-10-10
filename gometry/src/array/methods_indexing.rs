@@ -18,13 +18,11 @@ use pyo3::types::{PyBool, PyInt, PyList, PySequence, PyTuple};
 use crate::array::{
     Arc, ArrayRow, Bound, GeometryError, HeapSize, IntoPyObject as _, OverlayOp, Py, PyAny,
     PyAnyMethods as _, PyCoordinates, PyErr, PyGeometryArray, PyGeometryArrayIter,
-    PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _, Python, Shape,
-    StorageLayout, Typed, exact_geometry, exact_geometry_array, overlay_operator,
+    PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _, Python, Shape, Typed,
+    exact_geometry, exact_geometry_array, overlay_operator,
 };
 use crate::boundary::coordinates::measure_storage_payload_bytes;
-use crate::geometry::storage::{
-    GeometryArrayStorage, PackedStorage, ValidityMask, validity as missing,
-};
+use crate::geometry::storage::{ValidityMask, validity as missing};
 use crate::py::numpy::{false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 use crate::py::sizeof::python_sizeof;
@@ -401,35 +399,17 @@ impl RowGetItemContainer for PyGeometryArray {
 
 impl PyGeometryArray {
     pub(crate) fn try_drop_missing(&self) -> crate::error::Result<Self> {
-        let Some(mask) = self.missing() else {
+        if self.missing().is_none() {
             return Ok(self.clone());
-        };
-        if self.is_compact_nullable()
-            && matches!(
-                self.storage(),
-                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-            )
-        {
-            let source_rows = mask
-                .cursor()
-                .filter_map(|(logical, present)| present.map(|_| logical));
-            return Self::from_selected_storage(
-                self,
-                Arc::clone(self.storage_arc()),
-                self.frame.clone(),
-                None,
-                StorageLayout::LogicalRows,
-                source_rows,
-            );
         }
-        let mut rows = Vec::with_capacity(mask.present_count());
-        rows.extend(
-            mask.iter()
-                .enumerate()
-                .filter(|(_, missing)| !*missing)
-                .map(|(row, _)| row),
-        );
-        self.gather_logical_rows_dense(&rows)
+        let rows = self.rows.drop_missing()?;
+        let source_rows = self.rows.present_logical_indices();
+        Ok(Self::from_selected_rows(
+            self,
+            rows,
+            self.frame.clone(),
+            source_rows,
+        ))
     }
 }
 
@@ -443,20 +423,26 @@ impl PyGeometryArray {
     ///     use `.row_index` to recover source-row alignment, or call
     ///     `drop_missing()` first for an explicit dense path.
     #[getter]
-    pub fn coords(&self) -> PyCoordinates {
-        PyCoordinates::new(self.coordinate_view())
+    pub fn coords(slf: &Bound<'_, Self>) -> PyCoordinates {
+        PyCoordinates::new(
+            slf.borrow().coordinate_view(),
+            slf.clone().unbind().into_any(),
+        )
     }
 
-    /// Select rows by integer, slice, or fancy index.
+    /// Select rows by integer-like scalar, slice, or fancy index.
     ///
-    /// An ``int`` returns one typed geometry (or raises ``IndexError``).
-    /// A ``slice`` or integer sequence / boolean mask returns a gathered
-    /// ``GeometryArray`` (missing rows stay missing).
+    /// An ``int``, object implementing ``__index__``, or zero-dimensional
+    /// integer ndarray returns one typed geometry. A ``slice``, integer
+    /// sequence, one-dimensional integer ndarray, or boolean mask returns a
+    /// gathered ``GeometryArray``; missing rows stay missing. Boolean scalars
+    /// and NumPy index arrays with rank above one raise ``TypeError``.
     ///
     /// Returns
     /// -------
-    /// Geometry or GeometryArray
-    ///     Scalar geometry for an int index; array for slice/fancy selection.
+    /// Geometry, None, or GeometryArray
+    ///     Scalar geometry for integer-like scalar selection; array for
+    ///     slice or one-dimensional fancy selection.
     pub fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         array_getitem(self, py, index)
     }
@@ -977,21 +963,21 @@ impl PyGeometryArray {
         Ok(bytes.into_pyint(py))
     }
 
-    /// `sys.getsizeof` support: the wrapper plus this array's logical
+    /// `sys.getsizeof` support: Python's allocation base plus this array's logical
     /// Rust-side heap — coordinate payload, CSR offsets, row maps, missing
     /// mask, cache owners and their already-materialized contents, spilled CRS
     /// frame text, and any already-materialized prepared-geometry / frame
     /// sidecars.
     /// Lazy cache slots that have not been populated do not inflate the total.
-    /// Shared backing buffers are accounted like NumPy views: the logical view
-    /// is reported, not the whole shared parent allocation.
+    /// Shared backing buffers use the logical view estimate, not the whole
+    /// shared parent allocation.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    pub fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
+    pub fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     pub fn __repr__(&self) -> PyResult<String> {

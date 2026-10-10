@@ -466,7 +466,9 @@ With CRS-aware units (the default on a geographic CRS), linework edges are
 straight in the CRS's longitude/latitude chart and LRS measures their
 ellipsoidal arclength, rather than the shortest geodesic between each pair of
 vertices. `line_locate` minimizes against those same chart edges and returns the
-first route station on an exact distance tie. Repeated support and self-crossings
+interior projection before a point or endpoint when evaluated backend distances
+compare equal, then uses route order. This ranks available measurements, not an
+exact geodesic continuum minimum. Repeated support and self-crossings
 can have several stations at one location, so locate/interpolate is not a unique
 inverse there.
 An independently interpolated point has canonical longitude, while a
@@ -492,11 +494,19 @@ the next part's nearest point.
 | location nearest a point | [`line_locate(point)`][gometry.Geometry.line_locate] | `line_locate(point, basis='m')` |
 | portion between two locations | [`line_substring(start, end)`][gometry.Geometry.line_substring] | `line_substring(start, end, basis='m')` |
 
-`line_interpolate` also accepts a sequence of locations or `count=` for evenly
-spaced samples. A scalar line produces a [`GeometryArray`][gometry.GeometryArray] for those plural
-forms; an array receiver returns row-aligned points or [`Groups`][gometry.Groups] when each row
-has its own sample count. `normalized` and `unit` belong only to the distance
-basis, so a measured route never silently mixes two coordinate systems.
+On the distance basis, `line_interpolate` accepts a sequence of locations or
+`count=` for evenly spaced samples. With `basis='m'`, a scalar line accepts one
+stored measure for a `Point` or a measure sequence for a `GeometryArray[Point]`;
+an array receiver accepts one measure per line row. An array receiver returns
+row-aligned points for one location per row or [`Groups`][gometry.Groups] when
+each row has its own sample count. `normalized` and `unit` belong only to the
+distance basis, so a measured route never silently mixes two coordinate
+systems. On the distance basis, `unit` selects the route metric even when
+`normalized=True`:
+fractions are measured along that selected route, so changing `unit` can change
+the resulting position. `count=` also uses fractions of the selected metric and
+accepts `unit=`, but rejects `normalized=True` because the count already defines
+fractional sample positions.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -511,7 +521,7 @@ print('samples:', [point.to_wkt() for point in samples])
 
 **M linear referencing** locates positions by the M ordinate rather than by
 fractional or absolute length. `line_interpolate(m, basis='m')` returns the
-point at a given measure, `line_locate(geom, basis='m')` returns the measure
+point at a given measure, `line_locate(point, basis='m')` returns the measure
 nearest a point, and `line_substring(start_m, end_m, basis='m')` cuts the
 section between two measures. They require every vertex to carry a monotonic,
 non-decreasing M. The extent accessors mirror the Z family:
@@ -614,8 +624,13 @@ print(before_after(track, track.centroid(),
 
 For a permanent 2D conversion, use [`force_2d`][gometry.Geometry.force_2d] to
 drop Z and M. [`force_3d`][gometry.Geometry.force_3d] fills only vertices that
-lack Z, while [`set_z`][gometry.Geometry.set_z] and [`set_m`][gometry.Geometry.set_m]
-assign an ordinate at every vertex or clear it with `None`:
+lack Z. Use [`with_coordinates`][gometry.Geometry.with_coordinates] to replace
+one or more ordinates without changing topology. Each supplied value can be a
+scalar broadcast over vertices or a column with one value per vertex in the
+flattened coordinate sequence; omitted ordinates are preserved, and
+`z=None` / `m=None` removes that optional axis. X and Y cannot be removed.
+Matrix mode replaces the coordinate matrix using its existing axis layout and
+cannot be mixed with ordinate columns:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -625,8 +640,8 @@ flat = track.force_2d()
 print("force_2d axes:", flat.coordinate_axes)
 print("flat centroid:", (flat.centroid()).to_wkt())
 print("force_3d axes:", flat.force_3d().coordinate_axes)
-print("set_z:", flat.set_z(10.0))
-print("set_m:", flat.set_m(0.0).coordinate_axes)
+print("with_coordinates(z=...):", flat.with_coordinates(z=10.0))
+print("with_coordinates(m=...):", flat.with_coordinates(m=0.0).coordinate_axes)
 
 ```
 

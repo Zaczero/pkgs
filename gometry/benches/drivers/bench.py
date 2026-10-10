@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,8 @@ GOMETRY_ROOT = _BENCHES.parent
 _SUPPORT = _BENCHES / 'support'
 _DRIVERS = _BENCHES / 'drivers'
 _PYTHON = _BENCHES / 'python'
-for _path in (_SUPPORT, _DRIVERS, _PYTHON):
+_TOOLS = GOMETRY_ROOT / 'tools'
+for _path in (_SUPPORT, _DRIVERS, _PYTHON, _TOOLS):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
@@ -47,6 +49,9 @@ from bench_doctor import (
     select_benchmark_cpu,
     selected_cpu_governor,
 )
+import benchmark_runtime
+from benchmark_identity import validate_producer_identity
+import release_artifact as artifact_release
 
 
 def _serialize_public_operations(
@@ -211,6 +216,38 @@ def _oracle_command(
     return command
 
 
+def _benchmark_environment(
+    subject: dict[str, Any],
+    package_root: Path,
+    *,
+    invocation_id: str,
+    control: bool,
+    side: str | None = None,
+    row: str | None = None,
+) -> dict[str, str]:
+    environment = benchmark_runtime.environment_for_subject(
+        subject,
+        package_root,
+        invocation_id=invocation_id,
+        control=control,
+    )
+    names = {
+        'PYTHONPATH',
+        'GOMETRY_BENCH_SUBJECT_PATH',
+        'GOMETRY_BENCH_SUBJECT_SHA256',
+        'GOMETRY_BENCH_PACKAGE_ROOT',
+        'GOMETRY_BENCH_INVOCATION_ID',
+        'GOMETRY_BENCH_CONTROL',
+    }
+    if side is not None:
+        environment['GOMETRY_BENCH_SIDE'] = side
+        names.add('GOMETRY_BENCH_SIDE')
+    if row is not None:
+        environment['GOMETRY_BENCH_ROW'] = row
+        names.add('GOMETRY_BENCH_ROW')
+    return {name: environment[name] for name in names if name in environment}
+
+
 def _paired_command(
     *,
     gometry: str,
@@ -220,8 +257,9 @@ def _paired_command(
     output: Path,
     profile: Profile,
     cpu: int,
+    receipt_binding: dict[str, Any],
 ) -> list[str]:
-    return [
+    command = [
         'taskset',
         '--cpu-list',
         str(cpu),
@@ -239,6 +277,13 @@ def _paired_command(
         '--output',
         str(output),
     ]
+    command.extend((
+        '--gometry-receipt',
+        receipt_binding['path'],
+        '--receipt-sha256',
+        receipt_binding['receipt_sha256'],
+    ))
+    return command
 
 
 def _run(
@@ -246,10 +291,47 @@ def _run(
     *,
     environment: dict[str, str] | None,
     timeout: int,
+    benchmark_subject: dict[str, Any] | None = None,
+    package_root: Path | None = None,
+    case_path: Path | None = None,
+    result_path: Path | None = None,
 ) -> dict[str, Any]:
     env = os.environ | (environment or {})
     env.pop('RUSTC_WRAPPER', None)
     started = time.monotonic()
+    if env.get('GOMETRY_BENCH_CONTROL') == '1':
+        if (
+            benchmark_subject is None
+            or package_root is None
+            or case_path is None
+            or result_path is None
+        ):
+            raise SystemExit(
+                'controlled resource benchmark lacks its admitted subject or result path'
+            )
+        controlled = benchmark_runtime.run_controlled_process(
+            command,
+            case=case_path,
+            side='A',
+            subject=benchmark_subject,
+            package_root=package_root,
+            timeout=timeout,
+            environment=env,
+            result_path=result_path,
+        )
+        return {
+            'command': command,
+            'returncode': 0,
+            'timeout': False,
+            'elapsed_seconds': time.monotonic() - started,
+            'stdout_tail': controlled['stdout_tail'],
+            'stderr_tail': controlled['stderr_tail'],
+            'case_process': controlled['case_process'],
+            'producer_identity': controlled['producer_identity'],
+            'measurement_done_monotonic_ns': controlled[
+                'measurement_done_monotonic_ns'
+            ],
+        }
     process = subprocess.Popen(
         command,
         cwd=GOMETRY_ROOT,
@@ -301,6 +383,8 @@ def _benchmark_plans(
     output_dir: Path,
     timestamp: str,
     cpu: int,
+    receipt_binding: dict[str, Any],
+    package_root: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, list[Path]]]:
     plans: list[dict[str, Any]] = []
     outputs: dict[str, list[Path]] = {suite: [] for suite in selected}
@@ -321,11 +405,13 @@ def _benchmark_plans(
             output = output_dir / f'{timestamp}-{run_label}-{profile_name}.json'
             outputs[suite].append(output)
             command: list[str]
+            environment: dict[str, str]
             if len(scheduled_rows) == 2 and label.startswith('pair-'):
                 pair_number, block_spec = label.removeprefix('pair-').split(
                     '-block-', 1
                 )
                 _, lead = block_spec.split('-', 1)
+                invocation_id = uuid.uuid4().hex
                 command = _paired_command(
                     gometry=scheduled_rows[0],
                     pair_id=f'{suite}-pair-{pair_number}',
@@ -334,6 +420,13 @@ def _benchmark_plans(
                     output=output,
                     profile=profile,
                     cpu=cpu,
+                    receipt_binding=receipt_binding,
+                )
+                environment = _benchmark_environment(
+                    receipt_binding,
+                    package_root,
+                    invocation_id=invocation_id,
+                    control=False,
                 )
             else:
                 raise SystemExit(f'unsupported public benchmark schedule: {label}')
@@ -342,7 +435,7 @@ def _benchmark_plans(
                 'suite': suite,
                 'label': run_label,
                 'rows': scheduled_rows,
-                'environment': None,
+                'environment': environment,
                 'command': command,
                 'output': str(output),
             })
@@ -350,17 +443,33 @@ def _benchmark_plans(
 
 
 def _resource_plans(
-    *, output_dir: Path, timestamp: str, cpu: int
+    *,
+    output_dir: Path,
+    timestamp: str,
+    cpu: int,
+    receipt_binding: dict[str, Any],
+    package_root: Path,
 ) -> list[dict[str, Any]]:
     plans: list[dict[str, Any]] = []
+    case_path = GOMETRY_ROOT / 'benches' / 'cases' / 'case_resource_tail.py'
     for mode in ('bearing', 'features', 'intersects', 'mixed'):
         output = output_dir / f'{timestamp}-resource-{mode}-release.json'
+        invocation_id = uuid.uuid4().hex
+        environment = _benchmark_environment(
+            receipt_binding,
+            package_root,
+            invocation_id=invocation_id,
+            control=True,
+            side='A',
+            row=str(case_path.resolve()),
+        )
         plans.append({
             'kind': 'resource',
             'suite': 'resources',
             'label': f'resource-{mode}',
             'rows': (),
-            'environment': None,
+            'environment': environment,
+            'case_path': case_path,
             'command': [
                 'taskset',
                 '--cpu-list',
@@ -377,13 +486,54 @@ def _resource_plans(
     return plans
 
 
-def _resource_summaries(plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _resource_summaries(
+    plans: list[dict[str, Any]],
+    *,
+    subject: dict[str, Any],
+) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for plan in plans:
         output = Path(plan['output'])
         if plan['kind'] != 'resource' or not output.is_file():
             continue
         payload = json.loads(output.read_text(encoding='utf-8'))
+        identity = payload.get('producer_identity')
+        case_process = payload.get('case_process')
+        case_path = Path(plan['case_path']).resolve()
+        expected_case = {
+            'path': str(case_path),
+            'sha256': _file_sha256(case_path),
+        }
+        process_pid = (
+            case_process.get('pid') if isinstance(case_process, dict) else None
+        )
+        process_invocation = (
+            case_process.get('invocation_id')
+            if isinstance(case_process, dict)
+            else None
+        )
+        if (
+            not isinstance(identity, dict)
+            or not isinstance(case_process, dict)
+            or case_process.get('case') != expected_case
+            or not isinstance(process_pid, int)
+            or isinstance(process_pid, bool)
+            or process_pid <= 0
+            or not isinstance(process_invocation, str)
+            or not process_invocation
+            or case_process.get('identity_sha256')
+            != benchmark_runtime.identity_sha256(identity)
+        ):
+            raise SystemExit('resource result is not bound to its measured process')
+        admitted = benchmark_runtime.validate_identity_for_subject(
+            identity,
+            subject,
+            side='A',
+            row=str(case_path),
+            verify_archive=False,
+        )
+        if admitted != identity:
+            raise SystemExit('resource result identity differs from its subject')
         summaries.append({
             key: payload[key]
             for key in (
@@ -397,6 +547,8 @@ def _resource_summaries(plans: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 'pss_current_latency_endpoint_delta_kib',
                 'python_peak_traced_bytes',
                 'python_allocated_blocks_delta',
+                'producer_identity',
+                'case_process',
             )
         })
     return summaries
@@ -436,8 +588,9 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         raise SystemExit('publication rejected: benchmark identity metadata is missing')
     required = (
-        'git_commit',
+        'harness_commit',
         'source_inputs_sha256',
+        'native_source_inputs_sha256',
         'python_executable',
         'python',
         'python_version',
@@ -512,10 +665,12 @@ def _publication_metadata(result: dict[str, Any]) -> dict[str, Any]:
         raise SystemExit(
             'publication rejected: dependency lock identity is stale or unavailable'
         )
-    if not metadata.get('git_commit') or not metadata.get('source_inputs_sha256'):
+    if not metadata.get('harness_commit') or not metadata.get('source_inputs_sha256'):
         raise SystemExit(
-            'publication rejected: source commit/input identity is missing'
+            'publication rejected: harness commit/input identity is missing'
         )
+    if not metadata.get('native_source_inputs_sha256'):
+        raise SystemExit('publication rejected: native source identity is missing')
     packages = metadata['packages']
     required_packages = {
         'gometry',
@@ -648,10 +803,19 @@ def _validate_oracle_artifact(result: dict[str, Any], run_directory: Path) -> No
 
 
 def _validate_block_identity(
-    identity: dict[str, Any], metadata: dict[str, Any]
+    identity: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    receipt_cache: dict[tuple[str, str], dict[str, Any]],
 ) -> None:
     """Check one measured arm against the run's recorded build and dependencies."""
-    expected_commit = metadata['git_commit']
+    try:
+        validate_producer_identity(identity)
+    except (TypeError, ValueError) as error:
+        raise SystemExit(
+            f'publication rejected: paired block producer identity is invalid: {error}'
+        ) from error
+    expected_commit = metadata['harness_commit']
     expected_source = metadata['source_inputs_sha256']
     expected_extension_record = metadata['extension']
     expected_extension = expected_extension_record['sha256']
@@ -665,11 +829,15 @@ def _validate_block_identity(
             'python_cache_tag',
             'python_build',
             'python_debug',
+            'python_prefix',
+            'python_ext_suffix',
+            'python_gil_disabled',
+            'python_gil_enabled',
         )
     }
     expected_packages = metadata['packages']
-    if expected_commit and identity.get('git_commit') != expected_commit:
-        raise SystemExit('publication rejected: paired block commit identity mismatch')
+    if expected_commit and identity.get('harness_commit') != expected_commit:
+        raise SystemExit('publication rejected: paired block harness identity mismatch')
     if expected_source and identity.get('source_inputs_sha256') != expected_source:
         raise SystemExit('publication rejected: paired block source identity mismatch')
     observed_extension = identity.get('extension')
@@ -697,7 +865,7 @@ def _validate_block_identity(
         )
     observed_python = identity.get('python')
     if isinstance(observed_python, dict):
-        if observed_python.get('executable') != expected_python.get(
+        if observed_python.get('resolved_executable') != expected_python.get(
             'python_executable'
         ):
             raise SystemExit(
@@ -717,6 +885,16 @@ def _validate_block_identity(
             raise SystemExit(
                 'publication rejected: paired block Python cache identity mismatch'
             )
+        for field, expected_field in (
+            ('prefix', 'python_prefix'),
+            ('ext_suffix', 'python_ext_suffix'),
+            ('gil_disabled', 'python_gil_disabled'),
+            ('gil_enabled', 'python_gil_enabled'),
+        ):
+            if observed_python.get(field) != expected_python.get(expected_field):
+                raise SystemExit(
+                    f'publication rejected: paired block Python {field} mismatch'
+                )
         observed_build = observed_python.get('build')
         if isinstance(observed_build, dict):
             if observed_build.get('build') != expected_python.get('python_build'):
@@ -741,6 +919,75 @@ def _validate_block_identity(
     if not isinstance(implementation, dict):
         raise SystemExit(
             'publication rejected: paired block implementation attribution is missing'
+        )
+    source_commit = implementation.get('source_commit')
+    source_receipt = implementation.get('source_receipt')
+    source_wheel = implementation.get('source_wheel')
+    runtime_binding = identity.get('runtime_binding')
+    if not isinstance(runtime_binding, dict):
+        raise SystemExit('publication rejected: measured runtime binding is missing')
+    if runtime_binding.get('profile') != artifact_release.RELEASE_PROFILE:
+        raise SystemExit('publication rejected: DEV producer is not release evidence')
+    receipt_path = runtime_binding.get('path')
+    receipt_sha = runtime_binding.get('sha256')
+    if not isinstance(receipt_path, str) or not isinstance(receipt_sha, str):
+        raise SystemExit('publication rejected: runtime receipt reference is malformed')
+    key = (receipt_path, receipt_sha)
+    receipt = receipt_cache.get(key)
+    if receipt is None:
+        try:
+            receipt = artifact_release.validate_benchmark_receipt(Path(receipt_path))
+        except (AssertionError, OSError, TypeError, ValueError) as error:
+            raise SystemExit(
+                f'publication rejected: runtime subject receipt is invalid: {error}'
+            ) from error
+        if receipt.get('receipt_sha256') != receipt_sha:
+            raise SystemExit('publication rejected: runtime subject receipt changed')
+        receipt_cache[key] = receipt
+    package = identity.get('packages', {}).get('gometry', {})
+    distribution = package.get('distribution') if isinstance(package, dict) else None
+    try:
+        expected_binding = artifact_release.match_benchmark_receipt(
+            receipt,
+            identity.get('extension', {}),
+            distribution,
+            runtime_binding=runtime_binding,
+            verify_archive=False,
+        )
+    except (AssertionError, OSError, TypeError, ValueError) as error:
+        raise SystemExit(
+            f'publication rejected: runtime binding does not match subject: {error}'
+        ) from error
+    if implementation.get('runtime') == 'gometry':
+        expected_wheel = {
+            'filename': expected_binding['wheel_filename'],
+            'sha256': expected_binding['wheel_sha256'],
+            'extension_member': expected_binding['extension_member'],
+            'extension_sha256': expected_binding['extension_sha256'],
+        }
+        if source_commit != expected_binding['source_commit']:
+            raise SystemExit(
+                'publication rejected: producer commit differs from selected subject'
+            )
+        if source_commit is None:
+            if source_receipt is not None or source_wheel is not None:
+                raise SystemExit(
+                    'publication rejected: unattributed producer has receipt fields'
+                )
+        elif (
+            source_receipt != {'path': receipt_path, 'sha256': receipt_sha}
+            or source_wheel != expected_wheel
+        ):
+            raise SystemExit(
+                'publication rejected: source attribution is not bound to selected wheel'
+            )
+    elif (
+        source_commit is not None
+        or source_receipt is not None
+        or source_wheel is not None
+    ):
+        raise SystemExit(
+            'publication rejected: comparator implementation has Gometry source attribution'
         )
     implementation_row = implementation.get('row')
     if not isinstance(implementation_row, str):
@@ -882,10 +1129,15 @@ def _render_publication(
     validate_exact_paired_matrix(result, artifacts)
     _validate_oracle_artifact(result, run_directory)
     stats = _load_all_blocks(artifacts)
+    receipt_cache: dict[tuple[str, str], dict[str, Any]] = {}
     for operation_stats in stats.values():
         for block in operation_stats.blocks:
             for identity in block.arm_identities.values():
-                _validate_block_identity(identity, metadata)
+                _validate_block_identity(
+                    identity,
+                    metadata,
+                    receipt_cache=receipt_cache,
+                )
     sampling = result['sampling']
     rows = _build_rows(
         _parse_public_operations(result['public_operations']),
@@ -980,6 +1232,17 @@ def main() -> None:
         help='directory receiving summary.md for --publish (default: '
         'benches/results/current)',
     )
+    parser.add_argument(
+        '--gometry-receipt',
+        type=Path,
+        help='quality receipt, release manifest, or runner-wheel receipt '
+        '(default: this worktree quality receipt)',
+    )
+    parser.add_argument(
+        '--gometry-package-root',
+        type=Path,
+        help='installed package root when benchmarking a release receipt',
+    )
     parser.add_argument('--list', action='store_true')
     args = parser.parse_args()
     if args.list:
@@ -989,6 +1252,11 @@ def main() -> None:
     if args.publish is not None:
         print(f'wrote {publish_run(args.publish, current_dir=args.current_dir)}')
         return
+    receipt_binding = benchmark_runtime.load_subject(args.gometry_receipt)
+    package_root = benchmark_runtime.package_root_for_subject(
+        receipt_binding,
+        args.gometry_package_root,
+    )
     output_dir = args.output_dir
     if not output_dir.is_absolute():
         output_dir = GOMETRY_ROOT / output_dir
@@ -1020,10 +1288,18 @@ def main() -> None:
         output_dir=raw_directory,
         timestamp=timestamp,
         cpu=cpu,
+        receipt_binding=receipt_binding,
+        package_root=package_root,
     )
     if args.profile == 'release' and args.filter is None:
         plans.extend(
-            _resource_plans(output_dir=raw_directory, timestamp=timestamp, cpu=cpu)
+            _resource_plans(
+                output_dir=raw_directory,
+                timestamp=timestamp,
+                cpu=cpu,
+                receipt_binding=receipt_binding,
+                package_root=package_root,
+            )
         )
     # Oracle runs once after env/manifest validation and before timing.
     oracle_output = raw_directory / f'{timestamp}-oracle-{args.profile}.json'
@@ -1044,7 +1320,20 @@ def main() -> None:
             name in {n for rows in selected.values() for n in rows} for name in op.rows
         )
     )
-    doctor = collect(operations=selected_ops)
+    source_identity = receipt_binding.get('source')
+    doctor = collect(
+        operations=selected_ops,
+        expected_source_inputs_sha256=(
+            source_identity.get('source_inputs_sha256')
+            if isinstance(source_identity, dict)
+            else None
+        ),
+        expected_native_source_inputs_sha256=(
+            source_identity.get('native_source_inputs_sha256')
+            if isinstance(source_identity, dict)
+            else None
+        ),
+    )
     doctor['metadata']['selected_cpu'] = cpu
     doctor['metadata']['selected_cpu_source'] = cpu_selection
     frequency_state = doctor['metadata']['cpu_frequency_state']
@@ -1121,6 +1410,16 @@ def main() -> None:
                     plan['command'],
                     environment=env,
                     timeout=min(profile.command_timeout, max(1, int(remaining))),
+                    benchmark_subject=(
+                        receipt_binding if plan.get('kind') == 'resource' else None
+                    ),
+                    package_root=(
+                        package_root if plan.get('kind') == 'resource' else None
+                    ),
+                    case_path=plan.get('case_path'),
+                    result_path=(
+                        Path(plan['output']) if plan.get('kind') == 'resource' else None
+                    ),
                 )
                 result['suite'] = plan['suite']
                 result['label'] = plan['label']
@@ -1211,7 +1510,11 @@ def main() -> None:
             else None
         ),
         'artifacts': artifacts,
-        'resources': [] if args.plan_only else _resource_summaries(plans),
+        'resources': (
+            []
+            if args.plan_only
+            else _resource_summaries(plans, subject=receipt_binding)
+        ),
     }
     output = run_directory / 'run.json'
     _write_json_once(output, result, label='run manifest')

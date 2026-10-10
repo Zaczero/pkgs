@@ -1,19 +1,24 @@
 use pyo3::prelude::*;
 
 use crate::{Predicate, xy_predicate};
-/// Test whether ``left`` contains ``right``.
+/// Test whether ``left`` contains ``right`` or contains the point ``(x, y)``.
 ///
-/// Returns ``True`` if no points of ``right`` lie outside ``left`` and at least
-/// one interior point of ``right`` lies in the interior of ``left``.
+/// Returns ``True`` if no point of ``right`` lies outside ``left`` and the
+/// interiors of the two geometries share a point.
 /// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
 /// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Container (``left``) and candidate (``right``). Scalar and
-///     ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-///     epoch.
+/// left : Geometry, GeometryArray, or iterable of Geometry or None
+///     Container geometry. Array and iterable rows retain their logical
+///     positions.
+/// right : Geometry, GeometryArray, iterable of Geometry or None, optional
+///     Candidate geometry; scalar and sequence operands broadcast pairwise,
+///     and two sequences must have equal lengths and compatible frames.
+/// x, y : float or sequence of float, keyword-only
+///     Raw coordinates in ``left``'s CRS. Supply both instead of ``right``;
+///     provide exactly one input mode.
 ///
 /// Returns
 /// -------
@@ -24,11 +29,18 @@ use crate::{Predicate, xy_predicate};
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// InvalidGeometryError
+///     If ``x`` or ``y`` contains a non-finite coordinate, or the coordinate
+///     columns have incompatible lengths.
+/// TypeError
+///     If ``right`` is combined with ``x`` or ``y``, or if only one coordinate
+///     keyword is supplied.
 ///
 /// See Also
 /// --------
 /// within : Inverse relation.
 /// covers : Boundary-inclusive containment.
+/// intersects : Boundary-inclusive point test.
 ///
 /// Examples
 /// --------
@@ -38,13 +50,18 @@ use crate::{Predicate, xy_predicate};
 /// True
 /// >>> gm.contains(square, gm.Point(2, 1))  # boundary: not contained
 /// False
+/// >>> gm.contains(square, x=1, y=1)
+/// True
 #[pyfunction]
+#[pyo3(signature = (left, right = None, *, x = None, y = None))]
 pub(crate) fn contains(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
+    right: Option<&Bound<'_, PyAny>>,
+    x: Option<&Bound<'_, PyAny>>,
+    y: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Contains)
+    predicate_or_coordinates(py, left, right, x, y, Predicate::Contains)
 }
 
 /// Test whether ``left`` contains ``right`` with no boundary contact.
@@ -56,10 +73,9 @@ pub(crate) fn contains(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Container (``left``) and candidate (``right``). Scalar and
-///     ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-///     epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Container and candidate rows. Scalar and sequence operands broadcast
+///     pairwise; sequences must have equal length and compatible CRS/epoch.
 ///
 /// Returns
 /// -------
@@ -96,10 +112,9 @@ pub(crate) fn contains_properly(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Candidate (``left``) and container (``right``). Scalar and
-///     ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-///     epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Candidate and container rows. Scalar and sequence operands broadcast
+///     pairwise; sequences must have equal length and compatible CRS/epoch.
 ///
 /// Returns
 /// -------
@@ -137,10 +152,9 @@ pub(crate) fn within(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Container (``left``) and candidate (``right``). Scalar and
-///     ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-///     epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Container and candidate rows. Scalar and sequence operands broadcast
+///     pairwise; sequences must have equal length and compatible CRS/epoch.
 ///
 /// Returns
 /// -------
@@ -178,10 +192,9 @@ pub(crate) fn covers(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Candidate (``left``) and container (``right``). Scalar and
-///     ``GeometryArray`` broadcast pairwise; must share CRS and coordinate
-///     epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Candidate and container rows. Scalar and sequence operands broadcast
+///     pairwise; sequences must have equal length and compatible CRS/epoch.
 ///
 /// Returns
 /// -------
@@ -211,91 +224,23 @@ pub(crate) fn covered_by(
     crate::dispatch::dispatch_predicate(py, left, right, Predicate::CoveredBy)
 }
 
-/// Test whether a geometry contains each ``(x, y)`` point (vectorized).
-///
-/// Parameters
-/// ----------
-/// geom : Geometry or GeometryArray
-///     The geometry row(s) to test against.
-/// x, y : float or sequence of float
-///     Finite coordinates in ``geom``'s CRS. Geographic antimeridian seams
-///     and poles use the same topology as point-geometry predicates.
-///
-/// Returns
-/// -------
-/// bool or numpy.ndarray
-///     A single bool for scalar geometry and coordinates, otherwise one result
-///     per broadcast row.
-///
-/// Raises
-/// ------
-/// InvalidGeometryError
-///     If ``x``/``y`` are non-finite or differ in length.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> gm.contains_xy(gm.box(0, 0, 2, 2), 1, 1)
-/// True
-#[pyfunction]
-pub(crate) fn contains_xy(
-    py: Python<'_>,
-    geom: &Bound<'_, PyAny>,
-    x: &Bound<'_, PyAny>,
-    y: &Bound<'_, PyAny>,
-) -> PyResult<Py<PyAny>> {
-    xy_predicate(py, geom, x, y, false)
-}
-
-/// Test whether a geometry intersects each ``(x, y)`` point (vectorized).
-///
-/// Boundary-inclusive (unlike ``contains_xy``), and skips building point
-/// geometries.
-///
-/// Parameters
-/// ----------
-/// geom : Geometry or GeometryArray
-///     The geometry row(s) to test against.
-/// x, y : float or sequence of float
-///     Finite coordinates in ``geom``'s CRS. Geographic antimeridian seams
-///     and poles use the same topology as point-geometry predicates.
-///
-/// Returns
-/// -------
-/// bool or numpy.ndarray
-///     A single bool for scalar geometry and coordinates, otherwise one result
-///     per broadcast row.
-///
-/// Raises
-/// ------
-/// InvalidGeometryError
-///     If ``x``/``y`` are non-finite or differ in length.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> gm.intersects_xy(gm.box(0, 0, 2, 2), 3, 3)
-/// False
-#[pyfunction]
-pub(crate) fn intersects_xy(
-    py: Python<'_>,
-    geom: &Bound<'_, PyAny>,
-    x: &Bound<'_, PyAny>,
-    y: &Bound<'_, PyAny>,
-) -> PyResult<Py<PyAny>> {
-    xy_predicate(py, geom, x, y, true)
-}
-
-/// Test whether ``left`` and ``right`` share any point.
+/// Test whether ``left`` and ``right`` share any point, or whether ``left``
+/// intersects the point ``(x, y)``.
 ///
 /// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
 /// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left : Geometry, GeometryArray, or iterable of Geometry or None
+///     Geometry being tested. Array and iterable rows retain their logical
+///     positions.
+/// right : Geometry, GeometryArray, iterable of Geometry or None, optional
+///     Geometry compared with ``left``. Scalar and sequence operands broadcast
+///     pairwise, and two sequences must have equal lengths and compatible frames.
+/// x, y : float or sequence of float, keyword-only
+///     Raw coordinates in ``left``'s CRS. Supply both instead of ``right``;
+///     provide exactly one input mode.
 ///
 /// Returns
 /// -------
@@ -306,6 +251,12 @@ pub(crate) fn intersects_xy(
 /// ------
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
+/// InvalidGeometryError
+///     If ``x`` or ``y`` contains a non-finite coordinate, or the coordinate
+///     columns have incompatible lengths.
+/// TypeError
+///     If ``right`` is combined with ``x`` or ``y``, or if only one coordinate
+///     keyword is supplied.
 ///
 /// See Also
 /// --------
@@ -316,13 +267,40 @@ pub(crate) fn intersects_xy(
 /// >>> import gometry as gm
 /// >>> gm.intersects(gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3))
 /// True
+/// >>> gm.intersects(gm.box(0, 0, 2, 2), x=2, y=1)
+/// True
 #[pyfunction]
+#[pyo3(signature = (left, right = None, *, x = None, y = None))]
 pub(crate) fn intersects(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
+    right: Option<&Bound<'_, PyAny>>,
+    x: Option<&Bound<'_, PyAny>>,
+    y: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Intersects)
+    predicate_or_coordinates(py, left, right, x, y, Predicate::Intersects)
+}
+
+fn predicate_or_coordinates(
+    py: Python<'_>,
+    left: &Bound<'_, PyAny>,
+    right: Option<&Bound<'_, PyAny>>,
+    x: Option<&Bound<'_, PyAny>>,
+    y: Option<&Bound<'_, PyAny>>,
+    predicate: Predicate,
+) -> PyResult<Py<PyAny>> {
+    match (right, x, y) {
+        (Some(right), None, None) => {
+            crate::dispatch::dispatch_predicate(py, left, right, predicate)
+        },
+        (None, Some(x), Some(y)) => {
+            let left = crate::normalize_geometry_batch(py, left)?;
+            xy_predicate(py, &left, x, y, matches!(predicate, Predicate::Intersects))
+        },
+        _ => Err(pyo3::exceptions::PyTypeError::new_err(
+            "provide either right or both x and y; geometry and coordinate inputs cannot be mixed",
+        )),
+    }
 }
 
 /// Test whether ``left`` and ``right`` share no point; negation of
@@ -333,9 +311,9 @@ pub(crate) fn intersects(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Operands broadcast pairwise; sequences must have equal lengths and
+///     compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------
@@ -372,9 +350,9 @@ pub(crate) fn disjoint(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Operands broadcast pairwise; sequences must have equal lengths and
+///     compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------
@@ -400,17 +378,20 @@ pub(crate) fn touches(
     crate::dispatch::dispatch_predicate(py, left, right, Predicate::Touches)
 }
 
-/// Test whether ``left`` and ``right`` cross (interiors meet with lower
-/// dimension).
+/// Test whether ``left`` and ``right`` cross.
+///
+/// The dimension pair determines the relation. A line crosses a polygon when
+/// part of the line interior is inside the polygon and part is outside. Two
+/// curves cross when their interiors meet at a point.
 ///
 /// Evaluated from the exact DE-9IM relation matrix; geographic inputs use the
 /// longitude and pole quotient.
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Operands broadcast pairwise; sequences must have equal lengths and
+///     compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------
@@ -446,9 +427,9 @@ pub(crate) fn crosses(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Operands broadcast pairwise; sequences must have equal lengths and
+///     compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------

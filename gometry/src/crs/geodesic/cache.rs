@@ -1,8 +1,8 @@
 use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
-    CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError,
-    ensure_thread_caches_current, lru_insert, lru_promote,
+    AuthalicSeries, CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject,
+    CrsError, ensure_thread_caches_current, lru_insert, lru_promote,
 };
 use crate::crs::{RuntimeState, info_with_state};
 use crate::error::Result;
@@ -98,10 +98,12 @@ fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeode
         ellipsoid.semi_minor_metre,
         flattening,
     )?;
+    let definition = crs.to_owned();
+    let authalic_series = AuthalicSeries::new(&object);
     Ok(CachedGeodesicObject {
-        definition: crs.to_owned(),
-        authalic_series: super::AuthalicSeries::new(&object),
+        definition,
         object,
+        authalic_series,
     })
 }
 
@@ -118,7 +120,7 @@ pub(crate) fn with_geodesic_chart_cache_at<T, E>(
     crs: &str,
     state: &RuntimeState,
     map_err: impl Fn(crate::error::Error) -> E,
-    f: impl FnOnce(&Geodesic, &super::AuthalicSeries) -> Result<T, E>,
+    f: impl FnOnce(&Geodesic, &AuthalicSeries) -> Result<T, E>,
 ) -> Result<T, E> {
     with_geodesic_object_cache_at(crs, state, map_err, |entry| {
         f(&entry.object, &entry.authalic_series)
@@ -142,7 +144,7 @@ fn with_geodesic_object_cache_at<T, E>(
     if hit {
         return CRS_GEODESIC_CACHE.with(|cache| {
             let cache = cache.borrow();
-            f(&cache
+            f(cache
                 .last()
                 .expect("a promoted geodesic object is the MRU tail"))
         });
@@ -155,7 +157,7 @@ fn with_geodesic_object_cache_at<T, E>(
     CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let entry = lru_insert(&mut cache, CRS_GEODESIC_CACHE_CAPACITY, entry);
-        f(&entry)
+        f(entry)
     })
 }
 

@@ -632,6 +632,103 @@ pub(crate) fn xy_bounds_columns(xs: &[f64], ys: &[f64]) -> [f64; 4] {
     [minx, miny, maxx, maxy]
 }
 
+/// Fused finite XY bounds for callers that must reject non-finite support.
+///
+/// Unlike [`xy_bounds_columns`], this returns `None` for empty or non-finite
+/// columns. It scans both ordinates together so extrema and finiteness are
+/// established by one traversal without changing the NaN-skipping bounds
+/// contract used by other callers.
+pub(crate) fn xy_finite_bounds_columns(xs: &[f64], ys: &[f64]) -> Option<[f64; 4]> {
+    debug_assert_eq!(xs.len(), ys.len());
+    if xs.is_empty() {
+        return None;
+    }
+    if xs.len() < XY_BOUNDS_SIMD_MIN {
+        let (&first_x, xs_tail) = xs.split_first().expect("non-empty columns");
+        let (&first_y, ys_tail) = ys.split_first().expect("non-empty columns");
+        let mut minx = first_x;
+        let mut miny = first_y;
+        let mut maxx = first_x;
+        let mut maxy = first_y;
+        let mut all_finite = first_x.is_finite() & first_y.is_finite();
+        for (&x, &y) in std::iter::zip(xs_tail, ys_tail) {
+            all_finite &= x.is_finite() & y.is_finite();
+            minx = minx.min(x);
+            miny = miny.min(y);
+            maxx = maxx.max(x);
+            maxy = maxy.max(y);
+        }
+        return all_finite.then_some([minx, miny, maxx, maxy]);
+    }
+
+    let (x_chunks, x_tail) = xs.as_chunks::<REDUCE_LANES>();
+    let (y_chunks, y_tail) = ys.as_chunks::<REDUCE_LANES>();
+    let mut x_chunks = x_chunks.iter();
+    let mut y_chunks = y_chunks.iter();
+    let non_finite_exponent = std::simd::Simd::<u64, REDUCE_LANES>::splat(NON_FINITE_EXP_MASK);
+    let (extrema, all_finite) = simd_reduce_f64(
+        xs.len(),
+        (
+            ReduceSimd::splat(f64::INFINITY),
+            ReduceSimd::splat(f64::NEG_INFINITY),
+            ReduceSimd::splat(f64::INFINITY),
+            ReduceSimd::splat(f64::NEG_INFINITY),
+            std::simd::Mask::<i64, REDUCE_LANES>::splat(true),
+        ),
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            true,
+        ),
+        |(minx, maxx, miny, maxy, finite_lanes), scalar, _start| {
+            let x = ReduceSimd::from_array(*x_chunks.next().expect("one XY chunk per fold"));
+            let y = ReduceSimd::from_array(*y_chunks.next().expect("one XY chunk per fold"));
+            let x_non_finite = (x.to_bits() & non_finite_exponent).simd_eq(non_finite_exponent);
+            let y_non_finite = (y.to_bits() & non_finite_exponent).simd_eq(non_finite_exponent);
+            (
+                (
+                    minx.simd_min(x),
+                    maxx.simd_max(x),
+                    miny.simd_min(y),
+                    maxy.simd_max(y),
+                    finite_lanes & !(x_non_finite | y_non_finite),
+                ),
+                scalar,
+            )
+        },
+        |(mut minx, mut maxx, mut miny, mut maxy, mut finite), range| {
+            let (x_values, y_values) = if range.start == 0 {
+                (xs, ys)
+            } else {
+                (x_tail, y_tail)
+            };
+            for (&x, &y) in std::iter::zip(x_values, y_values) {
+                finite &= x.is_finite() & y.is_finite();
+                minx = minx.min(x);
+                miny = miny.min(y);
+                maxx = maxx.max(x);
+                maxy = maxy.max(y);
+            }
+            (minx, maxx, miny, maxy, finite)
+        },
+        |(minx, maxx, miny, maxy, finite_lanes),
+         (scalar_minx, scalar_maxx, scalar_miny, scalar_maxy, finite_scalar)| {
+            (
+                [
+                    scalar_minx.min(minx.reduce_min()),
+                    scalar_miny.min(miny.reduce_min()),
+                    scalar_maxx.max(maxx.reduce_max()),
+                    scalar_maxy.max(maxy.reduce_max()),
+                ],
+                finite_scalar && finite_lanes.all(),
+            )
+        },
+    );
+    all_finite.then_some(extrema)
+}
+
 /// Area-weighted centroid sums about `anchor` over a ring's contiguous
 /// columns: the SIGNED triangle-fan accumulators `(Σ 2·area, Σ 2·area·(ax +
 /// x_i + x_{i+1}), Σ 2·area·(ay + y_i + y_{i+1}))` — signed cross products

@@ -177,7 +177,18 @@ impl ExactSourceInventory {
         let operands = self.operand_count();
         let face_cells = (global.count as usize).wrapping_mul(operands);
         let span_cells = partition.spans.len().wrapping_mul(operands);
-        let face_slots = self.global_face_slots(topology, global);
+        // Winding-shell support is represented by occupied incident faces;
+        // collapsed shells are the case that can contribute support without one.
+        let needs_raw = self
+            .ring_kinds
+            .iter()
+            .zip(&self.ring_holes)
+            .any(|(&kind, &hole)| kind == RingKind::Collapsed && !hole);
+        let face_slots = if needs_raw {
+            self.global_face_slots(topology, global)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         let span_faces = Self::span_faces(partition, topology, edges, global);
         let mut facts = CellFacts {
             face_membership: Vec::new(),
@@ -200,11 +211,17 @@ impl ExactSourceInventory {
         facts.point_membership.resize(node_cells, false);
         let mut shell_support = Vec::new();
         let mut hole_support = Vec::new();
-        shell_support.reserve(self.polygon_count);
-        hole_support.reserve(self.polygon_count);
-        shell_support.resize(self.polygon_count, false);
-        hole_support.resize(self.polygon_count, false);
-        let mut touched_polygons = Vec::with_capacity(partition.spans.len());
+        if needs_raw {
+            shell_support.reserve(self.polygon_count);
+            hole_support.reserve(self.polygon_count);
+            shell_support.resize(self.polygon_count, false);
+            hole_support.resize(self.polygon_count, false);
+        }
+        let mut touched_polygons = if needs_raw {
+            Vec::with_capacity(partition.spans.len())
+        } else {
+            Vec::new()
+        };
         let mut point_sources_by_node = Vec::with_capacity(partition.point_sources.len());
         point_sources_by_node.extend_from_slice(&partition.point_sources);
         point_sources_by_node.sort_unstable_by_key(|(node, _)| node.0);
@@ -219,7 +236,7 @@ impl ExactSourceInventory {
                 continue;
             };
             if self.ring_holes[ring as usize]
-                || self.source_ring_kinds[source_index] != Some(RingKind::Collapsed)
+                || self.ring_kinds[ring as usize] != RingKind::Collapsed
             {
                 continue;
             }
@@ -246,8 +263,7 @@ impl ExactSourceInventory {
             }
         }
         point_shell_faces.sort_unstable_by_key(|(face, _)| *face);
-        let mut point_shell_cursor = 0;
-        let mut occupancy = PolygonOccupancy::new(&self.polygon_rings, self.ring_count, odd)?;
+        let mut occupancy = PolygonOccupancy::new(self, odd);
         if let Some((_, seed)) = &partition.winding_seed {
             occupancy.seed(seed)?;
         }
@@ -275,10 +291,14 @@ impl ExactSourceInventory {
                     );
                     facts.face_membership[face * operands + operand] = occupied;
                 }
-                while point_shell_cursor < point_shell_faces.len()
-                    && point_shell_faces[point_shell_cursor].0 == face as u32
-                {
-                    let (_, state_index) = point_shell_faces[point_shell_cursor];
+                let requested_face = face as u32;
+                let first =
+                    point_shell_faces.partition_point(|&(requested, _)| requested < requested_face);
+                let end = first.wrapping_add(
+                    point_shell_faces[first..]
+                        .partition_point(|&(requested, _)| requested == requested_face),
+                );
+                for &(_, state_index) in &point_shell_faces[first..end] {
                     let state = &mut point_polygon_states[state_index as usize];
                     let node = state.0;
                     let polygon = state.1 as usize;
@@ -300,7 +320,9 @@ impl ExactSourceInventory {
                             }
                         });
                     state.2 |= hole;
-                    point_shell_cursor += 1;
+                }
+                if !needs_raw {
+                    return Ok(());
                 }
                 let start = face_slots.0[face] as usize;
                 let end = face_slots.0[face + 1] as usize;
@@ -313,10 +335,9 @@ impl ExactSourceInventory {
                         let Some(ring) = self.source_rings[source] else {
                             continue;
                         };
-                        let occupied = match self.source_ring_kinds[source] {
-                            Some(RingKind::Winding) => ring_occupied(winding[ring as usize], odd),
-                            Some(RingKind::Collapsed) => true,
-                            None => false,
+                        let occupied = match self.ring_kinds[ring as usize] {
+                            RingKind::Winding => ring_occupied(winding[ring as usize], odd),
+                            RingKind::Collapsed => true,
                         };
                         if !occupied {
                             continue;
@@ -480,24 +501,24 @@ impl ExactSourceInventory {
         node: NodeId,
         ring: usize,
     ) -> bool {
+        if self.ring_kinds[ring] != RingKind::Collapsed {
+            return false;
+        }
+        let ring = ring as u32;
         let mut range = topology.starts[node.0 as usize] as usize
             ..topology.starts[node.0 as usize + 1] as usize;
         if range.any(|slot| {
             partition
                 .owners(edges[slot] as usize)
                 .iter()
-                .any(|&(source, _)| {
-                    self.source_rings[source as usize] == Some(ring as u32)
-                        && self.source_ring_kinds[source as usize] == Some(RingKind::Collapsed)
-                })
+                .any(|&(source, _)| self.source_rings[source as usize] == Some(ring))
         }) {
             return true;
         }
         let mut range = node_source_range(point_sources_by_node, node);
         range.any(|index| {
             let source = point_sources_by_node[index].1 as usize;
-            self.source_rings[source] == Some(ring as u32)
-                && self.source_ring_kinds[source] == Some(RingKind::Collapsed)
+            self.source_rings[source] == Some(ring)
         })
     }
 
@@ -807,15 +828,101 @@ impl ExactSourceInventory {
         }
         cells
     }
+}
 
-    pub(super) fn linework_source_rings(&self) -> Vec<Option<u32>> {
-        self.source_rings
+#[cfg(test)]
+mod semantic_witness_tests {
+    use super::*;
+    use crate::geometry::{ExpansionBudget, OverlayOp};
+
+    #[test]
+    fn collapsed_shell_coowned_curve_keeps_point_interior() {
+        let mixed = crate::io::parse_wkt(
+            "GEOMETRYCOLLECTION (POLYGON ((0 0,2 0,4 0,0 0)), LINESTRING (0 0,1 0))",
+        )
+        .unwrap();
+        let point = crate::io::parse_wkt("POINT (1 0)").unwrap();
+        let inventory =
+            ExactSourceInventory::from_shapes_with_occurrences(&[&mixed, &point]).unwrap();
+        let mut budget = ExpansionBudget::new("relate", "co-owned collapsed curve parity");
+        let partition = inventory.partition(&mut budget).unwrap();
+
+        assert_eq!(inventory.relate(&partition).unwrap().text(), "0F1FF0FF2");
+    }
+
+    #[test]
+    fn difference_keeps_selected_span_endpoint_when_shared_node_is_excluded() {
+        let left = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap();
+        let right = crate::io::parse_wkt("POLYGON ((2 0.5,4 0.5,4 1.5,2 1.5,2 0.5))").unwrap();
+        let inventory = ExactSourceInventory::from_shapes(&[&left, &right]).unwrap();
+        let mut budget = ExpansionBudget::new("difference", "shared endpoint closure");
+        let partition = inventory.partition(&mut budget).unwrap();
+        let (topology, edges) = partition.local_topology().unwrap();
+        let global = partition.global_faces(&topology, &edges).unwrap();
+        let winding_rings = inventory.winding_source_rings();
+        let facts = inventory
+            .build_cell_facts(
+                &partition,
+                &topology,
+                &edges,
+                &global,
+                &winding_rings,
+                false,
+            )
+            .unwrap();
+        let cells = inventory.select_cells_from_facts(
+            &partition,
+            &topology,
+            &global,
+            OverlayOp::Difference,
+            &facts,
+        );
+        let node = (0..partition.node_count())
+            .map(|index| NodeId(u32::try_from(index).unwrap()))
+            .find(|&node| partition.nearest_xy(node) == crate::geometry::XY::new(2.0, 0.5))
+            .expect("the shared-edge endpoint is a stored source vertex");
+        assert!(partition.is_stored(node));
+
+        let line_boundaries = inventory
+            .node_source_flags(&partition, facts.point_membership.len())
+            .unwrap();
+        let left_location = inventory.node_location_and_area_from_facts(
+            0,
+            node,
+            &topology,
+            &edges,
+            &global,
+            &facts,
+            &line_boundaries,
+            &facts.point_membership,
+        );
+        let right_location = inventory.node_location_and_area_from_facts(
+            1,
+            node,
+            &topology,
+            &edges,
+            &global,
+            &facts,
+            &line_boundaries,
+            &facts.point_membership,
+        );
+        assert_eq!(left_location.location, Loc::Boundary);
+        assert_eq!(right_location.location, Loc::Boundary);
+        assert!(left_location.area && right_location.area);
+        assert!(
+            !(left_location.location != Loc::Exterior && right_location.location == Loc::Exterior),
+            "the shared node is excluded by A minus B"
+        );
+
+        let incident_span_is_selected = partition
+            .spans
             .iter()
-            .zip(&self.source_ring_kinds)
-            .map(|(&ring, &kind)| {
-                matches!(kind, Some(RingKind::Winding))
-                    .then(|| ring.expect("a ring source always carries its ring identity"))
-            })
-            .collect()
+            .enumerate()
+            .any(|(span, item)| (item.start == node || item.end == node) && cells.spans[span]);
+        assert!(incident_span_is_selected);
+        assert!(
+            cells.nodes[node.0 as usize],
+            "a selected incident span retains its endpoint cell"
+        );
     }
 }

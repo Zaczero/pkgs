@@ -72,13 +72,13 @@ pub(crate) fn min_parts_to_parts<const SQUARED: bool>(
     if !target.point_only.is_empty() {
         probe.linework.for_each_chain_xy_columns(|xs, ys| {
             best = min_point_pairs::<SQUARED>(
-                xs.iter().copied().zip(ys.iter().copied()),
+                &xs.iter().copied().zip(ys.iter().copied()),
                 &target.point_only,
                 best,
             );
         });
         best = min_point_pairs::<SQUARED>(
-            probe.point_only.iter().map(|point| (point.x, point.y)),
+            &probe.point_only.iter().map(|point| (point.x, point.y)),
             &target.point_only,
             best,
         );
@@ -87,7 +87,7 @@ pub(crate) fn min_parts_to_parts<const SQUARED: bool>(
 }
 
 fn min_point_pairs<const SQUARED: bool>(
-    probes: impl ExactSizeIterator<Item = (f64, f64)> + Clone,
+    probes: &(impl ExactSizeIterator<Item = (f64, f64)> + Clone),
     targets: &[Point],
     mut best: f64,
 ) -> f64 {
@@ -95,7 +95,7 @@ fn min_point_pairs<const SQUARED: bool>(
         return best;
     }
     for other in targets {
-        for (x, y) in probes.clone() {
+        for (x, y) in (*probes).clone() {
             let candidate = if SQUARED {
                 // Squared-space callers bound the coordinates against overflow
                 // and rescue a subnormal/false-zero minimum in distance space.

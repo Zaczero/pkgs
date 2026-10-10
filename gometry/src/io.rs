@@ -72,7 +72,7 @@ impl IoError {
         }
     }
 
-    pub(crate) fn offset_position(&mut self, offset: usize) {
+    pub(crate) const fn offset_position(&mut self, offset: usize) {
         if let Some(position) = self.position.as_mut() {
             *position = position.wrapping_add(offset);
         }
@@ -673,7 +673,7 @@ where
                     index,
                     format!(
                         "Polygon rings must share one coordinate axes layout for serialization; \
-                         got {} and {} — promote with force_3d/set_m first",
+                         got {} and {} — promote with force_3d/with_coordinates(m=...) first",
                         prev.as_str(),
                         member.as_str(),
                     )
@@ -763,10 +763,12 @@ mod wkt;
 
 #[cfg(test)]
 pub(crate) use geojson::parse_geojson;
+#[cfg(test)]
+pub(crate) use geojson::to_geojson_string;
 pub(crate) use geojson::{
     DefiningMembers, GEOJSON_M_ERROR, GeoJsonCrs, GeoJsonMemberKind, LegacyGeoJsonCrsPolicy,
-    geojson_domain, geojson_interface_error, parse_geojson_at, reject_rfc7946_cross_type_members,
-    reject_rfc7946_value_object, to_geojson_string, validate_geojson_bbox,
+    geojson_interface_error, parse_geojson_at, reject_rfc7946_cross_type_members,
+    reject_rfc7946_value_object, to_geojson_string_with_metric, validate_geojson_bbox,
     validate_geojson_bbox_member, validate_geojson_feature_id, validate_geojson_feature_members,
     validate_geojson_feature_properties,
 };
@@ -815,6 +817,12 @@ mod tests {
         assert!(matches!(
             geojson_text_summary(&shape).geojson_lower_bound(limit),
             TextWidthBound::Exceeds { limit: got } if got == limit
+        ));
+        let error = to_wkt_with_srid(&shape, Some("not a CRS"), true)
+            .expect_err("WKT body width fails before SRID prefix validation");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
         ));
     }
 

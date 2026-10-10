@@ -10,7 +10,7 @@ use super::exact::{
     SourceRingId, SourceRowId, point_on_exact_segment, vector_cross, vector_difference,
 };
 use crate::error::{ResourceError, Result};
-use crate::geographic::{GeographicFrame, Pole};
+use crate::geographic::{ChartPole, GeographicFrame};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
 use crate::geometry::source_support::RingKind;
@@ -65,7 +65,7 @@ pub(super) struct QPort {
 pub(super) struct QNode {
     pub id: QNodeId,
     key: QNodeKey,
-    pole: Option<Pole>,
+    pole: Option<ChartPole>,
     pub ports: Range<usize>,
 }
 
@@ -566,8 +566,8 @@ impl QCutIndex {
                 )?;
                 let value = (node_components[node.id.0 as usize], face);
                 let slot = match pole {
-                    Pole::South => &mut south_pole_face,
-                    Pole::North => &mut north_pole_face,
+                    ChartPole::South => &mut south_pole_face,
+                    ChartPole::North => &mut north_pole_face,
                 };
                 if slot.replace(value).is_some() {
                     return Err(GeometryErrorKind::Invalid(
@@ -726,7 +726,7 @@ impl QCutIndex {
                         .nodes
                         .iter()
                         .find(|node| {
-                            node.pole == Some(Pole::South)
+                            node.pole == Some(ChartPole::South)
                                 && node_components.get(node.id.0 as usize) == Some(&component_id)
                         })
                         .map(|node| node.id);
@@ -767,8 +767,8 @@ impl QCutIndex {
             });
         }
 
-        let south_y = ExactRational::from_f64(-frame.pole());
-        let north_y = ExactRational::from_f64(frame.pole());
+        let south_y = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
+        let north_y = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
         let interval_count = events
             .len()
             .checked_add(1)
@@ -890,10 +890,10 @@ impl QCutIndex {
         })
     }
 
-    fn pole_interval_id(&self, pole: Pole) -> Result<CutIntervalId> {
+    fn pole_interval_id(&self, pole: ChartPole) -> Result<CutIntervalId> {
         let interval = match pole {
-            Pole::South => self.intervals.first(),
-            Pole::North => self.intervals.last(),
+            ChartPole::South => self.intervals.first(),
+            ChartPole::North => self.intervals.last(),
         }
         .ok_or_else(|| GeometryErrorKind::Invalid("Q has no pole cut interval".into()))?;
         Ok(interval.id)
@@ -1760,7 +1760,7 @@ fn north_pole_ring_windings(
 ) -> Result<Vec<i64>> {
     let frame = sources.frame;
     let axis = frame.longitude();
-    let pole = frame.pole();
+    let north_pole = frame.chart_pole_latitude(ChartPole::North);
     let period = ExactRational::from_f64(axis.period());
     let mut windings = Vec::with_capacity(sources.rings.len());
     for ring in &sources.rings {
@@ -1768,12 +1768,12 @@ fn north_pole_ring_windings(
             windings.push(0);
             continue;
         }
-        let mut winding = if ring.summary.bounded_pole() == Some(Pole::North) {
+        let mut winding = if ring.summary.bounded_pole() == Some(ChartPole::North) {
             ring.summary.chart_turn
         } else {
             0
         };
-        if ring.summary.north.get().to_bits() == pole.to_bits() {
+        if ring.summary.north.get().to_bits() == north_pole.to_bits() {
             let edges = sources
                 .edges
                 .get(ring.source_edges.clone())
@@ -1785,15 +1785,18 @@ fn north_pole_ring_windings(
                 if crate::geographic::Latitude::from_admitted(frame, start.y)
                     .get()
                     .to_bits()
-                    != pole.to_bits()
+                    != north_pole.to_bits()
                     || crate::geographic::Latitude::from_admitted(frame, end.y)
                         .get()
                         .to_bits()
-                        != pole.to_bits()
+                        != north_pole.to_bits()
                 {
                     continue;
                 }
-                let (start_x, delta) = super::exact::local_longitude_edge(frame, start.x, end.x)?;
+                let local_edge =
+                    super::exact::local_longitude_edge(frame, start.x, edge.retained_longitude());
+                let start_x = local_edge.start_x;
+                let delta = local_edge.delta_x(frame.longitude().period())?;
                 if delta.is_zero() {
                     continue;
                 }
@@ -1896,7 +1899,7 @@ pub(super) fn global_face_structure(
                 point: port_data.point.clone(),
             }
         } else {
-            let latitude = ExactRational::from_f64(-frame.pole());
+            let latitude = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
             HostRoot {
                 component: component_id,
                 face: topology
@@ -2385,7 +2388,6 @@ pub(super) fn global_face_structure(
 
 #[expect(
     clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
     reason = "Q IDs and ring transitions index the dense topology and source inventory built together"
 )]
 fn build_global_face_topology(
@@ -2608,10 +2610,7 @@ fn is_collapsed_pole_span(
     let Some(pole) = node.pole else {
         return Ok(false);
     };
-    let latitude = ExactRational::from_f64(match pole {
-        Pole::North => frame.pole(),
-        Pole::South => -frame.pole(),
-    });
+    let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
     let start = chart
         .ports
         .get(span.ports[0].0 as usize)
@@ -2893,12 +2892,12 @@ fn compare_pole_dart_to_longitude(
 }
 
 fn compare_pole_meridians(
-    pole: Pole,
+    pole: ChartPole,
     left: &ExactRational,
     right: &ExactRational,
 ) -> Result<Ordering> {
     let order = left.try_cmp(right)?;
-    Ok(if pole == Pole::South {
+    Ok(if pole == ChartPole::South {
         order.reverse()
     } else {
         order
@@ -2908,12 +2907,12 @@ fn compare_pole_meridians(
 /// The south-pole quotient reverses the complete circular order, including
 /// the tangent tie within one meridian.
 fn compare_pole_tangent_rays(
-    pole: Pole,
+    pole: ChartPole,
     left: &(ExactRational, ExactRational),
     right: &(ExactRational, ExactRational),
 ) -> Result<Ordering> {
     let order = compare_exact_rays_allow_equal(left, right)?;
-    Ok(if pole == Pole::South {
+    Ok(if pole == ChartPole::South {
         order.reverse()
     } else {
         order
@@ -3185,17 +3184,19 @@ impl ExactGeographicQ {
         let frame = topology.sources.frame;
         if point
             .y
-            .try_cmp(&ExactRational::from_f64(frame.pole()))?
+            .try_cmp(&ExactRational::from_f64(
+                frame.chart_pole_latitude(ChartPole::North),
+            ))?
             .is_eq()
         {
             if let Some(node) = self
                 .nodes
                 .iter()
-                .find(|node| node.pole == Some(Pole::North))
+                .find(|node| node.pole == Some(ChartPole::North))
             {
                 return locate_q_node(self, node.id, row);
             }
-            let interval = self.cut_index.pole_interval_id(Pole::North)?;
+            let interval = self.cut_index.pole_interval_id(ChartPole::North)?;
             let face = *self
                 .cut_interval_faces
                 .get(interval.0 as usize)
@@ -3206,17 +3207,19 @@ impl ExactGeographicQ {
         }
         if point
             .y
-            .try_cmp(&ExactRational::from_f64(-frame.pole()))?
+            .try_cmp(&ExactRational::from_f64(
+                frame.chart_pole_latitude(ChartPole::South),
+            ))?
             .is_eq()
         {
             if let Some(node) = self
                 .nodes
                 .iter()
-                .find(|node| node.pole == Some(Pole::South))
+                .find(|node| node.pole == Some(ChartPole::South))
             {
                 return locate_q_node(self, node.id, row);
             }
-            let interval = self.cut_index.pole_interval_id(Pole::South)?;
+            let interval = self.cut_index.pole_interval_id(ChartPole::South)?;
             let face = *self
                 .cut_interval_faces
                 .get(interval.0 as usize)
@@ -5636,8 +5639,8 @@ fn chart_edge_longitude_intervals(
     frame: GeographicFrame,
     chart: &NodedExactChart,
 ) -> Result<Vec<LongitudeInterval>> {
-    let north = ExactRational::from_f64(frame.pole());
-    let south = ExactRational::from_f64(-frame.pole());
+    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
+    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
     let half = ExactRational::from_f64(frame.longitude().half_period());
     let negative_half = ExactRational::from_f64(-frame.longitude().half_period());
     let mut intervals = Vec::with_capacity(chart.atoms.len());
@@ -5986,8 +5989,8 @@ fn cut_node_key(
     chart: &NodedExactChart,
     latitude: &ExactRational,
 ) -> Result<QNodeKey> {
-    let north = ExactRational::from_f64(frame.pole());
-    let south = ExactRational::from_f64(-frame.pole());
+    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
+    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
     if latitude.try_cmp(&north)?.is_eq() {
         return chart
             .nodes
@@ -6017,7 +6020,7 @@ fn cut_node_key(
     Ok(QNodeKey::Cut(latitude.clone()))
 }
 
-fn qnode_pole(chart: &NodedExactChart, key: &QNodeKey) -> Result<Option<Pole>> {
+fn qnode_pole(chart: &NodedExactChart, key: &QNodeKey) -> Result<Option<ChartPole>> {
     let QNodeKey::Source(id) = key else {
         return Ok(None);
     };
@@ -6025,8 +6028,8 @@ fn qnode_pole(chart: &NodedExactChart, key: &QNodeKey) -> Result<Option<Pole>> {
         GeometryErrorKind::Invalid("a Q node references an unknown chart node".into())
     })?;
     Ok(match &node.key {
-        ExactQuotientKey::NorthPole => Some(Pole::North),
-        ExactQuotientKey::SouthPole => Some(Pole::South),
+        ExactQuotientKey::NorthPole => Some(ChartPole::North),
+        ExactQuotientKey::SouthPole => Some(ChartPole::South),
         ExactQuotientKey::Coordinate(_) | ExactQuotientKey::Seam(_) => None,
     })
 }
@@ -6578,7 +6581,7 @@ mod tests {
             }
         }
         let period = frame.longitude().period();
-        let pole = frame.pole();
+        let pole = frame.chart_pole_latitude(ChartPole::North);
         ring(
             &points
                 .iter()
@@ -6608,6 +6611,110 @@ mod tests {
         (sources, q)
     }
 
+    fn compare_source_ray_order(
+        frame: GeographicFrame,
+        shape: &Shape,
+        origin: (f64, f64),
+        left_target: (f64, f64),
+        right_target: (f64, f64),
+    ) -> Ordering {
+        let (_, q) = q_graph_in_frame(frame, shape);
+        let exact_point = |(x, y): (f64, f64)| {
+            ExactChartPoint::from_rationals(ExactRational::from_f64(x), ExactRational::from_f64(y))
+        };
+        let origin = exact_point(origin);
+        let left_target = exact_point(left_target);
+        let right_target = exact_point(right_target);
+        let period = ExactRational::from_f64(frame.longitude().period());
+        let same_chart_location =
+            |chart_point: &ExactChartPoint, source_point: &ExactChartPoint| {
+                if !chart_point
+                    .y
+                    .try_cmp(&source_point.y)
+                    .expect("test latitude comparisons are exact")
+                    .is_eq()
+                {
+                    return false;
+                }
+                let east = source_point
+                    .x
+                    .try_add(&period)
+                    .expect("one longitude period fits the test chart");
+                let west = source_point
+                    .x
+                    .try_subtract(&period)
+                    .expect("one longitude period fits the test chart");
+                [&source_point.x, &east, &west]
+                    .into_iter()
+                    .any(|longitude| {
+                        chart_point
+                            .x
+                            .try_cmp(longitude)
+                            .expect("test longitude comparisons are exact")
+                            .is_eq()
+                    })
+            };
+        let north_pole = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
+        let south_pole = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
+        let pole = if origin.y.try_cmp(&north_pole).unwrap().is_eq() {
+            Some(ChartPole::North)
+        } else if origin.y.try_cmp(&south_pole).unwrap().is_eq() {
+            Some(ChartPole::South)
+        } else {
+            None
+        };
+        let origin_node = q
+            .nodes
+            .iter()
+            .find(|node| {
+                pole.is_some_and(|pole| node.pole == Some(pole))
+                    || q.node_ports.get(node.ports.clone()).is_some_and(|ports| {
+                        ports.iter().any(|port| {
+                            q.ports
+                                .get(port.0 as usize)
+                                .is_some_and(|port| same_chart_location(&port.point, &origin))
+                        })
+                    })
+            })
+            .expect("the source rays share their origin node")
+            .id;
+        let dart_to = |target: &ExactChartPoint| {
+            q.darts
+                .iter()
+                .enumerate()
+                .find_map(|(index, dart)| {
+                    if dart.from_node != origin_node {
+                        return None;
+                    }
+                    let port = q.ports.get(dart.to_port.0 as usize)?;
+                    same_chart_location(&port.point, target).then(|| {
+                        QDartId(
+                            u32::try_from(index).expect("the test fan fits the Q dart identifier"),
+                        )
+                    })
+                })
+                .expect("the source target has one outgoing Q dart")
+        };
+        let left = dart_to(&left_target);
+        let right = dart_to(&right_target);
+        let cut_east = q
+            .cut
+            .try_add(&ExactRational::from_f64(frame.longitude().period()))
+            .unwrap();
+        compare_q_darts(
+            QFaceChart {
+                cut: &q.cut,
+                cut_east: &cut_east,
+                ports: &q.ports,
+                nodes: &q.nodes,
+            },
+            &q.darts,
+            left,
+            right,
+        )
+        .unwrap()
+    }
+
     /// Independent exact ray-crossing winding of the lifted source ring at the
     /// north germ of `cut`; only Q's edge lift is shared with the seed.
     fn reference_north_germ_winding(
@@ -6624,17 +6731,24 @@ mod tests {
             .get(ring.source_edges.clone())
             .expect("ring source edges belong to the chart inventory");
         let latitude = |y: f64| ExactRational::from_f64(Latitude::from_admitted(frame, y).get());
-        let step = |edge: &super::super::exact::ExactSourceEdge| {
-            super::super::exact::local_longitude_edge(frame, edge.source[0].x, edge.source[1].x)
-                .unwrap()
+        let edge = |edge: &super::super::exact::ExactSourceEdge| {
+            super::super::exact::local_longitude_edge(
+                frame,
+                edge.source[0].x,
+                edge.retained_longitude(),
+            )
         };
-        let mut x = ExactRational::from_f64(step(&edges[0]).0);
+        let mut x = ExactRational::from_f64(edge(&edges[0]).start_x);
         let mut lifted = vec![(x.clone(), latitude(edges[0].source[0].y))];
-        for edge in edges {
+        for source_edge in edges {
             x = x
-                .try_add(&ExactRational::from_dyadic(step(edge).1))
+                .try_add(&ExactRational::from_dyadic(
+                    edge(source_edge)
+                        .delta_x(frame.longitude().period())
+                        .unwrap(),
+                ))
                 .unwrap();
-            lifted.push((x.clone(), latitude(edge.source[1].y)));
+            lifted.push((x.clone(), latitude(source_edge.source[1].y)));
         }
         let net = lifted.last().unwrap().0.try_subtract(&lifted[0].0).unwrap();
         let turns = (-3_i64..=3).find(|&turn| {
@@ -6648,8 +6762,7 @@ mod tests {
         }
         if turns != 0 {
             let closure_latitude = match ring.summary.full_turn_pole()? {
-                FullTurnPole::Bounded(Pole::North) => frame.pole(),
-                FullTurnPole::Bounded(Pole::South) => -frame.pole(),
+                FullTurnPole::Bounded(pole) => frame.chart_pole_latitude(pole),
                 FullTurnPole::Ambiguous => return None,
             };
             let end = lifted.last().unwrap().0.clone();
@@ -6657,7 +6770,7 @@ mod tests {
             lifted.push((end, ExactRational::from_f64(closure_latitude)));
             lifted.push((start, ExactRational::from_f64(closure_latitude)));
         }
-        let germ_y = ExactRational::from_f64(frame.pole())
+        let germ_y = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North))
             .try_subtract(&ExactRational::from_f64(2.0_f64.powi(-60)))
             .unwrap();
         let image_radius = i64::try_from(edges.len()).unwrap().checked_add(1).unwrap();
@@ -7008,7 +7121,7 @@ mod tests {
         }
     }
 
-    fn pole_fan_degree(q: &ExactGeographicQ, pole: Pole) -> usize {
+    fn pole_fan_degree(q: &ExactGeographicQ, pole: ChartPole) -> usize {
         let node = q
             .nodes
             .iter()
@@ -7019,6 +7132,56 @@ mod tests {
         };
         end.checked_sub(*start)
             .expect("outgoing fan offsets are monotone")
+    }
+
+    #[test]
+    fn exact_q_orders_adjacent_source_rays_by_their_cross_product() {
+        let high = f64::from_bits(1.0_f64.to_bits() + 1);
+        let source = Shape::geometry_collection(vec![
+            line(&[(0.0, 0.0), (1.0, high)]),
+            line(&[(0.0, 0.0), (1.0, 1.0)]),
+        ])
+        .unwrap();
+        assert_eq!(
+            compare_source_ray_order(degrees(), &source, (0.0, 0.0), (1.0, high), (1.0, 1.0)),
+            Ordering::Greater,
+        );
+        assert_eq!(
+            compare_source_ray_order(degrees(), &source, (0.0, 0.0), (1.0, 1.0), (1.0, high)),
+            Ordering::Less,
+        );
+    }
+
+    #[test]
+    fn exact_q_orders_equal_longitude_pole_tangents_and_reverses_south() {
+        let high = f64::from_bits(1.0_f64.to_bits() + 1);
+        let north = Shape::geometry_collection(vec![
+            line(&[(0.0, 90.0), (high, 89.0)]),
+            line(&[(0.0, 90.0), (1.0, 89.0)]),
+        ])
+        .unwrap();
+        assert_eq!(
+            compare_source_ray_order(degrees(), &north, (0.0, 90.0), (high, 89.0), (1.0, 89.0)),
+            Ordering::Greater,
+        );
+        assert_eq!(
+            compare_source_ray_order(degrees(), &north, (0.0, 90.0), (1.0, 89.0), (high, 89.0)),
+            Ordering::Less,
+        );
+
+        let south = Shape::geometry_collection(vec![
+            line(&[(0.0, -90.0), (high, -89.0)]),
+            line(&[(0.0, -90.0), (1.0, -89.0)]),
+        ])
+        .unwrap();
+        assert_eq!(
+            compare_source_ray_order(degrees(), &south, (0.0, -90.0), (high, -89.0), (1.0, -89.0)),
+            Ordering::Less,
+        );
+        assert_eq!(
+            compare_source_ray_order(degrees(), &south, (0.0, -90.0), (1.0, -89.0), (high, -89.0)),
+            Ordering::Greater,
+        );
     }
 
     #[test]
@@ -7060,7 +7223,7 @@ mod tests {
         ];
         let (frame, chart) = noded_chart_for_shapes(&shapes);
         let pole_port_longitude = ExactRational::from_f64(-120.0);
-        let north_pole = ExactRational::from_f64(frame.pole());
+        let north_pole = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
         assert!(
             chart.ports.iter().any(|port| {
                 port.point.x.try_cmp(&pole_port_longitude).unwrap().is_eq()
@@ -7298,6 +7461,26 @@ mod tests {
         assert!(q.face_rows.rows_for(exterior_side).is_empty());
         assert_global_cut_event_wedges(&q);
         assert_source_transition_cycles(&q);
+
+        let topology = exact_topology(&shape);
+        for longitude in [0.0, 179.0, 180.0] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, 0.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Interior,
+                },
+            );
+        }
+        assert_eq!(
+            topology.locate_point(Point::new_raw_xy(0.0, 10.0)).unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Boundary,
+                area: Loc::Boundary,
+            },
+        );
     }
 
     #[test]
@@ -7377,7 +7560,7 @@ mod tests {
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
         let (sources, q) = q_graph(&shape);
         let (inside, outside) = source_shell_faces(&q, &sources, 0);
-        assert!(pole_fan_degree(&q, Pole::North) >= 2);
+        assert!(pole_fan_degree(&q, ChartPole::North) >= 2);
         assert_eq!(q.global_face_count, 2);
         assert_eq!(q.face_rows.rows_for(inside), &[SourceRowId(0)]);
         assert!(q.face_rows.rows_for(outside).is_empty());
@@ -7442,7 +7625,7 @@ mod tests {
         let shape = Shape::Polygon(Polygon::new(shell, vec![]));
         let (sources, q) = q_graph(&shape);
         let (left, right) = source_shell_faces(&q, &sources, 0);
-        assert!(pole_fan_degree(&q, Pole::South) >= 2);
+        assert!(pole_fan_degree(&q, ChartPole::South) >= 2);
         assert!(q.face_rows.rows_for(left).is_empty());
         assert_eq!(q.face_rows.rows_for(right), &[SourceRowId(0)]);
         assert!(
@@ -7648,6 +7831,83 @@ mod tests {
     }
 
     #[test]
+    fn exact_point_query_includes_seam_and_pole_alias_point_support() {
+        let source = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(-180.0, 5.0)),
+            Shape::Point(Point::new_raw_xy(180.0, 5.0)),
+            Shape::Point(Point::new_raw_xy(-30.0, 90.0)),
+            Shape::Point(Point::new_raw_xy(120.0, 90.0)),
+            Shape::Point(Point::new_raw_xy(-180.0, -90.0)),
+            Shape::Point(Point::new_raw_xy(47.0, -90.0)),
+        ])
+        .unwrap();
+        let topology = exact_topology(&source);
+        for point in [
+            Point::new_raw_xy(-180.0, 5.0),
+            Point::new_raw_xy(180.0, 5.0),
+            Point::new_raw_xy(-30.0, 90.0),
+            Point::new_raw_xy(120.0, 90.0),
+            Point::new_raw_xy(-180.0, -90.0),
+            Point::new_raw_xy(47.0, -90.0),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+                "source point alias {point:?}",
+            );
+        }
+        for longitude in [-180.0, 180.0] {
+            let point = Point::new_raw_xy(longitude, 6.0);
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Exterior,
+                    area: Loc::Exterior,
+                },
+                "seam latitude without source point support {point:?}",
+            );
+        }
+        assert_eq!(
+            topology
+                .locate_point(Point::new_raw_xy(0.0, 5.0))
+                .unwrap()
+                .geometry,
+            Loc::Exterior,
+        );
+    }
+
+    #[test]
+    fn chart_seam_point_on_a_crossing_line_is_interior() {
+        let source = line(&[(170.0, 0.0), (-170.0, 0.0)]);
+        let topology = exact_topology(&source);
+        for longitude in [-180.0, 180.0] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, 0.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+                "chart seam longitude {longitude}",
+            );
+        }
+        for longitude in [170.0, -170.0] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, 0.0))
+                    .unwrap()
+                    .geometry,
+                Loc::Boundary,
+                "source endpoint longitude {longitude}",
+            );
+        }
+    }
+
+    #[test]
     fn exact_point_query_uses_mod2_line_boundaries() {
         let source = Shape::geometry_collection(vec![
             Shape::LineString(
@@ -7672,14 +7932,51 @@ mod tests {
             ),
         ])
         .unwrap();
+        let topology = exact_topology(&source);
+        for (point, expected) in [
+            (Point::new_raw_xy(0.0, 0.0), Loc::Boundary),
+            (Point::new_raw_xy(1.0, 0.0), Loc::Interior),
+            (Point::new_raw_xy(2.0, 0.0), Loc::Boundary),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: expected,
+                    area: Loc::Exterior,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_line_members_cancel_their_endpoint_boundaries() {
+        let source = Shape::geometry_collection(vec![
+            line(&[(0.0, 0.0), (2.0, 0.0)]),
+            line(&[(0.0, 0.0), (2.0, 0.0)]),
+            Shape::Point(Point::new_raw_xy(4.0, 4.0)),
+        ])
+        .unwrap();
+        let topology = exact_topology(&source);
+        for point in [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+                "duplicate line support at {point:?}",
+            );
+        }
         assert_eq!(
-            exact_topology(&source)
-                .locate_point(Point::new_raw_xy(1.0, 0.0))
-                .unwrap(),
-            ExactGeographicPointLocation {
-                geometry: Loc::Interior,
-                area: Loc::Exterior,
-            }
+            topology
+                .locate_point(Point::new_raw_xy(4.0, 4.0))
+                .unwrap()
+                .geometry,
+            Loc::Interior,
         );
     }
 
@@ -7711,6 +8008,459 @@ mod tests {
                 .unwrap()
                 .geometry,
             Loc::Exterior
+        );
+        for longitude in [-181.0, 179.0, 539.0] {
+            let point = Point::new_raw_xy(longitude, 5.0);
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Interior,
+                },
+                "wrapped seam rectangle alias {point:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn exact_point_query_aggregates_overlapping_polygon_members_by_union() {
+        let source = Shape::geometry_collection(vec![
+            Shape::Polygon(Polygon::new(
+                ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
+                vec![],
+            )),
+            Shape::Polygon(Polygon::new(
+                ring(&[(2.0, 2.0), (6.0, 2.0), (6.0, 6.0), (2.0, 6.0), (2.0, 2.0)]),
+                vec![],
+            )),
+        ])
+        .unwrap();
+        let topology = exact_topology(&source);
+        assert_eq!(
+            topology.locate_point(Point::new_raw_xy(3.0, 3.0)).unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Interior,
+                area: Loc::Interior,
+            },
+        );
+        assert_eq!(
+            topology.locate_point(Point::new_raw_xy(1.0, 5.0)).unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Exterior,
+                area: Loc::Exterior,
+            },
+        );
+    }
+
+    #[test]
+    fn exact_point_query_keeps_mixed_area_curve_and_point_support_distinct() {
+        let polygon = Shape::Polygon(Polygon::new(
+            ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
+            vec![ring(&[
+                (1.0, 1.0),
+                (3.0, 1.0),
+                (3.0, 3.0),
+                (1.0, 3.0),
+                (1.0, 1.0),
+            ])],
+        ));
+        let source = Shape::geometry_collection(vec![
+            polygon,
+            line(&[(-1.0, 2.0), (2.0, 2.0), (5.0, 2.0)]),
+            Shape::Point(Point::new_raw_xy(8.0, 8.0)),
+        ])
+        .unwrap();
+        let topology = exact_topology(&source);
+        let one_ulp = 1.0_f64.next_up();
+        for (point, geometry, area) in [
+            (Point::new_raw_xy(0.5, 2.0), Loc::Interior, Loc::Interior),
+            (Point::new_raw_xy(0.0, 2.0), Loc::Boundary, Loc::Boundary),
+            (Point::new_raw_xy(1.0, 2.0), Loc::Boundary, Loc::Boundary),
+            (Point::new_raw_xy(2.0, 2.0), Loc::Interior, Loc::Exterior),
+            (Point::new_raw_xy(3.0, 2.0), Loc::Boundary, Loc::Boundary),
+            (Point::new_raw_xy(4.0, 2.0), Loc::Boundary, Loc::Boundary),
+            (Point::new_raw_xy(-1.0, 2.0), Loc::Boundary, Loc::Exterior),
+            (Point::new_raw_xy(-0.5, 2.0), Loc::Interior, Loc::Exterior),
+            (Point::new_raw_xy(2.0, 1.5), Loc::Exterior, Loc::Exterior),
+            (Point::new_raw_xy(3.5, 2.0), Loc::Interior, Loc::Interior),
+            (Point::new_raw_xy(5.0, 2.0), Loc::Boundary, Loc::Exterior),
+            (Point::new_raw_xy(8.0, 8.0), Loc::Interior, Loc::Exterior),
+            (
+                Point::new_raw_xy(one_ulp, 1.0),
+                Loc::Boundary,
+                Loc::Boundary,
+            ),
+            (
+                Point::new_raw_xy(1.0, one_ulp),
+                Loc::Boundary,
+                Loc::Boundary,
+            ),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation { geometry, area },
+                "source support at {point:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn exact_point_query_keeps_an_adjacent_float_source_endpoint() {
+        let endpoint = (-170.0_f64).next_down();
+        let source = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, 0.0),
+                (endpoint, 0.0),
+                (endpoint, 10.0),
+                (170.0, 10.0),
+                (170.0, 0.0),
+            ]),
+            vec![],
+        ));
+        assert_eq!(
+            exact_topology(&source)
+                .locate_point(Point::new_raw_xy(endpoint, 0.0))
+                .unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Boundary,
+                area: Loc::Boundary,
+            },
+        );
+    }
+
+    #[test]
+    fn exact_point_query_keeps_a_seam_donut_outside_its_hole() {
+        let source = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, -10.0),
+                (-170.0, -10.0),
+                (-170.0, 10.0),
+                (170.0, 10.0),
+                (170.0, -10.0),
+            ]),
+            vec![ring(&[
+                (175.0, -5.0),
+                (-175.0, -5.0),
+                (-175.0, 5.0),
+                (175.0, 5.0),
+                (175.0, -5.0),
+            ])],
+        ));
+        let topology = exact_topology(&source);
+        for longitude in [-180.0, 180.0] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, -10.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Boundary,
+                },
+                "lower seam shell boundary at longitude {longitude}",
+            );
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, 0.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Exterior,
+                    area: Loc::Exterior,
+                },
+            );
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, 5.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Boundary,
+                },
+            );
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, 8.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Interior,
+                },
+            );
+        }
+        assert_eq!(
+            topology
+                .locate_point(Point::new_raw_xy(179.0, 8.0))
+                .unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Interior,
+                area: Loc::Interior,
+            },
+        );
+        assert_eq!(
+            topology
+                .locate_point(Point::new_raw_xy(180.0, 10.0))
+                .unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Boundary,
+                area: Loc::Boundary,
+            },
+        );
+    }
+
+    #[test]
+    fn exact_point_query_preserves_original_mixed_seam_hole_and_cap_support() {
+        let seam_polygon = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, 0.0),
+                (-170.0, 0.0),
+                (-170.0, 12.0),
+                (170.0, 12.0),
+                (170.0, 0.0),
+            ]),
+            vec![ring(&[
+                (175.0, 3.0),
+                (-175.0, 3.0),
+                (-175.0, 8.0),
+                (175.0, 8.0),
+                (175.0, 3.0),
+            ])],
+        ));
+        let north_cap = Shape::Polygon(Polygon::new(
+            ring(&[
+                (-180.0, 80.0),
+                (-90.0, 80.0),
+                (0.0, 80.0),
+                (90.0, 80.0),
+                (180.0, 80.0),
+                (-180.0, 80.0),
+            ]),
+            vec![],
+        ));
+        let source = Shape::geometry_collection(vec![
+            seam_polygon,
+            north_cap,
+            line(&[(175.0, 6.0), (180.0, 6.0), (-175.0, 6.0)]),
+        ])
+        .unwrap();
+        let topology = exact_topology(&source);
+        for longitude in [-180.0, 180.0] {
+            for (latitude, geometry, area) in [
+                (0.0, Loc::Boundary, Loc::Boundary),
+                (3.0, Loc::Boundary, Loc::Boundary),
+                (5.0, Loc::Exterior, Loc::Exterior),
+                (6.0, Loc::Interior, Loc::Exterior),
+                (8.0, Loc::Boundary, Loc::Boundary),
+                (12.0, Loc::Boundary, Loc::Boundary),
+            ] {
+                assert_eq!(
+                    topology
+                        .locate_point(Point::new_raw_xy(longitude, latitude))
+                        .unwrap(),
+                    ExactGeographicPointLocation { geometry, area },
+                    "seam source at ({longitude}, {latitude})",
+                );
+            }
+        }
+        assert_eq!(
+            topology
+                .locate_point(Point::new_raw_xy(179.0, 10.0))
+                .unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Interior,
+                area: Loc::Interior,
+            },
+        );
+        for (point, expected) in [
+            (Point::new_raw_xy(0.0, 5.0), ExactGeographicPointLocation {
+                geometry: Loc::Exterior,
+                area: Loc::Exterior,
+            }),
+            (
+                Point::new_raw_xy(37.0, 80.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Boundary,
+                },
+            ),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                expected,
+                "off-seam source probe {point:?}",
+            );
+        }
+        for longitude in [-120.0, 0.0, 37.0, 120.0] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, 85.0))
+                    .unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Interior,
+                },
+                "north-cap interior at longitude {longitude}",
+            );
+        }
+        for (longitude, latitude, geometry, area) in [
+            (0.0, 90.0, Loc::Interior, Loc::Interior),
+            (-137.0, 90.0, Loc::Interior, Loc::Interior),
+            (223.0, 90.0, Loc::Interior, Loc::Interior),
+            (-137.0, -90.0, Loc::Exterior, Loc::Exterior),
+        ] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(longitude, latitude))
+                    .unwrap(),
+                ExactGeographicPointLocation { geometry, area },
+                "pole location at ({longitude}, {latitude})",
+            );
+        }
+        for point in [
+            Point::new_raw_xy(175.0, 6.0),
+            Point::new_raw_xy(-175.0, 6.0),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Boundary,
+                },
+                "line endpoint on the source hole boundary {point:?}",
+            );
+        }
+        for point in [
+            Point::new_raw_xy(175.0, 3.0),
+            Point::new_raw_xy(-175.0, 3.0),
+            Point::new_raw_xy(-175.0, 8.0),
+            Point::new_raw_xy(175.0, 8.0),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Boundary,
+                },
+                "source hole vertex {point:?}",
+            );
+        }
+        let one_ulp = 1.0_f64.next_up();
+        for point in [
+            Point::new_raw_xy(one_ulp, 1.0),
+            Point::new_raw_xy(1.0, one_ulp),
+        ] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Exterior,
+                    area: Loc::Exterior,
+                },
+                "one-ULP exterior probe {point:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn exact_point_query_resolves_source_nodes_and_crossings() {
+        let planar = Shape::geometry_collection(vec![
+            Shape::Polygon(Polygon::new(
+                ring(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
+                vec![],
+            )),
+            line(&[(-1.0, 1.0), (1.0, 1.0), (3.0, 1.0)]),
+        ])
+        .unwrap();
+        let planar_topology = exact_topology(&planar);
+        for (point, geometry, area) in [
+            (Point::new_raw_xy(0.0, 1.0), Loc::Boundary, Loc::Boundary),
+            (Point::new_raw_xy(1.0, 1.0), Loc::Interior, Loc::Interior),
+            (Point::new_raw_xy(2.0, 1.0), Loc::Boundary, Loc::Boundary),
+            (Point::new_raw_xy(-1.0, 1.0), Loc::Boundary, Loc::Exterior),
+            (Point::new_raw_xy(-0.5, 1.0), Loc::Interior, Loc::Exterior),
+            (Point::new_raw_xy(3.0, 1.0), Loc::Boundary, Loc::Exterior),
+        ] {
+            assert_eq!(
+                planar_topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation { geometry, area },
+                "planar source node at {point:?}",
+            );
+        }
+
+        let geographic = Shape::geometry_collection(vec![
+            Shape::Polygon(Polygon::new(
+                ring(&[
+                    (170.0, 0.0),
+                    (-170.0, 0.0),
+                    (-170.0, 10.0),
+                    (170.0, 10.0),
+                    (170.0, 0.0),
+                ]),
+                vec![],
+            )),
+            line(&[(175.0, 5.0), (180.0, 5.0), (-175.0, 5.0)]),
+        ])
+        .unwrap();
+        let geographic_topology = exact_topology(&geographic);
+        for (point, geometry, area) in [
+            (Point::new_raw_xy(0.0, 5.0), Loc::Exterior, Loc::Exterior),
+            (Point::new_raw_xy(170.0, 5.0), Loc::Boundary, Loc::Boundary),
+            (Point::new_raw_xy(175.0, 5.0), Loc::Interior, Loc::Interior),
+            (Point::new_raw_xy(180.0, 5.0), Loc::Interior, Loc::Interior),
+            (Point::new_raw_xy(-175.0, 5.0), Loc::Interior, Loc::Interior),
+            (Point::new_raw_xy(180.0, 0.0), Loc::Boundary, Loc::Boundary),
+        ] {
+            assert_eq!(
+                geographic_topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation { geometry, area },
+                "geographic source node at {point:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_polygon_members_aggregate_area_by_union() {
+        let square = Shape::Polygon(Polygon::new(
+            ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
+            vec![],
+        ));
+        for copies in [2, 3] {
+            let source = Shape::geometry_collection(vec![square.clone(); copies]).unwrap();
+            let topology = exact_topology(&source);
+            assert_eq!(
+                topology.locate_point(Point::new_raw_xy(2.0, 2.0)).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Interior,
+                },
+            );
+            assert_eq!(
+                topology.locate_point(Point::new_raw_xy(2.0, 0.0)).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Boundary,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn retraced_collapsed_shell_keeps_curve_support_without_area() {
+        let source = Shape::Polygon(Polygon::new(
+            ring(&[(0.0, 0.0), (4.0, 0.0), (0.0, 0.0), (0.0, 0.0)]),
+            vec![],
+        ));
+        let topology = exact_topology(&source);
+        assert_eq!(
+            topology.locate_point(Point::new_raw_xy(2.0, 0.0)).unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Interior,
+                area: Loc::Exterior,
+            },
+        );
+        assert_eq!(
+            topology.locate_point(Point::new_raw_xy(2.0, 1.0)).unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Exterior,
+                area: Loc::Exterior,
+            },
         );
     }
 
@@ -7747,6 +8497,15 @@ mod tests {
                 .geometry,
             Loc::Exterior
         );
+        assert_eq!(
+            donut_topology
+                .locate_point(Point::new_raw_xy(5.0, 3.0))
+                .unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Boundary,
+                area: Loc::Boundary,
+            },
+        );
 
         let cap = Shape::Polygon(Polygon::new(
             ring(&[
@@ -7766,6 +8525,15 @@ mod tests {
                 .geometry,
             Loc::Interior
         );
+        for longitude in [-120.0, 120.0] {
+            assert_eq!(
+                cap_topology
+                    .locate_point(Point::new_raw_xy(longitude, 85.0))
+                    .unwrap()
+                    .geometry,
+                Loc::Interior,
+            );
+        }
         assert_eq!(
             cap_topology
                 .locate_point(Point::new_raw_xy(0.0, 0.0))
@@ -7780,6 +8548,124 @@ mod tests {
                 .geometry,
             Loc::Interior
         );
+    }
+
+    #[test]
+    fn polar_hole_excludes_its_cap_and_the_pole() {
+        let source = Shape::Polygon(Polygon::new(
+            ring(&[
+                (0.0, 70.0),
+                (60.0, 70.0),
+                (120.0, 70.0),
+                (180.0, 70.0),
+                (-120.0, 70.0),
+                (-60.0, 70.0),
+                (0.0, 70.0),
+            ]),
+            vec![ring(&[
+                (0.0, 80.0),
+                (60.0, 80.0),
+                (120.0, 80.0),
+                (180.0, 80.0),
+                (-120.0, 80.0),
+                (-60.0, 80.0),
+                (0.0, 80.0),
+            ])],
+        ));
+        let topology = exact_topology(&source);
+        assert_eq!(
+            topology
+                .locate_point(Point::new_raw_xy(0.0, 75.0))
+                .unwrap()
+                .geometry,
+            Loc::Interior,
+        );
+        for point in [Point::new_raw_xy(0.0, 85.0), Point::new_raw_xy(0.0, 90.0)] {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Exterior,
+                    area: Loc::Exterior,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn native_grad_full_turn_ring_uses_its_admitted_pole() {
+        let unit = AngularFactor::try_new("test grads", std::f64::consts::TAU / 400.0).unwrap();
+        let frame = GeographicFrame::try_new(unit, unit, 0.0).unwrap();
+        let source = Shape::Polygon(Polygon::new(
+            ring(&[
+                (-200.0, 80.0),
+                (-100.0, 80.0),
+                (0.0, 80.0),
+                (100.0, 80.0),
+                (200.0, 80.0),
+                (-200.0, 80.0),
+            ]),
+            vec![],
+        ));
+        let view = ScalarGeographicView::try_new(frame, &source).expect("native grad cap admits");
+        let topology = ExactGeographicTopology::from_views(frame, std::iter::once(view)).unwrap();
+        assert_eq!(frame.pole(), 100.0);
+        assert_eq!(
+            topology
+                .locate_point(Point::new_raw_xy(0.0, frame.pole()))
+                .unwrap()
+                .geometry,
+            Loc::Interior,
+        );
+        assert_eq!(
+            topology
+                .locate_point(Point::new_raw_xy(0.0, 70.0))
+                .unwrap()
+                .geometry,
+            Loc::Exterior,
+        );
+    }
+
+    #[test]
+    fn separate_nearby_components_do_not_fill_the_gap_between_them() {
+        let left = Shape::Polygon(Polygon::new(
+            ring(&[
+                (-1.01e-7, -1e-9),
+                (-9.9e-8, -1e-9),
+                (-9.9e-8, 1e-9),
+                (-1.01e-7, 1e-9),
+                (-1.01e-7, -1e-9),
+            ]),
+            vec![],
+        ));
+        let right = Shape::Polygon(Polygon::new(
+            ring(&[
+                (9.9e-8, -1e-9),
+                (1.01e-7, -1e-9),
+                (1.01e-7, 1e-9),
+                (9.9e-8, 1e-9),
+                (9.9e-8, -1e-9),
+            ]),
+            vec![],
+        ));
+        let source = Shape::geometry_collection(vec![left, right]).unwrap();
+        let topology = exact_topology(&source);
+        assert_eq!(
+            topology.locate_point(Point::new_raw_xy(0.0, 0.0)).unwrap(),
+            ExactGeographicPointLocation {
+                geometry: Loc::Exterior,
+                area: Loc::Exterior,
+            },
+        );
+        for x in [-1.0e-7, 1.0e-7] {
+            assert_eq!(
+                topology
+                    .locate_point(Point::new_raw_xy(x, 0.0))
+                    .unwrap()
+                    .geometry,
+                Loc::Interior,
+                "component interior at x={x}",
+            );
+        }
     }
 
     #[test]
@@ -7894,6 +8780,25 @@ mod tests {
         ] {
             assert_eq!(topology.classify_rectangle(bounds).unwrap(), Some(expected));
         }
+        let adjacent_max = 1.0_f64.next_up();
+        let adjacent_bounds = Bounds::new_raw(1.0, 0.0, adjacent_max, 1.0);
+        assert_eq!(f64::midpoint(1.0, adjacent_max), 1.0);
+        let adjacent_source = Shape::Polygon(Polygon::new(
+            ring(&[
+                (1.0, 0.0),
+                (adjacent_max, 0.0),
+                (adjacent_max, 1.0),
+                (1.0, 1.0),
+                (1.0, 0.0),
+            ]),
+            vec![],
+        ));
+        assert_eq!(
+            exact_topology(&adjacent_source)
+                .classify_rectangle(adjacent_bounds)
+                .unwrap(),
+            None,
+        );
         assert_eq!(
             topology
                 .classify_rectangle(Bounds::new_raw(-180.0, 1.0, -179.0, 2.0))
@@ -7930,6 +8835,62 @@ mod tests {
                 .unwrap(),
             Some(ExactGeographicRectangleLocation::Boundary)
         );
+        assert_eq!(
+            donut_topology
+                .classify_rectangle(Bounds::new_raw(3.0, 3.0, 7.0, 7.0))
+                .unwrap(),
+            Some(ExactGeographicRectangleLocation::Boundary)
+        );
+
+        let line_in_hole =
+            Shape::geometry_collection(vec![donut, line(&[(4.0, 5.0), (6.0, 5.0)])]).unwrap();
+        assert_eq!(
+            exact_topology(&line_in_hole)
+                .classify_rectangle(Bounds::new_raw(3.0, 3.0, 7.0, 7.0))
+                .unwrap(),
+            Some(ExactGeographicRectangleLocation::Boundary)
+        );
+
+        let seam = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, -10.0),
+                (-170.0, -10.0),
+                (-170.0, 10.0),
+                (170.0, 10.0),
+                (170.0, -10.0),
+            ]),
+            vec![],
+        ));
+        let seam_topology = exact_topology(&seam);
+        assert_eq!(
+            seam_topology
+                .classify_rectangle(Bounds::new_raw(175.0, -5.0, 179.0, 5.0))
+                .unwrap(),
+            Some(ExactGeographicRectangleLocation::Interior)
+        );
+        assert_eq!(
+            seam_topology
+                .classify_rectangle(Bounds::new_raw(-5.0, -5.0, 5.0, 5.0))
+                .unwrap(),
+            Some(ExactGeographicRectangleLocation::Outside)
+        );
+
+        let polar = Shape::Polygon(Polygon::new(
+            ring(&[
+                (-10.0, 80.0),
+                (10.0, 80.0),
+                (10.0, 90.0),
+                (-10.0, 90.0),
+                (-10.0, 80.0),
+            ]),
+            vec![],
+        ));
+        assert_eq!(
+            exact_topology(&polar)
+                .classify_rectangle(Bounds::new_raw(0.0, 81.0, 1.0, 82.0))
+                .unwrap(),
+            Some(ExactGeographicRectangleLocation::Interior)
+        );
 
         let line = Shape::LineString(
             LineSeq::try_new(
@@ -7961,6 +8922,13 @@ mod tests {
                 .unwrap(),
             None
         );
+        for bounds in [
+            Bounds::new_raw(-180.0, 1.0, -179.0, 2.0),
+            Bounds::new_raw(0.0, 85.0, 10.0, 90.0),
+            Bounds::new_raw(-180.0, -1.0, 180.0, 1.0),
+        ] {
+            assert_eq!(topology.classify_rectangle(bounds).unwrap(), None);
+        }
     }
 
     #[test]
@@ -8041,6 +9009,139 @@ mod tests {
             Loc::Exterior
         );
         assert_eq!(sparse_topology.q.spatial_index.candidate_visits(), 0);
+    }
+
+    fn exact_topology_for_line_index_queries() -> (
+        ExactGeographicTopology,
+        [(Point, ExactGeographicPointLocation); 9],
+    ) {
+        let source = Shape::geometry_collection(vec![
+            line(&[(-10.0, -1.0), (10.0, 3.0)]),
+            line(&[(170.0, -2.0), (-170.0, 4.0)]),
+            line(&[(-180.0, -3.0), (180.0, 3.0)]),
+        ])
+        .unwrap();
+        let topology = exact_topology(&source);
+        let probes = [
+            (Point::new_raw_xy(0.0, 1.0), ExactGeographicPointLocation {
+                geometry: Loc::Interior,
+                area: Loc::Exterior,
+            }),
+            (
+                Point::new_raw_xy(360.0, 1.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+            ),
+            (
+                Point::new_raw_xy(180.0, 0.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+            ),
+            (
+                Point::new_raw_xy(-180.0, 0.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+            ),
+            (
+                Point::new_raw_xy(180.0, 1.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+            ),
+            (
+                Point::new_raw_xy(-180.0, 1.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Interior,
+                    area: Loc::Exterior,
+                },
+            ),
+            (
+                Point::new_raw_xy(180.0, 3.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Boundary,
+                    area: Loc::Exterior,
+                },
+            ),
+            (
+                Point::new_raw_xy(23.0, 30.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Exterior,
+                    area: Loc::Exterior,
+                },
+            ),
+            (
+                Point::new_raw_xy(-123.0, 90.0),
+                ExactGeographicPointLocation {
+                    geometry: Loc::Exterior,
+                    area: Loc::Exterior,
+                },
+            ),
+        ];
+        (topology, probes)
+    }
+
+    #[test]
+    fn exact_point_queries_classify_source_and_seam_linework() {
+        let (topology, probes) = exact_topology_for_line_index_queries();
+        for (point, expected) in probes {
+            assert_eq!(
+                topology.locate_point(point).unwrap(),
+                expected,
+                "exact location at {point:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn exact_point_queries_reuse_the_index_without_allocations() {
+        let (topology, probes) = exact_topology_for_line_index_queries();
+        let ((), allocations) = crate::test_support::allocation_count(|| {
+            for _ in 0..8 {
+                for (point, expected) in probes {
+                    assert_eq!(topology.locate_point(point).unwrap(), expected);
+                }
+            }
+        });
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn exact_high_degree_absent_line_queries_reuse_the_index_without_allocations() {
+        let lines = (0..64)
+            .map(|index| {
+                let offset = (f64::from(index) + 0.5) / 64.0 - 0.5;
+                line(&[(-1.0, -1.0 + offset), (1.0, 1.0 + offset)])
+            })
+            .collect();
+        let source = Shape::geometry_collection(lines).unwrap();
+        let topology = exact_topology(&source);
+        let points = [
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(360.0, 0.0),
+            Point::new_raw_xy(180.0, 30.0),
+            Point::new_raw_xy(12.0, 30.0),
+        ];
+        let ((), allocations) = crate::test_support::allocation_count(|| {
+            for _ in 0..8 {
+                for point in points {
+                    assert_eq!(
+                        topology.locate_point(point).unwrap(),
+                        ExactGeographicPointLocation {
+                            geometry: Loc::Exterior,
+                            area: Loc::Exterior,
+                        },
+                    );
+                }
+            }
+        });
+        assert_eq!(allocations, 0);
     }
 
     #[test]
@@ -8221,8 +9322,14 @@ mod tests {
 
     fn quotient_union_polygons(topology: &ExactGeographicTopology) -> usize {
         polygon_count(
-            &exact_geographic_overlay(topology, OverlayOp::Union, CoordinateAxes::XY, false)
-                .unwrap(),
+            &exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+                topology,
+                OverlayOp::Union,
+                CoordinateAxes::XY,
+                false,
+                None,
+            )
+            .unwrap(),
         )
     }
 

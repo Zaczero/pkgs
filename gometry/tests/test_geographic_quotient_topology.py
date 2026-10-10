@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 import gometry as gm
+import numpy as np
 import pytest
 
-from tests._support import ids, pair_rows
+from tests._support import WEST_RADIAN_SOUTH_GRAD_CRS, ids, pair_rows
 
 
 def seam_box() -> gm.Polygon:
@@ -165,7 +166,7 @@ def _densify_box_edges(
     )
     rings = []
     for polygon in polygons:
-        coordinates = gm.get_coordinates(polygon).tolist()
+        coordinates = np.asarray(polygon.coords, dtype=np.float64).tolist()
         dense = []
         for start, end in pairwise(coordinates):
             dense.append((float(start[0]), float(start[1])))
@@ -599,10 +600,15 @@ def test_country_union_rounding_residuals_are_nearest_even_crossings() -> None:
             zip(source_data['features'], countries, strict=True)
         )
     }
+    periodic_country_bounds = {
+        'RU': (19.4041722, 41.1850968, -168.976944, 82.0546231),
+        'US': (144.4137024, -14.760345, -64.3562671, 71.5729219),
+        'FJ': (174.4230867, -21.9420593, -178.011665, -12.2865087),
+    }
     for code in ('RU', 'US', 'FJ'):
         country, is_valid = countries_by_code[code]
         assert country.geometry_type == 'MultiPolygon'
-        assert country.bounds[0::2] == (-180.0, 180.0)
+        assert country.bounds == pytest.approx(periodic_country_bounds[code])
         assert is_valid
 
     source_index = gm.SpatialIndex(countries)
@@ -779,6 +785,119 @@ def test_canonical_full_band_union_keeps_its_chart_region(ccw: bool) -> None:
         assert not gm.covers(result, gm.Point(longitude, 85.0, crs=4326))
 
 
+def test_oriented_mixed_unit_full_band_overlay_keeps_its_source_boundary() -> None:
+    band = gm.box(
+        -math.pi,
+        -10.0 * 10.0 / 9.0,
+        math.pi,
+        10.0 * 10.0 / 9.0,
+        crs=WEST_RADIAN_SOUTH_GRAD_CRS,
+    )
+    window = gm.box(
+        -math.radians(40.0),
+        -5.0 * 10.0 / 9.0,
+        -math.radians(20.0),
+        5.0 * 10.0 / 9.0,
+        crs=WEST_RADIAN_SOUTH_GRAD_CRS,
+    )
+    result = gm.intersection(band, window)
+    interior = gm.Point(-math.radians(30.0), 0.0, crs=WEST_RADIAN_SOUTH_GRAD_CRS)
+    exterior = gm.Point(
+        -math.radians(30.0), -20.0 * 10.0 / 9.0, crs=WEST_RADIAN_SOUTH_GRAD_CRS
+    )
+
+    assert gm.equals(result, window)
+    assert gm.covers(band, interior)
+    assert gm.covers(result, interior)
+    assert not gm.covers(band, exterior)
+
+
+def test_canceled_parallel_levels_do_not_fill_the_intervening_band() -> None:
+    polygon = gm.Polygon(
+        [
+            (0, 10),
+            (360, 10),
+            (360, 15),
+            (0, 15),
+            (0, 20),
+            (360, 20),
+            (360, 0),
+            (0, 0),
+            (0, 10),
+        ],
+        crs=4326,
+    )
+    probes = gm.GeometryArray([
+        gm.Point(90, 5, crs=4326),
+        gm.Point(90, 12, crs=4326),
+        gm.Point(90, 17, crs=4326),
+    ])
+
+    assert gm.covers(polygon, gm.Point(90, 5, crs=4326))
+    assert not gm.covers(polygon, gm.Point(90, 12, crs=4326))
+    assert gm.covers(polygon, gm.Point(90, 17, crs=4326))
+    assert gm.covers(polygon, probes).tolist() == [True, False, True]
+
+
+def test_geographic_bounds_use_primitive_periodic_support_across_storage_paths() -> (
+    None
+):
+    def width(bounds: tuple[float, float, float, float]) -> float:
+        return (bounds[2] - bounds[0]) % 360.0
+
+    cloud = gm.MultiPoint([(0, 0), (120, 0), (-120, 0), (180, 0)], crs=4326)
+    assert width(cloud.bounds) == pytest.approx(240.0)
+    assert gm.Point(180, 3, crs=4326).bounds == (-180.0, 3.0, -180.0, 3.0)
+    assert gm.Point(-180, 3, crs=4326).bounds == (-180.0, 3.0, -180.0, 3.0)
+
+    packed = gm.points(
+        [0.0, 120.0, -120.0, 180.0, 999.0],
+        [0.0, 0.0, 0.0, 0.0, 999.0],
+        crs=4326,
+    )
+    nullable = packed._with_missing([False, False, False, False, True])
+    for selected in (
+        nullable,
+        nullable[:],
+        nullable[[2, 0, 3, 1, 4]],
+    ):
+        assert width(selected.total_bounds) == pytest.approx(240.0)
+
+    mixed = gm.GeometryArray(
+        [
+            gm.MultiPoint([(0, 0), (120, 0), (-120, 0)], crs=4326),
+            gm.Point(180, 0, crs=4326),
+        ],
+        crs=4326,
+    )
+    assert width(mixed.total_bounds) == pytest.approx(240.0)
+
+
+def test_packed_geographic_polygon_bounds_keep_periodic_support_on_windows_and_gathers() -> (
+    None
+):
+    seam = gm.Polygon(
+        [(170.0, 0.0), (-170.0, 0.0), (-170.0, 10.0), (170.0, 10.0)],
+        crs=4326,
+    )
+    ordinary = gm.box(10.0, 10.0, 20.0, 20.0, crs=4326)
+    packed = gm.GeometryArray([seam, ordinary, seam], crs=4326)
+    expected = (170.0, 0.0, -170.0, 10.0)
+    selections = (
+        packed[:1],
+        packed[[2, 0]],
+        packed._with_missing([False, True, False]),
+    )
+
+    for selected in selections:
+        assert selected.total_bounds == expected
+        for index, missing in enumerate(selected.is_missing):
+            if missing:
+                assert all(math.isnan(float(value)) for value in selected.bounds[index])
+            else:
+                assert tuple(selected.bounds[index]) == expected
+
+
 def test_south_full_turn_ring_emits_its_polar_shell() -> None:
     cap = gm.Polygon([(0, -80), (90, -80), (180, -80), (-90, -80), (0, -80)], crs=4326)
 
@@ -904,14 +1023,16 @@ def test_quotient_topology_ignores_z_and_m_ordinates() -> None:
 
 
 def test_epsg_4807_pole_index_candidate_reaches_exact_refinement() -> None:
-    pole = 100.0
-    for _ in range(7):
-        pole = math.nextafter(pole, math.inf)
+    pole = math.nextafter(100.0, math.inf)
     north = gm.Point(0, pole, crs=4807)
     alternate_spelling = gm.Point(200, pole, crs=4807)
     index = gm.SpatialIndex([north])
     assert ids(index.candidates(alternate_spelling)) == [0]
     assert ids(index.query(alternate_spelling, predicate='intersects')) == [0]
+
+    outside_pole = math.nextafter(math.nextafter(100.0, math.inf), math.inf)
+    with pytest.raises(gm.InvalidGeometryError, match='latitude'):
+        gm.SpatialIndex([gm.Point(0, outside_pole, crs=4807)])
 
 
 def test_full_turn_self_relation_keeps_the_closed_area_boundary() -> None:

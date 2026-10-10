@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
-use super::{GeographicDiagnostic, GeographicError};
+use super::{GeodeticPole, GeographicDiagnostic, GeographicError};
 use crate::geometry::ShapeOwnerKey;
 use crate::{GeometryErrorKind, Shape};
 
@@ -29,7 +29,6 @@ pub(crate) fn geographic_admission_error(diagnostic: &GeographicDiagnostic) -> c
             }
         },
         GeographicError::InvalidAngularFactor { .. }
-        | GeographicError::InvalidSweep { .. }
         | GeographicError::ChartTurnOverflow
         | GeographicError::AmbiguousFullTurnRing { .. } => {
             GeometryErrorKind::message(diagnostic.to_string())
@@ -64,10 +63,10 @@ pub(crate) fn normalize_accepted_latitude(latitude: f64) -> f64 {
 /// Physical-pole identity after the geographic admission normalization.
 /// Longitude is intentionally absent: every longitude spelling at either
 /// normalized pole is the same spherical point.
-pub(crate) fn normalized_geographic_pole(latitude: f64) -> Option<bool> {
+pub(crate) fn normalized_geographic_pole(latitude: f64) -> Option<GeodeticPole> {
     match normalize_accepted_latitude(latitude) {
-        MAX_LATITUDE => Some(true),
-        MIN_LATITUDE => Some(false),
+        MAX_LATITUDE => Some(GeodeticPole::North),
+        MIN_LATITUDE => Some(GeodeticPole::South),
         _ => None,
     }
 }
@@ -133,17 +132,51 @@ fn normalize_grid_shape(shape: &Shape, collections: &mut HashMap<ShapeOwnerKey, 
     }
 }
 
-/// Earth's authalic radius in meters — the sphere model the H3 backend uses
-/// for cell areas, shared by the S2 cell area so the two grids compare.
+/// Earth's authalic radius in meters, used by H3 and S2 cell-area calculations.
 pub(crate) const EARTH_AUTHALIC_RADIUS_M: f64 = 6_371_007.180_918_475;
 
-/// Spherical area (m²) of a lon/lat rectangle on the authalic Earth:
-/// `R² * Δλ * (sin φ2 - sin φ1)` — exact for the sphere, the same frame
-/// the H3/S2 cell areas use, so systems compare.
+/// WGS84 ellipsoidal area (m²) of a longitude/latitude rectangle.
 pub(crate) fn lonlat_rect_area_m2(bounds: crate::geometry::Bounds) -> f64 {
-    let width = (bounds.maxx() - bounds.minx()).to_radians();
-    let band = bounds.maxy().to_radians().sin() - bounds.miny().to_radians().sin();
-    EARTH_AUTHALIC_RADIUS_M * EARTH_AUTHALIC_RADIUS_M * width * band
+    let south_degrees = bounds.miny();
+    let north_degrees = bounds.maxy();
+    let latitude_delta_degrees = north_degrees - south_degrees;
+    let latitude_delta = latitude_delta_degrees.to_radians();
+
+    // Avoid subtracting endpoint q values, and derive the midpoint cosine
+    // from colatitude in one-sided bands so narrow polar cells stay resolved.
+    let cosine_midpoint = if south_degrees >= 0.0 {
+        ((90.0 - north_degrees) + latitude_delta_degrees / 2.0)
+            .to_radians()
+            .sin()
+    } else if north_degrees <= 0.0 {
+        ((90.0 + south_degrees) + latitude_delta_degrees / 2.0)
+            .to_radians()
+            .sin()
+    } else {
+        f64::midpoint(south_degrees, north_degrees)
+            .to_radians()
+            .cos()
+    };
+    let delta_sine = 2.0 * cosine_midpoint * (latitude_delta / 2.0).sin();
+    let sine_south = south_degrees.to_radians().sin();
+    let sine_north = north_degrees.to_radians().sin();
+
+    let flattening = crate::crs::WGS84_F;
+    let eccentricity_squared = flattening * (2.0 - flattening);
+    let eccentricity = eccentricity_squared.sqrt();
+    let endpoint_product = sine_south * sine_north;
+    let atanh_denominator = 1.0 - eccentricity_squared * endpoint_product;
+    // This is q(north) - q(south) with the rational and atanh difference
+    // identities applied before rounding.
+    let rational_difference = delta_sine * (1.0 + eccentricity_squared * endpoint_product)
+        / ((1.0 - eccentricity_squared * sine_south * sine_south)
+            * (1.0 - eccentricity_squared * sine_north * sine_north));
+    let atanh_difference = (eccentricity * delta_sine / atanh_denominator).atanh() / eccentricity;
+    let authalic_q_difference =
+        (1.0 - eccentricity_squared) * (rational_difference + atanh_difference);
+    let longitude_width = (bounds.maxx() - bounds.minx()).to_radians();
+
+    crate::crs::WGS84_A * crate::crs::WGS84_A * longitude_width * authalic_q_difference / 2.0
 }
 
 pub(crate) fn validate_lonlat_shape(shape: &Shape) -> crate::error::Result<()> {

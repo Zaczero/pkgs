@@ -442,9 +442,9 @@ fn line_vertex_classes(
                 let collapsed_longitude = super::super::exact::local_longitude_edge(
                     topology.sources.frame,
                     edge.source[0].x,
-                    edge.source[1].x,
-                )?
-                .1
+                    edge.retained_longitude(),
+                )
+                .delta_x(topology.sources.frame.longitude().period())?
                 .is_zero();
                 let collapsed_pole = topology
                     .q
@@ -562,9 +562,9 @@ fn ring_rules(topology: &ExactGeographicTopology) -> Result<Vec<RingRules>> {
             let delta = super::super::exact::local_longitude_edge(
                 frame,
                 edge.source[0].x,
-                edge.source[1].x,
-            )?
-            .1;
+                edge.retained_longitude(),
+            )
+            .delta_x(frame.longitude().period())?;
             let collapsed = start_node == end_node
                 && (delta.is_zero()
                     || topology
@@ -856,11 +856,21 @@ fn node_witness(topology: &ExactGeographicTopology, node: QNodeId) -> Result<Exa
                 )),
                 ExactQuotientKey::NorthPole => Ok(ExactChartPoint::from_rationals(
                     ExactRational::zero(),
-                    ExactRational::from_f64(topology.sources.frame.pole()),
+                    ExactRational::from_f64(
+                        topology
+                            .sources
+                            .frame
+                            .chart_pole_latitude(crate::geographic::ChartPole::North),
+                    ),
                 )),
                 ExactQuotientKey::SouthPole => Ok(ExactChartPoint::from_rationals(
                     ExactRational::zero(),
-                    ExactRational::from_f64(-topology.sources.frame.pole()),
+                    ExactRational::from_f64(
+                        topology
+                            .sources
+                            .frame
+                            .chart_pole_latitude(crate::geographic::ChartPole::South),
+                    ),
                 )),
             }
         },

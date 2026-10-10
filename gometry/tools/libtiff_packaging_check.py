@@ -177,7 +177,7 @@ def expect_dirty_rejected(path: Path, label: str) -> None:
 
 def sdist_check(path: Path) -> None:
     sys.path.insert(0, str(ROOT / 'tools'))
-    from wheel_smoke import inspect_libtiff_sdist
+    from artifact_content import inspect_libtiff_sdist
 
     inspect_libtiff_sdist(path)
 

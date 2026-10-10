@@ -11,8 +11,53 @@ fn degrees() -> GeographicFrame {
     frame(std::f64::consts::PI / 180.0)
 }
 
+#[test]
+fn chart_and_geodetic_poles_remain_distinct_for_southward_latitude_axes() {
+    let unit = factor(std::f64::consts::PI / 180.0);
+    let frame = GeographicFrame::try_new_with_orientation(
+        unit,
+        unit,
+        0.0,
+        GeographicAxisOrientation::from_axis_directions(true, false),
+    )
+    .unwrap();
+    assert_eq!(frame.chart_pole_latitude(ChartPole::North), 90.0);
+    assert_eq!(frame.chart_pole_latitude(ChartPole::South), -90.0);
+    assert_eq!(frame.native_latitude_pole(GeodeticPole::North), -90.0);
+    assert_eq!(frame.native_latitude_pole(GeodeticPole::South), 90.0);
+}
+
 fn assert_bits(value: f64, expected: f64) {
     assert_eq!(value.to_bits(), expected.to_bits());
+}
+
+#[test]
+fn conventional_degree_latitude_conversion_preserves_source_bits() {
+    let unit = factor(std::f64::consts::PI / 180.0);
+    for latitude_north in [true, false] {
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(true, latitude_north),
+        )
+        .unwrap();
+        for latitude in [
+            -63.870_640_325_120_85,
+            -61.836_984_191_501_61,
+            43.625_172_661_832_906,
+        ] {
+            let native_latitude = latitude * frame.latitude_orientation_sign();
+            assert_bits(
+                frame.to_geodesic_latitude(native_latitude).unwrap(),
+                latitude,
+            );
+            let native = frame
+                .point_from_geodesic(crate::geometry::Point::new_raw_xy(0.0, latitude))
+                .unwrap();
+            assert_bits(native.y, native_latitude);
+        }
+    }
 }
 
 fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::CoordSeq {
@@ -23,7 +68,87 @@ fn ring(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::Ring {
     crate::geometry::Ring::closed_coordseq(xy_seq(xs, ys)).unwrap()
 }
 
-fn rounded_up_integer_period_frame() -> GeographicFrame {
+fn ring_from_points(points: &[(f64, f64)]) -> crate::geometry::Ring {
+    ring(
+        points.iter().map(|&(x, _)| x).collect(),
+        points.iter().map(|&(_, y)| y).collect(),
+    )
+}
+
+fn nested_member_path(path: &[usize], mut child: crate::geometry::Shape) -> crate::geometry::Shape {
+    use crate::geometry::{CoordinateAxes, GeometryKind, Shape};
+
+    for &member in path.iter().rev() {
+        let mut members = vec![Shape::Empty(GeometryKind::Point, CoordinateAxes::XY); member];
+        members.push(child);
+        child = Shape::geometry_collection(members).expect("test member path stays within limits");
+    }
+    child
+}
+
+fn invalid_hole_polygon() -> crate::geometry::Polygon {
+    use crate::geometry::Polygon;
+
+    let shell = ring_from_points(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 0.0)]);
+    let hole = ring_from_points(&[(0.5, 0.5), (1.5, 0.5), (1.5, 91.0), (0.5, 0.5)]);
+    Polygon::new(shell, vec![hole])
+}
+
+fn nested_window_ring(ys: Vec<f64>) -> (crate::geometry::Ring, usize) {
+    use crate::geometry::{CoordWindow, Ring};
+
+    let parent = xy_seq(vec![901.0, 902.0, 10.0, 20.0, 20.0, 10.0, 903.0], ys);
+    let parent_window = CoordWindow::checked(1..7, parent.len())
+        .expect("first relative view is within the parent coordinates");
+    let parent_view = parent.view(parent_window);
+    let ring_window = CoordWindow::checked(1..5, parent_view.len())
+        .expect("second relative view is within the first visible window");
+    let ring_coords = parent_view.view(ring_window);
+    let x_address = ring_coords.xs().as_ptr().addr();
+    let ring =
+        Ring::try_from_closed(ring_coords).expect("fixture is a closed four-coordinate ring");
+    (ring, x_address)
+}
+
+fn rotated_ring(points: &[(f64, f64)], offset: usize, reverse: bool) -> crate::geometry::Ring {
+    let mut vertices = points
+        .iter()
+        .take(points.len().saturating_sub(1))
+        .copied()
+        .collect::<Vec<_>>();
+    vertices.rotate_left(offset);
+    if reverse {
+        vertices.reverse();
+    }
+    let first = vertices.first().copied().expect("ring has a vertex");
+    vertices.push(first);
+    ring_from_points(&vertices)
+}
+
+fn admitted_ring_summary(frame: GeographicFrame, ring: &crate::geometry::Ring) -> RingSummary {
+    let shape =
+        crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(ring.clone(), Vec::new()));
+    let mut owners = GeographicCollectionOwners::default();
+    let mut summary = None;
+    ScalarGeographicView::try_new_with_collection_owners_and_visit(
+        frame,
+        &shape,
+        &mut owners,
+        |_| {},
+        |event| {
+            if let super::view::GeographicAdmissionEvent::Ring {
+                summary: admitted, ..
+            } = event
+            {
+                summary = Some(admitted);
+            }
+        },
+    )
+    .unwrap();
+    summary.expect("an admitted polygon publishes its shell summary")
+}
+
+fn nearby_grad_factor_frame() -> GeographicFrame {
     let factor = factor(std::f64::consts::TAU / 400.0_f64.next_up());
     GeographicFrame::try_new(factor, factor, 0.0).unwrap()
 }
@@ -91,18 +216,18 @@ fn native_periodic_seam_detection_uses_the_frame_half_period() {
 }
 
 #[test]
-fn ordinary_chart_certificate_matches_edge_and_period_rounding_contracts() {
-    let rounded_up = rounded_up_integer_period_frame();
+fn ordinary_chart_certificate_matches_selected_period_and_edge_contracts() {
+    let nearby_grads = nearby_grad_factor_frame();
     let frames = [
         degrees(),
         frame(1.0),
         frame(std::f64::consts::TAU / 400.0),
-        rounded_up,
+        nearby_grads,
     ];
     for frame in frames {
         let axis = frame.longitude();
         let half = axis.half_period();
-        assert!(axis.ordinary_chart_edge(-half / 2.0, half / 2.0));
+        assert!(!axis.ordinary_chart_edge(-half / 2.0, half / 2.0));
         assert!(axis.ordinary_chart_edge(-half.next_down(), 0.0));
         assert!(!axis.ordinary_chart_edge(-half, half));
         assert!(!axis.ordinary_chart_edge(0.0, axis.period()));
@@ -110,32 +235,133 @@ fn ordinary_chart_certificate_matches_edge_and_period_rounding_contracts() {
         assert_eq!(axis.chart_transit(-half / 2.0, half / 2.0).unwrap(), 0);
     }
 
-    let axis = rounded_up.longitude();
-    assert!(200.0 < axis.half_period());
-    assert_eq!(axis.ordinary_longitude_bound(), 200.0);
-    let nominal_half = axis.canonicalize(200.0).unwrap();
-    assert_eq!(
-        nominal_half.get().to_bits(),
-        (-axis.half_period()).to_bits()
-    );
-    assert_eq!(nominal_half.identity(axis), SeamIdentity::Seam);
-    let rounded_down_axis = frame(std::f64::consts::TAU / 400.0).longitude();
-    assert!(200.0 > rounded_down_axis.half_period());
-    assert_eq!(
-        rounded_down_axis.ordinary_longitude_bound().to_bits(),
-        rounded_down_axis.half_period().to_bits()
-    );
-    assert_eq!(
-        rounded_down_axis
-            .canonicalize(200.0)
-            .unwrap()
-            .identity(rounded_down_axis),
-        SeamIdentity::Seam
-    );
+    let axis = degrees().longitude();
+    let from = -90.0;
+    let to = 90.0_f64.next_up();
+    assert_eq!(to - from, 180.0);
+    assert!(!axis.ordinary_chart_edge(from, to));
+    let connection = axis.chart_connection(from, to).unwrap();
+    assert_eq!(connection.source_lift, -1);
+    assert_eq!(connection.seam_transit(), -1);
+
+    for axis in [
+        nearby_grads.longitude(),
+        frame(std::f64::consts::TAU / 400.0).longitude(),
+    ] {
+        assert_bits(axis.period(), 400.0);
+        assert_bits(axis.half_period(), 200.0);
+        assert_eq!(axis.ordinary_longitude_bound(), 200.0);
+        let nominal_half = axis.canonicalize(200.0).unwrap();
+        assert_bits(nominal_half.get(), -200.0);
+        assert_eq!(nominal_half.identity(axis), SeamIdentity::Seam);
+    }
     assert_eq!(
         axis.canonicalize(-0.0).unwrap().get().to_bits(),
         0.0_f64.to_bits()
     );
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "these tests characterize exact binary64 spellings at a periodic seam"
+)]
+fn removed_period_workarounds_preserve_finite_longitude_bits() {
+    fn previous_wrap(axis: PeriodicAxis, value: f64) -> f64 {
+        let mut reduced = value % axis.period();
+        if value.fract() == 0.0 && axis.period().fract() == 0.0 {
+            let nominal_remainder = value % axis.period();
+            if nominal_remainder == 0.0 {
+                reduced = 0.0;
+            } else if nominal_remainder.abs() == axis.period() / 2.0 {
+                reduced = -axis.half_period();
+            }
+        }
+        if reduced < -axis.half_period() {
+            reduced += axis.period();
+        } else if reduced >= axis.half_period() {
+            reduced -= axis.period();
+        }
+        if reduced == 0.0 {
+            reduced = 0.0;
+        }
+        reduced
+    }
+
+    fn previous_ordinary_longitude(axis: PeriodicAxis, value: f64) -> Option<u64> {
+        if value.abs().partial_cmp(&axis.half_period()) != Some(std::cmp::Ordering::Less) {
+            return None;
+        }
+        if value.fract() == 0.0
+            && axis.period().fract() == 0.0
+            && value.abs() == axis.period() / 2.0
+        {
+            return None;
+        }
+        Some(if value == 0.0 { 0.0 } else { value }.to_bits())
+    }
+
+    fn previous_ordinary_longitude_bound(axis: PeriodicAxis) -> f64 {
+        if axis.period().fract() == 0.0 && (axis.period() / 2.0).fract() == 0.0 {
+            axis.half_period().min(axis.period() / 2.0)
+        } else {
+            axis.half_period()
+        }
+    }
+
+    let mut axes = vec![degrees().longitude(), frame(1.0).longitude()];
+    for turn in [400.0_f64.next_down(), 400.0, 400.0_f64.next_up()] {
+        let unit = factor(std::f64::consts::TAU / turn);
+        assert_eq!(unit.recognized_period(), Some(400.0));
+        axes.push(
+            GeographicFrame::try_new(unit, unit, 0.0)
+                .unwrap()
+                .longitude(),
+        );
+    }
+
+    for axis in axes {
+        let half = axis.half_period();
+        let period = axis.period();
+        let large_alias = period * (2.0_f64.powi(40));
+        let values = [
+            -half,
+            half,
+            -half.next_down(),
+            -half.next_up(),
+            half.next_down(),
+            half.next_up(),
+            -0.0,
+            0.0,
+            -period,
+            period,
+            -large_alias,
+            large_alias,
+            -large_alias - half,
+            large_alias + half,
+            f64::MIN,
+            f64::MAX,
+        ];
+
+        assert_eq!(
+            axis.ordinary_longitude_bound().to_bits(),
+            previous_ordinary_longitude_bound(axis).to_bits()
+        );
+        for value in values {
+            assert!(value.is_finite());
+            assert_eq!(
+                axis.wrap_admitted(value).get().to_bits(),
+                previous_wrap(axis, value).to_bits(),
+                "wrapped bits for {value:?} with period {period:?}"
+            );
+            assert_eq!(
+                axis.ordinary_longitude(value)
+                    .map(|value| value.get().to_bits()),
+                previous_ordinary_longitude(axis, value),
+                "ordinary bits for {value:?} with period {period:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -169,7 +395,7 @@ fn ring_summary_uses_chart_turn_and_keeps_axis_bands() {
     assert_eq!(summary.chart_turn, 1);
     assert_eq!(summary.turn(), RingTurn::Full(TurnDirection::Positive));
     assert!(!summary.exact_axis_band);
-    assert_eq!(summary.bounded_pole(), Some(Pole::North));
+    assert_eq!(summary.bounded_pole(), Some(ChartPole::North));
     assert_eq!(
         summary.domain,
         RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)
@@ -179,7 +405,7 @@ fn ring_summary_uses_chart_turn_and_keeps_axis_bands() {
     let negative = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&negative)).unwrap();
     assert_eq!(negative.chart_turn, -1);
     assert_eq!(negative.turn(), RingTurn::Full(TurnDirection::Negative));
-    assert_eq!(negative.bounded_pole(), Some(Pole::South));
+    assert_eq!(negative.bounded_pole(), Some(ChartPole::South));
 
     let retraced = ring(vec![0.0, 120.0, 0.0, 0.0], vec![0.0; 4]);
     assert_eq!(
@@ -200,12 +426,51 @@ fn ring_summary_uses_chart_turn_and_keeps_axis_bands() {
 }
 
 #[test]
+fn geographic_ring_keeps_nested_visible_window_after_parent_drop() {
+    let (ring, visible_x_address) =
+        nested_window_ring(vec![91.0, -91.0, 60.0, 60.0, 70.0, 60.0, 91.0]);
+
+    assert_eq!(ring.len(), 4);
+    assert_eq!(ring.coords().xs(), &[10.0, 20.0, 20.0, 10.0]);
+    assert_eq!(ring.coords().ys(), &[60.0, 60.0, 70.0, 60.0]);
+    assert_eq!(ring.coords().xs().as_ptr().addr(), visible_x_address);
+
+    let geographic = GeographicRing::from_ring(&ring);
+    assert_eq!(geographic.native_xs(), &[10.0, 20.0, 20.0, 10.0]);
+    assert_eq!(geographic.native_xs().as_ptr().addr(), visible_x_address);
+    let summary = RingSummary::try_new(degrees(), &geographic).unwrap();
+    assert_eq!(summary.chart_turn, 0);
+    assert_eq!(summary.domain, RingDomain::Ordinary);
+    assert_eq!(summary.south.get(), 60.0);
+    assert_eq!(summary.north.get(), 70.0);
+}
+
+#[test]
+fn geographic_ring_reports_local_coordinate_index_for_nested_window() {
+    let (ring, visible_x_address) =
+        nested_window_ring(vec![91.0, -91.0, 60.0, 60.0, 91.0, 60.0, 91.0]);
+    assert_eq!(ring.coords().xs().as_ptr().addr(), visible_x_address);
+
+    let error = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&ring)).unwrap_err();
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 20.0);
+    assert_bits(error.native.y, 91.0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
+}
+
+#[test]
 fn raw_bounds_certify_only_strictly_ordinary_nonpolar_chart_support() {
     let frame = degrees();
     let bounds = |minx, miny, maxx, maxy| crate::geometry::Bounds::new_raw(minx, miny, maxx, maxy);
 
     assert!(frame.bounds_certify_ordinary_support(bounds(-10.0, -20.0, 10.0, 20.0)));
     assert!(frame.longitude_bounds_certify_no_seam(-10.0, 10.0));
+    assert!(!frame.longitude_bounds_certify_no_seam(10.0, -10.0));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(10.0, -1.0, -10.0, 1.0)));
+    assert!(!frame.bounds_certify_ordinary_support(bounds(-10.0, 10.0, 10.0, -10.0)));
     assert!(
         !frame.longitude_bounds_certify_no_seam(179.0, 181.0),
         "a narrow alias interval can still cross the canonical seam"
@@ -248,6 +513,50 @@ fn explicit_period_edge_keeps_the_ambiguous_ring_admission_gate() {
 }
 
 #[test]
+fn every_ambiguous_nonzero_turn_is_rejected_in_both_directions() {
+    use crate::geometry::{Polygon, Shape};
+
+    let forward = [
+        (0.0, 20.0),
+        (120.0, -20.0),
+        (240.0, 20.0),
+        (360.0, -20.0),
+        (480.0, 20.0),
+        (600.0, -20.0),
+        (0.0, 20.0),
+    ];
+    let reverse = [
+        (0.0, 20.0),
+        (600.0, -20.0),
+        (480.0, 20.0),
+        (360.0, -20.0),
+        (240.0, 20.0),
+        (120.0, -20.0),
+        (0.0, 20.0),
+    ];
+
+    for (points, expected_turn) in [(&forward, 2), (&reverse, -2)] {
+        let ring = ring_from_points(points);
+        let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&ring)).unwrap();
+        assert_eq!(summary.chart_turn, expected_turn);
+        assert_eq!(summary.full_turn_pole(), Some(FullTurnPole::Ambiguous));
+
+        let shape = Shape::Polygon(Polygon::new(ring, Vec::new()));
+        let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+        assert_eq!(error.location.ring, Some(0));
+        assert_eq!(error.location.coordinate, 0);
+        assert_bits(error.native.x, 0.0);
+        assert_bits(error.native.y, 20.0);
+        assert!(matches!(
+            error.source,
+            GeographicError::AmbiguousFullTurnRing { south, north }
+                if south.to_bits() == (-20.0_f64).to_bits()
+                    && north.to_bits() == 20.0_f64.to_bits()
+        ));
+    }
+}
+
+#[test]
 fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     let xs = vec![-180.0, -90.0, 0.0, 90.0, 180.0];
     let north = ring(xs.clone(), vec![0.0, 5.0, 5.0, 5.0, 0.0]);
@@ -255,7 +564,7 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     assert_eq!(north.chart_turn, 1);
     assert_eq!(
         north.full_turn_pole(),
-        Some(FullTurnPole::Bounded(Pole::North))
+        Some(FullTurnPole::Bounded(ChartPole::North))
     );
 
     let south = ring(xs.clone(), vec![0.0, -5.0, -5.0, -5.0, 0.0]);
@@ -263,7 +572,7 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     assert_eq!(south.chart_turn, 1);
     assert_eq!(
         south.full_turn_pole(),
-        Some(FullTurnPole::Bounded(Pole::South))
+        Some(FullTurnPole::Bounded(ChartPole::South))
     );
 
     let all_equator = ring(xs.clone(), vec![0.0; 5]);
@@ -287,26 +596,40 @@ fn full_turn_pole_uses_the_closed_hemisphere_rule_for_every_nonzero_turn() {
     assert_eq!(multiple_turns.chart_turn, 2);
     assert_eq!(
         multiple_turns.full_turn_pole(),
-        Some(FullTurnPole::Bounded(Pole::North))
+        Some(FullTurnPole::Bounded(ChartPole::North))
     );
 }
 
 #[test]
 fn coordinate_domain_errors_precede_pending_ambiguous_ring_gates() {
-    let shell = ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
-        -5.0, 5.0, 5.0, 5.0, -5.0,
-    ]);
-    let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
-        100.0, 100.0, 101.0, 100.0,
-    ]);
-    let shape = crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
+    for shell in [
+        ring(vec![-180.0, -90.0, 0.0, 90.0, 180.0], vec![
+            -5.0, 5.0, 5.0, 5.0, -5.0,
+        ]),
+        ring_from_points(&[
+            (0.0, 20.0),
+            (120.0, -20.0),
+            (240.0, 20.0),
+            (360.0, -20.0),
+            (480.0, 20.0),
+            (600.0, -20.0),
+            (0.0, 20.0),
+        ]),
+    ] {
+        let hole = ring(vec![10.0, 20.0, 20.0, 10.0], vec![
+            100.0, 100.0, 101.0, 100.0,
+        ]);
+        let shape =
+            crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell, vec![hole]));
 
-    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
-    assert_eq!(error.location.ring, Some(1));
-    assert!(matches!(
-        error.source,
-        GeographicError::LatitudeOutOfRange { .. }
-    ));
+        let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+        assert_eq!(error.location.ring, Some(1));
+        assert_eq!(error.location.coordinate, 0);
+        assert!(matches!(
+            error.source,
+            GeographicError::LatitudeOutOfRange { .. }
+        ));
+    }
 }
 
 fn axis_box(frame: GeographicFrame, west: f64, east: f64, south: f64, north: f64) -> RingSummary {
@@ -367,6 +690,95 @@ fn canonical_axis_band_spelling_retains_both_complete_parallel_turns() {
 }
 
 #[test]
+fn historical_parallel_levels_reject_interior_cancellation_independent_of_start() {
+    let frame = degrees();
+    let counterring = [
+        (0.0, 10.0),
+        (360.0, 10.0),
+        (360.0, 15.0),
+        (0.0, 15.0),
+        (0.0, 20.0),
+        (360.0, 20.0),
+        (360.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 10.0),
+    ];
+
+    for reverse in [false, true] {
+        for offset in 0..counterring.len() - 1 {
+            let source = rotated_ring(&counterring, offset, reverse);
+            let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&source)).unwrap();
+            let fused = admitted_ring_summary(frame, &source);
+
+            assert_eq!(summary, fused);
+            assert_eq!(summary.chart_turn, 0);
+            assert!(!summary.exact_axis_band);
+            assert_eq!(summary.domain, RingDomain::Ordinary);
+        }
+    }
+}
+
+#[test]
+fn historical_parallel_levels_accept_north_first_bands_and_ignore_zero_edges() {
+    let frame = degrees();
+    let north_first = [
+        (0.0, 20.0),
+        (120.0, 20.0),
+        (240.0, 20.0),
+        (360.0, 20.0),
+        (360.0, 10.0),
+        (240.0, 10.0),
+        (120.0, 10.0),
+        (0.0, 10.0),
+        (0.0, 20.0),
+    ];
+    for reverse in [false, true] {
+        for offset in 0..north_first.len() - 1 {
+            let source = rotated_ring(&north_first, offset, reverse);
+            let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&source)).unwrap();
+            assert_eq!(summary, admitted_ring_summary(frame, &source));
+            assert_eq!(summary.chart_turn, 0);
+            assert!(summary.exact_axis_band);
+            assert!(matches!(summary.domain, RingDomain::FullLongitude(_)));
+        }
+    }
+
+    let zero_edge = ring_from_points(&[
+        (-180.0, 20.0),
+        (-60.0, 20.0),
+        (60.0, 20.0),
+        (180.0, 20.0),
+        (-180.0, 20.0),
+        (-180.0, 10.0),
+        (60.0, 10.0),
+        (-60.0, 10.0),
+        (-180.0, 10.0),
+        (-180.0, 20.0),
+    ]);
+    let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&zero_edge)).unwrap();
+    assert_eq!(summary, admitted_ring_summary(frame, &zero_edge));
+    assert!(summary.exact_axis_band);
+}
+
+#[test]
+fn retraced_single_parallel_does_not_form_an_axis_band() {
+    let frame = degrees();
+    let retraced = ring_from_points(&[
+        (0.0, 20.0),
+        (360.0, 20.0),
+        (0.0, 20.0),
+        (0.0, 10.0),
+        (0.0, 20.0),
+    ]);
+    let summary = RingSummary::try_new(frame, &GeographicRing::from_ring(&retraced)).unwrap();
+
+    assert_eq!(summary, admitted_ring_summary(frame, &retraced));
+    assert_eq!(summary.chart_turn, 0);
+    assert!(!summary.exact_axis_band);
+    assert_eq!(summary.domain, RingDomain::Ordinary);
+}
+
+#[test]
 fn seam_zigzag_parallels_do_not_fabricate_an_axis_band() {
     let source = ring(
         vec![
@@ -424,7 +836,10 @@ fn seam_spelled_axis_ring_is_not_an_explicit_world_band() {
 
 #[test]
 fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
-    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape, SharedSlice};
+    use crate::geometry::{
+        CoordinateAxes, LineSeq, MultiLineString, MultiMember, MultiPolygon, Polygon, Shape,
+        SharedSlice,
+    };
 
     let shell = ring(vec![0.0, 2.0, 2.0, 0.0, 0.0], vec![0.0, 0.0, 2.0, 2.0, 0.0]);
     let bad_hole = ring(vec![0.5, 1.5, 1.5, 0.5, 0.5], vec![
@@ -450,6 +865,34 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
     assert_eq!(error.location.coordinate, 2);
     assert_bits(error.native.x, 1.5);
     assert_bits(error.native.y, 91.0);
+
+    let valid_line =
+        LineSeq::try_new(xy_seq(vec![0.0, 1.0], vec![0.0, 1.0])).expect("valid XY line");
+    let invalid_line = LineSeq::try_new(xy_seq(vec![0.0, 1.0], vec![0.0, 91.0]))
+        .expect("finite line outside the latitude range");
+    let multipart = MultiLineString::try_new(CoordinateAxes::XY, vec![
+        MultiMember::Empty,
+        MultiMember::Value(valid_line),
+        MultiMember::Value(invalid_line.clone()),
+        MultiMember::Value(invalid_line),
+    ])
+    .expect("multipart lines have homogeneous XY axes");
+    let nested_line = Shape::geometry_collection(vec![
+        Shape::geometry_collection(vec![Shape::MultiLineString(multipart)])
+            .expect("test collection is valid"),
+    ])
+    .expect("test collection is valid");
+    let error = ScalarGeographicView::try_new(degrees(), &nested_line)
+        .expect_err("the first invalid line member must be rejected");
+    assert_eq!(error.location.members.as_slice(), [0, 0, 2]);
+    assert_eq!(error.location.ring, None);
+    assert_eq!(error.location.coordinate, 1);
+    assert_bits(error.native.x, 1.0);
+    assert_bits(error.native.y, 91.0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
 }
 
 #[test]
@@ -470,6 +913,141 @@ fn shared_dag_domain_error_keeps_the_first_member_path() {
     assert_eq!(error.location.coordinate, 0);
     assert!(error.native.x.is_nan());
     assert_bits(error.native.y, 30.0);
+}
+
+#[test]
+fn member_path_inline_depth_preserves_literal_logical_ordinals() {
+    use crate::geometry::Shape;
+
+    let shape = nested_member_path(&[2, 1, 3, 0], Shape::Polygon(invalid_hole_polygon()));
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 1.5);
+    assert_bits(error.native.y, 91.0);
+    assert!(matches!(
+        error.source,
+        GeographicError::LatitudeOutOfRange { .. }
+    ));
+}
+
+#[test]
+fn member_path_spill_pop_preserves_the_sibling_path() {
+    use crate::geometry::{CoordinateAxes, MultiMember, MultiPolygon, Polygon, Shape};
+
+    let valid = Polygon::new(
+        ring_from_points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]),
+        Vec::new(),
+    );
+    let multipart = Shape::MultiPolygon(
+        MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Value(valid),
+            MultiMember::Empty,
+            MultiMember::Value(invalid_hole_polygon()),
+        ])
+        .unwrap(),
+    );
+    let shape = nested_member_path(&[2, 1, 3, 0], multipart);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0, 2]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 1.5);
+    assert_bits(error.native.y, 91.0);
+}
+
+#[test]
+fn member_path_depth_six_preserves_nested_empty_ordinals() {
+    use crate::geometry::{
+        CoordinateAxes, GeometryKind, MultiMember, MultiPolygon, Point, Polygon, Shape,
+    };
+
+    let valid = Polygon::new(
+        ring_from_points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]),
+        Vec::new(),
+    );
+    let multipart = Shape::MultiPolygon(
+        MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(valid),
+            MultiMember::Empty,
+            MultiMember::Value(invalid_hole_polygon()),
+        ])
+        .unwrap(),
+    );
+    let branch = Shape::geometry_collection(vec![
+        Shape::Point(Point::new(5.0, 6.0).unwrap()),
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+        multipart,
+    ])
+    .unwrap();
+    let shape = nested_member_path(&[2, 1, 3, 0], branch);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0, 2, 3]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+    assert_bits(error.native.x, 1.5);
+    assert_bits(error.native.y, 91.0);
+}
+
+#[test]
+fn member_path_spill_unwinds_before_outer_sibling() {
+    use crate::geometry::{CoordinateAxes, GeometryKind, Point, Shape};
+
+    let deep_success = nested_member_path(&[1, 0], Shape::Point(Point::new(5.0, 6.0).unwrap()));
+    let branch = Shape::geometry_collection(vec![
+        deep_success,
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+        Shape::Polygon(invalid_hole_polygon()),
+    ])
+    .unwrap();
+    let shape = nested_member_path(&[2, 1, 3], branch);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 3]);
+    assert_eq!(error.location.ring, Some(1));
+    assert_eq!(error.location.coordinate, 2);
+}
+
+#[test]
+fn pending_ring_gate_keeps_spilled_member_path_after_later_pops() {
+    use crate::geometry::{
+        CoordinateAxes, GeometryKind, MultiMember, MultiPolygon, Point, Polygon, Shape,
+    };
+
+    let ambiguous = ring(vec![0.0, 360.0, 300.0, 0.0], vec![
+        -10.0, -10.0, 10.0, -10.0,
+    ]);
+    let multipart = Shape::MultiPolygon(
+        MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Empty,
+            MultiMember::Value(Polygon::new(ambiguous, Vec::new())),
+        ])
+        .unwrap(),
+    );
+    let later_success = nested_member_path(&[1, 0], Shape::Point(Point::new(5.0, 6.0).unwrap()));
+    let branch = Shape::geometry_collection(vec![
+        multipart,
+        later_success,
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY),
+    ])
+    .unwrap();
+    let shape = nested_member_path(&[2, 1, 3], branch);
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), &[2, 1, 3, 0, 2]);
+    assert_eq!(error.location.ring, Some(0));
+    assert_eq!(error.location.coordinate, 0);
+    assert!(matches!(
+        error.source,
+        GeographicError::AmbiguousFullTurnRing { .. }
+    ));
 }
 
 fn deeply_nested_line(coordinate_count: usize) -> crate::geometry::Shape {
@@ -600,8 +1178,8 @@ fn frames_derive_degree_grad_and_radian_axes() {
     assert_eq!(degree.longitude().period(), 360.0);
     assert_eq!(degree.pole(), 90.0);
     let grad = frame(std::f64::consts::TAU / 400.0);
-    assert_eq!(grad.longitude().period(), 399.999_999_999_999_94);
-    assert_eq!(grad.pole(), 99.999_999_999_999_99);
+    assert_eq!(grad.longitude().period(), 400.0);
+    assert_eq!(grad.pole(), 100.0);
     let radian = frame(1.0);
     assert_eq!(radian.longitude().period(), std::f64::consts::TAU);
     assert_eq!(radian.pole(), std::f64::consts::FRAC_PI_2);
@@ -609,6 +1187,18 @@ fn frames_derive_degree_grad_and_radian_axes() {
         degree.longitude().unit().radians_per_unit(),
         std::f64::consts::PI / 180.0
     );
+    assert_eq!(
+        grad.longitude().radians_per_unit(),
+        std::f64::consts::TAU / 400.0
+    );
+    assert_eq!(
+        grad.latitude_radians_per_unit(),
+        std::f64::consts::TAU / 400.0
+    );
+    let adjacent_grad = frame((std::f64::consts::TAU / 400.0).next_up());
+    assert_eq!(adjacent_grad.longitude().period(), 400.0);
+    assert_eq!(adjacent_grad.pole(), 100.0);
+    assert_eq!(grad, adjacent_grad);
     assert_eq!(
         degree.latitude_unit().radians_per_unit(),
         std::f64::consts::PI / 180.0
@@ -670,11 +1260,7 @@ fn frame_conversion_uses_one_greenwich_seam_for_points_and_lanes() {
 fn computed_native_points_canonicalize_longitude_and_preserve_other_axes() {
     for (frame, longitude, expected) in [
         (degrees(), 180.0, -180.0),
-        (
-            frame(std::f64::consts::TAU / 400.0),
-            200.0,
-            -199.999_999_999_999_97,
-        ),
+        (frame(std::f64::consts::TAU / 400.0), 200.0, -200.0),
         (frame(1.0), std::f64::consts::PI, -std::f64::consts::PI),
     ] {
         let point = crate::geometry::Point::new_axes(
@@ -806,8 +1392,8 @@ fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact()
 
     let grads = frame(std::f64::consts::TAU / 400.0).longitude();
     for (source, reference, periods) in [
-        (-(1.0e19_f64.next_up()), 1.0, 25_000_000_000_000_009),
-        (1.0e19_f64.next_up(), -1.0, -25_000_000_000_000_009),
+        (-(1.0e19_f64.next_up()), 1.0, 25_000_000_000_000_005),
+        (1.0e19_f64.next_up(), -1.0, -25_000_000_000_000_005),
     ] {
         assert_bits(
             grads.nearest_longitude_alias(reference, source).unwrap(),
@@ -815,31 +1401,33 @@ fn nearest_longitude_alias_keeps_period_counts_larger_than_a_significand_exact()
         );
     }
 
-    let nominal_tie = frame(std::f64::consts::TAU / 16.0_f64.next_down()).longitude();
+    let selected_period_tie = frame(std::f64::consts::TAU / 16.0_f64.next_down()).longitude();
     assert_bits(
-        nominal_tie
+        selected_period_tie
             .nearest_longitude_alias(0.0, -(2.0_f64.powi(54) + 8.0))
             .unwrap(),
-        -10.0,
+        -8.0,
     );
 }
 
 #[test]
-fn nearest_longitude_alias_recovers_reference_bits_for_rounded_whole_periods() {
+fn nearest_longitude_alias_forms_whole_period_shifts_from_the_source() {
     for axis in [
         degrees().longitude(),
         frame(std::f64::consts::TAU / 400.0).longitude(),
         frame(1.0).longitude(),
     ] {
+        // A nearby reference is not an alias of the source. Select k from
+        // the exact operands, then round source+kP instead of copying reference.
         assert_bits(
             axis.nearest_longitude_alias(1.0e-16, -axis.period())
                 .unwrap(),
-            1.0e-16,
+            0.0,
         );
         assert_bits(
             axis.nearest_longitude_alias(-1.0e-16, axis.period())
                 .unwrap(),
-            -1.0e-16,
+            0.0,
         );
     }
 }
@@ -925,20 +1513,33 @@ fn nearest_longitude_alias_reduces_before_rounding_and_keeps_tie_direction() {
 }
 
 #[test]
+fn nearest_longitude_alias_preserves_source_bits_for_no_shift() {
+    let axis = degrees().longitude();
+    let source = 0.2_f64;
+    assert_eq!(
+        axis.nearest_longitude_alias(78.0, source)
+            .unwrap()
+            .to_bits(),
+        source.to_bits()
+    );
+    let negative_zero = -0.0;
+    assert_eq!(
+        axis.nearest_longitude_alias(negative_zero, negative_zero)
+            .unwrap()
+            .to_bits(),
+        negative_zero.to_bits()
+    );
+}
+
+#[test]
 fn nearest_longitude_alias_pins_native_ties_and_finite_subtraction_overflow() {
-    for (axis, half, period) in [
-        (degrees().longitude(), 180.0, 360.0),
-        (
-            frame(std::f64::consts::TAU / 400.0).longitude(),
-            199.999_999_999_999_97,
-            399.999_999_999_999_94,
-        ),
-        (
-            frame(1.0).longitude(),
-            std::f64::consts::PI,
-            std::f64::consts::TAU,
-        ),
+    for axis in [
+        degrees().longitude(),
+        frame(std::f64::consts::TAU / 400.0).longitude(),
+        frame(1.0).longitude(),
     ] {
+        let half = axis.half_period();
+        let period = axis.period();
         assert_bits(axis.nearest_longitude_alias(half, 0.0).unwrap(), 0.0);
         assert_bits(axis.nearest_longitude_alias(0.0, half).unwrap(), half);
         assert_bits(axis.nearest_longitude_alias(period, 0.0).unwrap(), period);
@@ -1095,46 +1696,76 @@ fn shortest_alias_steps_preserve_half_turn_direction() {
 }
 
 #[test]
-fn intervals_distinguish_empty_arc_full_and_windows() {
+fn endpoint_intervals_preserve_authentic_endpoints_and_closed_windows() {
     let axis = degrees().longitude();
-    let ordered = CircularInterval::try_arc(axis, -20.0, 30.0).unwrap();
-    assert_eq!(ordered.west_east(axis), Some((-20.0, 10.0)));
+    let canonical = |longitude| axis.canonicalize(longitude).unwrap();
+    let arc = |start, end| CircularInterval::from_endpoints(canonical(start), canonical(end));
+
+    let ordered = arc(-20.0, 10.0);
+    assert_eq!(ordered.west_east(), Some((-20.0, 10.0)));
     assert_eq!(
         ordered.windows(axis),
         Some(LongitudeWindows::One([-20.0, 10.0]))
     );
-    let wrapped = CircularInterval::try_arc(axis, 170.0, 30.0).unwrap();
-    assert_eq!(wrapped.west_east(axis), Some((170.0, -160.0)));
+    let wrapped = arc(170.0, -160.0);
+    assert_eq!(wrapped.west_east(), Some((170.0, -160.0)));
     assert_eq!(
         wrapped.windows(axis),
         Some(LongitudeWindows::Two([170.0, 180.0], [-180.0, -160.0]))
+    );
+    assert_eq!(
+        arc(170.0, -180.0).windows(axis),
+        Some(LongitudeWindows::Two([170.0, 180.0], [-180.0, -180.0]))
+    );
+    assert_eq!(
+        CircularInterval::point(canonical(-180.0)).windows(axis),
+        Some(LongitudeWindows::One([-180.0, -180.0]))
     );
     assert_eq!(CircularInterval::Empty.windows(axis), None);
     assert_eq!(
         CircularInterval::Full.windows(axis),
         Some(LongitudeWindows::Full)
     );
-    CircularInterval::try_arc(axis, 0.0, 360.0).unwrap_err();
+    assert_eq!(
+        CircularInterval::from_chart_connection(axis.chart_connection(170.0, -170.0).unwrap()),
+        arc(170.0, -170.0)
+    );
+    assert_eq!(
+        CircularInterval::from_chart_connection(axis.chart_connection(-170.0, 170.0).unwrap()),
+        arc(170.0, -170.0)
+    );
+    assert_eq!(
+        CircularInterval::from_chart_connection(axis.chart_connection(0.0, 360.0).unwrap()),
+        CircularInterval::Full
+    );
+
+    let start = 0.1_f64;
+    let end = 0.2_f64;
+    let next_end = end.next_up();
+    for endpoint in [end, next_end] {
+        let interval = arc(start, endpoint);
+        let (actual_start, actual_end) = interval.west_east().unwrap();
+        assert_eq!(actual_start.to_bits(), start.to_bits());
+        assert_eq!(actual_end.to_bits(), endpoint.to_bits());
+    }
 }
 
 #[test]
-fn extreme_axis_interval_arithmetic_remains_finite() {
+fn extreme_period_windows_and_unions_keep_endpoint_bits_finite() {
     let unit = factor(std::f64::consts::TAU / f64::MAX);
     let axis = PeriodicAxis::try_new("extreme unit", unit).unwrap();
     assert_eq!(axis.period(), f64::MAX);
     let start = axis.half_period().next_down();
-    let sweep = axis.period().next_down();
-    assert!((start + sweep).is_infinite());
-    let arc = CircularInterval::try_arc(axis, start, sweep).unwrap();
-    let expected_east = -axis.half_period() + (sweep - (axis.half_period() - start));
-    assert_eq!(arc.west_east(axis), Some((start, expected_east)));
+    let end = -axis.half_period().next_down();
+    let arc = CircularInterval::from_endpoints(
+        axis.canonicalize(start).unwrap(),
+        axis.canonicalize(end).unwrap(),
+    );
+    assert_eq!(arc.west_east(), Some((start, end)));
     let windows = arc.windows(axis).unwrap();
     assert_eq!(
         windows,
-        LongitudeWindows::Two([start, axis.half_period()], [
-            -axis.half_period(),
-            expected_east
-        ],)
+        LongitudeWindows::Two([start, axis.half_period()], [-axis.half_period(), end],)
     );
     for window in match windows {
         LongitudeWindows::Two(left, right) => [left, right],
@@ -1143,10 +1774,11 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
     } {
         assert!(window[0].is_finite() && window[1].is_finite());
     }
-    let point = CircularInterval::try_arc(axis, -axis.half_period(), 0.0).unwrap();
+    let point = CircularInterval::point(axis.canonicalize(-axis.half_period()).unwrap());
     let first = union_circular_intervals(axis, &[arc, point]);
     let second = union_circular_intervals(axis, &[arc, point]);
-    assert_eq!(first, second);
+    assert_eq!(first, arc);
+    assert_eq!(second, arc);
     assert!(first.windows(axis).is_some_and(|windows| match windows {
         LongitudeWindows::One(window) => window.into_iter().all(f64::is_finite),
         LongitudeWindows::Two(left, right) => left.into_iter().chain(right).all(f64::is_finite),
@@ -1157,28 +1789,51 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
 #[test]
 fn largest_gap_union_handles_disconnected_ties_and_full() {
     let axis = degrees().longitude();
-    let arc = |start, sweep| CircularInterval::try_arc(axis, start, sweep).unwrap();
-    let disconnected = union_circular_intervals(axis, &[arc(170.0, 5.0), arc(-5.0, 10.0)]);
-    assert_eq!(disconnected, arc(-5.0, 180.0));
+    let canonical = |longitude| axis.canonicalize(longitude).unwrap();
+    let arc = |start, end| CircularInterval::from_endpoints(canonical(start), canonical(end));
+    let point = |longitude| CircularInterval::point(canonical(longitude));
+    let disconnected = union_circular_intervals(axis, &[arc(170.0, 175.0), arc(-5.0, 5.0)]);
+    assert_eq!(disconnected, arc(-5.0, 175.0));
     let tie = union_circular_intervals(axis, &[
-        arc(-135.0, 0.0),
-        arc(-45.0, 0.0),
-        arc(45.0, 0.0),
-        arc(135.0, 0.0),
+        point(-135.0),
+        point(-45.0),
+        point(45.0),
+        point(135.0),
     ]);
-    assert_eq!(tie, arc(-135.0, 270.0));
+    assert_eq!(tie, arc(-135.0, 135.0));
     assert_eq!(
-        union_circular_intervals(axis, &[arc(-180.0, 180.0), arc(0.0, 180.0)]),
+        union_circular_intervals(axis, &[arc(-180.0, 0.0), arc(0.0, -180.0)]),
         CircularInterval::Full
     );
     assert_eq!(union_circular_intervals(axis, &[]), CircularInterval::Empty);
     assert_eq!(
-        union_circular_intervals(axis, &[arc(1.0, 2.0)]),
-        arc(1.0, 2.0)
+        union_circular_intervals(axis, &[arc(1.0, 3.0)]),
+        arc(1.0, 3.0)
     );
     assert_eq!(
         union_circular_intervals(axis, &[CircularInterval::Full]),
         CircularInterval::Full
+    );
+}
+
+#[test]
+fn largest_gap_union_distinguishes_exact_gaps_that_round_equal() {
+    let axis = degrees().longitude();
+    let outside = 120.0_f64.next_up();
+    let tiny = f64::from_bits(1);
+    let lower_gap = (-tiny) - (-outside);
+    let upper_gap = outside - (-tiny);
+    assert_eq!(lower_gap.to_bits(), upper_gap.to_bits());
+
+    let canonical = |longitude| axis.canonicalize(longitude).unwrap();
+    let intervals = [
+        CircularInterval::point(canonical(-outside)),
+        CircularInterval::point(canonical(-tiny)),
+        CircularInterval::point(canonical(outside)),
+    ];
+    assert_eq!(
+        union_circular_intervals(axis, &intervals),
+        CircularInterval::from_endpoints(canonical(outside), canonical(-tiny))
     );
 }
 
@@ -1211,6 +1866,15 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
     let negative_circle = axis.chart_step(360.0, 0.0).unwrap();
     assert_eq!(negative_circle, ChartStep::Circle(TurnDirection::Negative));
     assert_eq!(negative_circle.transit(axis, 360.0, 0.0).unwrap(), -1);
+    assert_eq!(axis.full_turn_delta(1.0e-20, 360.0), None);
+    assert_eq!(
+        axis.chart_step(1.0e-20, 360.0).unwrap(),
+        ChartStep::Shortest(EdgeDirection::Minor(-1.0e-20))
+    );
+    assert_eq!(
+        axis.chart_step(180.0_f64.next_down(), -180.0).unwrap(),
+        ChartStep::Shortest(EdgeDirection::Minor(2.0_f64.powi(-45)))
+    );
     assert_eq!(
         axis.chart_step(-180.0, 180.0).unwrap(),
         ChartStep::Shortest(EdgeDirection::Minor(0.0))
@@ -1235,6 +1899,95 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
         RingSummary::try_new(degrees(), &GeographicRing::from_ring(&negative)).unwrap();
     assert_eq!(negative_summary.turn(), RingTurn::Other);
     assert_eq!(negative_summary.chart_turn, -2);
+}
+
+#[test]
+fn chart_connections_keep_canonical_endpoints_and_integer_lifts() {
+    let axis = degrees().longitude();
+    let eastward = axis.chart_connection(170.0, -170.0).unwrap();
+    assert_bits(eastward.start.get(), 170.0);
+    assert_bits(eastward.end.get(), -170.0);
+    assert_eq!(eastward.source_lift, 1);
+    assert_eq!(eastward.source_lift, eastward.seam_transit());
+    assert_eq!(
+        eastward.step,
+        ChartStep::Shortest(EdgeDirection::Minor(20.0))
+    );
+
+    let westward = axis.chart_connection(-170.0, 170.0).unwrap();
+    assert_bits(westward.start.get(), -170.0);
+    assert_bits(westward.end.get(), 170.0);
+    assert_eq!(westward.source_lift, -1);
+    assert_eq!(westward.source_lift, westward.seam_transit());
+    assert_eq!(
+        westward.step,
+        ChartStep::Shortest(EdgeDirection::Minor(-20.0))
+    );
+
+    let circle = axis.chart_connection(0.0, 360.0).unwrap();
+    assert_eq!(circle.step, ChartStep::Circle(TurnDirection::Positive));
+    assert_eq!(circle.source_lift, 1);
+    assert_eq!(circle.source_lift, circle.seam_transit());
+    assert_bits(circle.start.get(), 0.0);
+    assert_bits(circle.end.get(), 0.0);
+
+    let proper_minor = axis.chart_connection(1.0e-20, 360.0).unwrap();
+    assert_eq!(
+        proper_minor.step,
+        ChartStep::Shortest(EdgeDirection::Minor(-1.0e-20))
+    );
+    assert_eq!(proper_minor.source_lift, 0);
+    assert_eq!(proper_minor.source_lift, proper_minor.seam_transit());
+    assert_bits(proper_minor.start.get(), 1.0e-20);
+    assert_bits(proper_minor.end.get(), 0.0);
+
+    let positive_half = axis.chart_connection(0.0, 180.0).unwrap();
+    assert_eq!(
+        positive_half.step,
+        ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Positive))
+    );
+    assert_eq!(positive_half.source_lift, 1);
+    assert_eq!(positive_half.source_lift, positive_half.seam_transit());
+    let negative_half = axis.chart_connection(0.0, -180.0).unwrap();
+    assert_eq!(
+        negative_half.step,
+        ChartStep::Shortest(EdgeDirection::HalfTurn(TurnDirection::Negative))
+    );
+    assert_eq!(negative_half.source_lift, 0);
+    assert_eq!(negative_half.source_lift, negative_half.seam_transit());
+
+    let seam_aliases = axis.chart_connection(-180.0, 180.0).unwrap();
+    assert_bits(seam_aliases.start.get(), -180.0);
+    assert_bits(seam_aliases.end.get(), -180.0);
+    assert_eq!(seam_aliases.source_lift, 0);
+    assert_eq!(seam_aliases.source_lift, seam_aliases.seam_transit());
+
+    let positive_seam_start = axis.chart_connection(180.0, 0.0).unwrap();
+    assert_bits(positive_seam_start.start.get(), -180.0);
+    assert_bits(positive_seam_start.end.get(), 0.0);
+    assert_eq!(positive_seam_start.source_lift, -1);
+    assert_eq!(
+        positive_seam_start.source_lift,
+        positive_seam_start.seam_transit()
+    );
+}
+
+#[test]
+fn rounded_half_period_span_uses_exact_chart_transit() {
+    let axis = degrees().longitude();
+    let from = -90.0;
+    let to = 90.0_f64.next_up();
+    assert_bits(to - from, 180.0);
+    assert!(!axis.ordinary_chart_edge(from, to));
+
+    let connection = axis.chart_connection(from, to).unwrap();
+    assert_eq!(connection.source_lift, -1);
+    assert!(matches!(
+        connection.step,
+        ChartStep::Shortest(EdgeDirection::Minor(delta)) if delta.is_sign_negative()
+    ));
+    assert_eq!(connection.seam_transit(), -1);
+    assert_eq!(axis.chart_transit(from, to).unwrap(), -1);
 }
 
 #[test]

@@ -17,44 +17,44 @@ pub(crate) fn cell_boundary<G: GridCell>(cell: G) -> PyResult<Typed> {
     Ok(Typed(PyGeometry::wgs84(cell.boundary_shape()?)))
 }
 
-/// Resolve the target depth for parent walks (explicit depth, or one coarser).
-fn parent_target_depth<G, P>(
-    cell: G,
+pub(crate) fn parse_explicit_depth<P>(
     depth: Option<&Bound<'_, PyAny>>,
     parse_depth: P,
-) -> PyResult<u8>
+) -> PyResult<Option<u8>>
 where
-    G: GridCell,
-    P: Fn(&Bound<'_, PyAny>) -> PyResult<u8>,
+    P: FnOnce(&Bound<'_, PyAny>) -> PyResult<u8>,
 {
-    let current = cell.depth();
     match depth {
-        Some(value) if !value.is_none() => parse_depth(value),
-        _ => current
-            .checked_sub(1)
-            .filter(|target| (G::MIN_DEPTH..=G::MAX_DEPTH).contains(target))
-            .ok_or_else(|| {
-                GeometryError::new_err(format!("a minimum-{} cell has no parent", G::DEPTH_NAME))
-            }),
+        Some(value) if !value.is_none() => parse_depth(value).map(Some),
+        _ => Ok(None),
     }
+}
+
+/// Resolve the target depth for parent walks (explicit depth, or one coarser).
+fn parent_target_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<u8> {
+    depth.map_or_else(
+        || {
+            cell.depth()
+                .checked_sub(1)
+                .filter(|target| (G::MIN_DEPTH..=G::MAX_DEPTH).contains(target))
+                .ok_or_else(|| {
+                    GeometryError::new_err(format!(
+                        "a minimum-{} cell has no parent",
+                        G::DEPTH_NAME
+                    ))
+                })
+        },
+        Ok,
+    )
 }
 
 /// Resolve the target depth for children / descendant walks.
 ///
 /// Returns `None` when the default walk is requested at max depth (empty / zero).
-fn children_target_depth<G, P>(
-    cell: G,
-    depth: Option<&Bound<'_, PyAny>>,
-    parse_depth: P,
-) -> PyResult<Option<u8>>
-where
-    G: GridCell,
-    P: Fn(&Bound<'_, PyAny>) -> PyResult<u8>,
-{
+fn children_target_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<Option<u8>> {
     let current = cell.depth();
     match depth {
-        Some(value) if !value.is_none() => {
-            let target = parse_depth(value)?;
+        Some(target) => {
             if target < current {
                 return Err(GeometryError::new_err(format!(
                     "children {} must be >= cell {}",
@@ -76,9 +76,14 @@ pub(crate) fn cell_parent<G, P>(
 ) -> PyResult<G>
 where
     G: GridCell,
-    P: Fn(&Bound<'_, PyAny>) -> PyResult<u8>,
+    P: FnOnce(&Bound<'_, PyAny>) -> PyResult<u8>,
 {
-    let target = parent_target_depth(cell, depth, parse_depth)?;
+    let depth = parse_explicit_depth(depth, parse_depth)?;
+    cell_parent_at_depth(cell, depth)
+}
+
+pub(crate) fn cell_parent_at_depth<G: GridCell>(cell: G, depth: Option<u8>) -> PyResult<G> {
+    let target = parent_target_depth(cell, depth)?;
     cell.parent_at(target).ok_or_else(|| {
         GeometryError::new_err(format!(
             "parent {} must be <= cell {}",
@@ -99,9 +104,17 @@ pub(crate) fn cell_descendant_count<G, P>(
 ) -> PyResult<u64>
 where
     G: GridCell,
-    P: Fn(&Bound<'_, PyAny>) -> PyResult<u8>,
+    P: FnOnce(&Bound<'_, PyAny>) -> PyResult<u8>,
 {
-    let Some(target) = children_target_depth(cell, depth, parse_depth)? else {
+    let depth = parse_explicit_depth(depth, parse_depth)?;
+    cell_descendant_count_at_depth(cell, depth)
+}
+
+pub(crate) fn cell_descendant_count_at_depth<G: GridCell>(
+    cell: G,
+    depth: Option<u8>,
+) -> PyResult<u64> {
+    let Some(target) = children_target_depth(cell, depth)? else {
         return Ok(0);
     };
     Ok(cell.descendant_count(target))

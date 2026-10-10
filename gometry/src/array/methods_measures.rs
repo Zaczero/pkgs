@@ -69,9 +69,9 @@ impl PyGeometryArray {
     ///
     /// Parameters
     /// ----------
-    /// *others : GeometryArray
-    ///     Arrays to append, in order; each must share this array's CRS and
-    ///     epoch. With no arguments the array itself is returned.
+    /// other, *others : GeometryArray
+    ///     Arrays to append in order; each must share this array's CRS and
+    ///     epoch. The zero-argument form omits both names and returns this array.
     ///
     /// Returns
     /// -------
@@ -185,8 +185,8 @@ impl PyGeometryArray {
     /// longitude/latitude; a projected CRS gives native linear units; a CRS-free
     /// array gives raw coordinate units. Use ``to_crs`` to change frame.
     ///
-    /// Geographic polygon perimeter follows the exact-identity, canonical
-    /// seam-cut convention documented for ``gometry.length``.
+    /// Geographic polygon perimeter measures straight chart edges and resolves
+    /// seam aliases in the CRS-native periodic longitude frame.
     ///
     /// Each ``GeometryCollection`` row sums every member's length or
     /// perimeter, including overlapping members.
@@ -256,7 +256,10 @@ impl PyGeometryArray {
     ///     Curve depth (``1``-``32``).
     ///
     /// bounds : iterable[float], optional
-    ///     ``(minx, miny, maxx, maxy)`` extent for keying; defaults to ``total_bounds``.
+    ///     Ordered ``(minx, miny, maxx, maxy)`` rectangle for keying. When
+    ///     omitted, uses the present rows' minimum and maximum stored
+    ///     coordinates without periodic wrapping. Geographic ``total_bounds``
+    ///     may wrap, so it is not necessarily a curve frame.
     ///
     /// Returns
     /// -------
@@ -378,15 +381,33 @@ impl PyGeometryArray {
             }
         }
         let frame = self.frame.clone();
-        let domain = crate::geometry::topology_domain(&frame)?;
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&frame, &mut metric_scratch)?;
         // One detach around the whole loop: the union of every group needs no
         // Python, and a GIL round-trip per group was the loop's fixed cost.
         let shapes: Vec<Shape> = py.detach(move || {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic dissolve source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
             group_shapes
                 .into_iter()
-                .map(|group| Shape::union_all_topo(&group, domain, strictness))
+                .map(|group| {
+                    crate::geometry::overlay_all_with_metric(
+                        &group,
+                        domain,
+                        crate::geometry::OverlayOp::Union,
+                        strictness,
+                        &metric_access,
+                    )
+                })
                 .collect::<Result<_, _>>()
         })?;
+        drop(metric_scratch);
         Ok((Self::from_shapes(shapes, frame)?, groups)
             .into_pyobject(py)?
             .into_any()

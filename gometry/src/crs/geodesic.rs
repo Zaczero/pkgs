@@ -34,6 +34,10 @@ pub(crate) use bearing::{
 };
 pub(crate) use cache::{with_geodesic_at, with_geodesic_cache_at, with_geodesic_chart_cache_at};
 pub(crate) use chart_edge::{AuthalicSeries, ChartEdge};
+#[cfg(test)]
+pub(crate) use chart_edge::{
+    QuadratureTestProgress, quadrature_test_progress, reset_quadrature_test_progress,
+};
 pub(crate) use distance::{
     geodesic_frechet_at_with_scratch, geodesic_hausdorff_at, geodesic_point_distances,
     geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
@@ -45,15 +49,18 @@ pub(crate) use domain::{
     ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, ensure_geographic_row_in_frame,
     geographic_lonlat_result,
 };
-pub(crate) use edge_distance::PointEdgeScratch;
+#[cfg(test)]
+pub(crate) use edge_distance::test_counters as point_edge_test_counters;
+pub(crate) use edge_distance::{
+    EVALUATION_SAFETY_CEILING as POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch,
+};
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
 };
 pub(crate) use envelope::{GeodesicBoxEnvelopeBound, GeodesicChartBox, GeodesicEnvelopeBound};
 pub(crate) use lrs::{
-    chart_line_interpolate, chart_line_interpolate_coordseq, chart_line_locate,
-    chart_line_locate_coordseq, chart_line_substring, chart_line_substring_coordseq,
-    metric_interpolate_m, with_geographic_coordseq_collect_rows_at,
+    chart_line_interpolate_coordseq_admitted, chart_line_locate_coordseq_admitted,
+    chart_line_substring_coordseq_admitted, metric_interpolate_m,
     with_geographic_coordseq_metric_at,
 };
 #[cfg(test)]
@@ -65,6 +72,7 @@ pub(crate) use measure::{
 };
 pub(crate) use metric_model::{
     GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,
-    metric_model, metric_model_meters, with_geographic_metric_erased_at,
+    metric_model, metric_model_at, metric_model_meters, metric_model_meters_at,
+    with_geographic_metric_erased_at,
 };
 pub(crate) use route::{checked_geodesic_route, sincos_degrees};

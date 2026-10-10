@@ -151,9 +151,9 @@ def test_geojson_inexact_integers_rejected() -> None:
         if 0 <= n < 2**64:
             with pytest.raises(gm.ParseError, match='not exactly representable as f64'):
                 gm.from_geojson(text, crs=None)
-        # from_features must match mapping admission (B3).
+        # from_geojson must match mapping admission (B3).
         with pytest.raises(gm.ParseError, match='not exactly representable as f64'):
-            gm.from_features(
+            gm.from_geojson(
                 {
                     'type': 'FeatureCollection',
                     'features': [
@@ -165,6 +165,7 @@ def test_geojson_inexact_integers_rejected() -> None:
                     ],
                 },
                 crs=None,
+                features=True,
             )
 
 
@@ -195,7 +196,7 @@ def test_feature_side_data_keeps_arbitrary_json_integers_exact_on_every_lane() -
         ('BUFFER', bytearray(text, 'utf-8')),
         ('MAPPING', mapping),
     ):
-        features = gm.from_features(source)
+        features = gm.from_geojson(source, features=True)
         properties = features.properties[0]
         assert isinstance(properties['n'], int), lane
         assert properties['n'] == value, lane
@@ -216,7 +217,7 @@ depth = 20_000
 text = ("{\\"type\\":\\"Feature\\",\\"geometry\\":{\\"type\\":\\"Point\\",\\"coordinates\\":[0,0]},\\"properties\\":"
         + "{\\"nested\\":" + "[" * depth + "0" + "]" * depth + "}}")
 try:
-    gm.from_features(text)
+    gm.from_geojson(text)
 except gm.ParseError as exc:
     assert "JSON nesting exceeds the structural limit" in str(exc), exc
     print("REJECTED", flush=True)
@@ -246,7 +247,7 @@ def test_feature_side_data_at_accepted_depth_keeps_one_large_payload_once() -> N
         + ']' * depth
         + '}}'
     )
-    nested = gm.from_features(text).properties[0]['nested']
+    nested = gm.from_geojson(text, features=True).properties[0]['nested']
     for _ in range(depth):
         assert isinstance(nested, list) and len(nested) == 1
         nested = nested[0]
@@ -254,7 +255,7 @@ def test_feature_side_data_at_accepted_depth_keeps_one_large_payload_once() -> N
 
 
 def test_geojson_cast_saturation_edges_rejected_all_paths() -> None:
-    """i64::MAX / u64::MAX must reject on TEXT, MAP, and from_features.
+    """i64::MAX / u64::MAX must reject on TEXT, MAP, and from_geojson.
 
     These are the values where `(v as f64) as int == v` false-passes in Rust
     because float→int casts saturate. A green suite without these fixtures
@@ -272,7 +273,7 @@ def test_geojson_cast_saturation_edges_rejected_all_paths() -> None:
             ('MAP', lambda m=mapping: gm.from_geojson(m, crs=None)),
             (
                 'FEATURES',
-                lambda m=mapping: gm.from_features(
+                lambda m=mapping: gm.from_geojson(
                     {
                         'type': 'FeatureCollection',
                         'features': [
@@ -284,6 +285,7 @@ def test_geojson_cast_saturation_edges_rejected_all_paths() -> None:
                         ],
                     },
                     crs=None,
+                    features=True,
                 ),
             ),
         ):
@@ -317,8 +319,8 @@ def test_geojson_text_mapping_exact_int_equivalence() -> None:
             {'type': 'Point', 'coordinates': [0, 0, n]}, crs=None
         )
         _assert_bits_equal(text_geom.z, map_geom.z, label=f'TEXT/MAP int {n}')
-        # from_features mapping path (geometry only via Feature).
-        feats = gm.from_features(
+        # from_geojson mapping path (geometry only via Feature).
+        feats = gm.from_geojson(
             {
                 'type': 'FeatureCollection',
                 'features': [
@@ -330,6 +332,7 @@ def test_geojson_text_mapping_exact_int_equivalence() -> None:
                 ],
             },
             crs=None,
+            features=True,
         )
         _assert_bits_equal(feats.geometries[0].z, map_geom.z, label=f'features int {n}')
 

@@ -4,8 +4,8 @@
 )]
 use super::{
     GeometryArrayStorage, PackedRow, PackedStorage, RowSelectionRef, RowsIter, ShapeRow,
-    ShapesIter, column_window, csr_value_window, line_logical_len, point_logical_len,
-    polygon_logical_len,
+    ShapesIter, column_window, csr_value_range, csr_value_window, line_logical_len,
+    point_logical_len, polygon_logical_len,
 };
 use crate::error::Result;
 use crate::geometry::types::ShapeHeapMemo;
@@ -259,9 +259,16 @@ impl GeometryArrayStorage {
                 let rows = line_logical_len(offsets_column.as_slice(), row_map.as_deref());
                 let map = row_map.as_deref();
                 let offsets = offsets_column.as_slice();
-                let vertices = (0..rows).fold(0_usize, |count, row| {
-                    count.saturating_add(map.csr_window(offsets, row).len())
-                });
+                let vertices = csr_value_range(offsets, map, 0..rows).map_or_else(
+                    || {
+                        (0..rows).fold(0_usize, |count, row| {
+                            #[cfg(test)]
+                            storage::record_csr_size_row_visit();
+                            count.saturating_add(map.csr_window(offsets, row).len())
+                        })
+                    },
+                    |vertices| vertices.len(),
+                );
                 crate::heap_size::ARC_CONTROL_BYTES
                     .saturating_add(std::mem::size_of::<CoordSeq>())
                     .saturating_add(coords.logical_heap_bytes_for_count_saturating(vertices))
@@ -280,20 +287,35 @@ impl GeometryArrayStorage {
                 let ring_offsets = ring_offsets_column.as_slice();
                 let map = row_map.as_deref();
                 let rows = polygon_logical_len(polygons, map);
-                let (rings, vertices) =
-                    (0..rows).fold((0_usize, 0_usize), |(ring_count, vertex_count), row| {
-                        let row_rings = map.csr_window(polygons, row);
-                        if row_rings.is_empty() {
-                            (ring_count, vertex_count)
+                let (rings, vertices) = csr_value_range(polygons, map, 0..rows).map_or_else(
+                    || {
+                        (0..rows).fold((0_usize, 0_usize), |(ring_count, vertex_count), row| {
+                            #[cfg(test)]
+                            storage::record_csr_size_row_visit();
+                            let row_rings = map.csr_window(polygons, row);
+                            if row_rings.is_empty() {
+                                (ring_count, vertex_count)
+                            } else {
+                                (
+                                    ring_count.saturating_add(row_rings.len()),
+                                    vertex_count.saturating_add(
+                                        csr_value_window(ring_offsets, row_rings).len(),
+                                    ),
+                                )
+                            }
+                        })
+                    },
+                    |rings| {
+                        let vertex_count = if rings.is_empty() {
+                            0
                         } else {
-                            (
-                                ring_count.saturating_add(row_rings.len()),
-                                vertex_count.saturating_add(
-                                    csr_value_window(ring_offsets, row_rings).len(),
-                                ),
-                            )
-                        }
-                    });
+                            csr_value_range(ring_offsets, RowSelectionRef::Identity, rings.clone())
+                                .expect("admitted ring offsets include the selected endpoints")
+                                .len()
+                        };
+                        (rings.len(), vertex_count)
+                    },
+                );
                 crate::heap_size::ARC_CONTROL_BYTES
                     .saturating_add(std::mem::size_of::<CoordSeq>())
                     .saturating_add(coords.logical_heap_bytes_for_count_saturating(vertices))
@@ -321,13 +343,14 @@ impl GeometryArrayStorage {
         )
     }
 
-    /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
-    /// ``None`` if every geometry is empty.
+    /// Raw axis-aligned coordinate bounds over all geometries, or ``None`` if
+    /// every geometry is empty. Geographic public bounds are resolved by the
+    /// array owner, which can interpret periodic support.
     ///
     /// Returns
     /// -------
     /// tuple or None
-    pub(crate) fn total_bounds(&self) -> Option<Bounds> {
+    pub(crate) fn raw_total_bounds(&self) -> Option<Bounds> {
         if let Self::Packed(PackedStorage::Polygons { row_map, .. }) = self
             && row_map.is_identity()
         {

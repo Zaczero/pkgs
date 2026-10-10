@@ -407,6 +407,21 @@ fn area_shape(polygons: Vec<Polygon>) -> Option<Shape> {
 }
 
 fn dissolved_area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::error::Error> {
+    // Cell membership uses XY only. Strip extra ordinates from this temporary
+    // area model before either the singleton or union path; the source shapes
+    // remain owned by the caller.
+    let polygons = polygons
+        .into_iter()
+        .map(|polygon| {
+            if polygon.axes() == crate::geometry::CoordinateAxes::XY {
+                return Ok(polygon);
+            }
+            let Shape::Polygon(polygon) = Shape::Polygon(polygon).force_2d()? else {
+                unreachable!("force_2d preserves polygon kind")
+            };
+            Ok(polygon)
+        })
+        .collect::<Result<Vec<_>, crate::error::Error>>()?;
     if polygons.len() <= 1 {
         return Ok(area_shape(polygons));
     }
@@ -737,9 +752,7 @@ pub(crate) enum CellClass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ErrorKind;
-    use crate::geometry::GeometryErrorKind;
-    use crate::grid::geohash;
+    use crate::grid::{geohash, tile};
 
     fn contact(start: (f64, f64), end: (f64, f64)) -> RectContact {
         let unit = Bounds::new_raw(0.0, 0.0, 1.0, 1.0);
@@ -782,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn classifier_propagates_invalid_dissolved_area() {
+    fn classifier_uses_xy_membership_for_mixed_ordinate_sources() {
         use crate::geometry::Ring;
 
         let z_square = Polygon::new(
@@ -841,28 +854,45 @@ mod tests {
         let source =
             Shape::geometry_collection(vec![Shape::Polygon(z_square), Shape::Polygon(square)])
                 .expect("test collection is valid");
-        let authority_plan = PreparedPlan::new(source.clone());
-        let authority_cache = crate::geometry::FrameDependentCaches::default();
+        let original = source.clone();
+        let xy_reference = source.force_2d().expect("XY membership image");
+        assert_eq!(source.axes(), crate::geometry::CoordinateAxes::XYZ);
 
-        let error = match cover(
-            &source,
-            &source,
-            &authority_plan,
-            &authority_cache,
-            crate::geographic::GeographicFrame::crs84(),
-            RectCoverRule::Overlap,
-            geohash::roots(),
-            1,
-            None,
-        ) {
-            Ok(_) => panic!("cover preparation must reject dropped ordinates"),
-            Err(CoverError::Preparation(error)) => error,
-            Err(CoverError::Budget(error)) => panic!("unexpected budget error: {error}"),
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Geometry(GeometryErrorKind::OrdinateDropped(_))
-        ));
+        let mixed_classifier = NativeRectClassifier::new_with_area_tester(&source, None)
+            .expect("S2 grid area uses XY only");
+        let xy_classifier = NativeRectClassifier::new(&xy_reference).expect("XY reference area");
+        let rectangles = [
+            (Bounds::new_raw(0.25, 0.25, 0.75, 0.75), RectClass::Interior),
+            (Bounds::new_raw(1.25, 1.25, 1.75, 1.75), RectClass::Interior),
+            (Bounds::new_raw(3.0, 3.0, 3.5, 3.5), RectClass::Boundary),
+            (Bounds::new_raw(4.0, 4.0, 5.0, 5.0), RectClass::Outside),
+        ];
+        for (bounds, expected) in rectangles {
+            assert_eq!(
+                mixed_classifier
+                    .classify_bounds(bounds)
+                    .expect("mixed-source classification"),
+                expected
+            );
+            assert_eq!(
+                mixed_classifier
+                    .classify_bounds(bounds)
+                    .expect("mixed-source classification"),
+                xy_classifier
+                    .classify_bounds(bounds)
+                    .expect("XY reference classification")
+            );
+        }
+
+        let mixed_area = dissolved_polygonal_area(&source)
+            .expect("mixed-source H3 area preparation")
+            .expect("polygonal source");
+        let xy_area = dissolved_polygonal_area(&xy_reference)
+            .expect("XY reference H3 area preparation")
+            .expect("polygonal source");
+        assert_eq!(mixed_area, xy_area);
+        assert_eq!(source, original);
+        assert_eq!(source.axes(), crate::geometry::CoordinateAxes::XYZ);
     }
 
     /// A near-world polygon covered at a fine depth expands past the shared
@@ -938,8 +968,8 @@ mod tests {
     #[test]
     fn center_rule_emits_only_center_covered_cells() {
         use crate::geometry::Ring;
-        // Unit square: center-rule at coarse precision should match
-        // overlap-then-filter on the same classifier.
+        // Unit square: a cell center is covered exactly when both coordinates
+        // lie in the closed source square.
         let shell = vec![
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 0.0),
@@ -954,7 +984,7 @@ mod tests {
         let authority_plan = PreparedPlan::new(poly.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
         let depth = 3_u8;
-        let center = cover(
+        let center_cover = cover(
             &poly,
             &poly,
             &authority_plan,
@@ -978,25 +1008,28 @@ mod tests {
             None,
         )
         .expect("cover");
-        let prepared = crate::geometry::GeographicPrepared::try_new(
-            &authority_plan,
-            &authority_cache,
-            crate::geographic::GeographicFrame::crs84(),
-        )
-        .expect("fixture admits");
-        let graph = crate::geometry::TopologyGraph::geographic(prepared.view()).unwrap();
+        let mut covered_centers = 0;
+        let mut uncovered_centers = 0;
         let filtered: Vec<_> = overlap
             .into_iter()
             .filter(|cell| {
                 let bounds = cell.bounds();
-                let c = Point::new_raw_xy(
+                let center = Point::new_raw_xy(
                     f64::midpoint(bounds.minx(), bounds.maxx()),
                     f64::midpoint(bounds.miny(), bounds.maxy()),
                 );
-                graph.covers_point(c.xy())
+                let covered = (0.0..=1.0).contains(&center.x) && (0.0..=1.0).contains(&center.y);
+                if covered {
+                    covered_centers += 1;
+                } else {
+                    uncovered_centers += 1;
+                }
+                covered
             })
             .collect();
-        assert_eq!(center, filtered);
+        assert!(covered_centers > 0, "fixture needs a covered center");
+        assert!(uncovered_centers > 0, "fixture needs an uncovered center");
+        assert_eq!(center_cover, filtered);
     }
 
     #[test]
@@ -1046,7 +1079,7 @@ mod tests {
         let plan = PreparedPlan::new(source.clone());
         let cache = crate::geometry::FrameDependentCaches::default();
         let frame = crate::geographic::GeographicFrame::crs84();
-        let root = crate::grid::tile::root();
+        let root = tile::root();
         let classifier = GeographicCandidateClassifier::new(&source, &source, &plan, &cache, frame)
             .expect("fixture admits");
         let bounds = root.bounds();

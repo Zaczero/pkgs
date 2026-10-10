@@ -1,4 +1,4 @@
-use crate::array::{ArrayRow, PyGeometryArray};
+use crate::array::PyGeometryArray;
 #[cfg(test)]
 use crate::broadcast::metrics::ShapeData;
 use crate::broadcast::metrics::{
@@ -8,6 +8,7 @@ use crate::broadcast::metrics::{
 use crate::crs::local::{LocalInputPurpose, PreparedLocalInput, geodesic_by_identity};
 use crate::dispatch::MetricOp;
 use crate::geographic::{ComputedEdgeIntent, GeographicFrame, lonlat as geographic};
+use crate::geometry::storage::packed_columns::PackedColumns;
 use crate::geometry::storage::{PackedStorage, PointRows};
 use crate::geometry::{
     FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, TopologyDomain,
@@ -135,6 +136,26 @@ pub(crate) fn resolve_metric(
     unit: Option<DistanceUnit>,
     operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
+    resolve_metric_with_state(crs, unit, operation, None)
+}
+
+/// Resolve a metric against a snapshot already captured by the operation's
+/// topology admission.
+pub(crate) fn resolve_metric_at(
+    crs: Option<&str>,
+    unit: Option<DistanceUnit>,
+    operation: MetricOp,
+    state: &crs::RuntimeState,
+) -> PyResult<crs::MetricModel> {
+    resolve_metric_with_state(crs, unit, operation, Some(state))
+}
+
+fn resolve_metric_with_state(
+    crs: Option<&str>,
+    unit: Option<DistanceUnit>,
+    operation: MetricOp,
+    state: Option<&crs::RuntimeState>,
+) -> PyResult<crs::MetricModel> {
     #[cfg(test)]
     binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
@@ -144,8 +165,17 @@ pub(crate) fn resolve_metric(
             "{operation} unit='meters' requires a CRS; CRS-free geometries have no meter scale — \
              use unit='planar' for raw coordinate units, or set a CRS"
         ))),
-        Some(DistanceUnit::Meters) => Ok(crs::metric_model_meters(crs.expect("checked above"))?),
-        None => Ok(crs::metric_model(crs)?),
+        Some(DistanceUnit::Meters) => {
+            let crs = crs.expect("checked above");
+            Ok(match state {
+                Some(state) => crs::metric_model_meters_at(crs, state)?,
+                None => crs::metric_model_meters(crs)?,
+            })
+        },
+        None => Ok(match state {
+            Some(state) => crs::metric_model_at(crs, state)?,
+            None => crs::metric_model(crs)?,
+        }),
     }
 }
 
@@ -204,7 +234,16 @@ pub(crate) fn lonlat_shape(geometry: &PyGeometry) -> PyResult<Shape> {
 /// Array sibling of [`lonlat_shape`]: validated lon/lat points at logical rows.
 pub(crate) enum LonLatPointRows<'a> {
     Source(PointRows<'a>),
-    Columns { xs: Vec<f64>, ys: Vec<f64> },
+    Columns {
+        xs: Vec<f64>,
+        ys: Vec<f64>,
+    },
+    CompactColumns {
+        xs: Vec<f64>,
+        ys: Vec<f64>,
+        present_rows: Vec<usize>,
+        logical_len: usize,
+    },
 }
 
 impl LonLatPointRows<'_> {
@@ -212,18 +251,40 @@ impl LonLatPointRows<'_> {
         match self {
             Self::Source(points) => points.len(),
             Self::Columns { xs, .. } => xs.len(),
+            Self::CompactColumns { logical_len, .. } => *logical_len,
         }
     }
 
-    pub(crate) fn get(&self, row: usize) -> Point {
+    pub(crate) fn for_each_present(
+        &self,
+        mut is_missing: impl FnMut(usize) -> bool,
+        mut visit: impl FnMut(usize, Point),
+    ) {
         match self {
-            Self::Source(points) => points.get(row),
-            Self::Columns { xs, ys } => Point::new_raw_xy(
-                *xs.get(row)
-                    .expect("longitude columns cover every logical row"),
-                *ys.get(row)
-                    .expect("latitude columns cover every logical row"),
-            ),
+            Self::Source(points) => {
+                for row in 0..points.len() {
+                    if !is_missing(row) {
+                        visit(row, points.get(row));
+                    }
+                }
+            },
+            Self::Columns { xs, ys } => {
+                for (row, (&x, &y)) in xs.iter().zip(ys).enumerate() {
+                    if !is_missing(row) {
+                        visit(row, Point::new_raw_xy(x, y));
+                    }
+                }
+            },
+            Self::CompactColumns {
+                xs,
+                ys,
+                present_rows,
+                ..
+            } => {
+                for ((&row, &x), &y) in present_rows.iter().zip(xs).zip(ys) {
+                    visit(row, Point::new_raw_xy(x, y));
+                }
+            },
         }
     }
 }
@@ -239,6 +300,22 @@ pub(crate) enum LonLatPointsError {
 
 fn lonlat_domain(row: usize, x: f64, y: f64) -> Result<(), LonLatPointsError> {
     geographic::validate_lonlat_xy(x, y).map_err(|error| LonLatPointsError::Row(row, error))
+}
+
+fn transform_failure_to_row(
+    failure: crate::crs::TransformFailure,
+    present_rows: &[usize],
+) -> LonLatPointsError {
+    let crate::crs::TransformFailure { error, coordinate } = failure;
+    match coordinate {
+        Some(coordinate) => LonLatPointsError::Row(
+            *present_rows
+                .get(coordinate)
+                .expect("transform failure coordinate belongs to the present-row batch"),
+            error,
+        ),
+        None => LonLatPointsError::Setup(error),
+    }
 }
 
 fn transform_present(
@@ -261,8 +338,8 @@ fn transform_present(
     }
     let plan =
         crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
-    plan.transform_coordinates(&mut px, &mut py, crate::Zt::None)
-        .map_err(LonLatPointsError::Setup)?;
+    plan.transform_coordinates_indexed(&mut px, &mut py, crate::Zt::None)
+        .map_err(|failure| transform_failure_to_row(failure, present))?;
     for ((&row, x), y) in present.iter().zip(px).zip(py) {
         lonlat_domain(row, x, y)?;
         *xs.get_mut(row)
@@ -273,49 +350,75 @@ fn transform_present(
     Ok(())
 }
 
+fn transform_compact_present(
+    crs: &str,
+    xs: &mut [f64],
+    ys: &mut [f64],
+    present_rows: &[usize],
+) -> Result<(), LonLatPointsError> {
+    let plan =
+        crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
+    plan.transform_coordinates_indexed(xs, ys, crate::Zt::None)
+        .map_err(|failure| transform_failure_to_row(failure, present_rows))?;
+    for (index, &row) in present_rows.iter().enumerate() {
+        lonlat_domain(
+            row,
+            *xs.get(index)
+                .expect("transformed longitude column matches present rows"),
+            *ys.get(index)
+                .expect("transformed latitude column matches present rows"),
+        )?;
+    }
+    Ok(())
+}
+
 fn compact_lonlat_points(
     array: &PyGeometryArray,
 ) -> Result<LonLatPointRows<'_>, LonLatPointsError> {
     let projected_crs = array.crs_str().filter(|crs| !crs::is_wgs84_lonlat(crs));
-    let mut xs = Vec::with_capacity(array.len());
-    let mut ys = Vec::with_capacity(array.len());
-    let mut present = Vec::with_capacity(array.len());
-    for logical_row in array
-        .row_operation()
-        .rows_with_missing(|| (f64::NAN, f64::NAN))
-    {
-        match logical_row {
-            ArrayRow::Missing { value, .. } => {
-                xs.push(value.0);
-                ys.push(value.1);
-            },
-            ArrayRow::Present(row) => {
-                let logical = row.logical();
-                let storage::ShapeRow::Point(point) = row.row() else {
-                    unreachable!("compact point storage yields point rows")
-                };
-                xs.push(point.x);
-                ys.push(point.y);
-                present.push(logical);
-            },
-        }
+    let Some(PackedColumns::Points(points)) = array.row_owner().packed_columns() else {
+        unreachable!("compact nullable point rows expose packed point columns");
+    };
+    let point_rows = points.rows();
+    let present_count = point_rows.present_count();
+    let mut xs = Vec::with_capacity(present_count);
+    let mut ys = Vec::with_capacity(present_count);
+    let mut present_rows = Vec::with_capacity(present_count);
+    for (logical, physical) in point_rows.cursor() {
+        let Some(physical) = physical else {
+            continue;
+        };
+        let (x, y) = points.physical_xy_at(physical);
+        xs.push(x);
+        ys.push(y);
+        present_rows.push(logical);
     }
     let Some(crs) = projected_crs else {
-        for &logical in &present {
+        for (index, &row) in present_rows.iter().enumerate() {
             lonlat_domain(
-                logical,
-                *xs.get(logical)
-                    .expect("present logical row is inside longitude columns"),
-                *ys.get(logical)
-                    .expect("present logical row is inside latitude columns"),
+                row,
+                *xs.get(index)
+                    .expect("compact longitude column matches present rows"),
+                *ys.get(index)
+                    .expect("compact latitude column matches present rows"),
             )?;
         }
-        return Ok(LonLatPointRows::Columns { xs, ys });
+        return Ok(LonLatPointRows::CompactColumns {
+            xs,
+            ys,
+            present_rows,
+            logical_len: array.len(),
+        });
     };
-    if !present.is_empty() {
-        transform_present(crs, &mut xs, &mut ys, &present)?;
+    if !present_rows.is_empty() {
+        transform_compact_present(crs, &mut xs, &mut ys, &present_rows)?;
     }
-    Ok(LonLatPointRows::Columns { xs, ys })
+    Ok(LonLatPointRows::CompactColumns {
+        xs,
+        ys,
+        present_rows,
+        logical_len: array.len(),
+    })
 }
 
 /// Resolve every logical row of `array` to a validated lon/lat point.
@@ -739,7 +842,9 @@ pub(crate) fn metric_shortest_line_resolved(
                         pair.as_ref(),
                         common,
                         frame,
-                        ComputedEdgeIntent::displacement(end.x - start.x),
+                        ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [
+                            start.x, end.x,
+                        ])?,
                     )
                 },
                 (_, TopologyDomain::Cartesian) => {
@@ -773,7 +878,11 @@ pub(crate) fn metric_shortest_line_resolved(
                     Some(&(start, end)),
                     common,
                     metric.frame,
-                    ComputedEdgeIntent::Stored(intent),
+                    ComputedEdgeIntent::retained_chart_witness(
+                        metric.frame,
+                        [start.x, end.x],
+                        intent,
+                    )?,
                 ),
                 None => crate::geometry::nearest_line(None, common),
             }
@@ -959,16 +1068,33 @@ mod dwithin_parity_tests {
 
 #[cfg(test)]
 mod lonlat_points_tests {
-    use super::{LonLatPointRows, LonLatPointsError, lonlat_points};
+    use super::{GeometryArrayStorage, LonLatPointRows, LonLatPointsError, lonlat_points};
     use crate::array::PyGeometryArray;
     use crate::crs::frame::{Frame, crs_arc_static};
     use crate::geometry::storage::ValidityMask;
-    use crate::geometry::{CoordSeq, Point};
+    use crate::geometry::{CoordSeq, Point, Shape};
     use crate::io::parse_wkt;
 
     fn packed_xy(xs: Vec<f64>, ys: Vec<f64>, frame: Frame) -> PyGeometryArray {
         PyGeometryArray::packed_points(CoordSeq::try_from_vecs(xs, ys, None, None).unwrap(), frame)
             .unwrap()
+    }
+
+    fn assert_transform_error_row(array: &PyGeometryArray, expected_row: usize) {
+        match lonlat_points(array) {
+            Err(LonLatPointsError::Row(row, error)) => {
+                assert_eq!(row, expected_row);
+                assert!(
+                    error.to_string().contains("transverse Mercator domain"),
+                    "unexpected projected coordinate error: {error}"
+                );
+            },
+            Err(LonLatPointsError::Type) => panic!("expected a projected row error, got Type"),
+            Err(LonLatPointsError::Setup(error)) => {
+                panic!("expected a projected row error, got Setup({error})")
+            },
+            Ok(_) => panic!("expected a projected coordinate error on row {expected_row}"),
+        }
     }
 
     #[test]
@@ -977,8 +1103,12 @@ mod lonlat_points_tests {
         let points = lonlat_points(&array).expect("in-domain packed points");
         assert!(matches!(points, LonLatPointRows::Source(_)));
         assert_eq!(points.len(), 2);
-        assert_eq!(points.get(0), Point::new_raw_xy(1.0, 3.0));
-        assert_eq!(points.get(1), Point::new_raw_xy(2.0, 4.0));
+        let mut visited = Vec::new();
+        points.for_each_present(|_| false, |row, point| visited.push((row, point)));
+        assert_eq!(visited, [
+            (0, Point::new_raw_xy(1.0, 3.0)),
+            (1, Point::new_raw_xy(2.0, 4.0)),
+        ]);
     }
 
     #[test]
@@ -986,11 +1116,91 @@ mod lonlat_points_tests {
         let present = packed_xy(vec![1.0], vec![2.0], Frame::None);
         let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
-        assert!(array.is_compact_nullable());
         let points = lonlat_points(&array).expect("present row is in domain");
-        assert!(matches!(points, LonLatPointRows::Columns { .. }));
+        assert!(matches!(points, LonLatPointRows::CompactColumns { .. }));
         assert_eq!(points.len(), 3);
-        assert_eq!(points.get(1), Point::new_raw_xy(1.0, 2.0));
+        let mut visited = Vec::new();
+        points.for_each_present(
+            |row| array.is_row_missing(row),
+            |row, point| visited.push((row, point)),
+        );
+        assert_eq!(visited, [(1, Point::new_raw_xy(1.0, 2.0))]);
+    }
+
+    #[test]
+    fn compact_projected_points_transform_present_columns_in_place() {
+        let present = packed_xy(
+            vec![960_464.566_564_364_4],
+            vec![6_002_020.553_970_727],
+            Frame::Crs(crs_arc_static("EPSG:3857")),
+        );
+        let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
+        let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
+        let points = lonlat_points(&array).expect("projected point transforms to valid lon/lat");
+
+        assert!(matches!(points, LonLatPointRows::CompactColumns { .. }));
+        let mut visited = Vec::new();
+        points.for_each_present(
+            |row| array.is_row_missing(row),
+            |row, point| visited.push((row, point)),
+        );
+        assert_eq!(visited.len(), 1);
+        let (row, point) = *visited.first().expect("one point remains present");
+        assert_eq!(row, 1);
+        assert!((point.x - 8.628).abs() < 1e-10);
+        assert!((point.y - 47.366).abs() < 1e-10);
+    }
+
+    #[test]
+    fn compact_projected_transform_failure_maps_present_rank_to_logical_row() {
+        let present = packed_xy(
+            vec![500_000.0, 1e300],
+            vec![0.0, 1e300],
+            Frame::Crs(crs_arc_static("EPSG:32660")),
+        );
+        let array = PyGeometryArray::scatter_present_rows(
+            &present,
+            ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask"),
+        )
+        .unwrap();
+
+        assert_transform_error_row(&array, 3);
+    }
+
+    #[test]
+    fn mixed_point_transform_failure_maps_present_rank_to_logical_row() {
+        let array = PyGeometryArray::mixed_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(10.0, 20.0)),
+                Shape::Point(Point::new_raw_xy(500_000.0, 0.0)),
+                Shape::Point(Point::new_raw_xy(30.0, 40.0)),
+                Shape::Point(Point::new_raw_xy(1e300, 1e300)),
+            ],
+            Frame::Crs(crs_arc_static("EPSG:32660")),
+        )
+        .unwrap()
+        .with_missing_mask(Some(
+            ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask"),
+        ))
+        .unwrap();
+        assert!(matches!(array.storage(), GeometryArrayStorage::Mixed(_)));
+
+        assert_transform_error_row(&array, 3);
+    }
+
+    #[test]
+    fn projected_transform_plan_failure_remains_setup() {
+        let unavailable = "urn:example:unavailable";
+        let array = packed_xy(
+            vec![1.0],
+            vec![2.0],
+            Frame::Crs(crs_arc_static(unavailable)),
+        );
+
+        assert!(matches!(
+            lonlat_points(&array),
+            Err(LonLatPointsError::Setup(_))
+        ));
     }
 
     #[test]
@@ -1049,14 +1259,13 @@ mod lonlat_points_tests {
         );
         let mask = ValidityMask::from_vec(2, vec![true, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
-        assert!(array.is_compact_nullable());
         assert!(
             crate::crs::TransformPlan::new(unavailable, "EPSG:4326").is_err(),
             "counterfactual: building the plan must fail"
         );
         let points =
             lonlat_points(&array).expect("all-missing compact must not construct TransformPlan");
-        assert!(matches!(points, LonLatPointRows::Columns { .. }));
+        assert!(matches!(points, LonLatPointRows::CompactColumns { .. }));
         assert_eq!(points.len(), 2);
     }
 
@@ -1074,45 +1283,50 @@ mod lonlat_points_tests {
 #[cfg(test)]
 mod lonlat_shape_under_tests {
     use super::lonlat_shape_under;
+    use crate::crs::CrsError;
+    use crate::error::ErrorKind;
     use crate::geometry::{GeometryErrorKind, Point, Shape};
 
     #[test]
     fn domain_error_is_native_result() {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
-        let error = lonlat_shape_under(&shape, None).expect_err("out of domain");
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-        ));
-        let message = error.to_string();
-        assert!(
-            message.contains("invalid longitude/latitude (0, 95)"),
-            "{message}"
-        );
+        for crs in [None, Some("EPSG:4326")] {
+            let error = lonlat_shape_under(&shape, crs).expect_err("out of domain");
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            ));
+            let message = error.to_string();
+            assert!(
+                message.contains("invalid longitude/latitude (0, 95)"),
+                "{message}"
+            );
+        }
     }
 
     #[test]
-    fn nad83_transform_then_domain_is_native_geometry_error() {
+    fn nad83_transform_error_precedes_lonlat_domain_validation() {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 95.0));
-        let transformed = crate::crs::transform(&shape, "EPSG:4269", "EPSG:4326")
-            .expect("NAD83 to WGS84 must execute for (0, 95)");
-        let Shape::Point(point) = &transformed else {
-            panic!("NAD83 point transform must yield a point, got {transformed:?}");
-        };
-        crate::validate_lonlat_shape(&transformed)
-            .expect_err("transformed (0, 95) must fail native domain");
-        let error = lonlat_shape_under(&shape, Some("EPSG:4269"))
-            .expect_err("owned-Cow path must fail domain after transform");
-        assert!(
-            matches!(
+        let direct_error = crate::crs::transform(&shape, "EPSG:4269", "EPSG:4326")
+            .expect_err("transformation rejects the source latitude");
+        let adapter_error = lonlat_shape_under(&shape, Some("EPSG:4269"))
+            .expect_err("the adapter preserves the transformation failure");
+        for error in [direct_error, adapter_error] {
+            assert!(
+                matches!(
                 error.kind(),
-                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
-            ),
-            "expected domain Invalid after a successful transform, got {error}"
-        );
-        let expected = format!("invalid longitude/latitude ({}, {})", point.x, point.y);
-        let message = error.to_string();
-        assert!(message.contains(&expected), "{message}");
+                ErrorKind::Crs(CrsError::Transform {
+                    from,
+                    to,
+                    message,
+                    ..
+                }) if from.as_ref() == "EPSG:4269"
+                    && to.as_ref() == "EPSG:4326"
+                    && message.as_ref() == "projection failed: latitude 9.5e1 is outside the geographic coordinate domain"
+                ),
+                "expected the original transform context and latitude cause, got {error}"
+            );
+        }
     }
 }
 

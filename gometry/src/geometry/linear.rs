@@ -76,7 +76,7 @@ impl MeasureRange {
 
 impl Shape {
     #[cfg(test)]
-    pub fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
+    pub fn line_locate_point_streaming(&self, point: Point, normalized: bool) -> Result<f64> {
         crate::geometry::locate_planar_route(self.linework()?.into_iter(), point, normalized)
     }
 
@@ -125,11 +125,6 @@ impl PreparedPlan {
     pub(crate) fn line_substring(&self, range: MeasureRange, normalized: bool) -> Result<Shape> {
         self.line_index()?
             .substring(range, normalized, &PlanarMetric)
-    }
-
-    pub(crate) fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
-        let index = self.line_index()?;
-        index.locate_point_prepared(point, normalized, || self.distance_parts())
     }
 }
 
@@ -327,12 +322,12 @@ impl Shape {
     /// Interpolated M ordinate at the location on this geometry nearest
     /// `point`.
     #[cfg(test)]
-    pub fn line_locate_point_m(&self, point: Point) -> Result<f64> {
-        self.line_locate_point_m_with(point, &PlanarMetric)
+    pub fn line_locate_point_m_streaming(&self, point: Point) -> Result<f64> {
+        self.line_locate_point_m_streaming_with(point, &PlanarMetric)
     }
 
     #[cfg(test)]
-    pub(crate) fn line_locate_point_m_with(
+    pub(crate) fn line_locate_point_m_streaming_with(
         &self,
         point: Point,
         metric: &PlanarMetric,
@@ -369,14 +364,6 @@ impl PreparedPlan {
         Ok(Shape::Point(
             self.measured_line_index()?.interpolate_finite(m, metric)?,
         ))
-    }
-
-    pub(crate) fn line_locate_point_m_with(
-        &self,
-        point: Point,
-        metric: &PlanarMetric,
-    ) -> Result<f64> {
-        self.measured_line_index()?.locate(point, metric)
     }
 
     pub(crate) fn line_substring_m_with<M: SegmentMetric>(
@@ -447,12 +434,7 @@ impl MeasuredLineIndex {
             .get(ordinal)
             .expect("measured ordinal belongs to the flattened route");
         let length = metric.chart_edge_length(&part.edge)?;
-        let along = metric.chart_edge_length_to(&part.edge, parameter)?;
-        let fraction = if length == 0.0 {
-            0.0
-        } else {
-            (along / length).clamp(0.0, 1.0)
-        };
+        let fraction = metric.chart_edge_arclength_fraction(&part.edge, parameter, Some(length))?;
         Ok(crate::geometry::interpolate_f64(
             part.start.m().unwrap_or(0.0),
             part.end.m().unwrap_or(0.0),
@@ -601,7 +583,7 @@ impl MeasuredLineIndex {
         Ok(result.unwrap_or_else(|| self.last_point()))
     }
 
-    fn locate(&self, point: Point, metric: &PlanarMetric) -> Result<f64> {
+    pub(crate) fn locate(&self, point: Point, metric: &PlanarMetric) -> Result<f64> {
         if point.x.is_nan() {
             return Ok(f64::NAN);
         }
@@ -818,7 +800,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
         let upper_bound = tolerance.next_up() * tolerance.next_up();
         for point in points {
             let mut nearest = None;
-            bvh.nearest_point_with_stack::<false, true, true>(
+            bvh.nearest_point_with_stack::<true, true>(
                 &linework,
                 *point,
                 upper_bound,
@@ -830,14 +812,15 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
             if let Some(nearest) = nearest
                 && let Some(ordinal) = nearest.segment_ordinal()
             {
-                let pair = coords
-                    .get(ordinal..ordinal.wrapping_add(2))
+                let [start, end] = coords
+                    .array_windows::<2>()
+                    .nth(ordinal)
                     .expect("the selected source segment has two coordinates");
                 cuts.push((
                     ordinal,
                     segment_projection(*point, Segment {
-                        start: pair[0].xy(),
-                        end: pair[1].xy(),
+                        start: start.xy(),
+                        end: end.xy(),
                     })?,
                 ));
             }
@@ -912,12 +895,14 @@ pub(super) fn line_point_offset<C: Coordinates + ?Sized>(
     point: Point,
     tolerance: f64,
 ) -> crate::error::Result<Option<(usize, SegmentProjection)>> {
+    #[cfg(test)]
+    use crate::geometry::facet_bvh::NEAREST_WORK;
+
     let mut best = None;
     let mut best_key = None;
     for (segment_index, [start, end]) in line.segment_pairs().enumerate() {
         #[cfg(test)]
-        crate::geometry::facet_bvh::NEAREST_WORK
-            .with(|work| work.set(work.get().saturating_add(1)));
+        NEAREST_WORK.with(|work| work.set(work.get().saturating_add(1)));
         let length = point_distance(start, end);
         if length == 0.0 {
             continue;
@@ -999,5 +984,133 @@ mod measured_window_tests {
         drop(source);
         drop(coords);
         assert_eq!(line.ms(), Some(&[10.0, 25.0, 40.0][..]));
+    }
+
+    #[test]
+    fn indexed_split_uses_local_xyzm_windows_for_quarter_cuts() {
+        let owner = CoordSeq::try_from_vecs(
+            vec![
+                -20.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
+                14.0, 15.0, 16.0, 40.0,
+            ],
+            vec![
+                -40.0, 0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0,
+                26.0, 28.0, 30.0, 32.0, 80.0,
+            ],
+            Some(vec![
+                900.0, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0, 42.0, 46.0, 50.0, 54.0,
+                58.0, 62.0, 66.0, 70.0, 74.0, 1_900.0,
+            ]),
+            Some(vec![
+                9_000.0, 100.0, 106.0, 112.0, 118.0, 124.0, 130.0, 136.0, 142.0, 148.0, 154.0,
+                160.0, 166.0, 172.0, 178.0, 184.0, 190.0, 196.0, 19_000.0,
+            ]),
+        )
+        .unwrap();
+        let window = owner.view(crate::geometry::CoordWindow::from_range(1..18, owner.len()));
+        assert_eq!(window.len(), 17);
+        let source = Shape::LineString(LineSeq::from_proven(window));
+
+        let splitters = vec![
+            Point::new(0.25, 0.5).unwrap(),
+            Point::new(1.25, 2.5).unwrap(),
+            Point::new(2.25, 4.5).unwrap(),
+            Point::new(3.25, 6.5).unwrap(),
+            Point::new(4.25, 8.5).unwrap(),
+            Point::new(5.25, 10.5).unwrap(),
+            Point::new(6.25, 12.5).unwrap(),
+            Point::new(7.25, 14.5).unwrap(),
+            Point::new(8.25, 16.5).unwrap(),
+            Point::new(9.25, 18.5).unwrap(),
+            Point::new(10.25, 20.5).unwrap(),
+            Point::new(11.25, 22.5).unwrap(),
+            Point::new(12.25, 24.5).unwrap(),
+            Point::new(13.25, 26.5).unwrap(),
+            Point::new(14.25, 28.5).unwrap(),
+            Point::new(15.25, 30.5).unwrap(),
+            Point::new(0.0, 0.0).unwrap(),
+            Point::new(16.0, 32.0).unwrap(),
+        ];
+        let output = source.split_at_points(&splitters, 0.0).unwrap();
+        let records = |shape: &Shape| {
+            let Shape::LineString(line) = shape else {
+                panic!("line output");
+            };
+            line.as_coords()
+                .iter()
+                .map(|point| {
+                    [
+                        point.x.to_bits(),
+                        point.y.to_bits(),
+                        point.z.to_bits(),
+                        point.m.to_bits(),
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(records(output.first().expect("first split piece")), vec![
+            [
+                0.0_f64.to_bits(),
+                0.0_f64.to_bits(),
+                10.0_f64.to_bits(),
+                100.0_f64.to_bits(),
+            ],
+            [
+                0.25_f64.to_bits(),
+                0.5_f64.to_bits(),
+                11.0_f64.to_bits(),
+                101.5_f64.to_bits(),
+            ],
+        ]);
+        assert_eq!(output.len(), 17);
+        for piece in &output {
+            let Shape::LineString(line) = piece else {
+                panic!("line output");
+            };
+            assert_eq!(line.as_coords().axes(), CoordinateAxes::XYZM);
+        }
+
+        let mut pieces = output.iter();
+        pieces.next().expect("first split piece");
+        for _ in 0..7 {
+            pieces.next().expect("split piece before middle");
+        }
+        let middle = pieces.next().expect("middle split piece");
+        let last = pieces.last().expect("last split piece");
+
+        assert_eq!(records(middle), vec![
+            [
+                7.25_f64.to_bits(),
+                14.5_f64.to_bits(),
+                39.0_f64.to_bits(),
+                143.5_f64.to_bits(),
+            ],
+            [
+                8.0_f64.to_bits(),
+                16.0_f64.to_bits(),
+                42.0_f64.to_bits(),
+                148.0_f64.to_bits(),
+            ],
+            [
+                8.25_f64.to_bits(),
+                16.5_f64.to_bits(),
+                43.0_f64.to_bits(),
+                149.5_f64.to_bits(),
+            ],
+        ]);
+        assert_eq!(records(last), vec![
+            [
+                15.25_f64.to_bits(),
+                30.5_f64.to_bits(),
+                71.0_f64.to_bits(),
+                191.5_f64.to_bits(),
+            ],
+            [
+                16.0_f64.to_bits(),
+                32.0_f64.to_bits(),
+                74.0_f64.to_bits(),
+                196.0_f64.to_bits(),
+            ],
+        ]);
     }
 }

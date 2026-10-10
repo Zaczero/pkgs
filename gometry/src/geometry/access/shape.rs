@@ -9,7 +9,7 @@ use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension, GeometryErrorKind, GeometryKind,
     HasM, HasZ, LineSeq, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, PointKey,
     Polygon, Shape, ShapeCountQuery, ShapeOwnerKey, VisiblePointRunKey, VisibleXYKey,
-    admit_shape_vector_capacity, line_length_3d,
+    line_length_3d,
 };
 
 fn reserve_unique_points_capacity(
@@ -79,7 +79,7 @@ pub(crate) enum RunIdentity {
 }
 
 /// The same CoordSeq owner can represent point support and linework support.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum SupportRunKind {
     PointSet,
     SegmentChain,
@@ -453,7 +453,49 @@ pub(crate) enum PointSet<'a> {
     Empty,
 }
 
+fn point_set_only_with_owners(shape: &Shape, owners: &mut SharedShapeOwners) -> bool {
+    match shape {
+        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => true,
+        Shape::LineString(line) => line.as_coords().is_empty(),
+        Shape::MultiLineString(lines) => lines.iter().all(|line| line.as_coords().is_empty()),
+        Shape::Polygon(polygon) => polygon.rings().all(|ring| ring.coords().is_empty()),
+        Shape::MultiPolygon(polygons) => polygons
+            .iter()
+            .all(|polygon| polygon.rings().all(|ring| ring.coords().is_empty())),
+        Shape::GeometryCollection(collection) => {
+            if owners.first_collection(collection.as_slice(), collection.members_are_shared()) {
+                collection
+                    .iter()
+                    .all(|member| point_set_only_with_owners(member, owners))
+            } else {
+                true
+            }
+        },
+    }
+}
+
 impl Shape {
+    /// Whether every nonempty component is puntal. Empty geometries keep
+    /// their declared kind but contribute no site to a point-set selection.
+    pub(crate) fn point_set_only(&self) -> bool {
+        match self {
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::Empty(
+                GeometryKind::Point | GeometryKind::MultiPoint | GeometryKind::GeometryCollection,
+                _,
+            ) => true,
+            Self::GeometryCollection(_) => {
+                point_set_only_with_owners(self, &mut SharedShapeOwners::for_collections())
+            },
+            Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::Empty(..) => false,
+        }
+    }
+
     pub const fn geometry_type(&self) -> &'static str {
         GeometryKind::of(self).geometry_type()
     }
@@ -906,6 +948,7 @@ impl Shape {
             });
     }
 
+    /// Append the first occurrence of each selected point-only run.
     pub(crate) fn append_first_point_only(&self, identity: RunIdentity, out: &mut Vec<Point>) {
         let ControlFlow::Continue(()): ControlFlow<Infallible> = self
             .for_each_first_point_only_run(identity, |run| {
@@ -1067,12 +1110,10 @@ impl Shape {
     /// boxed-`dyn` iterator allocation of the historical `points()`. Prefer
     /// it for hot paths (distance worksets, geodesic/Hausdorff distance,
     /// min-clearance) that need an owned vertex buffer. Returns
-    /// `SizeOverflow` if the logical point count or vector layout is not
-    /// representable.
+    /// `SizeOverflow` if the logical point count is not representable.
     pub fn points_vec(&self) -> crate::error::Result<Vec<Point>> {
         let count = ShapeCountQuery::default().coordinates(self)?;
-        let capacity = admit_shape_vector_capacity::<Point>(count)?;
-        let mut points = Vec::with_capacity(capacity);
+        let mut points = Vec::with_capacity(count);
         self.collect_points_into(&mut points);
         Ok(points)
     }
@@ -1104,8 +1145,7 @@ impl Shape {
                 CoordSeq::try_from_points(&unique)?,
             ));
         }
-        let capacity = admit_shape_vector_capacity::<Self>(unique.len())?;
-        let mut members = Vec::with_capacity(capacity);
+        let mut members = Vec::with_capacity(unique.len());
         members.extend(unique.into_iter().map(Self::Point));
         Self::geometry_collection(members)
     }

@@ -1,3 +1,4 @@
+use super::live_handles::LiveHandles;
 use super::str_tree::{StaticStrTree, StrNode};
 use crate::geometry::PreparedPlan;
 use crate::py::index::{
@@ -156,7 +157,7 @@ impl HeapLeafPolicy<'_> {
     fn visit_leaf<B>(
         &mut self,
         tree: &StaticStrTree,
-        live: &[u8],
+        live: &LiveHandles,
         node: &StrNode,
         ceiling: Option<f64>,
         bound: &B,
@@ -166,12 +167,11 @@ impl HeapLeafPolicy<'_> {
     {
         self.leaf_frontier.clear();
         self.leaf_frontier.reserve(tree.leaf_entries(node).len());
-        for entry in tree.leaf_entries(node).iter().filter(|entry| {
-            *live
-                .get(entry.idx)
-                .expect("STR entry handle belongs to the index row table")
-                != 0
-        }) {
+        for entry in tree
+            .leaf_entries(node)
+            .iter()
+            .filter(|entry| live.contains(entry.idx))
+        {
             self.leaf_frontier.push(LeafFrontierEntry {
                 bound: bound(&entry.envelope),
                 idx: entry.idx,
@@ -591,7 +591,7 @@ impl PySpatialIndex {
                     if level == 0 {
                         leaf_policy.visit_leaf(
                             &self.bulk,
-                            &self.rows.live,
+                            &self.rows.live_handles,
                             bulk_node,
                             ceiling,
                             &bound,
@@ -613,7 +613,7 @@ impl PySpatialIndex {
                     if level == 0 {
                         leaf_policy.visit_leaf(
                             tree,
-                            &self.rows.live,
+                            &self.rows.live_handles,
                             run_node,
                             ceiling,
                             &bound,
@@ -669,7 +669,7 @@ impl PySpatialIndex {
             .entry_count()
             .wrapping_sub(self.bulk_dead_entries)
             .wrapping_add(self.overflow.live_entry_count());
-        visited.reset(self.rows.len(), self.rows.live_count(), entries);
+        visited.reset(self.rows.next_handle, self.rows.live_handles.len(), entries);
     }
 }
 

@@ -128,11 +128,16 @@ pub(crate) fn definition(value: &str) -> Result<SmolStr> {
     Ok(SmolStr::from(normalized.as_ref()))
 }
 
+pub(crate) enum ConfigUpdate<T> {
+    Keep,
+    Set(T),
+}
+
 pub(crate) fn configure_runtime(
-    search_paths: Option<Vec<String>>,
-    user_writable_directory: Option<String>,
+    search_paths: ConfigUpdate<Option<Vec<String>>>,
+    user_writable_directory: ConfigUpdate<Option<String>>,
 ) -> Result<RuntimeConfig> {
-    if let Some(paths) = &search_paths {
+    if let ConfigUpdate::Set(Some(paths)) = &search_paths {
         if paths.iter().any(String::is_empty) {
             return Err(CrsError::invalid(
                 "search_paths entries must be non-empty strings".to_owned(),
@@ -142,19 +147,22 @@ pub(crate) fn configure_runtime(
             cstring(path.as_str())?;
         }
     }
-    validate_runtime_path(
-        "user_writable_directory",
-        user_writable_directory.as_deref(),
-    )?;
+    if let ConfigUpdate::Set(path) = &user_writable_directory {
+        validate_runtime_path("user_writable_directory", path.as_deref())?;
+    }
     let mut state = runtime_state_lock()
         .write()
         .map_err(|_| CrsError::invalid("CRS runtime config lock is poisoned".to_owned()))?;
     let mut config = (*state.config).clone();
-    if let Some(search_paths) = search_paths {
-        config.search_paths = Some(search_paths);
+    match search_paths {
+        ConfigUpdate::Keep => {},
+        ConfigUpdate::Set(search_paths) => config.search_paths = search_paths,
     }
-    if let Some(user_writable_directory) = user_writable_directory {
-        config.user_writable_directory = Some(user_writable_directory);
+    match user_writable_directory {
+        ConfigUpdate::Keep => {},
+        ConfigUpdate::Set(user_writable_directory) => {
+            config.user_writable_directory = user_writable_directory;
+        },
     }
     if config == *state.config {
         return Ok(config);

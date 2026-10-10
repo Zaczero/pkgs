@@ -20,14 +20,15 @@ use crate::geometry::storage::validity::ValidityMask;
 use crate::geometry::storage::{
     RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows,
 };
-use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, storage};
+use crate::geometry::{CoordSeq, storage};
 use crate::grid::cell::{GridCell, HierarchicalCell as _};
 use crate::grid::cell_set;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::grid_kind::{
-    collect_ids, collect_inferred_ids, grid_kind_from_type, membership_id,
+    collect_ids, collect_inferred_ids, grid_kind_from_type, grid_kind_from_value, is_raw_identity,
+    membership_id,
 };
 use crate::py::cells::{
     FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
@@ -48,16 +49,17 @@ use crate::py::vectors::Groups;
 /// Index with an integer for the typed cell object or `None` for a missing row;
 /// slice or mask for a new `CellArray`. Build from an iterable containing
 /// typed cell objects and `None`; the grid is inferred from the first concrete
-/// cell. Raw ids and tokens are accepted when a concrete cell supplies the
-/// family. For raw-only ids/tokens, arrays, buffers, or all-missing inputs,
-/// pass ``type=`` explicitly; every id is validated for that grid.
+/// cell. Raw ids for H3, S2, and Tile and tokens for any grid may accompany a
+/// typed cell of the same grid. Geohash cells use tokens, not integer ids. For
+/// raw-only values, numeric arrays or buffers, empty input, or all-missing
+/// input, pass ``type=`` explicitly; every id and token is validated.
 ///
 /// Parameters
 /// ----------
-/// values : numpy.ndarray or iterable
-///     Typed cell objects and ``None``; raw ids/tokens are also accepted when
-///     a concrete cell supplies the family.
-/// type : type, optional
+/// values : iterable, numpy.ndarray, or buffer
+///     Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
+///     any grid are accepted when a concrete cell supplies the family.
+/// type : type
 ///     Native cell class. Inferred from a concrete typed cell when present.
 #[pyclass(
     name = "CellArray",
@@ -473,21 +475,44 @@ impl PyCellArray {
             .map(|logical| G::from_validated_id(self.id_at(logical)))
     }
 
-    fn missing_mask(&self) -> Option<ValidityMask> {
-        if matches!(self.selection_ref(), RowSelectionRef::Identity) {
-            return self.storage.missing.clone();
-        }
-        ValidityMask::from_missing_iter(
-            self.len(),
-            (0..self.len()).map(|row| self.is_row_missing(row)),
-        )
+    fn missing_mask_and_present_count(&self) -> (Option<ValidityMask>, usize) {
+        let missing = if matches!(self.selection_ref(), RowSelectionRef::Identity) {
+            self.storage.missing.clone()
+        } else {
+            ValidityMask::from_missing_iter(
+                self.len(),
+                (0..self.len()).map(|row| self.is_row_missing(row)),
+            )
+        };
+        let present_count = missing
+            .as_ref()
+            .map_or(self.len(), ValidityMask::present_count);
+        (missing, present_count)
     }
 
-    fn map_logical_cells<G, T>(&self, f: impl FnMut(G) -> T) -> Vec<T>
+    fn map_logical_cells<G, T>(&self, mut f: impl FnMut(G) -> T) -> Vec<T>
     where
         G: CellArrayGrid,
     {
-        self.logical_cells::<G>().map(f).collect()
+        self.try_map_logical_cells::<G, _, std::convert::Infallible>(Vec::new(), |cell| Ok(f(cell)))
+            .expect("infallible cell mapping")
+    }
+
+    fn try_map_logical_cells<G, T, E>(
+        &self,
+        mut output: Vec<T>,
+        mut f: impl FnMut(G) -> Result<T, E>,
+    ) -> Result<Vec<T>, E>
+    where
+        G: CellArrayGrid,
+    {
+        for row in 0..self.len() {
+            if self.is_row_missing(row) {
+                continue;
+            }
+            output.push(f(G::from_validated_id(self.id_at(row)))?);
+        }
+        Ok(output)
     }
 
     fn numpy_array_kind(
@@ -585,13 +610,18 @@ impl PyCellArray {
                 values
             })
         } else {
-            let other_kind = grid_kind_from_type(&other.get_type())?;
-            if kind != other_kind {
-                return Err(GeometryError::new_err(format!(
-                    "cell types must match, got {} and {}",
-                    kind.class_name(),
-                    other_kind.class_name()
-                )));
+            if let Some(other_kind) = grid_kind_from_value(other) {
+                if kind != other_kind {
+                    return Err(GeometryError::new_err(format!(
+                        "cell types must match, got {} and {}",
+                        kind.class_name(),
+                        other_kind.class_name()
+                    )));
+                }
+            } else if !is_raw_identity(other, kind) {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "other must be a same-grid cell, integer id, or string token",
+                ));
             }
             let other_id = kind.id_from_value(other)?;
             dispatch_cell_grid!(self, G, {
@@ -662,13 +692,6 @@ impl RowGetItemContainer for PyCellArray {
     }
 }
 
-/// Per-kind bulk dispatch over the logical cells: monomorphize `$body` once
-/// per grid type (ids are pre-validated by construction, so the id -> cell
-/// conversions cannot fail).
-macro_rules! map_grid_cells {
-    ($self:expr, |$cell:ident| $body:expr) => {{ dispatch_cell_grid!($self, G, { $self.map_logical_cells::<G, _>(|$cell| $body) }) }};
-}
-
 frozen_pymethods! {
 impl PyCellArray {
     // NEP 13: opt out of numpy ufunc dispatch — cell ids are opaque keys, not
@@ -677,6 +700,39 @@ impl PyCellArray {
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
 
+    /// Construct a cell array from typed cells, ids, or tokens.
+    ///
+    /// The grid is inferred from a typed cell when ``type=None``. H3, S2, and
+    /// Tile ids and any grid's tokens may accompany a typed cell from the same
+    /// grid; Geohash cells accept tokens, not integer ids. Supply ``type=`` for
+    /// raw-only values, numeric arrays or buffers, empty input, or input
+    /// containing only ``None``. Wrap a single cell or supported id in an
+    /// iterable; a bare token string is ambiguous, so wrap one token in a
+    /// one-item iterable.
+    ///
+    /// Parameters
+    /// ----------
+    /// values : iterable, numpy.ndarray, or buffer
+    ///     Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
+    ///     are accepted when the grid can be inferred. Iterables are consumed
+    ///     in input order.
+    /// type : type
+    ///     One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
+    ///     ``GeohashCell`` classes, required when the grid cannot be inferred.
+    ///
+    /// Returns
+    /// -------
+    /// CellArray
+    ///     An immutable array in input order; ``None`` entries remain missing
+    ///     rows.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If the grid cannot be inferred, ``type`` is unsupported, or a value
+    ///     does not match the selected grid.
+    /// ParseError
+    ///     If an id or token is invalid for the selected grid.
     #[new]
     #[pyo3(signature = (values, *, r#type=None))]
     fn new(
@@ -696,17 +752,17 @@ impl PyCellArray {
         })
     }
 
-    /// ``sys.getsizeof`` support: the wrapper plus this array's logical
+    /// ``sys.getsizeof`` support: Python's allocation base plus this array's logical
     /// ``uint64`` id payload, missing flags, and any row-selection map. Shared
-    /// backing buffers are reported like NumPy views, not as the full parent
-    /// allocation.
+    /// backing buffers are estimated from the selected view, not the full
+    /// parent allocation.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(size_of::<Self>(), self.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     /// Grid-system token for the stored cell type.
@@ -751,14 +807,17 @@ impl PyCellArray {
         self.len() != 0
     }
 
-    /// Select cells by integer, slice, or fancy index.
+    /// Select cells by integer-like scalar, slice, or fancy index.
     ///
-    /// An ``int`` returns one cell object. A ``slice`` or fancy index returns
-    /// a ``CellArray`` of the same cell kind.
+    /// An ``int``, object implementing ``__index__``, or zero-dimensional
+    /// integer ndarray returns one cell object or ``None`` for a missing row.
+    /// A ``slice``, integer sequence, one-dimensional integer ndarray, or
+    /// boolean mask returns a ``CellArray`` of the same cell kind. Boolean
+    /// scalars and NumPy index arrays with rank above one raise ``TypeError``.
     ///
     /// Returns
     /// -------
-    /// Cell or CellArray
+    /// Cell, None, or CellArray
     fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         array_getitem(self, py, index)
     }
@@ -844,8 +903,8 @@ impl PyCellArray {
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------
@@ -872,8 +931,8 @@ fn contains(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAn
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------
@@ -1225,14 +1284,14 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
 
     /// Center points of every cell, as a packed WGS84 point array.
     ///
-    /// The bulk twin of each scalar cell's center property — one
-    /// vectorized call for the index-millions-of-points workflow, returning
-    /// zero-copy packed point storage.
+    /// Computes each center from its cell id and allocates a packed point
+    /// coordinate column.
     ///
     /// Returns
     /// -------
     /// GeometryArray
-    ///     One ``Point`` (lon/lat, ``OGC:CRS84``) per cell.
+    ///     Dense cells yield one ``Point`` (lon/lat, ``OGC:CRS84``) per row.
+    ///     Missing rows in a nullable ``CellArray`` remain ``None``.
     ///
     /// Examples
     /// --------
@@ -1243,28 +1302,34 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     #[getter]
     pub(crate) fn center(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
         use crate::grid::cell::GridCell as _;
+        let (missing, present_count) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let points = py.detach(move || map_grid_cells!(&cells, |cell| cell.center_point()));
-        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, points.len());
-        for point in points {
-            builder.push(point);
-        }
-        let coords = builder.finish()?;
+        let coords = py.detach(move || {
+            dispatch_cell_grid!(&cells, G, {
+                let mut xs = Vec::with_capacity(present_count);
+                let mut ys = Vec::with_capacity(present_count);
+                for cell in cells.logical_cells::<G>() {
+                    let point = cell.center_point();
+                    xs.push(point.x);
+                    ys.push(point.y);
+                }
+                CoordSeq::try_from_vecs(xs, ys, None, None).map_err(PyErr::from)
+            })
+        })?;
         let result = crate::PyGeometryArray::packed_points(
             coords,
             crate::Frame::Crs(crate::wgs84_crs()),
         )?;
-        Ok(match self.missing_mask() {
+        Ok(match missing {
             None => result,
             Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
     }
 
-    /// Geodesic cell areas in square meters.
+    /// Cell areas in square meters, using each grid's area model.
     ///
-    /// The bulk twin of each scalar cell's ``area`` property: H3 and S2 use
-    /// their exact cell geometry; geohash and tile cells use the ellipsoidal
-    /// area of their lon/lat rectangle.
+    /// H3 and S2 use an authalic-sphere model. Geohash and tile use the WGS 84
+    /// ellipsoidal area of their lon/lat rectangle.
     ///
     /// Returns
     /// -------
@@ -1301,22 +1366,25 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Returns
     /// -------
     /// GeometryArray
+    ///     Dense cells yield one polygon per row. Missing rows in a nullable
+    ///     ``CellArray`` remain ``None``.
     #[getter]
     pub(crate) fn polygon(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
+        let (missing, present_count) = self.missing_mask_and_present_count();
         let cells = self.clone();
-        let shapes = py.detach(move || {
+        let shapes = py.detach(move || -> PyResult<Vec<_>> {
             dispatch_cell_grid!(&cells, G, {
-                cells.map_logical_cells::<G, _>(|cell| {
-                    GridCell::boundary_shape(cell).map_err(PyErr::from)
-                })
+                cells.try_map_logical_cells::<G, _, PyErr>(
+                    Vec::with_capacity(present_count),
+                    |cell| GridCell::boundary_shape(cell).map_err(PyErr::from),
+                )
             })
-        });
-        let shapes = shapes.into_iter().collect::<PyResult<Vec<_>>>()?;
+        })?;
         let result = crate::PyGeometryArray::from_shapes(
             shapes,
             crate::Frame::Crs(crate::wgs84_crs()),
         )?;
-        Ok(match self.missing_mask() {
+        Ok(match missing {
             None => result,
             Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
@@ -1369,13 +1437,22 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let values = dispatch_cell_grid!(self, G, {
+            let mut present = self.logical_cells::<G>();
+            let first = present.next();
+            let target_depth = first
+                .as_ref()
+                .map(|_| cell_ops::parse_explicit_depth(depth, G::parse_depth))
+                .transpose()?;
+            let mut present = first.into_iter().chain(present);
             let mut values = Vec::with_capacity(self.len());
             for row in 0..self.len() {
                 let value = if self.is_row_missing(row) {
                     f64::NAN
                 } else {
-                    cell_ops::cell_descendant_count(
-                        G::from_validated_id(self.id_at(row)), depth, G::parse_depth,
+                    let cell = present.next().expect("present cell count matches");
+                    cell_ops::cell_descendant_count_at_depth(
+                        cell,
+                        target_depth.expect("a present cell admitted the depth"),
                     )? as f64
                 };
                 values.push(value);
@@ -1412,23 +1489,29 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
     pub(crate) fn parent(&self, depth: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let kind = self.kind();
-        let present = dispatch_cell_grid!(self, G, {
-            let mut present = Vec::with_capacity(self.len());
-            for cell in self.logical_cells::<G>() {
-                present.push(cell_ops::cell_parent(cell, depth, G::parse_depth)?.hash_key());
+        let ids = dispatch_cell_grid!(self, G, {
+            let mut present = self.logical_cells::<G>();
+            let first = present.next();
+            let target_depth = first
+                .as_ref()
+                .map(|_| cell_ops::parse_explicit_depth(depth, G::parse_depth))
+                .transpose()?;
+            let mut present = first.into_iter().chain(present);
+            let mut ids = Vec::with_capacity(self.len());
+            for row in 0..self.len() {
+                ids.push(if self.is_row_missing(row) {
+                    0
+                } else {
+                    cell_ops::cell_parent_at_depth(
+                        present.next().expect("present cell count matches"),
+                        target_depth.expect("a present cell admitted the depth"),
+                    )?
+                    .hash_key()
+                });
             }
-            Ok::<_, PyErr>(present)
+            Ok::<_, PyErr>(ids)
         })?;
-        let mut ids = Vec::with_capacity(self.len());
-        let mut next = present.into_iter();
-        for row in 0..self.len() {
-            ids.push(if self.is_row_missing(row) {
-                0
-            } else {
-                next.next().expect("present parent count matches")
-            });
-        }
-        let missing = self.missing_mask();
+        let (missing, _) = self.missing_mask_and_present_count();
         Ok(Self {
             storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
@@ -1814,6 +1897,7 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::{GridKind, PyCellArray};
+    use crate::grid::cell::GridCell as _;
 
     fn h3_id(lat: f64, lon: f64, resolution: u8) -> u64 {
         u64::from(
@@ -1873,5 +1957,122 @@ mod tests {
             selected.heap_bytes(),
             arc + size_of::<Vec<u64>>() + size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1
         );
+    }
+
+    #[test]
+    fn fallible_logical_mapping_stops_at_the_first_present_row_error() {
+        let cells = PyCellArray::from_ids_with_missing(
+            GridKind::H3Cell,
+            vec![
+                h3_id(37.7749, -122.4194, 7),
+                0,
+                h3_id(37.7749, -122.4194, 8),
+            ],
+            vec![false, true, false],
+        )
+        .select_logical_rows([2, 1, 0, 2]);
+        let mut visits = Vec::new();
+        let result = cells.try_map_logical_cells::<h3o::CellIndex, _, _>(Vec::new(), |cell| {
+            visits.push(u8::from(cell.resolution()));
+            if visits.len() == 2 {
+                Err(visits.len())
+            } else {
+                Ok(cell)
+            }
+        });
+        assert_eq!(result, Err(2));
+        assert_eq!(visits, [8, 7]);
+    }
+
+    #[test]
+    fn cell_array_depth_is_parsed_once_at_first_present_row() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                c"class Depth:\n    def __init__(self):\n        self.calls = 0\n        self.value = 6\n    def __index__(self):\n        self.calls += 1\n        return self.value\n",
+                c"<cell-array-depth-test>",
+                c"cell_array_depth_test",
+            )
+            .expect("depth module");
+            let depth = module
+                .getattr("Depth")
+                .and_then(|class| class.call0())
+                .expect("counting depth");
+            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![
+                h3_id(37.7749, -122.4194, 7),
+                h3_id(37.7749, -122.4194, 8),
+            ]);
+
+            let parent = cells
+                .parent(Some(&depth))
+                .expect("parent resolves one shared explicit depth");
+            let expected_parent = h3o::CellIndex::try_from(cells.id_at(0))
+                .expect("valid H3 id")
+                .parent_at(6)
+                .expect("parent at depth 6");
+            assert_eq!(parent.id_at(0), expected_parent.hash_key());
+            assert_eq!(
+                depth
+                    .getattr("calls")
+                    .and_then(|calls| calls.extract::<usize>())
+                    .expect("call count"),
+                1
+            );
+
+            depth.setattr("value", 9).expect("change requested depth");
+            let counts = cells
+                .children_count(py, Some(&depth))
+                .expect("descendant counts resolve one shared explicit depth");
+            let counts = counts
+                .bind(py)
+                .call_method0("tolist")
+                .and_then(|values| values.extract::<Vec<f64>>())
+                .expect("counts as list");
+            assert_eq!(counts, [49.0, 7.0]);
+            assert_eq!(
+                depth
+                    .getattr("calls")
+                    .and_then(|calls| calls.extract::<usize>())
+                    .expect("call count"),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn cell_array_depth_is_not_admitted_without_a_present_row() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                c"class Depth:\n    calls = 0\n    def __index__(self):\n        self.calls += 1\n        raise ValueError('depth should not be parsed')\n",
+                c"<cell-array-empty-depth-test>",
+                c"cell_array_empty_depth_test",
+            )
+            .expect("depth module");
+            let depth = module
+                .getattr("Depth")
+                .and_then(|class| class.call0())
+                .expect("counting depth");
+            for cells in [
+                PyCellArray::from_ids(GridKind::H3Cell, Vec::new()),
+                PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![0, 0], vec![true, true]),
+            ] {
+                cells
+                    .parent(Some(&depth))
+                    .expect("empty parent does not inspect depth");
+                cells
+                    .children_count(py, Some(&depth))
+                    .expect("empty descendants do not inspect depth");
+            }
+            assert_eq!(
+                depth
+                    .getattr("calls")
+                    .and_then(|calls| calls.extract::<usize>())
+                    .expect("call count"),
+                0
+            );
+        });
     }
 }

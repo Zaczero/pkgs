@@ -43,9 +43,9 @@ geometry decides which one you asked for. On a geographic CRS,
 straight longitude/latitude edges; `unit="planar"` measures the raw coordinates
 as they stand; and reprojecting first returns that frame's own answer, which at
 this latitude Web Mercator inflates 2.3 times. Geographic [`length`][gometry.Geometry.length]
-uses the same chart-edge model. Pairwise geographic distance uses ellipsoidal
-point-to-point distance over straight chart edges and includes filled polygon
-interiors.
+uses the same chart-edge model. Point-to-point geographic distance follows an
+ellipsoidal geodesic; shape distance minimizes geodesic separation over closed
+chart-edge supports, including filled polygon interiors.
 
 <div class="grid cards" markdown>
 
@@ -72,7 +72,8 @@ interiors.
 
     ---
 
-    H3 & S2 cell covers with explicit `cell_rule`, spatial indexing, and [ellipsoidal geodesics](https://geographiclib.sourceforge.io/) — all on one geometry type.
+    H3, S2, geohash, and tile covers with explicit `cell_rule`, spatial indexing,
+    and [ellipsoidal geodesics](https://geographiclib.sourceforge.io/) — all on one geometry type.
 
     [:octicons-arrow-right-24: Discrete grids](guide/grids.md)
 
@@ -107,7 +108,7 @@ use free geometry predicates for exact source checks.
 
 ### Declare, transform, refine
 
-[`set_crs`][gometry.Geometry.set_crs] declares metadata without moving numeric
+[`with_crs`][gometry.Geometry.with_crs] declares metadata without moving numeric
 coordinates; [`to_crs`][gometry.Geometry.to_crs] transforms X/Y into another frame.
 See [when to declare or transform](guide/crs.md#set-crs-vs-to-crs). Spatial indexes
 expose [`candidates`][gometry.SpatialIndex.candidates] as a bbox prefilter and

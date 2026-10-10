@@ -12,7 +12,7 @@ struct OrdinaryBounds {
 }
 
 impl OrdinaryBounds {
-    fn new(frame: GeographicFrame) -> Self {
+    const fn new(frame: GeographicFrame) -> Self {
         Self {
             longitude: frame.longitude().ordinary_longitude_bound(),
             half_period: frame.longitude().half_period(),

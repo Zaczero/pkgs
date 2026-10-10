@@ -94,9 +94,9 @@ units.
 Shapely already refines when you pass `predicate=` to `STRtree.query`.
 [`SpatialIndex`][gometry.SpatialIndex] covers many geometries, with query, join,
 and nearest, explicit `candidates` vs `query(..., predicate=...)`, frame checks,
-missing-row semantics, and geodesic nearest lanes. There is no `prepare`: a
-geometry probed repeatedly indexes itself after its first few probes, so a plain
-loop of predicate calls gets the prepared speed.
+missing-row semantics, and nearest queries. There is no `prepare`: a geometry
+probed repeatedly indexes itself after its first few probes, so a plain loop of
+predicate calls gets the prepared speed.
 
 === "Shapely"
 
@@ -264,7 +264,8 @@ binning behavior), `"overlap"` (default — a complete-coverage superset, safe
 candidate keys), or `"bbox"` (loosest). Use the free predicates
 [`gm.covers(...)`][gometry.covers] / [`gm.contains(...)`][gometry.contains] / [`gm.intersects(...)`][gometry.intersects] against the source
 geometry when exact geometry answers are needed. [`gm.s2_cover(geom, level=...)`][gometry.s2_cover]
-is the S2 analogue.
+selects a fixed-level cover. Omit `level` and pass `target_cells` or a level
+range to adapt refinement through the same operation.
 
 ### Cell-set algebra
 
@@ -316,8 +317,10 @@ frame and row-identity checks:
   instead of dropping identity in the result.
 - **Prepared caches** on every geometry, built once it is probed repeatedly;
   there is no separate `prepare` step.
-- **Geodesic nearest / dwithin lanes** when the index frame is geographic
-  (`unit=` selects CRS-natural meters vs planar).
+- **CRS-aware nearest / dwithin lanes** when the index frame is geographic:
+  point pairs use ellipsoidal geodesics, while shape queries use straight
+  chart-edge support with ellipsoidal separation (`unit=` selects the CRS
+  metric or planar coordinates).
 
 [`gm.SpatialIndex`][gometry.SpatialIndex] and [`gm.join`][gometry.join] are the
 unified surfaces; see [Spatial indexing & joins](../guide/indexing.md) for the
@@ -353,7 +356,8 @@ gometry all expose nearest-neighbour APIs.
 
 [`idx.nearest(query, k=..., unit=...)`][gometry.SpatialIndex.nearest] returns the `k` closest indices
 (`num_results` → `k`). `unit="planar"` selects projected or CRS-free coordinate
-units; on a geographic CRS, metric units select geodesic point-nearest ordering.
+units; on a geographic CRS, point-pair ordering uses geodesics and shape-pair
+ordering uses ellipsoidal separation over chart-edge support.
 The index is mutable (`insert`/`remove`) while still sharing one frame; Shapely's
 `STRtree` is bulk-built and immutable after construction.
 
@@ -426,7 +430,7 @@ GeoPandas) remain adjacent; gometry is the geometry engine they use.
 | --- | --- | --- |
 | `shapely` | planar geometry, predicates, overlay | the whole geometry surface — [`gm.Point`][gometry.Point], [`geom.buffer(...)`][gometry.Geometry.buffer], [`gm.intersection`][gometry.intersection], [`gm.contains`][gometry.contains], … |
 | `pyproj` | CRS transforms, projection | [`geom.to_crs`][gometry.Geometry.to_crs], [`gm.CRS`][gometry.CRS], [`gm.crs_transform`][gometry.crs_transform] |
-| `geographiclib` | geodesic & rhumb solutions | [`gm.rhumb_distance(point, other)`][gometry.rhumb_distance]; use `path='rhumb'` with [`gm.bearing`][gometry.bearing], `point.destination`, [`gm.point_between`][gometry.point_between], or [`geom.segmentize(..., path='rhumb')`][gometry.Geometry.segmentize] for constant-bearing routes. `path='geodesic'` on `segmentize` samples the shortest ellipsoidal route. |
+| `geographiclib` | geodesic & rhumb solutions | Use `path='rhumb'` with [`gm.distance`][gometry.distance] for point distance, [`gm.bearing`][gometry.bearing], `point.destination`, [`gm.point_between`][gometry.point_between], or [`geom.segmentize(..., path='rhumb')`][gometry.Geometry.segmentize] for constant-bearing routes. `path='geodesic'` on `segmentize` samples the shortest ellipsoidal route. |
 | `pyclipper` | polygon buffer / offset / clip | `Geometry.buffer`, [`Geometry.offset_curve`][gometry.Geometry.offset_curve], [`Geometry.clip_by_rect`][gometry.Geometry.clip_by_rect], the overlay ops |
 | `pygeohash` family | geohash encode/decode | [`gm.GeohashCell`][gometry.GeohashCell], [`cell.polygon`][gometry.Cell.polygon], [`gm.geohash_cover(geom, ...)`][gometry.geohash_cover] |
 | `haversine` | point-to-point distance | [`gm.distance(a, b)`][gometry.distance] on a geographic CRS ([ellipsoidal geodesic](https://geographiclib.sourceforge.io/), not the haversine sphere) |

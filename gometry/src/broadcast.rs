@@ -1,11 +1,11 @@
 //! Binary-operation broadcasts layered on the [`crate::dispatch`] spine.
 //!
-//! `broadcast2`/`array_binary_*`/`geometry_binary*` bind the spine's defaults
-//! (fast-path/resolver) so callers get a slim signature, and this module owns
-//! the genuinely broadcast-specific logic: the prepared + point-fast-path
-//! predicate optimizations, the CRS-aware distance/dwithin broadcasts, and the
-//! small shared classifiers/helpers. Reaches the crate-root model and sibling
-//! modules via `use super::*`; re-exported at the crate root.
+//! `broadcast2`/`array_binary_*`/`geometry_binary*` bind the spine's resolver
+//! policies so callers get a slim signature, and this module owns the genuinely
+//! broadcast-specific logic: prepared predicate kernels, CRS-aware
+//! distance/dwithin broadcasts, and shared classifiers/helpers. Reaches the
+//! crate-root model and sibling modules via `use super::*`; re-exported at the
+//! crate root.
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -38,7 +38,7 @@ pub(crate) use metrics::{
     lonlat_points, lonlat_shape, metric_maximum_inscribed_radius, metric_minimum_clearance,
     metric_minimum_clearance_line, metric_nearest_points_resolved, metric_shortest_line_resolved,
     pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
-    resolve_metric, resolve_metric_3d,
+    resolve_metric, resolve_metric_3d, resolve_metric_at,
 };
 mod predicates;
 pub(crate) use predicates::{
@@ -79,15 +79,17 @@ pub(crate) fn broadcast2_geometry<K>(
     kernel: K,
 ) -> PyResult<Py<PyAny>>
 where
-    K: Fn(&PreparedPlan, &PreparedPlan) -> Result<Shape> + Send + Sync,
+    K: Fn(&PreparedPlan, &PreparedPlan, &crate::dispatch::CachelessRowContext<'_>) -> Result<Shape>
+        + Send
+        + Sync,
 {
     crate::dispatch::dispatch_binary_geometry(
         py,
         left,
         right,
         op_name,
-        &crate::dispatch::OverlayFastPath,
-        move |left, right, _ctx| kernel(left, right),
+        crate::dispatch::MetricResolver::GeographicCarry,
+        move |left, right, context| kernel(left, right, context),
     )
 }
 

@@ -11,8 +11,8 @@ use crate::error::{ResourceError, Result};
 #[cfg(test)]
 use crate::geographic::GeographicInputs;
 use crate::geographic::{
-    ChartStep, EdgeDirection, GeographicError, GeographicFrame, Latitude, RingDomain, RingSummary,
-    ScalarGeographicView, SeamIdentity, TurnDirection,
+    GeographicFrame, Latitude, RetainedChartDisplacement, RingDomain, RingSummary,
+    ScalarGeographicView, SeamIdentity,
 };
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::try_sort_by;
@@ -184,8 +184,10 @@ pub(super) fn quotient_key(
     frame: GeographicFrame,
     point: &ExactChartPoint,
 ) -> Result<ExactQuotientKey> {
-    let north = ExactRational::from_f64(frame.pole());
-    let south = ExactRational::from_f64(-frame.pole());
+    let north =
+        ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::North));
+    let south =
+        ExactRational::from_f64(frame.chart_pole_latitude(crate::geographic::ChartPole::South));
     if point.y.try_cmp(&north)?.is_eq() {
         return Ok(ExactQuotientKey::NorthPole);
     }
@@ -250,8 +252,7 @@ pub(super) fn source_chart_point(frame: GeographicFrame, point: Point) -> ExactC
     let canonical = frame
         .longitude()
         .canonicalize(point.x)
-        .expect("source longitude was admitted")
-        .get();
+        .expect("source longitude was admitted");
     ExactChartPoint::from_dyadics(
         ExactDyadic::from_f64(seam_start_spelling(frame.longitude(), point.x, canonical)),
         ExactDyadic::from_f64(Latitude::from_admitted(frame, point.y).get()),
@@ -477,8 +478,15 @@ pub(super) enum SourceEdgeKind {
 pub(super) struct ExactSourceEdge {
     pub id: SourceEdgeId,
     pub source: [Point; 2],
+    longitude: RetainedChartDisplacement,
     pub row: SourceRowId,
     pub kind: SourceEdgeKind,
+}
+
+impl ExactSourceEdge {
+    pub(super) const fn retained_longitude(&self) -> RetainedChartDisplacement {
+        self.longitude
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1051,9 +1059,9 @@ impl ExactGeographicChartInventory {
         let mut last_edge = None;
         for pair in coordinates.segment_pairs() {
             let [start, end] = pair;
-            let source = self.push_source_edge(start, end, row, SourceEdgeKind::Line { line })?;
             let before = self.pieces.len();
-            self.push_chart_pieces(source, 0)?;
+            let (source, _) =
+                self.append_source_edge(start, end, row, SourceEdgeKind::Line { line }, 0)?;
             if self.pieces.len() != before {
                 first_edge.get_or_insert(source);
                 last_edge = Some(source);
@@ -1121,32 +1129,23 @@ impl ExactGeographicChartInventory {
                 stored_kind
             };
             let first_edge = self.edges.len();
-            let axis = self.frame.longitude();
             let mut lift = 0_i64;
             for [start, end] in ring.segment_pairs() {
-                let source = self.push_source_edge(start, end, row, SourceEdgeKind::Ring {
-                    polygon: polygon_id,
-                    ring: ring_id,
-                    hole: ring_index != 0,
-                    kind,
-                })?;
-                self.push_chart_pieces(source, lift)?;
-                lift = axis.add_chart_transit(lift, start.x, end.x).map_err(
-                    |error| -> crate::error::Error {
-                        match error {
-                            GeographicError::ChartTurnOverflow => {
-                                ResourceError::SizeOverflow.into()
-                            },
-                            other @ (GeographicError::NonFinite { .. }
-                            | GeographicError::LatitudeOutOfRange { .. }
-                            | GeographicError::AmbiguousFullTurnRing { .. }
-                            | GeographicError::InvalidAngularFactor { .. }
-                            | GeographicError::InvalidSweep { .. }) => {
-                                GeometryErrorKind::Invalid(other.to_string().into()).into()
-                            },
-                        }
+                let (_, transit) = self.append_source_edge(
+                    start,
+                    end,
+                    row,
+                    SourceEdgeKind::Ring {
+                        polygon: polygon_id,
+                        ring: ring_id,
+                        hole: ring_index != 0,
+                        kind,
                     },
+                    lift,
                 )?;
+                lift = lift
+                    .checked_add(i64::from(transit))
+                    .ok_or(ResourceError::SizeOverflow)?;
             }
             debug_assert_eq!(lift, summary.chart_turn);
             self.rings.push(ExactSourceRing {
@@ -1185,49 +1184,43 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
-    fn push_source_edge(
+    fn append_source_edge(
         &mut self,
         start: Point,
         end: Point,
         row: SourceRowId,
         kind: SourceEdgeKind,
-    ) -> Result<SourceEdgeId> {
+        ring_lift: i64,
+    ) -> Result<(SourceEdgeId, i8)> {
         let id =
             SourceEdgeId(u32::try_from(self.edges.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        let connection = self
+            .frame
+            .longitude()
+            .chart_connection(start.x, end.x)
+            .expect("source longitude was admitted");
         self.edges.push(ExactSourceEdge {
             id,
             source: [start, end],
+            longitude: connection.retained(),
             row,
             kind,
         });
-        Ok(id)
+        self.push_chart_pieces(id, ring_lift)?;
+        Ok((id, connection.seam_transit()))
     }
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "SourceEdgeId is issued by push_source_edge for this inventory's edge vector"
+        reason = "SourceEdgeId is issued by append_source_edge for this inventory's edge vector"
     )]
     fn push_chart_pieces(&mut self, source: SourceEdgeId, ring_lift: i64) -> Result<()> {
         let edge = self.edges[source.0 as usize];
         let [start, end] = edge.source;
-        let (start_x, delta_x) = local_longitude_edge(self.frame, start.x, end.x)?;
-        let canonical_start = self
-            .frame
-            .longitude()
-            .canonicalize(start.x)
-            .expect("source longitude was admitted")
-            .get();
-        let start_alias = if start_x.to_bits() == canonical_start.to_bits() {
-            0_i64
-        } else if start_x.to_bits() == (canonical_start + self.frame.longitude().period()).to_bits()
-        {
-            1
-        } else {
-            return Err(GeometryErrorKind::Invalid(
-                "exact chart edge start has an unknown seam spelling".into(),
-            )
-            .into());
-        };
+        let local_edge = local_longitude_edge(self.frame, start.x, edge.retained_longitude());
+        let start_x = local_edge.start_x;
+        let delta_x = local_edge.delta_x(self.frame.longitude().period())?;
+        let start_alias = local_edge.start_turn_adjust;
         let piece_lift = ring_lift
             .checked_sub(start_alias)
             .ok_or(ResourceError::SizeOverflow)?;
@@ -2048,68 +2041,56 @@ fn interpolate_rational(
     start.try_add(&delta.try_product(parameter)?)
 }
 
+pub(super) struct LocalLongitudeEdge {
+    pub(super) start_x: f64,
+    pub(super) start_turn_adjust: i64,
+    retained: RetainedChartDisplacement,
+}
+
+impl LocalLongitudeEdge {
+    pub(super) fn delta_x(&self, period: f64) -> Result<ExactDyadic> {
+        let [start, end] = self.retained.endpoints();
+        let period_delta = ExactDyadic::from_f64(period)
+            .try_product(&ExactDyadic::from_i64(self.retained.periods()))?;
+        ExactDyadic::from_f64(end.get())
+            .try_subtract_ref(&ExactDyadic::from_f64(start.get()))?
+            .try_add(period_delta)
+    }
+}
+
 pub(super) fn local_longitude_edge(
     frame: GeographicFrame,
     from: f64,
-    to: f64,
-) -> Result<(f64, ExactDyadic)> {
+    retained: RetainedChartDisplacement,
+) -> LocalLongitudeEdge {
     let axis = frame.longitude();
-    let from_canonical = axis
-        .canonicalize(from)
-        .expect("source longitude was admitted")
-        .get();
-    let to_canonical = axis
-        .canonicalize(to)
-        .expect("source longitude was admitted")
-        .get();
-    let direction = axis
-        .chart_step(from, to)
-        .expect("source longitude was admitted");
-    if let ChartStep::Circle(direction) = direction {
-        return Ok((
-            seam_start_spelling(axis, from, from_canonical),
-            ExactDyadic::from_f64(ChartStep::Circle(direction).delta(axis)),
-        ));
+    let canonical_start = retained.endpoints()[0];
+    let start_x = seam_start_spelling(axis, from, canonical_start);
+    let start_turn_adjust = i64::from(start_x.to_bits() != canonical_start.get().to_bits());
+    LocalLongitudeEdge {
+        start_x,
+        start_turn_adjust,
+        retained,
     }
-    let ChartStep::Shortest(direction) = direction else {
-        unreachable!("circle chart steps returned above");
-    };
-    let from_exact = ExactDyadic::from_f64(from_canonical);
-    let to_exact = ExactDyadic::from_f64(to_canonical);
-    let period = ExactDyadic::from_f64(axis.period());
-    let half = ExactDyadic::from_f64(axis.half_period());
-    let raw_delta = to_exact.try_subtract_ref(&from_exact)?;
-    let negative_half = half.clone().neg();
-    let delta = match direction {
-        EdgeDirection::HalfTurn(TurnDirection::Negative) => negative_half,
-        EdgeDirection::HalfTurn(TurnDirection::Positive) => half,
-        EdgeDirection::Minor(_) if raw_delta.cmp(&half).is_gt() => {
-            raw_delta.try_subtract(period)?
-        },
-        EdgeDirection::Minor(_) if raw_delta.cmp(&negative_half).is_lt() => {
-            raw_delta.try_add(period)?
-        },
-        EdgeDirection::Minor(_) => raw_delta,
-    };
-    Ok((seam_start_spelling(axis, from, from_canonical), delta))
 }
 
-fn seam_start_spelling(axis: crate::geographic::PeriodicAxis, source: f64, canonical: f64) -> f64 {
-    let identity = axis
-        .canonicalize(source)
-        .expect("source longitude was admitted")
-        .identity(axis);
+fn seam_start_spelling(
+    axis: crate::geographic::PeriodicAxis,
+    source: f64,
+    canonical: crate::geographic::CanonicalLongitude,
+) -> f64 {
+    let identity = canonical.identity(axis);
     if identity == SeamIdentity::Seam && source.is_sign_positive() {
         axis.half_period()
     } else {
-        canonical
+        canonical.get()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geographic::AngularFactor;
+    use crate::geographic::{AngularFactor, GeographicAxisOrientation, source_admission_counts};
     use crate::geometry::{CoordSeq, LineSeq, MOrdinate, Ring, ZOrdinate};
 
     fn degrees() -> GeographicFrame {
@@ -2145,7 +2126,10 @@ mod tests {
     fn chart_step_identity_holds(frame: GeographicFrame, from: f64, to: f64) -> bool {
         let axis = frame.longitude();
         let transit = axis.chart_transit(from, to).unwrap();
-        let (_, delta) = local_longitude_edge(frame, from, to).unwrap();
+        let longitude = axis.chart_connection(from, to).unwrap().retained();
+        let delta = local_longitude_edge(frame, from, longitude)
+            .delta_x(frame.longitude().period())
+            .unwrap();
         let canonical = |value: f64| ExactDyadic::from_f64(axis.canonicalize(value).unwrap().get());
         let period = ExactDyadic::from_f64(axis.period());
         let turn = match transit {
@@ -2160,6 +2144,145 @@ mod tests {
             .try_add(turn)
             .unwrap();
         delta.cmp(&expected).is_eq()
+    }
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "exact half-period equality selects the source seam spelling without rounding"
+    )]
+    fn admitted_source_producer_preserves_raw_branch_and_piece_correspondence() {
+        let degree = degrees();
+        let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
+        let grad = GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap();
+        let rad = GeographicFrame::try_new(
+            AngularFactor::try_new("radians", 1.0).unwrap(),
+            AngularFactor::try_new("radians", 1.0).unwrap(),
+            0.0,
+        )
+        .unwrap();
+        let tiny = f64::from_bits(1);
+        let cases = [
+            (degree, 0.0, 360.0, 0.0, 0.0, 1),
+            (degree, 0.0, -360.0, 0.0, 0.0, -1),
+            (degree, 0.0, 180.0, 0.0, -180.0, 1),
+            (degree, 0.0, -180.0, 0.0, -180.0, 0),
+            (degree, 180.0, 175.0, -180.0, 175.0, -1),
+            (degree, 175.0, 180.0, 175.0, -180.0, 1),
+            (degree, 530.0, 190.0, 170.0, -170.0, 1),
+            (degree, 190.0, 530.0, -170.0, 170.0, -1),
+            (degree, 2_f64.powi(60), 2_f64.powi(60), 136.0, 136.0, 0),
+            (degree, -0.0, tiny, 0.0, tiny, 0),
+            (degree, tiny, -tiny, tiny, -tiny, 0),
+            (degree, 1.0e-20, 360.0, 1.0e-20, 0.0, 0),
+            (grad, 195.0, -195.0, 195.0, -195.0, 1),
+            (grad, -195.0, 195.0, -195.0, 195.0, -1),
+            (rad, 3.0, -3.0, 3.0, -3.0, 1),
+            (rad, -3.0, 3.0, -3.0, 3.0, -1),
+        ];
+        for (frame, from, to, native_from, native_to, periods) in cases {
+            let source = [Point::new_raw_xy(from, 1.0), Point::new_raw_xy(to, 2.0)];
+            let mut inventory = ExactGeographicChartInventory::new(frame, 1);
+            let before = source_admission_counts::snapshot();
+            let _ = inventory
+                .append_source_edge(
+                    source[0],
+                    source[1],
+                    SourceRowId(0),
+                    SourceEdgeKind::Line {
+                        line: SourceLineId(0),
+                    },
+                    0,
+                )
+                .unwrap();
+            let after = source_admission_counts::snapshot();
+            assert_eq!(after.0 - before.0, 1, "{from} -> {to}");
+            let edge = &inventory.edges[0];
+            for (actual, original) in edge.source.iter().zip(source) {
+                assert_eq!(actual.x.to_bits(), original.x.to_bits());
+                assert_eq!(actual.y.to_bits(), original.y.to_bits());
+            }
+            let retained = edge.retained_longitude();
+            assert_eq!(retained.periods(), periods, "{from} -> {to}");
+            assert_eq!(
+                retained.endpoints()[0].get().to_bits(),
+                native_from.to_bits()
+            );
+            assert_eq!(retained.endpoints()[1].get().to_bits(), native_to.to_bits());
+            let delta = ExactDyadic::from_f64(native_to)
+                .try_subtract_ref(&ExactDyadic::from_f64(native_from))
+                .unwrap()
+                .try_add(
+                    ExactDyadic::from_f64(frame.longitude().period())
+                        .try_product(&ExactDyadic::from_i64(periods))
+                        .unwrap(),
+                )
+                .unwrap();
+            let chart_start =
+                if native_from == -frame.longitude().half_period() && from.is_sign_positive() {
+                    frame.longitude().half_period()
+                } else {
+                    native_from
+                };
+            let alias_adjust = i64::from(chart_start.to_bits() != native_from.to_bits());
+            for piece in &inventory.pieces {
+                for (point, parameter) in [
+                    (&piece.start, &piece.source_range.start),
+                    (&piece.end, &piece.source_range.end),
+                ] {
+                    let original_x = ExactRational::from_f64(chart_start)
+                        .try_add(
+                            &ExactRational::from_dyadic(delta.clone())
+                                .try_product(parameter)
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    let lifted_x = point
+                        .x
+                        .try_add(
+                            &ExactRational::from_f64(frame.longitude().period())
+                                .try_product(&ExactRational::from_dyadic(ExactDyadic::from_i64(
+                                    piece.lift + alias_adjust,
+                                )))
+                                .unwrap(),
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        lifted_x.try_cmp(&original_x).unwrap(),
+                        Ordering::Equal,
+                        "{from} -> {to}"
+                    );
+                    let expected_y = ExactRational::one().try_add(parameter).unwrap();
+                    assert_eq!(point.y.try_cmp(&expected_y).unwrap(), Ordering::Equal);
+                }
+            }
+            let actual_delta = local_longitude_edge(frame, from, edge.retained_longitude())
+                .delta_x(frame.longitude().period())
+                .unwrap();
+            assert_eq!(actual_delta, delta);
+            assert_eq!(source_admission_counts::snapshot(), after);
+        }
+    }
+
+    #[test]
+    fn admitted_ring_producer_classifies_once_beyond_legitimate_summary() {
+        let frame = degrees();
+        let ring = ring(&[
+            (175.0, 10.0),
+            (-175.0, 10.0),
+            (-175.0, 20.0),
+            (175.0, 20.0),
+            (175.0, 10.0),
+        ]);
+        let before = source_admission_counts::snapshot().0;
+        RingSummary::try_new(frame, &crate::geographic::GeographicRing::from_ring(&ring)).unwrap();
+        let summary_calls = source_admission_counts::snapshot().0 - before;
+        let polygon = Polygon::new(ring, Vec::new());
+        let mut inventory = ExactGeographicChartInventory::new(frame, 1);
+        let before = source_admission_counts::snapshot().0;
+        inventory.push_polygon(&polygon, SourceRowId(0)).unwrap();
+        let actual = source_admission_counts::snapshot().0 - before;
+        assert_eq!(actual, summary_calls + inventory.edges.len());
     }
 
     #[test]
@@ -2208,31 +2331,20 @@ mod tests {
             }
         }
         assert!(checked > 400);
-        // Grads uses a rounded factor: its nominal 200-grad tie differs from
-        // the frame's derived half-period, which Q uses for its exact lift.
-        let grads_ties = [
-            "grads: -200 -> 400",
-            "grads: -100 -> 100",
-            "grads: -100 -> 300",
-            "grads: 100 -> -100",
-            "grads: 100 -> 300",
-            "grads: 300 -> -100",
-            "grads: 300 -> 100",
-            "grads: 400 -> -200",
-        ];
-        assert_eq!(failures, grads_ties, "{failures:?}");
+        // Grads uses a rounded factor, so its nominal 200-grad tie differs
+        // from the frame's exact derived half-period.
+        assert!(failures.is_empty(), "{failures:?}");
     }
 
-    /// `full_turn_delta` subtracts in floating point, so a rounded difference
-    /// of exactly one period can join endpoints that do not alias; Q's exact
-    /// chart then does not close by the rounding residue.
+    /// A rounded raw difference of one period is not a circle unless the
+    /// represented source endpoints differ by exactly that period.
     #[test]
-    fn rounded_period_differences_break_the_chart_step_identity() {
+    fn rounded_period_differences_do_not_create_false_circles() {
         let grad_unit = AngularFactor::try_new("grads", std::f64::consts::TAU / 400.0).unwrap();
         let grads = GeographicFrame::try_new(grad_unit, grad_unit, 0.0).unwrap();
-        assert!(!chart_step_identity_holds(degrees(), 1.0e-20, 360.0));
-        assert!(!chart_step_identity_holds(degrees(), 360.0, 1.0e-20));
-        assert!(!chart_step_identity_holds(grads, 40.5, 440.5));
+        assert!(chart_step_identity_holds(degrees(), 1.0e-20, 360.0));
+        assert!(chart_step_identity_holds(degrees(), 360.0, 1.0e-20));
+        assert!(chart_step_identity_holds(grads, 40.5, 440.5));
     }
 
     fn inventory(frame: GeographicFrame, shapes: &[Shape]) -> ExactGeographicChartInventory {
@@ -2257,6 +2369,42 @@ mod tests {
                 | ExactQuotientKey::SouthPole => None,
             })
             .expect("the exact seam node exists")
+    }
+
+    #[test]
+    fn source_points_share_exact_seam_and_pole_nodes() {
+        let source = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(-180.0, 5.0)),
+            Shape::Point(Point::new_raw_xy(180.0, 5.0)),
+            Shape::Point(Point::new_raw_xy(-30.0, 90.0)),
+            Shape::Point(Point::new_raw_xy(120.0, 90.0)),
+            Shape::Point(Point::new_raw_xy(-180.0, -90.0)),
+            Shape::Point(Point::new_raw_xy(47.0, -90.0)),
+            Shape::Point(Point::new_raw_xy(-180.0, 6.0)),
+        ])
+        .unwrap();
+        let sources = inventory(degrees(), &[source]);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = sources.node(&mut budget).unwrap();
+        let point_node = |index: usize| {
+            let port = chart
+                .source_point_ports
+                .get(index)
+                .expect("source point port exists");
+            chart
+                .ports
+                .get(port.0 as usize)
+                .expect("source point port is admitted")
+                .node
+        };
+
+        assert_eq!(chart.source_point_ports.len(), 7);
+        assert_eq!(point_node(0), point_node(1));
+        assert_eq!(point_node(2), point_node(3));
+        assert_eq!(point_node(4), point_node(5));
+        assert_ne!(point_node(2), point_node(4));
+        assert_ne!(point_node(0), point_node(2));
+        assert_ne!(point_node(0), point_node(6));
     }
 
     #[test]
@@ -2526,6 +2674,210 @@ mod tests {
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(incident_sources.len(), 3);
         assert_eq!(budget.used(), 4);
+    }
+
+    #[test]
+    fn crossing_lines_keep_each_exact_half_source_range() {
+        let shapes = [
+            line(&[(0.0, 0.0), (4.0, 4.0)]),
+            line(&[(0.0, 4.0), (4.0, 0.0)]),
+        ];
+        let inventory = inventory(degrees(), &shapes);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = inventory.node(&mut budget).unwrap();
+        let half = ExactRational::from_f64(0.5);
+
+        assert_eq!(chart.atoms.len(), 4);
+        assert!(chart.atoms.iter().all(|atom| atom.owners.len() == 1));
+        for source in [SourceEdgeId(0), SourceEdgeId(1)] {
+            let mut ranges = chart
+                .atoms
+                .iter()
+                .flat_map(|atom| atom.owners.iter())
+                .filter(|owner| owner.source_edge == source)
+                .map(|owner| owner.source_range.clone())
+                .collect::<Vec<_>>();
+            ranges.sort_unstable_by(|left, right| {
+                left.start
+                    .try_cmp(&right.start)
+                    .expect("source parameters compare")
+            });
+            assert_eq!(ranges.len(), 2);
+            assert_eq!(
+                ranges[0].start.try_cmp(&ExactRational::zero()).unwrap(),
+                Ordering::Equal
+            );
+            assert_eq!(ranges[0].end.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(ranges[1].start.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(
+                ranges[1].end.try_cmp(&ExactRational::one()).unwrap(),
+                Ordering::Equal
+            );
+        }
+    }
+
+    #[test]
+    fn seam_split_ring_edges_keep_exact_parameters_and_quotient_owners() {
+        let shape = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, 0.0),
+                (-170.0, 0.0),
+                (-170.0, 10.0),
+                (170.0, 10.0),
+                (170.0, 0.0),
+            ]),
+            vec![],
+        ));
+        let inventory = inventory(degrees(), &[shape]);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = inventory.node(&mut budget).unwrap();
+        let half = ExactRational::from_f64(0.5);
+
+        for source in [SourceEdgeId(0), SourceEdgeId(2)] {
+            let mut ranges = chart
+                .atoms
+                .iter()
+                .flat_map(|atom| atom.owners.iter())
+                .filter(|owner| owner.source_edge == source)
+                .map(|owner| owner.source_range.clone())
+                .collect::<Vec<_>>();
+            ranges.sort_unstable_by(|left, right| {
+                left.start
+                    .try_cmp(&right.start)
+                    .expect("source parameters compare")
+            });
+            assert_eq!(ranges.len(), 2);
+            assert_eq!(
+                ranges[0].start.try_cmp(&ExactRational::zero()).unwrap(),
+                Ordering::Equal
+            );
+            assert_eq!(ranges[0].end.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(ranges[1].start.try_cmp(&half).unwrap(), Ordering::Equal);
+            assert_eq!(
+                ranges[1].end.try_cmp(&ExactRational::one()).unwrap(),
+                Ordering::Equal
+            );
+        }
+
+        for (latitude, source) in [
+            (ExactRational::zero(), SourceEdgeId(0)),
+            (ExactRational::from_f64(10.0), SourceEdgeId(2)),
+        ] {
+            let node = seam_node(&chart, &latitude);
+            assert!(source_uses_node(&chart, source, node));
+        }
+    }
+
+    #[test]
+    fn reversed_native_axis_edges_keep_exact_seam_parameters() {
+        let frame = GeographicFrame::try_new_with_orientation(
+            AngularFactor::try_new("west longitude unit", std::f64::consts::TAU / 8.0).unwrap(),
+            AngularFactor::try_new("south latitude radian", 1.0).unwrap(),
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(false, false),
+        )
+        .unwrap();
+        let sources = inventory(frame, &[
+            line(&[(-3.75, 0.0), (3.25, -1.0)]),
+            line(&[(3.25, -1.0), (-3.75, 0.0)]),
+        ]);
+        let quarter = ExactRational::from_f64(0.25);
+        let three_quarters = ExactRational::from_f64(0.75);
+        let seam_latitude = ExactRational::from_f64(-0.25);
+
+        for (source, parameter) in [
+            (SourceEdgeId(0), &quarter),
+            (SourceEdgeId(1), &three_quarters),
+        ] {
+            let pieces = sources
+                .pieces
+                .iter()
+                .filter(|piece| piece.source_edge == source)
+                .collect::<Vec<_>>();
+            assert_eq!(pieces.len(), 2);
+            let crossing = pieces
+                .iter()
+                .flat_map(|piece| [&piece.start, &piece.end])
+                .find(|point| {
+                    point
+                        .x
+                        .try_cmp(&ExactRational::from_f64(-4.0))
+                        .unwrap()
+                        .is_eq()
+                        || point
+                            .x
+                            .try_cmp(&ExactRational::from_f64(4.0))
+                            .unwrap()
+                            .is_eq()
+                })
+                .expect("source edge crosses the native longitude seam");
+            assert_eq!(crossing.y.try_cmp(&seam_latitude).unwrap(), Ordering::Equal);
+            assert!(
+                pieces
+                    .iter()
+                    .any(|piece| { piece.source_range.end.try_cmp(parameter).unwrap().is_eq() })
+                    || pieces.iter().any(|piece| {
+                        piece.source_range.start.try_cmp(parameter).unwrap().is_eq()
+                    })
+            );
+        }
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = sources.node(&mut budget).unwrap();
+        let seam = seam_node(&chart, &seam_latitude);
+        assert!(source_uses_node(&chart, SourceEdgeId(0), seam));
+        assert!(source_uses_node(&chart, SourceEdgeId(1), seam));
+    }
+
+    #[test]
+    fn one_ulp_source_endpoint_is_shared_by_adjacent_exact_edges() {
+        let endpoint = (-170.0_f64).next_down();
+        let shape = Shape::Polygon(Polygon::new(
+            ring(&[
+                (170.0, 0.0),
+                (endpoint, 0.0),
+                (endpoint, 10.0),
+                (170.0, 10.0),
+                (170.0, 0.0),
+            ]),
+            vec![],
+        ));
+        let inventory = inventory(degrees(), &[shape]);
+        let mut budget = ExpansionBudget::new("test", "exact chart");
+        let chart = inventory.node(&mut budget).unwrap();
+        let first_edge = chart
+            .source_edge_ports
+            .first()
+            .expect("first ring edge exists");
+        let second_edge = chart
+            .source_edge_ports
+            .get(1)
+            .expect("adjacent ring edge exists");
+        let first_endpoint = chart
+            .ports
+            .get(first_edge[1].0 as usize)
+            .expect("source endpoint port exists");
+        let second_start = chart
+            .ports
+            .get(second_edge[0].0 as usize)
+            .expect("adjacent source port exists");
+
+        assert_eq!(first_endpoint.node, second_start.node);
+        assert_eq!(
+            first_endpoint
+                .point
+                .x
+                .try_cmp(&ExactRational::from_f64(endpoint))
+                .unwrap(),
+            Ordering::Equal,
+        );
+        assert_eq!(
+            first_endpoint
+                .point
+                .y
+                .try_cmp(&ExactRational::zero())
+                .unwrap(),
+            Ordering::Equal,
+        );
     }
 
     #[test]

@@ -4,22 +4,26 @@ description: gometry runtime, platform, optional-integration, and semantic-versi
 
 # Compatibility & deprecation policy
 
-This release declares CPython 3.11–3.14 and free-threaded CPython 3.14t,
-requires NumPy, and needs no system GEOS, GDAL, or PROJ. Incompatible public
-removals wait for a major release.
+The current release workflow tests CPython 3.11–3.14 and free-threaded CPython
+3.14t, requires NumPy, and needs no system GEOS, GDAL, or PROJ. The package
+metadata's `requires-python >=3.11` is a lower bound, not evidence that later
+Python minors have been tested. Incompatible public removals wait for a major
+release.
 
 ## Runtime and platform matrix
 
-The rows below are the package metadata's declared runtime targets. A published
-wheel or a successful source build is the evidence that a particular target is
-installable; this table does not promise a wheel for every target on every
-release.
+The matrix below follows the current CI and release-wheel configuration. Linux
+tests every supported stable CPython minor; macOS and Windows test the newest
+stable minor, and Linux tests the free-threaded build. The release workflow
+builds wheels for the listed native platform architectures.
 
 | Surface | Supported |
 | --- | --- |
-| CPython | 3.11, 3.12, 3.13, and 3.14 |
-| Free-threaded CPython | 3.14t |
-| PyPy | Unsupported |
+| CPython tests | 3.11–3.14 on Linux; 3.14 on macOS, Windows, and Linux aarch64 |
+| Free-threaded CPython tests | 3.14t on Linux |
+| CPython wheels | 3.11–3.14 |
+| Free-threaded CPython wheels | 3.14t |
+| PyPy | Not included in the current test or wheel matrix |
 | Linux | glibc and musl, `x86_64` and `aarch64` |
 | macOS | 11 or newer, `x86_64` and `arm64` |
 | Windows | `amd64` and `arm64` |
@@ -40,7 +44,7 @@ CRS, epoch, missing-row, and loss behavior.
 | Boundary | Extra and minimum dependency | Supported entry points | Important boundary behavior |
 | --- | --- | --- | --- |
 | Arrow / GeoArrow | `gometry[arrow]`, `pyarrow>=24.0.0` for PyArrow objects | [`to_arrow`][gometry.Geometry.to_arrow], [`from_arrow`][gometry.from_arrow] | Native Arrow capsules do not require PyArrow; the C provider is a trusted ABI participant and buffer contents are validated. |
-| pandas | `gometry[pandas]`, `pandas>=3.0.3` | [`to_pandas`][gometry.GeometryArray.to_pandas], [`from_pandas`][gometry.from_pandas] | Uses gometry's extension storage; missing rows remain missing. |
+| pandas | `gometry[pandas]`, `pandas>=3.0.3` | [`to_pandas`][gometry.GeometryArray.to_pandas], [`from_pandas`][gometry.from_pandas] | Extension storage is shared; object Series rows are imported, and pandas missing values become missing rows. |
 | Polars | `gometry[polars]`, `polars>=1.42.0` | [`to_polars`][gometry.GeometryArray.to_polars], [`from_polars`][gometry.from_polars] | Uses WKB/EWKB binary storage; non-EPSG CRS and coordinate epochs need explicit restoration or loss acknowledgement. |
 | GeoPandas | `gometry[geopandas]`, `geopandas>=1.1.4` | [`to_geopandas`][gometry.GeometryArray.to_geopandas], [`from_geopandas`][gometry.from_geopandas] | Converts through the GeoPandas/Shapely boundary; coordinate epochs require explicit loss acknowledgement on export. |
 | GeoParquet | `gometry[arrow]` | [`to_geoparquet`][gometry.GeometryArray.to_geoparquet], [`from_geoparquet`][gometry.from_geoparquet] | Uses PyArrow and GeoParquet column metadata; see [Arrow & storage](../ecosystem/arrow.md) for CRS and epoch portability. |

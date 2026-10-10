@@ -299,6 +299,10 @@ impl DiskEnclosure {
         distance.is_finite() && distance.lo > self.squared_radius.hi
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the lower bound for cross squared must be at least the upper bound for radius squared times edge norm"
+    )]
     fn proves_ccw_edge_encloses(&self, left: XY, right: XY) -> bool {
         let dx = Interval::exact(right.x).sub(Interval::exact(left.x));
         let dy = Interval::exact(right.y).sub(Interval::exact(left.y));
@@ -752,6 +756,10 @@ pub(crate) fn emit_minimum_bounding_circle(
     // scale. Cover that scale before the certificate; radius-only ulp retries
     // can otherwise repeat the same realized ring dozens of times.
     let coordinate_scale = center.x.abs().max(center.y.abs()) + radius;
+    #[expect(
+        clippy::float_cmp,
+        reason = "f64::MAX has no finite successor, so the initial margin uses its finite predecessor spacing"
+    )]
     let coordinate_spacing = if coordinate_scale == f64::MAX {
         coordinate_scale - coordinate_scale.next_down()
     } else {
@@ -779,6 +787,10 @@ pub(crate) fn emit_minimum_bounding_circle(
         // ulps, which can dwarf a radius ulp on a small translated disk.
         // Cover that construction scale before retrying the exact certificate.
         let coordinate_scale = center.x.abs().max(center.y.abs()) + candidate_radius;
+        #[expect(
+            clippy::float_cmp,
+            reason = "f64::MAX has no finite successor, so a retry uses its finite predecessor spacing"
+        )]
         let coordinate_spacing = if coordinate_scale == f64::MAX {
             coordinate_scale - coordinate_scale.next_down()
         } else {
@@ -880,10 +892,10 @@ struct PolylabelField<'a> {
 
 impl PolylabelField<'_> {
     fn metric(&self, x: f64, y: f64) -> f64 {
-        match self.frame {
-            Some(frame) => (x / frame.scale_x()).hypot(y / frame.scale_y()),
-            None => x.hypot(y),
-        }
+        self.frame.map_or_else(
+            || x.hypot(y),
+            |frame| (x / frame.scale_x()).hypot(y / frame.scale_y()),
+        )
     }
 
     fn boundary_distance(&mut self, point: Point, bound: f64) -> Result<f64> {
@@ -1009,15 +1021,16 @@ fn polylabel_search(
             }
         }
     }
-    if field.bvh.is_none() && frame.is_none() && upper - best.distance > tolerance {
-        if let Some((upper, center)) =
+    if field.bvh.is_none()
+        && frame.is_none()
+        && upper - best.distance > tolerance
+        && let Some((upper, center)) =
             label_carrier_enclosure(&field.linework, best.center, tolerance)
-        {
-            field.upper = field.upper.min(upper);
-            let seed = field.cell(center, 0.0, 0.0, None)?;
-            if seed.distance > best.distance {
-                best = seed;
-            }
+    {
+        field.upper = field.upper.min(upper);
+        let seed = field.cell(center, 0.0, 0.0, None)?;
+        if seed.distance > best.distance {
+            best = seed;
         }
     }
     if field.upper - best.distance <= tolerance {
@@ -1225,14 +1238,24 @@ fn has_interior(shape: &Shape) -> bool {
             .flat_map(Polygon::rings)
             .any(ring_spans_area),
         Shape::GeometryCollection(geometries) => geometries.iter().any(has_interior),
-        _ => false,
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => false,
     }
 }
 
 fn representative_point(shape: &Shape, bounds: Bounds) -> Result<Point> {
     Ok(match shape.point_on_surface()? {
         Shape::Point(point) => point,
-        _ => degenerate_polygon_center(bounds),
+        Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => degenerate_polygon_center(bounds),
     })
 }
 

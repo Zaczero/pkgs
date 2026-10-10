@@ -31,9 +31,32 @@ def test_points_scalar_broadcast() -> None:
     assert [p.z for p in shared_z] == [10.0, 10.0, 10.0]
 
 
-def test_points_all_scalar_raises() -> None:
-    with pytest.raises(gm.GeometryError, match='Point'):
-        gm.points(0, 1)
+def test_points_all_scalar_builds_one_row() -> None:
+    points = gm.points(0, 1)
+    assert points.to_wkt() == ['POINT (0 1)']
+
+
+def test_points_accept_coordinate_rows_and_ndarrays() -> None:
+    rows = gm.points([(1, 2), (3, 4, 5)])
+    assert rows.to_wkt() == ['POINT (1 2)', 'POINT Z (3 4 5)']
+    assert gm.points(np.array([[6.0, 7.0], [8.0, 9.0]])).to_wkt() == [
+        'POINT (6 7)',
+        'POINT (8 9)',
+    ]
+
+
+def test_points_accept_point_rows_and_reconcile_frames() -> None:
+    framed = gm.points([gm.Point(1, 2, crs=4326), gm.Point(3, 4, crs=4326)])
+    assert framed.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+    assert framed.crs == gm.CRS('EPSG:4326')
+    with pytest.raises(gm.CRSMismatchError, match='one shared CRS'):
+        gm.points([gm.Point(1, 2, crs=4326), gm.Point(3, 4)])
+
+
+def test_points_ordinate_columns_do_not_override_embedded_values() -> None:
+    assert gm.points([(1, 2, 3)], m=4).to_wkt() == ['POINT ZM (1 2 3 4)']
+    with pytest.raises(gm.InvalidGeometryError, match='conflicts with an embedded'):
+        gm.points([(1, 2, 3)], z=5)
 
 
 def test_points_param_names_match_point() -> None:
@@ -50,6 +73,10 @@ def test_boxes_columnar_broadcast() -> None:
     assert (boxes[1]).to_wkt() == 'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))'
 
 
+def test_boxes_all_scalar_builds_one_row() -> None:
+    assert gm.boxes(1, 2, 3, 4).to_wkt() == ['POLYGON ((1 2, 3 2, 3 4, 1 4, 1 2))']
+
+
 def test_boxes_param_names_match_box() -> None:
     box_params = set(inspect.signature(gm.box).parameters) - {'self'}
     boxes_params = set(inspect.signature(gm.boxes).parameters) - {'self'}
@@ -62,7 +89,7 @@ def test_line_strings_round_trip() -> None:
     assert len(lines) == 2
     assert (lines[0]).to_wkt() == 'LINESTRING (0 0, 1 1)'
     assert (lines[1]).to_wkt() == 'LINESTRING (2 2, 3 3)'
-    assert lines.crs == 'EPSG:4326'
+    assert lines.crs == gm.CRS('EPSG:4326')
 
 
 def test_scalar_multipoint_publishes_every_exactly_sized_member() -> None:
@@ -421,6 +448,53 @@ def test_multi_polygons_round_trip() -> None:
     assert gm.equals(multipolys[0], gm.MultiPolygon([left, right], crs=4326))
 
 
+def test_line_strings_accepts_existing_line_rows() -> None:
+    line = gm.LineString([(0, 0), (1, 1)], crs=4326)
+    assert gm.line_strings([line]).crs == gm.CRS('EPSG:4326')
+
+
+def test_polygons_accepts_existing_polygon_rows() -> None:
+    polygon = gm.Polygon([(0, 0), (2, 0), (0, 2)], crs=4326)
+    assert gm.polygons([polygon]).crs == gm.CRS('EPSG:4326')
+
+
+def test_multi_points_accepts_multipoint_rows() -> None:
+    multipoint = gm.MultiPoint([gm.Point(0, 0, crs=4326)])
+    assert gm.multi_points([multipoint]).crs == gm.CRS('EPSG:4326')
+
+
+def test_multi_points_accepts_point_members_in_rows() -> None:
+    assert gm.multi_points([[gm.Point(1, 2, crs=4326)]]).crs == gm.CRS('EPSG:4326')
+
+
+def test_multi_line_strings_accepts_multiline_rows() -> None:
+    line = gm.LineString([(0, 0), (1, 1)], crs=4326)
+    multiline = gm.MultiLineString([line])
+    assert gm.multi_line_strings([multiline]).crs == gm.CRS('EPSG:4326')
+
+
+def test_multi_line_strings_accepts_line_members_in_rows() -> None:
+    line = gm.LineString([(0, 0), (1, 1)], crs=4326)
+    assert gm.multi_line_strings([[line]]).crs == gm.CRS('EPSG:4326')
+
+
+def test_multi_polygons_accepts_multipolygon_rows() -> None:
+    polygon = gm.Polygon([(0, 0), (2, 0), (0, 2)], crs=4326)
+    multipolygon = gm.MultiPolygon([polygon])
+    assert gm.multi_polygons([multipolygon]).crs == gm.CRS('EPSG:4326')
+
+
+def test_multi_polygons_accepts_polygon_members_in_rows() -> None:
+    polygon = gm.Polygon([(0, 0), (2, 0), (0, 2)], crs=4326)
+    assert gm.multi_polygons([[polygon]]).crs == gm.CRS('EPSG:4326')
+
+
+def test_multi_polygons_accepts_bare_shells_for_row_members() -> None:
+    assert gm.multi_polygons([[[(3, 0), (4, 0), (3, 1), (3, 0)]]]).to_wkt() == [
+        'MULTIPOLYGON (((3 0, 4 0, 3 1, 3 0)))'
+    ]
+
+
 def test_multi_polygons_rejects_mixed_member_and_ring_axes() -> None:
     """Raw and nested exact multipolygon members never reach unchecked packing."""
     xy = [[(0, 0), (4, 0), (0, 4), (0, 0)]]
@@ -442,30 +516,44 @@ def test_multi_polygons_rejects_mixed_member_and_ring_axes() -> None:
         gm.multi_polygons([[mixed]])
 
 
-def test_plural_coordinate_factories_reject_built_geometries() -> None:
-    members = [gm.LineString([(0, 0), (1, 1)]), gm.LineString([(2, 2), (3, 3)])]
-    shell = [(0, 0), (1, 0), (1, 1), (0, 1)]
-    left = [[(0, 0), (1, 0), (1, 1)]]
-    right = [[(2, 2), (3, 2), (3, 3)]]
-    cases = [
-        (gm.line_strings, members),
-        (gm.polygons, [gm.Polygon(shell)]),
-        (gm.multi_points, [gm.MultiPoint([(0, 0)])]),
-        (gm.multi_line_strings, [gm.MultiLineString([[(0, 0), (1, 1)]])]),
-        (gm.multi_polygons, [gm.MultiPolygon([left, right])]),
-    ]
-    for factory, values in cases:
-        with pytest.raises(TypeError, match='raw coordinate inputs only'):
-            factory(values)
+@pytest.mark.parametrize(
+    ('factory', 'values'),
+    [
+        pytest.param(gm.line_strings, [gm.Point(0, 0)], id='lines-reject-point'),
+        pytest.param(
+            gm.polygons,
+            [gm.LineString([(0, 0), (1, 1)])],
+            id='polygons-reject-line',
+        ),
+        pytest.param(
+            gm.multi_points,
+            [gm.Polygon([(0, 0), (1, 0), (0, 1)])],
+            id='multipoints-reject-polygon',
+        ),
+        pytest.param(
+            gm.multi_line_strings,
+            [gm.MultiPoint([(0, 0)])],
+            id='multilines-reject-multipoint',
+        ),
+        pytest.param(
+            gm.multi_polygons,
+            [gm.MultiLineString([[(0, 0), (1, 1)]])],
+            id='multipolygons-reject-multiline',
+        ),
+    ],
+)
+def test_plural_factories_reject_wrong_geometry_row_kinds(factory, values) -> None:
+    with pytest.raises(gm.GeometryTypeError):
+        factory(values)
 
 
 def test_scalar_multipart_constructors_reconcile_member_frames() -> None:
     points = [gm.Point(0, 0, crs=4326), gm.Point(1, 1, crs=4326)]
     lines = [gm.LineString([(0, 0), (1, 1)], crs=4326)]
     polygons = [gm.Polygon([(0, 0), (1, 0), (1, 1)], crs=4326)]
-    assert gm.MultiPoint(points).crs == 'EPSG:4326'
-    assert gm.MultiLineString(lines).crs == 'EPSG:4326'
-    assert gm.MultiPolygon(polygons).crs == 'EPSG:4326'
+    assert gm.MultiPoint(points).crs == gm.CRS('EPSG:4326')
+    assert gm.MultiLineString(lines).crs == gm.CRS('EPSG:4326')
+    assert gm.MultiPolygon(polygons).crs == gm.CRS('EPSG:4326')
     for constructor, values in (
         (gm.MultiPoint, points),
         (gm.MultiLineString, lines),

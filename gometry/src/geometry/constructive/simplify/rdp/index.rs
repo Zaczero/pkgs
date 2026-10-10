@@ -93,18 +93,19 @@ impl PointRanges {
         if node.range.end <= range.start || range.end <= node.range.start {
             return Ok(());
         }
-        if range.start <= node.range.start && node.range.end <= range.end {
-            if let Some(diagram) = &node.diagram {
-                let winner = diagram.query(
-                    query,
-                    vertices
-                        .get(node.range.clone())
-                        .expect("hull interval sites"),
-                    source.xs,
-                    source.ys,
-                )?;
-                return choose_pair(best, winner, query, source);
-            }
+        if range.start <= node.range.start
+            && node.range.end <= range.end
+            && let Some(diagram) = &node.diagram
+        {
+            let winner = diagram.query(
+                query,
+                vertices
+                    .get(node.range.clone())
+                    .expect("hull interval sites"),
+                source.xs,
+                source.ys,
+            )?;
+            return choose_pair(best, winner, query, source);
         }
         if let Some([left, right]) = node.children {
             self.query(left, range, vertices, query, source, best)?;
@@ -164,7 +165,7 @@ fn rotated(point: XY) -> XY {
     XY::new(-point.y, point.x)
 }
 
-fn negated(sign: ExactSign, negate: bool) -> ExactSign {
+const fn negated(sign: ExactSign, negate: bool) -> ExactSign {
     if !negate {
         return sign;
     }
@@ -224,17 +225,29 @@ impl Hull {
             return Ok(best);
         }
         let span = |forward: bool| {
-            if forward {
-                maximum.wrapping_add(count).wrapping_sub(minimum) % count
+            let (from, to) = if forward {
+                (minimum, maximum)
             } else {
-                minimum.wrapping_add(count).wrapping_sub(maximum) % count
+                (maximum, minimum)
+            };
+            if to >= from {
+                to.wrapping_sub(from)
+            } else {
+                count.wrapping_sub(from).wrapping_add(to)
             }
         };
         let position = |step: usize, forward: bool| {
             if forward {
-                minimum.wrapping_add(step) % count
+                let remaining = count.wrapping_sub(minimum);
+                if step < remaining {
+                    minimum.wrapping_add(step)
+                } else {
+                    step.wrapping_sub(remaining)
+                }
+            } else if step <= minimum {
+                minimum.wrapping_sub(step)
             } else {
-                minimum.wrapping_add(count).wrapping_sub(step) % count
+                count.wrapping_sub(step.wrapping_sub(minimum))
             }
         };
         let last_inside = |forward: bool| {
@@ -311,13 +324,12 @@ impl Hull {
             best = opposite;
         }
         for (endpoint, negate) in [(chord.start, false), (chord.end, true)] {
-            if let Some(candidate) = self.cap(chord, endpoint, negate, source)? {
-                if point_segment_exact_distance_key(source.at(candidate), chord)
+            if let Some(candidate) = self.cap(chord, endpoint, negate, source)?
+                && point_segment_exact_distance_key(source.at(candidate), chord)
                     .cmp_distance(&point_segment_exact_distance_key(source.at(best), chord))?
                     .is_gt()
-                {
-                    best = candidate;
-                }
+            {
+                best = candidate;
             }
         }
         Ok(best)
@@ -328,7 +340,6 @@ struct Node {
     range: Range<usize>,
     children: Option<[usize; 2]>,
     hull: Hull,
-    sorted: Vec<usize>,
 }
 
 pub(in crate::geometry::constructive::simplify) struct Index<'a> {
@@ -345,15 +356,25 @@ impl<'a> Index<'a> {
         let minimum = ys.iter().copied().fold(f64::INFINITY, f64::min);
         let maximum = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let seed = std::hash::RandomState::new().build_hasher().finish();
+        // For nonempty input, bisection depth is at most ceil(log2(ceil(n / SCAN))).
+        // The power-of-two leaf bound gives a full-tree node bound of 2L - 1.
+        let leaf_capacity = xs.len().div_ceil(SCAN).next_power_of_two();
+        let node_capacity = leaf_capacity.wrapping_mul(2).wrapping_sub(1);
         let mut result = Self {
             source,
-            nodes: Vec::with_capacity(xs.len().wrapping_mul(2)),
+            nodes: Vec::with_capacity(node_capacity),
         };
-        result.build(0..xs.len(), [minimum, maximum], seed)?;
+        let (_, root_order) = result.build(0..xs.len(), [minimum, maximum], seed)?;
+        drop(root_order);
         Ok(result)
     }
 
-    fn build(&mut self, range: Range<usize>, y_extent: [f64; 2], seed: u64) -> Result<usize> {
+    fn build(
+        &mut self,
+        range: Range<usize>,
+        y_extent: [f64; 2],
+        seed: u64,
+    ) -> Result<(usize, Vec<usize>)> {
         let (children, mut sorted) = if range.len() <= SCAN {
             let mut sorted: Vec<_> = range.clone().collect();
             sorted.sort_unstable_by(|&left, &right| {
@@ -362,15 +383,11 @@ impl<'a> Index<'a> {
             (None, sorted)
         } else {
             let middle = range.start.wrapping_add(range.len() / 2);
-            let left = self.build(range.start..middle, y_extent, seed)?;
-            let right = self.build(middle..range.end, y_extent, seed)?;
-            let (a, b) = (
-                &self.nodes.get(left).expect("source range child").sorted,
-                &self.nodes.get(right).expect("source range child").sorted,
-            );
-            let mut sorted = Vec::with_capacity(a.len().wrapping_add(b.len()));
+            let (left, left_order) = self.build(range.start..middle, y_extent, seed)?;
+            let (right, right_order) = self.build(middle..range.end, y_extent, seed)?;
+            let mut sorted = Vec::with_capacity(left_order.len().wrapping_add(right_order.len()));
             let (mut ai, mut bi) = (0, 0);
-            while let (Some(&av), Some(&bv)) = (a.get(ai), b.get(bi)) {
+            while let (Some(&av), Some(&bv)) = (left_order.get(ai), right_order.get(bi)) {
                 if self.source.compare(av, bv).then(av.cmp(&bv)).is_le() {
                     sorted.push(av);
                     ai = ai.wrapping_add(1);
@@ -379,8 +396,8 @@ impl<'a> Index<'a> {
                     bi = bi.wrapping_add(1);
                 }
             }
-            sorted.extend_from_slice(a.get(ai..).expect("source hull merge suffix"));
-            sorted.extend_from_slice(b.get(bi..).expect("source hull merge suffix"));
+            sorted.extend_from_slice(left_order.get(ai..).expect("source hull merge suffix"));
+            sorted.extend_from_slice(right_order.get(bi..).expect("source hull merge suffix"));
             (Some([left, right]), sorted)
         };
         sorted.dedup_by(|left, right| self.source.compare(*left, *right).is_eq());
@@ -391,7 +408,8 @@ impl<'a> Index<'a> {
             y_extent,
             seed.wrapping_add(index as u64),
         )?;
-        sorted = hull
+        drop(sorted);
+        let outline_order = hull
             .outline
             .sorted_sites(|site| self.source.at(site))
             .collect();
@@ -399,9 +417,8 @@ impl<'a> Index<'a> {
             range,
             children,
             hull,
-            sorted,
         });
-        Ok(index)
+        Ok((index, outline_order))
     }
 
     fn maximum(
@@ -592,5 +609,39 @@ mod tests {
                 reference(&xs, &ys, start, end, 0.1),
             );
         }
+    }
+
+    #[test]
+    fn source_descent_keeps_the_first_equal_maximum_after_reversal() {
+        let xs: [f64; 32] = std::array::from_fn(|index| index as f64);
+        let ys: [f64; 32] =
+            std::array::from_fn(|index| if index == 2 || index == 9 { 1.0 } else { 0.0 });
+        let index = Index::new(&xs, &ys).unwrap();
+        assert_eq!(index.split(0, 31, 0.5).unwrap(), Some(2));
+
+        let mut reversed_xs = xs;
+        reversed_xs.reverse();
+        let mut reversed_ys = ys;
+        reversed_ys.reverse();
+        let reversed = Index::new(&reversed_xs, &reversed_ys).unwrap();
+        assert_eq!(reversed.split(0, 31, 0.5).unwrap(), Some(22));
+    }
+
+    #[test]
+    fn endpoint_caps_keep_the_farthest_source_in_wrapped_and_linear_windows() {
+        let xs = [0.0, 0.0, 2.0];
+        let ys = [0.0, 2.0, 1.0];
+        let source = Source { xs: &xs, ys: &ys };
+        let hull = Hull::build(&[0, 1, 2], &source, [0.0, 2.0], 0).unwrap();
+        let chord = Segment {
+            start: XY::new(0.5, 0.0),
+            end: XY::new(1.5, 0.0),
+        };
+
+        assert_eq!(
+            hull.cap(chord, chord.start, false, &source).unwrap(),
+            Some(1)
+        );
+        assert_eq!(hull.cap(chord, chord.end, true, &source).unwrap(), Some(2));
     }
 }

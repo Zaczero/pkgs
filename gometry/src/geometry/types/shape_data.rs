@@ -6,21 +6,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::HeapSize;
 use crate::crs::ChartEdge;
 use crate::error::Result;
-use crate::geographic::{GeographicFrame, ScalarGeographicView};
+use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
+use crate::geometry::interval::Interval;
+use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
 use crate::geometry::source_support::{
-    OccupiedToward, PointMembership, SourcePointLocation, cartesian_exact_offset_location_and_area,
-    cartesian_exact_point_location_and_area, cartesian_point_location_and_area, exact_stored_point,
-    occupied_toward,
+    OccupiedToward, PointMembership, SourcePointLocation, cartesian_point_location_and_area,
+    exact_stored_point, occupied_toward,
 };
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, Point, Segment, Shape, XY};
 use crate::geometry::{
-    ChartLineIndex, DistanceParts, GeographicMetricKey, GeographicPrepared,
+    ChartLineIndex, DistanceParts, GeographicAreaDensity, GeographicMetricKey, GeographicPrepared,
     GeographicTopologyRoute, LineIndex, LineIndexSlot, MeasuredLineIndex, MeasuredLineIndexSlot,
-    PlanarMetric, PointBatchTester, ShapeCountQuery,
+    PlanarMetric, Work,
 };
 
 fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
@@ -33,8 +34,6 @@ fn point_outside_bounds(bounds: Option<Bounds>, point: Point) -> bool {
 }
 
 const POINT_SCANS_BEFORE_INDEXING: u32 = 3;
-// The index's fixed setup does not amortize for small source arrays.
-const SMALL_POINT_INDEX_OPERAND: usize = 16;
 
 /// Sidecar for geodesic products keyed by ellipsoid and PROJ runtime generation.
 #[derive(Default)]
@@ -67,18 +66,22 @@ impl HeapSize for FrameDependentCaches {
 struct GeographicTopologyKey {
     longitude_unit: u64,
     longitude_period: u64,
+    longitude_east: bool,
     latitude_unit: u64,
     latitude_pole: u64,
+    latitude_north: bool,
     prime_meridian: u64,
 }
 
 impl GeographicTopologyKey {
     fn new(frame: crate::geographic::GeographicFrame) -> Self {
         Self {
-            longitude_unit: canonical_bits(frame.longitude().unit().radians_per_unit()),
+            longitude_unit: canonical_bits(frame.longitude().radians_per_unit()),
             longitude_period: canonical_bits(frame.longitude().period()),
-            latitude_unit: canonical_bits(frame.latitude_unit().radians_per_unit()),
+            longitude_east: frame.orientation().longitude_east(),
+            latitude_unit: canonical_bits(frame.latitude_radians_per_unit()),
             latitude_pole: canonical_bits(frame.pole()),
+            latitude_north: frame.orientation().latitude_north(),
             prime_meridian: canonical_bits(frame.prime_meridian_radians()),
         }
     }
@@ -217,16 +220,15 @@ pub struct ShapeData {
 
 /// Shape-derived topology products shared by persistent and transient plans.
 ///
-/// The geographic graph owns seam charts and frame-keyed pole quotient topology.
-/// The point tester is separate and lazy so preparing a linear shape never
-/// constructs an inapplicable areal tester.
+/// The geographic graph owns seam charts and frame-keyed pole quotient topology. Cartesian
+/// point-query products are admitted independently by query demand.
 #[derive(Default)]
 struct TopologyPlan {
     structure: OnceLock<Option<Box<crate::geometry::ValidationIssue>>>,
     validity: OnceLock<Option<Box<crate::geometry::ValidationIssue>>>,
     simplicity: OnceLock<bool>,
     geographic: Mutex<Option<(GeographicTopologyKey, Arc<GeographicTopologyProducts>)>>,
-    point_tester: OnceLock<Option<Box<PointBatchTester>>>,
+    point_queries: OnceLock<Option<Box<PointQueryPlan>>>,
     point_scans: std::sync::atomic::AtomicU32,
     #[cfg(test)]
     geographic_exact_topology_accesses: AtomicUsize,
@@ -525,26 +527,23 @@ impl PreparedPlan {
             .unwrap_or(parts))
     }
 
-    /// Exact Cartesian location of `point`. Early probes scan the source;
-    /// the indexed tester costs about three scans to build, so it is built
-    /// once this plan has paid that much, and a repeated operand ends up
-    /// indexed at no more than twice the cost of knowing in advance. Small
-    /// sources stay streamed because their index setup cannot pay back.
+    /// Exact Cartesian location, admitted by this operand's accumulated demand.
     pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
-        if let Some(tester) = self.point_tester_for_location()? {
-            return Ok(tester.location(point));
-        }
-        Ok(crate::geometry::cartesian_point_location(
-            self.shape(),
-            point,
-        ))
+        self.locate_stored(point).map(|location| location.location)
     }
 
     pub(in crate::geometry) fn locate_stored(&self, point: Point) -> Result<SourcePointLocation> {
-        if let Some(tester) = self.point_tester_for_location()? {
-            return Ok(tester.location_and_area(point));
+        if let Some(product) = self
+            .topology
+            .get()
+            .and_then(|topology| topology.point_queries.get())
+        {
+            return product.as_ref().map_or_else(
+                || Ok(cartesian_point_location_and_area(self.shape(), point)),
+                |product| product.locate_stored(self.shape(), point),
+            );
         }
-        Ok(cartesian_point_location_and_area(self.shape(), point))
+        self.prepare_point_queries(1)?.locate_stored(point)
     }
 
     pub(in crate::geometry) fn locate_exact(
@@ -596,12 +595,7 @@ impl PreparedPlan {
             }
             return self.locate_stored(stored);
         }
-        if let Some(tester) = self.point_tester_for_location()?
-            && let Some(location) = tester.location_and_area_exact(point)?
-        {
-            return Ok(location);
-        }
-        cartesian_exact_point_location_and_area(self.shape(), point)
+        self.prepare_point_queries(1)?.locate_exact(point)
     }
 
     pub(in crate::geometry) fn locate_exact_offset(
@@ -609,12 +603,8 @@ impl PreparedPlan {
         point: &[ExactDyadic; 3],
         direction: &[ExactDyadic; 2],
     ) -> Result<SourcePointLocation> {
-        if let Some(tester) = self.point_tester_for_location()?
-            && let Some(location) = tester.location_and_area_exact_offset(point, direction)?
-        {
-            return Ok(location);
-        }
-        cartesian_exact_offset_location_and_area(self.shape(), point, direction)
+        self.prepare_point_queries(1)?
+            .locate_exact_offset(point, direction)
     }
 
     pub(in crate::geometry) fn occupied_toward_exact(
@@ -626,30 +616,82 @@ impl PreparedPlan {
             .map(occupied_toward)
     }
 
-    fn point_tester_for_location(&self) -> Result<Option<&PointBatchTester>> {
-        let topology = self.topology();
-        if let Some(tester) = topology.point_tester.get() {
-            return Ok(tester.as_deref());
-        }
-        if topology
-            .point_scans
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            >= POINT_SCANS_BEFORE_INDEXING
+    /// Resolve once per fixed-target operation. Query counts are advisory;
+    /// the handle remains usable beyond them without rebuilding or truncation.
+    pub(crate) fn prepare_point_queries(
+        &self,
+        expected_queries: usize,
+    ) -> Result<PreparedPointQueries<'_>> {
+        if expected_queries == 0
+            && self
+                .topology
+                .get()
+                .and_then(|topology| topology.point_queries.get())
+                .is_none()
         {
-            self.point_tester()
-        } else {
-            Ok(None)
+            return Ok(PreparedPointQueries::streaming(self.shape()));
         }
+        let topology = self.topology();
+        if let Some(product) = topology.point_queries.get() {
+            return product.as_ref().map_or_else(
+                || Ok(PreparedPointQueries::streaming(self.shape())),
+                |product| product.resolve(self.shape(), expected_queries),
+            );
+        }
+        if expected_queries > POINT_SCANS_BEFORE_INDEXING as usize
+            || topology
+                .point_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                >= POINT_SCANS_BEFORE_INDEXING
+        {
+            let product = topology.point_queries.get_or_try_init(|| -> Result<_> {
+                PointQueryPlan::new(self.shape()).map(|product| product.map(Box::new))
+            })?;
+            product.as_ref().map_or_else(
+                || Ok(PreparedPointQueries::streaming(self.shape())),
+                |product| product.resolve(self.shape(), expected_queries),
+            )
+        } else {
+            Ok(PreparedPointQueries::streaming(self.shape()))
+        }
+    }
+
+    pub(in crate::geometry) fn prepared_point_queries(
+        &self,
+    ) -> Result<Option<PreparedPointQueries<'_>>> {
+        if self
+            .topology
+            .get()
+            .and_then(|topology| topology.point_queries.get())
+            .is_none()
+        {
+            return Ok(None);
+        }
+        self.prepare_point_queries(0).map(Some)
     }
 
     /// Boolean set membership does not observe a line point's boundary versus
     /// interior label, so shared collection owners can be visited once.
     pub(crate) fn cartesian_point_covers(&self, point: Point) -> Result<bool> {
-        if matches!(self.shape(), Shape::GeometryCollection(_)) {
-            return Ok(crate::geometry::cartesian_point_covers(self.shape(), point));
+        self.point_membership_without_bounds(point, PointMembership::BoundaryInclusive)
+    }
+
+    fn point_membership_without_bounds(
+        &self,
+        point: Point,
+        membership: PointMembership,
+    ) -> Result<bool> {
+        if let Some(product) = self
+            .topology
+            .get()
+            .and_then(|topology| topology.point_queries.get())
+        {
+            return product.as_ref().map_or_else(
+                || PreparedPointQueries::streaming(self.shape()).membership(point, membership),
+                |product| product.membership_xy(self.shape(), point.x, point.y, membership),
+            );
         }
-        self.cartesian_point_location(point)
-            .map(|location| location != crate::geometry::Loc::Exterior)
+        self.prepare_point_queries(1)?.membership(point, membership)
     }
 
     pub(crate) fn cartesian_point_membership(
@@ -659,16 +701,11 @@ impl PreparedPlan {
     ) -> Result<bool> {
         if self
             .bounds()
-            .is_none_or(|bounds| !bounds.contains_xy(point.xy()))
+            .is_none_or(|bounds| !bounds.contains_point(point.xy()))
         {
             return Ok(false);
         }
-        match membership {
-            PointMembership::Strict => self
-                .cartesian_point_location(point)
-                .map(|location| location == crate::geometry::Loc::Interior),
-            PointMembership::BoundaryInclusive => self.cartesian_point_covers(point),
-        }
+        self.point_membership_without_bounds(point, membership)
     }
 
     #[cfg(test)]
@@ -676,26 +713,6 @@ impl PreparedPlan {
         self.topology()
             .point_scans
             .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// The indexed point tester of a polygonal shape, built on first use.
-    pub(crate) fn point_tester(&self) -> Result<Option<&PointBatchTester>> {
-        Ok(self
-            .topology()
-            .point_tester
-            .get_or_try_init(|| -> Result<_> {
-                if matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_)) {
-                    let mut counts = ShapeCountQuery::default();
-                    if counts.coordinates_at_most(self.shape(), SMALL_POINT_INDEX_OPERAND) {
-                        return Ok(None);
-                    }
-                    let tester = PointBatchTester::new(self.shape())?;
-                    Ok(Some(Box::new(tester)))
-                } else {
-                    Ok(None)
-                }
-            })?
-            .as_deref())
     }
 
     pub(crate) fn with_seeded_bounds(self, bounds: Option<Bounds>) -> Self {
@@ -767,7 +784,7 @@ impl HeapSize for TopologyPlan {
         self.structure
             .heap_bytes()
             .saturating_add(self.validity.heap_bytes())
-            .saturating_add(self.point_tester.heap_bytes())
+            .saturating_add(self.point_queries.heap_bytes())
             .saturating_add(
                 self.geographic
                     .lock()
@@ -917,6 +934,10 @@ mod frame_cache_tests {
     use crate::geometry::{CoordSeq, LineSeq};
     use crate::test_support::allocation_count;
 
+    fn cached_measured_locate(shape: &PreparedPlan, point: Point) -> crate::error::Result<f64> {
+        shape.measured_line_index()?.locate(point, &PlanarMetric)
+    }
+
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
         let base = GeographicMetricKey::new_at_generation(
@@ -1054,13 +1075,10 @@ mod frame_cache_tests {
                 .expect("repeated measured interpolation")
         });
         let (located, locate_allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
-                .expect("measured locate")
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0)).expect("measured locate")
         });
         let (repeat_located, repeat_locate_allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0))
                 .expect("repeated measured locate")
         });
         assert_eq!(interpolation, repeat_interpolation);
@@ -1127,8 +1145,7 @@ mod frame_cache_tests {
         assert_eq!(last.m().unwrap().to_bits(), 2.0_f64.to_bits());
 
         let (located, allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 0.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 0.0))
                 .expect("interior measured locate")
         });
         assert_eq!(located.to_bits(), 0.5_f64.to_bits());
@@ -1152,8 +1169,7 @@ mod frame_cache_tests {
         shape.measured_line_index().expect("measured line index");
 
         let (located, allocations) = allocation_count(|| {
-            shape
-                .line_locate_point_m_with(Point::new_raw_xy(1.0, 1.0), &PlanarMetric)
+            cached_measured_locate(&shape, Point::new_raw_xy(1.0, 1.0))
                 .expect("locate past duplicate segment")
         });
         assert_eq!(located.to_bits(), 1.0_f64.to_bits());
@@ -1188,8 +1204,7 @@ mod frame_cache_tests {
         ));
         shape.measured_line_index().expect("measured line index");
 
-        let located = shape
-            .line_locate_point_m_with(Point::new_raw_xy(minimum, 1.0), &PlanarMetric)
+        let located = cached_measured_locate(&shape, Point::new_raw_xy(minimum, 1.0))
             .expect("exact subnormal measured locate");
         assert_eq!(located.to_bits(), minimum.to_bits());
     }
@@ -1353,7 +1368,9 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn backend_floor(self) -> f64 {
-        self.semi_major * Self::BACKEND_RELATIVE
+        Interval::exact(self.semi_major)
+            .mul(Interval::exact(Self::BACKEND_RELATIVE))
+            .upper()
     }
 
     pub(crate) fn minimum_gap(self) -> f64 {
@@ -1365,7 +1382,10 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
-        self.backend_floor() * evaluations.max(1.0)
+        Interval::exact(self.semi_major)
+            .mul(Interval::exact(Self::BACKEND_RELATIVE))
+            .mul(Interval::exact(evaluations.max(1.0)))
+            .upper()
     }
 }
 
@@ -1414,6 +1434,7 @@ crate::heapless!(ChartBox);
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PointEdgeQuery {
     Minimum { cutoff: f64 },
+    Nearest { cutoff: f64 },
     Locate { cutoff: f64 },
     Dwithin { limit: f64 },
 }
@@ -1427,6 +1448,64 @@ pub(crate) struct PointEdgeMinimum {
     pub(crate) budget_exhausted: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DwithinOutcome {
+    Within,
+    Outside,
+    Unresolved,
+}
+
+impl DwithinOutcome {
+    pub(crate) const fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Within, _) | (_, Self::Within) => Self::Within,
+            (Self::Unresolved, _) | (_, Self::Unresolved) => Self::Unresolved,
+            (Self::Outside, Self::Outside) => Self::Outside,
+        }
+    }
+
+    pub(crate) fn into_bool(self) -> Result<bool> {
+        match self {
+            Self::Within => Ok(true),
+            Self::Outside => Ok(false),
+            Self::Unresolved => Err(crate::crs::CrsError::message(
+                "geodesic dwithin could not certify the threshold within its evaluation work limit",
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod dwithin_outcome_tests {
+    use super::DwithinOutcome;
+
+    #[test]
+    fn witnessed_within_dominates_an_earlier_unresolved_edge() {
+        assert_eq!(
+            DwithinOutcome::Unresolved.combine(DwithinOutcome::Within),
+            DwithinOutcome::Within
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Unresolved),
+            DwithinOutcome::Unresolved
+        );
+        assert_eq!(
+            DwithinOutcome::Outside.combine(DwithinOutcome::Outside),
+            DwithinOutcome::Outside
+        );
+    }
+
+    #[test]
+    fn unresolved_is_an_error_only_at_the_boolean_boundary() {
+        let error = DwithinOutcome::Unresolved
+            .into_bool()
+            .expect_err("a bool cannot encode an unresolved threshold");
+        assert!(error.to_string().contains(
+            "geodesic dwithin could not certify the threshold within its evaluation work limit"
+        ));
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferential {
     pub(crate) speed: f64,
@@ -1436,9 +1515,7 @@ pub(crate) struct ChartEdgeDifferential {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ChartEdgeDifferentialBounds {
     pub(crate) speed: f64,
-    pub(crate) lipschitz_speed: f64,
-    pub(crate) acceleration: f64,
-    pub(crate) curvature: f64,
+    pub(crate) covariant_acceleration: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1457,7 +1534,10 @@ pub(crate) enum PointEdgeQueryResult {
     Outside {
         lower_bound: f64,
         evaluations: usize,
-        budget_exhausted: bool,
+    },
+    Unresolved {
+        lower_bound: f64,
+        evaluations: usize,
     },
 }
 
@@ -1467,11 +1547,24 @@ pub(crate) trait ChartMetric {
     fn chart_frame(&self) -> GeographicFrame;
     fn chart_edge(&self, start: Point, end: Point) -> Result<ChartEdge>;
     fn chart_edge_length(&self, edge: &ChartEdge) -> Result<f64>;
+    fn chart_edge_length_with_work<W: Work>(&self, edge: &ChartEdge, work: &mut W) -> Result<f64>;
     fn chart_edge_length_to(&self, edge: &ChartEdge, parameter: f64) -> Result<f64>;
+    fn chart_edge_arclength_fraction(
+        &self,
+        edge: &ChartEdge,
+        parameter: f64,
+        total_length: Option<f64>,
+    ) -> Result<f64>;
+    fn chart_edge_arclength_fraction_with_work<W: Work>(
+        &self,
+        edge: &ChartEdge,
+        parameter: f64,
+        total_length: Option<f64>,
+        work: &mut W,
+    ) -> Result<f64>;
     fn chart_edge_locate_t(&self, edge: &ChartEdge, distance: f64, length: f64) -> Result<f64>;
     /// Measure a source edge interval without rounding exact chart-cut points.
     fn chart_edge_interval_length(&self, edge: &ChartEdge, start: f64, end: f64) -> Result<f64>;
-    fn chart_edge_position(&self, edge: &ChartEdge, parameter: f64) -> Point;
     fn chart_edge_witness(
         &self,
         start: Point,
@@ -1482,7 +1575,22 @@ pub(crate) trait ChartMetric {
     ) -> Result<Point>;
     fn chart_edge_differential(&self, edge: &ChartEdge, parameter: f64) -> ChartEdgeDifferential;
     fn chart_edge_differential_bounds(&self, edge: &ChartEdge) -> ChartEdgeDifferentialBounds;
-    fn chart_edge_pole_distance_upper_bound(&self, edge: &ChartEdge, target: Point) -> Option<f64>;
+    fn chart_edge_moving_correspondence_upper(
+        &self,
+        source: &ChartEdge,
+        target: &ChartEdge,
+        source_interval: [f64; 2],
+        target_interval: [f64; 2],
+        source_points: &[Point; 2],
+        target_points: &[Point; 2],
+        endpoint_distances: [f64; 2],
+    ) -> Option<f64>;
+    fn chart_edge_pole_distance_upper_bound(
+        &self,
+        edge: &ChartEdge,
+        source_interval: [f64; 2],
+        target: Point,
+    ) -> Option<f64>;
     fn point_edge_query(
         &self,
         point: Point,
@@ -1498,10 +1606,17 @@ pub(crate) trait ChartMetric {
         source_speed: f64,
         source_azimuth: f64,
     ) -> Result<ChartPointDistanceSample>;
-    fn geodesic_distance_hessian_upper_bound(&self, lower_distance: f64) -> f64;
+    fn geodesic_distance_hessian_upper_bound(
+        &self,
+        lower_distance: f64,
+        upper_distance: f64,
+    ) -> f64;
     fn point_envelope_bound(&self, point: Point) -> impl Fn(ChartBox) -> f64;
-    fn chart_area_edge_term(&self, edge: &ChartEdge, north: bool) -> f64;
-    fn chart_area_factor(&self) -> f64;
+    fn chart_area_density(
+        &self,
+        reference_colatitude: f64,
+        reference_pole: GeodeticPole,
+    ) -> GeographicAreaDensity;
 }
 
 #[derive(Clone, Copy, Debug)]

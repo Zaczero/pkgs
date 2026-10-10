@@ -10,15 +10,29 @@
 //! Interior wins, else Boundary, else Exterior (never global XOR across parts).
 //! Crossing arithmetic reuses [`ray_crossing_is_right`] / [`orientation_xy`].
 
+mod arrangement;
+mod prepared;
+
 use std::ops::ControlFlow;
 #[cfg(test)]
 use std::sync::Arc;
+
+pub(in crate::geometry) use arrangement::{
+    AreaLocationLabels, ExactLocationCells, ExactLocationDart, ExactLocationEdge,
+    ExactLocationIndex, ExactLocationPoints, SourceLocationLabels,
+};
+#[cfg(all(test, debug_assertions))]
+pub(in crate::geometry) use arrangement::{
+    query_comparisons, query_edge_tests, reset_query_comparisons,
+};
+pub(in crate::geometry) use prepared::PointQueryPlan;
+pub(crate) use prepared::PreparedPointQueries;
 
 use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex, checked_index_count};
 use crate::geometry::source_support::{
-    PointQuery, RingEdgeCandidates, SourcePointLocation, StreamingLocation,
+    PointMembership, PointQuery, RingEdgeCandidates, SourcePointLocation, StreamingLocation,
     cartesian_point_location_and_area, exact_edge_winding, exact_offset_edge_winding,
     exact_offset_point_in_bounds, exact_point_in_bounds, exact_query_xy, exact_query_y,
 };
@@ -440,15 +454,6 @@ impl PolygonPointIndex {
         })
     }
 
-    /// Strict membership after the envelope candidate gate.
-    #[cfg(test)]
-    pub(crate) fn contains_xy(&self, x: f64, y: f64) -> bool {
-        if !self.in_bounds_xy(x, y) {
-            return false;
-        }
-        self.location(Point::new_raw_xy(x, y)) == RingClass::Interior
-    }
-
     pub(crate) fn covers_point(&self, point: Point) -> bool {
         self.covers_xy(point.x, point.y)
     }
@@ -485,32 +490,9 @@ pub(crate) struct ExactPointTester {
 }
 
 impl ExactPointTester {
-    #[cfg(test)]
-    fn contains_point(&self, point: Point) -> bool {
-        crate::geometry::cartesian_point_location(&self.shape, point)
-            == crate::geometry::Loc::Interior
-    }
-
     fn covers_point(&self, point: Point) -> bool {
         crate::geometry::cartesian_point_covers(&self.shape, point)
     }
-}
-
-/// Union membership over the parts stabbed at `point`.
-fn any_part_at(
-    parts: &YStabbingIndex<PolygonPointIndex>,
-    point: Point,
-    accepts: impl Fn(&PolygonPointIndex) -> bool,
-) -> bool {
-    parts
-        .for_each_at_point(point.x, point.y, |polygon| {
-            if accepts(polygon) {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })
-        .is_some()
 }
 
 fn location_from_indexed_parts<Q: PointQuery>(
@@ -582,6 +564,31 @@ pub(crate) enum PointBatchTester {
 }
 
 impl PointBatchTester {
+    /// Includes the complete contact path, which visits every hole of each
+    /// selected part and can build at most two rays per candidate edge.
+    pub(in crate::geometry) fn query_work_bound(&self) -> Option<usize> {
+        fn polygon_work(polygon: &PolygonPointIndex) -> usize {
+            std::iter::once(&polygon.shell)
+                .chain(polygon.holes.items())
+                .fold(1_usize, |work, ring| {
+                    work.saturating_add(1)
+                        .saturating_add(ring.edges.candidate_bound())
+                })
+        }
+        match self {
+            Self::Polygon { index } => Some(polygon_work(index)),
+            Self::MultiPolygon { parts } => Some(
+                parts
+                    .items()
+                    .iter()
+                    .fold(parts.items().len(), |work, part| {
+                        work.saturating_add(polygon_work(part))
+                    }),
+            ),
+            Self::Generic(_) => None,
+        }
+    }
+
     #[cfg(test)]
     const fn uses_indexed_plan(&self) -> bool {
         match self {
@@ -648,19 +655,17 @@ impl PointBatchTester {
     /// Location of a probe that avoids every ring edge, from indexed exact
     /// windings. `None` for a probe on an edge, a collapsed ring, or a shape
     /// that is not polygonal: the exact source scan owns those.
-    pub(crate) fn location_off_boundary(&self, point: Point) -> Option<Loc> {
+    pub(crate) fn location_off_boundary(&self, x: f64, y: f64) -> Option<Loc> {
         let occupied = match self {
-            Self::Polygon { index } => index.occupied_off_boundary(point.x, point.y)?,
+            Self::Polygon { index } => index.occupied_off_boundary(x, y)?,
             Self::MultiPolygon { parts } => {
                 let mut occupied = false;
-                let touched = parts.for_each_at_point(point.x, point.y, |part| {
-                    part.occupied_off_boundary(point.x, point.y).map_or(
-                        ControlFlow::Break(()),
-                        |inside| {
+                let touched = parts.for_each_at_point(x, y, |part| {
+                    part.occupied_off_boundary(x, y)
+                        .map_or(ControlFlow::Break(()), |inside| {
                             occupied |= inside;
                             ControlFlow::Continue(())
-                        },
-                    )
+                        })
                 });
                 if touched.is_some() {
                     return None;
@@ -676,12 +681,13 @@ impl PointBatchTester {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn location(&self, point: Point) -> Loc {
         self.location_and_area(point).location
     }
 
     pub(in crate::geometry) fn location_and_area(&self, point: Point) -> SourcePointLocation {
-        if let Some(location) = self.location_off_boundary(point) {
+        if let Some(location) = self.location_off_boundary(point.x, point.y) {
             return SourcePointLocation {
                 location,
                 area: location == Loc::Interior,
@@ -695,6 +701,32 @@ impl PointBatchTester {
                     .expect("stored point location does not construct exact values")
             },
             Self::Generic(tester) => cartesian_point_location_and_area(&tester.shape, point),
+        }
+    }
+
+    pub(crate) fn membership_xy(&self, x: f64, y: f64, membership: PointMembership) -> bool {
+        if let Some(location) = self.location_off_boundary(x, y) {
+            return membership.accepts(location);
+        }
+        let point = Point::new_raw_xy(x, y);
+        match self {
+            Self::Generic(tester) => match membership {
+                PointMembership::Strict => membership.accepts(
+                    crate::geometry::cartesian_point_location(&tester.shape, point),
+                ),
+                PointMembership::BoundaryInclusive => tester.covers_point(point),
+            },
+            Self::Polygon { index } => {
+                membership.accepts(index.location_from_indexed_edges(point).location)
+            },
+            Self::MultiPolygon { parts } => {
+                let location = StreamingLocation::for_stored_point(point);
+                membership.accepts(
+                    location_from_indexed_parts(parts, x, y, location)
+                        .expect("stored point location does not construct exact values")
+                        .location,
+                )
+            },
         }
     }
 
@@ -780,24 +812,12 @@ impl PointBatchTester {
     /// Strict membership — [`Shape::contains_point`] semantics.
     #[cfg(test)]
     pub(crate) fn contains_point(&self, point: Point) -> bool {
-        match self {
-            Self::Polygon { index: polygon, .. } => polygon.contains_xy(point.x, point.y),
-            Self::MultiPolygon { parts, .. } => any_part_at(parts, point, |polygon| {
-                polygon.contains_xy(point.x, point.y)
-            }),
-            Self::Generic(tester) => tester.contains_point(point),
-        }
+        self.membership_xy(point.x, point.y, PointMembership::Strict)
     }
 
     /// Boundary-inclusive membership — [`Shape::covers_point`] semantics.
     pub(crate) fn covers_point(&self, point: Point) -> bool {
-        match self {
-            Self::Polygon { index: polygon, .. } => polygon.covers_xy(point.x, point.y),
-            Self::MultiPolygon { parts, .. } => {
-                any_part_at(parts, point, |polygon| polygon.covers_xy(point.x, point.y))
-            },
-            Self::Generic(tester) => tester.covers_point(point),
-        }
+        self.membership_xy(point.x, point.y, PointMembership::BoundaryInclusive)
     }
 }
 
@@ -814,6 +834,7 @@ impl HeapSize for PointBatchTester {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::overlay::{AreaLocationStrategy, ExactSourceInventory};
     use crate::geometry::source_support::{
         OccupiedToward, cartesian_exact_offset_location, cartesian_exact_offset_location_and_area,
         cartesian_exact_point_location, cartesian_exact_point_location_and_area,
@@ -855,6 +876,110 @@ mod tests {
             shell: closed_ring(&dense_square_points()),
             holes: SharedSlice::empty(),
         })
+    }
+
+    fn exact_location_indexes(
+        shape: &Shape,
+    ) -> (
+        ExactLocationIndex<SourceLocationLabels>,
+        Option<ExactLocationIndex<AreaLocationLabels>>,
+    ) {
+        let inventory = ExactSourceInventory::from_shapes_with_occurrences(&[shape])
+            .expect("source point-location inventory");
+        let mut budget = crate::geometry::ExpansionBudget::new("test", "point-location cells");
+        let partition = inventory
+            .partition(&mut budget)
+            .expect("source point-location partition");
+        let source = ExactLocationIndex::from_cells(
+            inventory
+                .source_location_cells(&partition)
+                .expect("full-source point-location cells"),
+        );
+        let support = inventory
+            .metric_support(&partition, AreaLocationStrategy::PersistentSlabs)
+            .expect("area point-location cells");
+        let area = support
+            .area_location_cells
+            .map(ExactLocationIndex::from_cells);
+        (source, area)
+    }
+
+    fn assert_exact_location_matches_source(
+        wkt: &str,
+        points: &[[ExactDyadic; 3]],
+        directions: &[[ExactDyadic; 2]],
+    ) {
+        let shape = crate::io::parse_wkt(wkt).expect("point-location counter-case");
+        let (source, area) = exact_location_indexes(&shape);
+        let tester = PointBatchTester::new(&shape).expect("prepared exact location tester");
+        let mut members = vec![shape.clone()];
+        members.extend(
+            (0..32)
+                .map(|index| Shape::Point(Point::new_raw_xy(1_000.0 + f64::from(index), 1_000.0))),
+        );
+        let padded = Shape::geometry_collection(members).unwrap();
+        let plan = crate::geometry::PreparedPlan::transient(&padded);
+        let queries = plan.prepare_point_queries(usize::MAX).unwrap();
+        assert!(queries.uses_slabs());
+        for point in points {
+            let streaming = cartesian_exact_point_location_and_area(&shape, point)
+                .expect("streaming exact point location");
+            let expected = tester
+                .location_and_area_exact(point)
+                .expect("prepared exact point location")
+                .unwrap_or(streaming);
+            assert_eq!(expected, streaming, "{wkt}, point={point:?}");
+            assert_eq!(
+                queries.locate_exact(point).unwrap(),
+                streaming,
+                "{wkt}, point={point:?}"
+            );
+            assert_eq!(
+                source.locate_exact(point).unwrap(),
+                expected,
+                "{wkt}, point={point:?}",
+            );
+            assert_eq!(
+                area.as_ref()
+                    .is_some_and(|index| index.locate_exact(point).unwrap()),
+                expected.area,
+                "{wkt}, point={point:?}",
+            );
+            for direction in directions {
+                assert_eq!(
+                    queries.locate_exact_offset(point, direction).unwrap(),
+                    cartesian_exact_offset_location_and_area(&shape, point, direction).unwrap(),
+                    "{wkt}, point={point:?}, direction={direction:?}",
+                );
+                let streaming_offset =
+                    cartesian_exact_offset_location_and_area(&shape, point, direction)
+                        .expect("streaming exact offset");
+                let expected_offset = tester
+                    .location_and_area_exact_offset(point, direction)
+                    .expect("prepared exact offset")
+                    .unwrap_or(streaming_offset);
+                assert_eq!(expected_offset, streaming_offset);
+                assert_eq!(
+                    source
+                        .locate_exact_offset(point, direction)
+                        .expect("indexed exact offset"),
+                    expected_offset,
+                    "{wkt}, point={point:?}, direction={direction:?}",
+                );
+            }
+        }
+    }
+
+    fn exact_xy(x: f64, y: f64) -> [ExactDyadic; 3] {
+        [
+            ExactDyadic::from_f64(x),
+            ExactDyadic::from_f64(y),
+            ExactDyadic::one(),
+        ]
+    }
+
+    fn exact_direction(x: f64, y: f64) -> [ExactDyadic; 2] {
+        [ExactDyadic::from_f64(x), ExactDyadic::from_f64(y)]
     }
 
     #[test]
@@ -1258,7 +1383,7 @@ mod tests {
                         exact,
                         "area for {wkt} at {point:?}"
                     );
-                    if let Some(location) = tester.location_off_boundary(point) {
+                    if let Some(location) = tester.location_off_boundary(point.x, point.y) {
                         assert_eq!(location, exact.location, "{wkt} at {point:?}");
                     } else {
                         let mut on_edge = false;
@@ -1326,12 +1451,7 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(plan.locate_exact(&point).unwrap(), expected);
         }
-        assert!(
-            plan.point_tester()
-                .unwrap()
-                .expect("large prepared polygon gets a point tester")
-                .uses_indexed_plan()
-        );
+        assert!(plan.prepare_point_queries(4).unwrap().uses_indexed_plan());
     }
 
     #[test]
@@ -1377,6 +1497,401 @@ mod tests {
     }
 
     #[test]
+    fn exact_slabs_keep_twice_wound_nonzero_fill() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+            &[exact_xy(2.0, 2.0), exact_xy(0.0, 2.0), exact_xy(5.0, 2.0)],
+            &[exact_direction(1.0, 0.0), exact_direction(0.0, 0.0)],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_union_oppositely_oriented_overlapping_members() {
+        assert_exact_location_matches_source(
+            "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),\
+             ((2 0,2 4,6 4,6 0,2 0)))",
+            &[exact_xy(1.0, 2.0), exact_xy(3.0, 2.0), exact_xy(5.0, 2.0)],
+            &[exact_direction(1.0, 0.0), exact_direction(0.0, 1.0)],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_preserve_cancelled_spur_and_shell_hole_cancellation() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,-2 0,0 0))",
+            &[exact_xy(2.0, 2.0), exact_xy(-1.0, 0.0), exact_xy(0.0, 0.0)],
+            &[exact_direction(0.0, 1.0), exact_direction(1.0, 0.0)],
+        );
+        for wkt in [
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,0 4,4 4,4 0,0 0))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(0 0,4 0,4 4,0 4,0 0))",
+            "POLYGON ((0 0,0 4,4 4,4 0,0 0),(0 0,0 4,4 4,4 0,0 0))",
+        ] {
+            assert_exact_location_matches_source(
+                wkt,
+                &[exact_xy(2.0, 2.0), exact_xy(0.0, 2.0), exact_xy(5.0, 2.0)],
+                &[exact_direction(1.0, 0.0), exact_direction(0.0, 1.0)],
+            );
+        }
+    }
+
+    #[test]
+    fn exact_slabs_preserve_hole_interior_and_boundary_labels() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,2 8,8 8,8 2,2 2))",
+            &[
+                exact_xy(1.0, 1.0),
+                exact_xy(5.0, 5.0),
+                exact_xy(2.0, 5.0),
+                exact_xy(12.0, 5.0),
+            ],
+            &[
+                exact_direction(1.0, 0.0),
+                exact_direction(0.0, 1.0),
+                exact_direction(-1.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_keep_an_adjacent_multipolygon_shared_edge_interior() {
+        let shape = crate::io::parse_wkt(
+            "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),\
+             ((2 0,4 0,4 2,2 2,2 0)))",
+        )
+        .unwrap();
+        let query = exact_xy(2.0, 1.0);
+        let (source, area) = exact_location_indexes(&shape);
+        let expected = cartesian_exact_point_location_and_area(&shape, &query).unwrap();
+        assert_eq!(expected, SourcePointLocation {
+            location: Loc::Interior,
+            area: true
+        });
+        assert_eq!(source.locate_exact(&query).unwrap(), expected);
+        assert!(area.unwrap().locate_exact(&query).unwrap());
+    }
+
+    #[test]
+    fn exact_slabs_classify_crossing_nodes_horizontal_atoms_and_offsets() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,4 4,0 4,4 0,0 0))",
+            &[
+                exact_xy(2.0, 2.0),
+                exact_xy(1.0, 3.0),
+                exact_xy(3.0, 1.0),
+                exact_xy(2.0, 0.0),
+                exact_xy(2.0, 4.0),
+            ],
+            &[
+                exact_direction(1.0, 0.0),
+                exact_direction(0.0, 1.0),
+                exact_direction(-1.0, 0.0),
+                exact_direction(0.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_locate_a_constructed_nondyadic_crossing_node() {
+        let shape = crate::io::parse_wkt("POLYGON ((0 0,3 1,0 1,2 0,0 0))").unwrap();
+        let query = [
+            ExactDyadic::from_f64(6.0),
+            ExactDyadic::from_f64(2.0),
+            ExactDyadic::from_f64(5.0),
+        ];
+        let (source, _) = exact_location_indexes(&shape);
+        let expected =
+            cartesian_exact_point_location_and_area(&shape, &query).expect("exact crossing node");
+        assert_eq!(expected.location, Loc::Boundary);
+        assert_eq!(source.locate_exact(&query).unwrap(), expected);
+        for direction in [
+            exact_direction(1.0, 0.0),
+            exact_direction(0.0, 1.0),
+            exact_direction(-1.0, 0.0),
+            exact_direction(0.0, -1.0),
+        ] {
+            assert_eq!(
+                source.locate_exact_offset(&query, &direction).unwrap(),
+                cartesian_exact_offset_location_and_area(&shape, &query, &direction).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn exact_slabs_keep_collapsed_polygon_support_out_of_area() {
+        assert_exact_location_matches_source(
+            "POLYGON ((0 0,2 0,1 0,0 0))",
+            &[exact_xy(1.0, 0.0), exact_xy(0.0, 0.0), exact_xy(3.0, 0.0)],
+            &[
+                exact_direction(1.0, 0.0),
+                exact_direction(0.0, 1.0),
+                exact_direction(0.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn exact_slabs_offset_isolated_nodes_into_their_host_face() {
+        assert_exact_location_matches_source("POINT (1 1)", &[exact_xy(1.0, 1.0)], &[
+            exact_direction(1.0, 0.0),
+            exact_direction(0.0, 0.0),
+        ]);
+        assert_exact_location_matches_source(
+            "GEOMETRYCOLLECTION (POINT (1 1),\
+             POLYGON ((0 0,4 0,4 4,0 4,0 0)))",
+            &[exact_xy(1.0, 1.0)],
+            &[exact_direction(1.0, 0.0), exact_direction(0.0, 0.0)],
+        );
+    }
+
+    #[test]
+    fn exact_homogeneous_boundary_queries_are_not_rounded() {
+        let wkt = "POLYGON ((0 0,3 1,0 2,0 0))";
+        let point = [
+            ExactDyadic::from_f64(3.0),
+            ExactDyadic::from_f64(1.0),
+            ExactDyadic::from_f64(6.0),
+        ];
+        let negative_weight = [
+            ExactDyadic::from_f64(-3.0),
+            ExactDyadic::from_f64(-1.0),
+            ExactDyadic::from_f64(-6.0),
+        ];
+        let shape = crate::io::parse_wkt(wkt).unwrap();
+        let (source, area) = exact_location_indexes(&shape);
+        for query in [&point, &negative_weight] {
+            let expected = cartesian_exact_point_location_and_area(&shape, query).unwrap();
+            assert_eq!(expected.location, Loc::Boundary);
+            assert_eq!(source.locate_exact(query).unwrap(), expected);
+            assert_eq!(
+                area.as_ref().unwrap().locate_exact(query).unwrap(),
+                expected.area
+            );
+            for direction in [
+                exact_direction(0.0, 1.0),
+                exact_direction(0.0, -1.0),
+                exact_direction(1.0, 0.0),
+                exact_direction(-1.0, 0.0),
+            ] {
+                assert_eq!(
+                    source.locate_exact_offset(query, &direction).unwrap(),
+                    cartesian_exact_offset_location_and_area(&shape, query, &direction).unwrap()
+                );
+            }
+        }
+        let rounded = [
+            ExactDyadic::from_f64(0.5),
+            ExactDyadic::from_f64(1.0 / 6.0),
+            ExactDyadic::one(),
+        ];
+        assert_eq!(
+            source.locate_exact(&rounded).unwrap().location,
+            Loc::Exterior
+        );
+    }
+
+    #[test]
+    fn prepared_low_ply_contacts_stay_on_bounded_ring_queries() {
+        let shape = dense_square();
+        let plan = crate::geometry::PreparedPlan::transient(&shape);
+        let queries = plan.prepare_point_queries(usize::MAX).unwrap();
+        assert!(!queries.uses_slabs());
+        assert!(queries.uses_indexed_plan());
+        for point in [exact_xy(3.0, 0.0), exact_xy(10.0, 10.0), exact_xy(5.0, 5.0)] {
+            assert_eq!(
+                queries.locate_exact(&point).unwrap(),
+                cartesian_exact_point_location_and_area(&shape, &point).unwrap()
+            );
+            for direction in [
+                exact_direction(1.0, 0.0),
+                exact_direction(0.0, 1.0),
+                exact_direction(0.0, -1.0),
+            ] {
+                assert_eq!(
+                    queries.locate_exact_offset(&point, &direction).unwrap(),
+                    cartesian_exact_offset_location_and_area(&shape, &point, &direction).unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prepared_shared_collection_locations_preserve_endpoint_occurrence_parity() {
+        let line = crate::io::parse_wkt(
+            "LINESTRING (0 0,1 0,2 0,3 0,4 0,5 0,6 0,7 0,8 0,9 0,10 0,11 0,12 0,13 0,14 0,15 0,16 0)",
+        ).unwrap();
+        let mut shared = line.clone();
+        for _ in 0..2 {
+            shared = Shape::geometry_collection(vec![shared.clone(), shared]).unwrap();
+        }
+        assert!(shared.has_repeated_shared_owner());
+        let plan = crate::geometry::PreparedPlan::transient(&shared);
+        let queries = plan.prepare_point_queries(usize::MAX).unwrap();
+        assert!(!queries.uses_slabs());
+        let endpoint = exact_xy(0.0, 0.0);
+        assert_eq!(
+            cartesian_exact_point_location_and_area(&line, &endpoint)
+                .unwrap()
+                .location,
+            Loc::Boundary,
+        );
+        let expected = SourcePointLocation {
+            location: Loc::Interior,
+            area: false,
+        };
+        assert_eq!(queries.locate_exact(&endpoint).unwrap(), expected);
+        assert_eq!(
+            queries.locate_stored(Point::new_raw_xy(0.0, 0.0)).unwrap(),
+            expected
+        );
+        for point in [endpoint, [
+            ExactDyadic::from_f64(1.0),
+            ExactDyadic::zero(),
+            ExactDyadic::from_f64(3.0),
+        ]] {
+            assert_eq!(
+                queries.locate_exact(&point).unwrap(),
+                cartesian_exact_point_location_and_area(&shared, &point).unwrap()
+            );
+            for direction in [
+                exact_direction(1.0, 0.0),
+                exact_direction(-1.0, 0.0),
+                exact_direction(0.0, 1.0),
+            ] {
+                assert_eq!(
+                    queries.locate_exact_offset(&point, &direction).unwrap(),
+                    cartesian_exact_offset_location_and_area(&shared, &point, &direction).unwrap()
+                );
+            }
+        }
+    }
+
+    fn sheared_comb(teeth: usize) -> Shape {
+        let teeth = teeth as f64;
+        let mut points = vec![(1.0, -2.0), (2.0 * teeth, -2.0), (2.0 * teeth, -1.0)];
+        for index in (0..teeth as usize).rev() {
+            let left = 1.0 + 2.0 * index as f64;
+            let right = left + 1.0;
+            if points.last() != Some(&(right, -1.0)) {
+                points.push((right, -1.0));
+            }
+            points.extend([(right, 1.0), (left, 1.0), (left, -1.0)]);
+        }
+        let mut points: Vec<_> = points
+            .into_iter()
+            .map(|(x, y)| (x + 4.0 * teeth * y, y))
+            .collect();
+        points.push(points[0]);
+        Shape::Polygon(Polygon::new(closed_ring(&points), Vec::new()))
+    }
+
+    #[test]
+    fn prepared_contact_certificate_includes_the_hole_hierarchy() {
+        let shell = closed_ring(&[
+            (0.0, 0.0),
+            (200.0, 0.0),
+            (200.0, 4.0),
+            (0.0, 4.0),
+            (0.0, 0.0),
+        ]);
+        let holes = (0..256)
+            .map(|index| {
+                let x = 2.0 + 3.0 * f64::from(index);
+                closed_ring(&[(x, 1.0), (x + 1.0, 1.0), (x + 1.0, 3.0), (x, 3.0), (x, 1.0)])
+            })
+            .collect();
+        let shape = Shape::Polygon(Polygon::new(shell, holes));
+        let plan = crate::geometry::PreparedPlan::transient(&shape);
+        let queries = plan.prepare_point_queries(usize::MAX).unwrap();
+        assert!(queries.uses_slabs());
+        for point in [exact_xy(2.0, 2.0), exact_xy(2.5, 2.0), exact_xy(1.0, 2.0)] {
+            assert_eq!(
+                queries.locate_exact(&point).unwrap(),
+                cartesian_exact_point_location_and_area(&shape, &point).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn sustained_queries_promote_after_an_advisory_light_batch() {
+        let shape = sheared_comb(256);
+        let plan = crate::geometry::PreparedPlan::transient(&shape);
+        let queries = plan.prepare_point_queries(4).unwrap();
+        assert!(!queries.uses_slabs());
+        for _ in 0..8192 {
+            assert_eq!(
+                queries.location(Point::new_raw_xy(0.0, 0.0)).unwrap(),
+                Loc::Exterior
+            );
+        }
+        let promoted = plan.prepare_point_queries(0).unwrap();
+        assert!(promoted.uses_slabs());
+        assert_eq!(
+            promoted.location(Point::new_raw_xy(0.0, 0.0)).unwrap(),
+            Loc::Exterior
+        );
+    }
+
+    #[test]
+    fn warm_scalar_membership_promotes_to_reused_slabs() {
+        let shape = sheared_comb(256);
+        let plan = crate::geometry::PreparedPlan::transient(&shape);
+        let point = Point::new_raw_xy(0.0, 0.0);
+        for _ in 0..8192 {
+            assert!(
+                !plan
+                    .cartesian_point_membership(point, PointMembership::Strict)
+                    .unwrap()
+            );
+        }
+        assert!(plan.prepare_point_queries(0).unwrap().uses_slabs());
+        for membership in [PointMembership::Strict, PointMembership::BoundaryInclusive] {
+            assert!(!plan.cartesian_point_membership(point, membership).unwrap());
+        }
+        assert!(plan.prepare_point_queries(0).unwrap().uses_slabs());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn packed_comb_batches_use_logarithmic_slab_queries() {
+        use crate::crs::frame::Frame;
+        use crate::geometry::storage::ShapeRow;
+        use crate::predicates::engine::{Predicate, scalar_vs_shapes};
+        let points = crate::PyGeometryArray::from_shapes(
+            vec![Shape::Point(Point::new_raw_xy(0.0, 0.0)); 512],
+            Frame::default(),
+        )
+        .unwrap();
+        let mut work = Vec::new();
+        for teeth in [256, 512, 1024] {
+            let shape = sheared_comb(teeth);
+            let plan = crate::geometry::PreparedPlan::transient(&shape);
+            plan.prepare_point_queries(0x0001_0000).unwrap();
+            reset_query_comparisons();
+            let actual = scalar_vs_shapes(
+                &Predicate::Contains.spec(),
+                &plan,
+                (0..512).map(|index| (index, Some(ShapeRow::Point(Point::new_raw_xy(0.0, 0.0))))),
+                true,
+                Some(&points),
+                crate::geometry::TopologyDomain::Cartesian,
+                &crate::geometry::FrameDependentCaches::default(),
+            )
+            .unwrap();
+            assert_eq!(actual, vec![false; 512]);
+            assert!(plan.prepare_point_queries(0).unwrap().uses_slabs());
+            let comparisons = query_comparisons();
+            assert!(comparisons > 0);
+            assert!(
+                comparisons < 512 * 64,
+                "teeth={teeth}, comparisons={comparisons}"
+            );
+            work.push(comparisons);
+        }
+        assert!(work[2] < 3 * work[0], "fixed-query comb work: {work:?}");
+    }
+
+    #[test]
     fn prepared_location_schedule_keeps_small_polygons_streaming() {
         let shape = Shape::Polygon(unit_square());
         let point = [
@@ -1388,6 +1903,6 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(plan.locate_exact(&point).unwrap().location, Loc::Interior);
         }
-        assert!(plan.point_tester().unwrap().is_none());
+        assert!(!plan.prepare_point_queries(4).unwrap().uses_indexed_plan());
     }
 }

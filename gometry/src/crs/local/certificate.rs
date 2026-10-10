@@ -4,10 +4,10 @@ use super::frame::{
     LocalCrsDefinition, is_east_north_metre_axes, is_projected_metre_cartesian_axes,
     local_projection_parameter,
 };
-use crate::crs::in_core::{ParamUnit, Pole, polar_certificate_terms, tmerc_certificate_terms};
+use crate::crs::in_core::{ParamUnit, polar_certificate_terms, tmerc_certificate_terms};
 use crate::crs::{ChartEdge, CrsError, RuntimeState, info_with_state};
 use crate::error::Result;
-use crate::geographic::{ChartStep, EdgeDirection, GeographicFrame, Latitude};
+use crate::geographic::{ChartStep, EdgeDirection, GeodeticPole, GeographicFrame, Latitude};
 use crate::geometry::{CoordSeq, Point, line_segments};
 
 // These simple decimal upper bounds follow by squaring against the exact
@@ -50,7 +50,7 @@ struct TmercCertificate {
 struct UpsCertificate {
     radius_lower: f64,
     radius_upper: f64,
-    pole: Pole,
+    pole: GeodeticPole,
     p_min: f64,
     p_max: f64,
     p2_max: f64,
@@ -212,23 +212,26 @@ impl LocalProjectionCertificate {
         };
         let latitude0_native = Latitude::from_admitted(self.frame, start.y).get();
         let latitude1_native = Latitude::from_admitted(self.frame, end.y).get();
-        let latitude_unit = self.frame.latitude_unit().radians_per_unit();
+        let latitude_unit =
+            self.frame.latitude_radians_per_unit() * self.frame.latitude_orientation_sign();
         let longitude_from_central_meridian = axis
             .shortest_alias_step(self.central_meridian, start.x)
             .expect("screen coordinates were admitted before local projection")
             .delta(axis)
-            * axis.unit().radians_per_unit();
+            * axis.radians_per_unit()
+            * self.frame.longitude_orientation_sign();
         let selected_pole = match self.projection {
             ProjectionCertificate::Tmerc(_) => None,
-            ProjectionCertificate::Ups(certificate) => Some(match certificate.pole {
-                Pole::North => self.frame.pole(),
-                Pole::South => -self.frame.pole(),
-            }),
+            ProjectionCertificate::Ups(certificate) => {
+                Some(self.frame.native_latitude_pole(certificate.pole))
+            },
         };
         Ok(CertificateEdge {
             longitude_delta_native,
             longitude_from_central_meridian,
-            longitude_delta: longitude_delta_native * axis.unit().radians_per_unit(),
+            longitude_delta: longitude_delta_native
+                * axis.radians_per_unit()
+                * self.frame.longitude_orientation_sign(),
             latitude0: latitude0_native * latitude_unit,
             latitude1: latitude1_native * latitude_unit,
             is_selected_pole_parallel: selected_pole.is_some_and(|pole| {
@@ -413,7 +416,7 @@ impl LocalProjectionCertificate {
 mod certificate_math {
     use super::{
         CrsError, EllipsoidRadii, FAST_TMER_BETA, GAUSSIAN_LATITUDE_ACCELERATION,
-        GAUSSIAN_TANGENTIAL_CURVATURE, NonZeroUsize, Pole, Result, TmercCertificate,
+        GAUSSIAN_TANGENTIAL_CURVATURE, GeodeticPole, NonZeroUsize, Result, TmercCertificate,
         UpsCertificate,
     };
 
@@ -1187,10 +1190,10 @@ mod certificate_math {
         )
     }
 
-    fn toward_pole(pole: Pole, latitude0: f64, latitude1: f64) -> (f64, f64) {
+    fn toward_pole(pole: GeodeticPole, latitude0: f64, latitude1: f64) -> (f64, f64) {
         match pole {
-            Pole::North => (latitude0, latitude1),
-            Pole::South => (-latitude0, -latitude1),
+            GeodeticPole::North => (latitude0, latitude1),
+            GeodeticPole::South => (-latitude0, -latitude1),
         }
     }
 
@@ -1229,7 +1232,7 @@ mod certificate_math {
 
     #[cfg(test)]
     mod tests {
-        use super::super::{LocalProjectionCertificate, ProjectionCertificate};
+        use super::super::{LocalCrsDefinition, LocalProjectionCertificate, ProjectionCertificate};
         use super::*;
 
         #[test]
@@ -1240,7 +1243,7 @@ mod certificate_math {
                 .geographic_frame()
                 .unwrap();
             let geodesic = crate::crs::geodesic_for_crs_at("EPSG:4326", &state).unwrap();
-            let local = crate::crs::local::frame::LocalCrsDefinition {
+            let local = LocalCrsDefinition {
                 definition: "EPSG:32631".to_owned(),
                 display_name: None,
                 projected_pole: None,

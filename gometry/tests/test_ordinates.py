@@ -60,24 +60,69 @@ def test_computed_point_ops_are_2d(op: str) -> None:
     assert getattr(_xy_polygon(), op)().coordinate_axes == 'XY'
 
 
-@pytest.mark.parametrize('op', ['voronoi_polygons', 'voronoi_edges'])
-def test_voronoi_results_are_2d(op: str) -> None:
+@pytest.mark.parametrize('output', ['polygons', 'edges'])
+def test_voronoi_results_are_2d(output: str) -> None:
     """Voronoi cells are synthesized and therefore have no source Z/M."""
     zsquare = _z_polygon()
-    assert all(part.coordinate_axes == 'XY' for part in getattr(zsquare, op)())
-    assert getattr(_xy_polygon(), op)() is not None
+    assert all(part.coordinate_axes == 'XY' for part in zsquare.voronoi(output=output))
+    assert _xy_polygon().voronoi(output=output) is not None
 
 
 @pytest.mark.parametrize('method', ['delaunay', 'constrained', 'earcut'])
 def test_triangulation_preserves_ordinates(method: str) -> None:
-    """Triangle corners coincide with input vertices, so Z/M is always
-    preserved — there is no ordinate policy to configure.
+    """Triangle corners coincide with input vertices, so their Z/M is copied.
+
+    The publisher's inserted Native-edge samples have a separate source-
+    arclength contract covered by the geographic Delaunay regression below.
     """
     zsquare = _z_polygon()
     carried = zsquare.triangulate(method=method)
     assert carried
     assert all(part.coordinate_axes == 'XYZ' for part in carried)
     assert _xy_polygon().triangulate(method=method) is not None
+
+
+def test_geographic_delaunay_publisher_carries_inserted_zm_by_ellipsoidal_arclength() -> (
+    None
+):
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    sites = [
+        (760.0, 45.0, 35.25, 551.0),
+        (1035.0, 72.5, 49.5, 726.0),
+        (900.0, 90.0, 61.0, 901.0),
+    ]
+    source = gm.MultiPoint(sites, crs=crs)
+    triangles = source.triangulate(method='delaunay')
+    assert len(triangles) == 1
+    coordinates = list(triangles[0].exterior.coords)
+    sample = next(
+        coordinate for coordinate in coordinates if coordinate[:2] == (177.5, 58.75)
+    )
+    assert math.isclose(sample[2], 43.730_417_185_196_416, abs_tol=2.0e-8)
+    assert math.isclose(sample[3], 655.145_474_204_166_5, abs_tol=2.0e-7)
+    assert not math.isclose(sample[2], 42.375, abs_tol=1.0e-6)
+    assert not math.isclose(sample[3], 638.5, abs_tol=1.0e-6)
+    assert (40.0, 45.0, 35.25, 551.0) in coordinates
+    assert (-45.0, 72.5, 49.5, 726.0) in coordinates
+    assert (-180.0, 90.0, 61.0, 901.0) in coordinates
+
+    xy_source = gm.MultiPoint([(x, y) for x, y, *_ in sites], crs=crs)
+    xy_triangles = xy_source.triangulate(method='delaunay')
+    assert [
+        [(x, y) for x, y, *_ in triangle.exterior.coords] for triangle in triangles
+    ] == [
+        [(x, y) for x, y, *_ in triangle.exterior.coords] for triangle in xy_triangles
+    ]
+
+    uniform_rows = gm.GeometryArray([source, source]).triangulate(method='delaunay')
+    assert [triangle.to_wkt() for triangle in uniform_rows[0]] == [
+        triangle.to_wkt() for triangle in triangles
+    ]
+    mixed_rows = gm.GeometryArray([source, xy_source]).triangulate(method='delaunay')
+    assert [triangle.to_wkt() for triangle in mixed_rows[0]] == [
+        triangle.to_wkt() for triangle in triangles
+    ]
+    assert all(triangle.coordinate_axes == 'XY' for triangle in mixed_rows[1])
 
 
 def test_point_on_surface_is_interior_xy_point() -> None:
@@ -192,25 +237,33 @@ def test_force_3d_on_empties_has_uniform_dimension() -> None:
     assert (gm.LineString([(0, 0), (1, 1)])).force_3d().has_z
 
 
-def test_set_z_and_set_m_retag_empties() -> None:
-    """set_z/set_m on an empty flip the declared axes (no vertices to fill);
-    ``None`` clears the ordinate. Collections retag nested empties too.
-    """
+def test_with_coordinates_retags_empty_dimensions() -> None:
+    """Coordinate replacements change declared axes on empties and collections."""
     for t in _EMPTY_TYPES:
         empty = gm.from_wkt(f'{t} EMPTY')
-        assert empty.set_z(5.0).coordinate_axes == 'XYZ', t
-        assert empty.set_m(7.0).coordinate_axes == 'XYM', t
-        assert empty.set_z(5.0).set_m(7.0).coordinate_axes == 'XYZM', t
-        assert empty.set_z(5.0).set_z(None).coordinate_axes == 'XY', t
-        assert empty.set_z(5.0).is_empty, t
+        assert empty.with_coordinates(z=5.0).coordinate_axes == 'XYZ', t
+        assert empty.with_coordinates(m=7.0).coordinate_axes == 'XYM', t
+        assert empty.with_coordinates(z=5.0, m=7.0).coordinate_axes == 'XYZM', t
+        assert (
+            empty.with_coordinates(z=5.0).with_coordinates(z=None).coordinate_axes
+            == 'XY'
+        ), t
+        assert empty.with_coordinates(z=5.0).is_empty, t
+        array = gm.GeometryArray([empty])
+        lifted_array = array.with_coordinates(z=5.0)
+        assert lifted_array[0].coordinate_axes == 'XYZ', t
+        assert lifted_array.with_coordinates(z=None)[0].coordinate_axes == 'XY', t
     nested = gm.from_wkt('GEOMETRYCOLLECTION (POINT EMPTY)').force_3d()
     assert nested.to_wkt() == 'GEOMETRYCOLLECTION (POINT Z EMPTY)'
 
 
-@pytest.mark.parametrize('method', ['set_z', 'set_m', 'force_3d'])
+@pytest.mark.parametrize(
+    ('method', 'axis'),
+    [('with_coordinates', 'z'), ('with_coordinates', 'm'), ('force_3d', None)],
+)
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
-def test_ordinate_setters_reject_nonfinite_before_empty_or_noop(
-    method: str, value: float
+def test_ordinate_replacement_rejects_nonfinite_before_empty_or_noop(
+    method: str, axis: str | None, value: float
 ) -> None:
     geometries = [
         gm.Point(1, 2),
@@ -219,14 +272,19 @@ def test_ordinate_setters_reject_nonfinite_before_empty_or_noop(
         gm.from_wkt('MULTIPOINT (EMPTY, (1 2))'),
     ]
     for geometry in geometries:
+        call_args = (value,) if axis is None else ()
+        call_kwargs = {} if axis is None else {axis: value}
         with pytest.raises(gm.InvalidGeometryError):
-            getattr(geometry, method)(value)
+            getattr(geometry, method)(*call_args, **call_kwargs)
 
 
-@pytest.mark.parametrize('method', ['set_z', 'set_m', 'force_3d'])
+@pytest.mark.parametrize(
+    ('method', 'axis'),
+    [('with_coordinates', 'z'), ('with_coordinates', 'm'), ('force_3d', None)],
+)
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf')])
-def test_array_ordinate_setters_reject_nonfinite_before_missing_or_noop(
-    method: str, value: float
+def test_array_ordinate_replacement_rejects_nonfinite_before_missing_or_noop(
+    method: str, axis: str | None, value: float
 ) -> None:
     arrays = [
         gm.GeometryArray([gm.Point(1, 2), None]),
@@ -235,15 +293,17 @@ def test_array_ordinate_setters_reject_nonfinite_before_missing_or_noop(
         gm.GeometryArray([]),
     ]
     for array in arrays:
+        call_args = (value,) if axis is None else ()
+        call_kwargs = {} if axis is None else {axis: value}
         with pytest.raises(gm.InvalidGeometryError):
-            getattr(array, method)(value)
+            getattr(array, method)(*call_args, **call_kwargs)
 
 
 def test_ordinate_updates_preserve_signed_zero_and_full_zm() -> None:
     source = gm.from_wkt('POINT ZM (-0 0 -0 0)')
-    z_updated = next(iter(source.set_z(7.0).coords))
-    m_updated = next(iter(source.set_m(8.0).coords))
-    both_updated = next(iter(source.set_z(7.0).set_m(8.0).coords))
+    z_updated = next(iter(source.with_coordinates(z=7.0).coords))
+    m_updated = next(iter(source.with_coordinates(m=8.0).coords))
+    both_updated = next(iter(source.with_coordinates(z=7.0, m=8.0).coords))
 
     assert z_updated == (-0.0, 0.0, 7.0, 0.0)
     assert m_updated == (-0.0, 0.0, -0.0, 8.0)
@@ -304,6 +364,81 @@ def _origin_coord(geom: gm.Geometry) -> tuple[float, ...]:
         if coord[0] == 0.0 and coord[1] == 0.0:
             return coord
     raise AssertionError(f'no origin vertex on {geom.to_wkt()}')
+
+
+def test_planar_geographic_offset_uses_source_arclength_for_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    coordinates = [(760.0, 45.0), (1035.0, 72.5)]
+    line = gm.LineString(
+        coordinates,
+        z=[35.25, 49.5],
+        m=[551.0, 726.0],
+        crs=crs,
+    )
+    xy_line = gm.LineString(coordinates, crs=crs)
+    result = line.offset_curve(1.0, unit='planar')
+    xy_result = xy_line.offset_curve(1.0, unit='planar')
+    array_result = gm.GeometryArray([line]).offset_curve(1.0, unit='planar')[0]
+
+    assert result.coordinate_axes == 'XYZM'
+    result_coordinates = list(result.coords)
+    assert [(point[0], point[1]) for point in result_coordinates] == list(
+        xy_result.coords
+    )
+    assert list(array_result.coords) == result_coordinates
+    assert (result_coordinates[0][2], result_coordinates[0][3]) == (35.25, 551.0)
+    assert (result_coordinates[-1][2], result_coordinates[-1][3]) == (49.5, 726.0)
+    inserted = next(
+        point
+        for point in result_coordinates
+        if (point[0], point[1])
+        == pytest.approx((177.40049628097904, 59.745037190209985), rel=0.0, abs=1.0e-12)
+    )
+    assert inserted[2] == pytest.approx(43.78167861104509, rel=0.0, abs=2.0e-8)
+    assert inserted[3] == pytest.approx(655.7750004865186, rel=0.0, abs=2.0e-7)
+
+
+def test_planar_geographic_concave_hull_uses_source_arclength_for_zm() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    coordinates = [(760.0, 45.0), (1035.0, 72.5), (900.0, 85.0)]
+    sites = gm.MultiPoint(
+        coordinates,
+        z=[35.25, 49.5, 80.0],
+        m=[551.0, 726.0, 901.0],
+        crs=crs,
+    )
+    xy_sites = gm.MultiPoint(coordinates, crs=crs)
+    result = sites.concave_hull(concavity=2.0, unit='planar')
+    xy_result = xy_sites.concave_hull(concavity=2.0, unit='planar')
+    array_result = gm.GeometryArray([sites]).concave_hull(concavity=2.0, unit='planar')[
+        0
+    ]
+
+    assert result.coordinate_axes == 'XYZM'
+    result_coordinates = list(result.exterior.coords)
+    assert [(point[0], point[1]) for point in result_coordinates] == list(
+        xy_result.exterior.coords
+    )
+    assert list(array_result.exterior.coords) == result_coordinates
+    start_xy = next(
+        (point[0], point[1]) for point in xy_result.exterior.coords if point[1] == 45.0
+    )
+    end_xy = next(
+        (point[0], point[1]) for point in xy_result.exterior.coords if point[1] == 72.5
+    )
+    assert next(point[2:] for point in result_coordinates if point[:2] == start_xy) == (
+        35.25,
+        551.0,
+    )
+    assert next(point[2:] for point in result_coordinates if point[:2] == end_xy) == (
+        49.5,
+        726.0,
+    )
+    inserted = next(
+        point for point in result_coordinates if (point[0], point[1]) == (177.5, 58.75)
+    )
+    assert inserted[2] == pytest.approx(43.730417185196416, rel=0.0, abs=2.0e-8)
+    assert inserted[3] == pytest.approx(655.1454742041665, rel=0.0, abs=2.0e-7)
 
 
 @pytest.mark.parametrize('op', ['convex_hull', 'concave_hull'])

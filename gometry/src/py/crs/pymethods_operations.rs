@@ -10,7 +10,7 @@ impl PyCrs {
     ///
     /// Parameters
     /// ----------
-    /// target : str or int or CRS
+    /// target : CRS-like
     ///     Destination CRS.
     ///
     /// at : tuple of float, optional
@@ -48,6 +48,10 @@ impl PyCrs {
     /// Returns
     /// -------
     /// CrsOperationInfo
+    ///     The operation or a nested step's ``definition`` may be ``None`` when
+    ///     the selected default angular semantics cannot be represented
+    ///     faithfully by an executable PROJ string. Method, parameters, steps,
+    ///     grids, source, target, and epoch metadata remain available.
     ///
     /// Raises
     /// ------
@@ -122,7 +126,7 @@ impl PyCrs {
     ///
     /// Parameters
     /// ----------
-    /// target : str or int or CRS
+    /// target : CRS-like
     ///     Destination CRS.
     ///
     /// area_of_interest : sequence of float, optional
@@ -155,6 +159,10 @@ impl PyCrs {
     /// Returns
     /// -------
     /// list of CrsOperationInfo
+    ///     A candidate's or nested step's ``definition`` may be ``None`` when
+    ///     the selected default angular semantics cannot be represented
+    ///     faithfully by an executable PROJ string. Method, parameters, steps,
+    ///     grids, source, target, and epoch metadata remain available.
     ///
     /// Examples
     /// --------

@@ -58,7 +58,7 @@ print('service area m²:', round(service_area.area))
 
 ## 3. Ingest named tutorial blocks
 
-[`gm.from_features`][gometry.from_features] parses a GeoJSON feature collection into a [`Features`][gometry.Features]
+[`gm.from_geojson(..., features=True)`][gometry.from_geojson] parses a GeoJSON feature collection into a [`Features`][gometry.Features]
 result with geometries in a [`GeometryArray`][gometry.GeometryArray] and parallel
 properties as ordinary Python mappings.
 
@@ -73,7 +73,7 @@ payload = '''
    "geometry":{"type":"Polygon","coordinates":[[[2.305,48.865],[2.311,48.865],[2.311,48.870],[2.305,48.870],[2.305,48.865]]]}}
 ]}
 '''
-features = gm.from_features(payload, crs=4326)
+features = gm.from_geojson(payload, crs=4326, features=True)
 blocks, properties, ids = features.geometries, features.properties, features.ids
 names = [row['name'] for row in properties]
 print(len(blocks), 'tutorial blocks loaded:', names)
@@ -133,8 +133,13 @@ scale; exact membership uses the source geometry with [`gm.covers`][gometry.cove
 ```python exec="on" source="block" result="text" session="catchment"
 import gometry as gm
 cells = gm.h3_cover(service_area, resolution=10)
-print('H3 cover created:', len(cells) > 0)
-print('source covers the station:', gm.covers(service_area, station))
+has_cells = len(cells) > 0
+station_is_covered = gm.covers(service_area, station)
+print('H3 cover created:', has_cells)
+print('source covers the station:', station_is_covered)
+assert has_cells
+assert cells.grid == 'h3'
+assert station_is_covered is True
 
 ```
 

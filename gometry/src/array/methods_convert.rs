@@ -7,7 +7,9 @@ use crate::geometry::storage::packed_columns::{LineColumns, PackedColumns, Polyg
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, reverse_coord_windows,
 };
-use crate::geometry::{ExpansionBudget, ShapeCountQuery, TopologyDomain};
+use crate::geometry::{
+    ExpansionBudget, ParallelSourceArcMetricAccess, ShapeCountQuery, TopologyDomain,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GridSize {
@@ -348,13 +350,28 @@ impl PyGeometryArray {
         let size = size.into();
         let origin = origin.into();
         if repair {
-            let domain = match geometry::topology_domain(&self.frame) {
-                Ok(domain) => domain,
-                Err(error) => return Some(Err(error.into())),
+            let mut metric_scratch = crate::dispatch::MetricScratch::default();
+            let (domain, metric) = match crate::dispatch::MetricResolver::GeographicCarry
+                .resolve_topology_ctx(&self.frame, &mut metric_scratch)
+            {
+                Ok(context) => context,
+                Err(error) => return Some(Err(error)),
+            };
+            let metric_access = move || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic snap_to_grid repair requires the operation's CRS metric",
+                    )
+                })
             };
             return Some(Python::attach(|py| {
                 self.map_shapes_detached(py, move |shape| {
-                    shape.snap_to_grid_repaired(size.tuple(), origin.tuple(), domain)
+                    shape.snap_to_grid_repaired(
+                        size.tuple(),
+                        origin.tuple(),
+                        domain,
+                        &crate::geometry::SourceArcContext::new(domain, Some(&metric_access)),
+                    )
                 })
             }));
         }
@@ -408,25 +425,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn force_3d_unary_packed(&self, py: Python<'_>, z: f64) -> PyResult<Self> {
-        self.set_z_unary_packed(py, Some(z), false)
-    }
-
-    pub(crate) fn set_z_unary_packed(
-        &self,
-        py: Python<'_>,
-        value: Option<f64>,
-        overwrite: bool,
-    ) -> PyResult<Self> {
-        self.set_z_impl(py, value, overwrite)
-    }
-
-    pub(crate) fn set_m_unary_packed(
-        &self,
-        py: Python<'_>,
-        value: Option<f64>,
-        overwrite: bool,
-    ) -> PyResult<Self> {
-        self.set_m_impl(py, value, overwrite)
+        self.replace_z_impl(py, Some(z), false)
     }
 
     pub(crate) fn quantize_unary_packed(&self, _py: Python<'_>, precision: i32) -> PyResult<Self> {
@@ -452,10 +451,11 @@ impl PyGeometryArray {
         py: Python<'_>,
         rect: Bounds,
         domain: TopologyDomain,
+        metric_access: &ParallelSourceArcMetricAccess<'_>,
     ) -> PyResult<Self> {
         self.map_shapes_detached(py, move |shape| {
             if let TopologyDomain::Geographic(frame) = domain {
-                shape.clip_by_rect_in_geographic_frame(rect, false, frame)
+                shape.clip_by_rect_in_geographic_frame(rect, false, frame, metric_access)
             } else {
                 shape.clip_by_rect(rect, false)
             }
