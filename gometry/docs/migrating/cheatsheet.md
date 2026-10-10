@@ -54,7 +54,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | Shapely | gometry |
 |---|---|
 | `a.contains(b)` / `shapely.contains(a, b)` | [`gm.contains(a, b)`][gometry.contains] |
-| `a.contains_properly(b)` / [`gm.contains_properly(prep, b)`][gometry.contains_properly] | `gm.contains_properly(a, b)` (also prepared, and as an index/join predicate) |
+| `shapely.contains_properly(a, b)` | [`gm.contains_properly(a, b)`][gometry.contains_properly] (also `gm.contains_properly(prep, b)` for prepared geometries, and as an index/join predicate) |
 | `a.within(b)` / `shapely.within(a, b)` | [`gm.within(a, b)`][gometry.within] |
 | `a.intersects(b)` / `shapely.intersects(a, b)` | [`gm.intersects(a, b)`][gometry.intersects] |
 | `a.covers(b)` / `a.covered_by(b)` | [`gm.covers(a, b)`][gometry.covers] / [`gm.covered_by(a, b)`][gometry.covered_by] |
