@@ -276,6 +276,15 @@ A `Point` exposes [`.x`][gometry.Point.x]/[`.y`][gometry.Point.y]/[`.z`][gometry
 [`.interiors`][gometry.Polygon.interiors] (its holes); and the multi-part / collection types are real
 sequences — iterate them, index them, and take `len(...)`, with each part typed:
 
+The multi-part classes are also registered as `collections.abc.Sequence`, so
+`isinstance` checks and ABC-based dispatch recognize the sequence interface.
+Their static types are `Sequence[Point]`, `Sequence[LineString]`,
+`Sequence[Polygon]`, or `Sequence[Geometry]`. Use class patterns such as
+`MultiPoint(parts)` for matching; anonymous sequence patterns do not match
+geometry objects. NumPy still treats each multipart geometry as one object:
+`np.asarray(multi)` has shape `()`, and `np.array([multi, multi], dtype=object)`
+has shape `(2,)`.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 

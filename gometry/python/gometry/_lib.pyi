@@ -4884,7 +4884,7 @@ class Point(Geometry):
         """Return value^self."""
 
 @final
-class MultiPoint(Geometry):
+class MultiPoint(Geometry, Sequence[Point]):
     """A collection of points.
 
     Parameters
@@ -5408,7 +5408,7 @@ class LineString(Geometry):
     ) -> LineString | MultiLineString: ...
 
 @final
-class MultiLineString(Geometry):
+class MultiLineString(Geometry, Sequence[LineString]):
     """A collection of linestrings.
 
     Parameters
@@ -5772,7 +5772,7 @@ class Polygon(Geometry):
     ) -> Polygon | MultiPolygon: ...
 
 @final
-class MultiPolygon(Geometry):
+class MultiPolygon(Geometry, Sequence[Polygon]):
     """A collection of polygons.
 
     Parameters
@@ -5965,7 +5965,7 @@ class MultiPolygon(Geometry):
     ) -> Polygon | MultiPolygon: ...
 
 @final
-class GeometryCollection(Geometry):
+class GeometryCollection(Geometry, Sequence[Geometry]):
     """A heterogeneous collection of geometries.
 
     Parameters

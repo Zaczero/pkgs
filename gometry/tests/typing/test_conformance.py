@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -1061,6 +1061,19 @@ assert_type(POINT, gm.Point)
 assert_type(POINTS, gm.GeometryArray[gm.Point])
 assert_type(gm.MultiPoint([POINT, gm.Point(2, 2)]), gm.MultiPoint)
 if TYPE_CHECKING:
+    _multipoint_sequence: Sequence[gm.Point] = gm.MultiPoint([(0, 0), (1, 1)])
+    _multiline_sequence: Sequence[gm.LineString] = gm.MultiLineString([
+        [(0, 0), (1, 1)]
+    ])
+    _multipolygon_sequence: Sequence[gm.Polygon] = gm.MultiPolygon([
+        [[(0, 0), (1, 0), (1, 1), (0, 0)]]
+    ])
+    _geometrycollection_sequence: Sequence[gm.Geometry] = gm.GeometryCollection([POINT])
+    reveal_type(_multipoint_sequence)
+    reveal_type(_multiline_sequence)
+    reveal_type(_multipolygon_sequence)
+    reveal_type(_geometrycollection_sequence)
+
     from collections.abc import Hashable, Iterable, Mapping
     from pathlib import Path
     from tempfile import TemporaryDirectory
