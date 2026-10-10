@@ -163,7 +163,7 @@ with mkdocs_gen_files.open('api/index.md', 'w') as file:
     for page in PAGES:
         file.write(f'| [{page.title}]({page.path}.md) | {page.description} |\n')
     file.write(
-        '| [Reference type definitions](types.md) | Named declarations used by public signatures and structured results. |\n'
+        '| [Public annotation forms](types.md) | Annotation meanings, named result records, and structured value shapes. |\n'
         '\n'
         '## Route by result shape\n\n'
         'Use the operation pages above for signatures. These links route by the '
