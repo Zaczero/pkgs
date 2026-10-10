@@ -100,7 +100,7 @@ impl TransformPlan {
         Ok(plan)
     }
 
-    pub(crate) fn output_frame(&self) -> &Frame {
+    pub(crate) const fn output_frame(&self) -> &Frame {
         &self
             .geometry_frame
             .as_ref()
@@ -153,7 +153,7 @@ impl TransformPlan {
     }
 
     /// Lazily resolve the output CRS ellipsoid against this plan's runtime snapshot.
-    pub(crate) fn target_metric_scratch(&self) -> TransformMetricScratch<'_> {
+    pub(crate) const fn target_metric_scratch(&self) -> TransformMetricScratch<'_> {
         TransformMetricScratch {
             frame: self
                 .geometry_frame

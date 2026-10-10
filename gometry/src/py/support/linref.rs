@@ -598,7 +598,7 @@ mod tests {
             let singles = match model {
                 MetricModel::Planar { .. } => (0..5)
                     .map(|sample| {
-                        line.line_interpolate_point(sample as f64 / 4.0, true)
+                        line.line_interpolate_point(f64::from(sample) / 4.0, true)
                             .unwrap()
                     })
                     .collect::<Vec<_>>(),
@@ -608,7 +608,11 @@ mod tests {
                         (0..5)
                             .map(|sample| {
                                 index
-                                    .interpolate_route_position(sample as f64 / 4.0, true, metric)
+                                    .interpolate_route_position(
+                                        f64::from(sample) / 4.0,
+                                        true,
+                                        metric,
+                                    )
                                     .map(Shape::Point)
                             })
                             .collect::<crate::error::Result<Vec<_>>>()

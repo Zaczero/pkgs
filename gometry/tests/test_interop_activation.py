@@ -109,6 +109,10 @@ def test_minimal_install_introspection_discovers_optional_exports() -> None:
 
 
 def test_pandas_and_polars_converters_are_inert_and_pyarrow_independent() -> None:
+    pytest.importorskip(
+        'polars',
+        reason='polars-runtime-32==1.43.2 has no CPython 3.14t wheel',
+    )
     _run_isolated(
         """
         import sys

@@ -903,6 +903,25 @@ def test_array_getitem_mask_and_bool_error_boundaries_are_frozen() -> None:
         cells[[True]]
 
 
+def test_supports_index_selects_scalar_rows_across_array_families() -> None:
+    class RowIndex:
+        def __index__(self) -> int:
+            return 1
+
+    index = RowIndex()
+    points = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    first = gm.H3Cell(gm.Point(10, 50, crs=4326), resolution=7)
+    second = gm.H3Cell(gm.Point(11, 50, crs=4326), resolution=7)
+    cells = gm.CellArray([first, second])
+    vertices = first.vertices
+    edges = first.edges
+
+    assert points[index] == points[1]
+    assert cells[index] == second
+    assert vertices[index] == vertices[1]
+    assert edges[index] == edges[1]
+
+
 def test_copy_returns_self_for_immutable_values() -> None:
     coverage = gm.h3_cover(gm.box(0, 0, 1, 1, crs=4326), resolution=4)
     values = [

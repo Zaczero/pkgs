@@ -592,6 +592,14 @@ def test_doc_integrity_checks_only_resolved_public_doc_carriers(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    pytest.importorskip(
+        'tree_sitter',
+        reason='tree-sitter==0.26.0 has no CPython 3.14t wheel',
+    )
+    pytest.importorskip(
+        'tree_sitter_rust',
+        reason='tree-sitter-rust==0.24.2 has no CPython 3.14t wheel',
+    )
     import importlib
 
     integrity = load_tool(

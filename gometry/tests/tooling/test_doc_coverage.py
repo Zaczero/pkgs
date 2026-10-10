@@ -137,7 +137,8 @@ def test_required_exception_missing_from_raises_is_reported() -> None:
     )
 
     assert coverage.check_subject_raises(subject) == [
-        'intersects: Raises must document CRSMismatchError (fallible-family contract)'
+        'intersects: Raises must document CRSMismatchError (fallible-family contract)',
+        'intersects: Raises must document InvalidGeometryError (fallible-family contract)',
     ]
 
 

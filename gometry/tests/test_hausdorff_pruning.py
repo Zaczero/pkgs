@@ -9,7 +9,10 @@ import textwrap
 
 import gometry as gm
 import pytest
-import shapely
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 oracle wheel is unavailable for this interpreter'
+)
 
 _HAUSDORFF_CHILD_TIMEOUT_SECONDS = 10.0
 

@@ -2,16 +2,21 @@ import math
 from typing import Any, cast
 
 import gometry as gm
-import h3
-import pyproj
 import pytest
-import s2sphere
-import shapely
 
 from tests._support import (
     chart_parallel_length,
     chart_rectangle_perimeter,
     chart_zone_area,
+    h3_oracle,
+)
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
+s2sphere = pytest.importorskip(
+    's2sphere', reason='s2sphere is an optional oracle dependency'
+)
+shapely = pytest.importorskip(
+    'shapely', reason='shapely is an optional oracle dependency'
 )
 
 
@@ -32,6 +37,7 @@ def test_overlay_restores_zm_and_force_2d_flattens() -> None:
 
 
 def test_h3_cells_hierarchy_and_compaction_match_h3_py_oracle() -> None:
+    h3 = h3_oracle()
     cell = gm.H3Cell(21.0, 52.0, resolution=7)
     coverage = gm.h3_cover(
         gm.box(20.99, 51.99, 21.01, 52.01, crs=4326), resolution=8, cell_rule='center'

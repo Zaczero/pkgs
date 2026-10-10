@@ -9,7 +9,11 @@ from typing import cast
 import gometry as gm
 import numpy as np
 import pytest
-from pyproj import Geod
+
+pyproj = pytest.importorskip(
+    'pyproj', reason='pyproj==3.7.2 oracle wheel is unavailable for this interpreter'
+)
+Geod = pyproj.Geod
 
 
 def test_line_interpolate_and_locate_point_are_rust_backed_and_preserve_axes() -> None:
@@ -493,17 +497,17 @@ def test_distance_3d_indexed_xyzm_line_uses_z_and_ignores_m() -> None:
     assert gm.distance_3d(probe, line) == 5.0
 
 
-def test_distance_3d_array_degrades_missing_z_rows() -> None:
-    """Array rows without Z on every vertex degrade to nan; scalar still raises."""
+def test_distance_3d_array_rejects_missing_z_rows() -> None:
+    """A present array row without Z raises at its original row position."""
     mixed = gm.GeometryArray([
         gm.from_wkt('POINT Z (0 0 0)'),
         gm.from_wkt('POINT (0 0)'),
     ])
     target = gm.from_wkt('POINT Z (1 1 1)')
-    assert gm.distance_3d(mixed, target)[0] == pytest.approx(3**0.5)
-    assert math.isnan(gm.distance_3d(mixed, target)[1])
-    with pytest.raises(ValueError, match='requires a Z ordinate'):
-        gm.distance_3d(mixed[1], target)
+
+    with pytest.raises(gm.InvalidGeometryError, match='requires a Z ordinate') as error:
+        gm.distance_3d(mixed, target)
+    assert error.value.__notes__ == ['while processing array element 1']
 
 
 def test_distance_3d_scalar_broadcast_uses_prepared_fixed_operand() -> None:
