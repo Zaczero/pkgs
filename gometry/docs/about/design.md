@@ -1,269 +1,180 @@
 ---
-description: gometry's design principles and public-API naming rules — one canonical spelling per operation, explicit models, candidate versus refine, and CRS safety.
+description: gometry public API design rules for operation placement, immutable values, pooled results, result types, Python protocols, and ecosystem integration.
 ---
 
 # Design principles
 
-gometry exposes a typed Python facade over Rust-owned geometry semantics. The
-public API uses explicit rules for operation placement, data models, result
-shapes, and interchange boundaries.
+gometry's public API follows nine rules. They explain where operations live,
+how inputs and results are named and typed, and how geometry values integrate
+with Python and its data ecosystem.
 
-Grid cover factories return a [`CellArray`][gometry.CellArray] for scalar geometry and [`Groups`][gometry.Groups] of
-`CellArray` for geometry arrays; coverage objects and interior/boundary partitions
-are not public API.
-Exact geometry membership uses top-level predicates such as
-[`gm.contains(source, probe)`][gometry.contains]. A geometry probed repeatedly builds its point
-tester after a few probes, with no separate prepare step, and linear shapes never
-build one. Numeric-id arrays expose
-[`to_numpy()`][gometry.CellArray.to_numpy] and `__array__`, not `values`. CRS metadata collections are
-properties, bulk constructors and operations use `values` for their input
-column, and `__geo_interface__` raises when M or coordinate epoch cannot be
-represented by GeoJSON.
+## API design rules
 
-The [migration guide](../migrating/index.md) shows how these rules cash out
-against the old stack.
+### 1. Place work on the value or relationship it describes
 
-## The constitution
+Facts about one value are properties, unary geometry work is a method, and
+relationships between two geometries are free functions. This makes an
+operation's owner predictable. See the [`Geometry.area` property][gometry.Geometry.area],
+[`Geometry.buffer` method][gometry.Geometry.buffer], and
+[`distance` function][gometry.distance].
 
-1. **Pythonic surface, Rust-owned semantics and native kernels.** Geometry
-   kernels, predicate robustness, and the memory model are Rust; the API is
-   Pythonic.
-2. **One canonical spelling per operation.** No synonym pairs; migration docs
-   list familiar ecosystem names beside the canonical spelling.
-3. **A class constructs one value; a plural free function builds an array.**
-   [`gm.Point(x, y)`][gometry.Point] / [`gm.LineString(coords)`][gometry.LineString] / [`gm.Polygon(shell, holes)`][gometry.Polygon]
-   construct a single geometry; [`gm.points(...)`][gometry.points] / [`gm.line_strings(...)`][gometry.line_strings] /
-   [`gm.polygons(...)`][gometry.polygons] build a packed [`GeometryArray`][gometry.GeometryArray]. Classes are callable directly,
-   with no classmethods.
-4. **Unary operations are methods; binary operations are free functions; state is properties.**
-   [`g.buffer(d)`][gometry.Geometry.buffer], [`g.centroid()`][gometry.Geometry.centroid] are methods on the geometry; [`gm.distance(a, b)`][gometry.distance],
-   [`gm.intersection(a, b)`][gometry.intersection] relate two operands; [`g.area`][gometry.Geometry.area], [`g.length`][gometry.Geometry.length], [`pt.x`][gometry.Point.x] are properties.
-   Stateful work ([`idx.query(...)`][gometry.SpatialIndex.query]) stays a method on its typed object.
-5. **Batched/vectorized operations are canonical; scalar calls are convenience.**
-6. **Operations avoid accidental Python loops, object churn, and hidden copies.**
-7. **Earth model is explicit when correctness depends on it.**
-8. **Index and cell results carry semantics**, not naked low-level values.
-9. **Arrow/GeoArrow is the public columnar boundary**, not a beginner concept.
+```python exec="on" source="block" result="text"
+import gometry as gm
 
-Three carve-outs are deliberate API clarity, not exceptions by accident:
-[`dwithin`][gometry.dwithin] stays as the standard word-of-art for distance-within predicates;
-NaN X/Y coordinates raise as invalid geometry input rather than becoming missing
-rows, consistently across the library; grid [`to_polygon`][gometry.CellArray.to_polygon] dissolves cells into an
-outline that may be a [`MultiPolygon`][gometry.MultiPolygon] when the covered cells are disjoint.
+point = gm.Point(1, 2)
+print(point.area, type(point.buffer(1)).__name__, gm.distance(point, gm.Point(4, 6)))
 
-## API placement doctrine
+```
 
-The receiver tells you where an operation lives. Facts are properties:
-[`geom.area`][gometry.Geometry.area], [`geom.bounds`][gometry.Geometry.bounds], [`cell.center`][gometry.Cell.center]. Unary work on one value is a method on
-that value, and the array has the same spelling: [`geom.buffer(distance)`][gometry.Geometry.buffer],
-[`arr.buffer(distance)`][gometry.GeometryArray.buffer], [`geom.to_crs(3857)`][gometry.Geometry.to_crs]. Binary relationships and overlays are
-free functions because neither operand owns the question: [`contains(a, b)`][gometry.contains],
-[`distance(a, b)`][gometry.distance], [`intersection(a, b)`][gometry.intersection].
-An operation over a whole collection is a free function that takes the
-collection, the way Python's `sum(iterable)` is: [`gm.union_all(values)`][gometry.union_all],
-[`gm.intersection_all`][gometry.intersection_all], [`gm.polygonize_all(values)`][gometry.polygonize_all], and the
-[`gm.coverage_*`][gometry.coverage_union_all] family accept a `GeometryArray` or any iterable of geometries.
-An array method that shares a scalar method's name is therefore always its
-row-wise mirror: [`arr.polygonize()`][gometry.GeometryArray.polygonize] polygonizes
-each row, while `gm.polygonize_all(arr)` pools every row's linework into one graph.
-Methods with no scalar counterpart treat the array as a container, like
-[`arr.concat(...)`][gometry.GeometryArray.concat] and
-[`arr.drop_missing()`][gometry.GeometryArray.drop_missing], or group its rows by
-aligned keys, like [`arr.dissolve(by=...)`][gometry.GeometryArray.dissolve].
+The example has no CRS, so its distance and buffer use raw coordinate units.
 
-I/O follows the same rule. If you already hold a geometry, serialize from it:
-[`geom.to_wkb()`][gometry.Geometry.to_wkb], [`geom.to_geojson()`][gometry.Geometry.to_geojson]. If bytes or text create a geometry, use a
-constructor-style free function: [`from_wkb(...)`][gometry.from_wkb], [`from_geojson(...)`][gometry.from_geojson]. If a
-geometry combines with side data, the composite builder is free:
-[`to_feature(geom, properties=...)`][gometry.to_feature]. There is no free scalar encoder: construct
-the geometry and serialize from it
-([`gm.Point(x, y, crs=4326).to_wkb(include_srid=True, precision=7)`][gometry.Geometry.to_wkb]).
+### 2. Name operations by their effect on immutable values
 
-Global prefix families keep domain functions together in both `gm.` completion and
-alphabetical reference lists: `crs_*`, `h3_*`, `s2_*`, `geohash_*`, `tile_*`,
-`pluscode_*`, and `osm_shortlink_*`. Grid families hold factories and set algebra
-(`cover`, `cells`,
-`bounding_cell`, [`union`][gometry.union], `intersection`, [`difference`][gometry.difference]); receiver operations stay
-on the cell or [`CellArray`][gometry.CellArray]: [`cell.polygon`][gometry.Cell.polygon], [`cell.children()`][gometry.Cell.children],
-[`cells.compact(depth)`][gometry.CellArray.compact], [`cells.to_polygon()`][gometry.CellArray.to_polygon].
+Copy-returning state replacements use `with_<field>` names. `to_<x>` names
+transform or serialize, `from_<x>` names parse, and `force_<dim>` names project
+coordinate dimensions. The name tells callers whether an operation constructs
+from an encoding, transforms a value, or returns a changed value. See
+[`Geometry.to_crs`][gometry.Geometry.to_crs],
+[`Geometry.to_wkt`][gometry.Geometry.to_wkt], [`from_wkt`][gometry.from_wkt],
+and [`Geometry.force_2d`][gometry.Geometry.force_2d].
 
-## One canonical spelling per operation
+```python exec="on" source="block" result="text"
+import gometry as gm
 
-Every operation has exactly one name. Historical names from the old stack are
-**not** registered in the public API — they live in the searchable
-[cheatsheet](../migrating/cheatsheet.md) instead. This keeps the API small and
-discoverable: there is no `make_valid` *and* [`repair`][gometry.Geometry.repair], no `STRtree` *and* `Rtree`
-*and* `sjoin`.
+wire = gm.Point(1, 2).to_wkt()
+parsed = gm.from_wkt(wire)
+projected = gm.Point(-73.9, 40.7, crs=4326).to_crs(3857)
+flattened = gm.Point(1, 2, z=3).force_2d()
+print(parsed.to_wkt(), projected.crs.to_epsg(), flattened.to_wkt())
 
-| Concept | Canonical spelling |
-|---|---|
-| make-valid | [`repair`][gometry.Geometry.repair] |
-| spatial index | [`gm.SpatialIndex`][gometry.SpatialIndex] |
-| spatial join | [`gm.join`][gometry.join] |
-| polyfill | [`gm.h3_cover(geom, ...)`][gometry.h3_cover] |
-| geodesy | [`gm.distance(a, b)`][gometry.distance] / [`gm.bearing(a, b)`][gometry.bearing] / [`point.destination(...)`][gometry.Point.destination] / [`gm.point_between(a, b, d)`][gometry.point_between] on points in a geographic CRS, which selects the ellipsoid |
-| CRS transform | [`geom.to_crs`][gometry.Geometry.to_crs] / [`gm.crs_transform`][gometry.crs_transform] |
-| dissolve / unary union | [`gm.union_all`][gometry.union_all] |
+```
 
-Prefixes are consistent, so the API filters and searches without a second
-attribute hop. An alias carrying a name from another library does not ship.
-Helpers are allowed when they add semantics rather than synonyms: [`gm.Point`][gometry.Point] with `crs=4326` makes geographic axis order explicit
-while still storing coordinates as X/Y. A name that adds nothing over
-an existing entry point does not ship — `__geo_interface__` / GeoJSON ingestion
-is [`gm.from_geojson`][gometry.from_geojson]. The same rule rejects the
-GeoPandas verbs that are aliases by another name: `clip(mask)` is
-[`gm.intersection`][gometry.intersection] (with
-[`clip_by_rect`][gometry.Geometry.clip_by_rect] for the cheap rectangular case) and
-`explode` is [`arr.parts`][gometry.GeometryArray.parts]. Convenience accessors that are
-one-liners over existing surface stay out too: no recursive
-`GeometryCollection.flatten()` (recurse over `parts`), no `Tile.ul`/`Tile.lr`
-corner properties (read `tile.polygon.bounds`), and no geohash
-`expand` (`[cell, *cell.neighbors]`). Geometry clustering and scattered-data
-interpolation are out of scope: scikit-learn/scipy and scikit-gstat
-own those domains, and gometry hands off through
-[`Geometry.coords`][gometry.Geometry.coords] and NumPy matrix conversion. Cheap pre-grouping
-before exact predicate work is what [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates]
-is for.
+### 3. Use `_all` for pooled many-to-one operations
 
-[`normalize()`][gometry.Geometry.normalize] is gometry's own canonical form: the lexicographically smallest
-equivalent presentation (pointwise coordinates, then shorter-first; parts
-ascending; open lines by the smaller direction; closed lines by the smallest
-rotation×direction over the orbit; polygon rings min-vertex-first under
-[RFC 7946](https://datatracker.ietf.org/doc/html/rfc7946) winding — exterior
-CCW, holes CW). The result is not textually equivalent to Shapely/GEOS
-`normalize()` while remaining in the same equivalence class.
+An `<op>_all` function pools many input geometries into one aggregate result;
+row-wise array methods keep results associated with their source rows. This
+distinction makes aggregation explicit. See [`union_all`][gometry.union_all],
+[`polygonize_all`][gometry.polygonize_all], and
+[`coverage_union_all`][gometry.coverage_union_all].
 
-Cross-system *uniformity* stops where domain vocabulary starts. The four cell
-systems share every operation shape (`cell`/`cells`, boundaries, set ops,
-compact/uncompact), but the granularity knob keeps each system's own name —
-H3 `resolution`, S2 `level`, geohash `precision`, tile `zoom` — because those
-are the terms every upstream API, paper, and dataset uses; renaming them to
-one invented word would make gometry consistent with itself and inconsistent
-with everything its users read. Bing quadkeys are `tile.token` (no `.quadkey`
-alias); slippy-map zoom is `tile.zoom` (no `.z` alias). Two deliberate gaps in the symmetry: only [`contains_xy`][gometry.contains_xy] / [`intersects_xy`][gometry.intersects_xy] get coordinate-pair
-specialized paths (the point-probe operations; the other predicates against a point
-degenerate to these or to [`touches`][gometry.touches], and a full `_xy` matrix would multiply
-surface without a workload behind it).
+```python exec="on" source="block" result="text"
+import gometry as gm
 
-**Equality is a three-way vocabulary, each axis real.** [`equals(a, b)`][gometry.equals] is the
-*topological* test (order-independent, spatial); [`equals_exact(a, b, tolerance)`][gometry.equals_exact]
-is *coordinate* comparison within a tolerance (frame-checked like every metric
-op — comparing across CRS frames is an error); [`equals_identical(a, b)`][gometry.equals_identical] is
-*value identity* — the vectorized `==` — where the CRS/epoch frame is part of
-the value, so a frame difference is `False`, never an error. Scalar
-`geom == other` and elementwise pandas `Series == Series` are both
-`equals_identical` semantics. `GeometryArray.__eq__` itself stays *container*
-value equality (whole-array `bool`, keeping arrays hashable and dict-usable
-like tuples); the elementwise spelling is `equals_identical(left, right)` —
-one spelling per meaning, with no overloaded middle ground.
+points = [gm.Point(0, 0), gm.Point(1, 1)]
+print(gm.union_all(points).to_wkt())
 
-Python *protocol* integrations are not aliases — `a & b`, `str(geom)`,
-`format(geom, '.2f')`, `bool(geom)`, and `match` patterns are the language's
-own spellings, adopted where the ecosystem already agrees on the meaning — the
-operators, WKT `str`, format specs, and emptiness truthiness are established
-Python-geometry conventions. Sugar that would *hide* a choice is rejected because
-the wire or operation semantics would be implicit: no `bytes(geom)` (which WKB flavor? the CRS would vanish
-silently — say [`to_wkb(...)`][gometry.Geometry.to_wkb]), no `round(geom, n)` ([`quantize`][gometry.Geometry.quantize] is coordinate
-quantization, not numeric rounding), no cell-set operator aliases (cell-set vs
-exact-geometry algebra is a real choice — [`gm.s2_union`][gometry.s2_union] and `set(cells)` keep it
-visible), no interned "forever-alive" empty-geometry singletons (identity
-surprises for no measurable win), `CellArray` slicing returns another
-[`CellArray`][gometry.CellArray], and `SpatialIndex` exposes mapping/iteration helpers
-but candidates vs exact answers stay named methods —
-[`candidates(...)`][gometry.SpatialIndex.candidates]/[`query(...)`][gometry.SpatialIndex.query].
-Cross-type [`CRS == 4326`][gometry.CRS] (and `CRS == "EPSG:4326"`) is supported for ergonomics,
-so `CRS` is **unhashable** (`hash(CRS(...))` raises `TypeError`). Use
-[`crs.to_authority()`][gometry.CRS.to_authority] / [`crs.to_epsg()`][gometry.CRS.to_epsg] when a dict or set key is needed.
+```
 
-## CRS and candidate boundaries
+### 4. Return `Groups` when each input row can produce a different number of results
 
-CRS metadata, precision controls, edge models, and coverage rules are explicit
-inputs. [`set_crs`][gometry.Geometry.set_crs] declares existing coordinates, [`to_crs`][gometry.Geometry.to_crs] transforms them, and
-metric behavior follows the frame described in [CRS, units & measurement](../guide/crs.md).
+Ragged array operations return one [`Groups`][gometry.Groups] entry per source
+row, preserving row association; a missing input row has an empty group. Callers
+can use each result without guessing which input produced it. See
+[`split`][gometry.split] and the [`Groups` reference][gometry.Groups].
 
-Spatial indexes expose bounding-box candidates and exact predicate queries; grid
-covers return typed cell arrays and exact membership remains a predicate on the
-source geometry. The canonical operational descriptions are [Spatial indexing &
-joins](../guide/indexing.md) and [Grids & geocodes](../guide/grids.md).
+```python exec="on" source="block" result="text"
+import gometry as gm
 
-## Scalar and vectorized forms
+line = gm.LineString([(0, 0), (2, 0)])
+groups = gm.split(gm.GeometryArray([line, None, line]), gm.Point(1, 0))
+print(type(groups).__name__, groups.offsets.tolist(), groups[1].to_wkt())
 
-Unary work stays on the receiver ([`poly.buffer(...)`][gometry.Geometry.buffer], [`array.buffer(...)`][gometry.GeometryArray.buffer]), while
-binary relationships and overlays stay free ([`gm.contains(a, b)`][gometry.contains]). Scalar calls
-return scalar values and array calls return the corresponding columnar result;
-the stubs model both forms with overloads. Broadcasting accepts scalar/array and
-equal-length array pairs, and rejects mismatched non-scalar lengths. See
-[Arrays & performance](../guide/arrays.md) for the batch contract.
+```
 
-## NumPy-native bulk outputs
+The cutter lies exactly on these CRS-free lines, and the default split
+tolerance is zero.
 
-NumPy is a mandatory runtime dependency. Dense numeric results are read-only
-`numpy.ndarray`s, geometry results are [`GeometryArray`][gometry.GeometryArray],
-and ragged results are [`Groups`][gometry.Groups]. Text and diagnostic outputs
-remain lists when no dense shape exists. Coordinate and cell-array details are in
-[NumPy arrays & coordinates](../ecosystem/numpy.md) and [Arrays & performance](../guide/arrays.md).
+### 5. Select an operation's representation or added output with a typed keyword
 
-## Errors as API
+A representation, output, or algorithm choice that belongs to one operation is
+a keyword option on that operation, not a second operation name. Literal
+overloads let type checkers narrow results for explicit choices. This keeps
+related behavior discoverable together. See
+[`CRS.to_projjson`][gometry.CRS.to_projjson],
+[`Geometry.voronoi`][gometry.Geometry.voronoi],
+[`distance`][gometry.distance], and
+[`polygonize_all`][gometry.polygonize_all].
 
-Exceptions are part of the public surface, designed once: a small hierarchy
-rooted at [`GeometryError(ValueError)`][gometry.GeometryError] (so broad `except ValueError` remains
-compatible),
-with precise classes only where users genuinely catch differently —
-[`ParseError`][gometry.ParseError] for malformed serialized input (including cell ids/tokens),
-[`CRSMismatchError`][gometry.CRSMismatchError] for frame conflicts, [`TransformError`][gometry.TransformError] for projection
-failures, [`InvalidGeometryError`][gometry.InvalidGeometryError] for structural rules, and a dual-base
-[`GeometryTypeError(GeometryError, TypeError)`][gometry.GeometryTypeError] for wrong-kind operands (the
-`numpy.exceptions.AxisError` pattern). Finer taxonomies (per-format parse
-classes, `TokenError`, `TopologyError`, per-engine classes, and a dedicated
-`GridError`) are not part of the public hierarchy; the message carries the
-remaining detail. Out-of-range depth parameters are ordinary
-`GeometryError` value lanes; invalid cell ids/tokens are `ParseError` parse
-lanes. Python
-protocol failures stay builtin — domain wrong-kind failures use
-`GeometryTypeError(GeometryError, TypeError)` (dual-base); pure Python protocol
-`TypeError`s stay builtin,
-`IndexError`, or `StopIteration` for protocol semantics, and `__format__` /
-[`GeometryArray.index`][gometry.GeometryArray.index] keep plain `ValueError` by stdlib convention. Messages
-follow one gate-enforced grammar; `Raises` sections name the real class and are
-contract-checked, so the docs cannot drift from the raise sites.
+```python exec="on" source="block" result="text"
+import gometry as gm
 
-## Z and M layouts
+mapping = gm.CRS(4326).to_projjson(as_dict=True)
+print(type(mapping).__name__, mapping["type"])
 
-XY, XYZ, XYM, and XYZM are supported layouts. Z/M behavior by operation family
-and the explicit recovery methods are documented in [Geometry & dimensions](../guide/geometry.md).
+```
 
-## Overlay linework and point-set presentation
+### 6. Keep supported input forms under one operation name
 
-General overlays node their inputs into atomic segments to compute the result,
-then dissolve selected linework into maximal [`LineString`s][gometry.LineString],
-splitting only at genuine junctions (a node of degree `>= 3`) and never fusing
-two arms through one. A line clipped to a covering polygon is one line, and a
-line crossed by a *subtracted* line keeps flowing through the crossing vertex.
-The public result follows the OGC point set, not the partition used to compute
-it. [`line_merge`][gometry.Geometry.line_merge] applies the same degree-two and
-junction rules when callers start with independent linework.
+When an operation accepts scalar and batch inputs, overloads describe those
+forms under the same name and preserve the corresponding result shape. Missing
+values admitted in a batch remain `None` rows. Callers can use the form that
+matches their data without converting it to a separate API. See
+[`from_wkt`][gometry.from_wkt] and the
+[array result contract](../guide/arrays.md).
 
-When a binary point-set overlay retains a non-empty higher-dimensional
-operand—as `union`, `symmetric_difference`, or `difference` with that operand
-on the left does—its line and polygon coordinates pass through in their stored
-presentation. Ring start, orientation, and collinear vertices are not rewritten,
-and absorbed point ordinates do not change the retained operand's Z/M values.
+```python exec="on" source="block" result="text"
+import gometry as gm
 
-## The Arrow / GeoArrow boundary
+scalar = gm.from_wkt("POINT (1 2)")
+batch = gm.from_wkt(["POINT (1 2)", None])
+print(type(scalar).__name__, type(batch).__name__, batch.to_wkt())
 
-The public columnar geometry format is [GeoArrow](https://geoarrow.org/)-compatible:
-homogeneous arrays without explicit empty multipart members export separated
-`x`/`y`/`z`/`m` children, while mixed types, mixed axes, collections, and adapter
-paths that cannot represent explicit member slots use GeoArrow WKB fallback.
-Scalar callers do not need
-the columnar boundary. Gometry owns geometry kernels and the Arrow/WKB boundary;
-optional Python adapters own focused GeoParquet conversions. Dataframe, SQL, and
-database engines remain outside the core. The portable database boundary is ISO
-WKB (or EWKB for PostGIS-compatible peers) plus side metadata.
+```
 
-## Reliability and supply-chain posture
+### 7. Preserve known facts in public types
 
-Robust predicates, **precision controls** ([`quantize`][gometry.Geometry.quantize], [`snap_to_grid`][gometry.Geometry.snap_to_grid] — not a
-JTS-style snap-rounding precision model), and structured validation reports are
-core features, not extras. The architecture keeps the CRS authority boundary
-explicit and records the bundled notices in the [license page](license.md).
+Annotations retain geometry kind, nullability, and scalar or container result
+shape when the inputs establish them; they do not promise inputs that runtime
+admission rejects. Precise types avoid unnecessary checks and make invalid
+calls visible to type checkers. See [`GeometryArray`][gometry.GeometryArray]
+and its [`buffer` method][gometry.GeometryArray.buffer].
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+point = gm.Point(1, 2)
+single: gm.Polygon = point.buffer(1)
+dense: gm.GeometryArray[gm.Polygon] = gm.GeometryArray([point]).buffer(1)
+nullable_input: gm.GeometryArray[gm.Point | None] = gm.GeometryArray([point, None])
+nullable: gm.GeometryArray[gm.Polygon | None] = nullable_input.buffer(1)
+print(type(single).__name__, type(dense).__name__, nullable.is_missing.tolist())
+
+```
+
+### 8. Prefer one obvious way, with exceptions for distinct capabilities
+
+A second spelling is justified when it adds a distinct capability or is the
+natural idiom in its context, not when it merely renames the same operation.
+For example, [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates]
+returns a bounding-box prefilter, while
+[`SpatialIndex.query`][gometry.SpatialIndex.query] refines candidates with an
+exact predicate. Keeping them separate makes that difference visible.
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+index = gm.SpatialIndex([gm.Polygon([(0, 0), (2, 0), (0, 2)])])
+point = gm.Point(1.8, 1.8)
+print(index.candidates(point).tolist(), index.query(point).tolist())
+
+```
+
+The CRS-free point lies inside the polygon's bounds but outside the triangle.
+
+### 9. Treat Python and ecosystem protocols as public API
+
+Python dunders, standard-library protocols, and NumPy, pandas, Arrow, and Polars
+integrations are designed, typed, and tested as part of the public surface.
+Protocol support lets geometry values compose with ordinary Python and
+ecosystem tools. See [`GeometryArray`][gometry.GeometryArray],
+[NumPy arrays & coordinates](../ecosystem/numpy.md), and
+[Ecosystem & interoperability](../ecosystem/index.md).
+
+```python exec="on" source="block" result="text"
+import numpy as np
+import gometry as gm
+
+array = gm.GeometryArray([gm.Point(1, 2), gm.Point(3, 4)])
+print(len(array), array[0].to_wkt(), np.asarray(array, dtype=object).dtype)
+
+```
