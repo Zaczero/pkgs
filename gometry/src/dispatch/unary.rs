@@ -329,17 +329,17 @@ pub(crate) fn unary_array_shapes(
     Ok(PyGeometryArray::from_shapes(shapes, frame)?.with_missing_mask(array.missing().cloned())?)
 }
 
-pub(crate) fn unary_scalar_linref_shape(
+fn execute_scalar_linref<R: Send>(
     py: Python<'_>,
     geometry: &PyGeometry,
     op: Operation,
     resolver: super::metric::MetricResolver,
-    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
-) -> PyResult<Typed> {
-    let frame = geometry.frame.clone();
+    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<R> + Send,
+) -> PyResult<R> {
+    let frame = &geometry.frame;
     let mut scratch = MetricScratch::default();
     let result = {
-        let metric = match resolver.resolve_ctx(&frame, &mut scratch) {
+        let metric = match resolver.resolve_ctx(frame, &mut scratch) {
             Ok(metric) => metric,
             Err(error) => {
                 drop(scratch);
@@ -365,8 +365,40 @@ pub(crate) fn unary_scalar_linref_shape(
         py.detach(move || kernel(&plan, &row))
     };
     drop(scratch);
-    let shape = result?;
+    Ok(result?)
+}
+
+pub(crate) fn unary_scalar_linref_shape(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    op: Operation,
+    resolver: super::metric::MetricResolver,
+    kernel: impl FnOnce(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send,
+) -> PyResult<Typed> {
+    let frame = geometry.frame.clone();
+    let shape = execute_scalar_linref(py, geometry, op, resolver, kernel)?;
     Ok(Typed(PyGeometry::with_frame(shape, frame)))
+}
+
+/// Evaluate several stations on one scalar geometry while sharing its
+/// prepared plan and metric context. Each station remains on the scalar lane,
+/// so invalid M support keeps the same error behavior as one scalar call.
+pub(crate) fn unary_scalar_linref_column(
+    py: Python<'_>,
+    geometry: &PyGeometry,
+    op: Operation,
+    resolver: super::metric::MetricResolver,
+    stations: Vec<f64>,
+    kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>, f64) -> Result<Shape> + Send,
+) -> PyResult<PyGeometryArray> {
+    let frame = geometry.frame.clone();
+    let shapes = execute_scalar_linref(py, geometry, op, resolver, move |plan, row| {
+        stations
+            .into_iter()
+            .map(|station| kernel(plan, row, station))
+            .collect::<Result<Vec<_>>>()
+    })?;
+    Ok(PyGeometryArray::from_shapes(shapes, frame)?)
 }
 
 pub(crate) fn unary_array_linref_shapes(
@@ -391,7 +423,7 @@ pub(crate) fn unary_array_linref_with_model(
     model: &crate::crs::MetricModel,
     kernel: impl Fn(&PreparedPlan, &LinearReferenceRow<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
-    let output_frame = array.frame.clone();
+    let frame = array.frame.clone();
     let output_missing = array.missing().cloned();
     let array = array.clone();
     let result = py.detach(move || {
@@ -430,7 +462,7 @@ pub(crate) fn unary_array_linref_with_model(
             return Err(rows_err(error));
         },
     };
-    Ok(PyGeometryArray::from_shapes(shapes, output_frame)?.with_missing_mask(output_missing)?)
+    Ok(PyGeometryArray::from_shapes(shapes, frame)?.with_missing_mask(output_missing)?)
 }
 
 /// Geometry-returning array lane for constructive operations whose generated

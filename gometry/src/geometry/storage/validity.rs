@@ -380,6 +380,10 @@ impl ValidityMask {
         self.valid_count
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "the validity range is admitted by checking its local order and the backing logical length"
+    )]
     pub(crate) fn present_in_range(&self, rows: std::ops::Range<usize>) -> usize {
         assert!(rows.start <= rows.end, "validity range must be ordered");
         assert!(

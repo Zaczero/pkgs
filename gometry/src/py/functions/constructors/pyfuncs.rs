@@ -24,7 +24,7 @@ use crate::py::numpy;
 ///     except that ``minx > maxx`` is allowed with ``wrap='split'`` to wrap a
 ///     geographic box across the CRS frame's longitude seam.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
 ///     With a geographic CRS, positive-size ``wrap=None`` bounds wholly inside
@@ -116,7 +116,7 @@ pub(super) fn box_(
 /// z, m : float or sequence of float, optional
 ///     Z and M ordinates, broadcast like ``x``/``y``.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
 ///
@@ -286,7 +286,7 @@ fn try_points_from_arc_columns(
 ///     Rectangle bounds per row. At least one must be sequence of float; scalars
 ///     broadcast numpy-style.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every box. Geographic rows follow the same native-range
 ///     chart-edge and corner-only ``wrap=None`` rules as `box`. Geographic area
 ///     and length measure the stored chart edges when the chart-edge path applies.
@@ -398,7 +398,7 @@ pub(super) fn boxes(
 /// values : sequence
 ///     Each member is a raw coordinate sequence accepted by `LineString`.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every linestring.
 ///
 /// epoch : float, optional
@@ -449,7 +449,7 @@ pub(super) fn line_strings(
 /// values : sequence
 ///     Each member is a raw shell coordinate sequence or ``[shell, *holes]``.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every polygon.
 ///
 /// epoch : float, optional
@@ -500,7 +500,7 @@ pub(super) fn polygons(
 /// values : sequence
 ///     Each member is a raw coordinate sequence accepted by `MultiPoint`.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every multipoint.
 ///
 /// epoch : float, optional
@@ -550,7 +550,7 @@ pub(super) fn multi_points(
 /// values : sequence
 ///     Each member is raw line coordinate sequences accepted by `MultiLineString`.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every multilinestring.
 ///
 /// epoch : float, optional
@@ -600,7 +600,7 @@ pub(super) fn multi_line_strings(
 /// values : sequence
 ///     Each member is raw polygon coordinate sequences accepted by `MultiPolygon`.
 ///
-/// crs : str or int, optional
+/// crs : CRS-like, optional
 ///     CRS applied to every multipolygon.
 ///
 /// epoch : float, optional

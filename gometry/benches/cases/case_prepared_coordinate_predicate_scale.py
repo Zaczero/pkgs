@@ -11,9 +11,13 @@ import statistics
 import sys
 import time
 
+from _observation import bootstrap, emit, prepare_measurement
+
+if __name__ == '__main__':
+    bootstrap()
+
 import gometry as gm
 import numpy as np
-from _observation import emit
 from _validation import emit_validation
 
 
@@ -33,6 +37,7 @@ def _median_prepared(n: int, *, warm: int = 3, reps: int = 11) -> float:
     assert gm.contains(prep, x=0.0, y=0.0) is True
     for _ in range(warm):
         gm.contains(prep, x=xs, y=ys)
+    prepare_measurement()
     samples: list[float] = []
     last = None
     for _ in range(reps):

@@ -89,7 +89,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     geographic = gm.CRS(4326).info
     projected = gm.CRS('epsg:27700').info
     projjson = json.loads(gm.CRS(4326).to_projjson())
-    projjson_dict = gm.CRS(4326).to_projjson_dict()
+    projjson_dict = gm.CRS(4326).to_projjson(as_dict=True)
     assert isinstance(engine['version'], str)
     assert isinstance(engine['major'], int)
     assert isinstance(engine['minor'], int)
@@ -227,27 +227,6 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
         }
     ]
     assert gm.CRS(4326).non_deprecated == []
-    search = gm.crs_search(
-        'British National Grid', authority='EPSG', kind='projected', limit=5
-    )
-    assert [item['crs'] for item in search] == ['EPSG:27700']
-    assert (
-        gm.crs_search(
-            'OSGB36 / British National Grid',
-            authority='EPSG',
-            kind='projected',
-            approximate=False,
-        )[0]['crs']
-        == 'EPSG:27700'
-    )
-    with pytest.raises(ValueError, match='CRS search name'):
-        gm.crs_search('')
-    with pytest.raises(ValueError, match='CRS search limit'):
-        gm.crs_search('WGS', limit=0)
-    with pytest.raises(ValueError, match='CRS search limit'):
-        gm.crs_search('WGS', limit=-1)
-    with pytest.raises(ValueError, match='CRS search limit'):
-        gm.crs_search('WGS', limit=1001)
     datum = cast('dict[str, object]', geographic['datum'])
     assert datum['name'] == 'World Geodetic System 1984 ensemble'
     assert datum['authority'] == 'EPSG'
@@ -808,6 +787,56 @@ def test_crs_namespace_exposes_proj_authority_metadata() -> None:
     _assert_crs_namespace_database_catalog_and_crs_info()
     _assert_crs_namespace_input_objects_and_serialization()
     _assert_crs_namespace_operations_geodesic_and_transforms()
+
+
+def test_crs_catalog_name_filter_returns_complete_crs_records() -> None:
+    named_catalog = gm.crs_catalog(
+        'British National Grid', authority='EPSG', kind='projected', limit=5
+    )
+    assert [item['crs'] for item in named_catalog] == ['EPSG:27700']
+    assert all(
+        'projection_method_name' in item and 'celestial_body' in item
+        for item in named_catalog
+    )
+    assert all(item['kind'] != 'ellipsoid' for item in named_catalog)
+    assert (
+        gm.crs_catalog(
+            'OSGB36 / British National Grid',
+            authority='EPSG',
+            kind='projected',
+            approximate=False,
+        )[0]['crs']
+        == 'EPSG:27700'
+    )
+    combined_filters = gm.crs_catalog(
+        'British National Grid',
+        authority='EPSG',
+        kind='projected',
+        area_of_interest=(-9.0, 49.0, 3.0, 61.0),
+        limit=1,
+    )
+    assert [item['crs'] for item in combined_filters] == ['EPSG:27700']
+    with pytest.raises(ValueError, match='CRS catalog name'):
+        gm.crs_catalog('')
+    with pytest.raises(ValueError, match='CRS catalog limit'):
+        gm.crs_catalog('WGS', limit=0)
+    with pytest.raises(ValueError, match='CRS catalog limit'):
+        gm.crs_catalog('WGS', limit=-1)
+    assert len(gm.crs_catalog(authority='EPSG')) > 20
+    assert len(gm.crs_catalog(authority='EPSG', limit=1001)) == 1001
+
+
+def test_crs_projjson_text_or_fresh_mapping() -> None:
+    crs = gm.CRS(4326)
+    text = crs.to_projjson()
+    mapping = crs.to_projjson(as_dict=True)
+    assert json.loads(text) == mapping
+    mapping['name'] = 'changed'
+    assert crs.to_projjson(as_dict=True)['name'] == 'WGS 84'
+    with pytest.raises(gm.GeometryError, match='cannot be used with as_dict=True'):
+        crs.to_projjson(as_dict=True, pretty=True)
+    with pytest.raises(gm.GeometryError, match='cannot be used with as_dict=True'):
+        crs.to_projjson(as_dict=True, indentation_width=4)
 
 
 def test_utm_catalog_matches_the_named_datum_prefix() -> None:

@@ -1143,7 +1143,7 @@ def build_coverage_union() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.coverage_union(d['gm'])
+        return gm.coverage_union_all(d['gm'])
 
     def competitor_call():
         import shapely
@@ -1158,8 +1158,8 @@ def build_coverage_union() -> PublicCase:
         if not bool(np.all(shapely.coverage_is_valid(d['sh']))):
             raise OracleMismatch('parcels not coverage-valid on shapely')
 
-    _reg('gometry.coverage_union/10k_edge_matched_parcels', gometry_call)
-    _reg('shapely.coverage_union/10k_edge_matched_parcels', competitor_call)
+    _reg('gometry.coverage_union_all/10k_edge_matched_parcels', gometry_call)
+    _reg('shapely.coverage_union_all/10k_edge_matched_parcels', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
@@ -1885,7 +1885,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.intersection/pairwise_1k_irregular_polygons': build_intersection,
     'gometry.intersects/pairwise_1k_irregular_polygons': build_intersects_pairs,
     'gometry.union_all/1024_service_areas': build_union_all,
-    'gometry.coverage_union/10k_edge_matched_parcels': build_coverage_union,
+    'gometry.coverage_union_all/10k_edge_matched_parcels': build_coverage_union,
     'gometry.is_valid/10k_mixed_polygons_20pct_invalid': build_is_valid,
     'gometry.repair.linework/1k_invalid_polygons': build_repair,
     'gometry.clip_by_rect/10k_realistic_linework_categories': build_clip_by_rect,

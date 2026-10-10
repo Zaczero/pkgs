@@ -26,6 +26,14 @@ crate::tokens::token_enum! {
 }
 
 crate::tokens::token_enum! {
+    /// Representation returned by a Voronoi construction.
+    pub enum VoronoiOutput("Voronoi output", param = "output") {
+        Polygons = "polygons",
+        Edges = "edges",
+    }
+}
+
+crate::tokens::token_enum! {
     /// Space-filling curve used for geometry-centre keys and ordering.
     pub enum SpatialCurve("spatial curve", param = "curve") {
         Hilbert = "hilbert",
@@ -51,6 +59,7 @@ crate::tokens::token_enum! {
 
 crate::tokens::token_from_pyobject!(
     TriangulationMethod,
+    VoronoiOutput,
     SpatialCurve,
     LineReferenceBasis,
     NavigationPath,
@@ -124,6 +133,11 @@ pub(crate) fn _token_vocabulary() -> Vec<(&'static str, Option<&'static str>, Ve
             "TriangulationMethod",
             Some("TriangulationMethod"),
             TriangulationMethod::TOKENS.to_vec(),
+        ),
+        (
+            "VoronoiOutput",
+            Some("VoronoiOutput"),
+            VoronoiOutput::TOKENS.to_vec(),
         ),
         (
             "SpatialCurve",

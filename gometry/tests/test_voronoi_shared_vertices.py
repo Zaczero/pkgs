@@ -30,8 +30,8 @@ def _carrier(points: list[tuple[float, float]], kind: str) -> gm.Geometry:
 
 def _cells(source: gm.Geometry, clip: gm.Polygon, frontend: str) -> gm.GeometryArray:
     if frontend == 'scalar':
-        return source.voronoi_polygons(clip=clip)
-    return gm.GeometryArray([source]).voronoi_polygons(clip=clip)[0]
+        return source.voronoi(output='polygons', clip=clip)
+    return gm.GeometryArray([source]).voronoi(output='polygons', clip=clip)[0]
 
 
 def _assert_partition(cells: gm.GeometryArray, clip: gm.Polygon) -> None:
@@ -144,9 +144,9 @@ def test_extreme_three_site_and_collinear_edges_keep_exact_count(
     source = _carrier(points, carrier)
     clip = gm.box(-half_extent, -half_extent, half_extent, half_extent)
     edges = (
-        source.voronoi_edges(clip=clip)
+        source.voronoi(output='edges', clip=clip)
         if frontend == 'scalar'
-        else gm.GeometryArray([source]).voronoi_edges(clip=clip)[0]
+        else gm.GeometryArray([source]).voronoi(output='edges', clip=clip)[0]
     )
     assert len(edges) == expected_count, (
         half_extent,

@@ -582,9 +582,13 @@ def test_masked_split_skips_missing_line_rows() -> None:
 
     pieces = gm.split(rows, gm.Point(1, 0))
 
-    assert pieces.to_wkt() == [
+    assert pieces.offsets.tolist() == [0, 2, 2, 4]
+    assert pieces[0].to_wkt() == [
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
+    ]
+    assert pieces[1].to_wkt() == []
+    assert pieces[2].to_wkt() == [
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
     ]
@@ -593,10 +597,13 @@ def test_masked_split_skips_missing_line_rows() -> None:
         rows,
         gm.GeometryArray([gm.Point(1, 0), gm.Point(1, 0), None]),
     )
-    assert pairwise_pieces.to_wkt() == [
+    assert pairwise_pieces.offsets.tolist() == [0, 2, 2, 2]
+    assert pairwise_pieces[0].to_wkt() == [
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
     ]
+    assert pairwise_pieces[1].to_wkt() == []
+    assert pairwise_pieces[2].to_wkt() == []
 
 
 def test_masked_splitter_array_skips_missing_points() -> None:
@@ -732,7 +739,7 @@ def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:
 
     for op in (
         gm.bearing,
-        gm.rhumb_distance,
+        lambda left, right: gm.distance(left, right, path='rhumb'),
         lambda left, right: gm.bearing(left, right, path='rhumb'),
     ):
         left_array = op(points, target)
@@ -1072,7 +1079,9 @@ def test_masked_line_interpolate_points_missing_row_is_empty_group() -> None:
 def test_masked_voronoi_skips_missing_placeholder() -> None:
     arr = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(1, 0), gm.Point(0, 1)])
     # Per-row Groups: the missing row becomes an empty group (no NaN placeholder).
-    edges = arr.voronoi_edges()
+    edges = arr.voronoi(
+        output='edges',
+    )
     assert isinstance(edges, gm.Groups) and len(edges) == 4
     assert len(edges[1]) == 0
     for row in list(edges):
@@ -1275,9 +1284,9 @@ def test_coverage_functions_skip_and_scatter_missing_array_rows() -> None:
     assert simplified.is_missing.tolist() == [False, True, False]
     cleaned = gm.coverage_clean(coverage, grid_size=0.0)
     assert cleaned.is_missing.tolist() == [False, True, False]
-    assert gm.coverage_union(coverage).geometry_type == 'Polygon'
+    assert gm.coverage_union_all(coverage).geometry_type == 'Polygon'
     with pytest.raises(gm.InvalidGeometryError):
-        gm.coverage_union(gm.GeometryArray([None, None]))
+        gm.coverage_union_all(gm.GeometryArray([None, None]))
 
 
 def test_free_coverage_functions_preserve_missing_iterable_rows() -> None:
@@ -1285,7 +1294,7 @@ def test_free_coverage_functions_preserve_missing_iterable_rows() -> None:
     array = gm.GeometryArray(values)
 
     assert gm.coverage_is_valid(values) == gm.coverage_is_valid(array)
-    assert gm.coverage_union(values) == gm.coverage_union(array)
+    assert gm.coverage_union_all(values) == gm.coverage_union_all(array)
     for iterable_result, array_result in (
         (gm.coverage_invalid_edges(values), gm.coverage_invalid_edges(array)),
         (gm.coverage_simplify(values, 0.0), gm.coverage_simplify(array, 0.0)),
@@ -1303,12 +1312,12 @@ def test_pooled_reductions_skip_missing_iterable_rows() -> None:
         assert gm.equals_exact(operation(values), operation(present))
 
     ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
-    pooled = gm.polygonize([ring, None])
-    dense = gm.polygonize([ring])
+    pooled = gm.polygonize_all([ring, None])
+    dense = gm.polygonize_all([ring])
     assert gm.equals_exact(pooled, dense).all()
     assert gm.equals_exact(
-        gm.polygonize_full([ring, None]).polygons,
-        gm.polygonize_full([ring]).polygons,
+        gm.polygonize_all([ring, None], diagnostics=True).polygons,
+        gm.polygonize_all([ring], diagnostics=True).polygons,
     ).all()
 
 

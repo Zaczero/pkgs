@@ -97,17 +97,32 @@ RELEASE_ENV_VARS = (
 )
 
 
-def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path = ROOT,
+    env: dict[str, str] | None = None,
+    capture_output: bool = True,
+) -> None:
     result = subprocess.run(
         cmd,
         cwd=cwd,
         env=env,
         check=False,
-        stdout=sys.stderr,
-        stderr=sys.stderr,
+        capture_output=capture_output,
+        text=True,
     )
+    if result.stdout:
+        sys.stderr.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
     if result.returncode:
-        raise subprocess.CalledProcessError(result.returncode, cmd)
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
 
 
 def sha256_file(path: Path) -> str:

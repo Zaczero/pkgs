@@ -119,6 +119,9 @@ pub(crate) fn nearest(
 ///     If ``predicate`` is unknown, ``distance`` is missing or invalid for
 ///     ``predicate='dwithin'``, or ``unit='meters'`` is requested for a
 ///     CRS-free geometry.
+/// CRSError
+///     If geographic ``dwithin`` refinement cannot prove a result within the
+///     point-edge evaluation budget.
 ///
 /// Examples
 /// --------

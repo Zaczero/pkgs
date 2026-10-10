@@ -255,7 +255,7 @@ impl PyCrs {
     ///
     /// Parameters
     /// ----------
-    /// other : str or int or CRS
+    /// other : CRS-like
     ///     The other CRS-like value to compare against.
     ///
     /// mode : str

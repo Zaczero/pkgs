@@ -2,7 +2,7 @@ use crate::py::errors::GeometryError;
 use crate::py::methods::unary_constructive_methods::{
     Bound, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, pymethods,
 };
-use crate::py::support::{TriangulationMethod, VoronoiClipInput};
+use crate::py::support::{TriangulationMethod, VoronoiClipInput, VoronoiOutput};
 use crate::py::vectors::Groups;
 
 #[pymethods]
@@ -42,31 +42,19 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         self.sample_points_impl(py, count, seed)
     }
-    #[doc = doc_voronoi_polygons!(scalar)]
+    #[doc = doc_voronoi!(scalar)]
     #[pyo3(
-        signature = (*, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
-        text_signature = "($self, *, tolerance=0.0, clip='padded')"
+        signature = (*, output = VoronoiOutput::Polygons, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
+        text_signature = "($self, *, output='polygons', tolerance=0.0, clip='padded')"
     )]
-    pub fn voronoi_polygons(
+    pub fn voronoi(
         &self,
         py: Python<'_>,
+        output: VoronoiOutput,
         tolerance: f64,
         clip: VoronoiClipInput,
     ) -> PyResult<PyGeometryArray> {
-        self.voronoi_polygons_impl(py, tolerance, &clip)
-    }
-    #[doc = doc_voronoi_edges!(scalar)]
-    #[pyo3(
-        signature = (*, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
-        text_signature = "($self, *, tolerance=0.0, clip='padded')"
-    )]
-    pub fn voronoi_edges(
-        &self,
-        py: Python<'_>,
-        tolerance: f64,
-        clip: VoronoiClipInput,
-    ) -> PyResult<PyGeometryArray> {
-        self.voronoi_edges_impl(py, tolerance, &clip)
+        self.voronoi_impl(py, output, tolerance, &clip)
     }
 }
 
@@ -106,31 +94,19 @@ impl PyGeometryArray {
     ) -> PyResult<Groups> {
         self.sample_points_impl(count, seed)
     }
-    #[doc = doc_voronoi_polygons!(array)]
+    #[doc = doc_voronoi!(array)]
     #[pyo3(
-        signature = (*, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
-        text_signature = "($self, *, tolerance=0.0, clip='padded')"
+        signature = (*, output = VoronoiOutput::Polygons, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
+        text_signature = "($self, *, output='polygons', tolerance=0.0, clip='padded')"
     )]
-    pub fn voronoi_polygons(
+    pub fn voronoi(
         &self,
         py: Python<'_>,
+        output: VoronoiOutput,
         tolerance: f64,
         clip: VoronoiClipInput,
     ) -> PyResult<Groups> {
-        self.voronoi_polygons_impl(py, tolerance, &clip)
-    }
-    #[doc = doc_voronoi_edges!(array)]
-    #[pyo3(
-        signature = (*, tolerance = 0.0, clip = VoronoiClipInput::DEFAULT),
-        text_signature = "($self, *, tolerance=0.0, clip='padded')"
-    )]
-    pub fn voronoi_edges(
-        &self,
-        py: Python<'_>,
-        tolerance: f64,
-        clip: VoronoiClipInput,
-    ) -> PyResult<Groups> {
-        self.voronoi_edges_impl(py, tolerance, &clip)
+        self.voronoi_impl(py, output, tolerance, &clip)
     }
 }
 

@@ -312,7 +312,7 @@ pub(in crate::crs) fn with_rhumb_at<T>(
 /// Rhumb-line distance (meters) between two lon/lat points.
 ///
 /// Distance-only: no `atan2` azimuth is computed.
-pub(crate) fn rhumb_distance_crs_at(
+pub(crate) fn distance_rhumb_crs_at(
     crs: &str,
     lon1: f64,
     lat1: f64,
@@ -357,7 +357,7 @@ pub(crate) fn rhumb_distance_crs_at(
 }
 
 #[cfg(test)]
-pub(crate) fn rhumb_distance_crs(
+pub(crate) fn distance_rhumb_crs(
     crs: &str,
     lon1: f64,
     lat1: f64,
@@ -365,7 +365,7 @@ pub(crate) fn rhumb_distance_crs(
     lat2: f64,
 ) -> Result<f64> {
     let state = crate::crs::runtime_state_snapshot()?;
-    rhumb_distance_crs_at(crs, lon1, lat1, lon2, lat2, &state)
+    distance_rhumb_crs_at(crs, lon1, lat1, lon2, lat2, &state)
 }
 
 /// Constant rhumb bearing (degrees clockwise from north, `0..360`) from one
@@ -604,7 +604,7 @@ mod tests {
                     * slope_naive(&ellipsoid, phi1, phi2)
                     * ellipsoid.radius
             };
-            let refactored = rhumb_distance_crs("EPSG:4326", lon1, lat1, lon2, lat2).unwrap();
+            let refactored = distance_rhumb_crs("EPSG:4326", lon1, lat1, lon2, lat2).unwrap();
             assert!(
                 (refactored - naive).abs() <= 1e-6 * naive.abs().max(1.0),
                 "({lon1},{lat1})->({lon2},{lat2}) refactored={refactored} naive={naive}"
@@ -616,7 +616,7 @@ mod tests {
     fn rhumb_destination_round_trips_the_inverse() {
         let (lon0, lat0) = (-73.7781_f64, 40.6413_f64);
         let (lon1, lat1) = (2.3522_f64, 48.8566_f64);
-        let distance = rhumb_distance_crs("EPSG:4326", lon0, lat0, lon1, lat1).unwrap();
+        let distance = distance_rhumb_crs("EPSG:4326", lon0, lat0, lon1, lat1).unwrap();
         let bearing = rhumb_bearing_crs("EPSG:4326", lon0, lat0, lon1, lat1).unwrap();
         let (lon2, lat2) = rhumb_destination_crs("EPSG:4326", lon0, lat0, bearing, distance)
             .unwrap()

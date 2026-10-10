@@ -134,7 +134,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(
 ) -> Result<Shape> {
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
-    let prepared = valid_coverage_rows(coverage, "coverage_union")?;
+    let prepared = valid_coverage_rows(coverage, "coverage_union_all")?;
     let source_refs: Vec<_> = coverage.iter().map(|shape| shape.borrow()).collect();
     // Preserve the singleton identity path: one polygon is already the union
     // (bit-identical presentation of the input).
@@ -259,12 +259,12 @@ fn dissolve_edge_incidences(
     survivors
         .sort_unstable_by_key(|segment| crate::geometry::undirected_segment_edge_key(*segment));
     let inventory = ExactSourceInventory::from_segments(&survivors)?;
-    let mut budget = crate::geometry::ExpansionBudget::new("coverage_union", "exact partition");
+    let mut budget = crate::geometry::ExpansionBudget::new("coverage_union_all", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
     let parts = inventory.linework_polygons(
         &mut partition,
         true,
-        "coverage_union",
+        "coverage_union_all",
         crate::geometry::CoordinateAxes::XY,
         false,
         &SourceArcContext::cartesian(),
