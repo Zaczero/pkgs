@@ -20640,7 +20640,7 @@ def from_wkb(
 def _parse_geoarrow_extension_metadata(
     metadata: bytes,
 ) -> tuple[str | None, float | None]:
-    """Private Python entry: parse GeoArrow extension metadata bytes → (crs, epoch)."""
+    """Private Python entry: parse GeoArrow extension metadata bytes → (stored CRS label, epoch)."""
 
 @final
 class _GeoParquetColumnFrame:

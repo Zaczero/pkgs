@@ -144,12 +144,24 @@ BinaryView padding, coordinate finiteness, and GeoArrow encoding/storage pairs.
 Malformed owned data raises a domain error. Resource budgets and untrusted-input
 limits are documented in [Security & untrusted input](../about/security.md).
 
-## CRS as PROJJSON, epoch as a gometry extension
+## CRS as PROJJSON, epoch and exact identity as gometry extensions
 
 The GeoArrow extension metadata writes the CRS as **PROJJSON** — GeoArrow's
 recommended encoding, and the one [GeoParquet](https://geoparquet.org/) 1.1
-requires when columns land in a lakehouse. It reads back both PROJJSON objects and
-plain authority strings from other producers.
+requires when columns land in a lakehouse. Gometry also writes
+`gometry:crs_definition`, a namespaced string containing the exact CRS
+definition stored by the producer. Its readers restore that exact identity only
+after verifying that it describes the standard PROJJSON CRS. External
+standard-only metadata continues to use the CRS decoded from PROJJSON or an
+authority string.
+
+This extra identity field matters because a standardized CRS can remain
+spatially equivalent while its stored representation changes. For example, an
+`EPSG:4326` geometry may be represented by a PROJJSON object after an
+interchange round trip; gometry's exact CRS equality distinguishes those
+definitions. Third-party transformations that discard `gometry:crs_definition`
+retain the standard CRS meaning but cannot preserve the producer's exact
+definition spelling.
 
 The **coordinate epoch** is **not** part of the GeoArrow extension-types
 standard; gometry stores it as an additional JSON member in the same extension
@@ -189,11 +201,12 @@ allocate; it does not promise a GeoJSON fallback.
 Install `gometry[arrow]` for [`GeometryArray.to_geoparquet()`][gometry.GeometryArray.to_geoparquet] /
 [`gm.from_geoparquet`][gometry.from_geoparquet]. Write a `GeometryArray` to a
 [GeoParquet](https://geoparquet.org/) file and read it back — CRS metadata is
-embedded as **PROJJSON** in the column header, geometry is written with **WKB**
-encoding (the GeoParquet 1.1 default), and gometry's missing rows travel as Arrow
-validity bits instead of sentinel geometries. GeoParquet builds on pyarrow (the
-`arrow` extra provides it); for an in-memory handoff without a file, use
-`to_arrow`.
+embedded as **PROJJSON** in the column header, with the namespaced
+`gometry:crs_definition` value preserving gometry's exact stored CRS identity.
+Geometry is written with **WKB** encoding (the GeoParquet 1.1 default), and
+gometry's missing rows travel as Arrow validity bits instead of sentinel
+geometries. GeoParquet builds on pyarrow (the `arrow` extra provides it); for an
+in-memory handoff without a file, use `to_arrow`.
 
 The GeoParquet reader and writer also accept binary streams, including
 `io.BytesIO` and `pyarrow.NativeFile`. Readers require a seekable binary source;

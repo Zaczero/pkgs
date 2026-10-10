@@ -705,6 +705,8 @@ pub(crate) fn extension_schema(
 const ZMIJ_F64_DISPLAY: usize = 24;
 const CRS_PREFIX: &str = "{\"crs\":";
 const CRS_TYPE_FIELD: &str = ",\"crs_type\":\"projjson\"";
+const CRS_DEFINITION_FIELD_PREFIX: &str = ",\"";
+const CRS_DEFINITION_FIELD_SUFFIX: &str = "\":";
 const EPOCH_FIELD: &str = ",\"epoch\":";
 const EPOCH_ONLY_PREFIX: &str = "{\"epoch\":";
 const OBJECT_END: &str = "}";
@@ -717,30 +719,60 @@ pub(crate) fn extension_metadata_json(
         return Ok(None);
     }
     let projjson = crs.map(crate::crs::to_projjson).transpose()?;
+    let crs_definition = crs.map(|crs| {
+        serde_json::to_string(crs).expect("a CRS definition string is JSON-serializable")
+    });
     let epoch = epoch
         .map(|epoch| {
             Number::from_f64(epoch)
                 .ok_or_else(|| NativeArrowExportError::geometry("coordinate epoch must be finite"))
         })
         .transpose()?;
-    Ok(Some(assemble_extension_metadata(projjson, epoch)))
+    Ok(Some(assemble_extension_metadata(
+        projjson,
+        crs_definition,
+        epoch,
+    )))
 }
 
 /// Wrap trusted PROJJSON bytes in the GeoArrow envelope. Does not parse or
-/// rebuild a `serde_json::Value` tree.
-fn assemble_extension_metadata(projjson: Option<String>, epoch: Option<Number>) -> String {
+/// rebuild a `serde_json::Value` tree. The namespaced definition records the
+/// producer's CRS label beside GeoArrow's standardized PROJJSON value.
+fn assemble_extension_metadata(
+    projjson: Option<String>,
+    crs_definition: Option<String>,
+    epoch: Option<Number>,
+) -> String {
     debug_assert!(
         projjson.is_some() || epoch.is_some(),
         "absent CRS and epoch is returned as None before assembly"
     );
+    let crs_definition_field_len = CRS_DEFINITION_FIELD_PREFIX
+        .len()
+        .wrapping_add(crate::py::geoarrow::CRS_DEFINITION_METADATA_KEY.len())
+        .wrapping_add(CRS_DEFINITION_FIELD_SUFFIX.len());
     let extra = match (projjson.is_some(), epoch.is_some()) {
         (true, false) => CRS_PREFIX
             .len()
             .wrapping_add(CRS_TYPE_FIELD.len())
+            .wrapping_add(crs_definition_field_len)
+            .wrapping_add(
+                crs_definition
+                    .as_deref()
+                    .expect("a CRS definition accompanies PROJJSON")
+                    .len(),
+            )
             .wrapping_add(OBJECT_END.len()),
         (true, true) => CRS_PREFIX
             .len()
             .wrapping_add(CRS_TYPE_FIELD.len())
+            .wrapping_add(crs_definition_field_len)
+            .wrapping_add(
+                crs_definition
+                    .as_deref()
+                    .expect("a CRS definition accompanies PROJJSON")
+                    .len(),
+            )
             .wrapping_add(EPOCH_FIELD.len())
             .wrapping_add(ZMIJ_F64_DISPLAY)
             .wrapping_add(OBJECT_END.len()),
@@ -756,6 +788,14 @@ fn assemble_extension_metadata(projjson: Option<String>, epoch: Option<Number>) 
         out.push_str(CRS_PREFIX);
         out.push_str(&projjson);
         out.push_str(CRS_TYPE_FIELD);
+        out.push_str(CRS_DEFINITION_FIELD_PREFIX);
+        out.push_str(crate::py::geoarrow::CRS_DEFINITION_METADATA_KEY);
+        out.push_str(CRS_DEFINITION_FIELD_SUFFIX);
+        out.push_str(
+            crs_definition
+                .as_deref()
+                .expect("a CRS definition accompanies PROJJSON"),
+        );
         if let Some(epoch) = epoch {
             out.push_str(EPOCH_FIELD);
             write!(out, "{epoch}").expect("writing into a reserved String cannot fail");
@@ -890,15 +930,21 @@ mod owner_export_tests {
     #[test]
     fn assemble_extension_metadata_embeds_projjson_bytes() {
         let projjson = "{\"type\":\"GeographicCRS\",\"name\":\"fixture\"}".to_owned();
-        let text = assemble_extension_metadata(Some(projjson.clone()), None);
+        let definition = serde_json::to_string("EPSG:4326").unwrap();
+        let text = assemble_extension_metadata(Some(projjson.clone()), Some(definition), None);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["crs_type"], "projjson");
         assert_eq!(
             value["crs"],
             serde_json::from_str::<serde_json::Value>(&projjson).unwrap()
         );
+        assert_eq!(value["gometry:crs_definition"], "EPSG:4326");
         assert!(text.contains(&projjson), "PROJJSON bytes must be retained");
-        let with_epoch = assemble_extension_metadata(Some(projjson), Number::from_f64(2010.5));
+        let with_epoch = assemble_extension_metadata(
+            Some(projjson),
+            Some(serde_json::to_string("EPSG:4326").unwrap()),
+            Number::from_f64(2010.5),
+        );
         let value: serde_json::Value = serde_json::from_str(&with_epoch).unwrap();
         assert_eq!(value["epoch"].as_f64(), Some(2010.5));
         assert_eq!(value["crs_type"], "projjson");
@@ -916,7 +962,7 @@ mod owner_export_tests {
             let number = Number::from_f64(epoch).expect("finite epoch");
             let reserved = number.clone();
             let (text, allocations) = crate::test_support::allocation_count(|| {
-                assemble_extension_metadata(None, Some(reserved))
+                assemble_extension_metadata(None, None, Some(reserved))
             });
             assert_eq!(allocations, 1, "epoch {epoch:?} allocated {allocations}");
             let token = text
@@ -930,7 +976,7 @@ mod owner_export_tests {
             );
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();
             assert!(value["epoch"].is_number(), "{text}");
-            let repeated = assemble_extension_metadata(None, Some(number));
+            let repeated = assemble_extension_metadata(None, None, Some(number));
             assert_eq!(repeated, text);
         }
     }
@@ -948,6 +994,7 @@ mod owner_export_tests {
             value["crs"],
             serde_json::from_str::<serde_json::Value>(&projjson).unwrap()
         );
+        assert_eq!(value["gometry:crs_definition"], "EPSG:4326");
         assert_eq!(value["epoch"].as_f64(), Some(2010.0));
         assert!(
             text.contains(&projjson),
