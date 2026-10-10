@@ -826,14 +826,14 @@ def test_masked_cell_array_row_preserving_operations(grid: GridCase) -> None:
     assert np.isnan(values.area[1])
     assert np.isnan(values.children_count()[1])
     assert values.parent().is_missing.tolist() == [False, True, False]
-    assert [len(row) for row in values.neighbors] == [
+    assert [None if row is None else len(row) for row in values.neighbors] == [
         len(a.neighbors),
-        0,
+        None,
         len(a.neighbors),
     ]
-    assert [len(row) for row in values.children()] == [
+    assert [None if row is None else len(row) for row in values.children()] == [
         len(a.children()),
-        0,
+        None,
         len(a.children()),
     ]
     assert values.token == [a.token, None, a.token]

@@ -38,7 +38,8 @@ pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyCellAr
 /// geom : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Geometry to cover (WGS84 lon/lat or projected). A scalar returns a
 ///     flat cell array; an array or iterable returns one group per input row.
-///     ``None`` and empty geometries produce empty groups.
+///     ``None`` produces a missing group; a present empty geometry produces
+///     an empty group.
 ///
 /// zoom : int
 ///     Tile zoom (``0``-``29``; finer at higher values).

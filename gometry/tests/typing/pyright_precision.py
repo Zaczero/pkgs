@@ -19,3 +19,11 @@ if TYPE_CHECKING:
             values.drop_missing(),
             gm.GeometryArray[gm.Point | gm.LineString],
         )
+
+    def nullable_cell_groups(
+        cells: gm.CellArray[gm.H3Cell | None],
+    ) -> None:
+        assert_type(
+            cells.children(),
+            gm.Groups[gm.CellArray[gm.H3Cell] | None],
+        )

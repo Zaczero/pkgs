@@ -31,6 +31,7 @@ from typing import (
     Generic,
     Literal,
     NamedTuple,
+    Never,
     NotRequired,
     Protocol,
     Self,
@@ -155,8 +156,16 @@ if TYPE_CHECKING:
         from typing_extensions import TypeVar as _DefaultTypeVar
 
     _ExtremeT = _DefaultTypeVar('_ExtremeT', default=Point)
+    _GroupMissingT_co = _DefaultTypeVar(
+        '_GroupMissingT_co',
+        Never,
+        None,
+        covariant=True,
+        default=Never,
+    )
 else:
     _ExtremeT = TypeVar('_ExtremeT')
+    _GroupMissingT_co = TypeVar('_GroupMissingT_co', covariant=True)
 
 __all__ = [
     'ArrowEncoding',
@@ -920,37 +929,42 @@ def _restore_extremes_v1(
     return Extremes(west, south, east, north)
 
 
-class PolygonizeResult(NamedTuple):
+class PolygonizeResult(NamedTuple, Generic[_GroupMissingT_co]):
     """Full polygonization output: the polygons plus the leftover linework.
 
     Returned by `polygonize_all(diagnostics=True)`; unpacks as ``(polygons, cut_edges,
     dangles, invalid_rings)``, or use the named fields. ``polygons`` is the
-    pooled result; each diagnostic is a ``Groups[GeometryArray[LineString]]``
-    with one row per input source.
+    pooled result; each diagnostic is a `Groups` of `GeometryArray[LineString]`
+    rows, one per input source. Missing sources yield ``None`` rows, distinct
+    from present sources with no diagnostic linework. The generic argument is
+    ``None`` when source rows may be missing; it defaults to ``Never`` for dense
+    source rows.
     """
 
     polygons: GeometryArray[Polygon]
     """The polygons formed from the noded linework."""
 
-    cut_edges: Groups[GeometryArray[LineString]]
+    cut_edges: Groups[GeometryArray[LineString] | _GroupMissingT_co]
     """Noded edges that are not part of a polygon, grouped by source row."""
 
-    dangles: Groups[GeometryArray[LineString]]
+    dangles: Groups[GeometryArray[LineString] | _GroupMissingT_co]
     """Noded edges with at least one free end, grouped by source row."""
 
-    invalid_rings: Groups[GeometryArray[LineString]]
+    invalid_rings: Groups[GeometryArray[LineString] | _GroupMissingT_co]
     """Invalid noded rings or duplicate edges, grouped by source row."""
 
-    def __reduce__(self) -> tuple[Callable[..., PolygonizeResult], tuple[Any, ...]]:
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[..., PolygonizeResult[_GroupMissingT_co]], tuple[Any, ...]]:
         return _restore_polygonize_result_v1, tuple(self)
 
 
 def _restore_polygonize_result_v1(
     polygons: GeometryArray[Polygon],
-    cut_edges: Groups[GeometryArray[LineString]],
-    dangles: Groups[GeometryArray[LineString]],
-    invalid_rings: Groups[GeometryArray[LineString]],
-) -> PolygonizeResult:
+    cut_edges: Groups[GeometryArray[LineString] | _GroupMissingT_co],
+    dangles: Groups[GeometryArray[LineString] | _GroupMissingT_co],
+    invalid_rings: Groups[GeometryArray[LineString] | _GroupMissingT_co],
+) -> PolygonizeResult[_GroupMissingT_co]:
     return PolygonizeResult(polygons, cut_edges, dangles, invalid_rings)
 
 
