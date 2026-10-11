@@ -16507,12 +16507,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             "source area reuse has no certified shell/hole role".into(),
                         )
                     })?;
-                    if source_ring.hole != is_hole {
-                        return Err(GeometryErrorKind::Invalid(
-                            "source area reuse changed its selected shell/hole role".into(),
-                        )
-                        .into());
-                    }
                     let planned = match &self.emission.plan.polygons {
                         PolygonPlan::Regions { rings, .. } => rings.get(ring_index).copied(),
                         PolygonPlan::WholeSphere(_) => None,
@@ -16529,6 +16523,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                         .into());
                     };
+                    if source_ring.hole ^ reverse != is_hole {
+                        return Err(GeometryErrorKind::Invalid(
+                            "source area reuse role disagrees with its planned traversal".into(),
+                        )
+                        .into());
+                    }
                     if planned_ring != ring_id || planned_region != ring.region {
                         return Err(GeometryErrorKind::Invalid(
                             "source drawing changed its planned source area identity".into(),
@@ -21003,6 +21003,155 @@ mod canonical_coordinate_tests {
             &drawn.path,
             &mut work,
         )?);
+        Ok(())
+    }
+
+    #[test]
+    fn reversed_source_shell_can_be_reused_as_a_selected_hole() -> Result<()> {
+        let source = crate::io::parse_wkt("POLYGON ((170 40, -170 40, -170 50, 170 50, 170 40))")?;
+        let cutter = crate::io::parse_wkt("POLYGON ((172 42, 178 42, 178 48, 172 48, 172 42))")?;
+        let topology = topology(&[source, cutter])?;
+        let operation = OverlayOp::Difference;
+        let mut budget = EvaluationBudget::new(operation.name(), 0)?;
+        let plan = QEmissionPlan::build(&topology, operation, &mut budget)?;
+        let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
+        let publication =
+            plan.fragment_recipes
+                .publish(&topology, &nearest, operation.name(), &mut budget)?;
+        let source_points = vec![None; topology.q.nodes.len()];
+        let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+        let ring_roles = match check_q_ring_roles(&topology, &drawing, &mut budget)? {
+            QRingRoleCheck::Pass(roles) => roles,
+            QRingRoleCheck::Reject { .. } => {
+                return Err(GeometryErrorKind::Invalid(
+                    "difference source rings did not retain their selected roles".into(),
+                )
+                .into());
+            },
+        };
+        let emission =
+            plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+        let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+        let problem: QEmbeddingProblem<'_, '_, '_, '_, crate::crs::GeodesicMetric> =
+            QEmbeddingProblem::new(
+                &topology,
+                &emission,
+                &nearest,
+                &ordinates,
+                crate::geometry::CoordinateAxes::XY,
+                false,
+                operation.name(),
+                None,
+                &mut budget,
+            )?;
+        let publication_coordinates = vec![None; problem.publication_nodes.nodes().len()];
+        let reused = problem.source_reused_recipe_ids(
+            &drawing,
+            &ring_roles,
+            &nearest,
+            &publication_coordinates,
+            &mut budget,
+        )?;
+
+        let source_polygon = topology.sources.polygons.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("difference source polygon is missing".into())
+        })?;
+        let cutter_polygon = topology.sources.polygons.get(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("difference cutter polygon is missing".into())
+        })?;
+        let source_ring = source_polygon.rings.start;
+        let cutter_ring = cutter_polygon.rings.start;
+        let DrawnPolygons::Regions { rings, .. } = &drawing.polygons else {
+            return Err(GeometryErrorKind::Invalid(
+                "difference unexpectedly selected a whole sphere".into(),
+            )
+            .into());
+        };
+        let planned_rings = match &plan.polygons {
+            PolygonPlan::Regions { rings, .. } => rings,
+            PolygonPlan::WholeSphere(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "difference unexpectedly planned a whole sphere".into(),
+                )
+                .into());
+            },
+        };
+        let (cutter_index, reverse) = rings
+            .iter()
+            .enumerate()
+            .find_map(|(index, ring)| {
+                let RecipeWalkOwner::SourceRing(ring_id) = ring.recipe_walk else {
+                    return None;
+                };
+                let Some(PlannedAreaRing::Source {
+                    ring: planned_ring,
+                    reverse,
+                    ..
+                }) = planned_rings.get(index).copied()
+                else {
+                    return None;
+                };
+                (ring_id == cutter_ring && planned_ring == cutter_ring).then_some((index, reverse))
+            })
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("difference did not reuse the cutter shell".into())
+            })?;
+        let source_ring_row = topology
+            .sources
+            .rings
+            .get(source_ring)
+            .ok_or_else(|| GeometryErrorKind::Invalid("source shell row is missing".into()))?;
+        let cutter_ring_row = topology
+            .sources
+            .rings
+            .get(cutter_ring)
+            .ok_or_else(|| GeometryErrorKind::Invalid("cutter shell row is missing".into()))?;
+        assert!(!source_ring_row.hole);
+        assert!(!cutter_ring_row.hole);
+        assert!(ring_roles[cutter_index]);
+        assert!(reverse);
+        let source_walks = plan.fragment_recipes.walks();
+        let source_recipe_ids = source_walks
+            .iter()
+            .find(|walk| walk.owner == RecipeWalkOwner::SourceRing(source_ring))
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("difference source shell recipe is missing".into())
+            })?;
+        let cutter_recipe_ids = source_walks
+            .iter()
+            .find(|walk| walk.owner == RecipeWalkOwner::SourceRing(cutter_ring))
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("difference cutter shell recipe is missing".into())
+            })?;
+        assert!(
+            source_recipe_ids
+                .fragments
+                .iter()
+                .all(|recipe| reused.contains(recipe)),
+            "the unchanged source shell keeps its raw reuse path"
+        );
+        assert!(
+            cutter_recipe_ids
+                .fragments
+                .iter()
+                .all(|recipe| reused.contains(recipe)),
+            "the reversed cutter shell keeps its certified planned reuse path"
+        );
+
+        let mut wrong_roles = ring_roles;
+        wrong_roles[cutter_index] = false;
+        assert!(
+            problem
+                .source_reused_recipe_ids(
+                    &drawing,
+                    &wrong_roles,
+                    &nearest,
+                    &publication_coordinates,
+                    &mut budget,
+                )
+                .is_err(),
+            "a selected shell role without its planned traversal reversal must reject"
+        );
         Ok(())
     }
 
