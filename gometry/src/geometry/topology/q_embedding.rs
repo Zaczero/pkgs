@@ -5929,6 +5929,24 @@ fn exact_coordinate_matches_with_work(
     }
 }
 
+fn exact_coordinate_has_binary64_value_with_work(
+    value: &ExactRational,
+    work: &mut impl Work,
+) -> Result<bool> {
+    let rounded = value.round_with_work(work)?;
+    value.try_eq_with_work(&ExactRational::from_f64(rounded), work)
+}
+
+fn exact_node_position_has_binary64_value_with_work(
+    position: &ExactNodePosition,
+    work: &mut impl Work,
+) -> Result<bool> {
+    Ok(
+        exact_coordinate_has_binary64_value_with_work(&position.longitude, work)?
+            && exact_coordinate_has_binary64_value_with_work(&position.latitude, work)?,
+    )
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct EmittedVertex<'topology> {
     pub(super) port: &'topology QPort,
@@ -16909,12 +16927,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         Ok(true)
     }
 
-    fn exact_input_port_is_unchanged(
+    fn input_port_has_rounding_residual(
         &self,
         port_id: QPortId,
         source_nodes: &[bool],
         producer: &AssignedProducerProjection,
-        coordinates: &QCoordinates,
         budget: &mut impl Work,
     ) -> Result<bool> {
         budget.charge(1)?;
@@ -16923,7 +16940,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .q
             .ports
             .get(port_id.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("source-only Q port is unknown".into()))?;
+            .ok_or_else(|| GeometryErrorKind::Invalid("Native-demand Q port is unknown".into()))?;
         if port.cut {
             let assigned = producer
                 .source_ports
@@ -16931,25 +16948,44 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .and_then(Option::as_ref)
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid(
-                        "source-only Q cut port has no assigned image".into(),
+                        "Native-demand Q cut port has no assigned image".into(),
                     )
                 })?;
-            return Ok(assigned == &port.point);
+            if assigned == &port.point {
+                return Ok(false);
+            }
+            let native_longitude = exact_canonical_longitude_with_work(
+                self.topology.sources.frame,
+                &assigned.x,
+                budget,
+            )?;
+            return Ok(
+                !exact_coordinate_has_binary64_value_with_work(&native_longitude, budget)?
+                    || !exact_coordinate_has_binary64_value_with_work(&assigned.y, budget)?,
+            );
         }
         let is_source = *source_nodes
             .get(port.node.0 as usize)
-            .ok_or_else(|| GeometryErrorKind::Invalid("source-only Q node is unknown".into()))?;
-        if !is_source {
+            .ok_or_else(|| GeometryErrorKind::Invalid("Native-demand Q node is unknown".into()))?;
+        if is_source {
             return Ok(false);
         }
-        Ok(coordinates.candidate(port.node)? == self.nearest.candidate(port.node)?)
+        let Some(position) = self
+            .exact_positions
+            .get(port.node.0 as usize)
+            .and_then(Option::as_ref)
+        else {
+            return Ok(false);
+        };
+        Ok(!exact_node_position_has_binary64_value_with_work(
+            position, budget,
+        )?)
     }
 
-    fn drawing_uses_only_unchanged_input_ports(
+    fn drawing_has_rounding_residual(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         producer: &AssignedProducerProjection,
-        coordinates: &QCoordinates,
         budget: &mut impl Work,
     ) -> Result<bool> {
         let q = &self.topology.q;
@@ -16968,12 +17004,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             for port_id in [start, end] {
                 let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
-                        "source-only input edge references an unknown Q port".into(),
+                        "Native-demand input edge references an unknown Q port".into(),
                     )
                 })?;
                 *source_nodes.get_mut(port.node.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
-                        "source-only input edge references an unknown Q node".into(),
+                        "Native-demand input edge references an unknown Q node".into(),
                     )
                 })? = true;
             }
@@ -16981,12 +17017,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         for &port_id in &q.source_point_ports {
             let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid(
-                    "source-only input point references an unknown Q port".into(),
+                    "Native-demand input point references an unknown Q port".into(),
                 )
             })?;
             *source_nodes.get_mut(port.node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid(
-                    "source-only input point references an unknown Q node".into(),
+                    "Native-demand input point references an unknown Q node".into(),
                 )
             })? = true;
         }
@@ -16995,14 +17031,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 for polygon in polygons {
                     for ring in polygon {
                         for vertex in &ring.vertices {
-                            if !self.exact_input_port_is_unchanged(
+                            if self.input_port_has_rounding_residual(
                                 vertex.port.id,
                                 &source_nodes,
                                 producer,
-                                coordinates,
                                 budget,
                             )? {
-                                return Ok(false);
+                                return Ok(true);
                             }
                         }
                     }
@@ -17011,14 +17046,13 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             DrawnPolygons::Regions { rings, .. } => {
                 for ring in rings {
                     for vertex in &ring.vertices {
-                        if !self.exact_input_port_is_unchanged(
+                        if self.input_port_has_rounding_residual(
                             vertex.port.id,
                             &source_nodes,
                             producer,
-                            coordinates,
                             budget,
                         )? {
-                            return Ok(false);
+                            return Ok(true);
                         }
                     }
                 }
@@ -17026,26 +17060,24 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         }
         for line in &drawing.lines {
             for vertex in &line.path {
-                if !self.exact_input_port_is_unchanged(
+                if self.input_port_has_rounding_residual(
                     vertex.port.id,
                     &source_nodes,
                     producer,
-                    coordinates,
                     budget,
                 )? {
-                    return Ok(false);
+                    return Ok(true);
                 }
             }
         }
         for vertex in &drawing.points {
-            if !self.exact_input_port_is_unchanged(
+            if self.input_port_has_rounding_residual(
                 vertex.port.id,
                 &source_nodes,
                 producer,
-                coordinates,
                 budget,
             )? {
-                return Ok(false);
+                return Ok(true);
             }
         }
         for chord in &self.publication_chords {
@@ -17060,11 +17092,22 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             .get(node.0 as usize)
                             .ok_or_else(|| {
                                 GeometryErrorKind::Invalid(
-                                    "source-only publication node is unknown".into(),
+                                    "Native-demand publication node is unknown".into(),
                                 )
                             })?;
                         let NodeAuthority::Source(source_node) = &emission_node.authority else {
-                            return Ok(false);
+                            let position = self
+                                .publication_exact_positions
+                                .get(node.0 as usize)
+                                .and_then(Option::as_ref);
+                            if let Some(position) = position
+                                && !exact_node_position_has_binary64_value_with_work(
+                                    position, budget,
+                                )?
+                            {
+                                return Ok(true);
+                            }
+                            continue;
                         };
                         let Some(port_id) = self
                             .publication_sample_source_ports
@@ -17076,48 +17119,38 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         };
                         let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                             GeometryErrorKind::Invalid(
-                                "source-only publication sample has an unknown Q port".into(),
+                                "Native-demand publication sample has an unknown Q port".into(),
                             )
                         })?;
                         if port.node != *source_node {
                             return Err(GeometryErrorKind::Invalid(
-                                "source-only publication sample changed its Q node".into(),
+                                "Native-demand publication sample changed its Q node".into(),
                             )
                             .into());
                         }
                         port_id
                     },
                 };
-                if !self.exact_input_port_is_unchanged(
+                if self.input_port_has_rounding_residual(
                     port_id,
                     &source_nodes,
                     producer,
-                    coordinates,
                     budget,
                 )? {
-                    return Ok(false);
+                    return Ok(true);
                 }
             }
         }
-        Ok(true)
+        Ok(false)
     }
 
     fn native_demand_after_input_port_check(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         producer: &AssignedProducerProjection,
-        coordinates: &QCoordinates,
         budget: &mut impl Work,
     ) -> Result<bool> {
-        // Exact source/cut support belongs to the quotient writer; Native owns constructed or moved sites.
-        Ok(
-            !self.drawing_uses_only_unchanged_input_ports(
-                drawing,
-                producer,
-                coordinates,
-                budget,
-            )?,
-        )
+        self.drawing_has_rounding_residual(drawing, producer, budget)
     }
 
     fn actual_native_demand(
@@ -17153,12 +17186,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let [start, end] = &leaf.points;
             if strict_native_bank_event(axis, &start.x, &end.x, budget)? {
-                return self.native_demand_after_input_port_check(
-                    drawing,
-                    producer,
-                    coordinates,
-                    budget,
-                );
+                return self.native_demand_after_input_port_check(drawing, producer, budget);
             }
         }
         if let DrawnPolygons::Regions { rings, .. } = &drawing.polygons {
@@ -17195,12 +17223,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 if region.poles.includes(ChartPole::North)
                     || region.poles.includes(ChartPole::South)
                 {
-                    return self.native_demand_after_input_port_check(
-                        drawing,
-                        producer,
-                        coordinates,
-                        budget,
-                    );
+                    return self.native_demand_after_input_port_check(drawing, producer, budget);
                 }
                 for vertex in &ring.vertices {
                     budget.charge(1)?;
@@ -17211,12 +17234,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             .identity(axis)
                             == SeamIdentity::Seam
                     {
-                        return self.native_demand_after_input_port_check(
-                            drawing,
-                            producer,
-                            coordinates,
-                            budget,
-                        );
+                        return self
+                            .native_demand_after_input_port_check(drawing, producer, budget);
                     }
                 }
             }
@@ -21568,23 +21587,15 @@ mod canonical_coordinate_tests {
                 GeometryErrorKind::Invalid("fixture source point has an unknown Q node".into())
             })? = true;
         }
-        let axis = topology.sources.frame.longitude();
-        let mut constructed_seam_vertex = false;
+        let mut constructed_vertex = false;
         let mut inspect = |vertex: &EmittedVertex<'_>| -> Result<()> {
             let source = *source_nodes
                 .get(vertex.port.node.0 as usize)
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("fixture drawing has an unknown Q node".into())
                 })?;
-            if !source
-                && !vertex.port.cut
-                && axis
-                    .canonicalize(vertex.point.x)
-                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
-                    .identity(axis)
-                    == SeamIdentity::Seam
-            {
-                constructed_seam_vertex = true;
+            if !source && !vertex.port.cut {
+                constructed_vertex = true;
             }
             Ok(())
         };
@@ -21606,7 +21617,7 @@ mod canonical_coordinate_tests {
                 }
             },
         }
-        Ok((demand, constructed_seam_vertex))
+        Ok((demand, constructed_vertex))
     }
 
     fn reversed_lift_native_refinement_fixture(
@@ -22164,13 +22175,39 @@ mod canonical_coordinate_tests {
     }
 
     #[test]
-    fn constructed_seam_vertex_still_requires_native_completion() -> Result<()> {
+    fn exactly_representable_constructed_seam_vertex_stays_on_quotient_publication() -> Result<()> {
         let source = crate::io::parse_wkt("POLYGON ((170 0, -170 10, 170 10, 170 0))")?;
         let cutter = crate::io::parse_wkt("POLYGON ((180 2, 185 2, 185 8, 180 8, 180 2))")?;
 
-        let (demand, constructed_seam_vertex) =
+        assert_eq!(
+            native_demand_for_shapes(&[source, cutter], OverlayOp::Intersection)?,
+            (false, true),
+            "an exact constructed seam vertex has no binary64 rounding residual"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn exactly_representable_seam_difference_stays_on_quotient_publication() -> Result<()> {
+        let source = crate::io::parse_wkt("POLYGON ((170 0, -170 0, -170 20, 170 20, 170 0))")?;
+        let cutter = crate::io::parse_wkt("POLYGON ((175 10, -175 10, -175 30, 175 30, 175 10))")?;
+
+        assert_eq!(
+            native_demand_for_shapes(&[source, cutter], OverlayOp::Difference)?,
+            (false, true),
+            "constructed (175,20) and (-175,20) have exact binary64 coordinates"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nonrepresentable_constructed_seam_vertex_requires_native_completion() -> Result<()> {
+        let source = crate::io::parse_wkt("POLYGON ((179 0, -178 1, 179 1, 179 0))")?;
+        let cutter = crate::io::parse_wkt("POLYGON ((180 0, 181 0, 181 1, 180 1, 180 0))")?;
+
+        let (demand, constructed_vertex) =
             native_demand_for_shapes(&[source, cutter], OverlayOp::Intersection)?;
-        assert!(constructed_seam_vertex);
+        assert!(constructed_vertex);
         assert!(demand);
         Ok(())
     }
