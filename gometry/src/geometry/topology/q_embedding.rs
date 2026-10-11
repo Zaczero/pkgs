@@ -23197,7 +23197,7 @@ mod canonical_coordinate_tests {
             parameter: ExactRational::from_f64(0.5),
             written_vertex: 1,
             point: Point::new_raw_xy(10.0, 1.0),
-            exact_point: exact.clone(),
+            exact_point: exact,
             published_chart_point: ExactChartPoint::from_rationals(
                 ExactRational::from_f64(10.0),
                 ExactRational::from_f64(1.0),
@@ -23218,7 +23218,7 @@ mod canonical_coordinate_tests {
             candidate_chart_point_with_work(topology.sources.frame, assigned, &mut budget)?;
         let port_data = NativePortData {
             node: sample_node,
-            point: assigned_point.clone(),
+            point: assigned_point,
             spelling: PortSpelling::Interior { periods: 0 },
             source_record: None,
             occurrences: vec![OccurrenceSource {
