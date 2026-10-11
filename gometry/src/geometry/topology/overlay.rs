@@ -298,6 +298,13 @@ struct WrittenQDrawing {
     family_state: Option<FeatureFamilyRegistry>,
 }
 
+struct WrittenDrawingParts {
+    points: Vec<Point>,
+    lines: Vec<CoordSeq>,
+    polygons: Vec<Polygon>,
+    layout: ShapeLiteralLayout<QSourceImage>,
+}
+
 fn write_certified_q_emission(embedding: CertifiedQEmission) -> WrittenQDrawing {
     let family_state = embedding.family_state;
     match embedding.sealed {
@@ -1109,7 +1116,12 @@ impl QEmissionPlan {
         if strict_axes && axes != declared_axes {
             return Err(GeometryErrorKind::ordinate_dropped(operation));
         }
-        let (points, lines, polygons, layout) = write_drawing(
+        let WrittenDrawingParts {
+            points,
+            lines,
+            polygons,
+            layout,
+        } = write_drawing(
             drawing,
             ring_roles,
             ordinates,
@@ -3657,12 +3669,7 @@ fn write_drawing(
     walks: Option<&RecipeWalkIndex<'_>>,
     axes: CoordinateAxes,
     work: &mut impl Work,
-) -> Result<(
-    Vec<Point>,
-    Vec<CoordSeq>,
-    Vec<Polygon>,
-    ShapeLiteralLayout<QSourceImage>,
-)> {
+) -> Result<WrittenDrawingParts> {
     let mut walk_cursors = BTreeMap::new();
     let path_context = SourcePathContext {
         ordinates,
@@ -3885,11 +3892,16 @@ fn write_drawing(
             }
         }
     }
-    Ok((points, lines, polygons, ShapeLiteralLayout {
-        points: point_locations,
-        lines: line_locations,
-        polygons: polygon_locations,
-    }))
+    Ok(WrittenDrawingParts {
+        points,
+        lines,
+        polygons,
+        layout: ShapeLiteralLayout {
+            points: point_locations,
+            lines: line_locations,
+            polygons: polygon_locations,
+        },
+    })
 }
 
 fn identity_output_order(
@@ -4914,7 +4926,12 @@ mod tests {
         let ring_roles = certify_nearest_ring_roles(topology, &drawing, &mut work)?;
         let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
         let axes = CoordinateAxes::XY;
-        let (points, lines, polygons, layout) = write_drawing(
+        let WrittenDrawingParts {
+            points,
+            lines,
+            polygons,
+            layout,
+        } = write_drawing(
             drawing,
             &ring_roles,
             &ordinates,

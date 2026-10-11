@@ -147,6 +147,25 @@ struct NativeSelectedPoleSector {
     sector: super::q::PoleSector,
 }
 
+type NativePoleClosure = (usize, ChartPole);
+struct NativeSelectedPoleSectors {
+    sectors: Vec<NativeSelectedPoleSector>,
+    closures: Vec<NativePoleClosure>,
+}
+
+struct NativeReferenceGraphResult {
+    cycles: Vec<NativeGraphCycle>,
+    parts: Vec<NativeGraphPart>,
+    face_regions: Vec<Option<usize>>,
+    face_groups: Vec<u32>,
+    face_cells: Vec<Option<u8>>,
+}
+
+type NativeCutPeriodRange = (i64, i64);
+type NativeChordCutRanges = Vec<NativeCutPeriodRange>;
+type NativeRecipeCutRanges = Vec<NativeChordCutRanges>;
+type NativeCutFamilyDomains = Vec<NativeRecipeCutRanges>;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum NativeChartSpellingKey {
     Interior(i64),
@@ -1994,13 +2013,7 @@ fn native_reference_cycles_and_parts(
     whole_sphere: bool,
     materialize_areas: bool,
     budget: &mut impl Work,
-) -> Result<(
-    Vec<NativeGraphCycle>,
-    Vec<NativeGraphPart>,
-    Vec<Option<usize>>,
-    Vec<u32>,
-    Vec<Option<u8>>,
-)> {
+) -> Result<NativeReferenceGraphResult> {
     let face_count = usize::try_from(graph.faces.count).map_err(|_| ResourceError::SizeOverflow)?;
     budget.charge(
         u64::try_from(face_count)
@@ -2328,13 +2341,13 @@ fn native_reference_cycles_and_parts(
         .into());
     }
     if !materialize_areas {
-        return Ok((
-            Vec::new(),
-            Vec::new(),
+        return Ok(NativeReferenceGraphResult {
+            cycles: Vec::new(),
+            parts: Vec::new(),
             face_regions,
             face_groups,
             face_cells,
-        ));
+        });
     }
 
     let boundary_selects = |face, other| {
@@ -2587,7 +2600,13 @@ fn native_reference_cycles_and_parts(
             .into());
         }
     }
-    Ok((cycles, parts, face_regions, face_groups, face_cells))
+    Ok(NativeReferenceGraphResult {
+        cycles,
+        parts,
+        face_regions,
+        face_groups,
+        face_cells,
+    })
 }
 
 fn native_cycle_start_vertex_index(
@@ -5510,7 +5529,7 @@ fn native_selected_pole_sectors(
     topology: &ExactGeographicQ,
     selected_face_roots: &[Option<usize>],
     budget: &mut impl Work,
-) -> Result<(Vec<NativeSelectedPoleSector>, Vec<(usize, ChartPole)>)> {
+) -> Result<NativeSelectedPoleSectors> {
     if selected_face_roots.len() != topology.global_face_count {
         return Err(GeometryErrorKind::Invalid(
             "native selected roots do not match the exact Q face table".into(),
@@ -5536,23 +5555,24 @@ fn native_selected_pole_sectors(
             };
             work.charge(1)?;
             sectors.push(NativeSelectedPoleSector { region, sector });
-            if closure_index.insert_with_work((region, pole), work, &mut |left, right, work| {
+            let closure = (region, pole);
+            if closure_index.insert_with_work(closure, work, &mut |left, right, work| {
                 work.charge(1)?;
                 Ok(left.cmp(right))
             })? {
                 work.charge(1)?;
-                closures.push((region, pole));
+                closures.push(closure);
             }
             Ok(())
         })?;
     }
-    Ok((sectors, closures))
+    Ok(NativeSelectedPoleSectors { sectors, closures })
 }
 
 fn native_pole_closure_regions(
     sectors: &[NativeSelectedPoleSector],
     budget: &mut impl Work,
-) -> Result<BTreeSet<(usize, ChartPole)>> {
+) -> Result<BTreeSet<NativePoleClosure>> {
     // A repeated fan dart is a full-turn boundary; a multi-ray fan already
     // bounds a local pole sector and must not receive the complementary arc.
     budget.charge(u64::try_from(sectors.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
@@ -7950,6 +7970,12 @@ enum QPublicationChordId {
     Published(usize),
 }
 
+struct LocalPublicationChord {
+    nodes: [QGraphNode; 2],
+    exact: [ExactChartPoint; 2],
+    candidate: [ExactChartPoint; 2],
+}
+
 #[derive(Clone)]
 struct QSourceSpanRange {
     start: ExactRational,
@@ -9626,6 +9652,14 @@ struct QClassState {
     fans_by_rank: Vec<Vec<usize>>,
 }
 
+struct UnifiedQClassBuild {
+    source_variable_count: usize,
+    classes: Vec<Vec<QVariableNode>>,
+    node_location: Vec<Option<QNodeLocation>>,
+    publication_location: Vec<Option<QNodeLocation>>,
+    states: Vec<QClassState>,
+}
+
 type QSourceClass = Vec<QNodeId>;
 type QNodeLocation = (usize, usize);
 
@@ -11140,13 +11174,7 @@ struct UnifiedQClassInputs<'a> {
 fn build_unified_q_classes(
     inputs: &UnifiedQClassInputs<'_>,
     budget: &mut impl Work,
-) -> Result<(
-    usize,
-    Vec<Vec<QVariableNode>>,
-    Vec<Option<QNodeLocation>>,
-    Vec<Option<QNodeLocation>>,
-    Vec<QClassState>,
-)> {
+) -> Result<UnifiedQClassBuild> {
     let UnifiedQClassInputs {
         topology,
         source_classes,
@@ -11541,13 +11569,13 @@ fn build_unified_q_classes(
                 .push(fan_index);
         }
     }
-    Ok((
+    Ok(UnifiedQClassBuild {
         source_variable_count,
         classes,
         node_location,
         publication_location,
         states,
-    ))
+    })
 }
 
 fn build_q_fan_rows(
@@ -15309,26 +15337,31 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             &movable_axes,
             budget,
         )?;
-        let (source_base, classes, node_location, publication_location, class_states) =
-            build_unified_q_classes(
-                &UnifiedQClassInputs {
-                    topology,
-                    source_classes: &source_classes,
-                    publication_variables: &published.variables,
-                    publication_nodes: &publication_nodes,
-                    source_chords: &chords,
-                    publication_chords: &publication_chords,
-                    proximity_pairs: &proximity_pairs,
-                    cut_rows: &cut_rows,
-                    fan_rows: &fan_rows,
-                    publication_pairs: &publication_pairs,
-                    source_domains: &domains,
-                    source_movable_axes: &movable_axes,
-                    publication_domains: &published.domains,
-                    producer_witness: &prepared_producer,
-                },
-                budget,
-            )?;
+        let UnifiedQClassBuild {
+            source_variable_count: source_base,
+            classes,
+            node_location,
+            publication_location,
+            states: class_states,
+        } = build_unified_q_classes(
+            &UnifiedQClassInputs {
+                topology,
+                source_classes: &source_classes,
+                publication_variables: &published.variables,
+                publication_nodes: &publication_nodes,
+                source_chords: &chords,
+                publication_chords: &publication_chords,
+                proximity_pairs: &proximity_pairs,
+                cut_rows: &cut_rows,
+                fan_rows: &fan_rows,
+                publication_pairs: &publication_pairs,
+                source_domains: &domains,
+                source_movable_axes: &movable_axes,
+                publication_domains: &published.domains,
+                producer_witness: &prepared_producer,
+            },
+            budget,
+        )?;
         budget.budget_mut().include_constructed(source_base)?;
         Ok(Self {
             topology,
@@ -18175,7 +18208,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
     fn register_native_pole_families(
         &mut self,
-        pole_closures: &[(usize, ChartPole)],
+        pole_closures: &[NativePoleClosure],
         budget: &mut impl SearchAccount,
     ) -> Result<()> {
         if pole_closures.is_empty() {
@@ -18436,10 +18469,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         Ok(output)
     }
 
-    fn native_cut_family_domains(
-        &self,
-        budget: &mut impl Work,
-    ) -> Result<Vec<Vec<Vec<(i64, i64)>>>> {
+    fn native_cut_family_domains(&self, budget: &mut impl Work) -> Result<NativeCutFamilyDomains> {
         let recipe_count = self.emission.fragment_recipes.len();
         if self.publication_chord_offsets.len()
             != recipe_count
@@ -18452,7 +18482,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .into());
         }
         budget.charge(u64::try_from(recipe_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut recipe_ranges = Vec::with_capacity(recipe_count);
+        let mut recipe_ranges: NativeCutFamilyDomains = Vec::with_capacity(recipe_count);
         for recipe_index in 0..recipe_count {
             budget.charge(1)?;
             let start = *self
@@ -18474,7 +18504,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 GeometryErrorKind::Invalid("native family chord offsets are reversed".into())
             })?;
             budget.charge(u64::try_from(leaf_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-            let mut leaf_ranges = Vec::with_capacity(leaf_count);
+            let mut leaf_ranges: NativeRecipeCutRanges = Vec::with_capacity(leaf_count);
             for chord_index in start..end {
                 budget.charge(1)?;
                 let chord = self.publication_chords.get(chord_index).ok_or_else(|| {
@@ -18482,7 +18512,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 })?;
                 let left = self.native_family_endpoint_domain(chord, 0, budget)?;
                 let right = self.native_family_endpoint_domain(chord, 1, budget)?;
-                let mut ranges = Vec::new();
+                let mut ranges: NativeChordCutRanges = Vec::new();
                 for (left_candidate, left_point) in &left {
                     for (right_candidate, right_point) in &right {
                         budget.charge(1)?;
@@ -18567,19 +18597,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        let (pole_sectors, selected_pole_closures) = native_selected_pole_sectors(
+        let selected_poles = native_selected_pole_sectors(
             &self.topology.q,
             self.emission.selected_face_roots,
             budget,
         )?;
-        let pole_closure_sectors = native_pole_closure_regions(&pole_sectors, budget)?;
+        let pole_closure_sectors = native_pole_closure_regions(&selected_poles.sectors, budget)?;
         let mut pole_closures = Vec::new();
         if has_area {
-            for (region, pole) in selected_pole_closures {
+            for closure in selected_poles.closures {
                 budget.charge(1)?;
+                let (region, _) = closure;
                 // A source fan already supplies its pole port and sector bounds;
                 // terminal and isolated sectors need a synthetic closure.
-                if !pole_closure_sectors.contains(&(region, pole)) {
+                if !pole_closure_sectors.contains(&closure) {
                     continue;
                 }
                 let mut area_region = whole_sphere;
@@ -18590,9 +18621,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         break;
                     }
                 }
-                if area_region && !pole_closures.contains(&(region, pole)) {
+                if area_region && !pole_closures.contains(&closure) {
                     budget.charge(1)?;
-                    pole_closures.push((region, pole));
+                    pole_closures.push(closure);
                 }
             }
         }
@@ -19108,7 +19139,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             .chart_pole_latitude(ChartPole::North),
                     ),
                 ] {
-                    if !pole_closures.iter().any(|(_, selected)| *selected == pole) {
+                    if !pole_closures.iter().any(|&(_, selected)| selected == pole) {
                         continue;
                     }
                     let latitude = ExactRational::from_f64(latitude);
@@ -19271,15 +19302,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let mut graph = graph_builder.finish(self.topology.sources.frame, budget)?;
             graph.face_source_uses =
                 native_graph_face_source_table(&graph, &area_edges, &line_graph_edges, budget)?;
-            let (mut cycles, parts, face_regions, face_groups, face_cells) =
-                native_reference_cycles_and_parts(
-                    &graph,
-                    &area_edges,
-                    &line_graph_edges,
-                    whole_sphere,
-                    true,
-                    budget,
-                )?;
+            let NativeReferenceGraphResult {
+                mut cycles,
+                parts,
+                face_regions,
+                face_groups,
+                face_cells,
+            } = native_reference_cycles_and_parts(
+                &graph,
+                &area_edges,
+                &line_graph_edges,
+                whole_sphere,
+                true,
+                budget,
+            )?;
             align_native_cycle_starts(
                 self.topology.sources.frame,
                 self.topology,
@@ -19398,15 +19434,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let mut graph = graph_builder.finish(self.topology.sources.frame, budget)?;
             graph.face_source_uses =
                 native_graph_face_source_table(&graph, &area_edges, &line_graph_edges, budget)?;
-            let (cycles, parts, face_regions, face_groups, face_cells) =
-                native_reference_cycles_and_parts(
-                    &graph,
-                    &area_edges,
-                    &line_graph_edges,
-                    whole_sphere,
-                    false,
-                    budget,
-                )?;
+            let NativeReferenceGraphResult {
+                cycles,
+                parts,
+                face_regions,
+                face_groups,
+                face_cells,
+            } = native_reference_cycles_and_parts(
+                &graph,
+                &area_edges,
+                &line_graph_edges,
+                whole_sphere,
+                false,
+                budget,
+            )?;
             graph.cycles = cycles;
             graph.parts = parts;
             graph.face_regions = face_regions;
@@ -19451,7 +19492,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             literal_chord_uses,
             line_graph_edges,
             area_edges,
-            pole_sectors,
+            pole_sectors: selected_poles.sectors,
             graph,
         };
         validate_native_reference(&reference, budget)?;
@@ -20205,7 +20246,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         assigned: &[Option<QCandidate>],
         cut_cache: &mut BTreeMap<QNodeId, ExactRational>,
         budget: &mut impl Work,
-    ) -> Result<Option<([QGraphNode; 2], [ExactChartPoint; 2], [ExactChartPoint; 2])>> {
+    ) -> Result<Option<LocalPublicationChord>> {
         budget.charge(1)?;
         match chord_id {
             QPublicationChordId::Source(index) => {
@@ -20223,9 +20264,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 ] else {
                     return Ok(None);
                 };
-                Ok(Some((chord.nodes.map(QGraphNode::Source), exact, [
-                    start, end,
-                ])))
+                Ok(Some(LocalPublicationChord {
+                    nodes: chord.nodes.map(QGraphNode::Source),
+                    exact,
+                    candidate: [start, end],
+                }))
             },
             QPublicationChordId::Published(index) => {
                 let chord = self.publication_chords.get(index).ok_or_else(|| {
@@ -20253,7 +20296,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 ] else {
                     return Ok(None);
                 };
-                Ok(Some((chord.nodes, chord.exact.clone(), [start, end])))
+                Ok(Some(LocalPublicationChord {
+                    nodes: chord.nodes,
+                    exact: chord.exact.clone(),
+                    candidate: [start, end],
+                }))
             },
         }
     }
@@ -20267,40 +20314,36 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         budget: &mut impl Work,
     ) -> Result<bool> {
         budget.charge(1)?;
-        let (
-            Some((left_nodes, left_exact, left_candidate)),
-            Some((right_nodes, right_exact, right_candidate)),
-        ) = (
+        let (Some(left), Some(right)) = (
             self.local_publication_chord(pair.left, class, assigned, cut_cache, budget)?,
             self.local_publication_chord(pair.right, class, assigned, cut_cache, budget)?,
-        )
-        else {
+        ) else {
             return Ok(false);
         };
         let period = ExactRational::from_f64(self.topology.sources.frame.longitude().period());
         let right_exact = [
-            translated_exact_point_with_work(&right_exact[0], pair.right_shift, &period, budget)?,
-            translated_exact_point_with_work(&right_exact[1], pair.right_shift, &period, budget)?,
+            translated_exact_point_with_work(&right.exact[0], pair.right_shift, &period, budget)?,
+            translated_exact_point_with_work(&right.exact[1], pair.right_shift, &period, budget)?,
         ];
         let right_candidate = [
             translated_exact_point_with_work(
-                &right_candidate[0],
+                &right.candidate[0],
                 pair.right_shift,
                 &period,
                 budget,
             )?,
             translated_exact_point_with_work(
-                &right_candidate[1],
+                &right.candidate[1],
                 pair.right_shift,
                 &period,
                 budget,
             )?,
         ];
         pair_preserves_incidence_with_work(
-            left_nodes,
-            &left_exact,
-            &left_candidate,
-            right_nodes,
+            left.nodes,
+            &left.exact,
+            &left.candidate,
+            right.nodes,
             &right_exact,
             &right_candidate,
             budget,
@@ -22208,7 +22251,7 @@ mod canonical_coordinate_tests {
         let topology = topology(&[cap, wedge])?;
         let mut work = Unmetered;
         let plan = QEmissionPlan::build(&topology, OverlayOp::Intersection, &mut work)?;
-        let (sectors, closures) =
+        let NativeSelectedPoleSectors { sectors, closures } =
             native_selected_pole_sectors(&topology.q, &plan.selected_face_roots, &mut work)?;
         let (region, clockwise, counterclockwise) = sectors
             .iter()
@@ -22755,8 +22798,13 @@ mod canonical_coordinate_tests {
             )
             .expect_err("opposite selected boundary orientation must be rejected");
         let mut graph = graph_builder.finish(topology.sources.frame, &mut budget)?;
-        let (cycles, parts, face_regions, face_groups, face_cells) =
-            native_reference_cycles_and_parts(&graph, &edges, &[], true, true, &mut budget)?;
+        let NativeReferenceGraphResult {
+            cycles,
+            parts,
+            face_regions,
+            face_groups,
+            face_cells,
+        } = native_reference_cycles_and_parts(&graph, &edges, &[], true, true, &mut budget)?;
         graph.cycles = cycles;
         graph.parts = parts;
         graph.face_regions = face_regions;
@@ -23036,26 +23084,31 @@ mod canonical_coordinate_tests {
         assert!(candidates.contains(&nearest));
         let fixed_source_axes = vec![[false, false]; topology.q.nodes.len()];
         let producer_witness = PreparedProducerWitness::default();
-        let (source_base, classes, source_location, publication_location, states) =
-            build_unified_q_classes(
-                &UnifiedQClassInputs {
-                    topology: &topology,
-                    source_classes: &[],
-                    publication_variables: &domains.variables,
-                    publication_nodes: &nodes,
-                    source_chords: &[],
-                    publication_chords: &[],
-                    proximity_pairs: &[],
-                    cut_rows: &[],
-                    fan_rows: &[],
-                    publication_pairs: &[],
-                    source_domains: &[],
-                    source_movable_axes: &fixed_source_axes,
-                    publication_domains: &domains.domains,
-                    producer_witness: &producer_witness,
-                },
-                &mut budget,
-            )?;
+        let UnifiedQClassBuild {
+            source_variable_count: source_base,
+            classes,
+            node_location: source_location,
+            publication_location,
+            states,
+        } = build_unified_q_classes(
+            &UnifiedQClassInputs {
+                topology: &topology,
+                source_classes: &[],
+                publication_variables: &domains.variables,
+                publication_nodes: &nodes,
+                source_chords: &[],
+                publication_chords: &[],
+                proximity_pairs: &[],
+                cut_rows: &[],
+                fan_rows: &[],
+                publication_pairs: &[],
+                source_domains: &[],
+                source_movable_axes: &fixed_source_axes,
+                publication_domains: &domains.domains,
+                producer_witness: &producer_witness,
+            },
+            &mut budget,
+        )?;
         assert_eq!(source_base, 0);
         assert_eq!(classes, vec![vec![QVariableNode::Published(node)]]);
         assert!(source_location.iter().all(Option::is_none));
