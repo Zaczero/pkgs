@@ -3201,7 +3201,7 @@ impl FeatureFamilyRegistry {
         interval
             .family_base
             .checked_add(within)
-            .ok_or(ResourceError::SizeOverflow.into())
+            .ok_or_else(|| ResourceError::SizeOverflow.into())
     }
 
     pub(super) fn register(&mut self, family: FeatureFamily, work: &mut impl Work) -> Result<bool> {

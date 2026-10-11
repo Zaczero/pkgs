@@ -4988,7 +4988,7 @@ where
             })?;
             return face
                 .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow.into());
+                .ok_or_else(|| ResourceError::SizeOverflow.into());
         }
     }
     Err(
