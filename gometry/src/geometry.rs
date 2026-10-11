@@ -178,7 +178,7 @@ mod tessellation;
 mod topology;
 pub(crate) use topology::{
     ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain, VertexKey,
-    analyze_geographic_coverage, invalid_coverage_source_segments,
+    analyze_geographic_coverage, analyze_geographic_coverage_with_work,
 };
 mod util;
 use std::borrow::Borrow;

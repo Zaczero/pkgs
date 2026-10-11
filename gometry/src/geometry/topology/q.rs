@@ -16,7 +16,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
     NodeOrdinates, RootCatalog, RootId, RootMetricState, SourceArcMetricAccess, resolve_source_root,
 };
-use crate::geometry::segments::try_sort_by;
+use crate::geometry::segments::{try_sort_by, try_sort_by_with_work};
 use crate::geometry::source_support::RingKind;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
@@ -5303,6 +5303,13 @@ pub(super) struct GlobalFaceRowOccupancy {
     intervals: Box<[[usize; 2]]>,
 }
 
+#[derive(Clone, Copy)]
+struct FaceRowIntervalEvent {
+    order: usize,
+    row: usize,
+    starts: bool,
+}
+
 struct GlobalFaceRowProducts {
     face_rows: GlobalFaceRowOccupancy,
     span_collapsed_rows: GlobalSpanRowSupport,
@@ -5828,6 +5835,140 @@ impl GlobalFaceRowOccupancy {
         self.face_counts[face.0 as usize]
     }
 
+    /// Visit each global face once with its sparse active source-row set.
+    ///
+    /// Row occupancy is stored as preorder intervals by row. This sweep
+    /// inverts those intervals without constructing a face-by-row bitmap.
+    pub(super) fn for_each_face_occupants(
+        &self,
+        work: &mut impl Work,
+        mut visit: impl FnMut(GlobalFaceId, &[SourceRowId]) -> Result<()>,
+    ) -> Result<()> {
+        let face_count = self.face_order.len();
+        let row_count = self
+            .row_offsets
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q face row offsets are empty".into()))?;
+        let event_count = self
+            .intervals
+            .len()
+            .checked_mul(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        work.charge(
+            u64::try_from(
+                face_count
+                    .checked_add(event_count)
+                    .and_then(|count| count.checked_add(row_count))
+                    .ok_or(ResourceError::SizeOverflow)?,
+            )
+            .map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+
+        let mut face_at_order = vec![None; face_count];
+        for (face_index, &order) in self.face_order.iter().enumerate() {
+            let face =
+                GlobalFaceId(u32::try_from(face_index).map_err(|_| ResourceError::SizeOverflow)?);
+            let slot = face_at_order.get_mut(order).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face preorder is out of range".into())
+            })?;
+            if slot.replace(face).is_some() {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q face preorder contains a duplicate order".into(),
+                )
+                .into());
+            }
+        }
+
+        let mut events = Vec::with_capacity(event_count);
+        for (row, offsets) in self.row_offsets.windows(2).enumerate() {
+            let [start, end] = offsets else {
+                unreachable!("row CSR windows contain two offsets");
+            };
+            let intervals = self.intervals.get(*start..*end).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face row intervals are out of range".into())
+            })?;
+            for &[low, high] in intervals {
+                work.charge(1)?;
+                if low > high || high > face_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "Q face row interval is outside the preorder".into(),
+                    )
+                    .into());
+                }
+                events.push(FaceRowIntervalEvent {
+                    order: low,
+                    row,
+                    starts: true,
+                });
+                events.push(FaceRowIntervalEvent {
+                    order: high,
+                    row,
+                    starts: false,
+                });
+            }
+        }
+        try_sort_by_with_work(&mut events, work, |left, right, work| {
+            work.charge(1)?;
+            Ok(left
+                .order
+                .cmp(&right.order)
+                .then(left.starts.cmp(&right.starts))
+                .then(left.row.cmp(&right.row)))
+        })?;
+
+        let mut active_counts = vec![0_usize; row_count];
+        let mut active_set = BTreeSet::new();
+        let mut active_rows = Vec::new();
+        let mut event_cursor = 0_usize;
+        for order in 0..face_count {
+            while events
+                .get(event_cursor)
+                .is_some_and(|event| event.order <= order)
+            {
+                apply_face_row_interval_event(
+                    *events
+                        .get(event_cursor)
+                        .expect("event cursor was checked against the event slice"),
+                    &mut active_counts,
+                    &mut active_set,
+                    work,
+                )?;
+                event_cursor = event_cursor
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
+            let face = face_at_order.get(order).copied().flatten().ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q face preorder has a missing face".into())
+            })?;
+            work.charge(
+                u64::try_from(
+                    active_set
+                        .len()
+                        .checked_add(1)
+                        .ok_or(ResourceError::SizeOverflow)?,
+                )
+                .map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            active_rows.clear();
+            active_rows.extend(active_set.iter().copied());
+            visit(face, &active_rows)?;
+        }
+        while let Some(&event) = events.get(event_cursor) {
+            apply_face_row_interval_event(event, &mut active_counts, &mut active_set, work)?;
+            event_cursor = event_cursor
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+        }
+        if !active_set.is_empty() || active_counts.iter().any(|&count| count != 0) {
+            return Err(GeometryErrorKind::Invalid(
+                "Q face row interval sweep ended with active owners".into(),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn rows_for(&self, face: GlobalFaceId) -> Vec<SourceRowId> {
         self.row_offsets
@@ -5837,6 +5978,55 @@ impl GlobalFaceRowOccupancy {
             .filter(|&row| self.contains(face, row))
             .collect()
     }
+}
+
+fn apply_face_row_interval_event(
+    event: FaceRowIntervalEvent,
+    active_counts: &mut [usize],
+    active_rows: &mut BTreeSet<SourceRowId>,
+    work: &mut impl Work,
+) -> Result<()> {
+    let tree_steps = active_rows
+        .len()
+        .max(1)
+        .ilog2()
+        .checked_mul(2)
+        .and_then(|steps| steps.checked_add(1))
+        .ok_or(ResourceError::SizeOverflow)?;
+    work.charge(u64::from(tree_steps) + 1)?;
+    let count = active_counts.get_mut(event.row).ok_or_else(|| {
+        GeometryErrorKind::Invalid("Q face interval references an unknown row".into())
+    })?;
+    let row = SourceRowId(u32::try_from(event.row).map_err(|_| ResourceError::SizeOverflow)?);
+    if event.starts {
+        let was_inactive = *count == 0;
+        *count = (*count).checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        if was_inactive {
+            if !active_rows.insert(row) {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q active face row was inserted more than once".into(),
+                )
+                .into());
+            }
+        }
+    } else {
+        if *count == 0 {
+            return Err(GeometryErrorKind::Invalid(
+                "Q face interval ended before it started".into(),
+            )
+            .into());
+        }
+        *count = (*count).checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+        if *count == 0 {
+            if !active_rows.remove(&row) {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q active face row is missing from its set".into(),
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

@@ -5,6 +5,7 @@ use rstar::{AABB, Envelope as _};
 
 use crate::collections::{try_hash_map, try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::geometry::coverage::{HashMap, Result};
+use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     Bounds, BulkRTree, Contact, CoordinateAxes, ExactPoint, GeometryErrorKind, GeometryKind,
@@ -522,8 +523,22 @@ pub(crate) fn coverage_is_valid_with_domain<S: std::borrow::Borrow<Shape>>(
     gap_width: f64,
     domain: crate::geometry::TopologyDomain,
 ) -> Result<bool> {
-    let invalid = invalid_segments_with_domain(rows, gap_width, domain, "coverage_is_valid")?;
-    Ok(invalid.iter().all(Vec::is_empty))
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => coverage_is_valid(rows, gap_width),
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            validate_gap_width(gap_width)?;
+            validate_polygonal_rows(rows)?;
+            let mut budget = EvaluationBudget::new("coverage_is_valid", 0)?;
+            Ok(crate::geometry::analyze_geographic_coverage_with_work(
+                rows,
+                frame,
+                gap_width,
+                "coverage_is_valid",
+                &mut budget,
+            )?
+            .is_valid())
+        },
+    }
 }
 
 /// Per-row invalid boundary linework: the row's offending segments merged
@@ -543,24 +558,23 @@ pub(crate) fn coverage_invalid_edges_with_domain<S: std::borrow::Borrow<Shape>>(
     domain: crate::geometry::TopologyDomain,
     operation: &'static str,
 ) -> Result<Vec<Shape>> {
-    let invalid = invalid_segments_with_domain(rows, gap_width, domain, operation)?;
-    coverage_invalid_edge_shapes(invalid)
-}
-
-fn invalid_segments_with_domain<S: std::borrow::Borrow<Shape>>(
-    rows: &[S],
-    gap_width: f64,
-    domain: crate::geometry::TopologyDomain,
-    operation: &'static str,
-) -> Result<Vec<Vec<Segment>>> {
-    match domain {
-        crate::geometry::TopologyDomain::Cartesian => coverage_invalid_segments(rows, gap_width),
+    let invalid = match domain {
+        crate::geometry::TopologyDomain::Cartesian => coverage_invalid_segments(rows, gap_width)?,
         crate::geometry::TopologyDomain::Geographic(frame) => {
             validate_gap_width(gap_width)?;
             validate_polygonal_rows(rows)?;
-            crate::geometry::invalid_coverage_source_segments(rows, frame, gap_width, operation)
+            let mut budget = EvaluationBudget::new(operation, 0)?;
+            crate::geometry::analyze_geographic_coverage_with_work(
+                rows,
+                frame,
+                gap_width,
+                operation,
+                &mut budget,
+            )?
+            .invalid_source_segments
         },
-    }
+    };
+    coverage_invalid_edge_shapes(invalid)
 }
 
 fn coverage_invalid_edge_shapes(invalid: Vec<Vec<Segment>>) -> Result<Vec<Shape>> {
