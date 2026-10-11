@@ -1357,7 +1357,7 @@ impl NativeReferenceGraphBuilder {
                 atom: written.atom,
                 reversed: written.reversed,
                 producer_range: ExactSourceRange {
-                    start: producer_start.clone(),
+                    start: producer_start.as_ref().clone(),
                     end: producer_end.clone(),
                 },
             });
@@ -5356,7 +5356,7 @@ fn append_native_line_edge(
     };
     budget.charge(2)?;
     let literal_producer_range = ExactSourceRange {
-        start: producer_start.clone(),
+        start: producer_start.as_ref().clone(),
         end: producer_end.clone(),
     };
     budget.charge(u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
@@ -13409,7 +13409,7 @@ enum QFamilyState {
 }
 
 pub(super) enum NearestQCertificate {
-    Pass(QEmbeddingOutput),
+    Pass(Box<QEmbeddingOutput>),
     SearchRequired,
     Unrepresentable,
 }
@@ -14404,7 +14404,7 @@ fn common_refine_native_edges(
                 kind: NativeAreaEdgeKind::Producer {
                     recipe,
                     trace_edge,
-                    producer_start: start.parameter.try_clone_with_work(budget)?,
+                    producer_start: Box::new(start.parameter.try_clone_with_work(budget)?),
                     producer_end: end.parameter.try_clone_with_work(budget)?,
                     trace_ranges: child_ranges,
                     known_spans: child_spans,
@@ -15541,7 +15541,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         match self.check_global_candidate(&nearest, &publication_nearest, drawing, budget)? {
             GlobalCheck::Pass(mut output) => {
                 output.family_state = self.take_native_families();
-                Ok(NearestQCertificate::Pass(output))
+                Ok(NearestQCertificate::Pass(Box::new(output)))
             },
             GlobalCheck::Reject(classes) => {
                 if classes.is_empty() {
@@ -18027,7 +18027,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 kind: NativeAreaEdgeKind::Producer {
                     recipe,
                     trace_edge: chord.trace_edge,
-                    producer_start: previous_parameter.clone(),
+                    producer_start: Box::new(previous_parameter.clone()),
                     producer_end: feature.edge_parameter.clone(),
                     trace_ranges: trace_ranges_for_slice(
                         source_trace,
@@ -18066,7 +18066,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             kind: NativeAreaEdgeKind::Producer {
                 recipe,
                 trace_edge: chord.trace_edge,
-                producer_start: previous_parameter.clone(),
+                producer_start: Box::new(previous_parameter.clone()),
                 producer_end: one.clone(),
                 trace_ranges: trace_ranges_for_slice(
                     source_trace,
@@ -21439,14 +21439,14 @@ pub(super) fn certify_and_search_q_embedding<
             #[cfg(test)]
             {
                 Ok(SearchOutcome::Pass(QEmbeddingPass {
-                    output,
+                    output: *output,
                     coordinates: nearest.clone(),
                     searched: false,
                 }))
             }
             #[cfg(not(test))]
             {
-                Ok(SearchOutcome::Pass(QEmbeddingPass { output }))
+                Ok(SearchOutcome::Pass(QEmbeddingPass { output: *output }))
             }
         },
         NearestQCertificate::SearchRequired => search_q_embedding(problem, budget),
@@ -21631,7 +21631,7 @@ mod canonical_coordinate_tests {
             kind: NativeAreaEdgeKind::Producer {
                 recipe: FragmentRecipeId(4),
                 trace_edge: 0,
-                producer_start: ExactRational::zero(),
+                producer_start: Box::new(ExactRational::zero()),
                 producer_end: ExactRational::one(),
                 trace_ranges: Vec::new(),
                 known_spans: vec![source],
@@ -23986,7 +23986,7 @@ mod native_ordinate_provenance_tests {
             kind: NativeAreaEdgeKind::Producer {
                 recipe: FragmentRecipeId(4),
                 trace_edge: 0,
-                producer_start: ExactRational::zero(),
+                producer_start: Box::new(ExactRational::zero()),
                 producer_end: ExactRational::one(),
                 trace_ranges: Vec::new(),
                 known_spans: vec![source.clone(), source],

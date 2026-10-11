@@ -589,7 +589,7 @@ pub(super) enum NativeAreaEdgeKind {
     Producer {
         recipe: FragmentRecipeId,
         trace_edge: usize,
-        producer_start: ExactRational,
+        producer_start: Box<ExactRational>,
         producer_end: ExactRational,
         trace_ranges: Vec<(usize, RootRange)>,
         known_spans: Vec<NativeSourceSpanUse>,
@@ -4993,7 +4993,7 @@ mod tests {
             kind: NativeAreaEdgeKind::Producer {
                 recipe: FragmentRecipeId(0),
                 trace_edge: 0,
-                producer_start: ExactRational::zero(),
+                producer_start: Box::new(ExactRational::zero()),
                 producer_end: ExactRational::one(),
                 trace_ranges: Vec::new(),
                 known_spans: Vec::new(),

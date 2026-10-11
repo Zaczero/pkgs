@@ -6275,7 +6275,7 @@ mod tests {
             OverlayOp::Intersection.name(),
             &mut budget,
         )? {
-            NearestQCertificate::Pass(output) => output,
+            NearestQCertificate::Pass(output) => *output,
             NearestQCertificate::SearchRequired => {
                 return Err(GeometryErrorKind::Invalid(
                     "the midpoint tie fixture should certify at nearest-even".into(),
