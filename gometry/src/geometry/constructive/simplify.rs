@@ -948,7 +948,12 @@ impl<'a> NativeSubdivisionContext<'a> {
             Shape::LineString(_) => vec![shape.clone()],
             Shape::MultiLineString(_) => shape.parts().collect(),
             Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => Vec::new(),
-            _ => {
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => {
                 return Err(GeometryErrorKind::Invalid(
                     "native source preparation emitted a non-lineal shape".into(),
                 )
@@ -1062,7 +1067,12 @@ impl<'a> NativeSubdivisionContext<'a> {
                 Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
                     Vec::new()
                 },
-                _ => {
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => {
                     return Err(GeometryErrorKind::Invalid(
                         "native source trace is attached to a non-lineal result".into(),
                     )
@@ -3265,7 +3275,13 @@ mod subdivision_tests {
                     .collect(),
             )
             .unwrap(),
-            _ => shape.clone(),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::Empty(..) => shape.clone(),
         }
     }
 
@@ -3305,7 +3321,12 @@ mod subdivision_tests {
                 ));
                 Ok(1)
             },
-            _ => Ok(0),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::Empty(..) => Ok(0),
         }
     }
 

@@ -555,7 +555,12 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
         Shape::LineString(_) => 1,
         Shape::MultiLineString(lines) => lines.len(),
         Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => 0,
-        _ => {
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => {
             return Err(GeometryErrorKind::Invalid(
                 "native line preparation emitted a non-lineal shape".into(),
             )
@@ -5875,7 +5880,12 @@ mod tests {
                 QSourceImage::PublicationSample(sample) => {
                     Some((*sample as usize, point.x, point.y))
                 },
-                _ => None,
+                QSourceImage::Port(_)
+                | QSourceImage::SourcePoint(_)
+                | QSourceImage::SourceRingStart(_)
+                | QSourceImage::SourceRingEnd(_)
+                | QSourceImage::CollapsedStart(_)
+                | QSourceImage::CollapsedEnd(_) => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(written_samples, vec![
@@ -8047,7 +8057,12 @@ mod tests {
                         source.point.x.to_bits() == 720.0_f64.to_bits()
                             && source.point.y.to_bits() == 90.0_f64.to_bits()
                     }),
-                _ => false,
+                QSourceImage::Port(_)
+                | QSourceImage::SourceRingStart(_)
+                | QSourceImage::SourceRingEnd(_)
+                | QSourceImage::CollapsedStart(_)
+                | QSourceImage::CollapsedEnd(_)
+                | QSourceImage::PublicationSample(_) => false,
             })
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid(

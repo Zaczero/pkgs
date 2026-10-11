@@ -18707,7 +18707,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let area_region = match walk.owner {
                 RecipeWalkOwner::Line(_) => None,
-                owner => Some(
+                owner @ RecipeWalkOwner::Cycle(_) | owner @ RecipeWalkOwner::SourceRing(_) => Some(
                     area_facts
                         .get(&owner)
                         .map(|(region, _)| *region)
@@ -22182,7 +22182,9 @@ mod canonical_coordinate_tests {
                     counterclockwise,
                     ..
                 } => Some((selected.region, clockwise, counterclockwise)),
-                _ => None,
+                super::super::q::PoleSector::Fan { .. }
+                | super::super::q::PoleSector::Isolated { .. }
+                | super::super::q::PoleSector::Terminal { .. } => None,
             })
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("north wedge has no selected pole fan".into())
