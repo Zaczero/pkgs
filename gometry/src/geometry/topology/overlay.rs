@@ -7627,13 +7627,13 @@ mod tests {
             let anchored_end = ExactRational::from_f64(start_x)
                 .try_add_with_work(&recipe.exact_displacement, &mut work)?
                 .round_with_work(&mut work)?;
-            if start_x.to_bits() != 100.00000000000001_f64.to_bits()
-                || anchored_end.to_bits() != 99.99999999999997_f64.to_bits()
+            if start_x.to_bits() != 100.000_000_000_000_01_f64.to_bits()
+                || anchored_end.to_bits() != 99.999_999_999_999_97_f64.to_bits()
             {
                 continue;
             }
             let assigned_end = nearest.point(&topology, recipe.endpoints[1])?;
-            assert_eq!(assigned_end.x.to_bits(), 99.99999999999999_f64.to_bits());
+            assert_eq!(assigned_end.x.to_bits(), 99.999_999_999_999_99_f64.to_bits());
             assert_eq!(end_x.to_bits(), assigned_end.x.to_bits());
             let fragment = publication
                 .fragments
