@@ -1031,6 +1031,71 @@ def test_nullable_ragged_groups_distinguish_missing_from_empty_and_pickle() -> N
         assert restored[1] is None
 
 
+def test_missing_geometry_group_does_not_contain_empty_array() -> None:
+    missing = gm.GeometryArray([None]).parts
+    assert gm.GeometryArray([]) not in missing
+
+
+def test_present_empty_geometry_group_contains_empty_array() -> None:
+    present_empty = gm.GeometryArray([gm.MultiPoint([])]).parts
+    empty = gm.GeometryArray([])
+
+    assert empty in present_empty
+    assert present_empty.count(empty) == 1
+    assert present_empty.index(empty) == 0
+
+
+def test_missing_integer_group_does_not_contain_empty_row() -> None:
+    missing = gm.SpatialIndex().query(gm.GeometryArray([None]))
+    assert [] not in missing
+
+
+def test_missing_integer_group_counts_no_empty_rows() -> None:
+    missing = gm.SpatialIndex().query(gm.GeometryArray([None]))
+
+    assert missing.count([]) == 0
+
+
+def test_missing_integer_group_index_rejects_empty_row() -> None:
+    missing = gm.SpatialIndex().query(gm.GeometryArray([None]))
+
+    with pytest.raises(ValueError):
+        missing.index([])
+
+
+def test_present_empty_integer_group_matches_empty_row() -> None:
+    present_empty = gm.SpatialIndex().query(gm.GeometryArray([gm.Point(0, 0)]))
+
+    assert list(present_empty[0]) == []
+    assert [] in present_empty
+    assert present_empty.count([]) == 1
+    assert present_empty.index([]) == 0
+
+
+def test_missing_cell_group_does_not_contain_empty_cover_row() -> None:
+    missing = gm.h3_cover(gm.GeometryArray([None], crs=4326), resolution=4)
+    empty_polygon = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    empty_cells = gm.h3_cover(
+        gm.GeometryArray([empty_polygon], crs=4326), resolution=4
+    )[0]
+
+    assert missing[0] is None
+    assert empty_cells not in missing
+
+
+def test_present_empty_cell_group_contains_empty_cover_row() -> None:
+    empty_polygon = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    present_empty = gm.h3_cover(
+        gm.GeometryArray([empty_polygon], crs=4326), resolution=4
+    )
+    empty_cells = present_empty[0]
+
+    assert len(empty_cells) == 0
+    assert empty_cells in present_empty
+    assert present_empty.count(empty_cells) == 1
+    assert present_empty.index(empty_cells) == 0
+
+
 @pytest.mark.parametrize(
     ('geometry', 'member_type'),
     [
