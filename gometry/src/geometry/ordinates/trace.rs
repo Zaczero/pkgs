@@ -7,6 +7,26 @@ use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{ChartMetric, CoordinateAxes, GeometryErrorKind, Point, Work};
 
+fn reserve_with_work<T>(
+    values: &mut Vec<T>,
+    additional: usize,
+    work: &mut impl Work,
+) -> Result<()> {
+    if additional == 0 {
+        return Ok(());
+    }
+    prepay_slots(additional, work)?;
+    values.reserve(additional);
+    Ok(())
+}
+
+fn prepay_slots(additional: usize, work: &mut impl Work) -> Result<()> {
+    if additional > 0 {
+        work.charge(u64::try_from(additional).map_err(|_| ResourceError::SizeOverflow)?)?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RootId(u32);
 
@@ -463,7 +483,33 @@ pub(crate) struct RootRequestTable {
     row_offsets: Vec<u32>,
     row_requests: Vec<UniqueRequestId>,
     row_axes: Vec<CoordinateAxes>,
-    roots: Vec<RootId>,
+}
+
+fn push_unique_root_request(
+    records: &mut Vec<UniqueRootRequest>,
+    request: &RootRequest,
+    work: &mut impl Work,
+) -> Result<UniqueRequestId> {
+    let root_state_slot = match records.last() {
+        Some(previous_record) if previous_record.root == request.root => {
+            previous_record.root_state_slot
+        },
+        Some(previous_record) => previous_record
+            .root_state_slot
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?,
+        None => 0,
+    };
+    let request_id =
+        UniqueRequestId(u32::try_from(records.len()).map_err(|_| ResourceError::SizeOverflow)?);
+    reserve_with_work(records, 1, work)?;
+    records.push(UniqueRootRequest {
+        root: request.root,
+        parameter: request.parameter.try_clone_with_work(work)?,
+        root_state_slot,
+        fraction: None,
+    });
+    Ok(request_id)
 }
 
 impl RootRequestTable {
@@ -476,20 +522,18 @@ impl RootRequestTable {
                 .checked_add(row.requests.len())
                 .ok_or(ResourceError::SizeOverflow)?;
         }
-        work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let request_views = rows
-            .iter()
-            .map(|row| row.requests.as_slice())
-            .collect::<Vec<_>>();
+        let mut request_views = Vec::new();
+        reserve_with_work(&mut request_views, rows.len(), work)?;
+        request_views.extend(rows.iter().map(|row| row.requests.as_slice()));
         let row_offset_capacity = rows
             .len()
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        work.charge(u64::try_from(row_offset_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut row_offsets = Vec::with_capacity(row_offset_capacity);
+        let mut row_offsets = Vec::new();
+        reserve_with_work(&mut row_offsets, row_offset_capacity, work)?;
         row_offsets.push(0);
-        work.charge(u64::try_from(request_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut ordered = Vec::with_capacity(request_count);
+        let mut ordered = Vec::new();
+        reserve_with_work(&mut ordered, request_count, work)?;
         for (row_index, row) in request_views.iter().enumerate() {
             for index in 0..row.len() {
                 work.charge(1)?;
@@ -513,11 +557,10 @@ impl RootRequestTable {
             }
         })?;
 
-        work.charge(u64::try_from(request_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut records: Vec<UniqueRootRequest> = Vec::with_capacity(request_count);
-        let mut roots = Vec::new();
-        work.charge(u64::try_from(request_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut row_requests = vec![None; request_count];
+        let mut records: Vec<UniqueRootRequest> = Vec::new();
+        let mut row_requests = Vec::new();
+        reserve_with_work(&mut row_requests, request_count, work)?;
+        row_requests.resize(request_count, None);
         let mut previous: Option<UniqueRequestId> = None;
         for occurrence in ordered {
             work.charge(1)?;
@@ -538,25 +581,7 @@ impl RootRequestTable {
             let request_id = if duplicate {
                 previous.expect("a duplicate has a previous unique record")
             } else {
-                let root_state_slot = if roots.last() == Some(&request.root) {
-                    roots
-                        .len()
-                        .checked_sub(1)
-                        .ok_or(ResourceError::SizeOverflow)?
-                } else {
-                    let slot = roots.len();
-                    roots.push(request.root);
-                    slot
-                };
-                let request_id = UniqueRequestId(
-                    u32::try_from(records.len()).map_err(|_| ResourceError::SizeOverflow)?,
-                );
-                records.push(UniqueRootRequest {
-                    root: request.root,
-                    parameter: request.parameter.try_clone_with_work(work)?,
-                    root_state_slot,
-                    fraction: None,
-                });
+                let request_id = push_unique_root_request(&mut records, request, work)?;
                 previous = Some(request_id);
                 request_id
             };
@@ -570,18 +595,15 @@ impl RootRequestTable {
                 GeometryErrorKind::Invalid("source request occurrence index is unknown".into())
             })? = Some(request_id);
         }
-        work.charge(u64::try_from(request_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let row_requests = row_requests
-            .into_iter()
-            .map(|request| {
-                request.ok_or_else(|| {
-                    GeometryErrorKind::Invalid("source request occurrence was not indexed".into())
-                        .into()
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut row_axes = Vec::with_capacity(rows.len());
+        let mut indexed_requests = Vec::new();
+        reserve_with_work(&mut indexed_requests, request_count, work)?;
+        for request in row_requests {
+            indexed_requests.push(request.ok_or_else(|| {
+                GeometryErrorKind::Invalid("source request occurrence was not indexed".into())
+            })?);
+        }
+        let mut row_axes = Vec::new();
+        reserve_with_work(&mut row_axes, rows.len(), work)?;
         for row in rows {
             work.charge(1)?;
             row_axes.push(row.axes);
@@ -589,9 +611,8 @@ impl RootRequestTable {
         Ok(Self {
             records,
             row_offsets,
-            row_requests,
+            row_requests: indexed_requests,
             row_axes,
-            roots,
         })
     }
 
@@ -641,8 +662,11 @@ impl RootRequestTable {
         })
     }
 
-    pub(crate) const fn root_count(&self) -> usize {
-        self.roots.len()
+    pub(crate) fn root_count(&self) -> usize {
+        match self.records.last() {
+            Some(record) => record.root_state_slot + 1,
+            None => 0,
+        }
     }
 
     pub(crate) fn root_state_slot(&self, request: UniqueRequestId) -> Result<usize> {
@@ -657,12 +681,12 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
     work: &mut impl Work,
 ) -> Result<Vec<NodeOrdinates>> {
     let mut table = RootRequestTable::from_rows(rows, work)?;
-    work.charge(u64::try_from(table.root_count()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut states = std::iter::repeat_with(|| None)
-        .take(table.root_count())
-        .collect::<Vec<Option<RootMetricState>>>();
-    work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut output = Vec::with_capacity(rows.len());
+    let state_count = table.root_count();
+    let mut states = Vec::new();
+    reserve_with_work(&mut states, state_count, work)?;
+    states.resize(state_count, RootMetricState::default());
+    let mut output = Vec::new();
+    reserve_with_work(&mut output, rows.len(), work)?;
     for row_index in 0..rows.len() {
         work.charge(1)?;
         let row_id = RequestRowId::from_index(row_index)?;
@@ -672,12 +696,9 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
         for request_index in 0..request_count {
             let request_id = table.request_id_at(row_id, request_index)?;
             let state_slot = table.root_state_slot(request_id)?;
-            let state = states
-                .get_mut(state_slot)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("source root state slot is unknown".into())
-                })?
-                .get_or_insert_with(RootMetricState::default);
+            let state = states.get_mut(state_slot).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source root state slot is unknown".into())
+            })?;
             work.charge(1)?;
             let record = table.record_mut(request_id)?;
             ordinates.merge(roots.resolve(
@@ -803,6 +824,7 @@ fn unique_requests_at(
 ) -> Result<(Vec<RootRequest>, bool)> {
     check_unit_parameter_with_work(local, work)?;
     let mut requests = Vec::new();
+    reserve_with_work(&mut requests, owners.len(), work)?;
     let mut has_request = false;
     let mut endpoint_only = true;
     for owner in owners {
@@ -816,7 +838,8 @@ fn unique_requests_at(
     }
     let rows = [requests.as_slice()];
     let unique = unique_request_indices(&rows, work)?;
-    let mut unique_requests = Vec::with_capacity(unique.len());
+    let mut unique_requests = Vec::new();
+    reserve_with_work(&mut unique_requests, unique.len(), work)?;
     for occurrence in unique {
         work.charge(1)?;
         unique_requests.push(request_at(&rows, occurrence)?.try_clone_with_work(work)?);
@@ -846,12 +869,16 @@ fn unique_request_indices(
     rows: &[&[RootRequest]],
     work: &mut impl Work,
 ) -> Result<Vec<RequestIndex>> {
-    let capacity = rows.iter().try_fold(0_usize, |count, row| {
-        count
+    work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut capacity = 0_usize;
+    for row in rows {
+        work.charge(1)?;
+        capacity = capacity
             .checked_add(row.len())
-            .ok_or(ResourceError::SizeOverflow)
-    })?;
-    let mut ordered = Vec::with_capacity(capacity);
+            .ok_or(ResourceError::SizeOverflow)?;
+    }
+    let mut ordered = Vec::new();
+    reserve_with_work(&mut ordered, capacity, work)?;
     for (row_index, row) in rows.iter().enumerate() {
         for index in 0..row.len() {
             work.charge(1)?;
@@ -873,7 +900,8 @@ fn unique_request_indices(
         }
     })?;
 
-    let mut unique = Vec::with_capacity(ordered.len());
+    let mut unique = Vec::new();
+    reserve_with_work(&mut unique, ordered.len(), work)?;
     for occurrence in ordered {
         work.charge(1)?;
         let duplicate = if let Some(previous) = unique.last() {
