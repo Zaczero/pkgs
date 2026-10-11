@@ -3310,7 +3310,7 @@ mod subdivision_tests {
     }
 
     #[test]
-    fn geographic_shared_line_ranges_match_expanded_occurrence_order() -> Result<()> {
+    fn geographic_shared_line_ranges_match_expanded_occurrence_order() {
         let longitude =
             crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 180.0)
                 .unwrap();
@@ -3339,7 +3339,7 @@ mod subdivision_tests {
             let mut memo = SourceLineMemberCountMemo::default();
             reset_source_line_member_count_calls();
             let total = if native.frame.is_some() {
-                source_line_member_count(&shared, &mut memo)?
+                source_line_member_count(&shared, &mut memo).unwrap()
             } else {
                 0
             };
@@ -3351,7 +3351,7 @@ mod subdivision_tests {
 
             let mut expanded_ranges = Vec::with_capacity(total);
             assert_eq!(
-                expanded_line_ranges(&expanded, 0, &mut expanded_ranges)?,
+                expanded_line_ranges(&expanded, 0, &mut expanded_ranges).unwrap(),
                 total
             );
 
@@ -3374,7 +3374,6 @@ mod subdivision_tests {
                 "expanded depth {depth}"
             );
         }
-        Ok(())
     }
 
     fn quotient_test_line(latitude_start: f64) -> Shape {
@@ -3481,7 +3480,7 @@ mod subdivision_tests {
     }
 
     #[test]
-    fn geographic_shared_native_member_ordinals_match_expanded_occurrences() -> Result<()> {
+    fn geographic_shared_native_member_ordinals_match_expanded_occurrences() {
         let longitude =
             crate::geographic::AngularFactor::try_new("longitude", std::f64::consts::PI / 180.0)
                 .unwrap();
@@ -3526,13 +3525,13 @@ mod subdivision_tests {
             ];
             let mut memo = SourceLineMemberCountMemo::default();
             let shared_members =
-                collect_native_line_members_with_known(&source, frame, 2, 17, &known, &mut memo)?;
+                collect_native_line_members_with_known(&source, frame, 2, 17, &known, &mut memo)
+                    .unwrap();
             let expanded_members =
-                legacy_native_line_members_with_known(&expanded, frame, 2, 17, &known)?;
+                legacy_native_line_members_with_known(&expanded, frame, 2, 17, &known).unwrap();
             assert_eq!(shared_members, expected_members, "depth {depth}");
             assert_eq!(expanded_members, expected_members, "depth {depth}");
         }
-        Ok(())
     }
 
     #[test]

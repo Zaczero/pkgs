@@ -1764,7 +1764,7 @@ mod tests {
     }
 
     #[test]
-    fn independent_overlapping_logical_rings_bind_across_wall_faces() -> Result<()> {
+    fn independent_overlapping_logical_rings_bind_across_wall_faces() {
         let coordinates = [
             (0.0, 0.0),
             (2.0, 0.0),
@@ -1798,7 +1798,8 @@ mod tests {
             [1, 8],
         ];
         let mut work = Unmetered;
-        let graph = admit_known_graph(points(&coordinates), atoms, (0..12).collect(), &mut work)?;
+        let graph =
+            admit_known_graph(points(&coordinates), atoms, (0..12).collect(), &mut work).unwrap();
         let layout = admit_logical_layout(
             &graph,
             vec![
@@ -1815,7 +1816,8 @@ mod tests {
             ],
             None,
             &mut work,
-        )?;
+        )
+        .unwrap();
         assert_eq!(
             layout
                 .areal
@@ -1825,13 +1827,17 @@ mod tests {
             "the wall arrangement has Exterior and five bounded faces"
         );
         assert!(
-            admit_candidate(&graph, &layout, &graph.points, &[], &mut work)?.is_some(),
+            admit_candidate(&graph, &layout, &graph.points, &[], &mut work)
+                .unwrap()
+                .is_some(),
             "the unchanged noded reference must admit both complete ring walks"
         );
 
         let affine = points(&coordinates.map(|(x, y)| (x + y, y)));
         assert!(
-            admit_candidate(&graph, &layout, &affine, &[], &mut work)?.is_some(),
+            admit_candidate(&graph, &layout, &affine, &[], &mut work)
+                .unwrap()
+                .is_some(),
             "an exact orientation-preserving affine image keeps the same wall correspondence"
         );
 
@@ -1848,18 +1854,24 @@ mod tests {
                             crate::geometry::GeometryErrorKind::Invalid(
                                 "overlapping collection ring vertex is unknown".into(),
                             )
-                        })?;
+                        })
+                        .unwrap();
                     Ok(Point::new_raw_xy(xy.x, xy.y))
                 })
-                .collect::<Result<Vec<_>>>()?;
-            Ring::try_from_closed(CoordSeq::try_from_points(&records)?)
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            Ring::try_from_closed(CoordSeq::try_from_points(&records).unwrap())
         };
         let left_vertices = [0, 1, 2, 3, 4, 5, 6, 7, 0];
         let right_vertices = [8, 9, 2, 5, 10, 11, 6, 1, 8];
         let sink = Shape::geometry_collection(vec![
-            Shape::Polygon(Polygon::new(make_ring(&left_vertices)?, Vec::new())),
-            Shape::Polygon(Polygon::new(make_ring(&right_vertices)?, Vec::new())),
-        ])?;
+            Shape::Polygon(Polygon::new(make_ring(&left_vertices).unwrap(), Vec::new())),
+            Shape::Polygon(Polygon::new(
+                make_ring(&right_vertices).unwrap(),
+                Vec::new(),
+            )),
+        ])
+        .unwrap();
         let literal_layout = ShapeLiteralLayout {
             points: Vec::new(),
             lines: Vec::new(),
@@ -1893,10 +1905,10 @@ mod tests {
                 &mut IdentityLiteralChart,
                 &images,
                 &mut work,
-            )?,
+            )
+            .unwrap(),
             LiteralCheck::Pass(_)
         ));
-        Ok(())
     }
 
     #[test]

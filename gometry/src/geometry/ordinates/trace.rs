@@ -1034,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn directed_child_ranges_compose_immediately_to_the_original_root() -> Result<()> {
+    fn directed_child_ranges_compose_immediately_to_the_original_root() {
         let root = RootId(7);
         let original = RootRange::whole(root);
         let quarter = ExactRational::from_f64(0.25);
@@ -1042,30 +1042,38 @@ mod tests {
         let three_quarters = ExactRational::from_f64(0.75);
 
         let first_child = original
-            .compose(&quarter, &three_quarters)?
-            .ok_or_else(|| GeometryErrorKind::Invalid("first trace child is empty".into()))?;
+            .compose(&quarter, &three_quarters)
+            .unwrap()
+            .ok_or_else(|| GeometryErrorKind::Invalid("first trace child is empty".into()))
+            .unwrap();
         let nested_child = first_child
-            .compose(&half, &ExactRational::one())?
-            .ok_or_else(|| GeometryErrorKind::Invalid("nested trace child is empty".into()))?;
+            .compose(&half, &ExactRational::one())
+            .unwrap()
+            .ok_or_else(|| GeometryErrorKind::Invalid("nested trace child is empty".into()))
+            .unwrap();
         let direct_child = original
-            .compose(&ExactRational::from_f64(0.5), &three_quarters)?
-            .ok_or_else(|| GeometryErrorKind::Invalid("direct trace child is empty".into()))?;
+            .compose(&ExactRational::from_f64(0.5), &three_quarters)
+            .unwrap()
+            .ok_or_else(|| GeometryErrorKind::Invalid("direct trace child is empty".into()))
+            .unwrap();
 
         assert_eq!(nested_child, direct_child);
         assert_eq!(nested_child.source_start, ExactRational::from_f64(0.5));
         assert_eq!(nested_child.source_end, three_quarters);
-        Ok(())
     }
 
     #[test]
-    fn identical_geometry_keeps_distinct_source_root_occurrences() -> Result<()> {
+    fn identical_geometry_keeps_distinct_source_root_occurrences() {
         let first = RootId::from_index(0);
         let second = RootId::from_index(1);
         let mut rows = TraceRowsBuilder::new();
-        rows.push_row([RootRange::whole(first), RootRange::whole(second)])?;
+        rows.push_row([RootRange::whole(first), RootRange::whole(second)])
+            .unwrap();
         let mut work = Unmetered;
-        let rows = rows.finish(&mut work)?;
-        let requests = rows.requests_at(0, &ExactRational::from_f64(0.5), &mut work)?;
+        let rows = rows.finish(&mut work).unwrap();
+        let requests = rows
+            .requests_at(0, &ExactRational::from_f64(0.5), &mut work)
+            .unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].root(), first);
         assert_eq!(requests[1].root(), second);
@@ -1074,11 +1082,10 @@ mod tests {
                 .iter()
                 .all(|request| { request.parameter() == &ExactRational::from_f64(0.5) })
         );
-        Ok(())
     }
 
     #[test]
-    fn request_dedup_keeps_first_occurrence_order() -> Result<()> {
+    fn request_dedup_keeps_first_occurrence_order() {
         let first = RootId::from_index(7);
         let second = RootId::from_index(2);
         let mut rows = TraceRowsBuilder::new();
@@ -1086,22 +1093,26 @@ mod tests {
             RootRange::whole(first),
             RootRange::whole(second),
             RootRange::whole(first),
-        ])?;
+        ])
+        .unwrap();
         let mut work = Unmetered;
-        let rows = rows.finish(&mut work)?;
-        let requests = rows.requests_at(0, &ExactRational::from_f64(0.5), &mut work)?;
+        let rows = rows.finish(&mut work).unwrap();
+        let requests = rows
+            .requests_at(0, &ExactRational::from_f64(0.5), &mut work)
+            .unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].root(), first);
         assert_eq!(requests[1].root(), second);
-        Ok(())
     }
 
     #[test]
-    fn request_table_shares_exact_keys_and_keeps_each_axis_mask() -> Result<()> {
+    fn request_table_shares_exact_keys_and_keeps_each_axis_mask() {
         let root = RootId::from_index(4);
         let half = ExactRational::from_f64(0.5);
-        let rounded_twin = half.try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?;
-        assert_eq!(rounded_twin.round()?, 0.5);
+        let rounded_twin = half
+            .try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))
+            .unwrap();
+        assert_eq!(rounded_twin.round().unwrap(), 0.5);
         assert_ne!(rounded_twin, half);
         let rows = [
             RequestRowInput {
@@ -1127,22 +1138,21 @@ mod tests {
             },
         ];
         let mut work = Unmetered;
-        let table = RootRequestTable::from_rows(&rows, &mut work)?;
-        let first = RequestRowId::from_index(0)?;
-        let second = RequestRowId::from_index(1)?;
-        let rounded = RequestRowId::from_index(2)?;
-        let first_request = table.request_id_at(first, 0)?;
-        assert_eq!(first_request, table.request_id_at(second, 0)?);
-        assert_ne!(first_request, table.request_id_at(rounded, 0)?);
-        assert_eq!(table.axes(first)?, CoordinateAxes::XY);
-        assert_eq!(table.axes(second)?, CoordinateAxes::XYZM);
-        assert_eq!(table.axes(rounded)?, CoordinateAxes::XYZ);
-        assert!(table.record(first_request)?.fraction.is_none());
-        Ok(())
+        let table = RootRequestTable::from_rows(&rows, &mut work).unwrap();
+        let first = RequestRowId::from_index(0).unwrap();
+        let second = RequestRowId::from_index(1).unwrap();
+        let rounded = RequestRowId::from_index(2).unwrap();
+        let first_request = table.request_id_at(first, 0).unwrap();
+        assert_eq!(first_request, table.request_id_at(second, 0).unwrap());
+        assert_ne!(first_request, table.request_id_at(rounded, 0).unwrap());
+        assert_eq!(table.axes(first).unwrap(), CoordinateAxes::XY);
+        assert_eq!(table.axes(second).unwrap(), CoordinateAxes::XYZM);
+        assert_eq!(table.axes(rounded).unwrap(), CoordinateAxes::XYZ);
+        assert!(table.record(first_request).unwrap().fraction.is_none());
     }
 
     #[test]
-    fn grouped_requests_resolve_in_written_occurrence_order() -> Result<()> {
+    fn grouped_requests_resolve_in_written_occurrence_order() {
         let first_root = RootId::from_index(7);
         let second_root = RootId::from_index(2);
         let third_root = RootId::from_index(5);
@@ -1180,7 +1190,8 @@ mod tests {
         let roots = RecordingRoots(RefCell::new(Vec::new()));
         let mut work = Unmetered;
 
-        resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)?;
+        resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)
+            .unwrap();
 
         assert_eq!(roots.0.borrow().as_slice(), &[
             (first_root, first_parameter.clone(), CoordinateAxes::XY),
@@ -1188,33 +1199,37 @@ mod tests {
             (first_root, first_parameter, CoordinateAxes::XYZM),
             (third_root, third_parameter, CoordinateAxes::XYZM),
         ]);
-        Ok(())
     }
 
     #[test]
-    fn endpoint_only_support_has_no_interior_root_requests() -> Result<()> {
+    fn endpoint_only_support_has_no_interior_root_requests() {
         let root = RootId::from_index(5);
         let start = ExactRational::from_f64(0.25);
         let end = ExactRational::from_f64(0.75);
         let mut rows = TraceRowsBuilder::new();
         rows.push_row([
-            RootRange::point(root, start.clone(), ExactRational::zero())?,
-            RootRange::point(root, end.clone(), ExactRational::one())?,
-        ])?;
+            RootRange::point(root, start.clone(), ExactRational::zero()).unwrap(),
+            RootRange::point(root, end.clone(), ExactRational::one()).unwrap(),
+        ])
+        .unwrap();
         let mut work = Unmetered;
-        let rows = rows.finish(&mut work)?;
+        let rows = rows.finish(&mut work).unwrap();
 
-        let start_request = rows.requests_at(0, &ExactRational::zero(), &mut work)?;
+        let start_request = rows
+            .requests_at(0, &ExactRational::zero(), &mut work)
+            .unwrap();
         assert_eq!(start_request.len(), 1);
         assert_eq!(start_request[0].parameter(), &start);
         assert!(
-            rows.requests_at(0, &ExactRational::from_f64(0.5), &mut work)?
+            rows.requests_at(0, &ExactRational::from_f64(0.5), &mut work)
+                .unwrap()
                 .is_empty()
         );
-        let end_request = rows.requests_at(0, &ExactRational::one(), &mut work)?;
+        let end_request = rows
+            .requests_at(0, &ExactRational::one(), &mut work)
+            .unwrap();
         assert_eq!(end_request.len(), 1);
         assert_eq!(end_request[0].parameter(), &end);
-        Ok(())
     }
 
     #[test]
@@ -1231,11 +1246,11 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_only_support_survives_a_split_at_its_written_point() -> Result<()> {
+    fn endpoint_only_support_survives_a_split_at_its_written_point() {
         let root = RootId::from_index(6);
         let half = ExactRational::from_f64(0.5);
         let source_parameter = ExactRational::from_f64(0.375);
-        let owner = RootRange::point(root, source_parameter.clone(), half.clone())?;
+        let owner = RootRange::point(root, source_parameter.clone(), half.clone()).unwrap();
         let mut work = Unmetered;
 
         let mut left = TraceRowsBuilder::new();
@@ -1244,31 +1259,33 @@ mod tests {
             &ExactRational::zero(),
             &half,
             &mut work,
-        )?;
-        let left = left.finish(&mut work)?;
+        )
+        .unwrap();
+        let left = left.finish(&mut work).unwrap();
         let mut right = TraceRowsBuilder::new();
-        right.push_composed_row(
-            std::slice::from_ref(&owner),
-            &half,
-            &ExactRational::one(),
-            &mut work,
-        )?;
-        let right = right.finish(&mut work)?;
+        right
+            .push_composed_row(
+                std::slice::from_ref(&owner),
+                &half,
+                &ExactRational::one(),
+                &mut work,
+            )
+            .unwrap();
+        let right = right.finish(&mut work).unwrap();
 
         for (rows, edge, local) in [
             (&left, 0, ExactRational::one()),
             (&right, 0, ExactRational::zero()),
         ] {
-            let requests = rows.requests_at(edge, &local, &mut work)?;
+            let requests = rows.requests_at(edge, &local, &mut work).unwrap();
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].root(), root);
             assert_eq!(requests[0].parameter(), &source_parameter);
         }
-        Ok(())
     }
 
     #[test]
-    fn child_rows_keep_only_the_contributors_covering_their_source_interval() -> Result<()> {
+    fn child_rows_keep_only_the_contributors_covering_their_source_interval() {
         let zero = ExactRational::zero();
         let quarter = ExactRational::from_f64(0.25);
         let half = ExactRational::from_f64(0.5);
@@ -1279,34 +1296,44 @@ mod tests {
             one.clone(),
             quarter.clone(),
             half.clone(),
-        )?;
+        )
+        .unwrap();
         let mut work = Unmetered;
 
         let mut left = TraceRowsBuilder::new();
-        left.push_composed_row(std::slice::from_ref(&owner), &zero, &quarter, &mut work)?;
-        let left = left.finish(&mut work)?;
+        left.push_composed_row(std::slice::from_ref(&owner), &zero, &quarter, &mut work)
+            .unwrap();
+        let left = left.finish(&mut work).unwrap();
         let mut middle = TraceRowsBuilder::new();
-        middle.push_composed_row(std::slice::from_ref(&owner), &quarter, &half, &mut work)?;
-        let middle = middle.finish(&mut work)?;
+        middle
+            .push_composed_row(std::slice::from_ref(&owner), &quarter, &half, &mut work)
+            .unwrap();
+        let middle = middle.finish(&mut work).unwrap();
         let mut right = TraceRowsBuilder::new();
-        right.push_composed_row(std::slice::from_ref(&owner), &half, &one, &mut work)?;
-        let right = right.finish(&mut work)?;
+        right
+            .push_composed_row(std::slice::from_ref(&owner), &half, &one, &mut work)
+            .unwrap();
+        let right = right.finish(&mut work).unwrap();
 
         assert_eq!(left.owner_count(), 0);
         assert_eq!(middle.owner_count(), 1);
-        let middle_owner = middle.row(0)?.first().ok_or_else(|| {
-            GeometryErrorKind::Invalid("middle trace row has no source owner".into())
-        })?;
+        let middle_owner = middle
+            .row(0)
+            .unwrap()
+            .first()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("middle trace row has no source owner".into())
+            })
+            .unwrap();
         assert_eq!(middle_owner.source_start, ExactRational::zero());
         assert_eq!(middle_owner.source_end, ExactRational::one());
         assert_eq!(middle_owner.producer_start, ExactRational::zero());
         assert_eq!(middle_owner.producer_end, ExactRational::one());
         assert_eq!(right.owner_count(), 0);
-        Ok(())
     }
 
     #[test]
-    fn reversed_source_and_producer_ranges_keep_partial_composition_direction() -> Result<()> {
+    fn reversed_source_and_producer_ranges_keep_partial_composition_direction() {
         let quarter = ExactRational::from_f64(0.25);
         let half = ExactRational::from_f64(0.5);
         let three_quarters = ExactRational::from_f64(0.75);
@@ -1316,35 +1343,41 @@ mod tests {
             quarter.clone(),
             three_quarters.clone(),
             quarter.clone(),
-        )?;
+        )
+        .unwrap();
 
         assert_eq!(
             owner
-                .request_at(&three_quarters)?
-                .ok_or_else(|| GeometryErrorKind::Invalid("reversed range lost its start".into()))?
+                .request_at(&three_quarters)
+                .unwrap()
+                .ok_or_else(|| GeometryErrorKind::Invalid("reversed range lost its start".into()))
+                .unwrap()
                 .parameter(),
             &three_quarters
         );
         assert_eq!(
             owner
-                .request_at(&quarter)?
-                .ok_or_else(|| GeometryErrorKind::Invalid("reversed range lost its end".into()))?
+                .request_at(&quarter)
+                .unwrap()
+                .ok_or_else(|| GeometryErrorKind::Invalid("reversed range lost its end".into()))
+                .unwrap()
                 .parameter(),
             &quarter
         );
 
         let child = owner
-            .compose(&ExactRational::zero(), &half)?
-            .ok_or_else(|| GeometryErrorKind::Invalid("partial reversed child is empty".into()))?;
+            .compose(&ExactRational::zero(), &half)
+            .unwrap()
+            .ok_or_else(|| GeometryErrorKind::Invalid("partial reversed child is empty".into()))
+            .unwrap();
         assert_eq!(child.source_start, quarter);
         assert_eq!(child.source_end, half);
         assert_eq!(child.producer_start, ExactRational::from_f64(0.5));
         assert_eq!(child.producer_end, ExactRational::one());
-        Ok(())
     }
 
     #[test]
-    fn request_at_join_keeps_both_endpoint_occurrences_before_child_composition() -> Result<()> {
+    fn request_at_join_keeps_both_endpoint_occurrences_before_child_composition() {
         let zero = ExactRational::zero();
         let half = ExactRational::from_f64(0.5);
         let one = ExactRational::one();
@@ -1354,31 +1387,32 @@ mod tests {
             half.clone(),
             zero.clone(),
             half.clone(),
-        )?;
+        )
+        .unwrap();
         let right = RootRange::from_mapped(
             RootId::from_index(4),
             half.clone(),
             one.clone(),
             half.clone(),
             one,
-        )?;
+        )
+        .unwrap();
         let mut rows = TraceRowsBuilder::new();
-        rows.push_row([left.clone(), right.clone()])?;
+        rows.push_row([left.clone(), right.clone()]).unwrap();
         let mut work = Unmetered;
-        let rows = rows.finish(&mut work)?;
-        let requests = rows.requests_at(0, &half, &mut work)?;
+        let rows = rows.finish(&mut work).unwrap();
+        let requests = rows.requests_at(0, &half, &mut work).unwrap();
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].root(), RootId::from_index(3));
         assert_eq!(requests[1].root(), RootId::from_index(4));
         assert!(requests.iter().all(|request| request.parameter() == &half));
 
-        assert!(left.compose(&zero, &half)?.is_some());
-        assert!(right.compose(&zero, &half)?.is_none());
-        Ok(())
+        assert!(left.compose(&zero, &half).unwrap().is_some());
+        assert!(right.compose(&zero, &half).unwrap().is_none());
     }
 
     #[test]
-    fn composed_trace_charges_each_parent_range() -> Result<()> {
+    fn composed_trace_charges_each_parent_range() {
         let mut rows = TraceRowsBuilder::new();
         let parents = [
             RootRange::whole(RootId::from_index(1)),
@@ -1395,19 +1429,18 @@ mod tests {
             )
             .is_err()
         );
-        Ok(())
     }
 
     #[test]
-    fn finishing_trace_rows_charges_stored_ranges() -> Result<()> {
+    fn finishing_trace_rows_charges_stored_ranges() {
         let mut rows = TraceRowsBuilder::new();
         rows.push_row([
             RootRange::whole(RootId::from_index(1)),
             RootRange::whole(RootId::from_index(2)),
-        ])?;
+        ])
+        .unwrap();
         let mut work = Fuel(1);
 
         assert!(rows.finish(&mut work).is_err());
-        Ok(())
     }
 }
