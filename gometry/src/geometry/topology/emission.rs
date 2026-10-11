@@ -4365,7 +4365,7 @@ mod tests {
             .find(|edge| {
                 edge.source[0].x == 0.0
                     && edge.source[0].y == 0.0
-                    && edge.source[1].x == 10.0
+                    && edge.source[1].x.to_bits() == 10.0_f64.to_bits()
                     && edge.source[1].y == 0.0
             })
             .ok_or_else(|| GeometryErrorKind::Invalid("horizontal source edge is missing".into()))

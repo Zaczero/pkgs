@@ -4142,7 +4142,9 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 };
                 let source_location = if port.cut && self.source_ports.is_some() {
                     let rounded = rounded_chart_point_with_work(expected, work)?;
-                    if record.x != rounded.x || chart_record_y != rounded.y {
+                    if record.x.partial_cmp(&rounded.x) != Some(Ordering::Equal)
+                        || chart_record_y.partial_cmp(&rounded.y) != Some(Ordering::Equal)
+                    {
                         return Ok(None);
                     }
                     ExactChartPoint::from_rationals(
@@ -4159,7 +4161,8 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 ) {
                     if !exact_coordinate_matches_with_work(&expected.y, chart_record_y, work)?
                         || (!source_record_authority
-                            && record.x != port.point.x.round_with_work(work)?)
+                            && record.x.partial_cmp(&port.point.x.round_with_work(work)?)
+                                != Some(Ordering::Equal))
                     {
                         return Ok(None);
                     }
@@ -4212,7 +4215,9 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                         "source publication slot has no resolved ordinates".into(),
                     )
                 })?;
-                if record.x != point.x || record.y != point.y {
+                if record.x.partial_cmp(&point.x) != Some(Ordering::Equal)
+                    || record.y.partial_cmp(&point.y) != Some(Ordering::Equal)
+                {
                     return Ok(None);
                 }
                 let expected =
@@ -5905,8 +5910,8 @@ fn exact_coordinate_matches_with_work(
     work: &mut impl Work,
 ) -> Result<bool> {
     let (low, high) = value.outward_bounds_with_work(work)?;
-    if low == high {
-        Ok(low == coordinate)
+    if low.partial_cmp(&high) == Some(Ordering::Equal) {
+        Ok(low.partial_cmp(&coordinate) == Some(Ordering::Equal))
     } else {
         Ok(value
             .try_cmp_with_work(&ExactRational::from_f64(coordinate), work)?
