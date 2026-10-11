@@ -175,6 +175,40 @@ def test_scalar_snap_uses_original_root_arclength(
     _assert_snap_sample(tuple(snapped.coords[1]), cut, expected)
 
 
+@pytest.mark.parametrize(
+    ('wkt', 'active_axes'),
+    [
+        pytest.param(
+            'LINESTRING Z (0 0 10,120 60 210)',
+            (0,),
+            id='xyz',
+        ),
+        pytest.param(
+            'LINESTRING M (0 0 100,120 60 500)',
+            (1,),
+            id='xym',
+        ),
+        pytest.param(
+            'LINESTRING ZM (0 0 10 100,120 60 210 500)',
+            (0, 1),
+            id='xyzm',
+        ),
+    ],
+)
+def test_split_and_snap_resolve_each_active_ordinate_axis(
+    wkt: str,
+    active_axes: tuple[int, ...],
+) -> None:
+    source = gm.from_wkt(wkt, crs=4326)
+    point = gm.Point(60.0, 30.0, crs=4326)
+    root_ordinates = _root_ordinates(4326, (0.0, 0.0), (120.0, 60.0), (60.0, 30.0))
+    expected = tuple(root_ordinates[index] for index in active_axes)
+
+    _assert_split_sample(gm.split(source, point), (60.0, 30.0), expected)
+    snapped = gm.snap(source, point, tolerance=0.0)
+    _assert_snap_sample(tuple(snapped.coords[1]), (60.0, 30.0), expected)
+
+
 def test_toleranced_snap_keeps_reference_xy_and_projection_parameter() -> None:
     source = gm.LineString(
         [(0.0, 0.0), (120.0, 60.0)],
