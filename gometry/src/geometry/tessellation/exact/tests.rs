@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn rational_integrality_includes_the_dyadic_numerator_exponent() {
+    assert!(ExactRational::zero().is_integer());
+    assert!(ExactRational::from_f64(-12.0).is_integer());
+    assert!(!ExactRational::from_f64(0.5).is_integer());
+    assert!(!ExactRational::from_f64(-1.5).is_integer());
+}
+
+#[test]
 fn work_product_matches_the_exact_nineteen_limb_result() {
     let left = ExactDyadic::from_parts(false, vec![u64::MAX; 9], 0);
     let right = ExactDyadic::from_parts(false, vec![u64::MAX; 10], 0);

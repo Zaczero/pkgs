@@ -169,6 +169,7 @@ pub(super) struct DrawnAreaRing<'topology> {
     pub(super) region: usize,
     pub(super) origin: DrawnAreaOrigin,
     pub(super) recipe_walk: RecipeWalkOwner,
+    pub(super) native_start_port: Option<QPortId>,
     pub(super) vertices: Vec<EmittedVertex<'topology>>,
 }
 
@@ -266,6 +267,7 @@ pub(super) enum PlannedAreaRing {
         ring: usize,
         region: usize,
         reverse: bool,
+        cycle_start: Option<QPortId>,
     },
     Cycle {
         cycle: usize,
@@ -1527,6 +1529,7 @@ impl QEmissionPlan {
                         ring,
                         region,
                         reverse,
+                        cycle_start,
                     } = *planned
                     else {
                         return Ok(false);
@@ -1545,6 +1548,7 @@ impl QEmissionPlan {
                     if !matches!(drawn.origin, DrawnAreaOrigin::Source)
                         || drawn.region != region
                         || drawn.recipe_walk != RecipeWalkOwner::SourceRing(ring)
+                        || drawn.native_start_port != cycle_start
                         || !source_ring_matches
                     {
                         return Ok(false);
@@ -1644,11 +1648,13 @@ impl QEmissionPlan {
                 let mut drawn_rings = Vec::with_capacity(rings.len());
                 for planned in rings {
                     work.charge(1)?;
-                    let (region, origin, recipe_walk, vertices) = match *planned {
+                    let (region, origin, recipe_walk, native_start_port, vertices) = match *planned
+                    {
                         PlannedAreaRing::Source {
                             ring,
                             region,
                             reverse,
+                            cycle_start,
                         } => {
                             let source_ring =
                                 topology.sources.rings.get(ring).ok_or_else(|| {
@@ -1662,6 +1668,7 @@ impl QEmissionPlan {
                                 region,
                                 DrawnAreaOrigin::Source,
                                 RecipeWalkOwner::SourceRing(ring),
+                                cycle_start,
                                 vertices,
                             )
                         },
@@ -1674,11 +1681,13 @@ impl QEmissionPlan {
                                     "Q area plan references an unknown cycle".into(),
                                 )
                             })?;
+                            let vertices = draw_cycle_vertices(topology, coordinates, cycle, work)?;
                             (
                                 region,
                                 DrawnAreaOrigin::Cycle,
                                 RecipeWalkOwner::Cycle(cycle_index),
-                                draw_cycle_vertices(topology, coordinates, cycle, work)?,
+                                vertices.first().map(|vertex| vertex.port.id),
+                                vertices,
                             )
                         },
                     };
@@ -1686,6 +1695,7 @@ impl QEmissionPlan {
                         region,
                         origin,
                         recipe_walk,
+                        native_start_port,
                         vertices,
                     });
                 }
@@ -2049,10 +2059,19 @@ impl PolygonPlan {
             else {
                 continue;
             };
+            let cycle_start = if source_cycles.len() == 1 {
+                let cycle = cycles.get(first_cycle).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q source-ring start cycle is unknown".into())
+                })?;
+                Some(source_cycle_start_port(topology, cycle, work)?)
+            } else {
+                None
+            };
             rings.push(PlannedAreaRing::Source {
                 ring: ring_index,
                 region,
                 reverse: !follows_source,
+                cycle_start,
             });
             for &cycle_index in source_cycles {
                 work.charge(1)?;
@@ -3438,6 +3457,7 @@ fn write_source_path(
     vertices: &[EmittedVertex<'_>],
     output: u32,
     owner: RecipeWalkOwner,
+    recipe_rotation: usize,
     ordinates: &[NodeOrdinates],
     source_ports: Option<&[Option<ExactChartPoint>]>,
     publication: Option<SourcePublication<'_>>,
@@ -3456,16 +3476,36 @@ fn write_source_path(
             .into());
         },
     };
+    let mut rotated_fragments = None;
+    if let Some(walk) = walk
+        && recipe_rotation != 0
+    {
+        if recipe_rotation >= walk.fragments.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "source ring rotation exceeds its producer walk".into(),
+            )
+            .into());
+        }
+        // Keep each frozen publication sample on the producer edge that owns it.
+        work.charge(u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut fragments = walk.fragments.clone();
+        fragments.rotate_left(recipe_rotation);
+        rotated_fragments = Some(fragments);
+    }
+    let walk_fragments = match walk {
+        Some(walk) => rotated_fragments.as_deref().unwrap_or(&walk.fragments),
+        None => &[],
+    };
     let edge_count = vertices.len().saturating_sub(1);
-    if walk.is_some_and(|walk| walk.fragments.len() != edge_count) {
+    if walk.is_some() && walk_fragments.len() != edge_count {
         return Err(GeometryErrorKind::Invalid(
             "source drawing path and published producer walk have different edge counts".into(),
         )
         .into());
     }
     let mut capacity = vertices.len();
-    if let (Some(publication), Some(walk)) = (publication, walk) {
-        for &recipe in &walk.fragments {
+    if let (Some(publication), Some(_walk)) = (publication, walk) {
+        for &recipe in walk_fragments {
             let fragment = publication
                 .inventory
                 .fragments
@@ -3494,8 +3534,8 @@ fn write_source_path(
     for (edge_index, pair) in vertices.array_windows::<2>().enumerate() {
         let [_, end] = pair;
         work.charge(1)?;
-        if let (Some(publication), Some(walk)) = (publication, walk) {
-            let recipe = *walk.fragments.get(edge_index).ok_or_else(|| {
+        if let (Some(publication), Some(_walk)) = (publication, walk) {
+            let recipe = *walk_fragments.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source path has no recipe for an output edge".into())
             })?;
             let fragment = publication
@@ -3573,6 +3613,7 @@ fn write_ring(
     vertices: &[EmittedVertex<'_>],
     output: u32,
     owner: RecipeWalkOwner,
+    recipe_rotation: usize,
     ordinates: &[NodeOrdinates],
     source_ports: Option<&[Option<ExactChartPoint>]>,
     publication: Option<SourcePublication<'_>>,
@@ -3585,6 +3626,7 @@ fn write_ring(
         vertices,
         output,
         owner,
+        recipe_rotation,
         ordinates,
         source_ports,
         publication,
@@ -3597,6 +3639,41 @@ fn write_ring(
         Ring::try_from_closed(CoordSeq::try_from_points(&path.points)?)?,
         path.locations,
     ))
+}
+
+fn rotate_area_ring_vertices<'topology>(
+    vertices: &[EmittedVertex<'topology>],
+    start_port: Option<QPortId>,
+    work: &mut impl Work,
+) -> Result<Option<(Vec<EmittedVertex<'topology>>, usize)>> {
+    let Some(start_port) = start_port else {
+        return Ok(None);
+    };
+    let edge_count = vertices
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q area ring has no closing vertex".into()))?;
+    let start_index = vertices
+        .get(..edge_count)
+        .and_then(|open| open.iter().position(|vertex| vertex.port.id == start_port))
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q area ring lost its native cycle start".into())
+        })?;
+    if start_index == 0 {
+        return Ok(None);
+    }
+    work.charge(u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut rotated = Vec::with_capacity(vertices.len());
+    let open = vertices.get(..edge_count).ok_or_else(|| {
+        GeometryErrorKind::Invalid("Q area ring has an invalid open vertex range".into())
+    })?;
+    rotated.extend_from_slice(&open[start_index..]);
+    rotated.extend_from_slice(&open[..start_index]);
+    let first = *rotated.first().ok_or_else(|| {
+        GeometryErrorKind::Invalid("Q area ring rotation removed every vertex".into())
+    })?;
+    rotated.push(first);
+    Ok(Some((rotated, start_index)))
 }
 
 fn write_drawing(
@@ -3636,6 +3713,7 @@ fn write_drawing(
                         &source_ring.vertices,
                         output_id,
                         source_ring.recipe_walk,
+                        0,
                         ordinates,
                         source_ports,
                         publication,
@@ -3697,10 +3775,18 @@ fn write_drawing(
                 })?;
                 let region_id =
                     u32::try_from(drawn.region).map_err(|_| ResourceError::SizeOverflow)?;
+                let rotated_vertices =
+                    rotate_area_ring_vertices(&drawn.vertices, drawn.native_start_port, work)?;
+                let (vertices, recipe_rotation) = rotated_vertices
+                    .as_ref()
+                    .map_or((&drawn.vertices[..], 0), |(vertices, rotation)| {
+                        (vertices.as_slice(), *rotation)
+                    });
                 let (ring, locations) = write_ring(
-                    &drawn.vertices,
+                    vertices,
                     region_id,
                     drawn.recipe_walk,
+                    recipe_rotation,
                     ordinates,
                     source_ports,
                     publication,
@@ -3791,6 +3877,7 @@ fn write_drawing(
             &line.path,
             output,
             line.recipe_walk,
+            0,
             ordinates,
             source_ports,
             publication,
@@ -4093,6 +4180,49 @@ fn source_cycles_by_ring(
         }
     }
     Ok(output)
+}
+
+fn source_cycle_start_port(
+    topology: &ExactGeographicTopology,
+    cycle: &BoundaryCycle,
+    work: &mut impl Work,
+) -> Result<QPortId> {
+    for &dart_id in &cycle.darts {
+        work.charge(1)?;
+        let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q cycle start references an unknown dart".into())
+        })?;
+        let port = topology
+            .q
+            .ports
+            .get(dart.from_port.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q cycle start references an unknown port".into())
+            })?;
+        if !port.cut {
+            return Ok(dart.from_port);
+        }
+    }
+    for &dart_id in &cycle.darts {
+        work.charge(1)?;
+        let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q cycle start references an unknown dart".into())
+        })?;
+        let port = topology
+            .q
+            .ports
+            .get(dart.to_port.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q cycle start references an unknown port".into())
+            })?;
+        if !port.cut {
+            return Ok(dart.to_port);
+        }
+    }
+    Err(GeometryErrorKind::Invalid(
+        "Q area cycle has no source node to anchor its native port order".into(),
+    )
+    .into())
 }
 
 fn source_ring_cycles_follow_source(
@@ -5511,6 +5641,253 @@ mod tests {
                 .expect("test geometry is admitted")
         });
         ExactGeographicTopology::from_views(frame, views).expect("build exact test Q topology")
+    }
+
+    #[test]
+    fn source_ring_rotation_keeps_publication_samples_with_their_recipes() -> Result<()> {
+        use super::super::emission::{
+            FeatureFamily, FeatureFamilyParent, FragmentRecipeId, PublishedFragment,
+            PublishedSample, SampleProducerKind, SourceTrace,
+        };
+        use crate::geometry::ordinates::RequestRowId;
+
+        let shape = crate::io::parse_wkt("POLYGON ((0 0, 10 0, 10 10, 0 0))")?;
+        let topology = test_topology(&[shape]);
+        let source_ring =
+            topology.sources.rings.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source ring is missing".into())
+            })?;
+        let mut vertices = Vec::with_capacity(source_ring.source_edges.len().saturating_add(1));
+        for edge_index in source_ring.source_edges.clone() {
+            let edge = topology.sources.edges.get(edge_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source ring edge is unknown".into())
+            })?;
+            let port_id = topology
+                .q
+                .source_edge_ports
+                .get(edge.id.0 as usize)
+                .and_then(|ports| ports.first())
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("sampled source ring start port is missing".into())
+                })?;
+            let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source ring start port is unknown".into())
+            })?;
+            vertices.push(EmittedVertex {
+                port,
+                point: edge.source[0],
+                literal_image: QSourceImage::Port(port_id),
+            });
+        }
+        let last_edge = topology
+            .sources
+            .edges
+            .get(source_ring.source_edges.end.checked_sub(1).ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source ring has no closing edge".into())
+            })?)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source ring closing edge is unknown".into())
+            })?;
+        let end_port_id = topology
+            .q
+            .source_edge_ports
+            .get(last_edge.id.0 as usize)
+            .and_then(|ports| ports.get(1))
+            .copied()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source ring end port is missing".into())
+            })?;
+        let end_port = topology
+            .q
+            .ports
+            .get(end_port_id.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source ring end port is unknown".into())
+            })?;
+        vertices.push(EmittedVertex {
+            port: end_port,
+            point: last_edge.source[1],
+            literal_image: QSourceImage::Port(end_port_id),
+        });
+        let edge_count = source_ring.source_edges.len();
+        if edge_count != 3 {
+            return Err(GeometryErrorKind::Invalid(
+                "sampled source-ring fixture has an unexpected edge count".into(),
+            )
+            .into());
+        }
+        let start_port = vertices
+            .get(2)
+            .ok_or_else(|| GeometryErrorKind::Invalid("rotated ring start is missing".into()))?
+            .port
+            .id;
+        let mut work = crate::geometry::Unmetered;
+        let (rotated_vertices, recipe_rotation) =
+            rotate_area_ring_vertices(&vertices, Some(start_port), &mut work)?.ok_or_else(
+                || GeometryErrorKind::Invalid("ring rotation was not applied".into()),
+            )?;
+        assert_eq!(recipe_rotation, 2);
+
+        let recipes = (0..edge_count)
+            .map(|index| FragmentRecipeId(u32::try_from(index).expect("three recipe IDs")))
+            .collect::<Vec<_>>();
+        let owner = RecipeWalkOwner::SourceRing(source_ring.id.0 as usize);
+        let walk_rows = [RecipeWalk {
+            owner,
+            fragments: recipes.clone(),
+        }];
+        let walks = index_recipe_walks(&walk_rows, &mut work)?;
+        let mut fragments = Vec::with_capacity(edge_count);
+        let mut samples = Vec::with_capacity(edge_count);
+        let mut assigned_samples = Vec::with_capacity(edge_count);
+        for (index, recipe) in recipes.iter().copied().enumerate() {
+            let start = vertices.get(index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source recipe start is missing".into())
+            })?;
+            let end = vertices.get(index + 1).ok_or_else(|| {
+                GeometryErrorKind::Invalid("sampled source recipe end is missing".into())
+            })?;
+            let source_sample = Point::new_raw_xy(
+                f64::midpoint(start.point.x, end.point.x),
+                f64::midpoint(start.point.y, end.point.y),
+            );
+            let assigned = XY::new(source_sample.x + 0.125, source_sample.y + 0.125);
+            let exact_start = ExactChartPoint::from_rationals(
+                ExactRational::from_f64(start.point.x),
+                ExactRational::from_f64(start.point.y),
+            );
+            let exact_end = ExactChartPoint::from_rationals(
+                ExactRational::from_f64(end.point.x),
+                ExactRational::from_f64(end.point.y),
+            );
+            let exact_sample = ExactChartPoint::from_rationals(
+                ExactRational::from_f64(source_sample.x),
+                ExactRational::from_f64(source_sample.y),
+            );
+            fragments.push(PublishedFragment {
+                recipe,
+                points: vec![start.point, source_sample, end.point],
+                trace: SourceTrace::from_edge_rows([Vec::new()], &mut work)?,
+                sample_range: index..index + 1,
+                source_records: [None, None],
+                exact_endpoints: [exact_start, exact_end],
+            });
+            samples.push(PublishedSample {
+                request_row: RequestRowId::from_index(index)?,
+                family: FeatureFamily {
+                    parent: FeatureFamilyParent::Fragment(recipe),
+                    producer: SampleProducerKind::Publication,
+                    occurrence: u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
+                },
+                parameter: ExactRational::from_f64(0.5),
+                written_vertex: 1,
+                point: source_sample,
+                exact_point: exact_sample.clone(),
+                published_chart_point: exact_sample,
+                source_trace: None,
+                endpoint_only: false,
+            });
+            assigned_samples.push(assigned);
+        }
+        let sample_ordinates = vec![NodeOrdinates::default(); samples.len()];
+        let publication = PublicationInventory {
+            fragments,
+            samples,
+            counts: Vec::new(),
+            ordinates: sample_ordinates.clone(),
+        };
+        let source_ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+        let source_publication = SourcePublication {
+            inventory: &publication,
+            points: &assigned_samples,
+            ordinates: &sample_ordinates,
+            live_samples: &[true; 3],
+        };
+        let mut cursors = BTreeMap::new();
+
+        let (ring, locations) = write_ring(
+            &rotated_vertices,
+            0,
+            owner,
+            recipe_rotation,
+            &source_ordinates,
+            None,
+            Some(source_publication),
+            Some(&walks),
+            &mut cursors,
+            CoordinateAxes::XY,
+            &mut work,
+        )?;
+
+        let ring_points = ring.coords().iter().collect::<Vec<_>>();
+        assert_eq!(ring_points.len(), 7);
+        let written_samples = locations
+            .images
+            .iter()
+            .zip(&ring_points)
+            .filter_map(|(image, point)| match image {
+                QSourceImage::PublicationSample(sample) => {
+                    Some((*sample as usize, point.x, point.y))
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(written_samples, vec![
+            (2, assigned_samples[2].x, assigned_samples[2].y),
+            (0, assigned_samples[0].x, assigned_samples[0].y),
+            (1, assigned_samples[1].x, assigned_samples[1].y),
+        ]);
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_seam_shared_edge_intersection_has_a_native_result() -> Result<()> {
+        let shapes = [
+            crate::io::parse_wkt("POLYGON ((179 0, -179 0, -179.8 -1, 179 0))")?,
+            crate::io::parse_wkt("POLYGON ((-179 0, 179 0, 179.8 1, -179 0))")?,
+        ];
+        let topology = test_topology(&shapes);
+        let intersection = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+            &topology,
+            OverlayOp::Intersection,
+            CoordinateAxes::XY,
+            false,
+            None,
+        )?;
+
+        assert!(!line_edges(&intersection).is_empty());
+        let union = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+            &topology,
+            OverlayOp::Union,
+            CoordinateAxes::XY,
+            false,
+            None,
+        )?;
+        assert!(matches!(union, Shape::Polygon(_) | Shape::MultiPolygon(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn synthetic_sliver_dissolve_has_a_native_result() -> Result<()> {
+        let seam = crate::io::parse_wkt("POLYGON ((179 0, -179 0, -179 1, 179 1, 179 0))")?;
+        let argentina = crate::io::parse_wkt(
+            "MULTIPOLYGON (((-58.10222180941994 -33.010937543229446, -58.084289 -33.0009615, -58.085477253434156 -32.99, -58.089648910878246 -32.99, -58.0878711 -32.9965279, -58.10222180941994 -33.010937543229446)), ((-58.11 -33.00166081596568, -58.10769305699579 -32.99, -58.11 -32.99, -58.11 -33.00166081596568)))",
+        )?;
+        let uruguay = crate::io::parse_wkt(
+            "POLYGON ((-58.11 -33.02, -58.08 -33.02, -58.08 -32.99, -58.085477253434156 -32.99, -58.084289 -33.0009615, -58.10256757394891 -33.011129892448544, -58.0878711 -32.9965279, -58.089648910878246 -32.99, -58.10765630407339 -32.99, -58.11 -33.001904214459806, -58.11 -33.02))",
+        )?;
+        let topology = test_topology(&[seam, argentina, uruguay]);
+        let union = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
+            &topology,
+            OverlayOp::Union,
+            CoordinateAxes::XY,
+            false,
+            None,
+        )?;
+
+        assert!(matches!(union, Shape::Polygon(_) | Shape::MultiPolygon(_)));
+        Ok(())
     }
 
     fn q_grid_parallelogram(u: (i32, i32), v: (i32, i32)) -> Result<Shape> {
