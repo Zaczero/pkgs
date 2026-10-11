@@ -1606,12 +1606,32 @@ fn source_requests_at_location(
     location: &TraceRequestLocation,
     work: &mut impl Work,
 ) -> Result<Vec<RootRequest>> {
-    let recipe = match location {
-        TraceRequestLocation::Edge { recipe, .. } | TraceRequestLocation::Sample { recipe, .. } => {
-            *recipe
+    match location {
+        TraceRequestLocation::Root { root, parameter } => Ok(vec![RootRequest::new_with_work(
+            *root,
+            parameter.try_clone_with_work(work)?,
+            work,
+        )?]),
+        TraceRequestLocation::Edge {
+            recipe,
+            edge,
+            parameter,
+        } => {
+            let fragment = source_trace_fragment(publication, *recipe)?;
+            fragment.trace.rows.requests_at(*edge, parameter, work)
         },
-    };
-    let fragment = publication
+        TraceRequestLocation::Sample { recipe, row } => {
+            let fragment = source_trace_fragment(publication, *recipe)?;
+            fragment.trace.rows.sample_requests_at(row.index(), work)
+        },
+    }
+}
+
+fn source_trace_fragment(
+    publication: &PublicationInventory,
+    recipe: FragmentRecipeId,
+) -> Result<&PublishedFragment> {
+    publication
         .fragments
         .get(recipe.0 as usize)
         .filter(|fragment| fragment.recipe == recipe)
@@ -1619,15 +1639,8 @@ fn source_requests_at_location(
             GeometryErrorKind::Invalid(
                 "written occurrence references an unknown source trace".into(),
             )
-        })?;
-    match location {
-        TraceRequestLocation::Edge {
-            edge, parameter, ..
-        } => fragment.trace.rows.requests_at(*edge, parameter, work),
-        TraceRequestLocation::Sample { row, .. } => {
-            fragment.trace.rows.sample_requests_at(row.index(), work)
-        },
-    }
+            .into()
+        })
 }
 
 fn native_chord_points(
@@ -2644,6 +2657,47 @@ pub(super) enum TraceRequestLocation {
         recipe: FragmentRecipeId,
         row: RequestRowId,
     },
+    Root {
+        root: RootId,
+        parameter: ExactRational,
+    },
+}
+
+pub(super) fn native_source_sample_occurrences(
+    source_trace: Option<TraceRequestLocation>,
+    source_requests: &[RootRequest],
+    work: &mut impl Work,
+) -> Result<Vec<OccurrenceSource>> {
+    let capacity = source_requests
+        .len()
+        .checked_add(usize::from(source_trace.is_some()))
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut occurrences = Vec::with_capacity(capacity);
+    if let Some(source_trace) = source_trace {
+        work.charge(1)?;
+        occurrences.push(OccurrenceSource {
+            origin: VertexOrigin::SourceSample,
+            source_trace: Some(source_trace),
+        });
+    }
+    for request in source_requests {
+        work.charge(1)?;
+        occurrences.push(OccurrenceSource {
+            origin: VertexOrigin::SourceSample,
+            source_trace: Some(TraceRequestLocation::Root {
+                root: request.root(),
+                parameter: request.parameter().try_clone_with_work(work)?,
+            }),
+        });
+    }
+    if occurrences.is_empty() {
+        work.charge(1)?;
+        occurrences.push(OccurrenceSource {
+            origin: VertexOrigin::Presentation,
+            source_trace: None,
+        });
+    }
+    Ok(occurrences)
 }
 
 #[derive(Clone, Debug)]
@@ -3916,6 +3970,7 @@ mod tests {
     use crate::geometry::embedding_completion::{
         ExactPoints, admit_known_graph, visit_shape_literals,
     };
+    use crate::geometry::ordinates::source_ordinate_values_at_fraction;
 
     fn pending_source_range(
         source_edge: u32,
@@ -3949,6 +4004,144 @@ mod tests {
         let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
+    }
+
+    fn resolve_native_root_occurrences<M: ChartMetric>(
+        topology: &ExactGeographicTopology,
+        port_id: QPortId,
+        root_requests: &[(RootId, ExactRational)],
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+        strict: bool,
+    ) -> Result<(Vec<NodeOrdinates>, CoordinateAxes)> {
+        let mut work = Unmetered;
+        let q_port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("source-root test Q port is unknown".into())
+        })?;
+        let node_registry =
+            EmissionNodeRegistry::with_sources(topology, &[q_port.node], &mut work)?;
+        let node = node_registry.source_node(q_port.node)?;
+        let mut requests = Vec::with_capacity(root_requests.len());
+        for (root, parameter) in root_requests {
+            requests.push(RootRequest::new_with_work(
+                *root,
+                parameter.try_clone_with_work(&mut work)?,
+                &mut work,
+            )?);
+        }
+        let occurrences = native_source_sample_occurrences(None, &requests, &mut work)?;
+        let occurrence_count = occurrences.len();
+        let mut written_occurrences = Vec::with_capacity(occurrence_count);
+        for (index, occurrence) in occurrences.into_iter().enumerate() {
+            written_occurrences.push(WrittenOccurrence {
+                origin: occurrence.origin,
+                source_trace: occurrence.source_trace,
+                request_row: RequestRowId::from_index(index)?,
+            });
+        }
+        let plan = ExpandedEmissionPlan {
+            topology,
+            selected_face_roots: Vec::new(),
+            node_registry,
+            ports: vec![EmissionPort {
+                node,
+                position: PortPosition::Projected {
+                    spelling: PortSpelling::Interior { periods: 0 },
+                },
+                source_record: None,
+                occurrence_range: 0..occurrence_count,
+            }],
+            occurrences: written_occurrences,
+            chords: Vec::new(),
+            parts: Vec::new(),
+            lines: Vec::new(),
+            points: Vec::new(),
+            whole_sphere: false,
+        };
+        let publication = PublicationInventory {
+            fragments: Vec::new(),
+            samples: Vec::new(),
+            counts: Vec::new(),
+            ordinates: Vec::new(),
+        };
+        let source_ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+        resolve_emission_ordinates(
+            &plan,
+            &publication,
+            &source_ordinates,
+            topology,
+            CoordinateAxes::XYZM,
+            strict,
+            "difference",
+            metric_access,
+            &mut work,
+        )
+    }
+
+    #[expect(
+        clippy::float_cmp,
+        reason = "source-root coordinates are exact stored values, and the fixture rejects horizontal edges"
+    )]
+    fn source_edge_varies_in_latitude_and_ordinates(source: &[Point; 2]) -> bool {
+        source[0].y != source[1].y
+            && (source[0].z() != source[1].z() || source[0].m() != source[1].m())
+    }
+
+    fn source_requests_at_shared_port(
+        topology: &ExactGeographicTopology,
+        minimum_roots: usize,
+        varying_source_edge: bool,
+    ) -> Result<(QPortId, Vec<(RootId, ExactRational)>)> {
+        for port in &topology.q.ports {
+            let mut requests = Vec::new();
+            for span in &topology.q.spans {
+                for (endpoint, &span_port) in span.ports.iter().enumerate() {
+                    if span_port != port.id {
+                        continue;
+                    }
+                    for owner in &span.owners {
+                        let parameter = if endpoint == 0 {
+                            if owner.reversed {
+                                &owner.source_range.end
+                            } else {
+                                &owner.source_range.start
+                            }
+                        } else if owner.reversed {
+                            &owner.source_range.start
+                        } else {
+                            &owner.source_range.end
+                        };
+                        let request = (RootId::from_index(owner.source_edge.0), parameter.clone());
+                        if !requests.contains(&request) {
+                            requests.push(request);
+                        }
+                    }
+                }
+            }
+            let distinct_roots = requests
+                .iter()
+                .map(|(root, _)| *root)
+                .collect::<std::collections::BTreeSet<_>>();
+            let has_varying_source_edge = requests.iter().any(|(root, parameter)| {
+                topology
+                    .sources
+                    .edges
+                    .get(root.index())
+                    .is_some_and(|edge| {
+                        source_edge_varies_in_latitude_and_ordinates(&edge.source)
+                            && !parameter.is_zero()
+                            && !parameter.is_one()
+                    })
+            });
+            if distinct_roots.len() >= minimum_roots
+                && (!varying_source_edge || has_varying_source_edge)
+            {
+                return Ok((port.id, requests));
+            }
+        }
+        Err(GeometryErrorKind::Invalid(
+            "source-root test has no shared port with enough distinct source roots".into(),
+        )
+        .into())
     }
 
     fn endpoint_test_recipe(
@@ -5039,6 +5232,146 @@ mod tests {
             .is_err()
         );
         Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions are the exact ordinate and strict-axis regression oracle"
+    )]
+    fn native_source_root_occurrences_preserve_constant_zm_and_resolve_varying_seam_values()
+    -> Result<()> {
+        const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+        let state = crate::crs::runtime_state_snapshot()?;
+        crate::crs::with_ellipsoid_metric_at(CRS, &[], &state, |metric| {
+            let frame = metric.chart_frame();
+            let metric_access = || Ok(metric);
+            let metric_access: &SourceArcMetricAccess<'_, '_, crate::crs::EllipsoidMetric<'_>> =
+                &metric_access;
+            let mut request_work = Unmetered;
+
+            let constant = [
+                crate::io::parse_wkt("LINESTRING ZM (170 -30 5 50, -170 70 5 50)")?,
+                crate::io::parse_wkt("LINESTRING ZM (170 70 5 50, -170 -30 5 50)")?,
+            ];
+            let inputs =
+                crate::geographic::GeographicInputs::try_from_shapes(frame, constant.iter())
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+            let topology =
+                ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+            let (cut_port, requests) = source_requests_at_shared_port(&topology, 2, false)?;
+            let (ordinates, axes) = resolve_native_root_occurrences(
+                &topology,
+                cut_port,
+                &requests,
+                Some(metric_access),
+                true,
+            )?;
+            assert_eq!(axes, CoordinateAxes::XYZM);
+            let ordinates = ordinates.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("constant Z/M source port is missing".into())
+            })?;
+            assert_eq!(ordinates.z.value(), Some(5.0));
+            assert_eq!(ordinates.m.value(), Some(50.0));
+
+            let varying = crate::io::parse_wkt("LINESTRING ZM (170 -30 1 5, -170 70 9 45)")?;
+            let inputs = crate::geographic::GeographicInputs::try_from_shapes(
+                frame,
+                std::iter::once(&varying),
+            )
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+            let topology =
+                ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+            let (cut_port, requests) = source_requests_at_shared_port(&topology, 1, true)?;
+            let (root, parameter) = requests
+                .iter()
+                .find(|(root, parameter)| {
+                    topology
+                        .sources
+                        .edges
+                        .get(root.index())
+                        .is_some_and(|edge| {
+                            source_edge_varies_in_latitude_and_ordinates(&edge.source)
+                                && !parameter.is_zero()
+                                && !parameter.is_one()
+                        })
+                })
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "varying shared port has no interior source-root request".into(),
+                    )
+                })?;
+            let edge = topology.sources.edges.get(root.index()).ok_or_else(|| {
+                GeometryErrorKind::Invalid("varying source root is unknown".into())
+            })?;
+            let chart_parameter = parameter.round_with_work(&mut request_work)?;
+            let chart_edge = crate::crs::ChartEdge::from_retained(
+                edge.source[0],
+                edge.source[1],
+                frame,
+                edge.retained_longitude(),
+            )?;
+            let fraction =
+                metric.chart_edge_arclength_fraction(&chart_edge, chart_parameter, None)?;
+            assert_ne!(
+                fraction, chart_parameter,
+                "the source sample distinguishes ellipsoidal arclength from chart t"
+            );
+            let expected = source_ordinate_values_at_fraction(
+                edge.source[0],
+                edge.source[1],
+                CoordinateAxes::XYZM,
+                fraction,
+            );
+            let (ordinates, axes) = resolve_native_root_occurrences(
+                &topology,
+                cut_port,
+                &requests,
+                Some(metric_access),
+                true,
+            )?;
+            assert_eq!(axes, CoordinateAxes::XYZM);
+            let ordinates = ordinates.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("varying source request lost its output port".into())
+            })?;
+            assert_eq!(
+                ordinates.z.value().map(f64::to_bits),
+                expected.0.0.map(f64::to_bits)
+            );
+            assert_eq!(
+                ordinates.m.value().map(f64::to_bits),
+                expected.1.0.map(f64::to_bits)
+            );
+
+            let conflicting = [
+                crate::io::parse_wkt("LINESTRING ZM (170 -30 5 50, -170 70 5 50)")?,
+                crate::io::parse_wkt("LINESTRING ZM (170 70 7 70, -170 -30 7 70)")?,
+            ];
+            let inputs =
+                crate::geographic::GeographicInputs::try_from_shapes(frame, conflicting.iter())
+                    .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+            let topology =
+                ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
+            let (cut_port, requests) = source_requests_at_shared_port(&topology, 2, false)?;
+            let Err(error) = resolve_native_root_occurrences(
+                &topology,
+                cut_port,
+                &requests,
+                Some(metric_access),
+                true,
+            ) else {
+                return Err(GeometryErrorKind::Invalid(
+                    "conflicting source ordinates were merged into one value".into(),
+                )
+                .into());
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("difference cannot represent Z/M")
+            );
+            Ok(())
+        })
     }
 
     #[test]
