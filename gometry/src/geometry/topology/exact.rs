@@ -308,11 +308,6 @@ pub(super) fn compare_quotient_keys_with_work(
     }
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    clippy::arithmetic_side_effects,
-    reason = "binary-search bounds remain within the sorted exact chart-port slice"
-)]
 #[cfg(test)]
 fn find_chart_port(ports: &[ChartPort], point: &ExactChartPoint) -> Result<ChartPortId> {
     let mut work = Unmetered;
@@ -1676,11 +1671,6 @@ impl ExactGeographicChartInventory {
         Ok(())
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        clippy::arithmetic_side_effects,
-        reason = "piece, port, quotient-node, and atom IDs index dense columns emitted by this noder"
-    )]
     #[cfg(test)]
     pub(super) fn node(&self, budget: &mut ExpansionBudget) -> Result<NodedExactChart> {
         let mut work = Unmetered;

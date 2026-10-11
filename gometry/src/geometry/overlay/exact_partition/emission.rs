@@ -899,10 +899,6 @@ fn canonicalize_open_nodes_by_xy(coordinates: &[XY], nodes: &mut [NodeId]) {
 /// Whether a closed boundary walk is the outer cycle of the face on its left,
 /// judged at its exact lexicographically least vertex. `first(i)` and
 /// `last(i)` are the first and last darts of the walk's `i`-th step.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "callbacks return darts from the same nonempty closed walk in the checked topology"
-)]
 pub(super) fn walk_is_shell(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,

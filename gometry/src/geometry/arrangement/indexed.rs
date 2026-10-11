@@ -324,10 +324,6 @@ impl IndexedTopology {
     }
 
     #[expect(
-        clippy::indexing_slicing,
-        reason = "edge, vertex, twin, successor, and face slots are derived from the admitted CSR columns built here"
-    )]
-    #[expect(
         clippy::expect_used,
         reason = "the Unmetered specialization cannot fail its Work charge"
     )]

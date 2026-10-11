@@ -5899,14 +5899,6 @@ impl QCoordinates {
     }
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "singleton enclosure and binary64 equality certify exact represented coordinates"
-)]
-#[expect(
-    clippy::float_cmp,
-    reason = "singleton enclosure and binary64 equality certify exact represented coordinates"
-)]
 fn exact_coordinate_matches_with_work(
     value: &ExactRational,
     coordinate: f64,

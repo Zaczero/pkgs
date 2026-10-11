@@ -2158,10 +2158,6 @@ impl AreaSupport {
         Ok(false)
     }
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "the union counts distinct admitted source rows"
-    )]
     fn count(&mut self, q: &super::q::ExactGeographicQ, work: &mut impl Work) -> Result<usize> {
         let Some(&first) = self.faces.first() else {
             return Ok(0);
@@ -2181,10 +2177,6 @@ impl AreaSupport {
         Ok(count)
     }
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "sorted unique support rows add only rows absent from the area union"
-    )]
     fn with_rows(
         &mut self,
         q: &super::q::ExactGeographicQ,
