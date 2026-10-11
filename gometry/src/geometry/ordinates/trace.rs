@@ -1234,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn point_producer_support_cannot_cover_a_source_interval() -> Result<()> {
+    fn point_producer_support_cannot_cover_a_source_interval() {
         RootRange::from_mapped(
             RootId::from_index(8),
             ExactRational::zero(),
@@ -1243,7 +1243,6 @@ mod tests {
             ExactRational::from_f64(0.5),
         )
         .unwrap_err();
-        Ok(())
     }
 
     #[test]

@@ -306,7 +306,7 @@ fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQD
             family_state,
         }),
         SealedQDrawing::Native(native) => {
-            let written = write_completed_native(native)?;
+            let written = write_completed_native(native);
             Ok(WrittenQDrawing {
                 shape: written.shape,
                 line_traces: written.line_traces,

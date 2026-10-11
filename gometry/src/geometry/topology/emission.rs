@@ -1505,17 +1505,15 @@ pub(super) fn materialize_native_parts(
     })
 }
 
-pub(super) fn write_completed_native(
-    drawing: CompletedNativeDrawing,
-) -> Result<WrittenNativeDrawing> {
+pub(super) fn write_completed_native(drawing: CompletedNativeDrawing) -> WrittenNativeDrawing {
     let CompletedNativeDrawing {
         sealed,
         line_traces,
     } = drawing;
-    Ok(WrittenNativeDrawing {
+    WrittenNativeDrawing {
         shape: sealed.into_shape(),
         line_traces,
-    })
+    }
 }
 
 pub(super) struct WrittenNativeDrawing {
@@ -4572,7 +4570,7 @@ mod tests {
     }
 
     #[test]
-    fn bent_and_backtracking_producers_are_not_flattened() -> Result<()> {
+    fn bent_and_backtracking_producers_are_not_flattened() {
         let unsupported = [
             (
                 vec![
@@ -4602,7 +4600,6 @@ mod tests {
             )
             .unwrap_err();
         }
-        Ok(())
     }
 
     #[test]
