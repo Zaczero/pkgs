@@ -5233,8 +5233,13 @@ where
     let mut count = 1_u32;
     for node in 1..size {
         work.charge(1)?;
-        if links[node] == node as u32 {
-            labels[node] = count;
+        let link = *links.get(node).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph face link is outside its table".into())
+        })?;
+        if link == node as u32 {
+            *labels.get_mut(node).ok_or_else(|| {
+                GeometryErrorKind::Invalid("graph face label is outside its table".into())
+            })? = count;
             count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
     }

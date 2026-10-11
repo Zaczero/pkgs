@@ -3651,8 +3651,11 @@ fn rotate_area_ring_vertices<'topology>(
     let open = vertices.get(..edge_count).ok_or_else(|| {
         GeometryErrorKind::Invalid("Q area ring has an invalid open vertex range".into())
     })?;
-    rotated.extend_from_slice(&open[start_index..]);
-    rotated.extend_from_slice(&open[..start_index]);
+    let (prefix, suffix) = open.split_at_checked(start_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("Q area ring has an invalid native cycle start".into())
+    })?;
+    rotated.extend_from_slice(suffix);
+    rotated.extend_from_slice(prefix);
     let first = *rotated.first().ok_or_else(|| {
         GeometryErrorKind::Invalid("Q area ring rotation removed every vertex".into())
     })?;

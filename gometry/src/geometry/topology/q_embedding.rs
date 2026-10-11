@@ -723,20 +723,19 @@ impl NativeReferenceRayPoints<'_> {
 }
 
 impl RayPoints for NativeReferenceRayPoints<'_> {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "query IDs are allocated immediately after the paired graph point columns"
-    )]
     fn rounded(&self, index: u32) -> XY {
         let index = index as usize;
-        let point = if index < self.base.rounded.len() {
-            self.base.rounded[index]
-        } else {
-            let query_index = index
-                .checked_sub(self.base.rounded.len())
-                .expect("query IDs follow the base graph point columns");
-            self.rounded_queries[query_index]
-        };
+        let point = self
+            .base
+            .rounded
+            .get(index)
+            .or_else(|| {
+                index
+                    .checked_sub(self.base.rounded.len())
+                    .and_then(|query_index| self.rounded_queries.get(query_index))
+            })
+            .copied()
+            .expect("ray point IDs belong to the paired graph and query point tables");
         match self.transform {
             NativeRayTransform::Identity => point,
             NativeRayTransform::ReflectX => XY::new(-point.x, point.y),
@@ -2497,12 +2496,18 @@ fn native_reference_cycles_and_parts(
                 contributors,
             });
         }
+        let slot_at = |step| {
+            slots
+                .get(step)
+                .copied()
+                .expect("walk steps are bounded by the admitted face slots")
+        };
         let shell = walk_is_shell_with_work(
             &graph.points,
             &graph.topology,
             slots.len(),
-            |step| slots[step],
-            |step| slots[step],
+            slot_at,
+            slot_at,
             budget,
         )?;
         cycles.push(NativeGraphCycle {
@@ -17541,7 +17546,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                     self.all_outer_repair_classes(budget)?,
                                 ));
                             }
-                            variable_for_node[node_index] = Some(variable);
+                            *variable_for_node.get_mut(node_index).ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "native computed cut node has no variable slot".into(),
+                                )
+                            })? = Some(variable);
                             points.push(point);
                             domains.push(domain);
                             variable
@@ -19174,13 +19183,25 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             "native pole node is outside its assigned site table".into(),
                         )
                         .into());
-                    } else if sites[node_index].is_none() {
+                    } else if sites
+                        .get(node_index)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "native pole node has no assigned site slot".into(),
+                            )
+                        })?
+                        .is_none()
+                    {
                         let [_, longitude, _] = rounded_native_neighbors_with_work(
                             self.topology.sources.frame.longitude(),
                             &chart_point.x,
                             budget,
                         )?;
-                        sites[node_index] = Some(assigned_emission_site(
+                        *sites.get_mut(node_index).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "native pole node has no assigned site slot".into(),
+                            )
+                        })? = Some(assigned_emission_site(
                             self.topology.sources.frame,
                             QCandidate {
                                 native: XY::new(

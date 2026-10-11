@@ -63,7 +63,10 @@ impl ExactPoints {
 
 impl RayPoints for ExactPoints {
     fn rounded(&self, index: u32) -> XY {
-        self.rounded[index as usize]
+        self.rounded
+            .get(index as usize)
+            .copied()
+            .expect("graph point IDs belong to the admitted point table")
     }
 
     fn compare_axis(&self, left: u32, right: u32, axis: RayAxis) -> Result<Ordering> {

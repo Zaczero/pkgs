@@ -706,7 +706,10 @@ fn collect_native_line_members_inner(
             return Ok(());
         }
         if let Ok(index) = known.binary_search_by_key(&member, |&(member, _)| member) {
-            output.push((member, known[index].1));
+            let (_, axes) = known.get(index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("known native line member is missing".into())
+            })?;
+            output.push((member, *axes));
             return Ok(());
         }
         let source = Shape::LineString(line.clone());
