@@ -691,7 +691,7 @@ pub(crate) fn publish_changed_raw_computed_shape<'metric, M: ChartMetric + 'metr
     Ok(published)
 }
 
-fn publish_native_computed_chain<'intent, 'metric, P, M>(
+pub(crate) fn publish_native_computed_chain<'intent, 'metric, P, M>(
     frame: GeographicFrame,
     points: &P,
     closed_ring: bool,

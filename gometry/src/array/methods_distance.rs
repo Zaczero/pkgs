@@ -499,16 +499,35 @@ impl PyGeometryArray {
         self.map_shapes(|shape| Ok(shape.envelope()?))
     }
 
-    pub(crate) fn convex_hull_unary_packed(&self, py: Python<'_>) -> PyResult<Self> {
+    pub(crate) fn convex_hull_unary_packed(
+        &self,
+        py: Python<'_>,
+        resolver: crate::dispatch::MetricResolver,
+    ) -> PyResult<Self> {
         if let Some(identity) = self.packed_points_identity() {
             return Ok(identity);
         }
-        let domain = crate::geometry::topology_domain(&self.frame)?;
-        self.map_shapes_detached(py, |shape| {
+        let mut metric_scratch = crate::dispatch::MetricScratch::default();
+        let (domain, metric) = resolver.resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+        let source_crs = self.frame.crs_str().map(str::to_owned);
+        self.map_shapes_detached(py, move |shape| {
+            let metric_access = || {
+                metric
+                    .source_chart_metric(source_crs.as_deref())?
+                    .ok_or_else(|| {
+                        crate::crs::CrsError::invalid(
+                            "geographic computed-edge source ordinates require the operation's CRS metric",
+                        )
+                        .into()
+                    })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
             if let crate::geometry::TopologyDomain::Geographic(frame) = domain
                 && !matches!(shape, Shape::Point(_) | Shape::Empty(..))
                 && PointSelectionChart::accepts_point_set(shape)
-                && let Some(hull) = point_set_convex_hull_shape(shape, frame, shape.bounds())?
+                && let Some(hull) =
+                    point_set_convex_hull_shape(shape, frame, shape.bounds(), &source_context)?
             {
                 return Ok(hull);
             }
@@ -516,7 +535,12 @@ impl PyGeometryArray {
             match domain {
                 crate::geometry::TopologyDomain::Cartesian => Ok(hull),
                 crate::geometry::TopologyDomain::Geographic(frame) => {
-                    crate::geometry::publish_raw_computed_shape(&hull, frame, "convex_hull")
+                    crate::geometry::publish_raw_computed_shape_with_context(
+                        &hull,
+                        frame,
+                        "convex_hull",
+                        &source_context,
+                    )
                 },
             }
         })

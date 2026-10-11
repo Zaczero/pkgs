@@ -176,11 +176,13 @@ pub(crate) fn unary_convex_hull(
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
         && PointSelectionChart::accepts_point_set(shape)
-        && let Some(hull) = point_set_convex_hull_shape(shape, frame, data.bounds())?
+        && let Some(hull) = with_native_source_context(ctx, |source_context| {
+            point_set_convex_hull_shape(shape, frame, data.bounds(), source_context)
+        })?
     {
         return Ok(hull);
     }
-    publish_raw_computed_if_geographic(shape.convex_hull()?, ctx.domain, "convex_hull")
+    publish_raw_computed_if_geographic(shape.convex_hull()?, ctx, "convex_hull")
 }
 
 /// Simplify kernel shared by the spine-routed free function.
@@ -459,29 +461,55 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
         && PointSelectionChart::accepts_point_set(shape)
-        && let Some(rectangle) =
-            point_set_minimum_rotated_rectangle_shape(shape, frame, data.bounds())?
+        && let Some(rectangle) = with_native_source_context(ctx, |source_context| {
+            point_set_minimum_rotated_rectangle_shape(shape, frame, data.bounds(), source_context)
+        })?
     {
         return Ok(rectangle);
     }
     publish_raw_computed_if_geographic(
         shape.minimum_rotated_rectangle()?,
-        ctx.domain,
+        ctx,
         "minimum_rotated_rectangle",
     )
 }
 
 fn publish_raw_computed_if_geographic(
     shape: Shape,
-    domain: TopologyDomain,
+    ctx: &CachelessRowContext<'_>,
     operation: &'static str,
 ) -> Result<Shape> {
-    match domain {
+    match ctx.domain {
         TopologyDomain::Cartesian => Ok(shape),
-        TopologyDomain::Geographic(frame) => {
-            crate::geometry::publish_raw_computed_shape(&shape, frame, operation)
-        },
+        TopologyDomain::Geographic(frame) => with_native_source_context(ctx, |source_context| {
+            crate::geometry::publish_raw_computed_shape_with_context(
+                &shape,
+                frame,
+                operation,
+                source_context,
+            )
+        }),
     }
+}
+
+fn with_native_source_context<T>(
+    ctx: &CachelessRowContext<'_>,
+    publish: impl FnOnce(
+        &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    ) -> Result<T>,
+) -> Result<T> {
+    let metric_access = || {
+        ctx.metric
+            .source_chart_metric(ctx.frame.crs_str())?
+            .ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic computed-edge source ordinates require the operation's CRS metric",
+                )
+                .into()
+            })
+    };
+    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
+    publish(&source_context)
 }
 
 fn publish_computed_point_or_raw_if_geographic(

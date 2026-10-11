@@ -3,7 +3,6 @@ use std::cmp::Ordering;
 use super::{
     CanonicalLongitude, CircularInterval, ComputedEdgeIntent, ComputedVertexIntent,
     GeographicFrame, GeographicSupportProducts, RetainedChartDisplacement, RetainedLongitudeSite,
-    publish_computed_chain_with_vertex_intents,
 };
 use crate::error::Result;
 use crate::geometry::{
@@ -324,6 +323,7 @@ pub(crate) fn point_set_convex_hull_shape(
     shape: &Shape,
     frame: GeographicFrame,
     raw_extrema: Option<Bounds>,
+    source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Option<Shape>> {
     let Some(chain) = point_set_convex_hull(shape, frame, raw_extrema)? else {
         return Ok(None);
@@ -332,6 +332,7 @@ pub(crate) fn point_set_convex_hull_shape(
         chain,
         frame,
         "convex_hull",
+        source_context,
     )?))
 }
 
@@ -339,13 +340,14 @@ pub(crate) fn point_set_minimum_rotated_rectangle_shape(
     shape: &Shape,
     frame: GeographicFrame,
     raw_extrema: Option<Bounds>,
+    source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Option<Shape>> {
     let Some(rectangle) = point_set_minimum_rotated_rectangle(shape, frame, raw_extrema)? else {
         return Ok(None);
     };
     let shape = match rectangle {
         ChartedPointRectangle::Source(chain) => {
-            publish_charted_point_chain(chain, frame, "minimum_rotated_rectangle")?
+            publish_charted_point_chain(chain, frame, "minimum_rotated_rectangle", source_context)?
         },
         // `minimum_area_rectangle_chart` has already used the shared publisher
         // and certified its actual emitted boundary.
@@ -361,6 +363,7 @@ fn publish_charted_point_chain(
     chain: ChartedPointChain,
     frame: GeographicFrame,
     operation: &'static str,
+    source_context: &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
 ) -> Result<Shape> {
     match chain {
         ChartedPointChain::SourcePoint(point) => Ok(Shape::Point(point)),
@@ -371,11 +374,12 @@ fn publish_charted_point_chain(
         } => {
             debug_assert_eq!(edges.len(), coordinates.len().saturating_sub(1));
             let mut budget = ExpansionBudget::new(operation, "computed edges");
-            let published = publish_computed_chain_with_vertex_intents(
+            let published = crate::geometry::publish_native_computed_chain(
                 frame,
                 &coordinates,
                 closed_ring,
                 &mut budget,
+                source_context,
                 |index, _, _| {
                     Ok(ComputedEdgeIntent::retained_native(
                         *edges
@@ -473,12 +477,13 @@ fn charted_point_chain(
 mod tests {
     use super::{
         ChartedPointChain, ChartedPointRectangle, PointSelectionChart, point_set_centroid,
-        point_set_convex_hull, point_set_minimum_rotated_rectangle, point_set_surface,
+        point_set_convex_hull, point_set_convex_hull_shape, point_set_minimum_rotated_rectangle,
+        point_set_surface,
     };
     use crate::geographic::{AngularFactor, ChartPole, GeographicFrame};
     use crate::geometry::{
-        Bounds, CoordSeq, CoordinateAxes, Coordinates as _, MOrdinate, Point, PointSetCenter,
-        Polygon, Ring, Shape, ZOrdinate,
+        Bounds, ChartMetric, CoordSeq, CoordinateAxes, Coordinates as _, MOrdinate, Point,
+        PointSetCenter, Polygon, Ring, Shape, SourceArcContext, TopologyDomain, ZOrdinate,
     };
 
     fn point(x: f64, y: f64) -> Point {
@@ -866,6 +871,63 @@ mod tests {
         let [start, end] = *edges[0].endpoints();
         assert_eq!((start.get(), end.get()), (170.0, -170.0));
         assert_eq!(edges[0].periods(), 1);
+    }
+
+    #[test]
+    fn point_chart_hull_closing_chord_resolves_ordinates_on_its_retained_root() {
+        const CRS: &str = "OGC:CRS84";
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
+        let crate::crs::ResolvedMetric::Geodesic(metric) =
+            crate::crs::ResolvedMetric::from_model(&model).unwrap()
+        else {
+            panic!("CRS84 has a geodesic metric");
+        };
+        let frame = metric.frame;
+        let shape = multipoint(
+            &[
+                Point::new_axes(0.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(Some(100.0))).unwrap(),
+                Point::new_axes(120.0, 60.0, ZOrdinate(Some(210.0)), MOrdinate(Some(500.0)))
+                    .unwrap(),
+                Point::new_axes(-120.0, 10.0, ZOrdinate(Some(40.0)), MOrdinate(Some(160.0)))
+                    .unwrap(),
+            ],
+            CoordinateAxes::XYZM,
+        );
+        let metric_access = || Ok(&metric);
+        let source_context =
+            SourceArcContext::new(TopologyDomain::Geographic(frame), Some(&metric_access));
+        let output = point_set_convex_hull_shape(&shape, frame, shape.bounds(), &source_context)
+            .unwrap()
+            .unwrap();
+        let Shape::Polygon(polygon) = output else {
+            panic!("three non-collinear sites have an areal hull");
+        };
+        let midpoint = polygon
+            .shell
+            .coords()
+            .iter()
+            .find(|point| point.x == 0.0 && point.y == 35.0)
+            .expect("the retained -240-degree closing chord has a midpoint");
+
+        let chord = |parameter: usize| {
+            let fraction = parameter as f64 / 8.0;
+            Point::new_raw_xy(120.0 - 240.0 * fraction, 60.0 - 50.0 * fraction)
+        };
+        let length = |range: std::ops::Range<usize>| {
+            range
+                .map(|index| {
+                    let edge = metric.chart_edge(chord(index), chord(index + 1)).unwrap();
+                    metric.chart_edge_length(&edge).unwrap()
+                })
+                .sum::<f64>()
+        };
+        let fraction = length(0..4) / length(0..8);
+        let expected_z = 210.0 + (40.0 - 210.0) * fraction;
+        let expected_m = 500.0 + (160.0 - 500.0) * fraction;
+
+        assert!((midpoint.z().unwrap() - expected_z).abs() < 1.0e-10);
+        assert!((midpoint.m().unwrap() - expected_m).abs() < 1.0e-10);
     }
 
     #[test]
