@@ -5530,6 +5530,35 @@ fn native_selected_pole_sectors(
     Ok((sectors, closures))
 }
 
+fn native_pole_closure_regions(
+    sectors: &[NativeSelectedPoleSector],
+    budget: &mut impl Work,
+) -> Result<BTreeSet<(usize, ChartPole)>> {
+    // A repeated fan dart is a full-turn boundary; a multi-ray fan already
+    // bounds a local pole sector and must not receive the complementary arc.
+    budget.charge(u64::try_from(sectors.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut closures = BTreeSet::new();
+    for selected in sectors {
+        budget.charge(1)?;
+        let pole = match selected.sector {
+            super::q::PoleSector::Terminal { pole, .. }
+            | super::q::PoleSector::Isolated { pole, .. } => Some(pole),
+            super::q::PoleSector::Fan {
+                pole,
+                clockwise,
+                counterclockwise,
+                ..
+            } if clockwise == counterclockwise => Some(pole),
+            super::q::PoleSector::Fan { .. } => None,
+        };
+        if let Some(pole) = pole {
+            budget.charge(1)?;
+            closures.insert((selected.region, pole));
+        }
+    }
+    Ok(closures)
+}
+
 fn native_whole_sphere_cell_edges(
     builder: &mut super::emission::EmissionBuilder<'_>,
     frame: GeographicFrame,
@@ -18044,10 +18073,16 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             self.emission.selected_face_roots,
             budget,
         )?;
+        let pole_closure_sectors = native_pole_closure_regions(&pole_sectors, budget)?;
         let mut pole_closures = Vec::new();
         if has_area {
             for (region, pole) in selected_pole_closures {
                 budget.charge(1)?;
+                // A source fan already supplies its pole port and sector bounds;
+                // terminal and isolated sectors need a synthetic closure.
+                if !pole_closure_sectors.contains(&(region, pole)) {
+                    continue;
+                }
                 let mut area_region = whole_sphere;
                 for &(candidate, _) in area_facts.values() {
                     budget.charge(1)?;
@@ -18693,6 +18728,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     self.topology.sources.frame,
                     &native_seam_vertices,
                     &pole_closures,
+                    &area_edges,
+                    &line_graph_edges,
+                    &reference_ports,
                     &mut |region, start, end, budget| {
                         graph_builder.has_area_edge(region, start, end, budget)
                     },
@@ -18718,6 +18756,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     };
                     materialized_poles.push((region, *pole));
                 }
+                try_sort_by_with_work(&mut materialized_poles, budget, |left, right, budget| {
+                    budget.charge(1)?;
+                    Ok(left.cmp(right))
+                })?;
+                budget.charge(
+                    u64::try_from(materialized_poles.len())
+                        .map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
+                materialized_poles.dedup();
                 self.register_native_pole_families(&materialized_poles, budget)?;
                 area_edges.extend(pole_edges);
             }
@@ -21059,6 +21106,92 @@ mod canonical_coordinate_tests {
                 "unexpected strict-bank result for {start} -> {end}",
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_pole_wedge_is_a_fan_not_a_terminal_chart_closure() -> Result<()> {
+        let cap = crate::io::parse_wkt("POLYGON ((0 80, 90 80, 180 80, -90 80, 0 80))")?;
+        let wedge = crate::io::parse_wkt("POLYGON ((120 90, 110 75, 130 75, 120 90))")?;
+        let topology = topology(&[cap, wedge])?;
+        let mut work = Unmetered;
+        let plan = QEmissionPlan::build(&topology, OverlayOp::Intersection, &mut work)?;
+        let (sectors, closures) =
+            native_selected_pole_sectors(&topology.q, &plan.selected_face_roots, &mut work)?;
+        let (region, clockwise, counterclockwise) = sectors
+            .iter()
+            .find_map(|selected| match selected.sector {
+                super::super::q::PoleSector::Fan {
+                    pole: ChartPole::North,
+                    clockwise,
+                    counterclockwise,
+                    ..
+                } => Some((selected.region, clockwise, counterclockwise)),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("north wedge has no selected pole fan".into())
+            })?;
+
+        assert_ne!(clockwise, counterclockwise);
+        assert!(closures.contains(&(region, ChartPole::North)));
+        assert!(!sectors.iter().any(|selected| {
+            selected.region == region
+                && matches!(selected.sector, super::super::q::PoleSector::Terminal {
+                    pole: ChartPole::North,
+                    ..
+                })
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn native_pole_closures_keep_terminal_isolated_and_full_turn_sectors() -> Result<()> {
+        let sectors = [
+            NativeSelectedPoleSector {
+                region: 1,
+                sector: super::super::q::PoleSector::Fan {
+                    pole: ChartPole::North,
+                    clockwise: QDartId(0),
+                    counterclockwise: QDartId(1),
+                    face: GlobalFaceId(0),
+                },
+            },
+            NativeSelectedPoleSector {
+                region: 4,
+                sector: super::super::q::PoleSector::Fan {
+                    pole: ChartPole::North,
+                    clockwise: QDartId(2),
+                    counterclockwise: QDartId(2),
+                    face: GlobalFaceId(3),
+                },
+            },
+            NativeSelectedPoleSector {
+                region: 2,
+                sector: super::super::q::PoleSector::Terminal {
+                    pole: ChartPole::North,
+                    face: GlobalFaceId(1),
+                },
+            },
+            NativeSelectedPoleSector {
+                region: 3,
+                sector: super::super::q::PoleSector::Isolated {
+                    pole: ChartPole::South,
+                    node: QNodeId(0),
+                    face: GlobalFaceId(2),
+                },
+            },
+        ];
+        let closures = native_pole_closure_regions(&sectors, &mut Unmetered)?;
+
+        assert_eq!(
+            closures,
+            BTreeSet::from([
+                (2, ChartPole::North),
+                (3, ChartPole::South),
+                (4, ChartPole::North),
+            ])
+        );
         Ok(())
     }
 

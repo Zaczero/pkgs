@@ -751,10 +751,55 @@ pub(super) fn native_seam_edges(
     Ok(edges)
 }
 
+fn native_pole_presentation_occurrence(
+    source: &NativePortData,
+    node: EmissionNodeId,
+    latitude: &ExactRational,
+    west: &ExactRational,
+    half: &ExactRational,
+    budget: &mut EvaluationBudget,
+) -> Result<Option<NativePortData>> {
+    budget.charge(1)?;
+    if source.node != node
+        || !matches!(&source.spelling, PortSpelling::Pole { .. })
+        || !source.point.y.try_cmp_with_work(latitude, budget)?.is_eq()
+        || !source.point.x.try_cmp_with_work(west, budget)?.is_gt()
+        || !source.point.x.try_cmp_with_work(half, budget)?.is_lt()
+    {
+        return Ok(None);
+    }
+    let PortSpelling::Pole { native_longitude } = &source.spelling else {
+        return Ok(None);
+    };
+    if !ExactRational::from_f64(*native_longitude)
+        .try_cmp_with_work(&source.point.x, budget)?
+        .is_eq()
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "native pole occurrence has an inexact longitude spelling".into(),
+        )
+        .into());
+    }
+    budget.charge(1)?;
+    Ok(Some(NativePortData {
+        node: source.node,
+        point: source.point.try_clone_with_work(budget)?,
+        spelling: source.spelling.clone(),
+        source_record: None,
+        occurrences: vec![OccurrenceSource {
+            origin: VertexOrigin::Presentation,
+            source_trace: None,
+        }],
+    }))
+}
+
 pub(super) fn native_pole_edges(
     frame: GeographicFrame,
     events: &[NativeSeamVertices],
     closures: &[(usize, ChartPole)],
+    area_edges: &[NativeAreaEdge],
+    line_edges: &[NativeAreaEdge],
+    reference_ports: &[NativePortData],
     has_existing_area_edge: &mut impl FnMut(
         usize,
         &NativePortData,
@@ -763,8 +808,107 @@ pub(super) fn native_pole_edges(
     ) -> Result<bool>,
     budget: &mut EvaluationBudget,
 ) -> Result<Vec<NativeAreaEdge>> {
+    if closures.is_empty() {
+        return Ok(Vec::new());
+    }
     budget.charge(u64::try_from(closures.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut edges = Vec::with_capacity(closures.len());
+    let mut edges = Vec::new();
+    let half = ExactRational::from_f64(frame.longitude().half_period());
+    let west = ExactRational::zero().try_subtract_with_work(&half, budget)?;
+    let mut known_poles = Vec::<(
+        ChartPole,
+        EmissionNodeId,
+        ExactRational,
+        Vec<NativePortData>,
+    )>::new();
+    for pole in [ChartPole::South, ChartPole::North] {
+        budget.charge(u64::try_from(closures.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        if !closures
+            .iter()
+            .any(|(_, closure_pole)| *closure_pole == pole)
+        {
+            continue;
+        }
+        let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
+        let event = events
+            .get(native_seam_vertex_index(events, &latitude, budget)?)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("native pole closure has no seam event".into())
+            })?;
+        if event.east.node != event.west.node
+            || !event.latitude.try_cmp_with_work(&latitude, budget)?.is_eq()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "native pole banks do not share their typed pole identity".into(),
+            )
+            .into());
+        }
+        known_poles.push((pole, event.east.node, latitude, Vec::new()));
+    }
+    for edge in area_edges.iter().chain(line_edges) {
+        budget.charge(1)?;
+        if !matches!(&edge.kind, NativeAreaEdgeKind::Producer { .. }) {
+            continue;
+        }
+        for source in &edge.vertices {
+            for (_, node, latitude, known) in &mut known_poles {
+                if let Some(presentation) = native_pole_presentation_occurrence(
+                    source, *node, latitude, &west, &half, budget,
+                )? {
+                    known.push(presentation);
+                }
+            }
+        }
+    }
+    for source in reference_ports {
+        for (_, node, latitude, known) in &mut known_poles {
+            if let Some(presentation) =
+                native_pole_presentation_occurrence(source, *node, latitude, &west, &half, budget)?
+            {
+                known.push(presentation);
+            }
+        }
+    }
+    for (_, _, _, known) in &mut known_poles {
+        try_sort_by_with_work(known, budget, |left, right, budget| {
+            budget.charge(1)?;
+            left.point.x.try_cmp_with_work(&right.point.x, budget)
+        })?;
+        let known_count = known.len();
+        budget.charge(u64::try_from(known_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut unique = Vec::<NativePortData>::with_capacity(known_count);
+        for port in std::mem::take(known) {
+            budget.charge(1)?;
+            if let Some(previous) = unique.last()
+                && previous
+                    .point
+                    .x
+                    .try_cmp_with_work(&port.point.x, budget)?
+                    .is_eq()
+            {
+                let same_spelling = match (&previous.spelling, &port.spelling) {
+                    (
+                        PortSpelling::Pole {
+                            native_longitude: previous,
+                        },
+                        PortSpelling::Pole {
+                            native_longitude: current,
+                        },
+                    ) => previous.to_bits() == current.to_bits(),
+                    _ => false,
+                };
+                if !same_spelling || !previous.point.try_eq_with_work(&port.point, budget)? {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native producer pole ports disagree on one chart occurrence".into(),
+                    )
+                    .into());
+                }
+                continue;
+            }
+            unique.push(port);
+        }
+        *known = unique;
+    }
     for &(region, pole) in closures {
         let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
         let event = events
@@ -780,25 +924,82 @@ pub(super) fn native_pole_edges(
             )
             .into());
         }
-        let presentation = |source: &NativePortData, side| NativePortData {
+        let known = known_poles
+            .iter()
+            .find(|(known_pole, node, ..)| *known_pole == pole && *node == event.east.node)
+            .map(|(_, _, _, ports)| ports)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("native pole closure has no incidence inventory".into())
+            })?;
+        let path_len = known
+            .len()
+            .checked_add(2)
+            .ok_or(ResourceError::SizeOverflow)?;
+        budget.charge(u64::try_from(path_len).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut path = Vec::with_capacity(path_len);
+        let east = NativePortData {
             node: event.east.node,
-            point: source.point.clone(),
-            spelling: PortSpelling::Seam(side),
+            point: event.east.point.try_clone_with_work(budget)?,
+            spelling: PortSpelling::Seam(ChartSide::East),
             source_record: None,
             occurrences: vec![OccurrenceSource {
                 origin: VertexOrigin::Presentation,
                 source_trace: None,
             }],
         };
-        let east = presentation(&event.east, ChartSide::East);
-        let west = presentation(&event.west, ChartSide::West);
-        let vertices = match pole {
-            ChartPole::North => [east, west],
-            ChartPole::South => [west, east],
+        let west = NativePortData {
+            node: event.west.node,
+            point: event.west.point.try_clone_with_work(budget)?,
+            spelling: PortSpelling::Seam(ChartSide::West),
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::Presentation,
+                source_trace: None,
+            }],
         };
-        if !has_existing_area_edge(region, &vertices[0], &vertices[1], budget)? {
+        match pole {
+            ChartPole::North => {
+                path.push(east);
+                path.extend(known.iter().rev().cloned());
+                path.push(west);
+            },
+            ChartPole::South => {
+                path.push(west);
+                path.extend(known.iter().cloned());
+                path.push(east);
+            },
+        }
+        let segment_count = path
+            .len()
+            .checked_sub(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        budget.charge(u64::try_from(segment_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        edges.reserve(segment_count);
+        for pair in path.array_windows::<2>() {
+            budget.charge(1)?;
+            let mut endpoints = pair.iter();
+            let start = endpoints.next().ok_or_else(|| {
+                GeometryErrorKind::Invalid("native pole arc has no start port".into())
+            })?;
+            let end = endpoints.next().ok_or_else(|| {
+                GeometryErrorKind::Invalid("native pole arc has no end port".into())
+            })?;
+            if start
+                .point
+                .x
+                .try_cmp_with_work(&end.point.x, budget)?
+                .is_eq()
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "native pole presentation contains a zero-length chart arc".into(),
+                )
+                .into());
+            }
+            if has_existing_area_edge(region, start, end, budget)? {
+                continue;
+            }
             edges.push(NativeAreaEdge {
-                vertices,
+                vertices: [start.clone(), end.clone()],
                 owner: NativeGraphEdgeOwner::Area { region },
                 kind: NativeAreaEdgeKind::PolePresentation { pole },
             });
@@ -3712,7 +3913,9 @@ impl FragmentRecipes {
 mod tests {
     use super::*;
     use crate::geometry::Unmetered;
-    use crate::geometry::embedding_completion::visit_shape_literals;
+    use crate::geometry::embedding_completion::{
+        ExactPoints, admit_known_graph, visit_shape_literals,
+    };
 
     fn pending_source_range(
         source_edge: u32,
@@ -4510,6 +4713,206 @@ mod tests {
         assert!(
             merge_native_port_data(frame, &east_presentation, &west, &mut work).is_err(),
             "East and West seam-bank copies remain distinct at a pole"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_pole_presentation_splits_at_a_known_source_occurrence() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let pole_latitude = frame.chart_pole_latitude(ChartPole::North);
+        let pole = NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(120.0),
+                ExactRational::from_f64(pole_latitude),
+            ),
+            spelling: PortSpelling::Pole {
+                native_longitude: 120.0,
+            },
+            source_record: Some(Point::new_raw_xy(120.0, pole_latitude)),
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::SourceNode(QNodeId(7)),
+                source_trace: None,
+            }],
+        };
+        let lower = NativePortData {
+            node: EmissionNodeId(5),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(110.0),
+                ExactRational::from_f64(75.0),
+            ),
+            spelling: PortSpelling::Interior { periods: 0 },
+            source_record: None,
+            occurrences: Vec::new(),
+        };
+        let producer = NativeAreaEdge {
+            vertices: [pole, lower],
+            owner: NativeGraphEdgeOwner::Area { region: 0 },
+            kind: NativeAreaEdgeKind::Producer {
+                recipe: FragmentRecipeId(0),
+                trace_edge: 0,
+                producer_start: ExactRational::zero(),
+                producer_end: ExactRational::one(),
+                trace_ranges: Vec::new(),
+                known_spans: Vec::new(),
+            },
+        };
+        let isolated_pole = NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(100.0),
+                ExactRational::from_f64(pole_latitude),
+            ),
+            spelling: PortSpelling::Pole {
+                native_longitude: 100.0,
+            },
+            source_record: Some(Point::new_raw_xy(100.0, pole_latitude)),
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::SourceNode(QNodeId(8)),
+                source_trace: None,
+            }],
+        };
+        let seam_vertex = |longitude, spelling| NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(longitude),
+                ExactRational::from_f64(pole_latitude),
+            ),
+            spelling: PortSpelling::Seam(spelling),
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::Presentation,
+                source_trace: None,
+            }],
+        };
+        let event = NativeSeamVertices {
+            latitude: ExactRational::from_f64(pole_latitude),
+            east: seam_vertex(180.0, ChartSide::East),
+            west: seam_vertex(-180.0, ChartSide::West),
+        };
+        let mut budget = EvaluationBudget::new("pole presentation incidence", 0)?;
+        let edges = native_pole_edges(
+            frame,
+            &[event],
+            &[(0, ChartPole::North)],
+            &[producer],
+            &[],
+            &[isolated_pole],
+            &mut |_, _, _, _| Ok(false),
+            &mut budget,
+        )?;
+
+        assert_eq!(edges.len(), 3);
+        let first = &edges[0];
+        let second = &edges[1];
+        let third = &edges[2];
+        assert_eq!(first.vertices[0].point.x, ExactRational::from_f64(180.0));
+        assert_eq!(first.vertices[1].point.x, ExactRational::from_f64(120.0));
+        assert_eq!(second.vertices[0].point.x, ExactRational::from_f64(120.0));
+        assert_eq!(second.vertices[1].point.x, ExactRational::from_f64(100.0));
+        assert_eq!(third.vertices[0].point.x, ExactRational::from_f64(100.0));
+        assert_eq!(third.vertices[1].point.x, ExactRational::from_f64(-180.0));
+        assert!(matches!(
+            &first.vertices[0].spelling,
+            PortSpelling::Seam(ChartSide::East)
+        ));
+        assert!(matches!(
+            &third.vertices[1].spelling,
+            PortSpelling::Seam(ChartSide::West)
+        ));
+        for presentation_port in [
+            &first.vertices[1],
+            &second.vertices[0],
+            &second.vertices[1],
+            &third.vertices[0],
+        ] {
+            assert!(matches!(
+                &presentation_port.spelling,
+                PortSpelling::Pole { .. }
+            ));
+            assert!(presentation_port.source_record.is_none());
+            assert!(matches!(presentation_port.occurrences.as_slice(), [
+                OccurrenceSource {
+                    origin: VertexOrigin::Presentation,
+                    source_trace: None,
+                }
+            ]));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn overlapping_pole_presentation_arcs_still_fail_known_graph_admission() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let pole_latitude = frame.chart_pole_latitude(ChartPole::North);
+        let pole_port = |longitude| NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(longitude),
+                ExactRational::from_f64(pole_latitude),
+            ),
+            spelling: PortSpelling::Pole {
+                native_longitude: longitude,
+            },
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::Presentation,
+                source_trace: None,
+            }],
+        };
+        let existing = NativeAreaEdge {
+            vertices: [pole_port(80.0), pole_port(140.0)],
+            owner: NativeGraphEdgeOwner::Area { region: 0 },
+            kind: NativeAreaEdgeKind::PolePresentation {
+                pole: ChartPole::North,
+            },
+        };
+        let seam_vertex = |longitude, spelling| NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(longitude),
+                ExactRational::from_f64(pole_latitude),
+            ),
+            spelling: PortSpelling::Seam(spelling),
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::Presentation,
+                source_trace: None,
+            }],
+        };
+        let event = NativeSeamVertices {
+            latitude: ExactRational::from_f64(pole_latitude),
+            east: seam_vertex(180.0, ChartSide::East),
+            west: seam_vertex(-180.0, ChartSide::West),
+        };
+        let mut budget = EvaluationBudget::new("overlapping pole presentations", 0)?;
+        let generated = native_pole_edges(
+            frame,
+            &[event],
+            &[(0, ChartPole::North)],
+            std::slice::from_ref(&existing),
+            &[],
+            &[],
+            &mut |_, _, _, _| Ok(false),
+            &mut budget,
+        )?;
+        assert_eq!(generated.len(), 1);
+        let presentation = generated
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("pole arc was not generated".into()))?;
+        let exact = vec![
+            existing.vertices[0].point.clone(),
+            existing.vertices[1].point.clone(),
+            presentation.vertices[0].point.clone(),
+            presentation.vertices[1].point.clone(),
+        ];
+        let mut work = Unmetered;
+        let points = ExactPoints::from_exact(exact, &mut work)?;
+
+        assert!(
+            admit_known_graph(points, vec![[0, 1], [2, 3]], vec![4; 4], &mut work).is_err(),
+            "a partial overlap between known presentation arcs remains inadmissible"
         );
         Ok(())
     }
