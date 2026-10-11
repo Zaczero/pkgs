@@ -2,7 +2,7 @@ use std::collections::BinaryHeap;
 use std::num::NonZeroUsize;
 
 use crate::error::Result;
-use crate::geometry::coverage::{AABB, HashMap, Reverse, valid_coverage_rows};
+use crate::geometry::coverage::{AABB, HashMap, Reverse, coverage_rows, valid_coverage_rows};
 use crate::geometry::overlay::{ExactChainView, ExactPartition, ExactSourceInventory, NodeId};
 use crate::geometry::segment_index::ChordIndex;
 use crate::geometry::{
@@ -655,13 +655,29 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     if !(tolerance.is_finite() && tolerance >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("tolerance", tolerance).into());
     }
-    let prepared = valid_coverage_rows(rows, "coverage_simplify")?;
-    let prepared = prepared.rows;
-    let geographic_frame = match source_context.domain() {
+    let domain = source_context.domain();
+    let identity = same_topological_coordinate(tolerance, 0.0);
+    let prepared = if identity {
+        match domain {
+            TopologyDomain::Cartesian => valid_coverage_rows(rows, "coverage_simplify")?.rows,
+            TopologyDomain::Geographic(_) => {
+                if !crate::geometry::coverage_is_valid_with_domain(rows, 0.0, domain)? {
+                    return Err(GeometryErrorKind::InvalidCoverage {
+                        operation: "coverage_simplify",
+                    }
+                    .into());
+                }
+                coverage_rows(rows, 0.0)?.rows
+            },
+        }
+    } else {
+        valid_coverage_rows(rows, "coverage_simplify")?.rows
+    };
+    let geographic_frame = match domain {
         TopologyDomain::Geographic(frame) => Some(frame),
         TopologyDomain::Cartesian => None,
     };
-    if same_topological_coordinate(tolerance, 0.0) {
+    if identity {
         return Ok(prepared.iter().map(|row| row.shape.clone()).collect());
     }
 

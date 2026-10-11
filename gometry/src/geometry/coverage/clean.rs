@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::geometry::coverage::{
-    HashMap, coverage_rows, valid_coverage_rows, visit_invalid_segments,
+    HashMap, coverage_is_valid_with_domain, coverage_rows, valid_coverage_rows,
+    visit_invalid_segments,
 };
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
@@ -58,15 +59,22 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     } else {
         snapped.extend(rows.iter().map(|row| row.borrow().clone()));
     }
-    let prepared = coverage_rows(&snapped, gap_width)?;
     // Cleaning an already-valid coverage is an identity operation. Besides
     // avoiding needless partition work, this preserves coordinate bits, ring
     // presentation, and makes repeated cleaning exactly idempotent.
     // Finish validation so errors from later rows precede partition construction.
-    if !visit_invalid_segments(&prepared, gap_width, |_, _| true)? {
+    let already_valid = match context.domain() {
+        crate::geometry::TopologyDomain::Cartesian => {
+            let prepared = coverage_rows(&snapped, gap_width)?;
+            !visit_invalid_segments(&prepared, gap_width, |_, _| true)?
+        },
+        domain @ crate::geometry::TopologyDomain::Geographic(_) => {
+            coverage_is_valid_with_domain(&snapped, gap_width, domain)?
+        },
+    };
+    if already_valid {
         return Ok(snapped);
     }
-    drop(prepared);
 
     #[cfg(test)]
     drop(admission_phase);

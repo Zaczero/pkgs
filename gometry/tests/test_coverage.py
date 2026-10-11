@@ -124,6 +124,40 @@ def test_geographic_disjoint_coverage_preserves_nullable_rows() -> None:
     assert edges[2].is_empty
 
 
+def test_geographic_clean_keeps_valid_disjoint_rows_as_identity() -> None:
+    seam = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    greenwich = gm.Polygon(
+        [(-5, 2), (5, 2), (5, 8), (-5, 8)],
+        crs='OGC:CRS84',
+    )
+    rows = gm.GeometryArray([seam, greenwich])
+
+    cleaned = gm.coverage_clean(rows)
+    assert cleaned.to_wkt() == rows.to_wkt()
+    assert gm.coverage_is_valid(cleaned)
+
+
+def test_geographic_zero_tolerance_simplify_keeps_valid_disjoint_rows_as_identity() -> (
+    None
+):
+    seam = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    greenwich = gm.Polygon(
+        [(-5, 2), (5, 2), (5, 8), (-5, 8)],
+        crs='OGC:CRS84',
+    )
+    rows = gm.GeometryArray([seam, greenwich])
+
+    simplified = gm.coverage_simplify(rows, 0.0)
+    assert simplified.to_wkt() == rows.to_wkt()
+    assert gm.coverage_is_valid(simplified)
+
+
 def test_geographic_disjoint_coverage_union_keeps_its_output_bytes() -> None:
     seam = gm.Polygon(
         [(170, 0), (-170, 0), (-170, 10), (170, 10)],
