@@ -7,6 +7,8 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
+#[cfg(test)]
+use std::{cell::Cell, thread_local};
 
 use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::IndexedTopology;
@@ -24,6 +26,72 @@ use crate::geometry::{
     Bounds, CoordinateAxes, GeometryErrorKind, Point, Shape, Unmetered, Work, XY,
     for_each_overlapping_bounds_cross_pair_with_work,
 };
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ContactCheckProgress {
+    bounds_attempted: usize,
+    bounds_completed: usize,
+    identity_attempted: usize,
+    identity_completed: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CONTACT_CHECK_PROGRESS: Cell<ContactCheckProgress> =
+        const { Cell::new(ContactCheckProgress {
+            bounds_attempted: 0,
+            bounds_completed: 0,
+            identity_attempted: 0,
+            identity_completed: 0,
+        }) };
+}
+
+#[cfg(test)]
+fn reset_contact_check_progress() {
+    CONTACT_CHECK_PROGRESS.with(|progress| progress.set(ContactCheckProgress::default()));
+}
+
+#[cfg(test)]
+fn contact_check_progress() -> ContactCheckProgress {
+    CONTACT_CHECK_PROGRESS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_bounds_attempt() {
+    CONTACT_CHECK_PROGRESS.with(|progress| {
+        let mut value = progress.get();
+        value.bounds_attempted = value.bounds_attempted.wrapping_add(1);
+        progress.set(value);
+    });
+}
+
+#[cfg(test)]
+fn record_bounds_complete() {
+    CONTACT_CHECK_PROGRESS.with(|progress| {
+        let mut value = progress.get();
+        value.bounds_completed = value.bounds_completed.wrapping_add(1);
+        progress.set(value);
+    });
+}
+
+#[cfg(test)]
+fn record_identity_attempt() {
+    CONTACT_CHECK_PROGRESS.with(|progress| {
+        let mut value = progress.get();
+        value.identity_attempted = value.identity_attempted.wrapping_add(1);
+        progress.set(value);
+    });
+}
+
+#[cfg(test)]
+fn record_identity_complete() {
+    CONTACT_CHECK_PROGRESS.with(|progress| {
+        let mut value = progress.get();
+        value.identity_completed = value.identity_completed.wrapping_add(1);
+        progress.set(value);
+    });
+}
 
 /// Exact points are chart images already admitted by their producer receipt.
 /// An adapter must form a lifted longitude as exact native X plus the original
@@ -1474,14 +1542,27 @@ fn build_areal_signature(
     })
 }
 
-fn outward_bounds(point: &ExactChartPoint) -> Result<Bounds> {
-    let [min_x, min_y, max_x, max_y] = point.outward_bounds()?;
+fn outward_bounds(point: &ExactChartPoint, work: &mut impl Work) -> Result<Bounds> {
+    #[cfg(test)]
+    record_bounds_attempt();
+    let [min_x, min_y, max_x, max_y] = point.outward_bounds_with_work(work)?;
+    #[cfg(test)]
+    record_bounds_complete();
     Ok(Bounds::new_raw(min_x, min_y, max_x, max_y))
 }
 
-fn outward_segment_bounds(start: &ExactChartPoint, end: &ExactChartPoint) -> Result<Bounds> {
-    let [start_min_x, start_min_y, start_max_x, start_max_y] = start.outward_bounds()?;
-    let [end_min_x, end_min_y, end_max_x, end_max_y] = end.outward_bounds()?;
+fn outward_segment_bounds(
+    start: &ExactChartPoint,
+    end: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<Bounds> {
+    #[cfg(test)]
+    record_bounds_attempt();
+    let [start_min_x, start_min_y, start_max_x, start_max_y] =
+        start.outward_bounds_with_work(work)?;
+    let [end_min_x, end_min_y, end_max_x, end_max_y] = end.outward_bounds_with_work(work)?;
+    #[cfg(test)]
+    record_bounds_complete();
     Ok(Bounds::new_raw(
         start_min_x.min(end_min_x),
         start_min_y.min(end_min_y),
@@ -1512,7 +1593,7 @@ fn point_edge_contacts_preserved(
             let point = points.exact.get(vertex as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("isolated graph point is unknown".into())
             })?;
-            point_bounds.push(outward_bounds(point)?);
+            point_bounds.push(outward_bounds(point, work)?);
         }
         work.charge(u64::try_from(edge_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut edge_bounds = Vec::with_capacity(edge_nodes.len());
@@ -1525,6 +1606,7 @@ fn point_edge_contacts_preserved(
                 points.exact.get(end as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("point-contact edge end is unknown".into())
                 })?,
+                work,
             )?);
         }
         let mut result = BTreeSet::new();
@@ -1588,10 +1670,15 @@ fn edges_have_only_vertex_contacts(
             .exact
             .get(end as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("candidate edge end is unknown".into()))?;
-        if start.same_position(end)? {
+        #[cfg(test)]
+        record_identity_attempt();
+        let same_position = start.try_eq_with_work(end, work)?;
+        #[cfg(test)]
+        record_identity_complete();
+        if same_position {
             return Ok(false);
         }
-        bounds.push(outward_segment_bounds(start, end)?);
+        bounds.push(outward_segment_bounds(start, end, work)?);
     }
     let mut new_contact = false;
     let completion = for_each_overlapping_bounds_cross_pair_with_work(
@@ -1718,6 +1805,7 @@ mod tests {
         spent_before: u128,
         ticks: u128,
         progress: CrossPairProbeProgress,
+        contact_progress: super::ContactCheckProgress,
     }
 
     struct SweepRecordingWork<'a> {
@@ -1742,6 +1830,7 @@ mod tests {
                 spent_before: self.spent,
                 ticks,
                 progress: cross_pair_probe_progress(),
+                contact_progress: super::contact_check_progress(),
             };
             if result.is_ok() {
                 self.charges.push(event);
@@ -1835,6 +1924,13 @@ mod tests {
             &mut work,
         )
         .unwrap()
+    }
+
+    fn near_one_exact_chart_point() -> ExactChartPoint {
+        let x = ExactDyadic::from_f64(1.0)
+            .try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(-256)), &mut Unmetered)
+            .expect("the test rational is representable");
+        ExactChartPoint::from_rationals(ExactRational::from_dyadic(x), ExactRational::from_f64(0.0))
     }
 
     struct ImageRows(Vec<ExactChartPoint>);
@@ -2966,6 +3062,126 @@ mod tests {
         };
         assert_sweep_limit(&error, OPERATION);
         assert_eq!(cross_pair_probe_progress(), target.progress);
+        Ok(())
+    }
+
+    #[test]
+    fn native_contact_bounds_refuse_before_returning_bounds() -> Result<()> {
+        const OPERATION: &str = "native_contact_bounds";
+        let point = near_one_exact_chart_point();
+        super::reset_contact_check_progress();
+        let (expected, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let expected = super::outward_bounds(&point, &mut work)?;
+            (expected, work.charges)
+        };
+        assert_eq!(
+            super::contact_check_progress().bounds_attempted,
+            super::contact_check_progress().bounds_completed
+        );
+        let target = charges
+            .into_iter()
+            .find(|event| {
+                event.contact_progress.bounds_attempted == 1
+                    && event.contact_progress.bounds_completed == 0
+            })
+            .expect("contact bounds forward rational rounding work");
+
+        super::reset_contact_check_progress();
+        let mut budget = budget_refusing_before(OPERATION, target);
+        let error = {
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let error = super::outward_bounds(&point, &mut work)
+                .expect_err("failed exact rounding cannot publish outward bounds");
+            assert_eq!(
+                work.refused.map(|event| event.contact_progress),
+                Some(target.contact_progress)
+            );
+            error
+        };
+        assert_sweep_limit(&error, OPERATION);
+        assert_eq!(super::contact_check_progress(), target.contact_progress);
+
+        let expected = [
+            expected.minx().to_bits(),
+            expected.miny().to_bits(),
+            expected.maxx().to_bits(),
+            expected.maxy().to_bits(),
+        ];
+        let ordinary = point.outward_bounds()?;
+        assert_eq!(ordinary.map(f64::to_bits), expected);
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            let bounds = super::outward_bounds(&point, &mut work)?;
+            assert_eq!(
+                [
+                    bounds.minx().to_bits(),
+                    bounds.miny().to_bits(),
+                    bounds.maxx().to_bits(),
+                    bounds.maxy().to_bits(),
+                ],
+                expected
+            );
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
+        Ok(())
+    }
+
+    #[test]
+    fn native_contact_endpoint_identity_refuses_inside_exact_equality() -> Result<()> {
+        const OPERATION: &str = "native_contact_identity";
+        let point = near_one_exact_chart_point();
+        let exact = exact_points(&[
+            (point.x.clone(), point.y.clone()),
+            (point.x.clone(), point.y.clone()),
+        ]);
+        let edges = [[0, 1]];
+        super::reset_contact_check_progress();
+        let (result, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let result = edges_have_only_vertex_contacts(&exact, &edges, &mut work)?;
+            (result, work.charges)
+        };
+        assert!(!result);
+        let target = charges
+            .into_iter()
+            .find(|event| {
+                event.contact_progress.identity_attempted == 1
+                    && event.contact_progress.identity_completed == 0
+            })
+            .expect("degenerate endpoint identity uses metered rational equality");
+
+        super::reset_contact_check_progress();
+        let mut budget = budget_refusing_before(OPERATION, target);
+        let error = {
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let error = edges_have_only_vertex_contacts(&exact, &edges, &mut work)
+                .expect_err("endpoint equality refuses before the degenerate-edge result");
+            assert_eq!(
+                work.refused.map(|event| event.contact_progress),
+                Some(target.contact_progress)
+            );
+            error
+        };
+        assert_sweep_limit(&error, OPERATION);
+        assert_eq!(super::contact_check_progress(), target.contact_progress);
+
+        assert!(!edges_have_only_vertex_contacts(
+            &exact,
+            &edges,
+            &mut Unmetered
+        )?);
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            assert!(!edges_have_only_vertex_contacts(&exact, &edges, &mut work)?);
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
         Ok(())
     }
 }

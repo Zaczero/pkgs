@@ -133,8 +133,15 @@ impl ExactChartPoint {
     }
 
     pub(in crate::geometry) fn outward_bounds(&self) -> Result<[f64; 4]> {
-        let (min_x, max_x) = self.x.outward_bounds()?;
-        let (min_y, max_y) = self.y.outward_bounds()?;
+        self.outward_bounds_with_work(&mut Unmetered)
+    }
+
+    pub(in crate::geometry) fn outward_bounds_with_work(
+        &self,
+        work: &mut impl Work,
+    ) -> Result<[f64; 4]> {
+        let (min_x, max_x) = self.x.outward_bounds_with_work(work)?;
+        let (min_y, max_y) = self.y.outward_bounds_with_work(work)?;
         Ok([min_x, min_y, max_x, max_y])
     }
 
