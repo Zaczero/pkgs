@@ -21,7 +21,7 @@ impl RootId {
 }
 
 pub(crate) trait RootCatalog {
-    fn resolve<M: ChartMetric>(
+    fn resolve<M: ChartMetric, W: Work>(
         &self,
         root: RootId,
         parameter: &ExactRational,
@@ -29,7 +29,7 @@ pub(crate) trait RootCatalog {
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         state: &mut RootMetricState,
         fraction: &mut Option<f64>,
-        work: &mut impl Work,
+        work: &mut W,
     ) -> Result<NodeOrdinates>;
 }
 
@@ -1019,7 +1019,7 @@ mod tests {
     struct RecordingRoots(RefCell<Vec<(RootId, ExactRational, CoordinateAxes)>>);
 
     impl RootCatalog for RecordingRoots {
-        fn resolve<M: ChartMetric>(
+        fn resolve<M: ChartMetric, W: Work>(
             &self,
             root: RootId,
             parameter: &ExactRational,
@@ -1027,7 +1027,7 @@ mod tests {
             _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
             _state: &mut RootMetricState,
             _fraction: &mut Option<f64>,
-            _work: &mut impl Work,
+            _work: &mut W,
         ) -> Result<NodeOrdinates> {
             self.0.borrow_mut().push((root, parameter.clone(), axes));
             Ok(NodeOrdinates::default())
