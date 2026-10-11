@@ -623,6 +623,48 @@ def test_geographic_delaunay_uses_the_retained_site_chart() -> None:
             assert selected_faces == expected_faces
 
 
+def test_geographic_delaunay_retains_periodic_source_site_identity() -> None:
+    source_sites = [
+        (170.0, 1.0, 7.0, 10.0),
+        (530.0, 1.0, 99.0, 99.0),
+        (-170.0, 1.0, 8.0, 11.0),
+        (-100.0, 1.0, 9.0, 12.0),
+        (0.2, 1.0, 10.0, 13.0),
+        (0.200_000_000_000_000_04, 1.0, 11.0, 14.0),
+        (170.0, 2.0, 12.0, 15.0),
+    ]
+    retained_sites = set(source_sites) - {source_sites[1]}
+    expected_faces = {
+        frozenset((source_sites[0], source_sites[2], source_sites[6])),
+        frozenset((source_sites[2], source_sites[3], source_sites[6])),
+        frozenset((source_sites[3], source_sites[4], source_sites[6])),
+        frozenset((source_sites[4], source_sites[5], source_sites[6])),
+    }
+    source = gm.MultiPoint(source_sites, crs=4326)
+
+    for triangles in (
+        source.triangulate(method='delaunay'),
+        gm.GeometryArray([source]).triangulate(method='delaunay')[0],
+    ):
+        observed_faces = [
+            frozenset(
+                tuple(coordinate[:4])
+                for coordinate in triangle.exterior.coords
+                if tuple(coordinate[:4]) in retained_sites
+            )
+            for triangle in triangles
+        ]
+        published_records = {
+            tuple(coordinate[:4])
+            for triangle in triangles
+            for coordinate in triangle.exterior.coords
+        }
+        assert set(observed_faces) == expected_faces
+        assert len(observed_faces) == len(expected_faces)
+        assert source_sites[0] in published_records
+        assert source_sites[1] not in published_records
+
+
 @pytest.mark.parametrize('swap_axes', [False, True])
 def test_reciprocal_constrained_delaunay_uses_the_source_incircle_sign(
     swap_axes: bool,
