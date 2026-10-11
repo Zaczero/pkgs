@@ -18707,7 +18707,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let area_region = match walk.owner {
                 RecipeWalkOwner::Line(_) => None,
-                owner @ RecipeWalkOwner::Cycle(_) | owner @ RecipeWalkOwner::SourceRing(_) => Some(
+                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_)) => Some(
                     area_facts
                         .get(&owner)
                         .map(|(region, _)| *region)
