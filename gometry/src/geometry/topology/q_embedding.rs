@@ -19660,11 +19660,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             None
         };
         let mut producer_projection = {
-            let source_faces = source_faces;
+            let source_faces_for_certification = source_faces;
             self.certify_assigned_producer(
                 coordinates,
                 publication_coordinates,
-                source_faces.as_ref(),
+                source_faces_for_certification.as_ref(),
                 budget,
             )?
         };
