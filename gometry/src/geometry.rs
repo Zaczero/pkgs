@@ -108,7 +108,7 @@ mod computed_shape;
 pub(crate) use computed_shape::{
     PolygonPartEdgeRoles, PublishedTriangleVertices, map_computed_shape_chains,
     publish_changed_raw_computed_shape, publish_computed_line_column_with_budget,
-    publish_computed_point_or_raw_shape, publish_mesh_triangle_vertex_stream_budgeted,
+    publish_computed_point_or_raw_shape, publish_mesh_publication_for_domain,
     publish_polygon_parts_with_edge_roles, publish_polygon_with_edge_roles_and_context,
     publish_raw_computed_shape, publish_raw_computed_shape_with_budget,
     publish_raw_computed_shape_with_budget_and_context, publish_raw_computed_shape_with_context,

@@ -175,7 +175,25 @@ impl PyGeometry {
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
-        let publication = py.detach(move || shape.delaunay_mesh_publication_in_domain(domain))?;
+        let publication = py.detach(move || {
+            let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
+            let publication =
+                shape.delaunay_mesh_publication_in_domain_budgeted(domain, &mut budget)?;
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                })
+            };
+            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::publish_mesh_publication_for_domain(
+                publication,
+                domain,
+                &source_context,
+                &mut budget,
+            )
+        })?;
         let vertices = publication.points.as_slice();
         if vertices.is_empty() {
             return Ok(PyGeometryArray::from_shapes(
@@ -185,12 +203,15 @@ impl PyGeometry {
         }
         let axes = vertices.first().map(|point| point.axes);
         if vertices.iter().any(|point| Some(point.axes) != axes) {
-            let triangles = Shape::triangle_shapes_from_vertices(vertices)?;
             let triangles =
-                py.detach(move || publish_triangle_shapes_for_domain(triangles, domain, metric))?;
+                Shape::triangle_shapes_from_published_rings(vertices, &publication.ring_ends)?;
             return self.parts_to_array(triangles);
         }
-        PyGeometryArray::packed_triangles(vertices, self.frame.clone())
+        PyGeometryArray::packed_triangles_with_ring_ends(
+            vertices,
+            &publication.ring_ends,
+            self.frame.clone(),
+        )
     }
 
     pub(crate) fn constrained_delaunay_triangles_impl(

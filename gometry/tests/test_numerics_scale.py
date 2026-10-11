@@ -612,15 +612,35 @@ def test_geographic_delaunay_uses_the_retained_site_chart() -> None:
         packed = gm.GeometryArray([source]).triangulate(method='delaunay')[0]
         for triangles in (scalar, packed):
             selected_faces = set()
+            chart_area = Fraction(0)
             for triangle in triangles:
-                corners = {
-                    tuple(coordinate[:2])
-                    for coordinate in triangle.exterior.coords
-                    if tuple(coordinate[:2]) in source_vertices
-                }
+                coordinates = [tuple(coordinate[:2]) for coordinate in triangle.exterior.coords]
+                corners = {coordinate for coordinate in coordinates if coordinate in source_vertices}
                 assert len(corners) == 3
                 selected_faces.add(frozenset(corners))
+                chart_ring = [
+                    (
+                        Fraction(170.0) + (Fraction(x) - Fraction(170.0)) % Fraction(360.0),
+                        Fraction(y),
+                    )
+                    for x, y in coordinates
+                ]
+                assert all(
+                    abs(right[0] - left[0]) <= 20
+                    for left, right in pairwise(chart_ring)
+                )
+                chart_area += abs(
+                    sum(
+                        left[0] * right[1] - right[0] * left[1]
+                        for left, right in pairwise(chart_ring)
+                    )
+                ) / 2
+                for longitude, latitude in coordinates:
+                    if (longitude, latitude) not in source_vertices:
+                        assert abs(longitude) == 180.0
+                        assert latitude in {0.0, 4.0, 9.0}
             assert selected_faces == expected_faces
+            assert chart_area == 180
 
 
 def test_geographic_delaunay_retains_periodic_source_site_identity() -> None:

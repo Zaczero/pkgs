@@ -82,27 +82,15 @@ fn publish_mesh_publication_for_domain(
     metric: crate::dispatch::MetricCtx<'_>,
     budget: &mut crate::geometry::ExpansionBudget,
 ) -> Result<crate::geometry::PublishedTriangleVertices> {
-    match domain {
-        crate::geometry::TopologyDomain::Cartesian => {
-            crate::geometry::PublishedTriangleVertices::uniform_mesh(publication)
-        },
-        crate::geometry::TopologyDomain::Geographic(frame) => {
-            let metric_access = || {
-                metric.geographic_chart_metric()?.ok_or_else(|| {
-                    crate::crs::CrsError::invalid(
-                        "geographic triangulation requires the operation's CRS metric",
-                    )
-                })
-            };
-            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
-            geometry::publish_mesh_triangle_vertex_stream_budgeted(
-                publication,
-                frame,
-                &source_context,
-                budget,
+    let metric_access = || {
+        metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic triangulation requires the operation's CRS metric",
             )
-        },
-    }
+        })
+    };
+    let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+    geometry::publish_mesh_publication_for_domain(publication, domain, &source_context, budget)
 }
 
 impl PyGeometryArray {

@@ -259,12 +259,46 @@ impl Shape {
         }
         let mut shapes = Vec::with_capacity(vertices.len() / 4);
         for ring in vertices.as_chunks::<4>().0 {
-            shapes.push(Self::Polygon(Polygon::new(
-                Ring::try_from_closed(CoordSeq::try_from_points(ring)?)?,
-                Vec::new(),
-            )));
+            shapes.push(Self::triangle_shape_from_ring(ring)?);
         }
         Ok(shapes)
+    }
+
+    pub(crate) fn triangle_shapes_from_published_rings(
+        vertices: &[Point],
+        ring_ends: &[usize],
+    ) -> Result<Vec<Self>> {
+        let mut shapes = Vec::with_capacity(ring_ends.len());
+        let mut start = 0;
+        for &end in ring_ends {
+            if end > vertices.len() || end.checked_sub(start).is_none_or(|len| len < 4) {
+                return Err(GeometryErrorKind::Invalid(
+                    "triangle ring offsets do not match the vertex stream".into(),
+                )
+                .into());
+            }
+            let ring = vertices.get(start..end).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "triangle ring offsets do not match the vertex stream".into(),
+                )
+            })?;
+            shapes.push(Self::triangle_shape_from_ring(ring)?);
+            start = end;
+        }
+        if start != vertices.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "triangle ring offsets do not match the vertex stream".into(),
+            )
+            .into());
+        }
+        Ok(shapes)
+    }
+
+    fn triangle_shape_from_ring(vertices: &[Point]) -> Result<Self> {
+        Ok(Self::Polygon(Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(vertices)?)?,
+            Vec::new(),
+        )))
     }
 
     pub(crate) fn delaunay_triangle_vertices_budgeted(
@@ -279,6 +313,7 @@ impl Shape {
             .into_points())
     }
 
+    #[cfg(test)]
     pub(crate) fn delaunay_mesh_publication_in_domain(
         &self,
         domain: crate::geometry::TopologyDomain,
