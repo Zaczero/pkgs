@@ -122,7 +122,6 @@ let
     export NIX_ENFORCE_PURITY=0
     export PYTHONPATH=""
     export COVERAGE_CORE=sysmon
-    export PYTEST_ADDOPTS="--quiet --import-mode=importlib --strict-markers --strict-config"
 
     # `uv sync --all-groups` builds through maturin's PEP 517 backend, which defaults to
     # plain `--release` (thin LTO and default codegen-units), measured at 37 s for a one-line
