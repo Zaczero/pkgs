@@ -57,22 +57,8 @@ impl EarcutCornerId {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EarcutTriangle {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the sample draw receipt consumes the selected Earcut face ordinal"
-        )
-    )]
     pub(crate) face: usize,
     pub(crate) points: [Point; 3],
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the sample draw receipt consumes source-site and occurrence identities"
-        )
-    )]
     pub(crate) corners: [EarcutCornerId; 3],
 }
 

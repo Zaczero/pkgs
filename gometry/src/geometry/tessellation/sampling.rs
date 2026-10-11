@@ -1,5 +1,5 @@
+use super::{EarcutCornerId, EarcutTriangle, earcut_polygon_with_ids};
 use crate::error::Result;
-use super::earcut::{EarcutTriangle, earcut_polygon_with_ids};
 use crate::geometry::{MultiMember, Point, Polygon, Segment, Shape, TopologyDomain};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,7 +59,8 @@ impl GeographicSampleSegment {
 pub(crate) enum SampleSupport {
     AreaTriangle {
         occurrence: SampleOccurrenceId,
-        triangle: EarcutTriangle,
+        vertices: [Point; 3],
+        corners: [EarcutCornerId; 3],
     },
     Segment {
         occurrence: SampleOccurrenceId,
@@ -213,13 +214,14 @@ fn collect_polygon_sample_triangles(
     out: &mut Vec<SampleSupport>,
 ) -> Result<()> {
     let component = next_sample_component(component)?;
-    earcut_polygon_with_ids(polygon, &mut |triangle| {
+    earcut_polygon_with_ids(polygon, &mut |triangle: EarcutTriangle| {
         out.push(SampleSupport::AreaTriangle {
             occurrence: SampleOccurrenceId {
                 component,
                 occurrence: triangle.face,
             },
-            triangle,
+            vertices: triangle.points,
+            corners: triangle.corners,
         });
         Ok(())
     })
