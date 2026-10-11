@@ -849,6 +849,22 @@ fn logical_layout_for_plan(
     Ok(areal_walks)
 }
 
+fn native_point_contact_vertices(
+    plan: &ExpandedEmissionPlan<'_>,
+    port_vertices: &[u32],
+    work: &mut impl Work,
+) -> Result<Vec<u32>> {
+    work.charge(u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut vertices = Vec::with_capacity(plan.points.len());
+    for &port in &plan.points {
+        work.charge(1)?;
+        vertices.push(*port_vertices.get(port.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("native output point has no graph vertex".into())
+        })?);
+    }
+    Ok(vertices)
+}
+
 impl NativeReferenceGraph {
     fn local_vertex(&self, key: NativeChartVertexKey, budget: &mut impl Work) -> Result<u32> {
         let probe = NativeChartVertexIndex { key, index: 0 };
@@ -4604,26 +4620,7 @@ fn native_candidate_edges_preserve_embedding(
     budget: &mut impl Work,
 ) -> Result<bool> {
     let graph = &reference.graph;
-    budget.charge(
-        u64::try_from(reference.plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
-    )?;
-    let mut point_vertices = Vec::with_capacity(reference.plan.points.len());
-    for &port in &reference.plan.points {
-        let vertex = *reference
-            .port_vertices
-            .get(port.0 as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("native isolated point has no reference vertex".into())
-            })?;
-        point_vertices.push(vertex);
-    }
-    let Some(candidate) = admit_candidate(
-        &graph.common,
-        &reference.dimension,
-        points,
-        &point_vertices,
-        budget,
-    )?
+    let Some(candidate) = admit_candidate(&graph.common, &reference.dimension, points, budget)?
     else {
         return Ok(false);
     };
@@ -18993,7 +18990,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let mut graph_builder =
             new_native_reference_graph_builder(&area_edges, &reference_ports, budget)?;
-        let graph = if has_area {
+        let mut graph = if has_area {
             if !whole_sphere {
                 let mut band_events = seam_events
                     .iter()
@@ -19368,6 +19365,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             budget.charge(1)?;
             port_vertices.push(graph.local_vertex(native_emission_port_key(port), budget)?);
         }
+        let point_contact_vertices = native_point_contact_vertices(&plan, &port_vertices, budget)?;
+        graph.common = graph
+            .common
+            .with_output_point_contacts(&point_contact_vertices, budget)?;
         let logical_walks = logical_layout_for_plan(&plan, &port_vertices, budget)?;
         let dimension =
             admit_logical_layout(&graph.common, logical_walks, Some(&graph.faces), budget)?;

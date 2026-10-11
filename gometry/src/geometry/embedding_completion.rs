@@ -253,6 +253,7 @@ pub(super) struct AdmittedGraph {
     pub(super) edge_of_slot: Vec<u32>,
     pub(super) topology: IndexedTopology,
     point_identities: Vec<u32>,
+    point_contact_queries: Vec<u32>,
 }
 
 pub(super) struct AdmittedCandidate<'a> {
@@ -747,6 +748,26 @@ pub(super) fn admit_known_graph(
         )
         .into());
     }
+    work.charge(u64::try_from(points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut degree = vec![0_usize; points.exact.len()];
+    for &[start, end] in &edge_nodes {
+        work.charge(2)?;
+        for vertex in [start, end] {
+            let count = degree.get_mut(vertex as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("known graph edge endpoint is unknown".into())
+            })?;
+            *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+        }
+    }
+    work.charge(u64::try_from(degree.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut point_contact_queries = Vec::new();
+    for (vertex, &incident_edges) in degree.iter().enumerate() {
+        work.charge(1)?;
+        if incident_edges == 0 {
+            point_contact_queries
+                .push(u32::try_from(vertex).map_err(|_| ResourceError::SizeOverflow)?);
+        }
+    }
     let (topology, edge_of_slot) = indexed_topology(&points, &edge_nodes, work)?;
     let edge_slots = crate::geometry::arrangement::indexed_edge_slots_with_work(
         &edge_nodes,
@@ -761,7 +782,49 @@ pub(super) fn admit_known_graph(
         edge_of_slot,
         topology,
         point_identities,
+        point_contact_queries,
     })
+}
+
+impl AdmittedGraph {
+    /// Extend the graph's degree-zero query set with the producer's actual
+    /// output-point vertices before the reference is used for candidates.
+    pub(super) fn with_output_point_contacts(
+        mut self,
+        vertices: &[u32],
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        work.charge(u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut requested = Vec::with_capacity(vertices.len());
+        for &vertex in vertices {
+            work.charge(1)?;
+            if self.points.exact.get(vertex as usize).is_none() {
+                return Err(GeometryErrorKind::Invalid(
+                    "output point contact query is outside the admitted graph".into(),
+                )
+                .into());
+            }
+            requested.push(vertex);
+        }
+        if requested.is_empty() {
+            return Ok(self);
+        }
+        try_sort_by_with_work(&mut requested, work, |left, right, work| {
+            work.charge(1)?;
+            Ok(left.cmp(right))
+        })?;
+        work.charge(u64::try_from(requested.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut unique = Vec::with_capacity(requested.len());
+        for vertex in requested {
+            work.charge(1)?;
+            if unique.last() != Some(&vertex) {
+                unique.push(vertex);
+            }
+        }
+        self.point_contact_queries =
+            merge_sorted_contact_queries(&self.point_contact_queries, &unique, work)?;
+        Ok(self)
+    }
 }
 
 /// Freeze dimension-specific obligations only after the producer's actual
@@ -797,7 +860,6 @@ pub(super) fn admit_candidate<'a>(
     reference: &AdmittedGraph,
     dimension: &AdmittedLayout,
     points: &'a ExactPoints,
-    isolated_vertices: &[u32],
     work: &mut impl Work,
 ) -> Result<Option<AdmittedCandidate<'a>>> {
     if points.exact.len() != reference.points.exact.len()
@@ -814,7 +876,7 @@ pub(super) fn admit_candidate<'a>(
     if !point_edge_contacts_preserved(
         &reference.points,
         points,
-        isolated_vertices,
+        &reference.point_contact_queries,
         &reference.edge_nodes,
         work,
     )? {
@@ -845,6 +907,68 @@ pub(super) fn admit_candidate<'a>(
         return Ok(Some(AdmittedCandidate { points }));
     }
     Ok(Some(AdmittedCandidate { points }))
+}
+
+fn merge_sorted_contact_queries(
+    left: &[u32],
+    right: &[u32],
+    work: &mut impl Work,
+) -> Result<Vec<u32>> {
+    let capacity = left
+        .len()
+        .checked_add(right.len())
+        .ok_or(ResourceError::SizeOverflow)?;
+    work.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut merged = Vec::with_capacity(capacity);
+    let (mut left_index, mut right_index) = (0_usize, 0_usize);
+    while left_index < left.len() && right_index < right.len() {
+        work.charge(1)?;
+        let (Some(&left_row), Some(&right_row)) = (left.get(left_index), right.get(right_index))
+        else {
+            return Err(GeometryErrorKind::Invalid(
+                "contact query merge cursor is outside its rows".into(),
+            )
+            .into());
+        };
+        if left_row <= right_row {
+            work.charge(1)?;
+            if merged.last() != Some(&left_row) {
+                work.charge(1)?;
+                merged.push(left_row);
+            }
+            left_index = left_index
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+        } else {
+            work.charge(1)?;
+            if merged.last() != Some(&right_row) {
+                work.charge(1)?;
+                merged.push(right_row);
+            }
+            right_index = right_index
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
+        }
+    }
+    for &row in left.get(left_index..).ok_or_else(|| {
+        GeometryErrorKind::Invalid("contact query merge left cursor is unknown".into())
+    })? {
+        work.charge(1)?;
+        if merged.last() != Some(&row) {
+            work.charge(1)?;
+            merged.push(row);
+        }
+    }
+    for &row in right.get(right_index..).ok_or_else(|| {
+        GeometryErrorKind::Invalid("contact query merge right cursor is unknown".into())
+    })? {
+        work.charge(1)?;
+        if merged.last() != Some(&row) {
+            work.charge(1)?;
+            merged.push(row);
+        }
+    }
+    Ok(merged)
 }
 
 fn stable_areal_signatures_match(reference: &ArealSignature, candidate: &ArealSignature) -> bool {
@@ -1692,6 +1816,7 @@ mod tests {
         admit_logical_layout, bind_literals,
     };
     use crate::error::Result;
+    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly, Work};
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::topology::ExactChartPoint;
     use crate::geometry::{
@@ -1756,6 +1881,60 @@ mod tests {
                 ExactRational::from_f64(record.x),
                 ExactRational::from_f64(record.y),
             )))
+        }
+    }
+
+    struct EvaluationRecorder {
+        budget: EvaluationBudget,
+        successful_charges: usize,
+        refusals: usize,
+        charges_after_refusal: usize,
+        refused: bool,
+    }
+
+    impl EvaluationRecorder {
+        fn record(&mut self, result: Result<()>) -> Result<()> {
+            match result {
+                Ok(()) => {
+                    self.successful_charges = self
+                        .successful_charges
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    Ok(())
+                },
+                Err(error) => {
+                    self.refusals = self
+                        .refusals
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    self.refused = true;
+                    Err(error)
+                },
+            }
+        }
+    }
+
+    impl Work for EvaluationRecorder {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            if self.refused {
+                self.charges_after_refusal = self
+                    .charges_after_refusal
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            }
+            let result = self.budget.charge(ticks);
+            self.record(result)
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            if self.refused {
+                self.charges_after_refusal = self
+                    .charges_after_refusal
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            }
+            let result = self.budget.charge_product(count, ticks_per_item);
+            self.record(result)
         }
     }
 
@@ -1835,13 +2014,13 @@ mod tests {
             "the wall arrangement has Exterior and five bounded faces"
         );
         assert!(
-            admit_candidate(&graph, &layout, &graph.points, &[], &mut work)?.is_some(),
+            admit_candidate(&graph, &layout, &graph.points, &mut work)?.is_some(),
             "the unchanged noded reference must admit both complete ring walks"
         );
 
         let affine = points(&coordinates.map(|(x, y)| (x + y, y)));
         assert!(
-            admit_candidate(&graph, &layout, &affine, &[], &mut work)?.is_some(),
+            admit_candidate(&graph, &layout, &affine, &mut work)?.is_some(),
             "an exact orientation-preserving affine image keeps the same wall correspondence"
         );
 
@@ -1948,7 +2127,7 @@ mod tests {
         // A half-turn changes the angular sort cut, not the anchored stable-dart cycle.
         let rotated = points(&[(0.0, 0.0), (-2.0, 0.0), (0.0, -2.0), (1.0, 0.0), (0.0, 1.0)]);
         assert!(
-            admit_candidate(&graph, &layout, &rotated, &[], &mut work)
+            admit_candidate(&graph, &layout, &rotated, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -1963,7 +2142,7 @@ mod tests {
             (1.0, -1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &opposition_changed, &[], &mut work)
+            admit_candidate(&graph, &layout, &opposition_changed, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -1971,7 +2150,7 @@ mod tests {
         // Swapping the two stable line darts changes the actual rotation.
         let reordered = points(&[(0.0, 0.0), (2.0, 0.0), (0.0, 2.0), (0.0, -1.0), (-1.0, 0.0)]);
         assert!(
-            admit_candidate(&graph, &layout, &reordered, &[], &mut work)
+            admit_candidate(&graph, &layout, &reordered, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2022,7 +2201,7 @@ mod tests {
             (ExactRational::from_f64(1.0), ExactRational::from_f64(0.25)),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &nearest, &[], &mut work)
+            admit_candidate(&graph, &layout, &nearest, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2038,7 +2217,7 @@ mod tests {
             (ExactRational::from_f64(1.0), ExactRational::from_f64(0.5)),
             (ExactRational::from_f64(1.0), ExactRational::from_f64(0.25)),
         ]);
-        let Some(assignment) = admit_candidate(&graph, &layout, &repaired, &[], &mut work).unwrap()
+        let Some(assignment) = admit_candidate(&graph, &layout, &repaired, &mut work).unwrap()
         else {
             panic!("the prescribed upper-neighbor assignment preserves this known graph");
         };
@@ -2119,7 +2298,7 @@ mod tests {
             (-1.0, 1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &nearest, &[4], &mut work)
+            admit_candidate(&graph, &layout, &nearest, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2131,7 +2310,7 @@ mod tests {
             (-1.0, 1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &upper, &[4], &mut work)
+            admit_candidate(&graph, &layout, &upper, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2179,7 +2358,7 @@ mod tests {
             (1.0, 1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &nearest, &[], &mut work)
+            admit_candidate(&graph, &layout, &nearest, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2195,7 +2374,7 @@ mod tests {
             (1.0, lower),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &repaired, &[], &mut work)
+            admit_candidate(&graph, &layout, &repaired, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2299,7 +2478,7 @@ mod tests {
             (1.0, 1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &nearest, &[7], &mut work)
+            admit_candidate(&graph, &layout, &nearest, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2316,7 +2495,7 @@ mod tests {
             (1.0, lower),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &repaired, &[7], &mut work)
+            admit_candidate(&graph, &layout, &repaired, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2405,7 +2584,7 @@ mod tests {
 
         let nearest = points(&[(0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (0.0, 2.0), (1.0, 1.0)]);
         assert!(
-            admit_candidate(&graph, &layout, &nearest, &[4], &mut work)
+            admit_candidate(&graph, &layout, &nearest, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2418,7 +2597,7 @@ mod tests {
             (1.0 - 2.0_f64.powi(-53), 1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &lower, &[4], &mut work)
+            admit_candidate(&graph, &layout, &lower, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2431,7 +2610,7 @@ mod tests {
             (1.0 + 2.0_f64.powi(-52), 1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &upper, &[4], &mut work)
+            admit_candidate(&graph, &layout, &upper, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2461,7 +2640,7 @@ mod tests {
 
         let nearest = points(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (1.0, 1.0)]);
         assert!(
-            admit_candidate(&graph, &layout, &nearest, &[], &mut work)
+            admit_candidate(&graph, &layout, &nearest, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2473,7 +2652,7 @@ mod tests {
             (1.0, 1.0 - 2.0_f64.powi(-53)),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &lower, &[], &mut work)
+            admit_candidate(&graph, &layout, &lower, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2545,7 +2724,7 @@ mod tests {
             (2.0, 1.0),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &nearest, &[], &mut work)
+            admit_candidate(&graph, &layout, &nearest, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2561,7 +2740,7 @@ mod tests {
             (2.0, 1.0 - 2.0_f64.powi(-53)),
         ]);
         assert!(
-            admit_candidate(&graph, &layout, &lower, &[], &mut work)
+            admit_candidate(&graph, &layout, &lower, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2583,7 +2762,7 @@ mod tests {
         .unwrap();
         let line_layout = admit_logical_layout(&line_graph, Vec::new(), None, &mut work).unwrap();
         assert!(
-            admit_candidate(&line_graph, &line_layout, &reversed, &[], &mut work)
+            admit_candidate(&line_graph, &line_layout, &reversed, &mut work)
                 .unwrap()
                 .is_some()
         );
@@ -2591,7 +2770,7 @@ mod tests {
         let polygon_graph = admit_known_graph(reference, edges, identities, &mut work).unwrap();
         let layout = polygon_layout(&polygon_graph, &[0, 1, 2, 0]);
         assert!(
-            admit_candidate(&polygon_graph, &layout, &reversed, &[], &mut work)
+            admit_candidate(&polygon_graph, &layout, &reversed, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2615,7 +2794,6 @@ mod tests {
             &line_graph,
             &admit_logical_layout(&line_graph, Vec::new(), None, &mut work).unwrap(),
             &reversed,
-            &[],
             &mut work,
         )
         .unwrap() else {
@@ -2670,7 +2848,7 @@ mod tests {
         let polygon_graph = admit_known_graph(reference, edges, identities, &mut work).unwrap();
         let layout = polygon_layout(&polygon_graph, &[0, 1, 2, 0]);
         assert!(
-            admit_candidate(&polygon_graph, &layout, &reversed, &[], &mut work)
+            admit_candidate(&polygon_graph, &layout, &reversed, &mut work)
                 .unwrap()
                 .is_none()
         );
@@ -2692,11 +2870,100 @@ mod tests {
                 &graph,
                 &admit_logical_layout(&graph, Vec::new(), None, &mut work).unwrap(),
                 &collapsed,
-                &[],
                 &mut work
             )
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn candidate_admission_keeps_degree_zero_point_contacts_with_the_reference() -> Result<()> {
+        let half_ulp =
+            ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
+        let reference = exact_points(&[
+            (ExactRational::zero(), ExactRational::one()),
+            (ExactRational::from_f64(2.0), ExactRational::one()),
+            (
+                ExactRational::one(),
+                ExactRational::one().try_add(&half_ulp).unwrap(),
+            ),
+        ]);
+        let nearest = points(&[(0.0, 1.0), (2.0, 1.0), (1.0, 1.0)]);
+        let mut work = Unmetered;
+        let graph = admit_known_graph(reference, vec![[0, 1]], vec![0, 1, 2], &mut work)?;
+        let layout = admit_logical_layout(&graph, Vec::new(), None, &mut work)?;
+
+        assert!(
+            admit_candidate(&graph, &layout, &nearest, &mut work)?.is_none(),
+            "the nearest image of degree-zero P contacts AB and must not be admitted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn output_point_query_refusal_stops_before_progress() -> Result<()> {
+        let mut setup_work = Unmetered;
+        let graph = admit_known_graph(
+            points(&[(0.0, 1.0), (2.0, 1.0), (1.0, 1.0)]),
+            vec![[0, 1]],
+            vec![0, 1, 2],
+            &mut setup_work,
+        )?;
+        let budget = EvaluationBudget::with_remaining_ticks_for_test("point contacts", 0, 1)?;
+        let mut recorder = EvaluationRecorder {
+            budget,
+            successful_charges: 0,
+            refusals: 0,
+            charges_after_refusal: 0,
+            refused: false,
+        };
+
+        let result = graph.with_output_point_contacts(&[0], &mut recorder);
+        assert!(matches!(
+            result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        crate::geometry::GeometryErrorKind::ExactEmbeddingSearchLimit { .. }
+                    )
+                )
+        ));
+        assert_eq!(recorder.successful_charges, 1);
+        assert_eq!(recorder.refusals, 1);
+        assert_eq!(recorder.charges_after_refusal, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluation_only_erases_point_contact_work() -> Result<()> {
+        let half_ulp =
+            ExactRational::new(ExactDyadic::one(), ExactDyadic::from_i64(1_i64 << 54)).unwrap();
+        let reference = exact_points(&[
+            (ExactRational::zero(), ExactRational::one()),
+            (ExactRational::from_f64(2.0), ExactRational::one()),
+            (
+                ExactRational::one(),
+                ExactRational::one().try_add(&half_ulp).unwrap(),
+            ),
+        ]);
+        let mut budget =
+            EvaluationBudget::with_remaining_ticks_for_test("ordinary point contacts", 0, 0)?;
+        let mut ordinary_work = EvaluationOnly::new(&mut budget);
+        let graph = admit_known_graph(reference, vec![[0, 1]], vec![0, 1, 2], &mut ordinary_work)?;
+        let layout = admit_logical_layout(&graph, Vec::new(), None, &mut ordinary_work)?;
+
+        assert!(
+            admit_candidate(
+                &graph,
+                &layout,
+                &points(&[(0.0, 1.0), (2.0, 1.0), (1.0, 1.0)]),
+                &mut ordinary_work,
+            )?
+            .is_none(),
+            "EvaluationOnly preserves the same geometric decision with zero raw-work allowance"
+        );
+        Ok(())
     }
 }
