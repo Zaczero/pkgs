@@ -13,10 +13,11 @@ use crate::geometry::distance::{ChartParts, point_chart_locate};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, FacetBvh,
     GeometryErrorKind, GeometryKind, HasM, HasZ, LineSeq, Lineal, MColumn, MultiLineString,
-    Ordering, PlanarMetric, Point, PreparedLinework, PreparedPlan, Segment, SegmentMetric,
-    SegmentProjection, Shape, SharedSlice, distance_3d_with_parts, interpolate_fraction,
-    point_distance, point_segment_selection, push_distinct_active_position, same_point,
-    segment_projection, shape_axes_all_z, squared_norm_is_trustworthy,
+    Ordering, PlanarMetric, Point, PreparedLinework, PreparedPlan, RootMetricState, Segment,
+    SegmentMetric, SegmentProjection, Shape, SharedSlice, SourceArcContext, distance_3d_with_parts,
+    interpolate_fraction, interpolate_source_projection, point_distance, point_segment_selection,
+    push_distinct_active_position, same_point, segment_projection, shape_axes_all_z,
+    squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
@@ -91,8 +92,48 @@ impl Shape {
         self.split_at_points(&splitter.splitter_points()?, tolerance)
     }
 
+    pub(crate) fn split_with_context<M: ChartMetric>(
+        &self,
+        splitter: &Self,
+        tolerance: f64,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Vec<Self>> {
+        self.split_at_points_with_context(&splitter.splitter_points()?, tolerance, context)
+    }
+
     /// [`Self::split`] against split locations the caller already holds.
     pub(crate) fn split_at_points(&self, splitters: &[Point], tolerance: f64) -> Result<Vec<Self>> {
+        self.split_at_points_impl(splitters, tolerance, |start, end, projection, _state| {
+            projection.interpolate_point(start, end)
+        })
+    }
+
+    pub(crate) fn split_at_points_with_context<M: ChartMetric>(
+        &self,
+        splitters: &[Point],
+        tolerance: f64,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Vec<Self>> {
+        self.split_at_points_impl(
+            splitters,
+            tolerance,
+            |start, end, projection, root_state| {
+                interpolate_source_projection(context, start, end, projection, root_state)
+            },
+        )
+    }
+
+    fn split_at_points_impl(
+        &self,
+        splitters: &[Point],
+        tolerance: f64,
+        mut interpolate: impl FnMut(
+            Point,
+            Point,
+            &SegmentProjection,
+            &mut Option<RootMetricState>,
+        ) -> Result<Point>,
+    ) -> Result<Vec<Self>> {
         let mut pieces = Vec::new();
         let lines = match self.lineal().ok_or(GeometryErrorKind::LinealRequired)? {
             Lineal::LineString(line) => std::slice::from_ref(line),
@@ -101,7 +142,7 @@ impl Shape {
             Lineal::Empty => &[],
         };
         for line in lines {
-            for part in split_line_by_points(line, splitters, tolerance)? {
+            for part in split_line_by_points(line, splitters, tolerance, &mut interpolate)? {
                 pieces.push(Self::LineString(LineSeq::from_proven(
                     CoordSeq::try_from_points(&part)?,
                 )));
@@ -771,6 +812,12 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     line: &C,
     points: &[Point],
     tolerance: f64,
+    mut interpolate: impl FnMut(
+        Point,
+        Point,
+        &SegmentProjection,
+        &mut Option<RootMetricState>,
+    ) -> crate::error::Result<Point>,
 ) -> crate::error::Result<Vec<Vec<Point>>> {
     let coords: Vec<Point> = line.iter_coords().collect();
     let [first, .., _] = coords.as_slice() else {
@@ -869,12 +916,13 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     let mut piece = vec![*first];
     let mut cuts = cuts.into_iter().peekable();
     for (segment_index, pair) in coords.array_windows::<2>().enumerate() {
+        let mut root_state = None;
         while cuts
             .peek()
             .is_some_and(|(cut_index, _)| *cut_index == segment_index)
         {
             let (_, projection) = cuts.next().expect("peeked cut exists");
-            let point = projection.interpolate_point(pair[0], pair[1])?;
+            let point = interpolate(pair[0], pair[1], &projection, &mut root_state)?;
             push_distinct_active_position(&mut piece, point);
             if piece.len() >= 2 {
                 pieces.push(std::mem::replace(&mut piece, vec![point]));

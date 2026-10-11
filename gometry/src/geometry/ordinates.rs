@@ -10,10 +10,10 @@ use crate::geographic::{ComputedSampleOrdinates, RetainedChartDisplacement};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON,
-    OverlayOp, Point, PointKey, RunIdentity, Segment, Shape, Unmetered, VertexKey, Work, XY,
-    ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate, interpolate_subdivision_ordinate,
-    overlay, point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
-    scaled_residual, segment_projection,
+    OverlayOp, Point, PointKey, RunIdentity, Segment, SegmentProjection, Shape, TopologyDomain,
+    Unmetered, VertexKey, Work, XY, ZOrdinate, axis_pow2_scale, interpolate_optional_ordinate,
+    interpolate_subdivision_ordinate, overlay, point_distance, point_on_segment,
+    point_segment_distance_and_projection, same_point, scaled_residual, segment_projection,
 };
 
 mod trace;
@@ -543,6 +543,54 @@ pub(in crate::geometry) fn source_arc_ordinates_unmetered<'m, M: ChartMetric + '
     let mut fraction = None;
     let mut work = Unmetered;
     source_arc_ordinates(request, metric, &mut state, &mut fraction, &mut work)
+}
+
+/// Interpolate the producer's XY projection and resolve eligible geographic
+/// ordinates on the original directed source edge at its exact parameter.
+pub(crate) fn interpolate_source_projection<M: ChartMetric>(
+    context: &SourceArcContext<'_, '_, M>,
+    start: Point,
+    end: Point,
+    projection: &SegmentProjection,
+    root_state: &mut Option<RootMetricState>,
+) -> crate::error::Result<Point> {
+    let point = projection.interpolate_point(start, end)?;
+    let axes = CoordinateAxes::new(
+        HasZ(start.z().is_some() && end.z().is_some()),
+        HasM(start.m().is_some() && end.m().is_some()),
+    );
+    if !axes.has_z() && !axes.has_m() {
+        return Ok(point);
+    }
+    let TopologyDomain::Geographic(frame) = context.domain() else {
+        return Ok(point);
+    };
+    let source = [start, end];
+    let parameter = projection.exact_fraction()?;
+    let longitude = crate::geometry::exact_arith::retained_edge_from_lifted_binary64_pair(
+        frame.longitude(),
+        [start.x, end.x],
+    )?;
+    let mut fraction = None;
+    let mut work = Unmetered;
+    let state = root_state.get_or_insert_with(RootMetricState::default);
+    let ordinates = resolve_source_root(
+        frame,
+        &source,
+        longitude,
+        &parameter,
+        axes,
+        context.metric_access(),
+        state,
+        &mut fraction,
+        &mut work,
+    )?;
+    Point::new_axes(
+        point.x,
+        point.y,
+        ZOrdinate(ordinates.z.value().or_else(|| point.z())),
+        MOrdinate(ordinates.m.value().or_else(|| point.m())),
+    )
 }
 
 fn node_ordinates_at(point: Point, axes: CoordinateAxes) -> NodeOrdinates {

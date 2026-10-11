@@ -20,6 +20,41 @@ use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask
 use crate::py::support;
 use crate::py::vectors::Groups;
 
+fn split_paired_rows(
+    lines: &PyGeometryArray,
+    cutters: &PyGeometryArray,
+    mut split: impl FnMut(&Shape, &Shape) -> Result<Vec<Shape>>,
+) -> std::result::Result<crate::CsrBuilder<Shape>, (usize, Error)> {
+    let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, lines.len());
+    for (line, cutter) in lines
+        .row_operation()
+        .rows_with_missing(|| ())
+        .zip(cutters.row_operation().rows_with_missing(|| ()))
+    {
+        let (row, values) = match (line, cutter) {
+            (ArrayRow::Present(line), ArrayRow::Present(cutter)) => {
+                let logical = line.logical();
+                let values = line
+                    .row()
+                    .try_with_shape(|line| {
+                        cutter.row().try_with_shape(|cutter| split(line, cutter))
+                    })
+                    .map_err(|error| (logical, error))?;
+                (logical, values)
+            },
+            (line, _) => {
+                let logical = match line {
+                    ArrayRow::Present(line) => line.logical(),
+                    ArrayRow::Missing { logical, .. } => logical,
+                };
+                (logical, Vec::new())
+            },
+        };
+        builder.push_row(values).map_err(|error| (row, error))?;
+    }
+    Ok(builder)
+}
+
 fn publish_triangle_shapes_for_domain(
     shapes: Vec<Shape>,
     domain: crate::geometry::TopologyDomain,
@@ -792,6 +827,22 @@ impl PyGeometryArray {
                 "split",
             )?;
             let splitter_shape = Arc::clone(&splitter.shape);
+            if self.has_z() || self.has_m() {
+                let mut metric_scratch = crate::dispatch::MetricScratch::default();
+                let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+                    .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+                return self.flat_map_shapes_groups(py, move |line| {
+                    let metric_access = || {
+                        metric.geographic_chart_metric()?.ok_or_else(|| {
+                            crate::crs::CrsError::invalid(
+                                "geographic split source ordinates require the operation's CRS metric",
+                            )
+                        })
+                    };
+                    let context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+                    line.split_with_context(&splitter_shape, tolerance, &context)
+                });
+            }
             return self
                 .flat_map_shapes_groups(py, move |line| line.split(&splitter_shape, tolerance));
         }
@@ -804,40 +855,32 @@ impl PyGeometryArray {
             );
             let lines = self.clone();
             let cutters = splitters.clone();
-            let builder = py
-                .detach(move || {
-                    let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, lines.len());
-                    for (line, cutter) in lines
-                        .row_operation()
-                        .rows_with_missing(|| ())
-                        .zip(cutters.row_operation().rows_with_missing(|| ()))
-                    {
-                        let (row, values) = match (line, cutter) {
-                            (ArrayRow::Present(line), ArrayRow::Present(cutter)) => {
-                                let logical = line.logical();
-                                let values = line
-                                    .row()
-                                    .try_with_shape(|line| {
-                                        cutter
-                                            .row()
-                                            .try_with_shape(|cutter| line.split(cutter, tolerance))
-                                    })
-                                    .map_err(|error| (logical, error))?;
-                                (logical, values)
-                            },
-                            (line, _) => {
-                                let logical = match line {
-                                    ArrayRow::Present(line) => line.logical(),
-                                    ArrayRow::Missing { logical, .. } => logical,
-                                };
-                                (logical, Vec::new())
-                            },
-                        };
-                        builder.push_row(values).map_err(|error| (row, error))?;
-                    }
-                    Ok::<_, (usize, Error)>(builder)
+            let builder = if self.has_z() || self.has_m() {
+                let mut metric_scratch = crate::dispatch::MetricScratch::default();
+                let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
+                    .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
+                py.detach(move || {
+                    let metric_access = || {
+                        metric.geographic_chart_metric()?.ok_or_else(|| {
+                            crate::crs::CrsError::invalid(
+                                "geographic split source ordinates require the operation's CRS metric",
+                            )
+                        })
+                    };
+                    let context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+                    split_paired_rows(&lines, &cutters, |line, cutter| {
+                        line.split_with_context(cutter, tolerance, &context)
+                    })
                 })
-                .map_err(rows_err)?;
+                .map_err(rows_err)?
+            } else {
+                py.detach(move || {
+                    split_paired_rows(&lines, &cutters, |line, cutter| {
+                        line.split(cutter, tolerance)
+                    })
+                })
+                .map_err(rows_err)?
+            };
             return Groups::from_geometry_builder(self.frame.clone(), builder, missing);
         }
         Err(expected_geometry_or_array())
