@@ -132,14 +132,6 @@ impl ExactChartPoint {
         })
     }
 
-    pub(in crate::geometry) fn compare_x(&self, other: &Self) -> Result<Ordering> {
-        self.x.try_cmp(&other.x)
-    }
-
-    pub(in crate::geometry) fn compare_y(&self, other: &Self) -> Result<Ordering> {
-        self.y.try_cmp(&other.y)
-    }
-
     pub(in crate::geometry) fn outward_bounds(&self) -> Result<[f64; 4]> {
         let (min_x, max_x) = self.x.outward_bounds()?;
         let (min_y, max_y) = self.y.outward_bounds()?;

@@ -16,7 +16,7 @@ use std::ops::ControlFlow;
 
 #[cfg(test)]
 use super::metrics::{record_candidate_pair, record_overlap, update as update_partition_metrics};
-use super::rays::RayPoints;
+use super::rays::RayPointsWithWork;
 use super::{Axis, ExactPartition, ExactSpan, KeptNodes, NodeId, NodeRecipe, OrdinateBindings};
 use crate::error::{Error, ResourceError};
 use crate::geometry::exact_arith::ExactSign;
@@ -26,8 +26,8 @@ use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::TouchEndpoint;
 use crate::geometry::segments::{
     SegmentClipInterval, SegmentClipPoint, SegmentEndpoint, TouchLocation, crossing_homogeneous,
-    crossing_point, point_in_segment_envelope, segment_contact_exact_impl, stored_orientation_sign,
-    strictly_inside,
+    crossing_homogeneous_with_work, crossing_point, point_in_segment_envelope,
+    segment_contact_exact_impl, stored_orientation_sign, strictly_inside,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios, round_ratio};
 use crate::geometry::{
@@ -194,6 +194,18 @@ impl<'a> PointArena<'a> {
         reason = "the admitted PointArena node ID addresses aligned recipe and rounded columns; crossing segment IDs came from the candidate sweep"
     )]
     pub(in crate::geometry) fn exact(&self, index: u32) -> Result<Cow<'_, [ExactDyadic; 3]>> {
+        self.exact_with_work(index, &mut Unmetered)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted PointArena node ID addresses aligned recipe and rounded columns; crossing segment IDs came from the candidate sweep"
+    )]
+    pub(in crate::geometry) fn exact_with_work<W: Work>(
+        &self,
+        index: u32,
+        work: &mut W,
+    ) -> Result<Cow<'_, [ExactDyadic; 3]>> {
         match &self.recipes[index as usize] {
             NodeRecipe::Stored => {
                 let point = self.rounded[index as usize];
@@ -213,9 +225,11 @@ impl<'a> PointArena<'a> {
                         metrics.exact_crossings = metrics.exact_crossings.wrapping_add(1);
                     });
                     let [first, second] = *segments;
-                    Ok(Box::new(crossing_homogeneous(
+                    work.charge(1)?;
+                    Ok(Box::new(crossing_homogeneous_with_work(
                         self.unique[first as usize],
                         self.unique[second as usize],
+                        work,
                     )?))
                 })?;
                 Ok(Cow::Borrowed(&**point))
@@ -293,7 +307,7 @@ impl<'a> PointArena<'a> {
             return Ok(());
         }
         let (axis, increasing) = segment_axis(segment);
-        RayPoints::sort_by_axis_with_work(self, items, axis, point, equal, work)?;
+        RayPointsWithWork::sort_by_axis_with_work(self, items, axis, point, equal, work)?;
         if !increasing {
             work.charge(u64::try_from(items.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
             items.reverse();

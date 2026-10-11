@@ -99,7 +99,7 @@ pub(crate) use metrics::{partition_calls, reset_partition_calls};
 #[cfg(test)]
 use metrics::{record_partition_call, update as update_partition_metrics};
 pub(in crate::geometry) use rays::{
-    RayPoints, compare_departures_with_work, shoot_left, shoot_left_with_work,
+    RayPoints, RayPointsWithWork, compare_departures_with_work, shoot_left, shoot_left_with_work,
     visit_component_faces,
 };
 
@@ -4923,7 +4923,7 @@ fn walk_exact_chain(
 fn graph_edge_departure<E, W>(edge_nodes: &E, edge: usize, origin: u32, work: &mut W) -> Result<u32>
 where
     E: Fn(usize) -> Result<[u32; 2]> + ?Sized,
-    W: Work + ?Sized,
+    W: Work,
 {
     work.charge(1)?;
     let [start, end] = edge_nodes(edge)?;
@@ -4948,13 +4948,13 @@ fn graph_contact_walk<R, E, W>(
     work: &mut W,
 ) -> Result<u32>
 where
-    R: RayPoints + ?Sized,
+    R: RayPointsWithWork + ?Sized,
     E: Fn(usize) -> Result<[u32; 2]> + ?Sized,
-    W: Work + ?Sized,
+    W: Work,
 {
     work.charge(1)?;
     let [start, end] = edge_nodes(edge)?;
-    let upper = match points.compare_axis(start, end, Axis::Y)? {
+    let upper = match points.compare_axis_with_work(start, end, Axis::Y, work)? {
         Ordering::Less => end,
         Ordering::Greater => start,
         Ordering::Equal => {
@@ -5004,9 +5004,9 @@ fn graph_exterior_walk<R, E, W>(
     work: &mut W,
 ) -> Result<Option<u32>>
 where
-    R: RayPoints + ?Sized,
+    R: RayPointsWithWork + ?Sized,
     E: Fn(usize) -> Result<[u32; 2]> + ?Sized,
-    W: Work + ?Sized,
+    W: Work,
 {
     let start = *topology.starts.get(root as usize).ok_or_else(|| {
         GeometryErrorKind::Invalid("graph component root has no departure row".into())
@@ -5029,7 +5029,9 @@ where
             GeometryErrorKind::Invalid("graph component departure has no target".into())
         })?;
         work.charge(1)?;
-        let upper = !points.compare_axis(target, root, Axis::Y)?.is_lt();
+        let upper = !points
+            .compare_axis_with_work(target, root, Axis::Y, work)?
+            .is_lt();
         if chosen.is_none() || (upper && !has_upper) {
             chosen = Some(slot);
             has_upper = upper;
@@ -5073,7 +5075,7 @@ pub(in crate::geometry) fn graph_global_faces_with_work<R, E, W>(
     work: &mut W,
 ) -> Result<GlobalFaces>
 where
-    R: RayPoints + ?Sized,
+    R: RayPointsWithWork + ?Sized,
     E: Fn(usize) -> Result<[u32; 2]>,
     W: Work,
 {
@@ -5116,10 +5118,10 @@ where
         let node = u32::try_from(node).map_err(|_| ResourceError::SizeOverflow)?;
         if let Some(previous) = *minimum {
             work.charge(1)?;
-            let x = points.compare_axis(node, previous, Axis::X)?;
+            let x = points.compare_axis_with_work(node, previous, Axis::X, work)?;
             let order = if x.is_eq() {
                 work.charge(1)?;
-                points.compare_axis(node, previous, Axis::Y)?
+                points.compare_axis_with_work(node, previous, Axis::Y, work)?
             } else {
                 x
             };

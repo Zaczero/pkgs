@@ -11,17 +11,18 @@ use std::ops::ControlFlow;
 use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::overlay::{
-    CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, compare_departures_with_work,
-    graph_global_faces_with_work,
+    CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, RayPointsWithWork,
+    compare_departures_with_work, graph_global_faces_with_work,
 };
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::{
-    ExactChartPoint, exact_segments_intersect, vector_cross, vector_difference,
+    ExactChartPoint, exact_segments_intersect_with_work, point_on_exact_segment_with_work,
+    vector_cross_with_work, vector_difference_with_work,
 };
 use crate::geometry::{
-    Bounds, CoordinateAxes, GeometryErrorKind, Point, Shape, Work, XY,
-    for_each_overlapping_bounds_cross_pair,
+    Bounds, CoordinateAxes, GeometryErrorKind, Point, Shape, Unmetered, Work, XY,
+    for_each_overlapping_bounds_cross_pair_with_work,
 };
 
 /// Exact points are chart images already admitted by their producer receipt.
@@ -63,6 +64,27 @@ impl RayPoints for ExactPoints {
     }
 
     fn compare_axis(&self, left: u32, right: u32, axis: RayAxis) -> Result<Ordering> {
+        self.compare_axis_with_work(left, right, axis, &mut Unmetered)
+    }
+
+    fn orientation(
+        &self,
+        a: u32,
+        b: u32,
+        c: u32,
+    ) -> Result<crate::geometry::exact_arith::ExactSign> {
+        self.orientation_with_work(a, b, c, &mut Unmetered)
+    }
+}
+
+impl RayPointsWithWork for ExactPoints {
+    fn compare_axis_with_work<W: Work>(
+        &self,
+        left: u32,
+        right: u32,
+        axis: RayAxis,
+        work: &mut W,
+    ) -> Result<Ordering> {
         let left = self
             .exact
             .get(left as usize)
@@ -72,16 +94,17 @@ impl RayPoints for ExactPoints {
             .get(right as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("known graph point ID is unknown".into()))?;
         match axis {
-            RayAxis::X => left.compare_x(right),
-            RayAxis::Y => left.compare_y(right),
+            RayAxis::X => left.x.try_cmp_with_work(&right.x, work),
+            RayAxis::Y => left.y.try_cmp_with_work(&right.y, work),
         }
     }
 
-    fn orientation(
+    fn orientation_with_work<W: Work>(
         &self,
         a: u32,
         b: u32,
         c: u32,
+        work: &mut W,
     ) -> Result<crate::geometry::exact_arith::ExactSign> {
         let a = self
             .exact
@@ -95,7 +118,9 @@ impl RayPoints for ExactPoints {
             .exact
             .get(c as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("known graph point ID is unknown".into()))?;
-        vector_cross(&vector_difference(a, b)?, &vector_difference(a, c)?).map(|cross| cross.sign())
+        let direction = vector_difference_with_work(a, b, work)?;
+        let offset = vector_difference_with_work(a, c, work)?;
+        vector_cross_with_work(&direction, &offset, work).map(|cross| cross.sign())
     }
 }
 
@@ -1503,58 +1528,40 @@ fn point_edge_contacts_preserved(
             )?);
         }
         let mut result = BTreeSet::new();
-        let completion = for_each_overlapping_bounds_cross_pair(
+        let completion = for_each_overlapping_bounds_cross_pair_with_work(
             &point_bounds,
             &edge_bounds,
-            |point_index, edge_index| {
-                if let Err(error) = work.charge(1) {
-                    return ControlFlow::Break(Err(error));
-                }
-                let vertex = match isolated_vertices.get(point_index).copied() {
-                    Some(vertex) => vertex,
-                    None => {
-                        return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
-                            "point-contact sweep returned an unknown point".into(),
-                        )
-                        .into()));
-                    },
-                };
-                let [start, end] = match edge_nodes.get(edge_index) {
-                    Some(edge) => *edge,
-                    None => {
-                        return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
-                            "point-contact sweep returned an unknown edge".into(),
-                        )
-                        .into()));
-                    },
-                };
+            work,
+            |point_index, edge_index, work| {
+                work.charge(1)?;
+                let vertex = isolated_vertices.get(point_index).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "point-contact sweep returned an unknown point".into(),
+                    )
+                })?;
+                let [start, end] = *edge_nodes.get(edge_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "point-contact sweep returned an unknown edge".into(),
+                    )
+                })?;
                 let (Some(point), Some(start), Some(end)) = (
                     points.exact.get(vertex as usize),
                     points.exact.get(start as usize),
                     points.exact.get(end as usize),
                 ) else {
-                    return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
+                    return Err(GeometryErrorKind::Invalid(
                         "point-contact graph row is outside its point inventory".into(),
                     )
-                    .into()));
+                    .into());
                 };
-                match crate::geometry::topology::point_on_exact_segment(point, start, end) {
-                    Ok(false) => ControlFlow::Continue(()),
-                    Ok(true) => {
-                        if let Err(error) = work.charge(1) {
-                            return ControlFlow::Break(Err(error));
-                        }
-                        result.insert((vertex, edge_index));
-                        ControlFlow::Continue(())
-                    },
-                    Err(error) => ControlFlow::Break(Err(error)),
+                if point_on_exact_segment_with_work(point, start, end, work)? {
+                    work.charge(1)?;
+                    result.insert((vertex, edge_index));
                 }
+                Ok(ControlFlow::<()>::Continue(()))
             },
         )?;
-        match completion {
-            ControlFlow::Break(Err(error)) => return Err(error),
-            ControlFlow::Break(Ok(())) | ControlFlow::Continue(()) => {},
-        }
+        let _ = completion;
         Ok(result)
     }
 
@@ -1587,21 +1594,22 @@ fn edges_have_only_vertex_contacts(
         bounds.push(outward_segment_bounds(start, end)?);
     }
     let mut new_contact = false;
-    let completion =
-        for_each_overlapping_bounds_cross_pair(&bounds, &bounds, |left_index, right_index| {
+    let completion = for_each_overlapping_bounds_cross_pair_with_work(
+        &bounds,
+        &bounds,
+        work,
+        |left_index, right_index, work| {
             if left_index >= right_index {
-                return ControlFlow::Continue(());
+                return Ok(ControlFlow::Continue(()));
             }
-            if let Err(error) = work.charge(1) {
-                return ControlFlow::Break(Err(error));
-            }
+            work.charge(1)?;
             let (Some([left_start, left_end]), Some([right_start, right_end])) =
                 (edge_nodes.get(left_index), edge_nodes.get(right_index))
             else {
-                return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
+                return Err(GeometryErrorKind::Invalid(
                     "candidate edge sweep returned an unknown edge".into(),
                 )
-                .into()));
+                .into());
             };
             let (
                 Some(left_start_point),
@@ -1615,26 +1623,27 @@ fn edges_have_only_vertex_contacts(
                 points.exact.get(*right_end as usize),
             )
             else {
-                return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
+                return Err(GeometryErrorKind::Invalid(
                     "candidate edge endpoint is outside its point inventory".into(),
                 )
-                .into()));
+                .into());
             };
-            match exact_segments_intersect(
+            match exact_segments_intersect_with_work(
                 left_start_point,
                 left_end_point,
                 right_start_point,
                 right_end_point,
+                work,
             ) {
-                Err(error) => ControlFlow::Break(Err(error)),
-                Ok(false) => ControlFlow::Continue(()),
+                Err(error) => Err(error),
+                Ok(false) => Ok(ControlFlow::Continue(())),
                 Ok(true) => {
                     let shared = [*left_start, *left_end]
                         .into_iter()
                         .find(|vertex| [*right_start, *right_end].contains(vertex));
                     let Some(shared) = shared else {
                         new_contact = true;
-                        return ControlFlow::Break(Ok(()));
+                        return Ok(ControlFlow::Break(()));
                     };
                     let left_other = if *left_start == shared {
                         *left_end
@@ -1650,37 +1659,37 @@ fn edges_have_only_vertex_contacts(
                         points.exact.get(left_other as usize),
                         points.exact.get(right_other as usize),
                     ) else {
-                        return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
+                        return Err(GeometryErrorKind::Invalid(
                             "candidate edge has no nonshared endpoint".into(),
                         )
-                        .into()));
+                        .into());
                     };
-                    match (
-                        crate::geometry::topology::point_on_exact_segment(
-                            left_other_point,
-                            right_start_point,
-                            right_end_point,
-                        ),
-                        crate::geometry::topology::point_on_exact_segment(
-                            right_other_point,
-                            left_start_point,
-                            left_end_point,
-                        ),
-                    ) {
-                        (Ok(false), Ok(false)) => ControlFlow::Continue(()),
+                    let left_on_right = point_on_exact_segment_with_work(
+                        left_other_point,
+                        right_start_point,
+                        right_end_point,
+                        work,
+                    );
+                    let right_on_left = point_on_exact_segment_with_work(
+                        right_other_point,
+                        left_start_point,
+                        left_end_point,
+                        work,
+                    );
+                    match (left_on_right, right_on_left) {
+                        (Ok(false), Ok(false)) => Ok(ControlFlow::Continue(())),
                         (Ok(_), Ok(_)) => {
                             new_contact = true;
-                            ControlFlow::Break(Ok(()))
+                            Ok(ControlFlow::Break(()))
                         },
-                        (Err(error), _) | (_, Err(error)) => ControlFlow::Break(Err(error)),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
                     }
                 },
             }
-        })?;
-    match completion {
-        ControlFlow::Break(Err(error)) => Err(error),
-        ControlFlow::Break(Ok(())) | ControlFlow::Continue(()) => Ok(!new_contact),
-    }
+        },
+    )?;
+    let _ = completion;
+    Ok(!new_contact)
 }
 
 #[cfg(test)]
@@ -1689,14 +1698,115 @@ mod tests {
         AdmittedGraph, AdmittedLayout, CheckedImages, ExactPoints, FrozenLiteralBuffers,
         LiteralChart, LiteralCheck, LiteralPoint, LiteralPolygon, LiteralSequence,
         LogicalArealWalk, ShapeLiteralLayout, admit_candidate, admit_known_graph,
-        admit_logical_layout, bind_literals,
+        admit_logical_layout, bind_literals, edges_have_only_vertex_contacts,
+        point_edge_contacts_preserved,
     };
-    use crate::error::Result;
+    use crate::error::{ErrorKind, Result};
+    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+    use crate::geometry::segment_index::sweep::{
+        CrossPairProbeProgress, cross_pair_probe_progress, reset_cross_pair_probe_progress,
+    };
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::topology::ExactChartPoint;
     use crate::geometry::{
-        CoordSeq, CoordinateAxes, LineSeq, Point, Polygon, Ring, Shape, Unmetered, XY,
+        CoordSeq, CoordinateAxes, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
+        Unmetered, Work, XY,
     };
+
+    #[derive(Clone, Copy)]
+    struct SweepCharge {
+        spent_before: u128,
+        ticks: u128,
+        progress: CrossPairProbeProgress,
+    }
+
+    struct SweepRecordingWork<'a> {
+        budget: &'a mut EvaluationBudget,
+        spent: u128,
+        charges: Vec<SweepCharge>,
+        refused: Option<SweepCharge>,
+    }
+
+    impl<'a> SweepRecordingWork<'a> {
+        fn new(budget: &'a mut EvaluationBudget) -> Self {
+            Self {
+                budget,
+                spent: 0,
+                charges: Vec::new(),
+                refused: None,
+            }
+        }
+
+        fn record(&mut self, ticks: u128, result: &Result<()>) {
+            let event = SweepCharge {
+                spent_before: self.spent,
+                ticks,
+                progress: cross_pair_probe_progress(),
+            };
+            if result.is_ok() {
+                self.charges.push(event);
+                self.spent = self.spent.wrapping_add(ticks);
+            } else {
+                self.refused = Some(event);
+            }
+        }
+    }
+
+    impl Work for SweepRecordingWork<'_> {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
+            self.record(u128::from(ticks), &result);
+            result
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            let ticks = (count as u128).wrapping_mul(ticks_per_item as u128);
+            let result =
+                <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
+            self.record(ticks, &result);
+            result
+        }
+    }
+
+    fn budget_refusing_before(operation: &'static str, event: SweepCharge) -> EvaluationBudget {
+        let remaining = event
+            .spent_before
+            .checked_add(event.ticks)
+            .and_then(|ticks| ticks.checked_sub(1))
+            .expect("the target sweep charge is positive and fits the budget");
+        EvaluationBudget::with_remaining_ticks_for_test(operation, 1, remaining)
+            .expect("calibrated sweep budget is representable")
+    }
+
+    fn assert_sweep_limit(error: &crate::error::Error, operation: &'static str) {
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: actual,
+                ..
+            }) if *actual == operation
+        ));
+    }
+
+    fn isolated_contact_result<W: Work>(work: &mut W) -> Result<bool> {
+        let points = points(&[
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (100.0, 100.0),
+            (101.0, 100.0),
+            (200.0, 200.0),
+            (201.0, 200.0),
+        ]);
+        point_edge_contacts_preserved(&points, &points, &[0, 1], &[[2, 3], [4, 5]], work)
+    }
+
+    fn edge_contact_result<W: Work>(
+        coordinates: &[(f64, f64)],
+        edges: &[[u32; 2]],
+        work: &mut W,
+    ) -> Result<bool> {
+        edges_have_only_vertex_contacts(&points(coordinates), edges, work)
+    }
 
     fn points(values: &[(f64, f64)]) -> ExactPoints {
         let mut work = Unmetered;
@@ -2698,5 +2808,164 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn native_point_contact_sweep_pays_no_survivor_probes() -> Result<()> {
+        const OPERATION: &str = "native_point_contact_sweep";
+        reset_cross_pair_probe_progress();
+        let (result, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let result = isolated_contact_result(&mut work)?;
+            (result, work.charges)
+        };
+        assert!(result);
+        assert_eq!(cross_pair_probe_progress(), CrossPairProbeProgress {
+            attempted: 8,
+            completed: 8,
+        });
+        let target = charges
+            .into_iter()
+            .find(|event| {
+                event.progress
+                    == CrossPairProbeProgress {
+                        attempted: 2,
+                        completed: 1,
+                    }
+            })
+            .expect("the paid sweep charges a rejected point-edge probe");
+
+        reset_cross_pair_probe_progress();
+        let mut budget = budget_refusing_before(OPERATION, target);
+        let error = {
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let error = isolated_contact_result(&mut work)
+                .expect_err("the no-survivor sweep refuses before its second probe");
+            assert_eq!(
+                work.refused.map(|event| event.progress),
+                Some(target.progress)
+            );
+            error
+        };
+        assert_sweep_limit(&error, OPERATION);
+        assert_eq!(cross_pair_probe_progress(), target.progress);
+
+        reset_cross_pair_probe_progress();
+        assert!(isolated_contact_result(&mut Unmetered)?);
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            assert!(isolated_contact_result(&mut work)?);
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
+        Ok(())
+    }
+
+    #[test]
+    fn native_edge_contact_sweep_pays_no_survivor_probes() -> Result<()> {
+        const OPERATION: &str = "native_edge_contact_sweep";
+        let coordinates = [(0.0, 0.0), (1.0, 0.0), (10.0, 0.0), (11.0, 0.0)];
+        let edges = [[0, 1], [2, 3]];
+        reset_cross_pair_probe_progress();
+        let (result, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let result = edge_contact_result(&coordinates, &edges, &mut work)?;
+            (result, work.charges)
+        };
+        assert!(result);
+        assert_eq!(cross_pair_probe_progress(), CrossPairProbeProgress {
+            attempted: 4,
+            completed: 4,
+        });
+        let target = charges
+            .into_iter()
+            .find(|event| {
+                event.progress
+                    == CrossPairProbeProgress {
+                        attempted: 2,
+                        completed: 1,
+                    }
+            })
+            .expect("the paid self-sweep charges a rejected edge pair");
+
+        reset_cross_pair_probe_progress();
+        let mut budget = budget_refusing_before(OPERATION, target);
+        let error = {
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let error = edge_contact_result(&coordinates, &edges, &mut work)
+                .expect_err("the no-survivor self-sweep refuses before its second probe");
+            assert_eq!(
+                work.refused.map(|event| event.progress),
+                Some(target.progress)
+            );
+            error
+        };
+        assert_sweep_limit(&error, OPERATION);
+        assert_eq!(cross_pair_probe_progress(), target.progress);
+
+        reset_cross_pair_probe_progress();
+        assert!(edge_contact_result(&coordinates, &edges, &mut Unmetered)?);
+        let mut ordinary_budget = EvaluationBudget::new(OPERATION, 1)?;
+        let ordinary_spend = ordinary_budget.spent_ticks_for_test();
+        {
+            let mut work = EvaluationOnly::new(&mut ordinary_budget);
+            assert!(edge_contact_result(&coordinates, &edges, &mut work)?);
+        }
+        assert_eq!(ordinary_budget.spent_ticks_for_test(), ordinary_spend);
+        Ok(())
+    }
+
+    #[test]
+    fn native_edge_contact_sweep_preserves_exact_charges_before_refusal() -> Result<()> {
+        const OPERATION: &str = "native_edge_contact_exact";
+        let coordinates = [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)];
+        let edges = [[0, 1], [1, 2]];
+        reset_cross_pair_probe_progress();
+        let (result, charges) = {
+            let mut budget = EvaluationBudget::new(OPERATION, 1)?;
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let result = edge_contact_result(&coordinates, &edges, &mut work)?;
+            (result, work.charges)
+        };
+        assert!(result);
+        assert!(
+            charges.iter().any(|event| {
+                event.progress
+                    == CrossPairProbeProgress {
+                        attempted: 2,
+                        completed: 2,
+                    }
+            }),
+            "the shared-endpoint survivor runs its exact contact predicate"
+        );
+        let target = charges
+            .into_iter()
+            .find(|event| {
+                event.progress
+                    == CrossPairProbeProgress {
+                        attempted: 3,
+                        completed: 2,
+                    }
+            })
+            .expect("the paid sweep charges the later rejected edge pair");
+
+        reset_cross_pair_probe_progress();
+        let mut budget = budget_refusing_before(OPERATION, target);
+        let error = {
+            let mut work = SweepRecordingWork::new(&mut budget);
+            let error = edge_contact_result(&coordinates, &edges, &mut work)
+                .expect_err("later sweep probe refuses after the exact contact");
+            assert_eq!(
+                work.refused.map(|event| event.progress),
+                Some(target.progress)
+            );
+            error
+        };
+        assert_sweep_limit(&error, OPERATION);
+        assert_eq!(cross_pair_probe_progress(), target.progress);
+        Ok(())
     }
 }

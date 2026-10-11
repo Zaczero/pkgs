@@ -713,6 +713,11 @@ impl EvaluationBudget {
         self.constructed
     }
 
+    #[cfg(test)]
+    pub(in crate::geometry) const fn spent_ticks_for_test(&self) -> u128 {
+        self.spent_ticks
+    }
+
     pub(in crate::geometry) fn include_constructed(&mut self, constructed: usize) -> Result<()> {
         if constructed > self.constructed {
             self.set_constructed(constructed)?;

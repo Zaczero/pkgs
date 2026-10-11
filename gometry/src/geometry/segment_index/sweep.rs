@@ -3,6 +3,8 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use std::ops::ControlFlow;
+#[cfg(test)]
+use std::{cell::Cell, thread_local};
 
 use crate::error::{ResourceError, Result};
 use crate::geometry::{
@@ -26,6 +28,49 @@ pub(crate) const SEGMENT_INDEX_MIN_PAIRS: usize = 4096;
 const SWEEP_MIN_ITEMS: usize = 6;
 const CROSS_LEFT_SIDE: u8 = 1;
 const CROSS_RIGHT_SIDE: u8 = 2;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::geometry) struct CrossPairProbeProgress {
+    pub(in crate::geometry) attempted: usize,
+    pub(in crate::geometry) completed: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static CROSS_PAIR_PROBE_PROGRESS: Cell<CrossPairProbeProgress> =
+        const { Cell::new(CrossPairProbeProgress { attempted: 0, completed: 0 }) };
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn reset_cross_pair_probe_progress() {
+    CROSS_PAIR_PROBE_PROGRESS.with(|progress| {
+        progress.set(CrossPairProbeProgress::default());
+    });
+}
+
+#[cfg(test)]
+pub(in crate::geometry) fn cross_pair_probe_progress() -> CrossPairProbeProgress {
+    CROSS_PAIR_PROBE_PROGRESS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn record_cross_pair_probe_attempt() {
+    CROSS_PAIR_PROBE_PROGRESS.with(|progress| {
+        let mut value = progress.get();
+        value.attempted = value.attempted.wrapping_add(1);
+        progress.set(value);
+    });
+}
+
+#[cfg(test)]
+fn record_cross_pair_probe_complete() {
+    CROSS_PAIR_PROBE_PROGRESS.with(|progress| {
+        let mut value = progress.get();
+        value.completed = value.completed.wrapping_add(1);
+        progress.set(value);
+    });
+}
 
 /// Entry count from which the sweep bands its cross axis (below it the
 /// plain forward window is already short), and the per-band grain the
@@ -315,8 +360,13 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_cross_pair_with_work<B, W
     if count < SWEEP_MIN_ITEMS {
         for (left_index, left_bounds) in left.iter().enumerate() {
             for (right_index, right_bounds) in right.iter().enumerate() {
+                #[cfg(test)]
+                record_cross_pair_probe_attempt();
                 work.charge(1)?;
-                if left_bounds.intersects(*right_bounds) {
+                let intersects = left_bounds.intersects(*right_bounds);
+                #[cfg(test)]
+                record_cross_pair_probe_complete();
+                if intersects {
                     match visit(left_index, right_index, work)? {
                         ControlFlow::Continue(()) => {},
                         ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),

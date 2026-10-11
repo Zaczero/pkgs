@@ -23,8 +23,7 @@ use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceEdge, ExactSourceRange, ExactSourceRing,
     FallibleAvl, SourceEdgeId, SourceEdgeKind, SourceRowId, compare_quotient_keys,
     compare_quotient_keys_with_work, point_on_exact_segment_with_work,
-    quotient_key_for_chart_position_with_work, vector_cross, vector_cross_with_work,
-    vector_difference, vector_difference_with_work,
+    quotient_key_for_chart_position_with_work, vector_cross_with_work, vector_difference_with_work,
 };
 use super::overlay::{
     DrawnAreaOrigin, DrawnPolygons, PlannedAreaRing, PolygonPlan, QEmissionDrawing, QEmissionPlan,
@@ -56,9 +55,9 @@ use crate::geometry::ordinates::{
     NodeOrdinates, RootId, RootRange, RootRequest, SourceArcMetricAccess,
 };
 use crate::geometry::overlay::{
-    EmbeddingDomain, GlobalFaces, RayAxis, RayPoints, compare_departures_with_work,
-    graph_global_faces_with_work, segments_within_chebyshev, shoot_left_with_work,
-    walk_is_shell_with_work,
+    EmbeddingDomain, GlobalFaces, RayAxis, RayPoints, RayPointsWithWork,
+    compare_departures_with_work, graph_global_faces_with_work, segments_within_chebyshev,
+    shoot_left_with_work, walk_is_shell_with_work,
 };
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, Interval};
@@ -717,6 +716,22 @@ impl RayPoints for NativeReferenceRayPoints<'_> {
     }
 
     fn compare_axis(&self, left: u32, right: u32, axis: RayAxis) -> Result<Ordering> {
+        self.compare_axis_with_work(left, right, axis, &mut Unmetered)
+    }
+
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+        self.orientation_with_work(a, b, c, &mut Unmetered)
+    }
+}
+
+impl RayPointsWithWork for NativeReferenceRayPoints<'_> {
+    fn compare_axis_with_work<W: Work>(
+        &self,
+        left: u32,
+        right: u32,
+        axis: RayAxis,
+        work: &mut W,
+    ) -> Result<Ordering> {
         let left = self.exact_point(left)?;
         let right = self.exact_point(right)?;
         let source_axis = match (self.transform, axis) {
@@ -725,8 +740,8 @@ impl RayPoints for NativeReferenceRayPoints<'_> {
             (NativeRayTransform::Identity | NativeRayTransform::ReflectX, axis) => axis,
         };
         let order = match source_axis {
-            RayAxis::X => left.compare_x(right)?,
-            RayAxis::Y => left.compare_y(right)?,
+            RayAxis::X => left.x.try_cmp_with_work(&right.x, work)?,
+            RayAxis::Y => left.y.try_cmp_with_work(&right.y, work)?,
         };
         Ok(
             if matches!(
@@ -740,11 +755,19 @@ impl RayPoints for NativeReferenceRayPoints<'_> {
         )
     }
 
-    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+    fn orientation_with_work<W: Work>(
+        &self,
+        a: u32,
+        b: u32,
+        c: u32,
+        work: &mut W,
+    ) -> Result<ExactSign> {
         let a = self.exact_point(a)?;
         let b = self.exact_point(b)?;
         let c = self.exact_point(c)?;
-        let sign = vector_cross(&vector_difference(a, b)?, &vector_difference(a, c)?)?.sign();
+        let left = vector_difference_with_work(a, b, work)?;
+        let right = vector_difference_with_work(a, c, work)?;
+        let sign = vector_cross_with_work(&left, &right, work)?.sign();
         Ok(
             if matches!(
                 self.transform,
