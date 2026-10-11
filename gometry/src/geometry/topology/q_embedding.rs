@@ -18404,8 +18404,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let left = self.native_family_endpoint_domain(chord, 0, budget)?;
                 let right = self.native_family_endpoint_domain(chord, 1, budget)?;
                 let mut ranges = Vec::new();
-                for &(left_candidate, ref left_point) in &left {
-                    for &(right_candidate, ref right_point) in &right {
+                for (left_candidate, left_point) in &left {
+                    for (right_candidate, right_point) in &right {
                         budget.charge(1)?;
                         if chord.nodes[0] == chord.nodes[1] && left_candidate != right_candidate {
                             continue;

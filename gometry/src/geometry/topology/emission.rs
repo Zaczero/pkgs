@@ -2600,23 +2600,23 @@ impl SourceTrace {
         let zero = ExactRational::zero();
         let one = ExactRational::one();
         let mut rows = TraceRowsBuilder::new();
-        for &(edge, ref start, ref end) in slices {
+        for (edge, start, end) in slices {
             work.charge(1)?;
-            if edge >= edge_count {
+            if *edge >= edge_count {
                 return Err(GeometryErrorKind::Invalid(
                     "source trace slice references an unknown edge".into(),
                 )
                 .into());
             }
             let mut row = Vec::new();
-            for parent in self.rows.row(edge)? {
+            for parent in self.rows.row(*edge)? {
                 work.charge(1)?;
                 if let Some(child) = parent.compose_with_work(start, end, work)? {
                     row.push(child);
                 }
             }
             if start.try_cmp_with_work(&zero, work)?.is_eq() {
-                for request in requests_by_vertex.get(edge).ok_or_else(|| {
+                for request in requests_by_vertex.get(*edge).ok_or_else(|| {
                     GeometryErrorKind::Invalid("source trace start vertex is unknown".into())
                 })? {
                     work.charge(1)?;
@@ -2629,7 +2629,7 @@ impl SourceTrace {
                 }
             }
             if end.try_cmp_with_work(&one, work)?.is_eq() {
-                let vertex = edge.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                let vertex = (*edge).checked_add(1).ok_or(ResourceError::SizeOverflow)?;
                 for request in requests_by_vertex.get(vertex).ok_or_else(|| {
                     GeometryErrorKind::Invalid("source trace end vertex is unknown".into())
                 })? {
