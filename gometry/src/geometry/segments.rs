@@ -393,7 +393,7 @@ pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
             let mut cursor = index;
             while cursor > 0 {
                 let previous = cursor.wrapping_sub(1);
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 #[expect(
                     clippy::indexing_slicing,
                     reason = "previous and cursor are adjacent indices within this admitted RUN16 slice"
@@ -402,7 +402,7 @@ pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
                 if ordering != Ordering::Greater {
                     break;
                 }
-                work.charge(2)?;
+                work.charge_into_error(2)?;
                 run.swap(previous, cursor);
                 cursor = previous;
             }
@@ -412,7 +412,7 @@ pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
     if len <= RUN {
         return Ok(());
     }
-    work.charge_product(len, 2)?;
+    work.charge_product_into_error(len, 2)?;
     let mut order = Vec::with_capacity(len);
     let mut merged = Vec::with_capacity(len);
     order.extend(0..len);
@@ -431,7 +431,7 @@ pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
                 // without offset arithmetic.
                 if let Some((left_id, left_rest)) = left.split_first() {
                     if let Some((right_id, right_rest)) = right.split_first() {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         let left_item = items
                             .get(*left_id)
                             .expect("merge ordinal belongs to the admitted item slice");
@@ -440,16 +440,16 @@ pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
                             .expect("merge ordinal belongs to the admitted item slice");
                         let ordering = compare(left_item, right_item, work)?;
                         if ordering == Ordering::Greater {
-                            work.charge(1)?;
+                            work.charge_into_error(1)?;
                             right = right_rest;
                             *slot = *right_id;
                         } else {
-                            work.charge(1)?;
+                            work.charge_into_error(1)?;
                             left = left_rest;
                             *slot = *left_id;
                         }
                     } else {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         left = left_rest;
                         *slot = *left_id;
                     }
@@ -457,7 +457,7 @@ pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
                     let (right_id, right_rest) = right
                         .split_first()
                         .expect("each merge output slot has a remaining run head");
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     right = right_rest;
                     *slot = *right_id;
                 }
@@ -479,12 +479,12 @@ pub(in crate::geometry) fn try_sort_by_with_work<T, W: Work>(
             if source == current {
                 break;
             }
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             *entry = current;
             if source == start {
                 break;
             }
-            work.charge(2)?;
+            work.charge_into_error(2)?;
             items.swap(current, source);
             current = source;
         }

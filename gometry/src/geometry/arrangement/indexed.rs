@@ -73,10 +73,10 @@ pub(crate) fn indexed_edge_slots_with_work<W: Work>(
         )
         .into());
     }
-    work.charge(u64::try_from(slot_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slot_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut slot_of_edge = vec![[u32::MAX; 2]; edge_nodes.len()];
     for (slot_index, &edge) in edge_of_slot.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let endpoints = edge_nodes.get(edge as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("indexed slot references an unknown edge".into())
         })?;
@@ -113,7 +113,7 @@ pub(crate) fn indexed_edge_slots_with_work<W: Work>(
         *slot = u32::try_from(slot_index).map_err(|_| ResourceError::SizeOverflow)?;
     }
     for row in &slot_of_edge {
-        work.charge(2)?;
+        work.charge_into_error(2)?;
         if row.contains(&u32::MAX) {
             return Err(GeometryErrorKind::Invalid(
                 "indexed edge is missing a directed slot".into(),
@@ -140,14 +140,16 @@ where
     let start_capacity = node_count
         .checked_add(1)
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(start_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(start_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut topology = IndexedTopology::default();
     topology.starts.resize(start_capacity, 0);
     for edge in 0..edge_count {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [start, end] = edge_nodes(edge)?;
         for node in [start, end] {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if node as usize >= node_count || start == end {
                 return Err(GeometryErrorKind::Invalid(
                     "indexed graph edge has an invalid endpoint pair".into(),
@@ -164,7 +166,7 @@ where
         }
     }
     for offset in 1..start_capacity {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let previous = *topology.starts.get(offset - 1).ok_or_else(|| {
             GeometryErrorKind::Invalid("indexed graph CSR prefix is incomplete".into())
         })?;
@@ -186,16 +188,16 @@ where
         .into());
     }
 
-    work.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut cursor = Vec::with_capacity(node_count);
     cursor.extend(topology.starts.iter().take(node_count).copied());
-    work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut edge_of_slot = vec![0_u32; slots];
     for edge in 0..edge_count {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [start, end] = edge_nodes(edge)?;
         for node in [start, end] {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let position = cursor.get_mut(node as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("indexed graph endpoint is outside its CSR".into())
             })?;
@@ -208,7 +210,7 @@ where
     }
 
     for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let row = edge_of_slot
             .get_mut(start as usize..end as usize)
             .ok_or_else(|| {
@@ -218,7 +220,7 @@ where
             compare_departures(node as u32, *left as usize, *right as usize, work)
         })?;
         for pair in row.array_windows::<2>() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let [left, right] = pair;
             if compare_departures(node as u32, *left as usize, *right as usize, work)?.is_eq() {
                 return Err(GeometryErrorKind::Invalid(
@@ -229,7 +231,7 @@ where
         }
     }
 
-    work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
     topology.targets.reserve(slots);
     for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
         for &edge in edge_of_slot
@@ -238,7 +240,7 @@ where
                 GeometryErrorKind::Invalid("indexed graph departure row is incomplete".into())
             })?
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let [left, right] = edge_nodes(edge as usize)?;
             let target = if left as usize == node {
                 right
@@ -255,25 +257,27 @@ where
     }
 
     let face_start_capacity = slots.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
     topology.owners.reserve(slots);
-    work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
     topology.twins.reserve(slots);
-    work.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     topology.component_of.reserve(node_count);
-    work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
     topology.face_of.reserve(slots);
-    work.charge(u64::try_from(face_start_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(face_start_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     topology.face_starts.reserve(face_start_capacity);
-    work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
     topology.face_slots.reserve(slots);
 
     let mut scratch = IndexedTopologyScratch::default();
-    work.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     scratch.component_stack.reserve(node_count);
-    work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
     scratch.successor.reserve(slots);
-    work.charge(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     scratch.first_slot.reserve(edge_count);
     topology.finish_with_work(&edge_of_slot, &mut scratch, work)?;
     Ok((topology, edge_of_slot))
@@ -367,25 +371,25 @@ impl IndexedTopology {
         debug_assert!(scratch.component_stack.capacity() >= vertices);
         debug_assert!(scratch.successor.capacity() >= slots);
         debug_assert!(scratch.first_slot.capacity() >= slots / 2);
-        work.charge(u64::try_from(vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
         self.owners.clear();
         for vertex in 0..vertices {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let row = self.starts[vertex] as usize..self.starts[vertex.wrapping_add(1)] as usize;
             debug_assert!(row.end <= slots);
             self.owners
                 .extend(std::iter::repeat_n(vertex as u32, row.len()));
         }
 
-        work.charge(u64::try_from(slots / 2).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(slots / 2).map_err(|_| ResourceError::SizeOverflow)?)?;
         scratch.first_slot.clear();
         scratch.first_slot.resize(slots / 2, u32::MAX);
-        work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
         self.twins.clear();
         self.twins.resize(slots, u32::MAX);
         let mut paired_edges = 0_usize;
         for (slot, &edge) in edge_of_slot.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let first_slot = &mut scratch.first_slot[edge as usize];
             if *first_slot == u32::MAX {
                 *first_slot = slot as u32;
@@ -402,24 +406,24 @@ impl IndexedTopology {
         }
         debug_assert_eq!(paired_edges, slots / 2);
 
-        work.charge(u64::try_from(vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(vertices).map_err(|_| ResourceError::SizeOverflow)?)?;
         self.component_of.clear();
         self.component_of.resize(vertices, u32::MAX);
         scratch.component_stack.clear();
         let mut component_count = 0;
         for seed in 0..vertices {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self.component_of[seed] != u32::MAX {
                 continue;
             }
             self.component_of[seed] = component_count;
             scratch.component_stack.push(seed as u32);
             while let Some(vertex) = scratch.component_stack.pop() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let row = self.starts[vertex as usize] as usize
                     ..self.starts[vertex as usize + 1] as usize;
                 for &neighbor in &self.targets[row] {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let neighbor = neighbor as usize;
                     if self.component_of[neighbor] == u32::MAX {
                         self.component_of[neighbor] = component_count;
@@ -430,35 +434,35 @@ impl IndexedTopology {
             component_count = component_count.wrapping_add(1);
         }
 
-        work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
         scratch.successor.clear();
         scratch.successor.resize(slots, u32::MAX);
         for &[start, end] in self.starts.array_windows::<2>() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let row = start as usize..end as usize;
             let mut previous = end.wrapping_sub(1);
             for slot in row {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 scratch.successor[self.twins[slot] as usize] = previous;
                 previous = slot as u32;
             }
         }
-        work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
         self.face_of.clear();
         self.face_of.resize(slots, u32::MAX);
         self.face_starts.clear();
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         self.face_starts.push(0);
         self.face_slots.clear();
         for seed in 0..slots {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self.face_of[seed] != u32::MAX {
                 continue;
             }
             let face = self.face_starts.len().wrapping_sub(1) as u32;
             let mut slot = seed;
             for _ in 0..slots {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 debug_assert_eq!(self.face_of[slot], u32::MAX);
                 self.face_of[slot] = face;
                 self.face_slots.push(slot as u32);
@@ -468,7 +472,7 @@ impl IndexedTopology {
                 }
             }
             debug_assert_eq!(slot, seed);
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             self.face_starts.push(self.face_slots.len() as u32);
         }
         Ok(component_count)

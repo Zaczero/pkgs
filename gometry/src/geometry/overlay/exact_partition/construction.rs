@@ -225,7 +225,7 @@ impl<'a> PointArena<'a> {
                         metrics.exact_crossings = metrics.exact_crossings.wrapping_add(1);
                     });
                     let [first, second] = *segments;
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     Ok(Box::new(crossing_homogeneous_with_work(
                         self.unique[first as usize],
                         self.unique[second as usize],
@@ -309,7 +309,9 @@ impl<'a> PointArena<'a> {
         let (axis, increasing) = segment_axis(segment);
         RayPointsWithWork::sort_by_axis_with_work(self, items, axis, point, equal, work)?;
         if !increasing {
-            work.charge(u64::try_from(items.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(items.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             items.reverse();
         }
         Ok(())

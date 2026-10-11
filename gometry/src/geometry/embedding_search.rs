@@ -1,6 +1,7 @@
 //! Deterministic search over finite embedding domains.
 
 use std::cmp::Ordering;
+use std::convert::Infallible;
 use std::hash::Hash;
 
 use crate::collections::{
@@ -20,25 +21,52 @@ const PROXIMITY_RELATIVE_SLACK: f64 = 9.094_947_017_729_282e-13;
 /// Raw primitive work. Evaluation events remain a separate unit on the same
 /// account; one evaluation consumes sixteen raw work ticks.
 pub(crate) trait Work {
-    fn charge(&mut self, ticks: u64) -> Result<()>;
+    /// The policy's failure type; ordinary policies use `Infallible`.
+    type Error: Into<crate::error::Error>;
 
-    fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
-        let ticks = count
-            .checked_mul(ticks_per_item)
-            .ok_or(ResourceError::SizeOverflow)?;
-        self.charge(u64::try_from(ticks).map_err(|_| ResourceError::SizeOverflow)?)
+    fn charge(&mut self, ticks: u64) -> std::result::Result<(), Self::Error>;
+
+    fn charge_product(
+        &mut self,
+        count: usize,
+        ticks_per_item: usize,
+    ) -> std::result::Result<(), Self::Error>;
+
+    fn charge_into_error(&mut self, ticks: u64) -> Result<()> {
+        self.charge(ticks).map_err(Into::into)
     }
+
+    fn charge_product_into_error(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+        self.charge_product(count, ticks_per_item)
+            .map_err(Into::into)
+    }
+}
+
+pub(crate) type WorkResult<W, T> = std::result::Result<T, <W as Work>::Error>;
+
+#[cfg(test)]
+pub(crate) fn work_product_ticks(count: usize, ticks_per_item: usize) -> Result<u64> {
+    let ticks = count
+        .checked_mul(ticks_per_item)
+        .ok_or(ResourceError::SizeOverflow)?;
+    u64::try_from(ticks).map_err(|_| ResourceError::SizeOverflow.into())
 }
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Unmetered;
 
 impl Work for Unmetered {
-    fn charge(&mut self, _ticks: u64) -> Result<()> {
+    type Error = Infallible;
+
+    fn charge(&mut self, _ticks: u64) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 
-    fn charge_product(&mut self, _count: usize, _ticks_per_item: usize) -> Result<()> {
+    fn charge_product(
+        &mut self,
+        _count: usize,
+        _ticks_per_item: usize,
+    ) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -66,11 +94,17 @@ impl<'a> EvaluationOnly<'a> {
 }
 
 impl Work for EvaluationOnly<'_> {
-    fn charge(&mut self, _ticks: u64) -> Result<()> {
+    type Error = Infallible;
+
+    fn charge(&mut self, _ticks: u64) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 
-    fn charge_product(&mut self, _count: usize, _ticks_per_item: usize) -> Result<()> {
+    fn charge_product(
+        &mut self,
+        _count: usize,
+        _ticks_per_item: usize,
+    ) -> std::result::Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -284,8 +318,8 @@ where
     S: FnMut(Segment, Segment, f64) -> bool,
 {
     if seeds.is_empty() {
-        work.charge_product(node_count, 1)?;
-        work.charge_product(chords.len(), 1)?;
+        work.charge_product_into_error(node_count, 1)?;
+        work.charge_product_into_error(chords.len(), 1)?;
         return Ok(ProximityClasses {
             classes: Vec::new(),
             node_location: vec![None; node_count],
@@ -293,51 +327,51 @@ where
             initial_evaluations: 0,
         });
     }
-    work.charge_product(node_count, 1)?;
+    work.charge_product_into_error(node_count, 1)?;
     let mut closure = vec![false; node_count];
     let mut closure_nodes = Vec::new();
     for &node in seeds {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if cached_movable(node, movable_cache, &mut is_movable)? && !closure[node as usize] {
-            work.charge(2)?;
+            work.charge_into_error(2)?;
             closure[node as usize] = true;
             closure_nodes.push(node);
         }
     }
-    work.charge_product(closure_nodes.len(), 1)?;
+    work.charge_product_into_error(closure_nodes.len(), 1)?;
     let mut frontier_nodes = closure_nodes.clone();
     let mut union = UnionFind::new_with_work(node_count, work)?;
-    work.charge_product(chords.len(), 1)?;
+    work.charge_product_into_error(chords.len(), 1)?;
     let all_bounds = chords
         .iter()
         .copied()
         .map(possible_swept_bounds)
         .collect::<Vec<_>>();
-    work.charge_product(chords.len(), 2)?;
+    work.charge_product_into_error(chords.len(), 2)?;
     let mut radius_cache = vec![None; chords.len()];
     let mut frontier_seen = vec![false; chords.len()];
     let mut initial_evaluations = 0_u64;
     while !frontier_nodes.is_empty() {
-        work.charge_product(frontier_nodes.len(), 1)?;
+        work.charge_product_into_error(frontier_nodes.len(), 1)?;
         let mut frontier_chords = Vec::new();
         for node in std::mem::take(&mut frontier_nodes) {
             for &chord in incident_chords
                 .get(node as usize)
                 .expect("frontier node belongs to the incident-chord domain")
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let seen = frontier_seen
                     .get_mut(chord)
                     .expect("incident chord belongs to the emitted chord table");
                 if !*seen {
-                    work.charge(2)?;
+                    work.charge_into_error(2)?;
                     *seen = true;
                     frontier_chords.push(chord);
                 }
             }
         }
         for &chord in &frontier_chords {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             *frontier_seen
                 .get_mut(chord)
                 .expect("frontier chord belongs to the emitted chord table") = false;
@@ -348,7 +382,7 @@ where
         if frontier_chords.is_empty() {
             break;
         }
-        work.charge_product(frontier_chords.len(), 1)?;
+        work.charge_product_into_error(frontier_chords.len(), 1)?;
         let left_bounds: Vec<_> = frontier_chords
             .iter()
             .map(|&index| {
@@ -363,7 +397,7 @@ where
         evaluation_event(work, &mut initial_evaluations, sweep_cost)?;
         let mut newly_reached = Vec::new();
         for &chord_index in &frontier_chords {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let chord = *chords
                 .get(chord_index)
                 .expect("frontier chord belongs to the emitted chord table");
@@ -380,12 +414,12 @@ where
             }
             union.union_with_work(first as usize, second as usize, work)?;
             for node in [first, second] {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let is_reached = *closure
                     .get(node as usize)
                     .expect("chord endpoint belongs to the node domain");
                 if !is_reached {
-                    work.charge(3)?;
+                    work.charge_into_error(3)?;
                     *closure
                         .get_mut(node as usize)
                         .expect("chord endpoint belongs to the node domain") = true;
@@ -399,7 +433,7 @@ where
             &all_bounds,
             work,
             |left, right, work| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let left_index = frontier_chords[left];
                 if left_index == right {
                     return Ok(std::ops::ControlFlow::<()>::Continue(()));
@@ -453,12 +487,12 @@ where
                     }
                 }
                 for node in movable_nodes.into_iter().flatten() {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let is_reached = *closure
                         .get(node as usize)
                         .expect("chord endpoint belongs to the node domain");
                     if !is_reached {
-                        work.charge(3)?;
+                        work.charge_into_error(3)?;
                         *closure
                             .get_mut(node as usize)
                             .expect("chord endpoint belongs to the node domain") = true;
@@ -473,14 +507,14 @@ where
         frontier_nodes = newly_reached;
     }
 
-    work.charge_product(closure_nodes.len(), 1)?;
+    work.charge_product_into_error(closure_nodes.len(), 1)?;
     let mut components: HashMap<usize, Vec<u32>> = try_hash_map_with_capacity(closure_nodes.len())?;
     for node in closure_nodes {
         let root = union.find_with_work(node as usize, work)?;
-        work.charge(2)?;
+        work.charge_into_error(2)?;
         components.entry(root).or_default().push(node);
     }
-    work.charge_product(components.len(), 1)?;
+    work.charge_product_into_error(components.len(), 1)?;
     let mut classes: Vec<_> = components.into_values().collect();
     for class in &mut classes {
         try_sort_by_with_work(class, work, |left, right, _work| {
@@ -493,11 +527,11 @@ where
             *right.first().expect("proximity class is nonempty"),
         )
     })?;
-    work.charge_product(node_count, 1)?;
+    work.charge_product_into_error(node_count, 1)?;
     let mut node_location = vec![None; node_count];
     for (class, nodes) in classes.iter().enumerate() {
         for (rank, &node) in nodes.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             *node_location
                 .get_mut(node as usize)
                 .expect("class member belongs to the node domain") = Some((class, rank));
@@ -787,11 +821,17 @@ impl EvaluationBudget {
 }
 
 impl Work for EvaluationBudget {
-    fn charge(&mut self, ticks: u64) -> Result<()> {
+    type Error = crate::error::Error;
+
+    fn charge(&mut self, ticks: u64) -> std::result::Result<(), Self::Error> {
         self.debit_ticks(u128::from(ticks))
     }
 
-    fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+    fn charge_product(
+        &mut self,
+        count: usize,
+        ticks_per_item: usize,
+    ) -> std::result::Result<(), Self::Error> {
         let ticks = (count as u128).wrapping_mul(ticks_per_item as u128);
         self.debit_ticks(ticks)
     }
@@ -849,8 +889,8 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
                 .checked_add(options.len())
                 .ok_or(ResourceError::SizeOverflow)
         })?;
-        work.charge_product(class.variables.len(), 3)?;
-        work.charge_product(candidate_count, 1)?;
+        work.charge_product_into_error(class.variables.len(), 3)?;
+        work.charge_product_into_error(candidate_count, 1)?;
         Ok(Self {
             next_candidate: vec![0; class.variables.len()],
             selected: vec![None; class.variables.len()],
@@ -862,9 +902,9 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
     }
 
     fn reset<W: Work>(&mut self, work: &mut W) -> Result<()> {
-        work.charge_product(self.next_candidate.len(), 3)?;
-        work.charge_product(self.used_keys.capacity(), 1)?;
-        work.charge_product(2, 1)?;
+        work.charge_product_into_error(self.next_candidate.len(), 3)?;
+        work.charge_product_into_error(self.used_keys.capacity(), 1)?;
+        work.charge_product_into_error(2, 1)?;
         self.next_candidate.fill(0);
         self.selected.fill(None);
         self.selected_keys.fill(None);
@@ -880,7 +920,7 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
             .get(rank)
             .copied()
             .expect("rank belongs to the class search state");
-        work.charge(2)?;
+        work.charge_into_error(2)?;
         if let Some(key) = key {
             self.used_keys.remove(&key);
         }
@@ -912,7 +952,7 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
         let mut rank = if self.yielded {
             let last = variable_count.wrapping_sub(1);
             self.unassign(last, account)?;
-            account.charge(1)?;
+            account.charge_into_error(1)?;
             self.yielded = false;
             last
         } else {
@@ -929,13 +969,13 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
                 .get(rank)
                 .expect("rank is within the class search state");
             if candidate_index >= options.len() {
-                account.charge(1)?;
+                account.charge_into_error(1)?;
                 *self
                     .next_candidate
                     .get_mut(rank)
                     .expect("rank is within the class search state") = 0;
                 if rank == 0 {
-                    account.charge(1)?;
+                    account.charge_into_error(1)?;
                     self.exhausted = true;
                     return Ok(None);
                 }
@@ -945,7 +985,7 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
             }
 
             account.charge_evaluations(1)?;
-            account.charge(1)?;
+            account.charge_into_error(1)?;
             *self
                 .next_candidate
                 .get_mut(rank)
@@ -953,7 +993,7 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
             let (candidate, key) = *options
                 .get(candidate_index)
                 .expect("candidate ordinal is bounded by its option row");
-            account.charge(3)?;
+            account.charge_into_error(3)?;
             if !self.used_keys.insert(key) {
                 continue;
             }
@@ -982,7 +1022,7 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
                 continue;
             }
             if rank.wrapping_add(1) == variable_count {
-                account.charge_product(variable_count, 2)?;
+                account.charge_product_into_error(variable_count, 2)?;
                 self.yielded = true;
                 let mut solution = Vec::with_capacity(variable_count);
                 for value in &self.selected {
@@ -992,7 +1032,7 @@ impl<C: Copy, K: Copy + Eq + Hash> ClassSearchState<C, K> {
                 return Ok(Some(solution));
             }
             rank = rank.wrapping_add(1);
-            account.charge(1)?;
+            account.charge_into_error(1)?;
             *self
                 .next_candidate
                 .get_mut(rank)
@@ -1059,7 +1099,7 @@ pub(in crate::geometry) fn run_with_budget<P: Problem, A: SearchAccount>(
     let Some((prepared, class_positions)) = prepare_classes(problem, account)? else {
         return Ok(SearchOutcome::Exhausted);
     };
-    account.charge_product(prepared.len(), 2)?;
+    account.charge_product_into_error(prepared.len(), 2)?;
     let mut states = Vec::with_capacity(prepared.len());
     let mut current_solutions = Vec::with_capacity(prepared.len());
     for class in &prepared {
@@ -1067,17 +1107,17 @@ pub(in crate::geometry) fn run_with_budget<P: Problem, A: SearchAccount>(
         let Some(solution) = state.next_solution(class, problem, account)? else {
             return Ok(SearchOutcome::Exhausted);
         };
-        account.charge(2)?;
+        account.charge_into_error(2)?;
         states.push(state);
         current_solutions.push(solution);
     }
     let mut product_order = None;
     loop {
         let global = {
-            account.charge_product(prepared.len(), 1)?;
+            account.charge_product_into_error(prepared.len(), 1)?;
             let mut assignments = Vec::with_capacity(prepared.len());
             for (class, values) in prepared.iter().zip(&current_solutions) {
-                account.charge(1)?;
+                account.charge_into_error(1)?;
                 assignments.push(ClassAssignment {
                     variables: &class.variables,
                     values,
@@ -1087,10 +1127,10 @@ pub(in crate::geometry) fn run_with_budget<P: Problem, A: SearchAccount>(
         };
         match global {
             GlobalCheck::Pass(output) => {
-                account.charge_product(prepared.len(), 1)?;
+                account.charge_product_into_error(prepared.len(), 1)?;
                 let mut classes = Vec::with_capacity(prepared.len());
                 for (class, values) in prepared.into_iter().zip(current_solutions) {
-                    account.charge(1)?;
+                    account.charge_into_error(1)?;
                     classes.push(ClassSolution {
                         variables: class.variables,
                         values,
@@ -1108,19 +1148,19 @@ pub(in crate::geometry) fn run_with_budget<P: Problem, A: SearchAccount>(
                     return Ok(SearchOutcome::Exhausted);
                 }
                 if product_order.is_none() {
-                    account.charge_product(prepared.len(), 1)?;
+                    account.charge_product_into_error(prepared.len(), 1)?;
                     let mut order = Vec::with_capacity(prepared.len());
                     for class in blamed_classes {
-                        account.charge(1)?;
+                        account.charge_into_error(1)?;
                         let position = prepared_position_for_blame(&class_positions, class)?;
-                        account.charge(1)?;
+                        account.charge_into_error(1)?;
                         order.push(position);
                     }
                     try_sort_by_with_work(&mut order, account, |left, right, _work| {
                         Ok(left.cmp(right))
                     })?;
                     let blamed_count = order.len();
-                    account.charge_product(blamed_count, 1)?;
+                    account.charge_product_into_error(blamed_count, 1)?;
                     order.dedup();
                     let blamed_count = order.len();
                     for position in 0..prepared.len() {
@@ -1131,14 +1171,14 @@ pub(in crate::geometry) fn run_with_budget<P: Problem, A: SearchAccount>(
                             contains_ordered_position(blamed_prefix, position, account)?
                         };
                         if !is_blamed {
-                            account.charge(1)?;
+                            account.charge_into_error(1)?;
                             order.push(position);
                         }
                     }
                     product_order = Some(order);
                 } else {
                     for class in blamed_classes {
-                        account.charge(1)?;
+                        account.charge_into_error(1)?;
                         prepared_position_for_blame(&class_positions, class)?;
                     }
                 }
@@ -1148,7 +1188,7 @@ pub(in crate::geometry) fn run_with_budget<P: Problem, A: SearchAccount>(
                     .expect("a nonempty rejection establishes the product order");
                 let mut advanced = false;
                 for &position in order {
-                    account.charge(1)?;
+                    account.charge_into_error(1)?;
                     let class = prepared
                         .get(position)
                         .expect("class rank is within prepared classes");
@@ -1204,7 +1244,7 @@ fn contains_ordered_position<W: Work>(
     let mut left = 0_usize;
     let mut right = values.len();
     while left < right {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let middle = left.wrapping_add(right.wrapping_sub(left) / 2);
         let value = *values
             .get(middle)
@@ -1224,7 +1264,7 @@ fn replace_class_solution<C, W: Work>(
     solution: Vec<C>,
     work: &mut W,
 ) -> Result<()> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     *current_solutions
         .get_mut(position)
         .expect("class rank is within current solutions") = solution;
@@ -1237,7 +1277,7 @@ fn prepare_classes<P: Problem, A: SearchAccount>(
 ) -> Result<Option<PreparedClassSet<P>>> {
     let classes = problem.classes();
 
-    account.charge_product(classes.len(), 1)?;
+    account.charge_product_into_error(classes.len(), 1)?;
     let mut specs = Vec::with_capacity(classes.len());
     for (class, variables) in classes.iter().enumerate() {
         if variables.is_empty() {
@@ -1246,12 +1286,12 @@ fn prepare_classes<P: Problem, A: SearchAccount>(
             )
             .into());
         }
-        account.charge_product(variables.len(), 1)?;
+        account.charge_product_into_error(variables.len(), 1)?;
         let mut variables = variables.clone();
         try_sort_by_with_work(&mut variables, account, |left, right, work| {
             problem.compare_nodes(*left, *right, work)
         })?;
-        account.charge(1)?;
+        account.charge_into_error(1)?;
         specs.push(ClassSpec { class, variables });
     }
     try_sort_by_with_work(&mut specs, account, |left, right, work| {
@@ -1275,45 +1315,45 @@ fn prepare_classes<P: Problem, A: SearchAccount>(
 
     let mut candidate_scratch = Vec::new();
     let mut seen_keys = Vec::new();
-    account.charge_product(specs.len(), 1)?;
+    account.charge_product_into_error(specs.len(), 1)?;
     let mut admitted = Vec::with_capacity(specs.len());
     for spec in specs {
         let fixed_candidates = problem.fixed_keys(spec.class, &spec.variables, account)?;
-        account.charge_product(fixed_candidates.len(), 1)?;
+        account.charge_product_into_error(fixed_candidates.len(), 1)?;
         let mut fixed_keys = try_hash_set_with_capacity(fixed_candidates.len())?;
         for key in fixed_candidates {
-            account.charge(1)?;
+            account.charge_into_error(1)?;
             fixed_keys.insert(key);
         }
-        account.charge_product(spec.variables.len(), 1)?;
+        account.charge_product_into_error(spec.variables.len(), 1)?;
         let mut options = Vec::with_capacity(spec.variables.len());
         for &node in &spec.variables {
-            account.charge_product(candidate_scratch.len(), 1)?;
+            account.charge_product_into_error(candidate_scratch.len(), 1)?;
             candidate_scratch.clear();
             problem.fill_candidates(node, &mut candidate_scratch, account)?;
             sort_candidates(problem, node, &mut candidate_scratch, account)?;
-            account.charge_product(seen_keys.len(), 1)?;
+            account.charge_product_into_error(seen_keys.len(), 1)?;
             seen_keys.clear();
             let additional_keys = candidate_scratch.len().saturating_sub(seen_keys.capacity());
-            account.charge_product(additional_keys, 1)?;
+            account.charge_product_into_error(additional_keys, 1)?;
             seen_keys.reserve(candidate_scratch.len());
-            account.charge_product(candidate_scratch.len(), 1)?;
+            account.charge_product_into_error(candidate_scratch.len(), 1)?;
             let mut node_options = Vec::with_capacity(candidate_scratch.len());
             for candidate in candidate_scratch.iter().copied() {
-                account.charge(1)?;
+                account.charge_into_error(1)?;
                 let key = problem.candidate_key(candidate);
                 account.charge_evaluations(1)?;
                 if fixed_keys.contains(&key) || seen_keys.contains(&key) {
                     continue;
                 }
-                account.charge(2)?;
+                account.charge_into_error(2)?;
                 seen_keys.push(key);
                 node_options.push((candidate, key));
             }
             if node_options.is_empty() {
                 return Ok(None);
             }
-            account.charge(1)?;
+            account.charge_into_error(1)?;
             options.push(node_options);
         }
 
@@ -1325,12 +1365,12 @@ fn prepare_classes<P: Problem, A: SearchAccount>(
         if !has_perfect_matching(&class, account)? {
             return Ok(None);
         }
-        account.charge(1)?;
+        account.charge_into_error(1)?;
         admitted.push(class);
     }
 
-    account.charge_product(admitted.len(), 1)?;
-    account.charge_product(classes.len(), 1)?;
+    account.charge_product_into_error(admitted.len(), 1)?;
+    account.charge_product_into_error(classes.len(), 1)?;
     let mut prepared = Vec::with_capacity(admitted.len());
     let mut class_positions = vec![0; classes.len()];
     // Hall failures should reject the whole problem before domain-specific
@@ -1344,7 +1384,7 @@ fn prepare_classes<P: Problem, A: SearchAccount>(
             local,
         };
         let position = prepared.len();
-        account.charge(2)?;
+        account.charge_into_error(2)?;
         *class_positions
             .get_mut(class.class)
             .expect("class IDs are the indexes in Problem::classes") = position;
@@ -1360,14 +1400,14 @@ fn sort_candidates<P: Problem, W: Work>(
     work: &mut W,
 ) -> Result<()> {
     for index in 1..candidates.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let candidate = *candidates
             .get(index)
             .expect("candidate index is within the vector");
         let mut position = index;
         while position > 0 {
             let previous = position.wrapping_sub(1);
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let previous_candidate = *candidates
                 .get(previous)
                 .expect("previous candidate is within the sorted prefix");
@@ -1376,7 +1416,7 @@ fn sort_candidates<P: Problem, W: Work>(
             {
                 break;
             }
-            work.charge(2)?;
+            work.charge_into_error(2)?;
             candidates.swap(position, previous);
             position = previous;
         }
@@ -1397,8 +1437,8 @@ where
             .checked_add(options.len())
             .ok_or(ResourceError::SizeOverflow)
     })?;
-    work.charge_product(candidate_count, 2)?;
-    work.charge_product(variable_count, 3)?;
+    work.charge_product_into_error(candidate_count, 2)?;
+    work.charge_product_into_error(variable_count, 3)?;
     let mut owners = try_hash_map_with_capacity(candidate_count)?;
     let mut seen_keys = try_hash_set_with_capacity(candidate_count)?;
     let mut seen_variables = Vec::with_capacity(variable_count);
@@ -1408,18 +1448,18 @@ where
     let mut stack = Vec::with_capacity(variable_count);
 
     for root in 0..variable_count {
-        work.charge_product(seen_keys.capacity(), 1)?;
+        work.charge_product_into_error(seen_keys.capacity(), 1)?;
         seen_keys.clear();
-        work.charge_product(stack.len(), 1)?;
+        work.charge_product_into_error(stack.len(), 1)?;
         stack.clear();
-        work.charge(2)?;
+        work.charge_into_error(2)?;
         *seen_variables
             .get_mut(root)
             .expect("root variable is within the class") = root;
         *parents
             .get_mut(root)
             .expect("root variable is within the class") = None;
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         stack.push(MatchFrame {
             variable: root,
             next_candidate: 0,
@@ -1436,12 +1476,12 @@ where
                     .get(frame.variable)
                     .expect("matching variable is within the class");
                 if frame.next_candidate == options.len() {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     stack.pop();
                     continue;
                 }
                 let index = frame.next_candidate;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 frame.next_candidate = frame.next_candidate.wrapping_add(1);
                 (frame.variable, index)
             };
@@ -1450,18 +1490,18 @@ where
                 .get(variable)
                 .and_then(|options| options.get(candidate_index))
                 .expect("matching candidate is within its row");
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if !seen_keys.insert(key) {
                 continue;
             }
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             match owners.get(&key).copied() {
                 None => {
                     free_cell = Some((variable, key));
                     break;
                 },
                 Some(owner) => {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     if *seen_variables
                         .get(owner)
                         .expect("matched variable is within the class")
@@ -1469,14 +1509,14 @@ where
                     {
                         continue;
                     }
-                    work.charge(2)?;
+                    work.charge_into_error(2)?;
                     *seen_variables
                         .get_mut(owner)
                         .expect("matched variable is within the class") = root;
                     *parents
                         .get_mut(owner)
                         .expect("matched variable is within the class") = Some((variable, key));
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     stack.push(MatchFrame {
                         variable: owner,
                         next_candidate: 0,
@@ -1489,9 +1529,9 @@ where
             return Ok(false);
         };
         loop {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             owners.insert(key, variable);
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let Some((parent, parent_key)) = parents
                 .get(variable)
                 .copied()
@@ -1679,7 +1719,7 @@ mod tests {
         ) -> Result<Ordering> {
             if let Some(phase) = &self.comparison_phase {
                 phase.set(1);
-                let result = work.charge(37);
+                let result = work.charge_into_error(37);
                 phase.set(0);
                 result?;
             }
@@ -1695,7 +1735,7 @@ mod tests {
             let options = self.candidates.get(node).ok_or_else(|| {
                 GeometryErrorKind::Invalid("fixture node has no candidate row".into())
             })?;
-            work.charge_product(options.len(), 1)?;
+            work.charge_product_into_error(options.len(), 1)?;
             candidates.reserve(options.len());
             candidates.extend(options.iter().copied());
             Ok(())
@@ -1710,7 +1750,7 @@ mod tests {
         ) -> Result<Ordering> {
             if let Some(phase) = &self.comparison_phase {
                 phase.set(2);
-                let result = work.charge(37);
+                let result = work.charge_into_error(37);
                 phase.set(0);
                 result?;
             }
@@ -1774,11 +1814,11 @@ mod tests {
                     .checked_add(assignment.variables.len().min(assignment.values.len()))
                     .ok_or(ResourceError::SizeOverflow)
             })?;
-            account.charge_product(actual_count, 1)?;
+            account.charge_product_into_error(actual_count, 1)?;
             let mut actual = Vec::with_capacity(actual_count);
             for assignment in assignments {
                 for (&node, &value) in assignment.variables.iter().zip(assignment.values) {
-                    account.charge(1)?;
+                    account.charge_into_error(1)?;
                     actual.push((node, value));
                 }
             }
@@ -1907,8 +1947,10 @@ mod tests {
     }
 
     impl Work for ComparisonWorkProbe {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
-            self.budget.charge(ticks)?;
+            self.budget.charge_into_error(ticks)?;
             let phase = usize::from(self.phase.get());
             if phase != 0 {
                 let mut comparator_ticks = self.comparator_ticks.get();
@@ -1921,7 +1963,8 @@ mod tests {
         }
 
         fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
-            self.budget.charge_product(count, ticks_per_item)?;
+            self.budget
+                .charge_product_into_error(count, ticks_per_item)?;
             let phase = usize::from(self.phase.get());
             if phase != 0 {
                 let ticks = u64::try_from(count)
@@ -3170,14 +3213,20 @@ mod tests {
         let mut budget = EvaluationBudget::new("search_test", 1).unwrap();
         {
             let mut account = EvaluationOnly::new(&mut budget);
-            account.charge(u64::MAX).unwrap();
-            account.charge_product(usize::MAX, usize::MAX).unwrap();
+            let raw: std::result::Result<(), Infallible> = account.charge(u64::MAX);
+            raw.unwrap();
+            account.charge_into_error(u64::MAX).unwrap();
+            account
+                .charge_product_into_error(usize::MAX, usize::MAX)
+                .unwrap();
             account.charge_evaluations(1).unwrap();
         }
 
         assert_eq!(budget.spent_ticks, 16);
         let mut unmetered = Unmetered;
-        unmetered.charge_product(usize::MAX, usize::MAX).unwrap();
+        let raw: std::result::Result<(), Infallible> =
+            unmetered.charge_product(usize::MAX, usize::MAX);
+        raw.unwrap();
     }
 
     fn equal_primary_sweep_bounds() -> Vec<Bounds> {
@@ -3402,9 +3451,9 @@ mod tests {
         let error =
             sweep_for_each_overlapping_bounds_pair_with_work(&bounds, &mut budget, |_, _, work| {
                 callback_count += 1;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 callback_progress += 1;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 callback_progress += 1;
                 Ok(ControlFlow::<()>::Continue(()))
             })
@@ -3742,7 +3791,7 @@ mod tests {
         budget.spent_ticks = 14;
 
         let error = try_sort_by_with_work(&mut items, &mut budget, |left, right, work| {
-            work.charge(2)?;
+            work.charge_into_error(2)?;
             comparator_progress += 1;
             Ok(left.0.cmp(&right.0))
         })
@@ -3774,7 +3823,7 @@ mod tests {
         let error = try_sort_by_with_work(&mut items, &mut budget, |left, right, work| {
             if (*left == (16, 16)) && (*right == (0, 0)) {
                 merge_callbacks += 1;
-                work.charge(2)?;
+                work.charge_into_error(2)?;
                 comparator_progress += 1;
             }
             Ok(left.0.cmp(&right.0))
@@ -3946,6 +3995,8 @@ mod tests {
     }
 
     impl Work for RecordingWork<'_> {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             let spent_before = self.budget.spent_ticks;
             let progress = crate::crs::quadrature_test_progress();

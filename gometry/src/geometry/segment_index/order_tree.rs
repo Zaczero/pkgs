@@ -3,7 +3,7 @@ use std::ops::Range;
 #[cfg(test)]
 use std::{cell::Cell, thread_local};
 
-use crate::geometry::{Unmetered, Work};
+use crate::geometry::{Unmetered, Work, WorkResult};
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -141,7 +141,7 @@ impl<T: Copy> OrderTree<T> {
         clippy::indexing_slicing,
         reason = "a reused slot comes from this tree's free list and is vacant"
     )]
-    fn allocate<W: Work>(&mut self, item: T, work: &mut W) -> crate::error::Result<usize> {
+    fn allocate<W: Work>(&mut self, item: T, work: &mut W) -> WorkResult<W, usize> {
         work.charge(1)?;
         let node = OrderNode {
             item,
@@ -164,7 +164,7 @@ impl<T: Copy> OrderTree<T> {
         clippy::indexing_slicing,
         reason = "the removed slot is a live arena node returned by this tree's rank descent"
     )]
-    fn release<W: Work>(&mut self, index: usize, work: &mut W) -> crate::error::Result<()> {
+    fn release<W: Work>(&mut self, index: usize, work: &mut W) -> WorkResult<W, ()> {
         work.charge(1)?;
         self.nodes[index] = None;
         self.free.push(index);
@@ -176,7 +176,7 @@ impl<T: Copy> OrderTree<T> {
         parent: usize,
         child: Option<usize>,
         work: &mut W,
-    ) -> crate::error::Result<()> {
+    ) -> WorkResult<W, ()> {
         work.charge(1)?;
         self.node_mut(parent).left = child;
         if let Some(child) = child {
@@ -190,7 +190,7 @@ impl<T: Copy> OrderTree<T> {
         parent: usize,
         child: Option<usize>,
         work: &mut W,
-    ) -> crate::error::Result<()> {
+    ) -> WorkResult<W, ()> {
         work.charge(1)?;
         self.node_mut(parent).right = child;
         if let Some(child) = child {
@@ -199,11 +199,7 @@ impl<T: Copy> OrderTree<T> {
         Ok(())
     }
 
-    fn take_left<W: Work>(
-        &mut self,
-        parent: usize,
-        work: &mut W,
-    ) -> crate::error::Result<Option<usize>> {
+    fn take_left<W: Work>(&mut self, parent: usize, work: &mut W) -> WorkResult<W, Option<usize>> {
         work.charge(1)?;
         let child = self.node_mut(parent).left.take();
         if let Some(child) = child {
@@ -212,11 +208,7 @@ impl<T: Copy> OrderTree<T> {
         Ok(child)
     }
 
-    fn take_right<W: Work>(
-        &mut self,
-        parent: usize,
-        work: &mut W,
-    ) -> crate::error::Result<Option<usize>> {
+    fn take_right<W: Work>(&mut self, parent: usize, work: &mut W) -> WorkResult<W, Option<usize>> {
         work.charge(1)?;
         let child = self.node_mut(parent).right.take();
         if let Some(child) = child {
@@ -225,7 +217,7 @@ impl<T: Copy> OrderTree<T> {
         Ok(child)
     }
 
-    fn update<W: Work>(&mut self, index: usize, work: &mut W) -> crate::error::Result<()> {
+    fn update<W: Work>(&mut self, index: usize, work: &mut W) -> WorkResult<W, ()> {
         #[cfg(test)]
         let nonroot = self.node(index).parent.is_some();
         #[cfg(test)]
@@ -255,7 +247,7 @@ impl<T: Copy> OrderTree<T> {
         (self.height(node.left) as isize).wrapping_sub(self.height(node.right) as isize)
     }
 
-    fn rotate_left<W: Work>(&mut self, root: usize, work: &mut W) -> crate::error::Result<usize> {
+    fn rotate_left<W: Work>(&mut self, root: usize, work: &mut W) -> WorkResult<W, usize> {
         work.charge(1)?;
         let parent = self.node(root).parent;
         let pivot = self
@@ -271,7 +263,7 @@ impl<T: Copy> OrderTree<T> {
         Ok(pivot)
     }
 
-    fn rotate_right<W: Work>(&mut self, root: usize, work: &mut W) -> crate::error::Result<usize> {
+    fn rotate_right<W: Work>(&mut self, root: usize, work: &mut W) -> WorkResult<W, usize> {
         work.charge(1)?;
         let parent = self.node(root).parent;
         let pivot = self
@@ -287,7 +279,7 @@ impl<T: Copy> OrderTree<T> {
         Ok(pivot)
     }
 
-    fn rebalance<W: Work>(&mut self, root: usize, work: &mut W) -> crate::error::Result<usize> {
+    fn rebalance<W: Work>(&mut self, root: usize, work: &mut W) -> WorkResult<W, usize> {
         work.charge(1)?;
         self.update(root, work)?;
         match self.balance(root) {
@@ -342,7 +334,7 @@ impl<T: Copy> OrderTree<T> {
     ) -> crate::error::Result<usize> {
         let (mut current, mut rank) = (self.root, 0_usize);
         while let Some(index) = current {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let node = self.node(index);
             let left_len = self.subtree_len(node.left);
             if before(node.item, work)? {
@@ -359,7 +351,7 @@ impl<T: Copy> OrderTree<T> {
         &self,
         rank: usize,
         work: &mut W,
-    ) -> crate::error::Result<Option<T>> {
+    ) -> WorkResult<W, Option<T>> {
         if rank >= self.len() {
             return Ok(None);
         }
@@ -383,7 +375,7 @@ impl<T: Copy> OrderTree<T> {
 
     pub(in crate::geometry) fn insert_at_rank(&mut self, rank: usize, item: T) {
         self.insert_at_rank_with_work(rank, item, &mut Unmetered)
-            .expect("unmetered tree insertion cannot fail");
+            .unwrap();
     }
 
     pub(in crate::geometry) fn insert_at_rank_with_work<W: Work>(
@@ -391,7 +383,7 @@ impl<T: Copy> OrderTree<T> {
         rank: usize,
         item: T,
         work: &mut W,
-    ) -> crate::error::Result<()> {
+    ) -> WorkResult<W, ()> {
         assert!(rank <= self.len(), "AVL insertion rank is in bounds");
         let node = self.allocate(item, work)?;
         self.root = Some(self.insert(self.root, rank, node, work)?);
@@ -408,7 +400,7 @@ impl<T: Copy> OrderTree<T> {
         rank: usize,
         inserted: usize,
         work: &mut W,
-    ) -> crate::error::Result<usize> {
+    ) -> WorkResult<W, usize> {
         let Some(root) = root else {
             return Ok(inserted);
         };
@@ -430,15 +422,14 @@ impl<T: Copy> OrderTree<T> {
     }
 
     pub(in crate::geometry) fn remove_at_rank(&mut self, rank: usize) -> T {
-        self.remove_at_rank_with_work(rank, &mut Unmetered)
-            .expect("unmetered tree removal cannot fail")
+        self.remove_at_rank_with_work(rank, &mut Unmetered).unwrap()
     }
 
     pub(in crate::geometry) fn remove_at_rank_with_work<W: Work>(
         &mut self,
         rank: usize,
         work: &mut W,
-    ) -> crate::error::Result<T> {
+    ) -> WorkResult<W, T> {
         assert!(rank < self.len(), "AVL removal rank is in bounds");
         let (root, item, removed) = self.remove(self.root, rank, work)?;
         self.root = root;
@@ -455,7 +446,7 @@ impl<T: Copy> OrderTree<T> {
         root: Option<usize>,
         rank: usize,
         work: &mut W,
-    ) -> crate::error::Result<(Option<usize>, T, usize)> {
+    ) -> WorkResult<W, (Option<usize>, T, usize)> {
         work.charge(1)?;
         let root = root.expect("AVL removal descends through a live node");
         let left_len = self.subtree_len(self.node(root).left);
@@ -483,8 +474,7 @@ impl<T: Copy> OrderTree<T> {
     /// Replace one contiguous rank range with items already sorted in their
     /// desired order. All fallible geometric comparisons happen before entry.
     pub(in crate::geometry) fn splice(&mut self, range: Range<usize>, items: &[T]) {
-        self.splice_with_work(range, items, &mut Unmetered)
-            .expect("unmetered tree splice cannot fail");
+        self.splice_with_work(range, items, &mut Unmetered).unwrap();
     }
 
     pub(in crate::geometry) fn splice_with_work<W: Work>(
@@ -492,7 +482,7 @@ impl<T: Copy> OrderTree<T> {
         range: Range<usize>,
         items: &[T],
         work: &mut W,
-    ) -> crate::error::Result<()> {
+    ) -> WorkResult<W, ()> {
         assert!(
             range.start <= range.end && range.end <= self.len(),
             "AVL splice range is in bounds"
@@ -518,7 +508,7 @@ impl<T: Copy> OrderTree<T> {
         root: Option<usize>,
         rank: usize,
         work: &mut W,
-    ) -> crate::error::Result<(Option<usize>, Option<usize>)> {
+    ) -> WorkResult<W, (Option<usize>, Option<usize>)> {
         let Some(root) = root else {
             return Ok((None, None));
         };
@@ -556,7 +546,7 @@ impl<T: Copy> OrderTree<T> {
         left: Option<usize>,
         right: Option<usize>,
         work: &mut W,
-    ) -> crate::error::Result<Option<usize>> {
+    ) -> WorkResult<W, Option<usize>> {
         match (left, right) {
             (None, right) => Ok(right),
             (left, None) => Ok(left),
@@ -572,7 +562,7 @@ impl<T: Copy> OrderTree<T> {
         &mut self,
         root: usize,
         work: &mut W,
-    ) -> crate::error::Result<(Option<usize>, usize)> {
+    ) -> WorkResult<W, (Option<usize>, usize)> {
         work.charge(1)?;
         let left = self.node(root).left;
         let Some(left) = left else {
@@ -593,7 +583,7 @@ impl<T: Copy> OrderTree<T> {
         pivot: usize,
         right: Option<usize>,
         work: &mut W,
-    ) -> crate::error::Result<usize> {
+    ) -> WorkResult<W, usize> {
         work.charge(1)?;
         let left_height = self.height(left);
         let right_height = self.height(right);
@@ -632,7 +622,7 @@ impl<T: Copy> OrderTree<T> {
         start: usize,
         end: usize,
         work: &mut W,
-    ) -> crate::error::Result<Option<usize>> {
+    ) -> WorkResult<W, Option<usize>> {
         if start == end {
             return Ok(None);
         }
@@ -646,11 +636,7 @@ impl<T: Copy> OrderTree<T> {
         Ok(Some(root))
     }
 
-    fn release_tree<W: Work>(
-        &mut self,
-        root: Option<usize>,
-        work: &mut W,
-    ) -> crate::error::Result<()> {
+    fn release_tree<W: Work>(&mut self, root: Option<usize>, work: &mut W) -> WorkResult<W, ()> {
         let Some(root) = root else {
             return Ok(());
         };
@@ -786,6 +772,8 @@ mod tests {
     }
 
     impl Work for TreeRecordingWork<'_> {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
             self.record(u128::from(ticks), &result);

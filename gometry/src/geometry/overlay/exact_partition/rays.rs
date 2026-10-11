@@ -19,7 +19,7 @@ use crate::geometry::arrangement::compare_departures;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{stored_orientation_sign, try_sort_by_with_work};
 use crate::geometry::tessellation::exact::{Interval, compare_ratios_with_work};
-use crate::geometry::{GeometryErrorKind, OrderTree, Result, Unmetered, Work, XY};
+use crate::geometry::{GeometryErrorKind, OrderTree, Result, Unmetered, Work, WorkResult, XY};
 
 #[derive(Clone, Copy)]
 struct SweepEdge {
@@ -101,11 +101,16 @@ trait SweepStatus: Sized {
     where
         F: FnMut(SweepEdge, &mut W) -> Result<bool>;
 
-    fn get_at_rank<W: Work>(&self, rank: usize, work: &mut W) -> Result<Option<SweepEdge>>;
+    fn get_at_rank<W: Work>(&self, rank: usize, work: &mut W) -> WorkResult<W, Option<SweepEdge>>;
 
-    fn insert_rank<W: Work>(&mut self, rank: usize, edge: SweepEdge, work: &mut W) -> Result<()>;
+    fn insert_rank<W: Work>(
+        &mut self,
+        rank: usize,
+        edge: SweepEdge,
+        work: &mut W,
+    ) -> WorkResult<W, ()>;
 
-    fn remove_rank<W: Work>(&mut self, rank: usize, work: &mut W) -> Result<SweepEdge>;
+    fn remove_rank<W: Work>(&mut self, rank: usize, work: &mut W) -> WorkResult<W, SweepEdge>;
 }
 
 impl SweepStatus for OrderTree<SweepEdge> {
@@ -120,15 +125,20 @@ impl SweepStatus for OrderTree<SweepEdge> {
         Self::partition_point_by_with_work(self, work, before)
     }
 
-    fn get_at_rank<W: Work>(&self, rank: usize, work: &mut W) -> Result<Option<SweepEdge>> {
+    fn get_at_rank<W: Work>(&self, rank: usize, work: &mut W) -> WorkResult<W, Option<SweepEdge>> {
         Self::item_at_with_work(self, rank, work)
     }
 
-    fn insert_rank<W: Work>(&mut self, rank: usize, edge: SweepEdge, work: &mut W) -> Result<()> {
+    fn insert_rank<W: Work>(
+        &mut self,
+        rank: usize,
+        edge: SweepEdge,
+        work: &mut W,
+    ) -> WorkResult<W, ()> {
         Self::insert_at_rank_with_work(self, rank, edge, work)
     }
 
-    fn remove_rank<W: Work>(&mut self, rank: usize, work: &mut W) -> Result<SweepEdge> {
+    fn remove_rank<W: Work>(&mut self, rank: usize, work: &mut W) -> WorkResult<W, SweepEdge> {
         Self::remove_at_rank_with_work(self, rank, work)
     }
 }
@@ -146,25 +156,24 @@ impl SweepStatus for Vec<SweepEdge> {
         first_not_left_with_work(self, work, before)
     }
 
-    fn get_at_rank<W: Work>(&self, rank: usize, work: &mut W) -> Result<Option<SweepEdge>> {
+    fn get_at_rank<W: Work>(&self, rank: usize, work: &mut W) -> WorkResult<W, Option<SweepEdge>> {
         work.charge(1)?;
         Ok(self.get(rank).copied())
     }
 
-    fn insert_rank<W: Work>(&mut self, rank: usize, edge: SweepEdge, work: &mut W) -> Result<()> {
-        work.charge(
-            u64::try_from(self.len().wrapping_sub(rank))
-                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-        )?;
+    fn insert_rank<W: Work>(
+        &mut self,
+        rank: usize,
+        edge: SweepEdge,
+        work: &mut W,
+    ) -> WorkResult<W, ()> {
+        work.charge_product(self.len().wrapping_sub(rank), 1)?;
         self.insert(rank, edge);
         Ok(())
     }
 
-    fn remove_rank<W: Work>(&mut self, rank: usize, work: &mut W) -> Result<SweepEdge> {
-        work.charge(
-            u64::try_from(self.len().wrapping_sub(rank).wrapping_sub(1))
-                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-        )?;
+    fn remove_rank<W: Work>(&mut self, rank: usize, work: &mut W) -> WorkResult<W, SweepEdge> {
+        work.charge_product(self.len().wrapping_sub(rank).wrapping_sub(1), 1)?;
         Ok(self.remove(rank))
     }
 }
@@ -270,34 +279,34 @@ fn sort_by_axis_with_work<
         let value = axis.of(points.rounded(point(item)));
         if value == 0.0 { 0.0 } else { value }
     };
-    work.charge(
+    work.charge_into_error(
         u64::try_from(items.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut keyed = Vec::with_capacity(items.len());
     for &item in items.iter() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         keyed.push((key(item), item));
     }
     try_sort_by_with_work(&mut keyed, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(left.0.total_cmp(&right.0))
     })?;
     let mut run = 0;
     while run < keyed.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mut end = run.wrapping_add(1);
         while end < keyed.len() && keyed[end].0.total_cmp(&keyed[run].0).is_eq() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             end = end.wrapping_add(1);
         }
         if end.wrapping_sub(run) > 1 {
             let tied = &mut keyed[run..end];
             try_sort_by_with_work(tied, work, |left, right, work| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 compare_axis(point(left.1), point(right.1), axis, work)
             })?;
             for pair in tied.array_windows::<2>() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if compare_axis(point(pair[0].1), point(pair[1].1), axis, work)? == Ordering::Equal
                 {
                     equal(pair[0].1, pair[1].1)?;
@@ -307,7 +316,7 @@ fn sort_by_axis_with_work<
         run = end;
     }
     for (item, (_, value)) in items.iter_mut().zip(keyed) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         *item = value;
     }
     Ok(())
@@ -563,7 +572,7 @@ pub(in crate::geometry) fn compare_departures_with_work<R: RayPointsWithWork + ?
     right: u32,
     work: &mut W,
 ) -> Result<Ordering> {
-    work.charge(4)?;
+    work.charge_into_error(4)?;
     let left_y = points.compare_axis_with_work(left, origin, Axis::Y, work)?;
     let left_x = points.compare_axis_with_work(left, origin, Axis::X, work)?;
     let right_y = points.compare_axis_with_work(right, origin, Axis::Y, work)?;
@@ -573,7 +582,7 @@ pub(in crate::geometry) fn compare_departures_with_work<R: RayPointsWithWork + ?
     if !halves.is_eq() {
         return Ok(halves);
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let sign = points.orientation_with_work(origin, left, right, work)?;
     if sign == ExactSign::Zero && left != right {
         return Err(GeometryErrorKind::Invalid(
@@ -813,7 +822,7 @@ fn shoot_left_with_status<
     queries: &[u32],
     work: &mut W,
 ) -> Result<Vec<Option<usize>>> {
-    work.charge(
+    work.charge_into_error(
         u64::try_from(queries.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut order = Vec::with_capacity(queries.len());
@@ -834,30 +843,30 @@ fn shoot_left_with_status<
     // whose vertical extent contains no query height.
     let mut starts: Vec<SweepEdge> = Vec::new();
     for index in 0..edge_count {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [a, b] = edge(index)?;
         let a_y = points.rounded(a).y;
         let b_y = points.rounded(b).y;
         if (a_y < min_query_y && b_y < min_query_y) || (a_y > max_query_y && b_y > max_query_y) {
             continue;
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let (lower, upper) = match points.compare_axis_with_work(a, b, Axis::Y, work)? {
             Ordering::Less => (a, b),
             Ordering::Greater => (b, a),
             Ordering::Equal => continue,
         };
         let first = first_not_left_with_work(&order, work, |query, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(
                 points.compare_axis_with_work(queries[query], lower, Axis::Y, work)?
                     == Ordering::Less,
             )
         })?;
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if let Some(&query) = order.get(first)
             && {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 points.compare_axis_with_work(queries[query], upper, Axis::Y, work)?
                     == Ordering::Less
             }
@@ -869,21 +878,21 @@ fn shoot_left_with_status<
             });
         }
     }
-    work.charge(
+    work.charge_into_error(
         u64::try_from(starts.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut ends = Vec::with_capacity(starts.len());
     ends.extend_from_slice(&starts);
     points.sort_by_axis_with_work(&mut starts, Axis::Y, |edge| edge.lower, |_, _| Ok(()), work)?;
     points.sort_by_axis_with_work(&mut ends, Axis::Y, |edge| edge.upper, |_, _| Ok(()), work)?;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(queries.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut answers = Vec::with_capacity(queries.len());
     answers.resize(queries.len(), None);
 
     let negative = |a, b, c, work: &mut W| -> Result<bool> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.ray_orientations = metrics.ray_orientations.wrapping_add(1);
@@ -891,7 +900,7 @@ fn shoot_left_with_status<
         Ok(points.orientation_with_work(a, b, c, work)? == ExactSign::Negative)
     };
     let positive = |a, b, c, work: &mut W| -> Result<bool> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.ray_orientations = metrics.ray_orientations.wrapping_add(1);
@@ -916,17 +925,17 @@ fn shoot_left_with_status<
             negative(edge.lower, edge.upper, ending.upper, work)
         }
     };
-    work.charge(
+    work.charge_into_error(
         u64::try_from(starts.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut status = S::new_status(starts.len());
     let (mut next_start, mut next_end, mut next_query) = (0, 0, 0);
     while next_query < order.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mut height = queries[order[next_query]];
         if let Some(starting) = starts.get(next_start)
             && {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 points.compare_axis_with_work(starting.lower, height, Axis::Y, work)?
                     == Ordering::Less
             }
@@ -935,7 +944,7 @@ fn shoot_left_with_status<
         }
         if let Some(ending) = ends.get(next_end)
             && {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 points.compare_axis_with_work(ending.upper, height, Axis::Y, work)?
                     == Ordering::Less
             }
@@ -944,38 +953,45 @@ fn shoot_left_with_status<
         }
         while let Some(&ending) = ends.get(next_end)
             && {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 points.compare_axis_with_work(ending.upper, height, Axis::Y, work)?
                     == Ordering::Equal
             }
         {
             let index = status.prefix_rank(work, |edge, work| left_below(edge, ending, work))?;
-            work.charge(1)?;
-            if status.get_at_rank(index, work)?.map(|edge| edge.item) != Some(ending.item) {
+            work.charge_into_error(1)?;
+            if status
+                .get_at_rank(index, work)
+                .map_err(Into::into)?
+                .map(|edge| edge.item)
+                != Some(ending.item)
+            {
                 return Err(GeometryErrorKind::Invalid(
                     "leftward ray sweep lost an edge from its status".into(),
                 )
                 .into());
             }
-            work.charge(1)?;
-            status.remove_rank(index, work)?;
+            work.charge_into_error(1)?;
+            status.remove_rank(index, work).map_err(Into::into)?;
             next_end = next_end.wrapping_add(1);
         }
         while let Some(&starting) = starts.get(next_start)
             && {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 points.compare_axis_with_work(starting.lower, height, Axis::Y, work)?
                     == Ordering::Equal
             }
         {
             let index = status.prefix_rank(work, |edge, work| left_above(edge, starting, work))?;
-            work.charge(1)?;
-            status.insert_rank(index, starting, work)?;
+            work.charge_into_error(1)?;
+            status
+                .insert_rank(index, starting, work)
+                .map_err(Into::into)?;
             next_start = next_start.wrapping_add(1);
         }
         while let Some(&query) = order.get(next_query)
             && {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 points.compare_axis_with_work(queries[query], height, Axis::Y, work)?
                     == Ordering::Equal
             }
@@ -984,9 +1000,12 @@ fn shoot_left_with_status<
             let rank = status.prefix_rank(work, |edge, work| {
                 negative(edge.lower, edge.upper, point, work)
             })?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             answers[query] = if let Some(left) = rank.checked_sub(1) {
-                status.get_at_rank(left, work)?.map(|edge| edge.item)
+                status
+                    .get_at_rank(left, work)
+                    .map_err(Into::into)?
+                    .map(|edge| edge.item)
             } else {
                 None
             };
@@ -1010,7 +1029,7 @@ where
 {
     let (mut low, mut high) = (0, items.len());
     while low < high {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let middle = low.wrapping_add(high.wrapping_sub(low) / 2);
         if left(items[middle], work)? {
             low = middle.wrapping_add(1);
@@ -1075,6 +1094,8 @@ mod tests {
     }
 
     impl Work for RecordingWork<'_> {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
             self.record(u128::from(ticks), &result);

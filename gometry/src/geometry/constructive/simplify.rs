@@ -523,7 +523,7 @@ fn stage_line_vertices(
         let traces = if let Some(trace) = trace {
             let mut slices = Vec::with_capacity(end.saturating_sub(start).saturating_sub(1));
             for edge in start..end.saturating_sub(1) {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 slices.push((
                     edge,
                     crate::geometry::tessellation::exact::ExactRational::zero(),
@@ -1088,8 +1088,9 @@ impl<'a> NativeSubdivisionContext<'a> {
                     )
                     .into());
                 }
-                budget
-                    .charge(u64::try_from(line.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+                budget.charge_into_error(
+                    u64::try_from(line.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
                 let row_start = request_rows.len();
                 for vertex in 0..line.len() {
                     let mut row = crate::geometry::ordinates::RequestRowInput {
@@ -1098,7 +1099,7 @@ impl<'a> NativeSubdivisionContext<'a> {
                     };
                     if vertex > 0 {
                         let incoming = trace.requests_at(vertex - 1, &one, budget)?;
-                        budget.charge(
+                        budget.charge_into_error(
                             u64::try_from(incoming.len())
                                 .map_err(|_| ResourceError::SizeOverflow)?,
                         )?;
@@ -1106,7 +1107,7 @@ impl<'a> NativeSubdivisionContext<'a> {
                     }
                     if vertex < edge_count {
                         let outgoing = trace.requests_at(vertex, &zero, budget)?;
-                        budget.charge(
+                        budget.charge_into_error(
                             u64::try_from(outgoing.len())
                                 .map_err(|_| ResourceError::SizeOverflow)?,
                         )?;
@@ -1171,8 +1172,9 @@ impl<'a> NativeSubdivisionContext<'a> {
                 .into_iter()
                 .zip(reconstruction.row_ranges)
             {
-                budget
-                    .charge(u64::try_from(line.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+                budget.charge_into_error(
+                    u64::try_from(line.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
                 let mut points = Vec::with_capacity(line.len());
                 for (point, ordinate_index) in line.as_coords().iter_coords().zip(range) {
                     let ordinate = *ordinates.get(ordinate_index).ok_or_else(|| {

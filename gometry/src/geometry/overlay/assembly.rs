@@ -214,41 +214,41 @@ pub(crate) fn build_certified_overlay_shape_with_axes_and_order<W: Work>(
     axes: CoordinateAxes,
     work: &mut W,
 ) -> crate::error::Result<(Shape, CertifiedOverlayOrder)> {
-    work.charge(
+    work.charge_into_error(
         u64::try_from(points.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut ordered_points = Vec::with_capacity(points.len());
     for (index, point) in points.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         ordered_points.push((index, point));
     }
     try_sort_by_with_work(&mut ordered_points, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(crate::geometry::compare_points(&left.1, &right.1).then_with(|| left.0.cmp(&right.0)))
     })?;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(lines.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut ordered_lines = Vec::with_capacity(lines.len());
     for (index, line) in lines.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         ordered_lines.push((index, line));
     }
     try_sort_by_with_work(&mut ordered_lines, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(crate::geometry::compare_point_slices(&left.1, &right.1)
             .then_with(|| left.0.cmp(&right.0)))
     })?;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(polygons.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut ordered_polygons = Vec::with_capacity(polygons.len());
     for (index, polygon) in polygons.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         ordered_polygons.push((index, polygon));
     }
     try_sort_by_with_work(&mut ordered_polygons, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(crate::geometry::compare_polygons(&left.1, &right.1).then_with(|| left.0.cmp(&right.0)))
     })?;
     let ordered_count = ordered_points
@@ -256,27 +256,27 @@ pub(crate) fn build_certified_overlay_shape_with_axes_and_order<W: Work>(
         .checked_add(ordered_lines.len())
         .and_then(|count| count.checked_add(ordered_polygons.len()))
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(ordered_count).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
     )?;
     let mut point_order = Vec::with_capacity(ordered_points.len());
     let mut points = Vec::with_capacity(ordered_points.len());
     for (index, point) in ordered_points {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         point_order.push(index);
         points.push(point);
     }
     let mut line_order = Vec::with_capacity(ordered_lines.len());
     let mut lines = Vec::with_capacity(ordered_lines.len());
     for (index, line) in ordered_lines {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         line_order.push(index);
         lines.push(line);
     }
     let mut polygon_order = Vec::with_capacity(ordered_polygons.len());
     let mut polygons = Vec::with_capacity(ordered_polygons.len());
     for (index, polygon) in ordered_polygons {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         polygon_order.push(index);
         polygons.push(polygon);
     }

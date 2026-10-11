@@ -106,10 +106,12 @@ pub(super) struct ExactPoints {
 impl ExactPoints {
     #[cfg(test)]
     pub(super) fn from_exact(exact: Vec<ExactChartPoint>, work: &mut impl Work) -> Result<Self> {
-        work.charge(u64::try_from(exact.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(exact.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut rounded = Vec::with_capacity(exact.len());
         for point in &exact {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let rounded_point = XY::new(
                 point.x.round_with_work(work)?,
                 point.y.round_with_work(work)?,
@@ -229,10 +231,12 @@ impl LogicalLayout {
                 areal_walks: Vec::new(),
             });
         }
-        work.charge(u64::try_from(edge_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(edge_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut atom_by_endpoints = BTreeMap::new();
         for (atom, &[left, right]) in edge_nodes.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let key = if left < right {
                 [left, right]
             } else {
@@ -252,11 +256,13 @@ impl LogicalLayout {
             }
         }
 
-        work.charge(u64::try_from(walks.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(walks.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut identities = BTreeSet::new();
         let mut areal_walks = Vec::with_capacity(walks.len());
         for walk in walks {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if !identities.insert((walk.output, walk.walk))
                 || walk.vertices.len() < 4
                 || walk.vertices.first() != walk.vertices.last()
@@ -271,10 +277,12 @@ impl LogicalLayout {
                 .len()
                 .checked_sub(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            work.charge(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut uses = Vec::with_capacity(edge_count);
             for &[start, end] in walk.vertices.array_windows::<2>() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if start as usize >= vertex_count || end as usize >= vertex_count {
                     return Err(GeometryErrorKind::Invalid(
                         "logical areal walk references an unknown graph vertex".into(),
@@ -306,7 +314,7 @@ impl LogicalLayout {
             });
         }
         try_sort_by_with_work(&mut areal_walks, work, |left, right, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok((left.output, left.walk).cmp(&(right.output, right.walk)))
         })?;
         Ok(Self { areal_walks })
@@ -358,7 +366,7 @@ pub(super) fn exact_chord_fraction(
     point: &ExactChartPoint,
     work: &mut impl Work,
 ) -> Result<Option<ExactRational>> {
-    work.charge(4)?;
+    work.charge_into_error(4)?;
     let dx = end.x.try_subtract_with_work(&start.x, work)?;
     let dy = end.y.try_subtract_with_work(&start.y, work)?;
     let fraction = if !dx.is_zero() {
@@ -442,12 +450,12 @@ fn reorder_rows<T>(rows: Vec<T>, order: &[usize], work: &mut impl Work) -> Resul
             GeometryErrorKind::Invalid("literal output order omits a physical row".into()).into(),
         );
     }
-    work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut rows = rows.into_iter().map(Some).collect::<Vec<_>>();
-    work.charge(u64::try_from(order.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(order.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut output = Vec::with_capacity(order.len());
     for &index in order {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let row = rows.get_mut(index).ok_or_else(|| {
             GeometryErrorKind::Invalid("literal output order references an unknown row".into())
         })?;
@@ -540,7 +548,7 @@ where
     let mut rejected = Vec::new();
     let mut check =
         |output, image, record, expected_axes, stored_axes, work: &mut W| -> Result<()> {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if expected_axes != stored_axes || CoordinateAxes::from_point(record) != stored_axes {
                 rejected.push(image);
                 return Ok(());
@@ -572,7 +580,7 @@ fn validate_dense_output_ids(
     count: usize,
     work: &mut impl Work,
 ) -> Result<()> {
-    work.charge(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut ids = values.collect::<Vec<_>>();
     if ids.len() != count {
         return Err(GeometryErrorKind::Invalid(
@@ -581,7 +589,7 @@ fn validate_dense_output_ids(
         .into());
     }
     try_sort_by_with_work(&mut ids, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(left.cmp(right))
     })?;
     if ids
@@ -614,7 +622,7 @@ fn validate_shape_layout<I>(layout: &ShapeLiteralLayout<I>, work: &mut impl Work
         work,
     )?;
     for polygon in &layout.polygons {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if polygon.shell.output != polygon.output
             || polygon
                 .holes
@@ -656,7 +664,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
             .into());
         }
         for (&image, point) in locations.images.iter().zip(sequence.points()) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             visit(locations.output, image, point, locations.axes, axes, work)?;
         }
         Ok(())
@@ -704,7 +712,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                 *point_row = point_row
                     .checked_add(1)
                     .ok_or(ResourceError::SizeOverflow)?;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 visit(
                     location.output,
                     location.image,
@@ -725,7 +733,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                 })?;
                 *point_row = end;
                 for (location, point) in locations.iter().zip(points.points()) {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     visit(
                         location.output,
                         location.image,
@@ -970,7 +978,7 @@ fn validate_atoms(
 ) -> Result<()> {
     let mut seen = BTreeSet::new();
     for &[start, end] in edge_nodes {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if start == end
             || points.exact.get(start as usize).is_none()
             || points.exact.get(end as usize).is_none()
@@ -1024,9 +1032,11 @@ fn point_hints_match(points: &ExactPoints, work: &mut impl Work) -> Result<bool>
     if points.rounded.len() != points.exact.len() {
         return Ok(false);
     }
-    work.charge(u64::try_from(points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     for (exact, &rounded) in points.exact.iter().zip(&points.rounded) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let expected = XY::new(
             exact.x.round_with_work(work)?,
             exact.y.round_with_work(work)?,
@@ -1046,7 +1056,9 @@ fn identities_are_injective(
     if points.exact.len() != identities.len() {
         return Ok(false);
     }
-    work.charge(u64::try_from(points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut order = (0..points.exact.len())
         .map(|index| {
             Ok((
@@ -1058,7 +1070,7 @@ fn identities_are_injective(
         })
         .collect::<Result<Vec<_>>>()?;
     try_sort_by_with_work(&mut order, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let left_point = points.exact.get(left.0).ok_or_else(|| {
             GeometryErrorKind::Invalid("graph identity point is outside its inventory".into())
         })?;
@@ -1073,7 +1085,7 @@ fn identities_are_injective(
         })
     })?;
     for pair in order.array_windows::<2>() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [left, right] = pair;
         if left.1 != right.1
             && points
@@ -1161,7 +1173,7 @@ fn areal_vertices(
     let mut vertices = BTreeSet::new();
     for walk in &layout.areal_walks {
         for use_row in &walk.uses {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let [start, end] = *edge_nodes.get(use_row.atom as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("admitted areal use has an unknown atom".into())
             })?;
@@ -1191,10 +1203,12 @@ fn stable_fan_rows(
         )
         .into());
     }
-    work.charge(u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut rotations = Vec::with_capacity(vertices.len());
     for &vertex in vertices {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if vertex as usize >= vertex_count {
             return Err(GeometryErrorKind::Invalid(
                 "areal fan references an unknown graph vertex".into(),
@@ -1211,10 +1225,10 @@ fn stable_fan_rows(
             GeometryErrorKind::Invalid("stable graph rotation end is missing".into())
         })? as usize;
         let degree = end.checked_sub(start).ok_or(ResourceError::SizeOverflow)?;
-        work.charge(u64::try_from(degree).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(degree).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut rotation = Vec::with_capacity(degree);
         for slot in start..end {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let edge = *edge_of_slot.get(slot).ok_or_else(|| {
                 GeometryErrorKind::Invalid("stable graph dart has no atom identity".into())
             })?;
@@ -1272,7 +1286,7 @@ fn stable_wall_face_keys(
     }
     let walk_count = topology.face_starts.len() - 1;
     let face_count = usize::try_from(faces.count).map_err(|_| ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut face_keys = vec![Vec::<u32>::new(); face_count];
     for walk in 0..walk_count {
         let start =
@@ -1292,7 +1306,9 @@ fn stable_wall_face_keys(
             )
             .into());
         }
-        work.charge(u64::try_from(slots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(slots.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut anchor = u32::MAX;
         for &slot in slots {
             let edge = *edge_of_slot.get(slot as usize).ok_or_else(|| {
@@ -1336,14 +1352,14 @@ fn stable_wall_face_keys(
     }
     for key in &mut face_keys {
         try_sort_by_with_work(key, work, |left, right, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(left.cmp(right))
         })?;
     }
-    work.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut face_order = (0..face_count).collect::<Vec<_>>();
     try_sort_by_with_work(&mut face_order, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let left = face_keys
             .get(*left)
             .ok_or_else(|| GeometryErrorKind::Invalid("stable left face key is unknown".into()))?;
@@ -1353,7 +1369,7 @@ fn stable_wall_face_keys(
         Ok(left.cmp(right))
     })?;
     for pair in face_order.array_windows::<2>() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let [left, right] = pair;
         let left_key = face_keys
             .get(*left)
@@ -1368,11 +1384,11 @@ fn stable_wall_face_keys(
             .into());
         }
     }
-    work.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut stable_face_id = vec![0_u32; face_count];
     let mut stable_keys = Vec::with_capacity(face_count);
     for (stable, face) in face_order.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         *stable_face_id
             .get_mut(face)
             .ok_or_else(|| GeometryErrorKind::Invalid("stable face ordinal is unknown".into()))? =
@@ -1396,11 +1412,13 @@ fn admit_areal_proof(
     let mut wall_atom_set = BTreeSet::new();
     for walk in &layout.areal_walks {
         for use_row in &walk.uses {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             wall_atom_set.insert(use_row.atom);
         }
     }
-    work.charge(u64::try_from(wall_atom_set.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(wall_atom_set.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let wall_atom_ids = wall_atom_set.into_iter().collect::<Vec<_>>();
     if wall_atom_ids.is_empty() {
         return Err(
@@ -1438,10 +1456,12 @@ fn build_areal_signature(
     let mut projected_topology = None;
     let mut projected_edge_of_slot = Vec::new();
     if !all_atoms_are_walls {
-        work.charge(u64::try_from(wall_atom_ids.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(wall_atom_ids.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         projected_edges.reserve(wall_atom_ids.len());
         for &atom in wall_atom_ids {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             projected_edges.push(*graph.edge_nodes.get(atom as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("areal logical wall names an unknown atom".into())
             })?);
@@ -1497,7 +1517,7 @@ fn build_areal_signature(
 
     let mut component_count = 0_usize;
     for &component in &wall_topology.component_of {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         component_count = component_count.max(
             usize::try_from(component)
                 .map_err(|_| ResourceError::SizeOverflow)?
@@ -1511,10 +1531,12 @@ fn build_areal_signature(
         )
         .into());
     }
-    work.charge(u64::try_from(points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(points.exact.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut host_by_vertex = Vec::with_capacity(points.exact.len());
     for &component in &wall_topology.component_of {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let face = *faces
             .component_hosts
             .get(component as usize)
@@ -1584,21 +1606,23 @@ fn point_edge_contacts_preserved(
         edge_nodes: &[[u32; 2]],
         work: &mut impl Work,
     ) -> Result<BTreeSet<(u32, usize)>> {
-        work.charge(
+        work.charge_into_error(
             u64::try_from(isolated_vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut point_bounds = Vec::with_capacity(isolated_vertices.len());
         for &vertex in isolated_vertices {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let point = points.exact.get(vertex as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("isolated graph point is unknown".into())
             })?;
             point_bounds.push(outward_bounds(point, work)?);
         }
-        work.charge(u64::try_from(edge_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(edge_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut edge_bounds = Vec::with_capacity(edge_nodes.len());
         for &[start, end] in edge_nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             edge_bounds.push(outward_segment_bounds(
                 points.exact.get(start as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("point-contact edge start is unknown".into())
@@ -1615,7 +1639,7 @@ fn point_edge_contacts_preserved(
             &edge_bounds,
             work,
             |point_index, edge_index, work| {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let vertex = isolated_vertices.get(point_index).copied().ok_or_else(|| {
                     GeometryErrorKind::Invalid(
                         "point-contact sweep returned an unknown point".into(),
@@ -1637,7 +1661,7 @@ fn point_edge_contacts_preserved(
                     .into());
                 };
                 if point_on_exact_segment_with_work(point, start, end, work)? {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     result.insert((vertex, edge_index));
                 }
                 Ok(ControlFlow::<()>::Continue(()))
@@ -1658,10 +1682,12 @@ fn edges_have_only_vertex_contacts(
     edge_nodes: &[[u32; 2]],
     work: &mut impl Work,
 ) -> Result<bool> {
-    work.charge(u64::try_from(edge_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(edge_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut bounds = Vec::with_capacity(edge_nodes.len());
     for &[start, end] in edge_nodes {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let start = points
             .exact
             .get(start as usize)
@@ -1689,7 +1715,7 @@ fn edges_have_only_vertex_contacts(
             if left_index >= right_index {
                 return Ok(ControlFlow::Continue(()));
             }
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let (Some([left_start, left_end]), Some([right_start, right_end])) =
                 (edge_nodes.get(left_index), edge_nodes.get(right_index))
             else {
@@ -1842,6 +1868,8 @@ mod tests {
     }
 
     impl Work for SweepRecordingWork<'_> {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
             self.record(u128::from(ticks), &result);

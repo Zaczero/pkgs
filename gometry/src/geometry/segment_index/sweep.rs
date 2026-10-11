@@ -105,14 +105,14 @@ pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair_with_work<B,
     mut visit: impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
     // The compact ordinal and bounds columns each request one slot per input.
-    work.charge_product(bounds.len(), 2)?;
+    work.charge_product_into_error(bounds.len(), 2)?;
     let mut ordinals = Vec::with_capacity(bounds.len());
     let mut present = Vec::with_capacity(bounds.len());
     for (ordinal, bounds) in bounds.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if let Some(bounds) = bounds {
             // Publish one ordinal and one copied bounds record.
-            work.charge(2)?;
+            work.charge_into_error(2)?;
             ordinals.push(ordinal);
             present.push(*bounds);
         }
@@ -182,7 +182,7 @@ fn run_oblique_bounds_with_work<W: Work>(
     };
     let (mut min, mut max) = (f64::INFINITY, f64::NEG_INFINITY);
     for segment in segments {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some((lo, hi)) = projected_point_interval(segment.start, projection) else {
             return Ok(full);
         };
@@ -192,7 +192,7 @@ fn run_oblique_bounds_with_work<W: Work>(
     let Some(last) = segments.last() else {
         return Ok(full);
     };
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let Some((lo, hi)) = projected_point_interval(last.end, projection) else {
         return Ok(full);
     };
@@ -239,7 +239,7 @@ fn finish_sweep_entries_with_work<W: Work>(
     work: &mut W,
 ) -> Result<()> {
     if swapped {
-        work.charge_product(entries.len(), 1)?;
+        work.charge_product_into_error(entries.len(), 1)?;
         for entry in entries.iter_mut() {
             std::mem::swap(&mut entry.sweep_min, &mut entry.cross_min);
             std::mem::swap(&mut entry.sweep_max, &mut entry.cross_max);
@@ -308,7 +308,7 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair_with_work<B, W: Work
         while let Some((left, right_bounds)) = remaining.split_first() {
             let mut right_index = left_index.wrapping_add(1);
             for right in right_bounds {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if left.intersects(*right) {
                     match visit(left_index, right_index, work)? {
                         ControlFlow::Continue(()) => {},
@@ -362,7 +362,7 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_cross_pair_with_work<B, W
             for (right_index, right_bounds) in right.iter().enumerate() {
                 #[cfg(test)]
                 record_cross_pair_probe_attempt();
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let intersects = left_bounds.intersects(*right_bounds);
                 #[cfg(test)]
                 record_cross_pair_probe_complete();
@@ -390,13 +390,13 @@ fn try_overlapping_bounds_sweep<B, W: Work>(
     }
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     // Reserve the logical entry row before touching retained scratch storage.
-    work.charge_product(count, 1)?;
+    work.charge_product_into_error(count, 1)?;
     entries.reserve(count);
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
     for (ordinal, b) in bounds.iter().enumerate() {
         // Read the bounds, fold their extents, and publish one entry.
-        work.charge(3)?;
+        work.charge_into_error(3)?;
         let (x_lo, x_hi, y_lo, y_hi) = (b.minx(), b.maxx(), b.miny(), b.maxy());
         min_x = min_x.min(x_lo);
         max_x = max_x.max(x_hi);
@@ -420,7 +420,7 @@ fn try_overlapping_bounds_sweep<B, W: Work>(
     // forward window (same split the segment sweep uses for large pools).
     if count >= SWEEP_BAND_MIN {
         let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
-        work.charge_product(entries.len(), 2)?;
+        work.charge_product_into_error(entries.len(), 2)?;
         let cross_lo = entries
             .iter()
             .map(|e| e.cross_min)
@@ -445,14 +445,14 @@ fn try_overlapping_bounds_cross_sweep<B, W: Work>(
 ) -> Result<ControlFlow<B>> {
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     // Reserve the combined logical entry rows before touching retained scratch.
-    work.charge_product(count, 1)?;
+    work.charge_product_into_error(count, 1)?;
     entries.reserve(count);
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
     for (side, bounds) in [(CROSS_LEFT_SIDE, left), (CROSS_RIGHT_SIDE, right)] {
         for (ordinal, bound) in bounds.iter().enumerate() {
             // Read the bounds, fold their extents, and publish one entry.
-            work.charge(3)?;
+            work.charge_into_error(3)?;
             let (x_lo, x_hi, y_lo, y_hi) = (bound.minx(), bound.maxx(), bound.miny(), bound.maxy());
             min_x = min_x.min(x_lo);
             max_x = max_x.max(x_hi);
@@ -476,7 +476,7 @@ fn try_overlapping_bounds_cross_sweep<B, W: Work>(
     let mut cross_visit = |left: usize, right: usize, work: &mut W| visit(left, right, work);
     if count >= SWEEP_BAND_MIN {
         let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
-        work.charge_product(entries.len(), 2)?;
+        work.charge_product_into_error(entries.len(), 2)?;
         let cross_lo = entries
             .iter()
             .map(|entry| entry.cross_min)
@@ -589,7 +589,7 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs_with_work<
         while let Some((_segment, right_segments)) = remaining.split_first() {
             let mut right = left.wrapping_add(1);
             for _ in right_segments {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 match visit(left, right, work)? {
                     ControlFlow::Continue(()) => {},
                     ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
@@ -622,14 +622,14 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B, W: Work>(
 ) -> Result<ControlFlow<B>> {
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     // Reserve one logical envelope row per staged run.
-    work.charge_product(runs.len(), 1)?;
+    work.charge_product_into_error(runs.len(), 1)?;
     entries.reserve(runs.len());
     let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
     let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     let (mut double_angle_x, mut double_angle_y) = (0.0_f64, 0.0_f64);
     let mut oblique_count = 0_usize;
     for (ordinal, run) in runs.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         // Length-exact run window: first/last via slice pattern (elision).
         let segs = &pool[run.start as usize..run.end as usize];
         let (first, last) = match segs {
@@ -639,13 +639,13 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B, W: Work>(
         };
         let (x_lo, x_hi) = (first.x.min(last.x), first.x.max(last.x));
         let (y_lo, y_hi) = (first.y.min(last.y), first.y.max(last.y));
-        work.charge(2)?;
+        work.charge_into_error(2)?;
         min_x = min_x.min(x_lo);
         min_y = min_y.min(y_lo);
         max_x = max_x.max(x_hi);
         max_y = max_y.max(y_hi);
         if OBLIQUE {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let (dx, dy) = (last.x - first.x, last.y - first.y);
             if run.sign_x != 0
                 && run.sign_y != 0
@@ -654,7 +654,7 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B, W: Work>(
                 && let scale = dx.abs().max(dy.abs())
                 && scale > 0.0
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let (dx, dy) = (dx / scale, dy / scale);
                 let norm_squared = dx * dx + dy * dy;
                 double_angle_x += (dx * dx - dy * dy) / norm_squared;
@@ -684,7 +684,7 @@ fn try_candidate_pairs_over_runs<const OBLIQUE: bool, B, W: Work>(
         // An uncertain projection becomes an unbounded interval, so only a
         // certified gap between run envelopes can prune the XY sweep.
         for entry in entries.iter_mut() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let run = &runs[entry.ordinal as usize];
             (entry.cross_min, entry.cross_max) =
                 run_oblique_bounds_with_work(pool, run, projection, work)?;
@@ -745,7 +745,7 @@ pub(in crate::geometry) fn monotone_runs_with_work<W: Work>(
     let (mut sign_x, mut sign_y) = (0_i8, 0_i8);
     let mut previous_segment = None;
     for (index, segment) in pool.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let index_u32 = index as u32;
         let dx = segment.end.x - segment.start.x;
         let dy = segment.end.y - segment.start.y;
@@ -755,9 +755,9 @@ pub(in crate::geometry) fn monotone_runs_with_work<W: Work>(
         previous_segment = Some((index, segment));
         let chained = (if index_u32 > start && !degenerate {
             if let Some((previous_index, previous_segment)) = previous {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let previous_chain = chain_of(previous_index);
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 previous_chain == chain_of(index)
                     && PointKey::new(previous_segment.end) == PointKey::new(segment.start)
             } else {
@@ -801,11 +801,11 @@ fn push_run_with_work<W: Work>(
     if end > start {
         if runs.len() == runs.capacity() {
             let requested = runs.len().wrapping_add(1);
-            work.charge_product(requested, 1)?;
-            work.charge_product(runs.len(), 1)?;
+            work.charge_product_into_error(requested, 1)?;
+            work.charge_product_into_error(runs.len(), 1)?;
         }
         runs.reserve(1);
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         runs.push(MonotoneRun {
             start,
             end,
@@ -849,7 +849,7 @@ fn run_pair_join<const OBLIQUE: bool, B, W: Work>(
     // overlap on both axes. With a projected secondary interval, only the
     // primary axis was checked, so verify the XY envelopes below.
     if a.len() == 1 && b.len() == 1 {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if OBLIQUE
             && projection_active
             && pool
@@ -968,7 +968,7 @@ fn bisect_runs<B, W: Work>(
     work: &mut W,
     visit: &mut impl FnMut(usize, usize, &mut W) -> Result<ControlFlow<B>>,
 ) -> Result<ControlFlow<B>> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let (as_lo, as_hi, ac_lo, ac_hi) = a.envelope(a_lo, a_hi);
     let (bs_lo, bs_hi, bc_lo, bc_hi) = b.envelope(b_lo, b_hi);
     if as_hi < bs_lo || bs_hi < as_lo || ac_hi < bc_lo || bc_hi < ac_lo {
@@ -1021,9 +1021,9 @@ fn plain_windows<B, W: Work>(
 ) -> Result<ControlFlow<B>> {
     let mut remaining = entries;
     while let Some((left, right_entries)) = remaining.split_first() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         for right in right_entries {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if right.sweep_min > left.sweep_max {
                 break;
             }
@@ -1063,47 +1063,47 @@ fn banded_windows<B, W: Work>(
     // Entries are already in sweep order, so every band row is too.
     let start_len = bands.wrapping_add(1);
     // Allocate and zero the CSR row starts before counting memberships.
-    work.charge_product(start_len, 2)?;
+    work.charge_product_into_error(start_len, 2)?;
     let mut starts = vec![0_usize; start_len];
     for entry in entries {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let next = band.wrapping_add(1);
             starts[next] = starts[next].wrapping_add(1);
         }
     }
     // Prefix sums visit one row per band.
-    work.charge_product(bands, 1)?;
+    work.charge_product_into_error(bands, 1)?;
     for band in 0..bands {
         let next = band.wrapping_add(1);
         starts[next] = starts[next].wrapping_add(starts[band]);
     }
     // The cursor is a copied starts column.
-    work.charge_product(start_len, 2)?;
+    work.charge_product_into_error(start_len, 2)?;
     let mut cursor = Vec::with_capacity(start_len);
     cursor.extend_from_slice(&starts);
     // Allocate and zero one slot per actual band membership.
-    work.charge_product(starts[bands], 2)?;
+    work.charge_product_into_error(starts[bands], 2)?;
     let mut slots = vec![0_usize; starts[bands]];
     for (position, entry) in entries.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             slots[cursor[band]] = position;
             cursor[band] = cursor[band].wrapping_add(1);
         }
     }
     for band in 0..bands {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let next = band.wrapping_add(1);
         let row = &slots[starts[band]..starts[next]];
         let mut remaining = row;
         while let Some((&left_slot, right_slots)) = remaining.split_first() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let left = &entries[left_slot];
             for &right_slot in right_slots {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let right = &entries[right_slot];
                 if right.sweep_min > left.sweep_max {
                     break;
