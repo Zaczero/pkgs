@@ -2043,7 +2043,7 @@ impl PolygonPlan {
                     topology,
                     source_ring,
                     cycles,
-                    &source_cycles,
+                    source_cycles,
                     work,
                 )?
             {
@@ -2053,7 +2053,7 @@ impl PolygonPlan {
                 topology,
                 source_ring,
                 cycles,
-                &source_cycles,
+                source_cycles,
                 work,
             )?
             else {
