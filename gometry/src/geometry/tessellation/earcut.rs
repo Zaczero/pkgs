@@ -57,8 +57,22 @@ impl EarcutCornerId {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EarcutTriangle {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the sample draw receipt consumes the selected Earcut face ordinal"
+        )
+    )]
     pub(crate) face: usize,
     pub(crate) points: [Point; 3],
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the sample draw receipt consumes source-site and occurrence identities"
+        )
+    )]
     pub(crate) corners: [EarcutCornerId; 3],
 }
 
@@ -612,7 +626,6 @@ const fn ring_segment_points(start: Point, end: Point) -> Segment {
     }
 }
 
-#[cfg(test)]
 pub(super) const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
     left.abs_diff(right) == 1 || (left == 0 && right == len.wrapping_sub(1))
 }
