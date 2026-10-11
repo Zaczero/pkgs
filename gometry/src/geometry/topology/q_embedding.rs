@@ -5905,13 +5905,13 @@ fn exact_coordinate_has_binary64_value_with_work(
     value.try_eq_with_work(&ExactRational::from_f64(rounded), work)
 }
 
-fn exact_chart_point_has_binary64_value_with_work(
-    point: &ExactChartPoint,
+fn exact_node_position_has_binary64_value_with_work(
+    position: &ExactNodePosition,
     work: &mut impl Work,
 ) -> Result<bool> {
     Ok(
-        exact_coordinate_has_binary64_value_with_work(&point.x, work)?
-            && exact_coordinate_has_binary64_value_with_work(&point.y, work)?,
+        exact_coordinate_has_binary64_value_with_work(&position.longitude, work)?
+            && exact_coordinate_has_binary64_value_with_work(&position.latitude, work)?,
     )
 }
 
@@ -8042,6 +8042,59 @@ struct AssignedProducerProjection {
     source_ports: Vec<Option<ExactChartPoint>>,
     leaves: Vec<AssignedProducerLeaf>,
     rejections: Vec<QVariableNode>,
+}
+
+fn strict_native_bank_event(
+    axis: crate::geographic::PeriodicAxis,
+    start: &ExactRational,
+    end: &ExactRational,
+    budget: &mut impl Work,
+) -> Result<bool> {
+    let direction = start.try_cmp_with_work(end, budget)?;
+    if direction.is_eq() {
+        return Ok(false);
+    }
+    budget.charge(1)?;
+    let start_site =
+        crate::geometry::exact_arith::retained_exact_native_site_with_work(axis, start, budget)?;
+    let period = ExactRational::from_f64(axis.period());
+    let half = ExactRational::from_f64(axis.half_period());
+    let periods = start_site.periods();
+    let bank_index = if direction.is_lt() {
+        periods
+    } else {
+        let immediately_lower = periods.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+        let lower_bank = half.try_add_with_work(
+            &period.try_product_with_work(
+                &ExactRational::from_dyadic(
+                    crate::geometry::tessellation::exact::ExactDyadic::from_i64(immediately_lower),
+                ),
+                budget,
+            )?,
+            budget,
+        )?;
+        if start.try_cmp_with_work(&lower_bank, budget)?.is_eq() {
+            periods.checked_sub(2).ok_or(ResourceError::SizeOverflow)?
+        } else {
+            immediately_lower
+        }
+    };
+    let bank = half.try_add_with_work(
+        &period.try_product_with_work(
+            &ExactRational::from_dyadic(
+                crate::geometry::tessellation::exact::ExactDyadic::from_i64(bank_index),
+            ),
+            budget,
+        )?,
+        budget,
+    )?;
+    Ok(if direction.is_lt() {
+        start.try_cmp_with_work(&bank, budget)?.is_lt()
+            && bank.try_cmp_with_work(end, budget)?.is_lt()
+    } else {
+        end.try_cmp_with_work(&bank, budget)?.is_lt()
+            && bank.try_cmp_with_work(start, budget)?.is_lt()
+    })
 }
 
 pub(super) fn source_line_reuse_is_complete(
@@ -16668,7 +16721,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         port_id: QPortId,
         source_nodes: &[bool],
         producer: &AssignedProducerProjection,
-        coordinates: &QCoordinates,
         budget: &mut impl Work,
     ) -> Result<bool> {
         budget.charge(1)?;
@@ -16691,28 +16743,38 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             if assigned == &port.point {
                 return Ok(false);
             }
-            return Ok(!exact_chart_point_has_binary64_value_with_work(
-                assigned, budget,
-            )?);
+            let native_longitude = exact_canonical_longitude_with_work(
+                self.topology.sources.frame,
+                &assigned.x,
+                budget,
+            )?;
+            return Ok(
+                !exact_coordinate_has_binary64_value_with_work(&native_longitude, budget)?
+                    || !exact_coordinate_has_binary64_value_with_work(&assigned.y, budget)?,
+            );
         }
         let is_source = *source_nodes
             .get(port.node.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Native-demand Q node is unknown".into()))?;
-        let moved = coordinates.candidate(port.node)? != self.nearest.candidate(port.node)?;
-        if !is_source || moved {
-            return Ok(!exact_chart_point_has_binary64_value_with_work(
-                &port.point,
-                budget,
-            )?);
+        if is_source {
+            return Ok(false);
         }
-        Ok(false)
+        let Some(position) = self
+            .exact_positions
+            .get(port.node.0 as usize)
+            .and_then(Option::as_ref)
+        else {
+            return Ok(false);
+        };
+        Ok(!exact_node_position_has_binary64_value_with_work(
+            position, budget,
+        )?)
     }
 
     fn drawing_has_rounding_residual(
         &self,
         drawing: &QEmissionDrawing<'topology>,
         producer: &AssignedProducerProjection,
-        coordinates: &QCoordinates,
         budget: &mut impl Work,
     ) -> Result<bool> {
         let q = &self.topology.q;
@@ -16762,7 +16824,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                 vertex.port.id,
                                 &source_nodes,
                                 producer,
-                                coordinates,
                                 budget,
                             )? {
                                 return Ok(true);
@@ -16778,7 +16839,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             vertex.port.id,
                             &source_nodes,
                             producer,
-                            coordinates,
                             budget,
                         )? {
                             return Ok(true);
@@ -16793,7 +16853,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     vertex.port.id,
                     &source_nodes,
                     producer,
-                    coordinates,
                     budget,
                 )? {
                     return Ok(true);
@@ -16805,7 +16864,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 vertex.port.id,
                 &source_nodes,
                 producer,
-                coordinates,
                 budget,
             )? {
                 return Ok(true);
@@ -16827,18 +16885,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                 )
                             })?;
                         let NodeAuthority::Source(source_node) = &emission_node.authority else {
-                            let sample =
-                                self.emission.publication.samples.get(*sample).ok_or_else(
-                                    || {
-                                        GeometryErrorKind::Invalid(
-                                            "Native-demand publication sample is unknown".into(),
-                                        )
-                                    },
-                                )?;
-                            if !exact_chart_point_has_binary64_value_with_work(
-                                &sample.exact_point,
-                                budget,
-                            )? {
+                            let position = self
+                                .publication_exact_positions
+                                .get(node.0 as usize)
+                                .and_then(Option::as_ref);
+                            if let Some(position) = position
+                                && !exact_node_position_has_binary64_value_with_work(
+                                    position, budget,
+                                )?
+                            {
                                 return Ok(true);
                             }
                             continue;
@@ -16869,7 +16924,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     port_id,
                     &source_nodes,
                     producer,
-                    coordinates,
                     budget,
                 )? {
                     return Ok(true);
@@ -16877,6 +16931,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
         }
         Ok(false)
+    }
+
+    fn native_demand_after_input_port_check(
+        &self,
+        drawing: &QEmissionDrawing<'topology>,
+        producer: &AssignedProducerProjection,
+        budget: &mut impl Work,
+    ) -> Result<bool> {
+        self.drawing_has_rounding_residual(drawing, producer, budget)
     }
 
     fn actual_native_demand(
@@ -16897,14 +16960,76 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        let _source_reused = self.source_reused_recipe_ids(
+        let source_reused = self.source_reused_recipe_ids(
             drawing,
             ring_roles,
             coordinates,
             publication_coordinates,
             budget,
         )?;
-        self.drawing_has_rounding_residual(drawing, producer, coordinates, budget)
+        let axis = self.topology.sources.frame.longitude();
+        for leaf in &producer.leaves {
+            budget.charge(1)?;
+            if source_reused.contains(&leaf.recipe) {
+                continue;
+            }
+            let [start, end] = &leaf.points;
+            if strict_native_bank_event(axis, &start.x, &end.x, budget)? {
+                return self.native_demand_after_input_port_check(drawing, producer, budget);
+            }
+        }
+        if let DrawnPolygons::Regions { rings, .. } = &drawing.polygons {
+            for ring in rings {
+                budget.charge(1)?;
+                if !matches!(ring.origin, DrawnAreaOrigin::Cycle) {
+                    continue;
+                }
+                let selected_regions = self.emission.selected_regions;
+                let mut low = 0_usize;
+                let mut high = selected_regions.len();
+                while low < high {
+                    budget.charge(1)?;
+                    let middle = low + (high - low) / 2;
+                    let candidate = selected_regions.get(middle).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "generated area use has no selected-region authority".into(),
+                        )
+                    })?;
+                    if candidate.root < ring.region {
+                        low = middle.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                    } else {
+                        high = middle;
+                    }
+                }
+                let region = selected_regions
+                    .get(low)
+                    .filter(|region| region.root == ring.region)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "generated area use has no selected-region authority".into(),
+                        )
+                    })?;
+                if region.poles.includes(ChartPole::North)
+                    || region.poles.includes(ChartPole::South)
+                {
+                    return self.native_demand_after_input_port_check(drawing, producer, budget);
+                }
+                for vertex in &ring.vertices {
+                    budget.charge(1)?;
+                    if vertex.port.cut
+                        || axis
+                            .canonicalize(vertex.point.x)
+                            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+                            .identity(axis)
+                            == SeamIdentity::Seam
+                    {
+                        return self
+                            .native_demand_after_input_port_check(drawing, producer, budget);
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn materialize_native_cut_features(
@@ -21391,6 +21516,31 @@ mod canonical_coordinate_tests {
                 .is_err(),
             "a selected shell role without its planned traversal reversal must reject"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_demand_counts_only_strict_interior_bank_events() -> Result<()> {
+        let axis = GeographicFrame::crs84().longitude();
+        let exact = |value| ExactRational::from_f64(value);
+        let mut budget = EvaluationBudget::new("Native demand", 0)?;
+        for (start, end, expected) in [
+            (170.0, 180.0, false),
+            (180.0, 190.0, false),
+            (170.0, 190.0, true),
+            (190.0, 170.0, true),
+            (-180.0, -170.0, false),
+            (-190.0, -180.0, false),
+            (-190.0, -170.0, true),
+            (539.0, 541.0, true),
+            (540.0, 550.0, false),
+        ] {
+            assert_eq!(
+                strict_native_bank_event(axis, &exact(start), &exact(end), &mut budget)?,
+                expected,
+                "unexpected strict-bank result for {start} -> {end}",
+            );
+        }
         Ok(())
     }
 
