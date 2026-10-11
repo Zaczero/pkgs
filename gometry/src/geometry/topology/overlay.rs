@@ -297,21 +297,21 @@ struct WrittenQDrawing {
     family_state: Option<FeatureFamilyRegistry>,
 }
 
-fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQDrawing> {
+fn write_certified_q_emission(embedding: CertifiedQEmission) -> WrittenQDrawing {
     let family_state = embedding.family_state;
     match embedding.sealed {
-        SealedQDrawing::Source(source) => Ok(WrittenQDrawing {
+        SealedQDrawing::Source(source) => WrittenQDrawing {
             shape: source.sealed.into_shape(),
             line_traces: source.line_traces,
             family_state,
-        }),
+        },
         SealedQDrawing::Native(native) => {
             let written = write_completed_native(native);
-            Ok(WrittenQDrawing {
+            WrittenQDrawing {
                 shape: written.shape,
                 line_traces: written.line_traces,
                 family_state,
-            })
+            }
         },
     }
 }
@@ -550,7 +550,7 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
         expansion_budget,
         budget,
     )?;
-    let written = write_certified_q_emission(embedding)?;
+    let written = write_certified_q_emission(embedding);
     let line_count = match &written.shape {
         Shape::LineString(_) => 1,
         Shape::MultiLineString(lines) => lines.len(),
@@ -582,7 +582,7 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
 }
 
 fn publish_q_overlay(embedding: CertifiedQEmission) -> Result<Shape> {
-    Ok(write_certified_q_emission(embedding)?.shape)
+    Ok(write_certified_q_emission(embedding).shape)
 }
 
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
@@ -615,7 +615,7 @@ pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMe
         &mut expansion_budget,
         &mut preparation_work,
     )?;
-    Ok(write_certified_q_emission(embedding)?.shape)
+    Ok(write_certified_q_emission(embedding).shape)
 }
 
 fn boundary_cycle_line_paths(
@@ -6382,7 +6382,7 @@ mod tests {
             assert_eq!(certified_coordinates.xy(*node)?, nearest.xy(*node)?);
         }
 
-        let written = write_certified_q_emission(certified)?;
+        let written = write_certified_q_emission(certified);
         let expected = written.shape;
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
@@ -7839,7 +7839,7 @@ mod tests {
                 .is_none(),
             "the searched boundary drawing must restore the exact area face/host structure"
         );
-        let written = write_certified_q_emission(embedding)?;
+        let written = write_certified_q_emission(embedding);
         let mut line_members = 0_usize;
         let mut polygon_members = 0_usize;
         written
