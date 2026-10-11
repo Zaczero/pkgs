@@ -15,6 +15,13 @@ pub(crate) enum MeshSiteLocation {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the shared storage adapter consumes source ordinals when binding retained sites to output rows"
+    )
+)]
 pub(crate) struct PreparedMeshSite {
     pub(crate) producer_ordinal: usize,
     pub(crate) source_ordinal: usize,
@@ -99,6 +106,13 @@ impl PreparedMeshBoundaryUse {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the shared storage adapter consumes face permutations and directed uses when binding output rings"
+    )
+)]
 pub(crate) struct PreparedMeshFace {
     pub(crate) selected_face: usize,
     pub(crate) selected_sites: [usize; 3],
@@ -132,6 +146,13 @@ impl PreparedMeshFace {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the shared storage adapter consumes producer/site/face authority from the carried receipt"
+    )
+)]
 pub(crate) struct PreparedMeshPublication {
     pub(crate) producer: MeshProducer,
     pub(crate) sites: Vec<PreparedMeshSite>,
