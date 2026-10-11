@@ -1345,6 +1345,10 @@ pub(super) struct NativeMaterializedParts {
 }
 
 impl NativeMaterializedParts {
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "LiteralSequence::images is the one-to-one source map for each ring's coordinates"
+    )]
     pub(super) fn validate_literal_uses(&self) -> Result<()> {
         if self.literal_uses.points.len() != self.points.len()
             || self.literal_uses.lines.len() != self.lines.len()

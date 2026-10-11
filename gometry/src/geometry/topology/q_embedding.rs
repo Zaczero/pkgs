@@ -4897,6 +4897,10 @@ fn validate_native_materialized_candidate(
     }))
 }
 
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "NativeGraphCycle.edges stores the shell boundary; its shell field is a boolean role flag"
+)]
 fn validate_native_reference(
     reference: &NativeReference<'_>,
     budget: &mut impl Work,
@@ -8481,6 +8485,10 @@ impl PreparedProducerWitness {
         Ok(())
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "QSourceSpanRange.source_lift is copied from the referenced QSpanOwner.lift"
+    )]
     fn validate(
         &self,
         topology: &ExactGeographicTopology,
@@ -14406,6 +14414,10 @@ fn common_refine_native_edges(
     Ok(refined)
 }
 
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "NativeSourceSpanUse preserves its owner's chart lift as source_lift"
+)]
 fn validate_native_source_ranges(
     topology: &ExactGeographicTopology,
     selected_face_roots: &[Option<usize>],
