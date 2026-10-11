@@ -598,8 +598,11 @@ def test_reciprocal_delaunay_uses_the_source_incircle_sign(
 
 def test_geographic_delaunay_uses_the_retained_site_chart() -> None:
     sites = [(170.0, 0.0), (-170.0, 0.0), (-170.0, 10.0), (170.0, 8.0)]
-    expected = frozenset((sites[1], sites[3]))
-    rejected = frozenset((sites[0], sites[2]))
+    source_vertices = set(sites)
+    expected_faces = {
+        frozenset((sites[0], sites[1], sites[3])),
+        frozenset((sites[1], sites[2], sites[3])),
+    }
 
     for source in (
         gm.MultiPoint(sites, crs=4326),
@@ -608,9 +611,16 @@ def test_geographic_delaunay_uses_the_retained_site_chart() -> None:
         scalar = source.triangulate(method='delaunay')
         packed = gm.GeometryArray([source]).triangulate(method='delaunay')[0]
         for triangles in (scalar, packed):
-            edges = _triangle_edges(triangles)
-            assert expected in edges
-            assert rejected not in edges
+            selected_faces = set()
+            for triangle in triangles:
+                corners = {
+                    tuple(coordinate[:2])
+                    for coordinate in triangle.exterior.coords
+                    if tuple(coordinate[:2]) in source_vertices
+                }
+                assert len(corners) == 3
+                selected_faces.add(frozenset(corners))
+            assert selected_faces == expected_faces
 
 
 @pytest.mark.parametrize('swap_axes', [False, True])
