@@ -1407,7 +1407,7 @@ pub(super) fn materialize_native_parts(
     ordinates: &[NodeOrdinates],
     axes: CoordinateAxes,
     line_traces: &[TracedLine],
-    budget: &mut EvaluationBudget,
+    budget: &mut impl Work,
 ) -> Result<NativeMaterializedParts> {
     if line_traces.len() != plan.lines.len() {
         return Err(GeometryErrorKind::Invalid(
@@ -1438,7 +1438,7 @@ pub(super) fn materialize_native_parts(
         let walk = native_chord_points(plan, sites, ordinates, chords, axes, false, budget)?;
         budget
             .charge(u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-        lines.push(CoordSeq::try_from_points(&walk.points)?);
+        lines.push(CoordSeq::try_from_points_with_work(&walk.points, budget)?);
         line_uses.push(LiteralSequence {
             output: u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
             axes,
@@ -1456,7 +1456,10 @@ pub(super) fn materialize_native_parts(
         budget.charge(
             u64::try_from(shell_walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell_walk.points)?)?;
+        let shell = Ring::try_from_closed(CoordSeq::try_from_points_with_work(
+            &shell_walk.points,
+            budget,
+        )?)?;
         budget.charge(u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut holes = Vec::with_capacity(part.holes.len());
         budget.charge(u64::try_from(part.holes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
@@ -1466,8 +1469,9 @@ pub(super) fn materialize_native_parts(
             budget.charge(
                 u64::try_from(walk.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
-            holes.push(Ring::try_from_closed(CoordSeq::try_from_points(
+            holes.push(Ring::try_from_closed(CoordSeq::try_from_points_with_work(
                 &walk.points,
+                budget,
             )?)?);
             hole_uses.push(LiteralSequence {
                 output,
@@ -1650,7 +1654,7 @@ fn native_chord_points(
     chords: &[EmissionChordId],
     axes: CoordinateAxes,
     closed: bool,
-    budget: &mut EvaluationBudget,
+    budget: &mut impl Work,
 ) -> Result<NativeChordPoints> {
     let Some(&first_id) = chords.first() else {
         return Err(GeometryErrorKind::Invalid("native emission walk is empty".into()).into());
@@ -1700,6 +1704,7 @@ fn native_chord_points(
             )
             .into());
         }
+        budget.charge(1)?;
         let first = *points.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("native polygon part has no first record".into())
         })?;
@@ -3972,6 +3977,39 @@ mod tests {
     };
     use crate::geometry::ordinates::source_ordinate_values_at_fraction;
 
+    struct RecordingWork {
+        budget: EvaluationBudget,
+        attempted: Vec<u64>,
+        accepted: Vec<u64>,
+    }
+
+    impl RecordingWork {
+        fn with_remaining(operation: &'static str, remaining_ticks: u128) -> Result<Self> {
+            Ok(Self {
+                budget: EvaluationBudget::with_remaining_ticks_for_test(
+                    operation,
+                    1,
+                    remaining_ticks,
+                )?,
+                attempted: Vec::new(),
+                accepted: Vec::new(),
+            })
+        }
+
+        fn accepted_ticks(&self) -> u128 {
+            self.accepted.iter().map(|&ticks| u128::from(ticks)).sum()
+        }
+    }
+
+    impl Work for RecordingWork {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            self.attempted.push(ticks);
+            self.budget.charge(ticks)?;
+            self.accepted.push(ticks);
+            Ok(())
+        }
+    }
+
     fn pending_source_range(
         source_edge: u32,
         longitude_start: f64,
@@ -4004,6 +4042,162 @@ mod tests {
         let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
+    }
+
+    fn materialize_test_line(
+        axes: CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        materialize_test_drawing(axes, false, work)
+    }
+
+    fn materialize_test_ring(
+        axes: CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        materialize_test_drawing(axes, true, work)
+    }
+
+    fn materialize_test_drawing(
+        axes: CoordinateAxes,
+        closed: bool,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        let source = crate::io::parse_wkt("LINESTRING (0 0, 1 0)")?;
+        let topology = endpoint_test_topology(std::slice::from_ref(&source))?;
+        let [start_port, end_port] = topology
+            .q
+            .source_edge_ports
+            .first()
+            .copied()
+            .ok_or_else(|| GeometryErrorKind::Invalid("test source edge is missing".into()))?;
+        let start_node = topology
+            .q
+            .ports
+            .get(start_port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test start port is missing".into()))?
+            .node;
+        let end_node = topology
+            .q
+            .ports
+            .get(end_port.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test end port is missing".into()))?
+            .node;
+        let mut setup_work = Unmetered;
+        let node_registry = EmissionNodeRegistry::with_sources(
+            &topology,
+            &[start_node, end_node],
+            &mut setup_work,
+        )?;
+        let start_emission_node = node_registry.source_node(start_node)?;
+        let end_emission_node = node_registry.source_node(end_node)?;
+        let frame = topology.sources.frame;
+        let make_site = |longitude: f64, latitude: f64| -> Result<AssignedSite> {
+            let longitude = frame
+                .longitude()
+                .canonicalize(longitude)
+                .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+            Ok(AssignedSite {
+                longitude: crate::geographic::RetainedLongitudeSite::new(longitude, 0),
+                latitude,
+            })
+        };
+        let mut sites = vec![None; node_registry.nodes().len()];
+        *sites
+            .get_mut(start_emission_node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test start site is missing".into()))? =
+            Some(make_site(0.0, 0.0)?);
+        *sites
+            .get_mut(end_emission_node.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("test end site is missing".into()))? =
+            Some(make_site(1.0, 0.0)?);
+        let sites = sites
+            .into_iter()
+            .map(|site| {
+                site.ok_or_else(|| GeometryErrorKind::Invalid("test site is missing".into()).into())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let ports = vec![
+            EmissionPort {
+                node: start_emission_node,
+                position: PortPosition::Source {
+                    spelling: PortSpelling::Interior { periods: 0 },
+                },
+                source_record: Some(Point::new_raw_xy(0.0, 0.0)),
+                occurrence_range: 0..0,
+            },
+            EmissionPort {
+                node: end_emission_node,
+                position: PortPosition::Source {
+                    spelling: PortSpelling::Interior { periods: 0 },
+                },
+                source_record: Some(Point::new_raw_xy(1.0, 0.0)),
+                occurrence_range: 0..0,
+            },
+        ];
+        let mut ordinates = vec![NodeOrdinates::default(); ports.len()];
+        for (index, (z, m)) in [(1.25, 2.5), (3.75, 4.5)].into_iter().enumerate() {
+            let row = ordinates
+                .get_mut(index)
+                .ok_or_else(|| GeometryErrorKind::Invalid("test ordinate row is missing".into()))?;
+            row.z.observe(Some(z));
+            row.m.observe(Some(m));
+        }
+        let chords = if closed {
+            vec![
+                EmissionChord {
+                    ports: [EmissionPortId(0), EmissionPortId(1)],
+                    recipe: None,
+                },
+                EmissionChord {
+                    ports: [EmissionPortId(1), EmissionPortId(0)],
+                    recipe: None,
+                },
+            ]
+        } else {
+            vec![EmissionChord {
+                ports: [EmissionPortId(0), EmissionPortId(1)],
+                recipe: None,
+            }]
+        };
+        let parts = if closed {
+            vec![EmissionPart {
+                region: 0,
+                face: NativeFaceId(0),
+                shell: vec![
+                    EmissionChordId(0),
+                    EmissionChordId(1),
+                    EmissionChordId(0),
+                    EmissionChordId(1),
+                ],
+                holes: Vec::new(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let plan = ExpandedEmissionPlan {
+            topology: &topology,
+            selected_face_roots: Vec::new(),
+            node_registry,
+            ports,
+            occurrences: Vec::new(),
+            chords,
+            parts,
+            lines: if closed {
+                Vec::new()
+            } else {
+                vec![vec![EmissionChordId(0)]]
+            },
+            points: Vec::new(),
+            whole_sphere: false,
+        };
+        let trace = SourceTrace::from_edge_rows([Vec::new()], &mut setup_work)?;
+        let line_traces = if closed {
+            Vec::new()
+        } else {
+            vec![TracedLine { member: 0, trace }]
+        };
+        materialize_native_parts(&plan, &sites, &ordinates, axes, &line_traces, work)
     }
 
     fn resolve_native_root_occurrences<M: ChartMetric>(
@@ -5566,6 +5760,132 @@ mod tests {
             [30, 20],
         );
         assert!(ordered.polygons.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn native_materialization_refuses_before_active_column_reservation() -> Result<()> {
+        let mut work = RecordingWork::with_remaining("native columns", 11)?;
+        let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
+        let Err(error) = result else {
+            return Err(GeometryErrorKind::Invalid(
+                "Native materialization completed without funding its active columns".into(),
+            )
+            .into());
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "native columns",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(work.accepted_ticks(), 11);
+        assert_eq!(work.attempted.last(), Some(&2));
+        Ok(())
+    }
+
+    #[test]
+    fn native_materialization_refuses_before_each_active_column_phase() -> Result<()> {
+        for remaining_ticks in [11, 19, 27] {
+            let mut work = RecordingWork::with_remaining("native columns", remaining_ticks)?;
+            let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
+            let Err(error) = result else {
+                return Err(GeometryErrorKind::Invalid(
+                    "Native materialization passed an unfunded column phase".into(),
+                )
+                .into());
+            };
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                    operation: "native columns",
+                    constructed: 1,
+                    ..
+                })
+            ));
+            assert_eq!(work.accepted_ticks(), remaining_ticks);
+            assert_eq!(work.attempted.last(), Some(&2));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_materialization_charges_only_the_active_columns() -> Result<()> {
+        let mut xy_work = RecordingWork::with_remaining("native columns", 128)?;
+        let xy = materialize_test_line(CoordinateAxes::XY, &mut xy_work)?;
+        let mut xyzm_work = RecordingWork::with_remaining("native columns", 128)?;
+        let xyzm = materialize_test_line(CoordinateAxes::XYZM, &mut xyzm_work)?;
+
+        assert_eq!(
+            xyzm_work.accepted_ticks() - xy_work.accepted_ticks(),
+            12,
+            "two extra columns each reserve, copy, and check two coordinate rows"
+        );
+        let xy_line = xy
+            .lines
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY line is missing".into()))?;
+        let xyzm_line = xyzm.lines.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XYZM line is missing".into())
+        })?;
+        assert_eq!(xy_line.xs(), xyzm_line.xs());
+        assert_eq!(xy_line.ys(), xyzm_line.ys());
+        assert_eq!(xyzm_line.zs(), Some(&[1.25, 3.75][..]));
+        assert_eq!(xyzm_line.ms(), Some(&[2.5, 4.5][..]));
+        Ok(())
+    }
+
+    #[test]
+    fn native_materialization_funds_the_complete_closing_xyzm_record() -> Result<()> {
+        let mut limited = RecordingWork::with_remaining("native columns", 17)?;
+        let result = materialize_test_ring(CoordinateAxes::XYZM, &mut limited);
+        let Err(error) = result else {
+            return Err(GeometryErrorKind::Invalid(
+                "Native ring materialization passed an unfunded closing-record write".into(),
+            )
+            .into());
+        };
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "native columns",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(limited.accepted_ticks(), 17);
+        assert_eq!(limited.attempted.last(), Some(&1));
+
+        let mut funded = RecordingWork::with_remaining("native columns", 128)?;
+        let parts = materialize_test_ring(CoordinateAxes::XYZM, &mut funded)?;
+        let ring = parts
+            .polygons
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized ring is missing".into()))?
+            .shell
+            .coords();
+        let first = ring.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized first record is missing".into())
+        })?;
+        let last = ring.last().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized closing record is missing".into())
+        })?;
+        assert_eq!(
+            [
+                first.x.to_bits(),
+                first.y.to_bits(),
+                first.z.to_bits(),
+                first.m.to_bits()
+            ],
+            [
+                last.x.to_bits(),
+                last.y.to_bits(),
+                last.z.to_bits(),
+                last.m.to_bits()
+            ],
+        );
         Ok(())
     }
 
