@@ -121,6 +121,8 @@ pub enum GeometryErrorKind {
         "exact geometry embedding failed: unprescribed contact between emitted items {first} and {second}"
     )]
     ExactUnexpectedContact { first: usize, second: usize },
+    #[error("native producer assignment does not realize a known Q-span incidence")]
+    NativeRefinementMismatch,
     #[error("exact geometry embedding failed: cyclic order changed at node {node}")]
     ExactCyclicOrder { node: u32 },
     #[error("exact geometry embedding failed: global face changed at node {node}")]
