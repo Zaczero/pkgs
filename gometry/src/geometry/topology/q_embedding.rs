@@ -21664,7 +21664,7 @@ mod canonical_coordinate_tests {
         let mut work = crate::geometry::Unmetered;
         let mut nodes = EmissionNodeRegistry::with_sources(&topology, &[], &mut work)?;
         let node = nodes.intern_computed(frame, exact.clone(), &mut work)?;
-        let publication = PublicationInventory {
+        let mut publication = PublicationInventory {
             fragments: Vec::new(),
             samples: vec![super::super::emission::PublishedSample {
                 request_row: crate::geometry::ordinates::RequestRowId::from_index(0)?,
@@ -21735,6 +21735,229 @@ mod canonical_coordinate_tests {
             Some((0, 0))
         );
         assert_eq!(states.len(), 1);
+
+        publication
+            .samples
+            .get_mut(0)
+            .ok_or_else(|| GeometryErrorKind::Invalid("published sample is missing".into()))?
+            .published_chart_point
+            .y = ExactRational::from_f64(1.0_f64.next_up());
+        let error = published_domains(&topology, &publication, &nodes, &[node], &mut budget)
+            .err()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "one-ULP wrong assigned Y must reject its frozen publication image".into(),
+                )
+            })?;
+        assert!(
+            error
+                .to_string()
+                .contains("published nearest image differs from its exact source reference"),
+            "wrong assigned-Y rejection came from an unexpected owner: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checked_publication_samples_reject_an_omitted_leaf_occurrence() -> Result<()> {
+        let line = crate::io::parse_wkt("LINESTRING (0 0, 360 10)")?;
+        let topology = topology(&[line])?;
+        let mut budget = EvaluationBudget::new("omitted publication sample", 0)?;
+        let plan = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+        let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
+        let publication = plan.fragment_recipes.publish(
+            &topology,
+            &nearest,
+            OverlayOp::Union.name(),
+            &mut budget,
+        )?;
+        assert!(
+            !publication.samples.is_empty(),
+            "the full-turn fixture must publish at least one checked sample"
+        );
+        let source_points = vec![None; topology.sources.points.len()];
+        let emission =
+            plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+        let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+        let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
+            None;
+        let mut problem = QEmbeddingProblem::new(
+            &topology,
+            &emission,
+            &nearest,
+            &ordinates,
+            crate::geometry::CoordinateAxes::XY,
+            false,
+            "omitted publication sample",
+            metric_access,
+            &mut budget,
+        )?;
+
+        let omitted_sample = 0;
+        let original_chord_count = problem.publication_chords.len();
+        problem.publication_chords.retain(|chord| {
+            !chord
+                .endpoints
+                .iter()
+                .any(|endpoint| publication_sample_index(endpoint) == Some(omitted_sample))
+        });
+        assert!(
+            problem.publication_chords.len() < original_chord_count,
+            "the omitted sample must have producer-leaf occurrences"
+        );
+        let producer = AssignedProducerProjection {
+            source_ports: Vec::new(),
+            leaves: problem
+                .publication_chords
+                .iter()
+                .map(|chord| AssignedProducerLeaf {
+                    recipe: chord.recipe,
+                    trace_edge: chord.trace_edge,
+                    points: chord.exact.clone(),
+                })
+                .collect(),
+            rejections: Vec::new(),
+        };
+        let error = problem
+            .checked_publication_sample_images(&producer, &mut budget)
+            .err()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "every publication occurrence must have a checked leaf image".into(),
+                )
+            })?;
+        assert!(
+            error
+                .to_string()
+                .contains("publication sample has no checked source-port or leaf image"),
+            "omitted-sample rejection came from an unexpected owner: {error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_literal_readback_rejects_a_post_pass_published_port_mutation() -> Result<()> {
+        use super::super::emission::{
+            EmissionBuilder, FeatureFamily, FeatureFamilyParent, FragmentRecipeId, NativePortData,
+            OccurrenceSource, PortSpelling, PublishedSample, SampleProducerKind, VertexOrigin,
+            native_port_point,
+        };
+        use crate::geometry::ordinates::RequestRowId;
+
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("native literal readback", 0)?;
+        let selected = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+        let exact = ExactChartPoint::from_rationals(
+            ExactRational::from_f64(10.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
+            ExactRational::from_f64(1.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
+        );
+        let sample = PublishedSample {
+            request_row: RequestRowId::from_index(0)?,
+            family: FeatureFamily {
+                parent: FeatureFamilyParent::Fragment(FragmentRecipeId(0)),
+                producer: SampleProducerKind::Publication,
+                occurrence: 0,
+            },
+            parameter: ExactRational::from_f64(0.5),
+            written_vertex: 1,
+            point: Point::new_raw_xy(10.0, 1.0),
+            exact_point: exact.clone(),
+            published_chart_point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(10.0),
+                ExactRational::from_f64(1.0),
+            ),
+            source_trace: None,
+            endpoint_only: false,
+        };
+        let mut builder = EmissionBuilder::new(&topology, &selected, &[], false, &mut budget)?;
+        let sample_nodes = builder.reserve_publication_nodes(&[sample], &mut budget)?;
+        let sample_node = *sample_nodes.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("Native literal fixture has no sample node".into())
+        })?;
+        let assigned = QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        };
+        let assigned_point =
+            candidate_chart_point_with_work(topology.sources.frame, assigned, &mut budget)?;
+        let port_data = NativePortData {
+            node: sample_node,
+            point: assigned_point.clone(),
+            spelling: PortSpelling::Interior { periods: 0 },
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::SourceSample,
+                source_trace: None,
+            }],
+        };
+        let port_id = builder.port(port_data.clone())?;
+        let plan = builder.finish();
+        let graph_builder = new_native_reference_graph_builder(&[], &[port_data], &mut budget)?;
+        let graph = graph_builder.finish(topology.sources.frame, &mut budget)?;
+        let dimension =
+            admit_logical_layout(&graph.common, Vec::new(), Some(&graph.faces), &mut budget)?;
+        let vertex = graph.local_vertex(
+            native_emission_port_key(
+                plan.ports
+                    .get(port_id.0 as usize)
+                    .ok_or_else(|| GeometryErrorKind::Invalid("sample port is unknown".into()))?,
+            ),
+            &mut budget,
+        )?;
+        let reference = NativeReference {
+            plan,
+            dimension,
+            port_vertices: vec![vertex],
+            sites: vec![Some(assigned_emission_site(
+                topology.sources.frame,
+                assigned,
+            )?)],
+            feature_nodes: Vec::new(),
+            publication_sample_nodes: vec![sample_node],
+            line_traces: Vec::new(),
+            literal_chord_uses: Vec::new(),
+            line_graph_edges: Vec::new(),
+            area_edges: Vec::new(),
+            pole_sectors: Vec::new(),
+            graph,
+        };
+        let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
+        let ordinates = [NodeOrdinates::default()];
+        let mut record = native_port_point(
+            &reference.plan,
+            &sites,
+            &ordinates,
+            port_id,
+            crate::geometry::CoordinateAxes::XY,
+        )?;
+        record.y = record.y.next_up();
+        let mut exact_points = reference.graph.points.exact.clone();
+        exact_points
+            .get_mut(vertex as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("published vertex is unknown".into()))?
+            .y = ExactRational::from_f64(record.y);
+        let candidate_points = NativeReferencePoints::from_exact(exact_points, &mut budget)?;
+        let mut chart = NativeLiteralChart {
+            reference: &reference,
+            sites: &sites,
+            ordinates: &ordinates,
+            points: &candidate_points,
+            port_records: vec![None; reference.plan.ports.len()],
+        };
+
+        assert!(
+            chart
+                .read_point(
+                    0,
+                    port_id,
+                    record,
+                    crate::geometry::CoordinateAxes::XY,
+                    crate::geometry::CoordinateAxes::XY,
+                    &mut budget,
+                )?
+                .is_none(),
+            "final Native literal binding must reject a post-Pass endpoint mutation"
+        );
         Ok(())
     }
 

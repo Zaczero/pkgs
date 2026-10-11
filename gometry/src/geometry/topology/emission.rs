@@ -4289,7 +4289,7 @@ mod tests {
     }
 
     #[test]
-    fn native_vertex_merge_rejects_nonperiodic_or_wrong_latitude_aliases() -> Result<()> {
+    fn native_vertex_merge_rejects_nonperiodic_longitude_aliases() -> Result<()> {
         let frame = GeographicFrame::crs84();
         let point = |x, y| {
             ExactChartPoint::from_rationals(ExactRational::from_f64(x), ExactRational::from_f64(y))
@@ -4305,19 +4305,6 @@ mod tests {
         let mut work = Unmetered;
 
         assert!(
-            merge_native_port_data(frame, &left, &alias(point(190.0, 20.0), 1), &mut work).is_ok()
-        );
-        assert!(
-            merge_native_port_data(
-                frame,
-                &left,
-                &alias(point(190.0, f64::from_bits(20.0_f64.to_bits() + 1)), 1),
-                &mut work,
-            )
-            .is_err(),
-            "one-ULP latitude differences are not one assigned source image"
-        );
-        assert!(
             merge_native_port_data(frame, &left, &alias(point(190.25, 20.0), 1), &mut work)
                 .is_err(),
             "equal node IDs do not admit nonperiodic longitude differences"
@@ -4325,6 +4312,30 @@ mod tests {
         assert!(
             merge_native_port_data(frame, &left, &alias(point(190.0, 20.0), 0), &mut work).is_err(),
             "one chart spelling cannot name two exact periodic lifts"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_vertex_merge_rejects_mismatched_admitted_latitudes() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let point = |x, y| {
+            ExactChartPoint::from_rationals(ExactRational::from_f64(x), ExactRational::from_f64(y))
+        };
+        let alias = |point, periods| NativePortData {
+            node: EmissionNodeId(3),
+            point,
+            spelling: PortSpelling::Interior { periods },
+            source_record: None,
+            occurrences: Vec::new(),
+        };
+        let left = alias(point(-170.0, 20.0), 0);
+        let right = alias(point(190.0, 20.0_f64.next_up()), 1);
+        let mut work = Unmetered;
+
+        assert!(
+            merge_native_port_data(frame, &left, &right, &mut work).is_err(),
+            "one-ULP admitted latitude differences are not one assigned source image"
         );
         Ok(())
     }
