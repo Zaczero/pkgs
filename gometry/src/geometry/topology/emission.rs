@@ -4061,19 +4061,27 @@ mod tests {
         axes: CoordinateAxes,
         work: &mut impl Work,
     ) -> Result<NativeMaterializedParts> {
-        materialize_test_drawing(axes, false, work)
+        materialize_test_drawing(axes, false, false, work)
     }
 
     fn materialize_test_ring(
         axes: CoordinateAxes,
         work: &mut impl Work,
     ) -> Result<NativeMaterializedParts> {
-        materialize_test_drawing(axes, true, work)
+        materialize_test_drawing(axes, true, false, work)
+    }
+
+    fn materialize_test_ring_with_hole(
+        axes: CoordinateAxes,
+        work: &mut impl Work,
+    ) -> Result<NativeMaterializedParts> {
+        materialize_test_drawing(axes, true, true, work)
     }
 
     fn materialize_test_drawing(
         axes: CoordinateAxes,
         closed: bool,
+        with_hole: bool,
         work: &mut impl Work,
     ) -> Result<NativeMaterializedParts> {
         let source = crate::io::parse_wkt("LINESTRING (0 0, 1 0)")?;
@@ -4183,7 +4191,16 @@ mod tests {
                     EmissionChordId(0),
                     EmissionChordId(1),
                 ],
-                holes: Vec::new(),
+                holes: if with_hole {
+                    vec![vec![
+                        EmissionChordId(0),
+                        EmissionChordId(1),
+                        EmissionChordId(0),
+                        EmissionChordId(1),
+                    ]]
+                } else {
+                    Vec::new()
+                },
             }]
         } else {
             Vec::new()
@@ -5931,6 +5948,56 @@ mod tests {
         assert_eq!(xy_line.ys(), xyzm_line.ys());
         assert_eq!(xyzm_line.zs(), Some(&[1.25, 3.75][..]));
         assert_eq!(xyzm_line.ms(), Some(&[2.5, 4.5][..]));
+
+        let mut xy_ring_work = RecordingWork::with_remaining("native columns", 256)?;
+        let xy_ring = materialize_test_ring_with_hole(CoordinateAxes::XY, &mut xy_ring_work)?;
+        let mut xyzm_ring_work = RecordingWork::with_remaining("native columns", 256)?;
+        let xyzm_ring = materialize_test_ring_with_hole(CoordinateAxes::XYZM, &mut xyzm_ring_work)?;
+        assert_eq!(
+            xyzm_ring_work.accepted_ticks() - xy_ring_work.accepted_ticks(),
+            60,
+            "two extra columns are reserved, copied and checked for both five-row rings"
+        );
+        let xy_polygon = xy_ring.polygons.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XY polygon is missing".into())
+        })?;
+        let xyzm_polygon = xyzm_ring.polygons.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XYZM polygon is missing".into())
+        })?;
+        assert_eq!(xy_polygon.holes.len(), 1);
+        assert_eq!(
+            xy_polygon.shell.coords().xs(),
+            xyzm_polygon.shell.coords().xs()
+        );
+        assert_eq!(
+            xy_polygon.shell.coords().ys(),
+            xyzm_polygon.shell.coords().ys()
+        );
+        assert_eq!(
+            xyzm_polygon.shell.coords().zs(),
+            Some(&[1.25, 3.75, 1.25, 3.75, 1.25][..])
+        );
+        assert_eq!(
+            xyzm_polygon.shell.coords().ms(),
+            Some(&[2.5, 4.5, 2.5, 4.5, 2.5][..])
+        );
+        let xy_hole = xy_polygon
+            .holes
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("materialized XY hole is missing".into()))?;
+        let xyzm_hole = xyzm_polygon.holes.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("materialized XYZM hole is missing".into())
+        })?;
+        assert_eq!(xy_hole.coords().xs(), xyzm_hole.coords().xs());
+        assert_eq!(xy_hole.coords().ys(), xyzm_hole.coords().ys());
+        assert_eq!(
+            xyzm_hole.coords().zs(),
+            Some(&[1.25, 3.75, 1.25, 3.75, 1.25][..])
+        );
+        assert_eq!(
+            xyzm_hole.coords().ms(),
+            Some(&[2.5, 4.5, 2.5, 4.5, 2.5][..])
+        );
         Ok(())
     }
 
