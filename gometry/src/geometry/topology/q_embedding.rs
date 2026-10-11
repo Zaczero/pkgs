@@ -14436,10 +14436,7 @@ fn validate_native_source_ranges(
         let owners = trace.owners_for_edge(trace_edge)?;
         let mut interval_cursor = ExactRational::zero();
         let mut found = false;
-        loop {
-            let Some(edge) = producer_edges.get(edge_cursor) else {
-                break;
-            };
+        while let Some(edge) = producer_edges.get(edge_cursor) {
             let NativeAreaEdgeKind::Producer {
                 recipe: edge_recipe,
                 trace_edge: edge_trace,
