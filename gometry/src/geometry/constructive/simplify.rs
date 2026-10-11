@@ -783,9 +783,23 @@ struct TracedLineReconstruction {
     declared_axes: crate::geometry::CoordinateAxes,
 }
 
-pub(crate) struct NativeSubdivisionContext<'a> {
+#[derive(Clone, Copy)]
+enum SubdivisionPath {
+    Ordinary,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Task 430/R11 keeps NativePrepared test-only until recursive family projection is supplied"
+        )
+    )]
+    NativePrepared,
+}
+
+struct NativeSubdivisionContext<'a> {
     original: &'a Shape,
     frame: Option<GeographicFrame>,
+    path: SubdivisionPath,
     topology: Option<crate::geometry::ExactGeographicTopology>,
     budget: Option<crate::geometry::embedding_search::EvaluationBudget>,
     prepared: BTreeMap<usize, PreparedNativeLine>,
@@ -796,10 +810,15 @@ pub(crate) struct NativeSubdivisionContext<'a> {
 }
 
 impl<'a> NativeSubdivisionContext<'a> {
-    pub(crate) const fn new(original: &'a Shape, frame: Option<GeographicFrame>) -> Self {
+    const fn new(
+        original: &'a Shape,
+        frame: Option<GeographicFrame>,
+        path: SubdivisionPath,
+    ) -> Self {
         Self {
             original,
             frame,
+            path,
             topology: None,
             budget: None,
             prepared: BTreeMap::new(),
@@ -1224,7 +1243,9 @@ pub(crate) fn split<M: crate::geometry::ChartMetric>(
         crate::geometry::TopologyDomain::Cartesian => None,
         crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
     };
-    let mut native = NativeSubdivisionContext::new(&original, frame);
+    // Recursive Native children need a producer-to-family projection that
+    // this public subdivision entry point does not carry.
+    let mut native = NativeSubdivisionContext::new(&original, frame, SubdivisionPath::Ordinary);
     split_with_context(shape, max_vertices, drop, context, &mut native, out, budget)
 }
 
@@ -1276,7 +1297,8 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
             staged.push(item);
             continue;
         }
-        if max_vertices >= 2
+        if matches!(native.path, SubdivisionPath::NativePrepared)
+            && max_vertices >= 2
             && item.traces.is_none()
             && let (Some(frame), Some(line_members)) =
                 (native.frame, item.source_line_members.clone())
@@ -3081,6 +3103,33 @@ mod subdivision_tests {
     }
 
     #[test]
+    fn geographic_adjacent_binary64_line_keeps_the_no_cut_fallback() {
+        let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
+        let points = (0..9)
+            .map(|index| Point::new_raw_xy(if index % 2 == 0 { 1.0 } else { adjacent }, 0.0))
+            .collect::<Vec<_>>();
+        let shape = line_shape(&points);
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            None,
+        );
+
+        reset_partition_calls();
+        let parts = shape
+            .subdivide_with_context(8, false, &context)
+            .expect("adjacent binary64 coordinates use the source-vertex fallback");
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(partition_calls(), 0);
+        let mut counts = ShapeCountQuery::default();
+        assert!(parts.iter().all(|part| {
+            counts
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 8)
+        }));
+    }
+
+    #[test]
     fn recursive_subdivision_keeps_each_child_count_with_its_shape() {
         let mut points = (0..32)
             .map(|index| {
@@ -3288,7 +3337,11 @@ mod subdivision_tests {
         for depth in [4, 8, 16] {
             let shared = shared_repeated_lines(depth);
             let expanded = expand_collection_owners(&shared);
-            let native = NativeSubdivisionContext::new(&shared, Some(frame));
+            let native = NativeSubdivisionContext::new(
+                &shared,
+                Some(frame),
+                SubdivisionPath::NativePrepared,
+            );
             let mut memo = SourceLineMemberCountMemo::default();
             reset_source_line_member_count_calls();
             let total = if native.frame.is_some() {

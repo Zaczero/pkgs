@@ -60,6 +60,21 @@ mod metrics;
 mod rays;
 mod relate;
 
+#[cfg(test)]
+thread_local! {
+    static SOURCE_LINE_RUNS_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_source_line_runs_calls() {
+    SOURCE_LINE_RUNS_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn source_line_runs_calls() -> usize {
+    SOURCE_LINE_RUNS_CALLS.with(Cell::get)
+}
+
 pub(in crate::geometry) use construction::Forest as ExactPointForest;
 use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
@@ -2655,6 +2670,10 @@ impl ExactSourceInventory {
         source_traces: &[crate::geometry::topology::SourceTrace],
         work: &mut W,
     ) -> Result<Vec<SourceLineRun>> {
+        #[cfg(test)]
+        SOURCE_LINE_RUNS_CALLS.with(|calls| {
+            calls.set(calls.get().saturating_add(1));
+        });
         if source_traces.len() != ranges.len() {
             return Err(GeometryErrorKind::Invalid(
                 "source trace rows do not match the line members".into(),
