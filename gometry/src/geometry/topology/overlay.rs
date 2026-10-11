@@ -3468,8 +3468,7 @@ fn write_source_path(
             .into());
         },
     };
-    let mut rotated_fragments = None;
-    if let Some(walk) = walk
+    let rotated_fragments = if let Some(walk) = walk
         && recipe_rotation != 0
     {
         if recipe_rotation >= walk.fragments.len() {
@@ -3482,8 +3481,10 @@ fn write_source_path(
         work.charge(u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut fragments = walk.fragments.clone();
         fragments.rotate_left(recipe_rotation);
-        rotated_fragments = Some(fragments);
-    }
+        Some(fragments)
+    } else {
+        None
+    };
     let walk_fragments = match walk {
         Some(walk) => rotated_fragments.as_deref().unwrap_or(&walk.fragments),
         None => &[],
