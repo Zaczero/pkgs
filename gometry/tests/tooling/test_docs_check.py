@@ -574,6 +574,10 @@ def test_built_form_audit_detects_missing_reordered_and_changed_forms() -> None:
 
 
 def test_source_form_oracle_matches_real_constructor_and_function_output() -> None:
+    pytest.importorskip(
+        'tree_sitter_rust',
+        reason='tree-sitter-rust==0.24.2 has no CPython 3.14t wheel',
+    )
     check = _check()
     site_contracts = load_tool('site_contracts')
     model = load_tool(
