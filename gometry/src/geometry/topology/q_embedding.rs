@@ -6298,6 +6298,21 @@ where
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "geographic build-area consumes exact cycle roles after F4 routing lands"
+    )
+)]
+pub(super) fn exact_q_ring_role_for_linework(
+    frame: GeographicFrame,
+    exact_ports: &[ExactChartPoint],
+    work: &mut impl Work,
+) -> Result<bool> {
+    exact_q_ring_role_with_work(frame, exact_ports.iter(), work)
+}
+
 pub(super) fn quotient_ring_role(frame: GeographicFrame, ring: &Ring) -> Result<Option<bool>> {
     let axis = frame.longitude();
     if ring
