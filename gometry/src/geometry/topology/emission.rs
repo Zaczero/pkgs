@@ -1310,29 +1310,10 @@ pub(super) fn native_literal_uses_in_output_order(
         )
         .into());
     }
-    let line_traces = reorder_literal_rows(line_traces, &order.lines, work)?;
+    let line_traces =
+        crate::geometry::embedding_completion::reorder_rows(line_traces, &order.lines, work)?;
     let literal_uses = literal_uses.in_output_order(order, work)?;
     Ok((literal_uses, line_traces))
-}
-
-fn reorder_literal_rows<T>(rows: Vec<T>, order: &[usize], work: &mut impl Work) -> Result<Vec<T>> {
-    if rows.len() != order.len() {
-        return Err(GeometryErrorKind::Invalid("literal output order omits a row".into()).into());
-    }
-    work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut rows = rows.into_iter().map(Some).collect::<Vec<_>>();
-    work.charge(u64::try_from(order.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut output = Vec::with_capacity(order.len());
-    for &index in order {
-        work.charge(1)?;
-        let slot = rows.get_mut(index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("literal output order references an unknown row".into())
-        })?;
-        output.push(slot.take().ok_or_else(|| {
-            GeometryErrorKind::Invalid("literal output order repeats a row".into())
-        })?);
-    }
-    Ok(output)
 }
 
 pub(super) struct NativeMaterializedParts {
