@@ -15,9 +15,10 @@ use super::exact::{
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use super::q_embedding::{
-    EmittedNodeKey, EmittedVertex, QCoordinates, QEmbeddingEmission, build_cut_node_ports,
-    canonical_bits, certify_and_search_q_embedding, certify_nearest_ring_roles, emitted_node_key,
-    for_each_q_cycle_vertex, node_injectivity_collisions_with_work, source_ring_emitted_vertices,
+    EmittedNodeKey, EmittedVertex, QCoordinates, QEmbeddingCertification, QEmbeddingEmission,
+    build_cut_node_ports, canonical_bits, certify_and_search_q_embedding,
+    certify_nearest_ring_roles, emitted_node_key, for_each_q_cycle_vertex,
+    node_injectivity_collisions_with_work, source_ring_emitted_vertices,
 };
 #[cfg(test)]
 use super::q_embedding::{
@@ -316,55 +317,6 @@ fn write_certified_q_emission(embedding: CertifiedQEmission) -> WrittenQDrawing 
     }
 }
 
-fn resolve_q_embedding_certified<
-    'topology,
-    'access,
-    M: crate::geometry::ChartMetric,
-    A: SearchAccount,
->(
-    topology: &'topology ExactGeographicTopology,
-    plan: &QEmissionPlan,
-    source_points: &[Option<EmittedVertex<'topology>>],
-    nearest: &QCoordinates,
-    live_node_keys: &[(EmittedNodeKey, QNodeId)],
-    drawing: QEmissionDrawing<'topology>,
-    ordinates_axes: CoordinateAxes,
-    strict: bool,
-    operation: &'static str,
-    metric_access: Option<&'access SourceArcMetricAccess<'access, '_, M>>,
-    expansion_budget: &mut ExpansionBudget,
-    account: &mut A,
-) -> Result<(super::q_embedding::QEmbeddingPass, Vec<NodeOrdinates>)> {
-    let ordinates = node_ordinates(topology, ordinates_axes, metric_access, account)?;
-    let published_inventory = plan.fragment_recipes.publish_with_expansion_budget(
-        topology,
-        nearest,
-        expansion_budget,
-        account,
-    )?;
-    let emission =
-        plan.embedding_emission(topology, source_points, &published_inventory, account)?;
-    let pass = match certify_and_search_q_embedding(
-        topology,
-        &emission,
-        nearest,
-        live_node_keys,
-        drawing,
-        &ordinates,
-        ordinates_axes,
-        strict,
-        operation,
-        metric_access,
-        account,
-    )? {
-        SearchOutcome::Pass(pass) => pass,
-        SearchOutcome::Exhausted => {
-            return Err(GeometryErrorKind::unrepresentable_output(operation));
-        },
-    };
-    Ok((pass, ordinates))
-}
-
 fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
     topology: &ExactGeographicTopology,
     plan: &QEmissionPlan,
@@ -399,20 +351,40 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
     #[cfg(test)]
     let mut test_coordinates = nearest.clone();
     let (sealed, family_state) = if needs_q_certificate {
-        let (pass, _ordinates) = resolve_q_embedding_certified(
+        let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
+        let published_inventory = plan.fragment_recipes.publish_with_expansion_budget(
             topology,
-            plan,
-            source_points,
             nearest,
-            &live_node_keys,
-            drawing,
-            declared_axes,
-            strict,
-            operation,
-            metric_access,
             expansion_budget,
             preparation_work,
         )?;
+        let emission = plan.embedding_emission(
+            topology,
+            source_points,
+            &published_inventory,
+            preparation_work,
+        )?;
+        let certification = QEmbeddingCertification {
+            topology,
+            emission: &emission,
+            nearest,
+            ordinates: &ordinates,
+            declared_axes,
+            strict_axes: strict,
+            operation,
+            metric_access,
+        };
+        let pass = match certify_and_search_q_embedding(
+            certification,
+            &live_node_keys,
+            drawing,
+            preparation_work,
+        )? {
+            SearchOutcome::Pass(pass) => pass,
+            SearchOutcome::Exhausted => {
+                return Err(GeometryErrorKind::unrepresentable_output(operation));
+            },
+        };
         #[cfg(test)]
         {
             choice = if pass.searched {
@@ -3448,19 +3420,31 @@ struct SourceWrittenPath {
     locations: LiteralSequence<QSourceImage>,
 }
 
+#[derive(Clone, Copy)]
+struct SourcePathContext<'a, 'walk> {
+    ordinates: &'a [NodeOrdinates],
+    source_ports: Option<&'a [Option<ExactChartPoint>]>,
+    publication: Option<SourcePublication<'a>>,
+    walks: Option<&'a RecipeWalkIndex<'walk>>,
+    axes: CoordinateAxes,
+}
+
 fn write_source_path(
     vertices: &[EmittedVertex<'_>],
     output: u32,
     owner: RecipeWalkOwner,
     recipe_rotation: usize,
-    ordinates: &[NodeOrdinates],
-    source_ports: Option<&[Option<ExactChartPoint>]>,
-    publication: Option<SourcePublication<'_>>,
-    walks: Option<&RecipeWalkIndex<'_>>,
+    context: &SourcePathContext<'_, '_>,
     cursors: &mut BTreeMap<RecipeWalkOwner, usize>,
-    axes: CoordinateAxes,
     work: &mut impl Work,
 ) -> Result<SourceWrittenPath> {
+    let SourcePathContext {
+        ordinates,
+        source_ports,
+        publication,
+        walks,
+        axes,
+    } = *context;
     let walk = match (publication, walks) {
         (Some(_), Some(walks)) => Some(next_recipe_walk(walks, cursors, owner, work)?),
         (None, None) => None,
@@ -3610,12 +3594,8 @@ fn write_ring(
     output: u32,
     owner: RecipeWalkOwner,
     recipe_rotation: usize,
-    ordinates: &[NodeOrdinates],
-    source_ports: Option<&[Option<ExactChartPoint>]>,
-    publication: Option<SourcePublication<'_>>,
-    walks: Option<&RecipeWalkIndex<'_>>,
+    context: &SourcePathContext<'_, '_>,
     cursors: &mut BTreeMap<RecipeWalkOwner, usize>,
-    axes: CoordinateAxes,
     work: &mut impl Work,
 ) -> Result<(Ring, LiteralSequence<QSourceImage>)> {
     let path = write_source_path(
@@ -3623,12 +3603,8 @@ fn write_ring(
         output,
         owner,
         recipe_rotation,
-        ordinates,
-        source_ports,
-        publication,
-        walks,
+        context,
         cursors,
-        axes,
         work,
     )?;
     Ok((
@@ -3688,6 +3664,13 @@ fn write_drawing(
     ShapeLiteralLayout<QSourceImage>,
 )> {
     let mut walk_cursors = BTreeMap::new();
+    let path_context = SourcePathContext {
+        ordinates,
+        source_ports,
+        publication,
+        walks,
+        axes,
+    };
     let (polygons, polygon_locations) = match drawing.polygons {
         DrawnPolygons::WholeSphere(source_polygons) => {
             work.charge(
@@ -3710,12 +3693,8 @@ fn write_drawing(
                         output_id,
                         source_ring.recipe_walk,
                         0,
-                        ordinates,
-                        source_ports,
-                        publication,
-                        walks,
+                        &path_context,
                         &mut walk_cursors,
-                        axes,
                         work,
                     )?;
                     if source_ring.hole {
@@ -3783,12 +3762,8 @@ fn write_drawing(
                     region_id,
                     drawn.recipe_walk,
                     recipe_rotation,
-                    ordinates,
-                    source_ports,
-                    publication,
-                    walks,
+                    &path_context,
                     &mut walk_cursors,
-                    axes,
                     work,
                 )?;
                 let destination = if is_hole {
@@ -3874,12 +3849,8 @@ fn write_drawing(
             output,
             line.recipe_walk,
             0,
-            ordinates,
-            source_ports,
-            publication,
-            walks,
+            &path_context,
             &mut walk_cursors,
-            axes,
             work,
         )?;
         lines.push(CoordSeq::try_from_points(&path.points)?);
@@ -5257,19 +5228,17 @@ mod tests {
         let ordinates = test_node_ordinates(topology)?;
         let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
             None;
-        certify_q_embedding_nearest(
+        let certification = QEmbeddingCertification {
             topology,
             emission,
             nearest,
-            live_keys,
-            drawing,
-            &ordinates,
-            CoordinateAxes::XY,
-            false,
+            ordinates: &ordinates,
+            declared_axes: CoordinateAxes::XY,
+            strict_axes: false,
             operation,
             metric_access,
-            budget,
-        )
+        };
+        certify_q_embedding_nearest(certification, live_keys, drawing, budget)
     }
 
     fn q_union_one_source(shape: &Shape, frame: GeographicFrame) -> Shape {
@@ -5859,18 +5828,21 @@ mod tests {
             live_samples: &[true; 3],
         };
         let mut cursors = BTreeMap::new();
+        let path_context = SourcePathContext {
+            ordinates: &source_ordinates,
+            source_ports: None,
+            publication: Some(source_publication),
+            walks: Some(&walks),
+            axes: CoordinateAxes::XY,
+        };
 
         let (ring, locations) = write_ring(
             &rotated_vertices,
             0,
             owner,
             recipe_rotation,
-            &source_ordinates,
-            None,
-            Some(source_publication),
-            Some(&walks),
+            &path_context,
             &mut cursors,
-            CoordinateAxes::XY,
             &mut work,
         )?;
 

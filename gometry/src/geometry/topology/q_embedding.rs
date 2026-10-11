@@ -11119,21 +11119,25 @@ fn union_prepared_dependencies(
     Ok(())
 }
 
+struct UnifiedQClassInputs<'a> {
+    topology: &'a ExactGeographicTopology,
+    source_classes: &'a [QSourceClass],
+    publication_variables: &'a [EmissionNodeId],
+    publication_nodes: &'a EmissionNodeRegistry,
+    source_chords: &'a [QChord],
+    publication_chords: &'a [QPublishedChord],
+    proximity_pairs: &'a [QProximityPair],
+    cut_rows: &'a [QCutRow],
+    fan_rows: &'a [QFanRow],
+    publication_pairs: &'a [QPublicationPair],
+    source_domains: &'a [Vec<QCandidate>],
+    source_movable_axes: &'a [[bool; 2]],
+    publication_domains: &'a [Vec<QCandidate>],
+    producer_witness: &'a PreparedProducerWitness,
+}
+
 fn build_unified_q_classes(
-    topology: &ExactGeographicTopology,
-    source_classes: &[QSourceClass],
-    publication_variables: &[EmissionNodeId],
-    publication_nodes: &EmissionNodeRegistry,
-    source_chords: &[QChord],
-    publication_chords: &[QPublishedChord],
-    proximity_pairs: &[QProximityPair],
-    cut_rows: &[QCutRow],
-    fan_rows: &[QFanRow],
-    publication_pairs: &[QPublicationPair],
-    source_domains: &[Vec<QCandidate>],
-    source_movable_axes: &[[bool; 2]],
-    publication_domains: &[Vec<QCandidate>],
-    producer_witness: &PreparedProducerWitness,
+    inputs: UnifiedQClassInputs<'_>,
     budget: &mut impl Work,
 ) -> Result<(
     usize,
@@ -11142,6 +11146,22 @@ fn build_unified_q_classes(
     Vec<Option<QNodeLocation>>,
     Vec<QClassState>,
 )> {
+    let UnifiedQClassInputs {
+        topology,
+        source_classes,
+        publication_variables,
+        publication_nodes,
+        source_chords,
+        publication_chords,
+        proximity_pairs,
+        cut_rows,
+        fan_rows,
+        publication_pairs,
+        source_domains,
+        source_movable_axes,
+        publication_domains,
+        producer_witness,
+    } = inputs;
     let mut source_variable_count = 0_usize;
     for class in source_classes {
         budget.charge(1)?;
@@ -13419,6 +13439,38 @@ pub(super) struct QEmbeddingOutput {
     pub(super) family_state: Option<FeatureFamilyRegistry>,
 }
 
+pub(super) struct QEmbeddingCertification<'topology, 'emission, 'access, 'metric, M: ChartMetric> {
+    pub(super) topology: &'topology ExactGeographicTopology,
+    pub(super) emission: &'emission QEmbeddingEmission<'topology, 'emission>,
+    pub(super) nearest: &'emission QCoordinates,
+    pub(super) ordinates: &'emission [NodeOrdinates],
+    pub(super) declared_axes: crate::geometry::CoordinateAxes,
+    pub(super) strict_axes: bool,
+    pub(super) operation: &'static str,
+    pub(super) metric_access: Option<&'access SourceArcMetricAccess<'access, 'metric, M>>,
+}
+
+impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
+    QEmbeddingCertification<'topology, 'emission, 'access, 'metric, M>
+{
+    fn build_problem<A: SearchAccount>(
+        &self,
+        budget: &mut A,
+    ) -> Result<QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>> {
+        QEmbeddingProblem::new(
+            self.topology,
+            self.emission,
+            self.nearest,
+            self.ordinates,
+            self.declared_axes,
+            self.strict_axes,
+            self.operation,
+            self.metric_access,
+            budget,
+        )
+    }
+}
+
 fn native_reference_global_check<T>(
     result: Result<T>,
     mut reject_classes: impl FnMut() -> Result<Vec<usize>>,
@@ -15257,20 +15309,22 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let (source_base, classes, node_location, publication_location, class_states) =
             build_unified_q_classes(
-                topology,
-                &source_classes,
-                &published.variables,
-                &publication_nodes,
-                &chords,
-                &publication_chords,
-                &proximity_pairs,
-                &cut_rows,
-                &fan_rows,
-                &publication_pairs,
-                &domains,
-                &movable_axes,
-                &published.domains,
-                &prepared_producer,
+                UnifiedQClassInputs {
+                    topology,
+                    source_classes: &source_classes,
+                    publication_variables: &published.variables,
+                    publication_nodes: &publication_nodes,
+                    source_chords: &chords,
+                    publication_chords: &publication_chords,
+                    proximity_pairs: &proximity_pairs,
+                    cut_rows: &cut_rows,
+                    fan_rows: &fan_rows,
+                    publication_pairs: &publication_pairs,
+                    source_domains: &domains,
+                    source_movable_axes: &movable_axes,
+                    publication_domains: &published.domains,
+                    producer_witness: &prepared_producer,
+                },
                 budget,
             )?;
         budget.budget_mut().include_constructed(source_base)?;
@@ -15550,6 +15604,33 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     Ok(NearestQCertificate::SearchRequired)
                 }
             },
+        }
+    }
+
+    fn certify_and_search<A: SearchAccount>(
+        mut self,
+        live_keys: &[(EmittedNodeKey, QNodeId)],
+        drawing: QEmissionDrawing<'topology>,
+        budget: &mut A,
+    ) -> Result<SearchOutcome<QEmbeddingPass>> {
+        match self.certify_nearest(live_keys, drawing, budget)? {
+            NearestQCertificate::Pass(output) => {
+                let output = *output;
+                #[cfg(test)]
+                {
+                    Ok(SearchOutcome::Pass(QEmbeddingPass {
+                        output,
+                        coordinates: self.nearest.clone(),
+                        searched: false,
+                    }))
+                }
+                #[cfg(not(test))]
+                {
+                    Ok(SearchOutcome::Pass(QEmbeddingPass { output }))
+                }
+            },
+            NearestQCertificate::SearchRequired => search_q_embedding(self, budget),
+            NearestQCertificate::Unrepresentable => Ok(SearchOutcome::Exhausted),
         }
     }
 
@@ -21323,40 +21404,6 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
     }
 }
 
-#[cfg(test)]
-pub(super) fn certify_q_embedding_nearest<
-    'topology,
-    'emission,
-    'access,
-    M: ChartMetric,
-    A: SearchAccount,
->(
-    topology: &'topology ExactGeographicTopology,
-    emission: &'emission QEmbeddingEmission<'topology, 'emission>,
-    nearest: &QCoordinates,
-    live_keys: &[(EmittedNodeKey, QNodeId)],
-    drawing: QEmissionDrawing<'topology>,
-    ordinates: &'emission [NodeOrdinates],
-    declared_axes: crate::geometry::CoordinateAxes,
-    strict_axes: bool,
-    operation: &'static str,
-    metric_access: Option<&'access SourceArcMetricAccess<'access, '_, M>>,
-    budget: &mut A,
-) -> Result<NearestQCertificate> {
-    let mut problem = QEmbeddingProblem::new(
-        topology,
-        emission,
-        nearest,
-        ordinates,
-        declared_axes,
-        strict_axes,
-        operation,
-        metric_access,
-        budget,
-    )?;
-    problem.certify_nearest(live_keys, drawing, budget)
-}
-
 fn search_q_embedding<M: ChartMetric, A: SearchAccount>(
     mut problem: QEmbeddingProblem<'_, '_, '_, '_, M>,
     budget: &mut A,
@@ -21404,54 +21451,27 @@ fn search_q_embedding<M: ChartMetric, A: SearchAccount>(
     }
 }
 
-pub(super) fn certify_and_search_q_embedding<
-    'emission,
-    'topology,
-    'access,
-    M: ChartMetric,
-    A: SearchAccount,
->(
-    topology: &'topology ExactGeographicTopology,
-    emission: &'emission QEmbeddingEmission<'topology, 'emission>,
-    nearest: &QCoordinates,
+pub(super) fn certify_and_search_q_embedding<'topology, M: ChartMetric, A: SearchAccount>(
+    certification: QEmbeddingCertification<'topology, '_, '_, '_, M>,
     live_keys: &[(EmittedNodeKey, QNodeId)],
     drawing: QEmissionDrawing<'topology>,
-    ordinates: &'emission [NodeOrdinates],
-    declared_axes: crate::geometry::CoordinateAxes,
-    strict_axes: bool,
-    operation: &'static str,
-    metric_access: Option<&'access SourceArcMetricAccess<'access, '_, M>>,
     budget: &mut A,
 ) -> Result<SearchOutcome<QEmbeddingPass>> {
-    let mut problem = QEmbeddingProblem::new(
-        topology,
-        emission,
-        nearest,
-        ordinates,
-        declared_axes,
-        strict_axes,
-        operation,
-        metric_access,
-        budget,
-    )?;
-    match problem.certify_nearest(live_keys, drawing, budget)? {
-        NearestQCertificate::Pass(output) => {
-            #[cfg(test)]
-            {
-                Ok(SearchOutcome::Pass(QEmbeddingPass {
-                    output: *output,
-                    coordinates: nearest.clone(),
-                    searched: false,
-                }))
-            }
-            #[cfg(not(test))]
-            {
-                Ok(SearchOutcome::Pass(QEmbeddingPass { output: *output }))
-            }
-        },
-        NearestQCertificate::SearchRequired => search_q_embedding(problem, budget),
-        NearestQCertificate::Unrepresentable => Ok(SearchOutcome::Exhausted),
-    }
+    certification
+        .build_problem(budget)?
+        .certify_and_search(live_keys, drawing, budget)
+}
+
+#[cfg(test)]
+pub(super) fn certify_q_embedding_nearest<'topology, M: ChartMetric, A: SearchAccount>(
+    certification: QEmbeddingCertification<'topology, '_, '_, '_, M>,
+    live_keys: &[(EmittedNodeKey, QNodeId)],
+    drawing: QEmissionDrawing<'topology>,
+    budget: &mut A,
+) -> Result<NearestQCertificate> {
+    certification
+        .build_problem(budget)?
+        .certify_nearest(live_keys, drawing, budget)
 }
 
 #[cfg(test)]
@@ -23016,20 +23036,22 @@ mod canonical_coordinate_tests {
         let producer_witness = PreparedProducerWitness::default();
         let (source_base, classes, source_location, publication_location, states) =
             build_unified_q_classes(
-                &topology,
-                &[],
-                &domains.variables,
-                &nodes,
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &fixed_source_axes,
-                &domains.domains,
-                &producer_witness,
+                UnifiedQClassInputs {
+                    topology: &topology,
+                    source_classes: &[],
+                    publication_variables: &domains.variables,
+                    publication_nodes: &nodes,
+                    source_chords: &[],
+                    publication_chords: &[],
+                    proximity_pairs: &[],
+                    cut_rows: &[],
+                    fan_rows: &[],
+                    publication_pairs: &[],
+                    source_domains: &[],
+                    source_movable_axes: &fixed_source_axes,
+                    publication_domains: &domains.domains,
+                    producer_witness: &producer_witness,
+                },
                 &mut budget,
             )?;
         assert_eq!(source_base, 0);
