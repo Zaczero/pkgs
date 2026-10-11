@@ -76,6 +76,35 @@ fn publish_triangle_vertices_for_domain(
     }
 }
 
+fn publish_mesh_publication_for_domain(
+    publication: crate::geometry::PreparedMeshPublication,
+    domain: crate::geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<crate::geometry::PublishedTriangleVertices> {
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => {
+            crate::geometry::PublishedTriangleVertices::uniform_mesh(publication)
+        },
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            let metric_access = || {
+                metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic triangulation requires the operation's CRS metric",
+                    )
+                })
+            };
+            let source_context = geometry::SourceArcContext::new(domain, Some(&metric_access));
+            geometry::publish_mesh_triangle_vertex_stream_budgeted(
+                publication,
+                frame,
+                &source_context,
+                budget,
+            )
+        },
+    }
+}
+
 impl PyGeometryArray {
     pub(crate) fn to_wkt_impl(
         &self,
@@ -422,8 +451,9 @@ impl PyGeometryArray {
             "triangulate",
             "method",
             move |_, shape, budget| {
-                let vertices = shape.delaunay_triangle_vertices_budgeted(budget)?;
-                publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
+                let publication =
+                    shape.delaunay_mesh_publication_in_domain_budgeted(domain, budget)?;
+                publish_mesh_publication_for_domain(publication, domain, metric, budget)
             },
         )
     }

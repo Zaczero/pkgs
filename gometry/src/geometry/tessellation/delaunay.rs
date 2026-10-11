@@ -9,16 +9,39 @@
 
 use std::cmp::Ordering;
 
-use crate::geographic::{ChartPointSite, GeographicFrame};
+use crate::geographic::{ChartPointSite, GeographicFrame, PointSelectionChart};
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude, retained_site_orientation};
 use crate::geometry::tessellation::{
-    EMPTY, RingOwner, Triangulation, exact, next_halfedge, overlapping_rings_error, prev_halfedge,
+    EMPTY, MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
+    PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite, RingOwner, Triangulation, exact,
+    next_halfedge, overlapping_rings_error, prev_halfedge,
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
     GeometryErrorKind, HasM, HasZ, MOrdinate, Orientation, Point, PointKey, Result, XY, ZOrdinate,
     open_xy_cycle_magnitude, orientation, same_point,
 };
+
+#[cfg(test)]
+thread_local! {
+    static DELAUNAY_OUTPUT_RESERVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_delaunay_output_reserve() {
+    DELAUNAY_OUTPUT_RESERVES.with(|count| {
+        let reserves = count
+            .get()
+            .checked_add(1)
+            .expect("Delaunay output reserve test counter overflow");
+        count.set(reserves);
+    });
+}
+
+#[cfg(test)]
+pub(super) fn take_delaunay_output_reserves() -> usize {
+    DELAUNAY_OUTPUT_RESERVES.with(|count| count.replace(0))
+}
 
 #[path = "cdt.rs"]
 mod cdt;
@@ -441,13 +464,6 @@ impl exact_delaunay::MeshCoordinates for RetainedPointCoordinates<'_> {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the retained exact producer is not wired to public output until the shared output seal is accepted"
-    )
-)]
 /// Build the exact primal mesh from retained chart sites without publishing it.
 pub(in crate::geometry::tessellation) fn certified_delaunay_for_retained_points(
     frame: GeographicFrame,
@@ -455,6 +471,161 @@ pub(in crate::geometry::tessellation) fn certified_delaunay_for_retained_points(
 ) -> Result<CertifiedDelaunay> {
     let coordinates = RetainedPointCoordinates::new(frame, sites);
     certified_delaunay_with_coordinates(&coordinates, sites.len())
+}
+
+pub(in crate::geometry::tessellation) fn prepare_retained_delaunay_publication(
+    frame: GeographicFrame,
+    source_points: &[Point],
+    budget: &mut ExpansionBudget,
+) -> Result<PreparedMeshPublication> {
+    let Some(chart) = PointSelectionChart::try_from_points(frame, source_points)? else {
+        return Ok(PreparedMeshPublication::new(
+            MeshProducer::Delaunay,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+    };
+    let mut chart_sites = chart.sites_from_points(source_points)?;
+    chart_sites.sort_unstable_by(|left, right| left.compare_chart_xy(*right));
+    let sites = chart_sites
+        .iter()
+        .enumerate()
+        .map(|(producer_ordinal, &site)| {
+            PreparedMeshSite::source(
+                producer_ordinal,
+                site.source_ordinal(),
+                *source_points
+                    .get(site.source_ordinal())
+                    .expect("retained source ordinal belongs to the source point inventory"),
+                MeshSiteLocation::Retained(site),
+            )
+        })
+        .collect::<Vec<_>>();
+    let coordinates = RetainedPointCoordinates::new(frame, &chart_sites);
+    let mesh = certified_delaunay_for_retained_points(frame, &chart_sites)?;
+    prepare_delaunay_publication(&mesh, sites, &coordinates, budget)
+}
+
+pub(in crate::geometry::tessellation) fn prepare_raw_delaunay_publication(
+    source_points: &[Point],
+    budget: &mut ExpansionBudget,
+) -> Result<PreparedMeshPublication> {
+    let mut indexed_points = source_points
+        .iter()
+        .copied()
+        .enumerate()
+        .collect::<Vec<_>>();
+    indexed_points.sort_unstable_by(|left, right| {
+        left.1
+            .x
+            .total_cmp(&right.1.x)
+            .then_with(|| left.1.y.total_cmp(&right.1.y))
+    });
+    let sites = indexed_points
+        .iter()
+        .enumerate()
+        .map(|(producer_ordinal, &(occurrence, point))| {
+            PreparedMeshSite::source(
+                producer_ordinal,
+                occurrence,
+                point,
+                MeshSiteLocation::Cartesian,
+            )
+        })
+        .collect::<Vec<_>>();
+    let points = indexed_points
+        .iter()
+        .map(|&(_, point)| point)
+        .collect::<Vec<_>>();
+    let provider_sites = points
+        .iter()
+        .enumerate()
+        .map(|(id, &point)| Site { id, point })
+        .collect::<Vec<_>>();
+    let mesh = certified_delaunay(&provider_sites)?;
+    let coordinates = |site| exact_delaunay::site_xy(&points, site);
+    prepare_delaunay_publication(&mesh, sites, &coordinates, budget)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "canonical side maps and halfedge columns are emitted together by the same certified mesh"
+)]
+fn prepare_delaunay_publication<C: exact_delaunay::MeshCoordinates>(
+    mesh: &CertifiedDelaunay,
+    sites: Vec<PreparedMeshSite>,
+    coordinates: &C,
+    budget: &mut ExpansionBudget,
+) -> Result<PreparedMeshPublication> {
+    let canonical_faces = exact_delaunay::canonical_triangle_order(coordinates, mesh.triangles());
+    let capacity = canonical_faces
+        .len()
+        .checked_mul(4)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    budget.check_additional(capacity)?;
+    #[cfg(test)]
+    note_delaunay_output_reserve();
+
+    let mut points = Vec::with_capacity(capacity);
+    let mut faces = Vec::with_capacity(canonical_faces.len());
+    for canonical in canonical_faces {
+        let start = points.len();
+        let output_points = canonical.output_sites.map(|site| {
+            sites
+                .get(site)
+                .expect("canonical site ordinal belongs to the prepared site table")
+                .source_record()
+        });
+        let [a, b, c, closure] = selected_triangle_points(&output_points, [0, 1, 2], false);
+        points.extend_from_slice(&[a, b, c, closure]);
+        let end = points.len();
+        let boundary_uses = std::array::from_fn(|output_side| {
+            let selected_side = usize::from(canonical.output_to_selected[output_side]);
+            let selected_slot = canonical
+                .selected_face
+                .wrapping_mul(3)
+                .wrapping_add(selected_side);
+            let reverse_slot = mesh.halfedges()[selected_slot];
+            let reverse = (reverse_slot != EMPTY).then(|| {
+                MeshUseId::new(
+                    reverse_slot / 3,
+                    u8::try_from(reverse_slot % 3)
+                        .expect("halfedge side is one of the three triangle sides"),
+                )
+            });
+            let selected_use = MeshUseId::new(
+                canonical.selected_face,
+                u8::try_from(selected_side).expect("triangle side fits u8"),
+            );
+            PreparedMeshBoundaryUse::new(
+                u8::try_from(output_side).expect("triangle side fits u8"),
+                selected_use,
+                canonical.output_sites[output_side],
+                canonical.output_sites[(output_side + 1) % 3],
+                reverse,
+                canonical.reversed,
+                mesh.edge_is_cocircular(selected_slot),
+                MeshEdgeRole::Delaunay,
+            )
+        });
+        faces.push(PreparedMeshFace::new(
+            canonical.selected_face,
+            canonical.selected_sites,
+            canonical.output_sites,
+            canonical.output_to_selected,
+            canonical.reversed,
+            start..end,
+            boundary_uses,
+        ));
+    }
+    budget.add(capacity)?;
+    Ok(PreparedMeshPublication::new(
+        MeshProducer::Delaunay,
+        sites,
+        faces,
+        points,
+    ))
 }
 
 pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {

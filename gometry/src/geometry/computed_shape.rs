@@ -434,6 +434,7 @@ pub(crate) fn publish_computed_line_column_with_budget(
 pub(crate) struct PublishedTriangleVertices {
     pub(crate) points: Vec<crate::geometry::Point>,
     pub(crate) ring_ends: Vec<usize>,
+    pub(crate) mesh_publication: Option<crate::geometry::PreparedMeshPublication>,
 }
 
 impl PublishedTriangleVertices {
@@ -447,7 +448,19 @@ impl PublishedTriangleVertices {
         let ring_ends = (1..=points.len() / 4)
             .map(|index| index.wrapping_mul(4))
             .collect();
-        Ok(Self { points, ring_ends })
+        Ok(Self {
+            points,
+            ring_ends,
+            mesh_publication: None,
+        })
+    }
+
+    pub(crate) fn uniform_mesh(
+        mut publication: crate::geometry::PreparedMeshPublication,
+    ) -> Result<Self> {
+        let mut published = Self::uniform(publication.take_points())?;
+        published.mesh_publication = Some(publication);
+        Ok(published)
     }
 }
 
@@ -483,7 +496,24 @@ pub(crate) fn publish_triangle_vertex_stream_budgeted(
         }
         ring_ends.push(points.len());
     }
-    Ok(PublishedTriangleVertices { points, ring_ends })
+    Ok(PublishedTriangleVertices {
+        points,
+        ring_ends,
+        mesh_publication: None,
+    })
+}
+
+pub(crate) fn publish_mesh_triangle_vertex_stream_budgeted(
+    mut publication: crate::geometry::PreparedMeshPublication,
+    frame: GeographicFrame,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedTriangleVertices> {
+    let source_points = publication.take_points();
+    let mut published =
+        publish_triangle_vertex_stream_budgeted(&source_points, frame, source_context, budget)?;
+    published.mesh_publication = Some(publication);
+    Ok(published)
 }
 
 pub(crate) fn publish_stored_computed_shape(

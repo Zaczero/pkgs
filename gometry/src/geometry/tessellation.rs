@@ -9,10 +9,15 @@ mod earcut;
 mod earcut_bridges;
 mod earcut_sweep;
 pub(in crate::geometry) mod exact;
+mod prepared_mesh;
 mod sampling;
 mod shape;
 mod voronoi;
 mod voronoi_dcel;
+pub(crate) use prepared_mesh::{
+    MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshSiteOrigin, MeshUseId,
+    PreparedMeshBoundaryUse, PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
+};
 
 pub(crate) struct VoronoiPolygonOutput {
     pub(crate) polygon: crate::geometry::Polygon,
@@ -77,9 +82,7 @@ pub(super) fn overlapping_rings_error(left: RingOwner, right: RingOwner) -> crat
 }
 
 pub(crate) use delaunay::{CdtRefinement, constrained_triangle_vertices, delaunay_triangulation};
-use delaunay::{
-    CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay, selected_triangle_points,
-};
+use delaunay::{CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay};
 pub(crate) use earcut::{earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape};
 pub(crate) use sampling::{
     collect_sample_triangles, row_sample_seed, sample_weighted, uniform_f64, weight_scale,
