@@ -181,10 +181,10 @@ fn geographic_sample_requires_preparation(
 }
 
 fn sample_triangle_vertices(support: &SampleSupport) -> &[Point; 3] {
-    let SampleSupport::AreaTriangle { vertices, .. } = support else {
+    let SampleSupport::AreaTriangle { triangle, .. } = support else {
         unreachable!("surface support contains only Earcut triangles")
     };
-    vertices
+    &triangle.points
 }
 
 fn prepare_geographic_sample_leaf(
@@ -1126,6 +1126,12 @@ mod geographic_sample_tests {
         )
     }
 
+    fn polygon_with_hole(shell: &[(f64, f64)], hole: &[(f64, f64)]) -> Polygon {
+        let shell = polygon(shell);
+        let hole = polygon(hole);
+        Polygon::new(shell.shell, vec![hole.shell])
+    }
+
     fn xy_bits(points: &[Point]) -> Vec<(u64, u64)> {
         points
             .iter()
@@ -1269,6 +1275,51 @@ mod geographic_sample_tests {
                 .collect::<Vec<_>>(),
             [1, 2]
         );
+    }
+
+    #[test]
+    fn area_receipt_keeps_the_selected_earcut_triangle_and_parameters() {
+        let source = Shape::Polygon(polygon_with_hole(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            &[(2.0, 2.0), (2.0, 8.0), (8.0, 8.0), (8.0, 2.0)],
+        ));
+        let product = source
+            .sample_point_receipts_in_domain(1, 1, 9, TopologyDomain::Cartesian)
+            .unwrap();
+
+        assert_eq!(product.logical_row, 9);
+        assert_eq!(product.resolved_seed, 1);
+        assert_eq!(product.support_elements.len(), 8);
+        let [draw] = product.draws.as_slice() else {
+            panic!("one weighted area draw")
+        };
+        assert_eq!(draw.draw_ordinal, 0);
+        let SampleSupport::AreaTriangle {
+            occurrence,
+            triangle,
+        } = *product
+            .support_elements
+            .get(draw.selected_element)
+            .expect("draw selects a prepared support element")
+        else {
+            panic!("area triangle receipt")
+        };
+        assert_eq!(occurrence.component, 0);
+        assert_eq!(occurrence.occurrence, triangle.face);
+        assert!(
+            triangle
+                .corners
+                .iter()
+                .all(|corner| matches!(corner.site.ring, 0 | 1))
+        );
+        assert_eq!(
+            draw.recipe,
+            SampleRecipe::Triangle {
+                spread: 0.863_586_566_166_184_1,
+                blend: 0.971_002_753_586_796_2,
+            }
+        );
+        assert!(draw.point.x.is_finite() && draw.point.y.is_finite());
     }
 
     #[test]

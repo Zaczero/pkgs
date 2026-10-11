@@ -12,16 +12,55 @@ use super::earcut_bridges::BridgeArena;
 use super::earcut_sweep::ring_has_contact;
 use super::exact::orient2d_normal_components;
 use crate::error::Result;
+#[cfg(test)]
+use crate::geometry::dedup_consecutive_points;
 use crate::geometry::exact_arith::ExactSign;
 #[cfg(test)]
 use crate::geometry::orientation_xy;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ,
     HashMap, HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding, Segment,
-    SegmentIndex, Shape, XY, ZOrdinate, dedup_consecutive_points, open_point_cycle_winding,
-    orientation, point_on_segment, ring_contains_interior, same_point, segments_intersect,
-    wrap_index,
+    SegmentIndex, Shape, XY, ZOrdinate, open_point_cycle_winding, orientation, point_on_segment,
+    ring_contains_interior, same_point, segments_intersect, wrap_index,
 };
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct EarcutSiteId {
+    pub(crate) ring: usize,
+    pub(crate) vertex: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct EarcutOccurrenceId(pub(crate) usize);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct EarcutCornerId {
+    pub(crate) site: EarcutSiteId,
+    pub(crate) occurrence: EarcutOccurrenceId,
+}
+
+impl EarcutCornerId {
+    pub(super) const fn source(ring: usize, vertex: usize, occurrence: usize) -> Self {
+        Self {
+            site: EarcutSiteId { ring, vertex },
+            occurrence: EarcutOccurrenceId(occurrence),
+        }
+    }
+
+    pub(super) const fn copied(self, occurrence: usize) -> Self {
+        Self {
+            site: self.site,
+            occurrence: EarcutOccurrenceId(occurrence),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EarcutTriangle {
+    pub(crate) face: usize,
+    pub(crate) points: [Point; 3],
+    pub(crate) corners: [EarcutCornerId; 3],
+}
 
 /// Walk a polygon's ear-cut triangles through one caller-owned sink. The
 /// generated-output budget lives at that caller, so it can reject before a
@@ -30,49 +69,110 @@ pub(crate) fn earcut_polygon_with(
     polygon: &Polygon,
     emit: &mut impl FnMut(Point, Point, Point) -> Result<()>,
 ) -> Result<()> {
-    let mut ring = cleaned_earcut_ring(&polygon.shell, false)?;
+    earcut_polygon_with_ids(polygon, &mut |triangle| {
+        let [a, b, c] = triangle.points;
+        emit(a, b, c)
+    })
+}
+
+/// Emit the ear selection with original ring-site and live occurrence IDs.
+/// Bridge copies keep their source site but receive independent occurrences.
+pub(crate) fn earcut_polygon_with_ids(
+    polygon: &Polygon,
+    emit: &mut impl FnMut(EarcutTriangle) -> Result<()>,
+) -> Result<()> {
+    let mut next_occurrence = 0_usize;
+    let (mut ring, mut ring_ids) =
+        cleaned_earcut_ring_with_ids(&polygon.shell, false, 0, &mut next_occurrence)?;
     if ring.len() < 3 || open_point_cycle_winding(&ring).is_degenerate() {
         return Ok(());
     }
 
     let mut holes = Vec::with_capacity(polygon.holes.len());
-    for hole in polygon.holes.iter() {
-        let hole = cleaned_earcut_ring(hole, true)?;
+    let mut hole_ids = Vec::with_capacity(polygon.holes.len());
+    for (hole_index, hole) in polygon.holes.iter().enumerate() {
+        let (hole, ids) = cleaned_earcut_ring_with_ids(
+            hole,
+            true,
+            hole_index.wrapping_add(1),
+            &mut next_occurrence,
+        )?;
         if hole.len() < 3 || open_point_cycle_winding(&hole).is_degenerate() {
             return Err(GeometryErrorKind::triangulation("polygon hole degenerates"));
         }
         validate_hole_inside_shell(&ring, &hole)?;
         holes.push(hole);
+        hole_ids.push(ids);
     }
     validate_hole_interactions(&ring, &holes)?;
-    eliminate_holes(&mut ring, &holes)?;
-    earcut_linked_ring_with(&ring, emit)
+    eliminate_holes_with_ids(&mut ring, &mut ring_ids, &holes, &hole_ids, next_occurrence)?;
+    earcut_linked_ring_with_ids(&ring, &ring_ids, emit)
 }
 
+#[cfg(test)]
 pub(crate) fn cleaned_earcut_ring<C: Coordinates + ?Sized>(
     ring: &C,
     exterior_cw: bool,
 ) -> Result<Vec<Point>> {
-    let mut vertices = open_ring(ring);
-    dedup_circular_points(&mut vertices);
-    strip_collinear_vertices(&mut vertices);
-    orient_earcut_ring(&mut vertices, exterior_cw);
-    validate_earcut_ring(&vertices)?;
-    Ok(vertices)
+    let mut next_occurrence = 0_usize;
+    cleaned_earcut_ring_with_ids(ring, exterior_cw, 0, &mut next_occurrence)
+        .map(|(points, _)| points)
 }
 
+fn cleaned_earcut_ring_with_ids<C: Coordinates + ?Sized>(
+    ring: &C,
+    exterior_cw: bool,
+    source_ring: usize,
+    next_occurrence: &mut usize,
+) -> Result<(Vec<Point>, Vec<EarcutCornerId>)> {
+    let mut vertices = open_ring(ring);
+    let mut identities = source_identities(source_ring, vertices.len(), next_occurrence)?;
+    dedup_circular_points_with_ids(&mut vertices, &mut identities);
+    strip_collinear_vertices_with_ids(&mut vertices, Some(&mut identities));
+    orient_earcut_ring_with_ids(&mut vertices, Some(&mut identities), exterior_cw);
+    validate_earcut_ring(&vertices)?;
+    Ok((vertices, identities))
+}
+
+#[cfg(test)]
 pub(crate) fn orient_earcut_ring(vertices: &mut [Point], exterior_cw: bool) {
+    orient_earcut_ring_with_ids(vertices, None, exterior_cw);
+}
+
+fn orient_earcut_ring_with_ids(
+    vertices: &mut [Point],
+    mut identities: Option<&mut Vec<EarcutCornerId>>,
+    exterior_cw: bool,
+) {
+    if let Some(identities) = identities.as_deref() {
+        debug_assert_eq!(vertices.len(), identities.len());
+    }
     if vertices.len() < 3 {
         return;
     }
     let is_clockwise = open_point_cycle_winding(vertices) == RingWinding::Clockwise;
     if is_clockwise != exterior_cw {
         vertices.reverse();
+        if let Some(identities) = identities.as_deref_mut() {
+            identities.reverse();
+        }
     }
 }
 
-pub(crate) fn dedup_circular_points(vertices: &mut Vec<Point>) {
-    dedup_consecutive_points(vertices);
+fn dedup_circular_points_with_ids(vertices: &mut Vec<Point>, identities: &mut Vec<EarcutCornerId>) {
+    debug_assert_eq!(vertices.len(), identities.len());
+    let mut write = 0_usize;
+    for read in 0..vertices.len() {
+        if write != 0 && same_point(vertices[write.wrapping_sub(1)], vertices[read]) {
+            continue;
+        }
+        let identity = identities[read];
+        vertices[write] = vertices[read];
+        identities[write] = identity;
+        write = write.wrapping_add(1);
+    }
+    vertices.truncate(write);
+    identities.truncate(write);
     while vertices.len() > 1
         && same_point(
             *vertices.first().expect("checked non-empty"),
@@ -80,13 +180,26 @@ pub(crate) fn dedup_circular_points(vertices: &mut Vec<Point>) {
         )
     {
         vertices.pop();
+        identities.pop();
     }
 }
 
+#[cfg(test)]
 pub(crate) fn strip_collinear_vertices(vertices: &mut Vec<Point>) {
+    strip_collinear_vertices_with_ids(vertices, None);
+}
+
+fn strip_collinear_vertices_with_ids(
+    vertices: &mut Vec<Point>,
+    mut identities: Option<&mut Vec<EarcutCornerId>>,
+) {
     if vertices.len() < 3 {
         return;
     }
+    if let Some(identities) = identities.as_deref() {
+        debug_assert_eq!(vertices.len(), identities.len());
+    }
+    let source_identities = identities.as_deref_mut().map(std::mem::take);
     let is_collinear = |a: Point, b: Point, c: Point| -> bool {
         orientation(a, b, c) == Orientation::Collinear && point_on_segment(b, a, c)
     };
@@ -97,13 +210,27 @@ pub(crate) fn strip_collinear_vertices(vertices: &mut Vec<Point>) {
     // after pushing a vertex, while the last three are collinear, drop the
     // middle by overwriting it with the last and popping (O(1), no shift).
     let mut out: Vec<Point> = Vec::with_capacity(vertices.len());
-    for &curr in vertices.iter() {
+    let mut out_identities = source_identities
+        .as_ref()
+        .map(|_| Vec::with_capacity(vertices.len()));
+    for (index, &curr) in vertices.iter().enumerate() {
         out.push(curr);
+        if let (Some(input_ids), Some(output_ids)) =
+            (source_identities.as_ref(), &mut out_identities)
+        {
+            output_ids.push(input_ids[index]);
+        }
         loop {
             match out.as_mut_slice() {
                 [.., first, middle, last] if is_collinear(*first, *middle, *last) => {
                     *middle = *last;
                     out.pop();
+                    if let Some(output_ids) = &mut out_identities {
+                        let last_id = *output_ids.last().expect("collinear output has a last ID");
+                        let middle = output_ids.len().wrapping_sub(2);
+                        output_ids[middle] = last_id;
+                        output_ids.pop();
+                    }
                 },
                 _ => break,
             }
@@ -119,6 +246,9 @@ pub(crate) fn strip_collinear_vertices(vertices: &mut Vec<Point>) {
         };
         if removes_last {
             out.pop();
+            if let Some(output_ids) = &mut out_identities {
+                output_ids.pop();
+            }
             continue;
         }
         let removes_first = match out.as_slice() {
@@ -127,11 +257,17 @@ pub(crate) fn strip_collinear_vertices(vertices: &mut Vec<Point>) {
         };
         if removes_first {
             out.remove(0);
+            if let Some(output_ids) = &mut out_identities {
+                output_ids.remove(0);
+            }
         } else {
             break;
         }
     }
     *vertices = out;
+    if let (Some(identities), Some(out_identities)) = (identities, out_identities) {
+        *identities = out_identities;
+    }
 }
 
 pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
@@ -476,13 +612,48 @@ const fn ring_segment_points(start: Point, end: Point) -> Segment {
     }
 }
 
+#[cfg(test)]
 pub(super) const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
     left.abs_diff(right) == 1 || (left == 0 && right == len.wrapping_sub(1))
 }
 
-pub(crate) fn eliminate_holes(ring: &mut Vec<Point>, holes: &[Vec<Point>]) -> Result<()> {
+fn source_identities(
+    source_ring: usize,
+    vertex_count: usize,
+    next_occurrence: &mut usize,
+) -> Result<Vec<EarcutCornerId>> {
+    let mut identities = Vec::with_capacity(vertex_count);
+    for vertex in 0..vertex_count {
+        let occurrence = *next_occurrence;
+        *next_occurrence = next_occurrence
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        identities.push(EarcutCornerId::source(source_ring, vertex, occurrence));
+    }
+    Ok(identities)
+}
+
+fn eliminate_holes_with_ids(
+    ring: &mut Vec<Point>,
+    ring_ids: &mut Vec<EarcutCornerId>,
+    holes: &[Vec<Point>],
+    hole_ids: &[Vec<EarcutCornerId>],
+    next_occurrence: usize,
+) -> Result<()> {
     if holes.is_empty() {
         return Ok(());
+    }
+    if ring.len() != ring_ids.len()
+        || holes.len() != hole_ids.len()
+        || holes
+            .iter()
+            .zip(hole_ids)
+            .any(|(hole, ids)| hole.len() != ids.len())
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "earcut source identities do not match the rings".into(),
+        )
+        .into());
     }
     let holes = HoleList::new(holes);
     let mut order: Vec<_> = holes.ids().collect();
@@ -493,19 +664,35 @@ pub(crate) fn eliminate_holes(ring: &mut Vec<Point>, holes: &[Vec<Point>]) -> Re
     let capacity = holes.rings.iter().fold(ring.len(), |count, hole| {
         count.wrapping_add(hole.len()).wrapping_add(2)
     });
-    let mut arena = BridgeArena::new(ring, capacity);
+    let mut arena = BridgeArena::new_with_ids(ring, ring_ids, capacity, next_occurrence);
     for (batch, hole_id) in order.into_iter().enumerate() {
         let hole_ring = holes.ring(hole_id);
-        let hole = rotate_ring(hole_ring, leftmost_vertex(hole_ring));
+        let start = leftmost_vertex(hole_ring);
+        let hole = rotate_ring(hole_ring, start);
+        let hole_identity_ring = hole_ids
+            .get(hole_id.index())
+            .expect("HoleId belongs to the validated source hole table");
+        let hole_identities = rotate_corner_ids(hole_identity_ring, start);
         let bridge = arena
             .find_bridge(*hole.first().expect("validated holes are non-empty"))
             .ok_or_else(|| {
                 GeometryErrorKind::triangulation("failed to find a visible bridge for polygon hole")
             })?;
-        arena.splice(bridge, &hole, batch.wrapping_add(1));
+        arena.splice_with_ids(bridge, &hole, &hole_identities, batch.wrapping_add(1));
     }
-    *ring = arena.into_points();
+    let (points, identities) = arena.into_points_and_ids();
+    *ring = points;
+    *ring_ids = identities;
     Ok(())
+}
+
+fn rotate_corner_ids(identities: &[EarcutCornerId], start: RingVertexId) -> Vec<EarcutCornerId> {
+    identities
+        .iter()
+        .skip(start.0)
+        .chain(identities.iter().take(start.0))
+        .copied()
+        .collect()
 }
 
 fn compare_hole_leftmost_xy_slope(left: &[Point], right: &[Point]) -> std::cmp::Ordering {
@@ -894,6 +1081,7 @@ mod earcut_tests {
 #[derive(Clone, Copy)]
 struct EarNode {
     point: Point,
+    identity: EarcutCornerId,
     prev: NodeId,
     next: NodeId,
 }
@@ -918,13 +1106,25 @@ struct EarArena {
 }
 
 impl EarArena {
+    #[cfg(test)]
     fn new(points: &[Point]) -> Self {
+        let identities = points
+            .iter()
+            .enumerate()
+            .map(|(index, _)| EarcutCornerId::source(0, index, index))
+            .collect::<Vec<_>>();
+        Self::new_with_ids(points, &identities)
+    }
+
+    fn new_with_ids(points: &[Point], identities: &[EarcutCornerId]) -> Self {
+        debug_assert_eq!(points.len(), identities.len());
         let nodes: Vec<EarNode> = points
             .iter()
             .copied()
             .enumerate()
             .map(|(index, point)| EarNode {
                 point,
+                identity: identities[index],
                 prev: NodeId::from_index(wrap_index(
                     index.wrapping_add(points.len()).wrapping_sub(1),
                     points.len(),
@@ -1230,16 +1430,24 @@ const fn arena_node_mut(nodes: &mut [EarNode], id: NodeId) -> &mut EarNode {
     &mut nodes[id.index()]
 }
 
-pub(crate) fn earcut_linked_ring_with(
+pub(crate) fn earcut_linked_ring_with_ids(
     points: &[Point],
-    emit: &mut impl FnMut(Point, Point, Point) -> Result<()>,
+    identities: &[EarcutCornerId],
+    emit: &mut impl FnMut(EarcutTriangle) -> Result<()>,
 ) -> Result<()> {
     if points.len() < 3 {
         return Ok(());
     }
-    let mut arena = EarArena::new(points);
+    if points.len() != identities.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "earcut site identities do not match the ring".into(),
+        )
+        .into());
+    }
+    let mut arena = EarArena::new_with_ids(points, identities);
     let mut current = NodeId::from_index(0);
     let mut guard = 0_usize;
+    let mut selected_face = 0_usize;
     while arena.active > 3 {
         if let Some(candidates) = &arena.candidates
             && candidates.is_reflex(current)
@@ -1251,12 +1459,13 @@ pub(crate) fn earcut_linked_ring_with(
                 let node = arena.node(current);
                 (node.prev, node.next)
             };
-            let triangle = (
-                arena.node(prev).point,
-                arena.node(current).point,
-                arena.node(next).point,
-            );
-            emit(triangle.0, triangle.1, triangle.2)?;
+            let nodes = [arena.node(prev), arena.node(current), arena.node(next)];
+            emit(EarcutTriangle {
+                face: selected_face,
+                points: nodes.map(|node| node.point),
+                corners: nodes.map(|node| node.identity),
+            })?;
+            selected_face = selected_face.wrapping_add(1);
             arena.remove(current);
             current = arena.node(next).next;
             guard = 0;
@@ -1274,11 +1483,12 @@ pub(crate) fn earcut_linked_ring_with(
         let first = current;
         let second = arena.node(first).next;
         let third = arena.node(second).next;
-        emit(
-            arena.node(first).point,
-            arena.node(second).point,
-            arena.node(third).point,
-        )?;
+        let nodes = [arena.node(first), arena.node(second), arena.node(third)];
+        emit(EarcutTriangle {
+            face: selected_face,
+            points: nodes.map(|node| node.point),
+            corners: nodes.map(|node| node.identity),
+        })?;
     }
     Ok(())
 }

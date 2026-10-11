@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::geometry::tessellation::earcut_polygon_with;
+use super::earcut::{EarcutTriangle, earcut_polygon_with_ids};
 use crate::geometry::{MultiMember, Point, Polygon, Segment, Shape, TopologyDomain};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,14 +49,17 @@ impl GeographicSampleSegment {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[expect(
-    dead_code,
-    reason = "The common sampling sink consumes selected support identities for stored output"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The common sampling sink consumes selected support identities for stored output"
+    )
 )]
 pub(crate) enum SampleSupport {
     AreaTriangle {
         occurrence: SampleOccurrenceId,
-        vertices: [Point; 3],
+        triangle: EarcutTriangle,
     },
     Segment {
         occurrence: SampleOccurrenceId,
@@ -210,18 +213,14 @@ fn collect_polygon_sample_triangles(
     out: &mut Vec<SampleSupport>,
 ) -> Result<()> {
     let component = next_sample_component(component)?;
-    let mut occurrence = 0_usize;
-    earcut_polygon_with(polygon, &mut |a, b, c| {
+    earcut_polygon_with_ids(polygon, &mut |triangle| {
         out.push(SampleSupport::AreaTriangle {
             occurrence: SampleOccurrenceId {
                 component,
-                occurrence,
+                occurrence: triangle.face,
             },
-            vertices: [a, b, c],
+            triangle,
         });
-        occurrence = occurrence
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Ok(())
     })
 }

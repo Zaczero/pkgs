@@ -80,7 +80,10 @@ pub(crate) use delaunay::{CdtRefinement, constrained_triangle_vertices, delaunay
 use delaunay::{
     CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay, selected_triangle_points,
 };
-pub(crate) use earcut::{earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape};
+pub(crate) use earcut::{
+    EarcutTriangle, earcut_polygon_with, earcut_polygon_with_ids, point_in_ccw_triangle,
+    try_triangle_shape,
+};
 pub(crate) use sampling::{
     GeographicSampleSegment, PreparedSampling, SampleOccurrenceId, SampleRecipe, SampleSupport,
     collect_sample_atoms, collect_sample_triangles, row_sample_seed, sample_weighted, uniform_f64,
