@@ -504,7 +504,7 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
         &mut expansion_budget,
         &mut preparation_work,
     )?;
-    publish_q_overlay(embedding)
+    Ok(publish_q_overlay(embedding))
 }
 
 pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::ChartMetric>(
@@ -581,8 +581,8 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
     })
 }
 
-fn publish_q_overlay(embedding: CertifiedQEmission) -> Result<Shape> {
-    Ok(write_certified_q_emission(embedding).shape)
+fn publish_q_overlay(embedding: CertifiedQEmission) -> Shape {
+    write_certified_q_emission(embedding).shape
 }
 
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
@@ -7025,7 +7025,7 @@ mod tests {
         let embedding =
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding)?;
+        let result = publish_q_overlay(embedding);
         assert_eq!(
             crate::io::to_wkb(&result, None, false)?,
             crate::io::to_wkb(&source, None, false)?,
@@ -7076,7 +7076,7 @@ mod tests {
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())
                 .expect("source axis-band ring is representable");
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding).expect("publish the source axis-band ring");
+        let result = publish_q_overlay(embedding);
         assert_eq!(
             crate::io::to_wkb(&result, None, false).expect("serialize Q result"),
             crate::io::to_wkb(&source, None, false).expect("serialize source band")
@@ -7144,7 +7144,7 @@ mod tests {
                 .enumerate()
                 .filter_map(|(index, (before, after))| (before != after).then_some(index))
                 .collect::<Vec<_>>();
-            let result = publish_q_overlay(embedding)?;
+            let result = publish_q_overlay(embedding);
             let issue = crate::geometry::validate_shape_in_frame(
                 &result,
                 crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
@@ -7188,7 +7188,7 @@ mod tests {
             OverlayOp::Union.name(),
         )?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding)?;
+        let result = publish_q_overlay(embedding);
         assert!(
             crate::geometry::validate_shape_in_frame(
                 &result,
