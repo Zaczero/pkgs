@@ -1335,7 +1335,9 @@ fn build_areal_signature(
     work: &mut impl Work,
 ) -> Result<ArealSignature> {
     let all_atoms_are_walls = wall_covers_graph(wall_atom_ids, graph.edge_nodes.len());
-    let (projected_edges, projected_topology, projected_edge_of_slot) = if !all_atoms_are_walls {
+    let (projected_edges, projected_topology, projected_edge_of_slot) = if all_atoms_are_walls {
+        (Vec::new(), None, Vec::new())
+    } else {
         work.charge(u64::try_from(wall_atom_ids.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut projected_edges = Vec::with_capacity(wall_atom_ids.len());
         for &atom in wall_atom_ids {
@@ -1346,8 +1348,6 @@ fn build_areal_signature(
         }
         let (topology, edge_of_slot) = indexed_topology(points, &projected_edges, work)?;
         (projected_edges, Some(topology), edge_of_slot)
-    } else {
-        (Vec::new(), None, Vec::new())
     };
     let (wall_edges, wall_topology, wall_edge_of_slot) = if all_atoms_are_walls {
         (
