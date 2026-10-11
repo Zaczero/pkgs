@@ -5052,13 +5052,9 @@ mod tests {
         let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
         let plan = build_q_plan(&topology, OverlayOp::Union)?;
         let directed_ports = |step: LineStep| -> Result<[QPortId; 2]> {
-            let span = topology
-                .q
-                .spans
-                .get(step.span)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q curve path names an unknown span".into())
-                })?;
+            let span = topology.q.spans.get(step.span).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q curve path names an unknown span".into())
+            })?;
             Ok(match step.from_endpoint {
                 SpanEndpoint::Start => span.ports,
                 SpanEndpoint::End => [span.ports[1], span.ports[0]],
