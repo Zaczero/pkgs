@@ -223,6 +223,31 @@ def test_nonzero_geographic_simplify_preserves_measured_disjoint_rows() -> None:
             assert math.isfinite(m)
 
 
+def test_nonzero_geographic_shared_seam_simplify_keeps_the_interface() -> None:
+    west = gm.Polygon(
+        [(170, 0), (180, 0), (180, 5), (180, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    east = gm.Polygon(
+        [(-180, 0), (-170, 0), (-170, 10), (-180, 10), (-180, 6)],
+        crs='OGC:CRS84',
+    )
+
+    simplified = gm.coverage_simplify([west, east], 2.0, method='dp')
+
+    assert gm.coverage_is_valid(simplified)
+    assert gm.covers(
+        simplified[0].boundary(),
+        gm.Point(180, 5, crs='OGC:CRS84'),
+    )
+    assert gm.covers(
+        simplified[1].boundary(),
+        gm.Point(-180, 5, crs='OGC:CRS84'),
+    )
+    assert gm.covers(simplified[0], gm.Point(175, 5, crs='OGC:CRS84'))
+    assert gm.covers(simplified[1], gm.Point(-175, 5, crs='OGC:CRS84'))
+
+
 def test_geographic_disjoint_coverage_union_keeps_its_output_bytes() -> None:
     seam = gm.Polygon(
         [(170, 0), (-170, 0), (-170, 10), (170, 10)],
