@@ -13700,6 +13700,11 @@ fn native_source_face_germs(
     Ok(Some(germs))
 }
 
+struct NativeKnownSourceSpanSlice {
+    uses: Vec<NativeSourceSpanUse>,
+    selected_left_region: Option<usize>,
+}
+
 fn native_known_source_spans_for_slice(
     topology: &ExactGeographicTopology,
     selected_face_roots: &[Option<usize>],
@@ -13708,11 +13713,12 @@ fn native_known_source_spans_for_slice(
     local_start: &ExactRational,
     local_end: &ExactRational,
     budget: &mut impl Work,
-) -> Result<Vec<NativeSourceSpanUse>> {
+) -> Result<NativeKnownSourceSpanSlice> {
     budget.charge(
         u64::try_from(chord.source_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut output = Vec::with_capacity(chord.source_ranges.len());
+    let mut selected_left_region = None;
     for source in &chord.source_ranges {
         budget.charge(1)?;
         let (producer_low, producer_high) = if source
@@ -13814,6 +13820,7 @@ fn native_known_source_spans_for_slice(
                 )
                 .into());
             }
+            selected_left_region = Some(region);
         }
         output.push(NativeSourceSpanUse {
             span: span_id,
@@ -13837,7 +13844,10 @@ fn native_known_source_spans_for_slice(
             face_germs,
         });
     }
-    Ok(output)
+    Ok(NativeKnownSourceSpanSlice {
+        uses: output,
+        selected_left_region,
+    })
 }
 
 fn native_known_span_boundaries(
@@ -17969,7 +17979,44 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        let start_bank = if !start_is_seam {
+        let mut seam_wall_source_spans = None;
+        let seam_wall_bank = if let Some(region) = region
+            && direction.is_eq()
+            && start_is_seam
+            && end_is_seam
+        {
+            let vertical = start_chart.y.try_cmp_with_work(&end_chart.y, budget)?;
+            if vertical.is_eq() {
+                None
+            } else {
+                let source_spans = native_known_source_spans_for_slice(
+                    self.topology,
+                    self.emission.selected_face_roots,
+                    Some(region),
+                    chord,
+                    &zero,
+                    &one,
+                    budget,
+                )?;
+                if source_spans.selected_left_region != Some(region) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native seam wall has no authenticated selected-left source germ".into(),
+                    )
+                    .into());
+                }
+                seam_wall_source_spans = Some(source_spans);
+                Some(if vertical.is_gt() {
+                    super::emission::ChartSide::West
+                } else {
+                    super::emission::ChartSide::East
+                })
+            }
+        } else {
+            None
+        };
+        let start_bank = if let Some(bank) = seam_wall_bank {
+            Some(bank)
+        } else if !start_is_seam {
             None
         } else if direction.is_gt() {
             Some(super::emission::ChartSide::West)
@@ -17978,7 +18025,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        let end_bank = if !end_is_seam {
+        let end_bank = if let Some(bank) = seam_wall_bank {
+            Some(bank)
+        } else if !end_is_seam {
             None
         } else if direction.is_gt() {
             Some(super::emission::ChartSide::East)
@@ -18175,7 +18224,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         &previous_parameter,
                         &feature.edge_parameter,
                         budget,
-                    )?,
+                    )?
+                    .uses,
                 },
             });
             output.break_after.push(true);
@@ -18206,15 +18256,21 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     &one,
                     budget,
                 )?,
-                known_spans: native_known_source_spans_for_slice(
-                    self.topology,
-                    self.emission.selected_face_roots,
-                    region,
-                    chord,
-                    &previous_parameter,
-                    &one,
-                    budget,
-                )?,
+                known_spans: match seam_wall_source_spans.take() {
+                    Some(source_spans) => source_spans.uses,
+                    None => {
+                        native_known_source_spans_for_slice(
+                            self.topology,
+                            self.emission.selected_face_roots,
+                            region,
+                            chord,
+                            &previous_parameter,
+                            &one,
+                            budget,
+                        )?
+                        .uses
+                    },
+                },
             },
         });
         output.break_after.push(end_is_seam);
@@ -22272,6 +22328,70 @@ mod canonical_coordinate_tests {
     }
 
     #[test]
+    fn seam_wall_reductions_complete_through_the_native_reference() -> Result<()> {
+        let west = vec![
+            crate::io::parse_wkt("POLYGON ((170 -1, -170 -1, -170 2, 170 2, 170 -1))")?,
+            crate::io::parse_wkt("POLYGON ((177 0, -174 1, -174 3, 177 2, 177 0))")?,
+            crate::io::parse_wkt("POLYGON ((-180 60, -179 61, -180 62, -180 60))")?,
+            crate::io::parse_wkt("POLYGON ((-180 50, -179 51, -180 52, -180 50))")?,
+        ];
+        let east = vec![
+            crate::io::parse_wkt("POLYGON ((170 -1, -170 -1, -170 2, 170 2, 170 -1))")?,
+            crate::io::parse_wkt("POLYGON ((177 0, -174 1, -174 3, 177 2, 177 0))")?,
+            crate::io::parse_wkt("POLYGON ((180 60, 180 62, 179 61, 180 60))")?,
+        ];
+
+        for (bank, shapes) in [("West", west), ("East", east)] {
+            let topology = topology(&shapes)?;
+            let mut budget = EvaluationBudget::new("Native seam wall control", 0)?;
+            let plan = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+            let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
+            let publication = plan.fragment_recipes.publish(
+                &topology,
+                &nearest,
+                OverlayOp::Union.name(),
+                &mut budget,
+            )?;
+            let source_points = vec![None; topology.q.nodes.len()];
+            let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+            let live_keys = drawing.live_node_keys(topology.sources.frame, &mut budget)?;
+            let emission =
+                plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+            let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+            let outcome = certify_and_search_q_embedding::<crate::crs::GeodesicMetric, _>(
+                &topology,
+                &emission,
+                &nearest,
+                &live_keys,
+                drawing,
+                &ordinates,
+                crate::geometry::CoordinateAxes::XY,
+                false,
+                OverlayOp::Union.name(),
+                None,
+                &mut budget,
+            )?;
+            let native = matches!(
+                outcome,
+                SearchOutcome::Pass(QEmbeddingPass {
+                    output: QEmbeddingOutput {
+                        sealed: super::super::emission::SealedQDrawing::Native(_),
+                        ..
+                    },
+                    ..
+                })
+            );
+            if !native {
+                return Err(GeometryErrorKind::Invalid(
+                    format!("{bank} seam-wall reduction did not complete through Native").into(),
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn selected_pole_wedge_is_a_fan_not_a_terminal_chart_closure() -> Result<()> {
         let cap = crate::io::parse_wkt("POLYGON ((0 80, 90 80, 180 80, -90 80, 0 80))")?;
         let wedge = crate::io::parse_wkt("POLYGON ((120 90, 110 75, 130 75, 120 90))")?;
@@ -24000,6 +24120,29 @@ mod ring_filter_tests {
         assert_eq!(exact_q_ring_winding_filter(frame, &clockwise), None);
         let lifted = continuously_lift_exact_ring(frame, &clockwise)?;
         assert_eq!(exact_ring_winding(&lifted)?, RingWinding::Clockwise);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod native_face_region_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_selected_roots_cannot_share_one_native_face() -> Result<()> {
+        let mut face_regions = vec![None; 1];
+        let mut known = vec![false; 1];
+        let mut work = Unmetered;
+        assign_native_face_region(&mut face_regions, &mut known, 0, Some(1256), &mut work)?;
+
+        if assign_native_face_region(&mut face_regions, &mut known, 0, Some(1251), &mut work)
+            .is_ok()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "one Native face accepted two distinct selected-region roots".into(),
+            )
+            .into());
+        }
         Ok(())
     }
 }
