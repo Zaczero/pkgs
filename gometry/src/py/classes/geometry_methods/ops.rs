@@ -176,7 +176,7 @@ impl PyGeometry {
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         let publication = py.detach(move || shape.delaunay_mesh_publication_in_domain(domain))?;
-        let vertices = publication.points();
+        let vertices = publication.points.as_slice();
         if vertices.is_empty() {
             return Ok(PyGeometryArray::from_shapes(
                 Vec::new(),

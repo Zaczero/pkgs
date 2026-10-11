@@ -975,72 +975,68 @@ fn retained_delaunay_publication_keeps_canonical_faces_and_reciprocal_uses() {
         .delaunay_mesh_publication_in_domain(TopologyDomain::Geographic(GeographicFrame::crs84()))
         .unwrap();
 
-    assert_eq!(publication.producer(), super::MeshProducer::Delaunay);
-    assert_eq!(publication.sites().len(), 4);
-    assert_eq!(publication.faces().len(), 2);
-    assert_eq!(publication.points().len(), 8);
-    for (producer_ordinal, site) in publication.sites().iter().enumerate() {
-        assert_eq!(site.producer_ordinal(), producer_ordinal);
-        assert!(matches!(site.origin(), super::MeshSiteOrigin::Source {
-            occurrence: 0..=3,
-            ..
-        }));
+    assert_eq!(publication.producer, super::MeshProducer::Delaunay);
+    assert_eq!(publication.sites.len(), 4);
+    assert_eq!(publication.faces.len(), 2);
+    assert_eq!(publication.points.len(), 8);
+    for (producer_ordinal, site) in publication.sites.iter().enumerate() {
+        assert_eq!(site.producer_ordinal, producer_ordinal);
+        assert_eq!(source_points[site.source_ordinal], site.record);
+        assert!(matches!(site.source_ordinal, 0..=3));
         assert!(matches!(
-            site.location(),
+            site.location,
             super::MeshSiteLocation::Retained(_)
         ));
     }
 
     let mut selected_faces = std::collections::HashSet::new();
-    for face in publication.faces() {
-        assert!(selected_faces.insert(face.selected_face()));
-        let output_vertices = face.output_vertices();
+    for face in &publication.faces {
+        assert!(selected_faces.insert(face.selected_face));
+        let output_vertices = face.output_vertices.clone();
         assert_eq!(output_vertices.len(), 4);
-        assert!(!face.reversed());
-        let mut selected_vertices = face.output_to_selected();
+        assert!(!face.reversed);
+        let mut selected_vertices = face.output_to_selected;
         selected_vertices.sort_unstable();
         assert_eq!(selected_vertices, [0, 1, 2]);
         for output_vertex in 0..3 {
             assert_eq!(
-                face.output_sites()[output_vertex],
-                face.selected_sites()[usize::from(face.output_to_selected()[output_vertex])]
+                face.output_sites[output_vertex],
+                face.selected_sites[usize::from(face.output_to_selected[output_vertex])]
             );
             assert_eq!(
-                publication.points()[output_vertices.start + output_vertex],
-                publication.sites()[face.output_sites()[output_vertex]]
-                    .origin()
-                    .point()
+                publication.points[output_vertices.start + output_vertex],
+                publication.sites[face.output_sites[output_vertex]].record
             );
         }
         assert_eq!(
-            publication.points()[output_vertices.start + 3],
-            publication.points()[output_vertices.start]
+            publication.points[output_vertices.start + 3],
+            publication.points[output_vertices.start]
         );
-        for (output_side, boundary) in face.boundary_uses().iter().enumerate() {
-            assert_eq!(usize::from(boundary.output_side()), output_side);
-            assert_eq!(boundary.selected_use().face(), face.selected_face());
+        for (output_side, boundary) in face.boundary_uses.iter().enumerate() {
+            assert_eq!(usize::from(boundary.output_side), output_side);
+            assert_eq!(boundary.selected_use.face, face.selected_face);
             assert_eq!(
-                usize::from(boundary.selected_use().side()),
-                usize::from(face.output_to_selected()[output_side])
+                usize::from(boundary.selected_use.side),
+                usize::from(face.output_to_selected[output_side])
             );
-            assert_eq!(boundary.role(), super::MeshEdgeRole::Delaunay);
-            assert!(!boundary.reversed_for_output());
-            assert!(!boundary.cocircular());
-            assert_eq!(boundary.endpoints(), [
-                face.output_sites()[output_side],
-                face.output_sites()[(output_side + 1) % 3],
+            assert_eq!(boundary.role, super::MeshEdgeRole::Delaunay);
+            assert!(!boundary.reversed_for_output);
+            assert!(!boundary.cocircular);
+            assert_eq!([boundary.start_site, boundary.end_site], [
+                face.output_sites[output_side],
+                face.output_sites[(output_side + 1) % 3],
             ]);
-            if let Some(reverse) = boundary.reverse() {
+            if let Some(reverse) = boundary.reverse {
                 let reciprocal = publication
-                    .faces()
+                    .faces
                     .iter()
-                    .flat_map(|other| other.boundary_uses())
-                    .find(|other| other.selected_use() == reverse)
+                    .flat_map(|other| other.boundary_uses.iter())
+                    .find(|other| other.selected_use == reverse)
                     .expect("every selected interior use has its authentic twin");
-                assert_eq!(reciprocal.reverse(), Some(boundary.selected_use()));
-                assert_eq!(reciprocal.endpoints(), [
-                    boundary.endpoints()[1],
-                    boundary.endpoints()[0]
+                assert_eq!(reciprocal.reverse, Some(boundary.selected_use));
+                assert_eq!([reciprocal.start_site, reciprocal.end_site], [
+                    boundary.end_site,
+                    boundary.start_site
                 ]);
             }
         }

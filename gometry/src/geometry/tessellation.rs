@@ -15,8 +15,8 @@ mod shape;
 mod voronoi;
 mod voronoi_dcel;
 pub(crate) use prepared_mesh::{
-    MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshSiteOrigin, MeshUseId,
-    PreparedMeshBoundaryUse, PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
+    MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
+    PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
 };
 
 pub(crate) struct VoronoiPolygonOutput {
