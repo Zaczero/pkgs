@@ -277,10 +277,41 @@ impl ExactLine {
         let ay = ExactDyadic::from_f64(a.y);
         let bx = ExactDyadic::from_f64(b.x);
         let by = ExactDyadic::from_f64(b.y);
+        Self::perpendicular_bisector_dyadics([&ax, &ay], [&bx, &by])
+    }
+
+    pub(in crate::geometry) fn perpendicular_bisector_points(
+        a: &ExactPoint,
+        b: &ExactPoint,
+    ) -> Result<Self> {
+        let a = a.coords()?;
+        let b = b.coords()?;
+        let aw_bw = a.w.try_product(&b.w)?;
+        let a_squared = a.x.try_product(&a.x)?.try_add(a.y.try_product(&a.y)?)?;
+        let b_squared = b.x.try_product(&b.x)?.try_add(b.y.try_product(&b.y)?)?;
+        let aw_squared = a.w.try_product(&a.w)?;
+        let bw_squared = b.w.try_product(&b.w)?;
         let two = ExactDyadic::from_f64(2.0);
         Ok(Self([
-            ExactDyadic::try_subtract_refs(&bx, &ax)?.try_product(&two)?,
-            ExactDyadic::try_subtract_refs(&by, &ay)?.try_product(&two)?,
+            ExactDyadic::try_subtract_refs(&b.x.try_product(&a.w)?, &a.x.try_product(&b.w)?)?
+                .try_product(&two)?
+                .try_product(&aw_bw)?,
+            ExactDyadic::try_subtract_refs(&b.y.try_product(&a.w)?, &a.y.try_product(&b.w)?)?
+                .try_product(&two)?
+                .try_product(&aw_bw)?,
+            a_squared
+                .try_product(&bw_squared)?
+                .try_subtract(b_squared.try_product(&aw_squared)?)?,
+        ]))
+    }
+
+    fn perpendicular_bisector_dyadics(a: [&ExactDyadic; 2], b: [&ExactDyadic; 2]) -> Result<Self> {
+        let [ax, ay] = a;
+        let [bx, by] = b;
+        let two = ExactDyadic::from_f64(2.0);
+        Ok(Self([
+            ExactDyadic::try_subtract_refs(bx, ax)?.try_product(&two)?,
+            ExactDyadic::try_subtract_refs(by, ay)?.try_product(&two)?,
             ax.try_product(&ax)?
                 .try_add(ay.try_product(&ay)?)?
                 .try_subtract(bx.try_product(&bx)?.try_add(by.try_product(&by)?)?)?,

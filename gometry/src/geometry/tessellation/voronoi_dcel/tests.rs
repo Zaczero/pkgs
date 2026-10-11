@@ -7,10 +7,7 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
         let sites: Vec<_> = [(0.0, 0.0), (step, 0.0), (0.0, step)]
             .into_iter()
             .enumerate()
-            .map(|(id, (x, y))| Site {
-                id,
-                point: Point::new_raw_xy(x, y),
-            })
+            .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
             .collect();
         let mut dual_budget = ExpansionBudget::new("test", "subnormal dual");
         let dual = dual_build(
@@ -1575,10 +1572,7 @@ fn ordinary_five_site_diagram_is_owned_and_admitted() {
     let sites: Vec<_> = [(0.0, 0.0), (0.0, 1.0), (0.5, 0.4), (1.0, 0.0), (1.0, 1.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let mut budget = ExpansionBudget::new("test", "Voronoi topology");
     let diagram = build(
@@ -1606,7 +1600,7 @@ fn cosine_circle_fails_open_to_generic_coverage() {
             Point::new_raw_xy(10.0 * angle.cos(), 10.0 * angle.sin())
         })
         .enumerate()
-        .map(|(id, point)| Site { id, point })
+        .map(|(id, point)| Site::raw(id, point, id))
         .collect();
     let mut budget = ExpansionBudget::new("test", "cosine circle");
     let diagram = build(
@@ -2122,7 +2116,10 @@ fn rounded_ring_orientation_mutant_is_rejected_by_the_embedding_certificate() {
     let clip = NormalizedClip {
         rings: Vec::new(),
         fixed: Vec::new(),
+        chart_fixed: Vec::new(),
         source: None,
+        geometry: None,
+        chart: None,
         polygon_baseline: None,
         contacts: Vec::new(),
     };
@@ -2218,8 +2215,11 @@ fn assigned_clip_host_conflicts_seed_and_blame_separator_only_class() {
 
     let clip = NormalizedClip {
         rings: vec![cycle(&shell_points), cycle(&hole_points)],
+        chart_fixed: vec![shell.clone(), hole.clone()],
         fixed: vec![shell, hole],
         source: Some(&clip_polygon),
+        geometry: Some(clip_polygon.clone()),
+        chart: None,
         polygon_baseline: None,
         contacts: Vec::new(),
     };
@@ -2384,10 +2384,7 @@ fn shifted_six_site_diagram_has_a_certified_binary64_partition() {
     ]
     .into_iter()
     .enumerate()
-    .map(|(id, (x, y))| Site {
-        id,
-        point: Point::new_raw_xy(offset + x, offset + y),
-    })
+    .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(offset + x, offset + y), id))
     .collect();
     let source = Shape::MultiPoint(
         sites
@@ -2588,10 +2585,7 @@ fn sites_xy(points: &[(f64, f64)]) -> Vec<Site> {
     points
         .iter()
         .enumerate()
-        .map(|(id, &(x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, &(x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect()
 }
 
@@ -3105,10 +3099,7 @@ fn edges_only_embedding_publishes_certified_chains_with_colliding_nearest_vertic
     ]
     .into_iter()
     .enumerate()
-    .map(|(id, (x, y))| Site {
-        id,
-        point: Point::new_raw_xy(offset + x, offset + y),
-    })
+    .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(offset + x, offset + y), id))
     .collect();
     let clip = Polygon::new(
         rectangle(offset - 1.0, offset - 1.0, offset + 11.0, offset + 11.0),
@@ -3795,10 +3786,7 @@ fn crossed_component_keeps_distinct_faces_with_the_same_owner() {
     let sites: Vec<_> = [(-10.0, -10.0), (0.0, 10.0), (10.0, -10.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -12.0, -1.0, 12.0, 1.0,
@@ -3833,10 +3821,7 @@ fn isolated_component_exterior_inherits_the_containing_face() {
     let sites: Vec<_> = [(-10.0, -10.0), (0.0, 10.0), (10.0, -10.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -1.0, -1.0, 1.0, 1.0,
@@ -4079,10 +4064,7 @@ fn two_isolated_holes_in_split_same_owner_cell_pair_by_containment() {
     let sites: Vec<_> = [(-10.0, -10.0), (0.0, 10.0), (10.0, -10.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![
         rectangle(-12.0, -1.0, 12.0, 1.0),
@@ -4110,10 +4092,7 @@ fn validate_rejects_a_mutated_twin_walk_label() {
     let sites: Vec<_> = [(-10.0, -10.0), (0.0, 10.0), (10.0, -10.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -1.0, -1.0, 1.0, 1.0,
@@ -4143,10 +4122,7 @@ fn collinear_holed_clip_splits_each_separator_into_two_pieces() {
     let sites: Vec<_> = [(-2.0, 0.0), (0.0, 0.0), (2.0, 0.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let clip = Polygon::new(rectangle(-3.0, -3.0, 3.0, 3.0), vec![rectangle(
         -1.5, -1.0, 1.5, 1.0,
@@ -4215,10 +4191,7 @@ fn frame_nearest_ignores_a_tie_that_is_not_the_minimum() {
     let sites: Vec<_> = [(-1.0, 0.0), (1.0, 0.0), (0.0, 0.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let point = exact::ExactPoint::from_xy(XY::new(0.0, 10.0));
     assert_eq!(nearest_site(&point, &sites).unwrap(), SiteId(2));
@@ -4231,10 +4204,7 @@ fn finite_extreme_collinear_envelope_is_explicitly_degenerate() {
     let sites: Vec<_> = [(-f64::MAX, 0.0), (f64::MAX, 0.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
     assert!(
@@ -4256,10 +4226,7 @@ fn sloped_collinear_envelope_emits_analytic_bisector() {
     let sites: Vec<_> = [(0.0, 0.0), (2.0, 2.0)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
     let edges = build_collinear_edges(
@@ -4478,10 +4445,7 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
     let sites: Vec<_> = [(0.0, 0.0), (2.0, 0.0), (0.0, 2.0), (2.0, 2.0), (0.8, 1.1)]
         .into_iter()
         .enumerate()
-        .map(|(id, (x, y))| Site {
-            id,
-            point: Point::new_raw_xy(x, y),
-        })
+        .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
         .collect();
     let clip = normalize_clip(&sites, VoronoiBoundary::Envelope, false).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
@@ -4604,10 +4568,7 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
     ]
     .into_iter()
     .enumerate()
-    .map(|(id, (x, y))| Site {
-        id,
-        point: Point::new_raw_xy(x, y),
-    })
+    .map(|(id, (x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
     .collect();
     let clip = normalize_clip(&sites, VoronoiBoundary::Envelope, false).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
@@ -4709,4 +4670,200 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
             "dual mutation unexpectedly admitted: {name}"
         );
     }
+}
+
+#[test]
+fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
+    let source = Shape::MultiPoint(
+        vec![
+            Point::new_raw_xy(172.0, 0.0),
+            Point::new_raw_xy(-172.0, 0.0),
+        ]
+        .into(),
+    );
+    let clip = Polygon::new(
+        Ring::closed(vec![
+            Point::new_raw_xy(170.0, -4.0),
+            Point::new_raw_xy(180.0, -4.0),
+            Point::new_raw_xy(190.0, -4.0),
+            Point::new_raw_xy(190.0, 4.0),
+            Point::new_raw_xy(180.0, 4.0),
+            Point::new_raw_xy(170.0, 4.0),
+            Point::new_raw_xy(170.0, -4.0),
+        ])
+        .unwrap(),
+        Vec::new(),
+    );
+    let frame = crate::geographic::GeographicFrame::crs84();
+    let mut budget = ExpansionBudget::new("test", "retained collinear seam");
+    let outputs = source
+        .voronoi_polygon_outputs_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Polygon(&clip),
+            Some(frame),
+            &mut budget,
+        )
+        .unwrap();
+    assert_eq!(outputs.len(), 2);
+
+    let chart_sites = [
+        Shape::Point(Point::new_raw_xy(172.0, 0.0)),
+        Shape::Point(Point::new_raw_xy(188.0, 0.0)),
+    ];
+    for (site_index, site) in chart_sites.iter().enumerate() {
+        let owner = outputs
+            .iter()
+            .position(|output| Shape::Polygon(output.polygon.clone()).covers(site).unwrap())
+            .expect("each retained seam site lies in one output cell");
+        assert_eq!(owner, site_index);
+        assert!(
+            outputs
+                .iter()
+                .enumerate()
+                .filter(|(_, output)| {
+                    Shape::Polygon(output.polygon.clone()).covers(site).unwrap()
+                })
+                .count()
+                == 1
+        );
+    }
+
+    let mut edge_budget = ExpansionBudget::new("test", "retained collinear seam edges");
+    let (coordinates, offsets) = source
+        .voronoi_edge_column_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Polygon(&clip),
+            Some(frame),
+            &mut edge_budget,
+        )
+        .unwrap();
+    assert_eq!(offsets.as_slice(), &[0, 2]);
+    assert_eq!(coordinates.xs(), &[180.0, 180.0]);
+    assert_eq!(coordinates.ys(), &[-4.0, 4.0]);
+}
+
+#[test]
+fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
+    let source = Shape::MultiPoint(
+        vec![
+            Point::new_raw_xy(170.0, 0.0),
+            Point::new_raw_xy(-170.0, 0.0),
+            Point::new_raw_xy(-170.0, 10.0),
+            Point::new_raw_xy(170.0, 8.0),
+        ]
+        .into(),
+    );
+    let frame = crate::geographic::GeographicFrame::crs84();
+    let clip = Polygon::new(
+        Ring::closed(vec![
+            Point::new_raw_xy(160.0, -10.0),
+            Point::new_raw_xy(200.0, -10.0),
+            Point::new_raw_xy(200.0, 20.0),
+            Point::new_raw_xy(160.0, 20.0),
+            Point::new_raw_xy(160.0, -10.0),
+        ])
+        .unwrap(),
+        Vec::new(),
+    );
+    let chart_sites = [
+        Shape::Point(Point::new_raw_xy(170.0, 0.0)),
+        Shape::Point(Point::new_raw_xy(190.0, 0.0)),
+        Shape::Point(Point::new_raw_xy(190.0, 10.0)),
+        Shape::Point(Point::new_raw_xy(170.0, 8.0)),
+    ];
+
+    let mut exact_budget = ExpansionBudget::new("test", "retained exact seam diagram");
+    let exact_outputs = source
+        .voronoi_polygon_outputs_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Polygon(&clip),
+            Some(frame),
+            &mut exact_budget,
+        )
+        .unwrap();
+    assert_eq!(exact_outputs.len(), chart_sites.len());
+    for site in &chart_sites {
+        assert_eq!(
+            exact_outputs
+                .iter()
+                .filter(|output| { Shape::Polygon(output.polygon.clone()).covers(site).unwrap() })
+                .count(),
+            1,
+            "the exact producer assigns each retained chart site to one cell"
+        );
+    }
+
+    let mut dual_budget = ExpansionBudget::new("test", "retained dual seam diagram");
+    let dual_outputs = source
+        .voronoi_polygon_outputs_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Padded,
+            Some(frame),
+            &mut dual_budget,
+        )
+        .unwrap();
+    assert_eq!(dual_outputs.len(), chart_sites.len());
+    for site in &chart_sites {
+        assert_eq!(
+            dual_outputs
+                .iter()
+                .filter(|output| { Shape::Polygon(output.polygon.clone()).covers(site).unwrap() })
+                .count(),
+            1,
+            "the dual producer assigns each retained chart site to one cell"
+        );
+    }
+}
+
+#[test]
+fn retained_lone_site_reuses_its_clip_and_empty_sites_stay_empty() {
+    let frame = crate::geographic::GeographicFrame::crs84();
+    let clip = Polygon::new(
+        Ring::closed(vec![
+            Point::new_raw_xy(170.0, -4.0),
+            Point::new_raw_xy(180.0, -4.0),
+            Point::new_raw_xy(190.0, -4.0),
+            Point::new_raw_xy(190.0, 4.0),
+            Point::new_raw_xy(180.0, 4.0),
+            Point::new_raw_xy(170.0, 4.0),
+            Point::new_raw_xy(170.0, -4.0),
+        ])
+        .unwrap(),
+        Vec::new(),
+    );
+    let lone = Shape::MultiPoint(vec![Point::new_raw_xy(172.0, 0.0)].into());
+    let mut budget = ExpansionBudget::new("test", "retained lone-site Voronoi");
+    let outputs = lone
+        .voronoi_polygon_outputs_in_frame_budgeted(
+            0.0,
+            VoronoiBoundary::Polygon(&clip),
+            Some(frame),
+            &mut budget,
+        )
+        .unwrap();
+    assert_eq!(outputs.len(), 1);
+    assert!(
+        outputs[0]
+            .computed_edges
+            .iter()
+            .flatten()
+            .all(|computed| !computed)
+    );
+
+    let empty = Shape::typed_empty(
+        crate::geometry::GeometryKind::MultiPoint,
+        crate::geometry::CoordinateAxes::XY,
+    );
+    let mut empty_budget = ExpansionBudget::new("test", "empty retained Voronoi");
+    assert!(
+        empty
+            .voronoi_polygon_outputs_in_frame_budgeted(
+                0.0,
+                VoronoiBoundary::Polygon(&clip),
+                Some(frame),
+                &mut empty_budget,
+            )
+            .unwrap()
+            .is_empty()
+    );
 }

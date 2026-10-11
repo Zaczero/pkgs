@@ -70,15 +70,19 @@ fn brute_snap_sites(sites: &[super::Site], radius: f64) -> Vec<super::Site> {
     for site in sites {
         let mut snapped = false;
         for survivor in &survivors {
-            if super::exact::distance_within(survivor.point.xy(), site.point.xy(), radius)
-                .expect("finite binary64 site distances stay within exact dyadic bounds")
+            if super::exact::distance_within_points(
+                &survivor.exact_point,
+                &site.exact_point,
+                radius,
+            )
+            .expect("finite binary64 site distances stay within exact dyadic bounds")
             {
                 snapped = true;
                 break;
             }
         }
         if !snapped {
-            survivors.push(*site);
+            survivors.push(site.clone());
         }
     }
     survivors
@@ -130,22 +134,10 @@ fn voronoi_snap_matches_exact_reference_at_strict_radius_neighbors() {
     let below = 1.0_f64.next_down();
     let above = 1.0_f64.next_up();
     let sites = [
-        super::Site {
-            id: 0,
-            point: xy(0.0, 0.0),
-        },
-        super::Site {
-            id: 1,
-            point: xy(0.0, below),
-        },
-        super::Site {
-            id: 2,
-            point: xy(0.0, 1.0),
-        },
-        super::Site {
-            id: 3,
-            point: xy(0.0, above),
-        },
+        super::Site::raw(0, xy(0.0, 0.0), 0),
+        super::Site::raw(1, xy(0.0, below), 1),
+        super::Site::raw(2, xy(0.0, 1.0), 2),
+        super::Site::raw(3, xy(0.0, above), 3),
     ];
 
     assert_eq!(
@@ -161,18 +153,9 @@ fn voronoi_snap_matches_exact_reference_at_strict_radius_neighbors() {
 fn voronoi_snap_matches_exact_reference_at_subnormal_and_extreme_bounds() {
     let minimum = f64::from_bits(1);
     let subnormal_sites = [
-        super::Site {
-            id: 0,
-            point: xy(0.0, 0.0),
-        },
-        super::Site {
-            id: 1,
-            point: xy(minimum, 0.0),
-        },
-        super::Site {
-            id: 2,
-            point: xy(2.0 * minimum, 0.0),
-        },
+        super::Site::raw(0, xy(0.0, 0.0), 0),
+        super::Site::raw(1, xy(minimum, 0.0), 1),
+        super::Site::raw(2, xy(2.0 * minimum, 0.0), 2),
     ];
     assert_eq!(
         assert_snap_matches_brute(&subnormal_sites, minimum)
@@ -184,14 +167,8 @@ fn voronoi_snap_matches_exact_reference_at_subnormal_and_extreme_bounds() {
 
     let maximum = f64::MAX;
     let overflowing_y_sites = [
-        super::Site {
-            id: 0,
-            point: xy(0.0, -maximum),
-        },
-        super::Site {
-            id: 1,
-            point: xy(0.0, maximum),
-        },
+        super::Site::raw(0, xy(0.0, -maximum), 0),
+        super::Site::raw(1, xy(0.0, maximum), 1),
     ];
     assert_eq!(
         assert_snap_matches_brute(&overflowing_y_sites, maximum)
@@ -202,18 +179,9 @@ fn voronoi_snap_matches_exact_reference_at_subnormal_and_extreme_bounds() {
     );
 
     let opposite_x_sites = [
-        super::Site {
-            id: 0,
-            point: xy(-maximum, 0.0),
-        },
-        super::Site {
-            id: 1,
-            point: xy(0.0, 0.0),
-        },
-        super::Site {
-            id: 2,
-            point: xy(maximum, 0.0),
-        },
+        super::Site::raw(0, xy(-maximum, 0.0), 0),
+        super::Site::raw(1, xy(0.0, 0.0), 1),
+        super::Site::raw(2, xy(maximum, 0.0), 2),
     ];
     assert_eq!(
         assert_snap_matches_brute(&opposite_x_sites, maximum)
@@ -227,18 +195,9 @@ fn voronoi_snap_matches_exact_reference_at_subnormal_and_extreme_bounds() {
 #[test]
 fn voronoi_snap_matches_exact_reference_when_y_order_differs() {
     let sites = [
-        super::Site {
-            id: 0,
-            point: xy(0.0, 0.8),
-        },
-        super::Site {
-            id: 1,
-            point: xy(0.8, 0.0),
-        },
-        super::Site {
-            id: 2,
-            point: xy(0.81, 0.4),
-        },
+        super::Site::raw(0, xy(0.0, 0.8), 0),
+        super::Site::raw(1, xy(0.8, 0.0), 1),
+        super::Site::raw(2, xy(0.81, 0.4), 2),
     ];
 
     assert_eq!(
@@ -274,14 +233,8 @@ fn canonical_voronoi_keeps_4097_equal_x_sparse_y_sites_in_dense_id_order() {
 #[test]
 fn exact_snap_does_not_use_a_rounded_axis_rejection() {
     let sites = [
-        super::Site {
-            id: 0,
-            point: xy(0.0, 1e20),
-        },
-        super::Site {
-            id: 1,
-            point: xy(0.0, 1.0),
-        },
+        super::Site::raw(0, xy(0.0, 1e20), 0),
+        super::Site::raw(1, xy(0.0, 1.0), 1),
     ];
     assert_eq!(
         (sites[0].point.y - sites[1].point.y).abs().to_bits(),
@@ -859,7 +812,7 @@ fn raw_delaunay_provider_keeps_the_existing_cocircular_square_mesh() {
     let sites = points
         .iter()
         .enumerate()
-        .map(|(id, &point)| super::delaunay::Site { id, point })
+        .map(|(id, &point)| super::delaunay::Site::raw(id, point, id))
         .collect::<Vec<_>>();
     let mesh = super::delaunay::certified_delaunay(&sites).unwrap();
     assert_eq!(mesh.triangles().len(), 2);

@@ -155,10 +155,47 @@ fn validate_refined_triangle(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Site {
     pub(super) id: usize,
     pub(super) point: Point,
+    pub(super) source_ordinal: usize,
+    pub(super) exact_point: exact::ExactPoint,
+    pub(super) retained_chart_site: Option<ChartPointSite>,
+}
+
+impl Site {
+    pub(super) fn raw(id: usize, point: Point, source_ordinal: usize) -> Self {
+        Self {
+            id,
+            point,
+            source_ordinal,
+            exact_point: exact::ExactPoint::from_xy(point.xy()),
+            retained_chart_site: None,
+        }
+    }
+
+    pub(super) fn retained(
+        id: usize,
+        point: Point,
+        source_ordinal: usize,
+        frame: GeographicFrame,
+        chart_site: ChartPointSite,
+    ) -> Result<Self> {
+        let x = retained_site_longitude(frame.longitude(), chart_site.longitude())?;
+        let y = exact::ExactDyadic::from_f64(chart_site.source_y());
+        Ok(Self {
+            id,
+            point,
+            source_ordinal,
+            exact_point: exact::ExactPoint::from_dyadics(x, y),
+            retained_chart_site: Some(chart_site),
+        })
+    }
+
+    pub(super) fn rounded_xy(&self) -> Result<XY> {
+        self.exact_point.round_nearest_even()
+    }
 }
 
 /// The Delaunay mesh the Voronoi dual reads: counter-clockwise faces in the
@@ -441,13 +478,6 @@ impl exact_delaunay::MeshCoordinates for RetainedPointCoordinates<'_> {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the retained exact producer is not wired to public output until the shared output seal is accepted"
-    )
-)]
 /// Build the exact primal mesh from retained chart sites without publishing it.
 pub(in crate::geometry::tessellation) fn certified_delaunay_for_retained_points(
     frame: GeographicFrame,
@@ -460,7 +490,7 @@ pub(in crate::geometry::tessellation) fn certified_delaunay_for_retained_points(
 pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {
     let mut sites = Vec::with_capacity(points.len());
     for (id, &point) in points.iter().enumerate() {
-        sites.push(Site { id, point });
+        sites.push(Site::raw(id, point, id));
     }
     certified_delaunay(&sites)?.into_topology()
 }
@@ -954,10 +984,7 @@ mod tests {
         points
             .iter()
             .enumerate()
-            .map(|(id, &(x, y))| Site {
-                id,
-                point: Point::new_raw_xy(x, y),
-            })
+            .map(|(id, &(x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
             .collect()
     }
 

@@ -124,6 +124,7 @@ fn voronoi_outputs<T: Send, U: Send>(
     py: Python<'_>,
     shapes: impl Iterator<Item = Arc<crate::geometry::ShapeData>>,
     frame: &Frame,
+    topology_frame: Option<crate::geographic::GeographicFrame>,
     tolerance: f64,
     clip: &VoronoiClipInput,
     operation: &'static str,
@@ -131,6 +132,7 @@ fn voronoi_outputs<T: Send, U: Send>(
         &Shape,
         f64,
         VoronoiBoundary<'_>,
+        Option<crate::geographic::GeographicFrame>,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<T>,
     mut publish: impl FnMut(
@@ -148,7 +150,13 @@ fn voronoi_outputs<T: Send, U: Send>(
             .map(|shape| {
                 let mut budget =
                     crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
-                let output = kernel(shape, tolerance, boundary.as_borrowed(), &mut budget)?;
+                let output = kernel(
+                    shape,
+                    tolerance,
+                    boundary.as_borrowed(),
+                    topology_frame,
+                    &mut budget,
+                )?;
                 publish(output, &boundary, &mut budget)
             })
             .collect::<Result<Vec<U>>>()
@@ -166,6 +174,7 @@ pub(crate) fn voronoi_flatten(
         &Shape,
         f64,
         VoronoiBoundary<'_>,
+        Option<crate::geographic::GeographicFrame>,
         &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<crate::geometry::VoronoiPolygonOutput>>,
 ) -> PyResult<PyGeometryArray> {
@@ -179,6 +188,7 @@ pub(crate) fn voronoi_flatten(
         py,
         shapes,
         &frame,
+        geographic_frame,
         tolerance,
         clip,
         operation,
@@ -212,10 +222,11 @@ pub(crate) fn voronoi_edge_lines_flatten(
         py,
         shapes,
         &frame,
+        geographic_frame,
         tolerance,
         clip,
         "voronoi_edge_lines",
-        Shape::voronoi_edge_column_budgeted,
+        Shape::voronoi_edge_column_in_frame_budgeted,
         move |(coords, offsets), _, budget| {
             let Some(frame) = geographic_frame else {
                 return Ok((coords, offsets));

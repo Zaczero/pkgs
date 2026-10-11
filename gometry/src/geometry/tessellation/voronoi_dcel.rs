@@ -20,13 +20,14 @@ use std::ops::ControlFlow;
 
 use crate::collections::try_hash_map_with_capacity;
 use crate::error::Result;
+use crate::geographic::PointSelectionChart;
 use crate::geometry::area::{RingWinding, open_xy_cycle_winding};
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::embedding_search::{
     ClassAssignment, EvaluationBudget, GlobalCheck, Problem, ProximityChord, Search, SearchAccount,
     Work, build_proximity_classes, exact_chord_radius, possible_swept_bounds, proximity_limit,
 };
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::overlay::{
     NodeId, RayAxis, RayPoints, binary_cartesian_difference_without_partition_budget,
     binary_cartesian_intersection_with_edge_roles, emitted_pair_preserves_incidence,
@@ -170,9 +171,9 @@ use assembly::{ExactCellPart, ExactEdgeChain, ExactSimpleRing, assemble_cells, a
 #[cfg(test)]
 use clip::in_rectangle;
 use clip::{
-    SegmentIntersectionExt as _, axis_aligned_rectangle, between, bisector_frame_intersections,
-    clip_hull_ray_to_rectangle, clip_rectangle, clip_segment_to_rectangle, orient_separator,
-    sort_unique_along,
+    SegmentIntersectionExt as _, axis_aligned_rectangle, between, clip_hull_ray_to_rectangle,
+    clip_rectangle, clip_segment_to_rectangle, exact_bisector_frame_intersections,
+    orient_separator, sort_unique_along,
 };
 use scaffold::{
     build_scaffold, emit_clipped_separators, fixed_coordinates, lex_position,
@@ -253,7 +254,10 @@ struct ClippedSeparator {
 struct NormalizedClip<'a> {
     rings: Vec<Vec<exact::ExactPoint>>,
     fixed: Vec<Vec<XY>>,
+    chart_fixed: Vec<Vec<XY>>,
     source: Option<&'a Polygon>,
+    geometry: Option<Polygon>,
+    chart: Option<PointSelectionChart>,
     polygon_baseline: Option<usize>,
     contacts: Vec<ExactCycleContact>,
 }
@@ -927,7 +931,7 @@ pub(super) fn validate_owner_cycle_facts(
     Ok(())
 }
 
-type OpenClipRing = (Vec<exact::ExactPoint>, Vec<XY>, Vec<Option<usize>>);
+type OpenClipRing = (Vec<exact::ExactPoint>, Vec<XY>, Vec<XY>, Vec<Option<usize>>);
 
 fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
     GeometryErrorKind::voronoi(message.into())
@@ -1636,16 +1640,29 @@ fn record_generic_exact_touch(
     clippy::arithmetic_side_effects,
     reason = "Ring stores its explicit closing coordinate, so its length is positive and one subtraction opens the cycle"
 )]
-fn open_ring(ring: &Ring) -> Result<OpenClipRing> {
+fn exact_chart_point(chart: Option<PointSelectionChart>, point: XY) -> Result<exact::ExactPoint> {
+    let Some(chart) = chart else {
+        return Ok(exact::ExactPoint::from_xy(point));
+    };
+    let frame = chart.frame();
+    let longitude = chart.longitude_site(point.x)?;
+    Ok(exact::ExactPoint::from_dyadics(
+        retained_site_longitude(frame.longitude(), longitude)?,
+        exact::ExactDyadic::from_f64(point.y),
+    ))
+}
+
+fn open_ring(ring: &Ring, chart: Option<PointSelectionChart>) -> Result<OpenClipRing> {
     let open = ring.len() - 1;
     let mut exact_points = Vec::new();
     let mut fixed = Vec::new();
+    let mut chart_fixed = Vec::new();
     let mut vertex_indices = Vec::with_capacity(open);
     exact_points.reserve(open);
     fixed.reserve(open);
     for point in ring.iter().take(open) {
         let point = point.xy();
-        let exact = exact::ExactPoint::from_xy(point);
+        let exact = exact_chart_point(chart, point)?;
         if let Some(previous) = exact_points.last()
             && exact.same_position(previous)?
         {
@@ -1658,6 +1675,7 @@ fn open_ring(ring: &Ring) -> Result<OpenClipRing> {
             continue;
         }
         vertex_indices.push(exact_points.len());
+        chart_fixed.push(exact.round_nearest_even()?);
         exact_points.push(exact);
         fixed.push(point);
     }
@@ -1673,12 +1691,13 @@ fn open_ring(ring: &Ring) -> Result<OpenClipRing> {
         .take(open)
         .map(|(start, end)| (start != end).then_some(start))
         .collect();
-    Ok((exact_points, fixed, source_edges))
+    Ok((exact_points, fixed, chart_fixed, source_edges))
 }
 
-fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) {
+fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY], chart_fixed: &mut [XY]) {
     points.reverse();
     fixed.reverse();
+    chart_fixed.reverse();
 }
 
 #[expect(
@@ -1686,7 +1705,11 @@ fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) {
     clippy::arithmetic_side_effects,
     reason = "least cyclic rotation compares random offsets modulo this admitted nonempty ring; direct access preserves constant-time candidate steps without a linear nth lookup"
 )]
-fn rotate_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) -> Result<usize> {
+fn rotate_ring(
+    points: &mut [exact::ExactPoint],
+    fixed: &mut [XY],
+    chart_fixed: &mut [XY],
+) -> Result<usize> {
     let count = points.len();
     let mut least = 0;
     for candidate in 1..count {
@@ -1703,6 +1726,7 @@ fn rotate_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) -> Result<usi
     }
     points.rotate_left(least);
     fixed.rotate_left(least);
+    chart_fixed.rotate_left(least);
     Ok(least)
 }
 
@@ -1728,6 +1752,7 @@ fn map_source_polygon_contacts(
     source_rings: &[Option<NormalizedSourceRing>],
     rings: &[Vec<exact::ExactPoint>],
     fixed: &[Vec<XY>],
+    chart: Option<PointSelectionChart>,
 ) -> Result<(Vec<ExactCycleContact>, Vec<ExactPairTouch>)> {
     let mut contacts = Vec::with_capacity(source_contacts.len());
     let mut pair_touches = Vec::new();
@@ -1766,7 +1791,7 @@ fn map_source_polygon_contacts(
         };
         let ring_pair = [first.ring, second.ring];
         let segments = [first.segment, second.segment];
-        let point = exact::ExactPoint::from_xy(source.point);
+        let point = exact_chart_point(chart, source.point)?;
         contacts.push(ExactCycleContact {
             segments,
             point: point.clone(),
@@ -1900,13 +1925,40 @@ fn exact_source_parameter(parameter: &SegmentParameter) -> Result<exact::ExactRa
     }
 }
 
+fn polygon_from_open_xy_rings(rings: &[Vec<XY>]) -> Result<Polygon> {
+    let mut rings = rings.iter();
+    let make_ring = |open: &[XY]| -> Result<Ring> {
+        let first = *open.first().ok_or_else(exact_cycle_error)?;
+        let mut closed = Vec::with_capacity(open.len().saturating_add(1));
+        closed.extend_from_slice(open);
+        closed.push(first);
+        Ring::try_from_closed(CoordSeq::try_from_xy(&closed)?)
+    };
+    let shell = make_ring(rings.next().ok_or_else(exact_cycle_error)?)?;
+    let holes = rings
+        .map(|ring| make_ring(ring))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(Polygon::new(shell, holes))
+}
+
+#[cfg(test)]
 fn normalize_clip<'a>(
     sites: &[Site],
     boundary: VoronoiBoundary<'a>,
     polygon_output: bool,
 ) -> Result<NormalizedClip<'a>> {
+    normalize_clip_with_chart(sites, boundary, polygon_output, None)
+}
+
+fn normalize_clip_with_chart<'a>(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'a>,
+    polygon_output: bool,
+    chart: Option<PointSelectionChart>,
+) -> Result<NormalizedClip<'a>> {
     let mut rings = Vec::new();
     let mut fixed = Vec::new();
+    let mut chart_fixed = Vec::new();
     let mut contacts = Vec::new();
     let mut polygon_baseline = None;
     let source = match boundary {
@@ -1931,7 +1983,8 @@ fn normalize_clip<'a>(
                 .chain(polygon.holes.iter())
                 .enumerate()
             {
-                let (mut points, mut coordinates, mut source_edges) = open_ring(ring)?;
+                let (mut points, mut coordinates, mut chart_coordinates, mut source_edges) =
+                    open_ring(ring, chart)?;
                 let orientation = exact::cycle_orientation(&points)?;
                 let wanted = if ring_index == 0 {
                     ExactSign::Positive
@@ -1940,14 +1993,21 @@ fn normalize_clip<'a>(
                 };
                 let reversed = orientation != wanted;
                 if reversed {
-                    reverse_ring(&mut points, &mut coordinates);
+                    reverse_ring(&mut points, &mut coordinates, &mut chart_coordinates);
                 }
-                let rotation = rotate_ring(&mut points, &mut coordinates)?;
+                let rotation = rotate_ring(&mut points, &mut coordinates, &mut chart_coordinates)?;
                 let count = points.len();
                 for edge in source_edges.iter_mut().flatten() {
                     *edge = normalized_source_edge(*edge, count, rotation, reversed);
                 }
-                clip_rings.push((ring_index, points, coordinates, source_edges, reversed));
+                clip_rings.push((
+                    ring_index,
+                    points,
+                    coordinates,
+                    chart_coordinates,
+                    source_edges,
+                    reversed,
+                ));
             }
             let (_, holes) = clip_rings
                 .split_first_mut()
@@ -1957,10 +2017,12 @@ fn normalize_clip<'a>(
             })?;
             rings.reserve(clip_rings.len());
             fixed.reserve(clip_rings.len());
+            chart_fixed.reserve(clip_rings.len());
             let mut source_edge_map = vec![Vec::new(); clip_rings.len()];
             let mut source_ring_map = vec![None; clip_rings.len()];
             let mut segment_offset = 0_usize;
-            for (source_ring, points, coordinates, edges, reversed) in clip_rings {
+            for (source_ring, points, coordinates, chart_coordinates, edges, reversed) in clip_rings
+            {
                 let normalized_ring = rings.len();
                 *source_edge_map
                     .get_mut(source_ring)
@@ -1977,6 +2039,7 @@ fn normalize_clip<'a>(
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
                 rings.push(points);
                 fixed.push(coordinates);
+                chart_fixed.push(chart_coordinates);
             }
             let (source_cycle_contacts, pair_touches) = map_source_polygon_contacts(
                 &polygon_contacts,
@@ -1984,18 +2047,20 @@ fn normalize_clip<'a>(
                 &source_ring_map,
                 &rings,
                 &fixed,
+                chart,
             )?;
             let mut open = Vec::with_capacity(rings.len());
             open.extend(rings.iter().map(Vec::as_slice));
             validate_exact_contact_graph(&open, 0, &pair_touches)?;
             contacts = source_cycle_contacts;
-            Some(polygon)
+            Some((polygon, polygon_from_open_xy_rings(&chart_fixed)?))
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
-            let mut points = Vec::with_capacity(sites.len());
-            points.extend(sites.iter().map(|site| site.point));
-            let rectangle =
-                exact::rectangular_boundary(&points, matches!(boundary, VoronoiBoundary::Padded))?;
+            let points: Vec<_> = sites.iter().map(|site| &site.exact_point).collect();
+            let rectangle = exact::rectangular_boundary_for_exact(
+                &points,
+                matches!(boundary, VoronoiBoundary::Padded),
+            )?;
             let mut corners = Vec::with_capacity(rectangle.len());
             for corner in &rectangle {
                 corners.push(corner.round_nearest_even()?);
@@ -2005,15 +2070,23 @@ fn normalize_clip<'a>(
             ring.extend(rectangle);
             rings.reserve(1);
             fixed.reserve(1);
+            chart_fixed.reserve(1);
             rings.push(ring);
-            fixed.push(corners);
+            fixed.push(corners.clone());
+            chart_fixed.push(corners);
             None
         },
     };
+    let (source, geometry) = source.map_or((None, None), |(source, geometry)| {
+        (Some(source), Some(geometry))
+    });
     Ok(NormalizedClip {
         rings,
         fixed,
+        chart_fixed,
         source,
+        geometry,
+        chart,
         polygon_baseline,
         contacts,
     })
@@ -2114,10 +2187,10 @@ fn nearest_site_walk(
         let neighbors = adjacency.neighbors(current);
         let mut best = current;
         let nearer = |candidate: SiteId, known: SiteId| {
-            exact::squared_distance_cmp_point(
+            exact::squared_distance_cmp_points(
                 point,
-                site_by_id(sites, candidate).point.xy(),
-                site_by_id(sites, known).point.xy(),
+                &site_by_id(sites, candidate).exact_point,
+                &site_by_id(sites, known).exact_point,
             )
         };
         for &candidate in neighbors {
@@ -2146,10 +2219,10 @@ fn nearest_site(point: &exact::ExactPoint, sites: &[Site]) -> Result<SiteId> {
     let mut nearest = 0;
     let mut tied = false;
     for candidate in 1..sites.len() {
-        match exact::squared_distance_cmp_point(
+        match exact::squared_distance_cmp_points(
             point,
-            sites[candidate].point.xy(),
-            sites[nearest].point.xy(),
+            &sites[candidate].exact_point,
+            &sites[nearest].exact_point,
         )? {
             Ordering::Less => {
                 nearest = candidate;
@@ -3150,9 +3223,13 @@ impl<'a> VoronoiEmbedding<'a> {
             return Ok(true);
         }
         let [start, end] = edge.endpoints;
-        let (start, end) = (xy_of(start)?, xy_of(end)?);
-        let side_of =
-            |site: SiteId| exact::orient2d(start, end, site_by_id(self.sites, site).point.xy());
+        let (start, end) = (
+            exact::ExactPoint::from_xy(xy_of(start)?),
+            exact::ExactPoint::from_xy(xy_of(end)?),
+        );
+        let side_of = |site: SiteId| {
+            exact::orient_points(&start, &end, &site_by_id(self.sites, site).exact_point)
+        };
         let (left, right) = match edge.forward.owner {
             OwnerTransition::Boundary { left, right } if left.is_some() || right.is_some() => {
                 (left, right)
@@ -3161,8 +3238,15 @@ impl<'a> VoronoiEmbedding<'a> {
                 return Err(voronoi_error("live separator has incomplete ownership"));
             },
         };
-        Ok(left.is_none_or(|site| side_of(site) == ExactSign::Positive)
-            && right.is_none_or(|site| side_of(site) == ExactSign::Negative))
+        let left_inside = match left {
+            Some(site) => side_of(site)? == ExactSign::Positive,
+            None => true,
+        };
+        let right_inside = match right {
+            Some(site) => side_of(site)? == ExactSign::Negative,
+            None => true,
+        };
+        Ok(left_inside && right_inside)
     }
 }
 
@@ -3241,7 +3325,7 @@ impl VoronoiEmbedding<'_> {
         }
         let marked_index = BoxIndex::build(&marked_boxes)?;
         for site in self.sites {
-            let query = exact::ExactPoint::from_xy(site.point.xy());
+            let query = &site.exact_point;
             let visit = |separator: usize| -> Result<()> {
                 let [start, end] = *marked
                     .get(separator)
@@ -3262,7 +3346,7 @@ impl VoronoiEmbedding<'_> {
                 }
                 Ok(())
             };
-            marked_index.for_each_containing(Some(site.point.xy()), visit)?;
+            marked_index.for_each_containing(Some(site.rounded_xy()?), visit)?;
         }
 
         for chord in 0..self.live_edges.len() {
@@ -3608,7 +3692,7 @@ impl<'p, 'a> VoronoiProblem<'p, 'a> {
 
         let mut sites = Vec::with_capacity(self.embedding.sites.len());
         for site in self.embedding.sites {
-            let point = site.point.xy();
+            let point = site.rounded_xy()?;
             sites.push(Bounds::new_raw(point.x, point.y, point.x, point.y));
         }
         let mut separator_bounds = Vec::new();
@@ -4590,8 +4674,13 @@ fn embed(
         let comparison_polygon = Polygon::new(shell, holes);
         admit_embedded_clip(&comparison_polygon)?;
         let comparison_clip = Shape::Polygon(comparison_polygon);
-        if let Some(source) = clip.source {
-            let source = Shape::Polygon(source.clone());
+        if clip.source.is_some() {
+            let source = Shape::Polygon(
+                clip.geometry
+                    .as_ref()
+                    .expect("source clips retain their normalized chart geometry")
+                    .clone(),
+            );
             let source_gap = binary_cartesian_difference_without_partition_budget(
                 &source,
                 &comparison_clip,
@@ -4626,7 +4715,8 @@ fn embed(
         row_boxes.extend(shape_rows.iter().map(Shape::bounds));
         let row_index = BoxIndex::build(&row_boxes)?;
         for (site_index, site) in sites.iter().enumerate() {
-            let point = Shape::Point(site.point.clone());
+            let rounded_site = site.rounded_xy()?;
+            let point = Shape::Point(Point::new_raw_xy(rounded_site.x, rounded_site.y));
             if !comparison_clip.covers(&point)? {
                 continue;
             }
@@ -4645,7 +4735,7 @@ fn embed(
                 }
                 Ok(())
             };
-            row_index.for_each_containing(Some(site.point.xy()), verify_row)?;
+            row_index.for_each_containing(Some(rounded_site), verify_row)?;
             if !own {
                 return Err(exact_embedding_unrepresentable(operation, constructed));
             }
@@ -4685,6 +4775,7 @@ pub(super) fn build(
     )
 }
 
+#[cfg(test)]
 pub(super) fn build_product(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
@@ -4692,6 +4783,26 @@ pub(super) fn build_product(
     combinatorial_dual: bool,
     mesh: &CertifiedDelaunay,
     product: VoronoiProduct,
+) -> Result<EmbeddedVoronoi> {
+    build_product_with_chart(
+        sites,
+        boundary,
+        budget,
+        combinatorial_dual,
+        mesh,
+        product,
+        None,
+    )
+}
+
+pub(super) fn build_product_with_chart(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    combinatorial_dual: bool,
+    mesh: &CertifiedDelaunay,
+    product: VoronoiProduct,
+    chart: Option<PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     if let Some(last) = sites.len().checked_sub(1) {
         u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -4703,10 +4814,11 @@ pub(super) fn build_product(
     {
         return Err(voronoi_error("Voronoi sites are not canonically indexed"));
     }
-    let normal_or_zero = sites.iter().all(|site| {
-        let xy = site.point.xy();
-        (xy.x == 0.0 || xy.x.is_normal()) && (xy.y == 0.0 || xy.y.is_normal())
-    });
+    let mut normal_or_zero = true;
+    for site in sites {
+        let xy = site.rounded_xy()?;
+        normal_or_zero &= (xy.x == 0.0 || xy.x.is_normal()) && (xy.y == 0.0 || xy.y.is_normal());
+    }
     if combinatorial_dual
         && sites.len() >= 3
         && normal_or_zero
@@ -4715,9 +4827,9 @@ pub(super) fn build_product(
             VoronoiBoundary::Envelope | VoronoiBoundary::Padded
         )
     {
-        return dual_build_product(sites, boundary, budget, mesh, product);
+        return dual_build_product(sites, boundary, budget, mesh, product, chart);
     }
-    let clip = normalize_clip(sites, boundary, product.includes_polygons())?;
+    let clip = normalize_clip_with_chart(sites, boundary, product.includes_polygons(), chart)?;
     if mesh.collinear_order().is_some() {
         return Err(voronoi_error(
             "collinear sites require the exact one-dimensional lane",
@@ -4743,6 +4855,7 @@ pub(super) fn build_product(
     embed(&subdivision, &parts, &chains, &clip, sites, product, budget)
 }
 
+#[cfg(test)]
 pub(super) fn build_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
@@ -4750,13 +4863,25 @@ pub(super) fn build_edges(
     combinatorial_dual: bool,
     mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedEdges> {
-    Ok(build_product(
+    build_edges_with_chart(sites, boundary, budget, combinatorial_dual, mesh, None)
+}
+
+pub(super) fn build_edges_with_chart(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    combinatorial_dual: bool,
+    mesh: &CertifiedDelaunay,
+    chart: Option<PointSelectionChart>,
+) -> Result<EmbeddedEdges> {
+    Ok(build_product_with_chart(
         sites,
         boundary,
         budget,
         combinatorial_dual,
         mesh,
         VoronoiProduct::Edges,
+        chart,
     )?
     .into_edges())
 }
@@ -5030,48 +5155,42 @@ fn clip_certificate_data<A: SearchAccount>(
 /// two exact half-planes and rounded once; neighbouring cells round the same
 /// exact bisector crossings, so they share their vertices. A polygon clip then
 /// intersects each strip with the polygon.
-pub(super) fn build_collinear_polygons(
+pub(super) fn build_collinear_polygons_with_chart(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
+    chart: Option<PointSelectionChart>,
 ) -> Result<Vec<EmbeddedPolygon>> {
     let order = mesh
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
     if matches!(boundary, VoronoiBoundary::Envelope)
-        && sites.first().is_some_and(|first| {
-            sites.iter().all(|site| site.point.x == first.point.x)
-                || sites.iter().all(|site| site.point.y == first.point.y)
-        })
+        && let Some(first) = sites.first()
     {
-        return Ok(Vec::new());
+        let mut same_x = true;
+        let mut same_y = true;
+        for site in sites.iter().skip(1) {
+            same_x &= site.exact_point.compare_x(&first.exact_point)?.is_eq();
+            same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
+        }
+        if same_x || same_y {
+            return Ok(Vec::new());
+        }
     }
-    let clip = normalize_clip(sites, boundary, true)?;
+    let clip = normalize_clip_with_chart(sites, boundary, true, chart)?;
     let frame = match clip.source {
         None => clip
             .rings
             .first()
             .cloned()
             .expect("generated Voronoi clips contain their frame ring"),
-        Some(polygon) => {
-            let extent = |values: &[f64]| {
-                values
-                    .iter()
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), &value| {
-                        (low.min(value), high.max(value))
-                    })
-            };
-            let (min_x, max_x) = extent(polygon.shell.xs());
-            let (min_y, max_y) = extent(polygon.shell.ys());
-            [
-                (min_x, min_y),
-                (max_x, min_y),
-                (max_x, max_y),
-                (min_x, max_y),
-            ]
-            .map(|(x, y)| exact::ExactPoint::from_xy(XY::new(x, y)))
-            .to_vec()
+        Some(_) => {
+            let outer = clip
+                .rings
+                .first()
+                .ok_or_else(|| voronoi_error("Voronoi clip has no outer ring"))?;
+            exact::axis_aligned_bounds(outer.iter())?.to_vec()
         },
     };
     let mut cells = Vec::new();
@@ -5081,14 +5200,14 @@ pub(super) fn build_collinear_polygons(
     let mut previous = None;
     while let Some(site_index) = ordered_sites.next() {
         let next = ordered_sites.peek().copied();
-        let here = site_at(sites, site_index).point.xy();
+        let here = &site_at(sites, site_index).exact_point;
         let mut ring = frame.clone();
         for neighbor in previous.into_iter().chain(next) {
-            let line = exact::ExactLine::perpendicular_bisector(
+            let line = exact::ExactLine::perpendicular_bisector_points(
                 here,
-                site_at(sites, neighbor).point.xy(),
+                &site_at(sites, neighbor).exact_point,
             )?;
-            let keep = exact::signed_line_product(&line, &exact::ExactPoint::from_xy(here))?;
+            let keep = exact::signed_line_product(&line, here)?;
             ring = clip_to_half_plane(&ring, &line, keep)?;
         }
         let mut vertices: Vec<XY> = Vec::new();
@@ -5141,9 +5260,14 @@ pub(super) fn build_collinear_polygons(
                     computed_edges,
                 });
             },
-            Some(polygon) => {
+            Some(_) => {
                 let strip = Shape::Polygon(strip);
-                let clip = Shape::Polygon(polygon.clone());
+                let clip = Shape::Polygon(
+                    clip.geometry
+                        .as_ref()
+                        .expect("polygon clips retain their chart-space polygon")
+                        .clone(),
+                );
                 for (part, computed_edges) in
                     binary_cartesian_intersection_with_edge_roles(&strip, &clip)?
                 {
@@ -5201,25 +5325,30 @@ fn collinear_clip_events(
     let first = sites
         .get(first_site)
         .ok_or_else(|| voronoi_error("collinear site order is out of range"))?
-        .point
-        .xy();
+        .exact_point
+        .clone();
     let last = sites
         .get(last_site)
         .ok_or_else(|| voronoi_error("collinear site order is out of range"))?
-        .point
-        .xy();
-    let direction_x = exact::try_difference(last.x, first.x)?;
-    let direction_y = exact::try_difference(last.y, first.y)?;
-    let projection = |point: XY| {
-        exact::ExactPoint::from_xy(point).projected_coordinate(&direction_x, &direction_y)
+        .exact_point
+        .clone();
+    let one = exact::ExactDyadic::one();
+    let zero = exact::ExactDyadic::zero();
+    let x = |point: &exact::ExactPoint| point.projected_coordinate(&one, &zero);
+    let y = |point: &exact::ExactPoint| point.projected_coordinate(&zero, &one);
+    let direction_x = x(&last)?.try_subtract(&x(&first)?)?;
+    let direction_y = y(&last)?.try_subtract(&y(&first)?)?;
+    let projection = |point: &exact::ExactPoint| {
+        x(point)?
+            .try_product(&direction_x)?
+            .try_add(&y(point)?.try_product(&direction_y)?)
     };
     let mut site_projections = Vec::with_capacity(order.len());
     for &site in order {
-        let point = sites
+        let point = &sites
             .get(site)
             .ok_or_else(|| voronoi_error("collinear site order is out of range"))?
-            .point
-            .xy();
+            .exact_point;
         site_projections.push(projection(point)?);
     }
     let mut bisectors = Vec::with_capacity(order.len().saturating_sub(1));
@@ -5259,12 +5388,8 @@ fn collinear_clip_events(
     let twice = exact::ExactRational::from_f64(2.0);
     for ring in &clip.rings {
         for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
-            let start_level = start
-                .projected_coordinate(&direction_x, &direction_y)?
-                .try_product(&twice)?;
-            let end_level = end
-                .projected_coordinate(&direction_x, &direction_y)?
-                .try_product(&twice)?;
+            let start_level = projection(start)?.try_product(&twice)?;
+            let end_level = projection(end)?.try_product(&twice)?;
             let edge_index = edges.len();
             edges.push(CollinearClipEdge { start, end });
             let (low, high) = if start_level.try_cmp(&end_level)?.is_le() {
@@ -5320,17 +5445,15 @@ fn collinear_clip_events(
         }
 
         let [left_site, right_site] = bisector.sites;
-        let line = exact::ExactLine::perpendicular_bisector(
-            sites
+        let line = exact::ExactLine::perpendicular_bisector_points(
+            &sites
                 .get(left_site)
                 .ok_or_else(|| voronoi_error("collinear bisector site is out of range"))?
-                .point
-                .xy(),
-            sites
+                .exact_point,
+            &sites
                 .get(right_site)
                 .ok_or_else(|| voronoi_error("collinear bisector site is out of range"))?
-                .point
-                .xy(),
+                .exact_point,
         )?;
         let mut events = Vec::with_capacity(active.len().saturating_mul(2));
         for &edge_index in &active {
@@ -5466,11 +5589,22 @@ fn collinear_clip_events(
     })
 }
 
+#[cfg(test)]
 pub(super) fn build_collinear_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
+) -> Result<EmbeddedEdges> {
+    build_collinear_edges_with_chart(sites, boundary, budget, mesh, None)
+}
+
+pub(super) fn build_collinear_edges_with_chart(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    mesh: &CertifiedDelaunay,
+    chart: Option<PointSelectionChart>,
 ) -> Result<EmbeddedEdges> {
     if let Some(last) = sites.len().checked_sub(1) {
         u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -5479,20 +5613,21 @@ pub(super) fn build_collinear_edges(
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
     if matches!(boundary, VoronoiBoundary::Envelope) {
-        let extent = |coordinate: fn(&Site) -> f64| {
-            let values = sites.iter().map(coordinate);
-            (
-                values.clone().reduce(f64::min).unwrap(),
-                values.reduce(f64::max).unwrap(),
-            )
-        };
-        let (min_x, max_x) = extent(|site| site.point.x);
-        let (min_y, max_y) = extent(|site| site.point.y);
-        if min_x == max_x || min_y == max_y {
+        if let Some(first) = sites.first() {
+            let mut same_x = true;
+            let mut same_y = true;
+            for site in sites.iter().skip(1) {
+                same_x &= site.exact_point.compare_x(&first.exact_point)?.is_eq();
+                same_y &= site.exact_point.compare_y(&first.exact_point)?.is_eq();
+            }
+            if same_x || same_y {
+                return empty_packed_edges();
+            }
+        } else {
             return empty_packed_edges();
         }
     }
-    let clip = normalize_clip(sites, boundary, false)?;
+    let clip = normalize_clip_with_chart(sites, boundary, false, chart)?;
     let CollinearClipEvents {
         separators: exact_chains,
         edge_events,
@@ -5520,14 +5655,21 @@ pub(super) fn build_collinear_edges(
     if edge_events.next().is_some() {
         return Err(exact_cycle_error());
     }
-    let mut split_fixed = Vec::with_capacity(clip.fixed.len());
-    for ring in &clip.fixed {
-        split_fixed.push(ring.clone());
+    let mut split_fixed = Vec::with_capacity(split_rings.len());
+    for ring in &split_rings {
+        split_fixed.push(
+            ring.iter()
+                .map(exact::ExactPoint::round_nearest_even)
+                .collect::<Result<Vec<_>>>()?,
+        );
     }
     let split_clip = NormalizedClip {
         rings: split_rings,
-        fixed: split_fixed,
+        fixed: split_fixed.clone(),
+        chart_fixed: split_fixed,
         source: clip.source,
+        geometry: clip.geometry.clone(),
+        chart: clip.chart,
         polygon_baseline: clip.polygon_baseline,
         contacts: Vec::new(),
     };
@@ -5960,19 +6102,14 @@ fn dual_ray_hit(
     frame: &[exact::ExactPoint; 4],
 ) -> Result<(FrameSide, exact::ExactPoint)> {
     let [left_site, right_site] = pair;
-    let [left_xy, right_xy] = [
-        site_at(sites, left_site).point.xy(),
-        site_at(sites, right_site).point.xy(),
+    let [left, right] = [
+        &site_at(sites, left_site).exact_point,
+        &site_at(sites, right_site).exact_point,
     ];
-    let left = exact::ExactPoint::from_xy(left_xy);
-    let right = exact::ExactPoint::from_xy(right_xy);
-    let opposite_sign = exact::orient_points(
-        &left,
-        &right,
-        &exact::ExactPoint::from_xy(site_at(sites, opposite).point.xy()),
-    )?;
-    for hit in bisector_frame_intersections([left_xy, right_xy], frame)? {
-        if exact::orient_points(&left, &right, &hit.1)? != opposite_sign {
+    let opposite_sign = exact::orient_points(left, right, &site_at(sites, opposite).exact_point)?;
+    let line = exact::ExactLine::perpendicular_bisector_points(left, right)?;
+    for hit in exact_bisector_frame_intersections([left, right], &line, frame)? {
+        if exact::orient_points(left, right, &hit.1)? != opposite_sign {
             return Ok(hit);
         }
     }
@@ -6130,16 +6267,20 @@ fn dual_point_in_cycle(
 /// orientation test.
 fn dual_clip_convex(
     ring: Vec<Tagged>,
-    site: XY,
+    site: &Site,
     sites: &[Site],
     rect: &[exact::ExactPoint; 4],
     axis_aligned: bool,
     centers: &[exact::ExactPoint],
 ) -> Result<Vec<Tagged>> {
     // Certified crossings need the clip sides as doubles.
-    let corners = match rect.each_ref().map(exact::ExactPoint::as_double) {
-        [Some(a), Some(b), Some(c), Some(d)] if axis_aligned => Some([a, b, c, d]),
-        _ => None,
+    let corners = if sites.iter().all(|site| site.retained_chart_site.is_none()) {
+        match rect.each_ref().map(exact::ExactPoint::as_double) {
+            [Some(a), Some(b), Some(c), Some(d)] if axis_aligned => Some([a, b, c, d]),
+            _ => None,
+        }
+    } else {
+        None
     };
     let mut current = ring;
     for side in FrameSide::ALL {
@@ -6170,9 +6311,12 @@ fn dual_clip_convex(
                 let [corner_start, corner_end] = side.endpoints_xy(&corners);
                 match tag {
                     EdgeTag::Bisector(neighbor) => {
-                        let pair = [site, site_by_id(sites, neighbor).point.xy()];
-                        if let exact::FrameHit::Point(hit) =
-                            exact::ExactPoint::certified_bisector_hit(pair, [
+                        let neighbor = site_by_id(sites, neighbor);
+                        if let (Some(site), Some(neighbor)) = (
+                            site.exact_point.as_double(),
+                            neighbor.exact_point.as_double(),
+                        ) && let exact::FrameHit::Point(hit) =
+                            exact::ExactPoint::certified_bisector_hit([site, neighbor], [
                                 corner_start,
                                 corner_end,
                             ])
@@ -6253,11 +6397,7 @@ fn dual_build_rings(
 ) -> Result<DualRings> {
     let centers = &complex.centers;
     let mut site_points = Vec::with_capacity(sites.len());
-    site_points.extend(
-        sites
-            .iter()
-            .map(|site| exact::ExactPoint::from_xy(site.point.xy())),
-    );
+    site_points.extend(sites.iter().map(|site| site.exact_point.clone()));
     let frame_inputs = || {
         site_points
             .iter()
@@ -6324,7 +6464,7 @@ fn dual_build_rings(
             let entry_ray = dual_ray_hit(sites, entry_pair, entry_opposite, &frame)?;
             let exit_ray = dual_ray_hit(sites, exit_pair, exit_opposite, &frame)?;
             let site_id = SiteId(entry_site as u32);
-            let site_point = exact::ExactPoint::from_xy(site.point.xy());
+            let site_point = &site.exact_point;
             // Positive topology fixes the open center chain. The two frame
             // paths are complementary clipped faces; exact ownership decides
             // only which one contains this site, including the zero-separator
@@ -6333,15 +6473,14 @@ fn dual_build_rings(
             let interior = dual_close_hull_chain(
                 faces, neighbors, site_id, &complex, centers, &entry_ray, &exit_ray, &frame, false,
             )?;
-            if dual_point_in_cycle(&interior, centers, &site_point)? == exact::PointInCycle::Inside
-            {
+            if dual_point_in_cycle(&interior, centers, site_point)? == exact::PointInCycle::Inside {
                 interior
             } else {
                 let exterior = dual_close_hull_chain(
                     faces, neighbors, site_id, &complex, centers, &entry_ray, &exit_ray, &frame,
                     true,
                 )?;
-                if dual_point_in_cycle(&exterior, centers, &site_point)?
+                if dual_point_in_cycle(&exterior, centers, site_point)?
                     != exact::PointInCycle::Inside
                 {
                     return Err(voronoi_error(
@@ -6416,7 +6555,7 @@ fn dual_build_rings(
             }
             ring
         };
-        let clipped = dual_clip_convex(ring, site.point.xy(), sites, &rect, axis_aligned, centers)?;
+        let clipped = dual_clip_convex(ring, site, sites, &rect, axis_aligned, centers)?;
         if clipped.len() < 3 {
             return Err(voronoi_error(
                 "dual Voronoi cell degenerated under the clip",
@@ -6634,7 +6773,7 @@ fn dual_embed(
             .min_by(|(_, left), (_, right)| lex_xy(**left, **right))
             .map_or(0, |(index, _)| index);
         rounded.rotate_left(start);
-        let site_xy = site.point.xy();
+        let site_xy = site.rounded_xy()?;
         let first = rounded
             .first()
             .expect("dual_build_rings admits only cells with at least three vertices");
@@ -6655,8 +6794,9 @@ fn dual_embed(
             if !polygon_is_valid(&Polygon::new(Ring::closed(points)?, Vec::new()))? {
                 return Err(DualEmbeddingError::Unrepresentable);
             }
-            let site = exact::ExactPoint::from_xy(site_xy);
-            if exact::point_in_cycle(&rounded_ring, &site)? == exact::PointInCycle::Outside {
+            if exact::point_in_cycle(&rounded_ring, &site.exact_point)?
+                == exact::PointInCycle::Outside
+            {
                 return Err(DualEmbeddingError::Unrepresentable);
             }
         }
@@ -6873,7 +7013,7 @@ pub(super) fn dual_build(
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
 ) -> Result<EmbeddedVoronoi> {
-    dual_build_product(sites, boundary, budget, mesh, VoronoiProduct::Both)
+    dual_build_product(sites, boundary, budget, mesh, VoronoiProduct::Both, None)
 }
 
 fn dual_build_product(
@@ -6882,8 +7022,9 @@ fn dual_build_product(
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
     product: VoronoiProduct,
+    chart: Option<PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
-    let clip = normalize_clip(sites, boundary, product.includes_polygons())?;
+    let clip = normalize_clip_with_chart(sites, boundary, product.includes_polygons(), chart)?;
     if mesh.collinear_order().is_some() {
         return Err(voronoi_error(
             "collinear sites require the exact one-dimensional lane",
@@ -6898,7 +7039,7 @@ fn dual_build_product(
             // embedding passes. Only a binary64 certificate failure uses the
             // general DCEL lane, where constructed vertices can move to
             // adjacent floats under the complete cell/face certificate.
-            build_product(sites, boundary, budget, false, mesh, product)
+            build_product_with_chart(sites, boundary, budget, false, mesh, product, chart)
         },
         Err(DualEmbeddingError::Other(error)) => Err(error),
     }

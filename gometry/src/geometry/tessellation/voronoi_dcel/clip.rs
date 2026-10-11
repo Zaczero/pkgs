@@ -16,11 +16,7 @@ pub(super) fn orient_separator(
     input: &[Site],
 ) -> Result<(exact::ExactPoint, exact::ExactPoint)> {
     let [left_site, _] = sites;
-    match exact::orient_points(
-        &start,
-        &end,
-        &exact::ExactPoint::from_xy(site_by_id(input, left_site).point.xy()),
-    )? {
+    match exact::orient_points(&start, &end, &site_by_id(input, left_site).exact_point)? {
         ExactSign::Positive => {},
         ExactSign::Negative => std::mem::swap(&mut start, &mut end),
         ExactSign::Zero => {
@@ -191,11 +187,14 @@ pub(super) fn span_from_points(
 }
 
 pub(super) fn separator_rectangle_hits(
-    pair: [XY; 2],
+    pair: [&exact::ExactPoint; 2],
     line: &exact::ExactLine,
     rect: &[exact::ExactPoint; 4],
 ) -> Result<Vec<exact::ExactPoint>> {
-    let certified = bisector_frame_intersections(pair, rect)?;
+    let certified = match pair.map(exact::ExactPoint::as_double) {
+        [Some(left), Some(right)] => bisector_frame_intersections([left, right], rect)?,
+        _ => exact_bisector_frame_intersections(pair, line, rect)?,
+    };
     let mut hits = Vec::with_capacity(certified.len().saturating_add(8));
     hits.extend(certified.into_iter().map(|(_, point)| point));
     for (start, end) in rect.iter().zip(rect.iter().cycle().skip(1)) {
@@ -209,6 +208,38 @@ pub(super) fn separator_rectangle_hits(
     Ok(hits)
 }
 
+pub(super) fn exact_bisector_frame_intersections(
+    _pair: [&exact::ExactPoint; 2],
+    line: &exact::ExactLine,
+    rect: &[exact::ExactPoint; 4],
+) -> Result<Vec<(FrameSide, exact::ExactPoint)>> {
+    let mut hits = Vec::new();
+    for (side, (start, end)) in FrameSide::ALL
+        .into_iter()
+        .zip(rect.iter().zip(rect.iter().cycle().skip(1)))
+    {
+        let start_sign = exact::signed_line_product(line, start)?;
+        let end_sign = exact::signed_line_product(line, end)?;
+        let hit = match (start_sign, end_sign) {
+            (ExactSign::Zero, ExactSign::Zero) => {
+                hits.push((side, start.clone()));
+                Some(end.clone())
+            },
+            (ExactSign::Zero, _) => Some(start.clone()),
+            (_, ExactSign::Zero) => Some(end.clone()),
+            (left, right) if left != right => {
+                let support = exact::ExactLine::through_points(start, end)?;
+                Some(exact::line_intersection(line, &support)?)
+            },
+            _ => None,
+        };
+        if let Some(hit) = hit {
+            hits.push((side, hit));
+        }
+    }
+    Ok(hits)
+}
+
 #[expect(
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
@@ -217,7 +248,7 @@ pub(super) fn separator_rectangle_hits(
 pub(super) fn clip_segment_to_rectangle(
     start: &exact::ExactPoint,
     end: &exact::ExactPoint,
-    pair: [XY; 2],
+    pair: [&exact::ExactPoint; 2],
     line: &exact::ExactLine,
     rect: &[exact::ExactPoint; 4],
 ) -> Result<Option<(exact::ExactPoint, exact::ExactPoint)>> {
@@ -272,28 +303,17 @@ pub(super) fn clip_hull_ray_to_rectangle(
     sites: &[Site],
 ) -> Result<Option<(exact::ExactPoint, exact::ExactPoint)>> {
     let [left_site, right_site] = pair;
-    let hits = separator_rectangle_hits(
-        [
-            site_at(sites, left_site).point.xy(),
-            site_at(sites, right_site).point.xy(),
-        ],
-        line,
-        rect,
-    )?;
-    let left = exact::ExactPoint::from_xy(site_at(sites, left_site).point.xy());
-    let right = exact::ExactPoint::from_xy(site_at(sites, right_site).point.xy());
+    let left = &site_at(sites, left_site).exact_point;
+    let right = &site_at(sites, right_site).exact_point;
+    let hits = separator_rectangle_hits([left, right], line, rect)?;
     let mid = left.midpoint(&right)?;
-    let opposite_sign = exact::orient_points(
-        &left,
-        &right,
-        &exact::ExactPoint::from_xy(site_at(sites, opposite).point.xy()),
-    )?;
+    let opposite_sign = exact::orient_points(&left, &right, &site_at(sites, opposite).exact_point)?;
     let mut points = Vec::with_capacity(hits.len().saturating_add(1));
     if in_rectangle(rect, center)? {
         points.push(center.clone());
     }
     for hit in hits {
-        if hull_point_on_ray(center, &mid, [&left, &right], opposite_sign, &hit)? {
+        if hull_point_on_ray(center, &mid, [left, right], opposite_sign, &hit)? {
             points.push(hit);
         }
     }

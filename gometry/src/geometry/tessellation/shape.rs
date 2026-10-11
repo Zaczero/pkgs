@@ -2,6 +2,7 @@ use std::borrow::Borrow;
 
 use crate::NonNegative;
 use crate::error::Result;
+use crate::geographic::{GeographicFrame, PointSelectionChart};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
     CdtRefinement, CertifiedDelaunay, RingOwner, Site, certified_delaunay,
@@ -330,7 +331,7 @@ impl Shape {
         // exact count before reserving or emitting any of them.
         let mut sites = Vec::with_capacity(points.len());
         for (id, &point) in points.iter().enumerate() {
-            sites.push(Site { id, point });
+            sites.push(Site::raw(id, point, id));
         }
         let triangulation = certified_delaunay(&sites)?;
         let capacity = triangulation
@@ -687,8 +688,18 @@ impl Shape {
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Vec<crate::geometry::VoronoiPolygonOutput>> {
+        self.voronoi_polygon_outputs_in_frame_budgeted(tolerance, boundary, None, budget)
+    }
+
+    pub(crate) fn voronoi_polygon_outputs_in_frame_budgeted(
+        &self,
+        tolerance: f64,
+        boundary: VoronoiBoundary<'_>,
+        frame: Option<GeographicFrame>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<Vec<crate::geometry::VoronoiPolygonOutput>> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let (canonical, mesh) = self.prepare_voronoi(tolerance)?;
+        let (canonical, mesh, chart) = self.prepare_voronoi(tolerance, frame, boundary)?;
         let Some(mesh) = mesh else {
             // A lone site's cell is the whole clip region; the envelope and
             // padded frames of one point have no area.
@@ -706,15 +717,18 @@ impl Shape {
             });
         };
         let cells = if mesh.collinear_order().is_some() {
-            voronoi_dcel::build_collinear_polygons(&canonical, boundary, budget, &mesh)?
+            voronoi_dcel::build_collinear_polygons_with_chart(
+                &canonical, boundary, budget, &mesh, chart,
+            )?
         } else {
-            voronoi_dcel::build_product(
+            voronoi_dcel::build_product_with_chart(
                 &canonical,
                 boundary,
                 budget,
                 true,
                 &mesh,
                 voronoi_dcel::VoronoiProduct::Polygons,
+                chart,
             )?
             .into_polygon_outputs()
         };
@@ -745,14 +759,38 @@ impl Shape {
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<voronoi_dcel::EmbeddedEdges> {
+        self.voronoi_edge_lines_in_frame_raw(tolerance, boundary, None, budget)
+    }
+
+    pub(crate) fn voronoi_edge_column_in_frame_budgeted(
+        &self,
+        tolerance: f64,
+        boundary: VoronoiBoundary<'_>,
+        frame: Option<GeographicFrame>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<(CoordSeq, CsrOffsetColumn)> {
+        self.voronoi_edge_lines_in_frame_raw(tolerance, boundary, frame, budget)?
+            .into_line_column()
+    }
+
+    fn voronoi_edge_lines_in_frame_raw(
+        &self,
+        tolerance: f64,
+        boundary: VoronoiBoundary<'_>,
+        frame: Option<GeographicFrame>,
+        budget: &mut ExpansionBudget,
+    ) -> Result<voronoi_dcel::EmbeddedEdges> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance)? else {
+        let (canonical, Some(mesh), chart) = self.prepare_voronoi(tolerance, frame, boundary)?
+        else {
             return voronoi_dcel::empty_packed_edges();
         };
         if mesh.collinear_order().is_none() {
-            return voronoi_dcel::build_edges(&canonical, boundary, budget, true, &mesh);
+            return voronoi_dcel::build_edges_with_chart(
+                &canonical, boundary, budget, true, &mesh, chart,
+            );
         }
-        voronoi_dcel::build_collinear_edges(&canonical, boundary, budget, &mesh)
+        voronoi_dcel::build_collinear_edges_with_chart(&canonical, boundary, budget, &mesh, chart)
     }
 
     pub fn polygonize(&self, strict: bool) -> Result<Vec<Self>> {
@@ -922,22 +960,105 @@ impl Shape {
 }
 
 impl Shape {
-    fn voronoi_sites(&self, tolerance: f64) -> Result<Vec<Site>> {
-        let points = self.try_unique_xy_points()?;
-        canonical_voronoi_sites(points, tolerance)
+    fn voronoi_sites(
+        &self,
+        tolerance: f64,
+        frame: Option<GeographicFrame>,
+        boundary: VoronoiBoundary<'_>,
+    ) -> Result<(Vec<Site>, Option<PointSelectionChart>)> {
+        let mut points = Vec::new();
+        self.try_for_each_point(|point| -> Result<()> {
+            points.push(point);
+            Ok(())
+        })?;
+        let chart = if let Some(frame) = frame {
+            let mut support = points.clone();
+            if let VoronoiBoundary::Polygon(polygon) = boundary {
+                support.extend(
+                    std::iter::once(&polygon.shell)
+                        .chain(polygon.holes.iter())
+                        .flat_map(|ring| ring.iter()),
+                );
+            }
+            PointSelectionChart::try_from_points(frame, &support)?
+        } else {
+            None
+        };
+        let Some(chart) = chart else {
+            return Ok((canonical_voronoi_sites(points, tolerance)?, None));
+        };
+
+        let frame = chart.frame();
+        let mut retained = chart.sites_from_points(&points)?;
+        retained.sort_unstable_by(|left, right| left.compare_chart_xy(*right));
+        let mut sites = Vec::with_capacity(retained.len());
+        for chart_site in retained {
+            let source_ordinal = chart_site.source_ordinal();
+            let point = *points.get(source_ordinal).ok_or_else(|| {
+                GeometryErrorKind::Invalid("retained Voronoi source is unknown".into())
+            })?;
+            sites.push(Site::retained(
+                sites.len(),
+                point,
+                source_ordinal,
+                frame,
+                chart_site,
+            )?);
+        }
+        let mut sites = if tolerance == 0.0 {
+            sites
+        } else {
+            snap_sites(&sites, tolerance)?
+        };
+        for (id, site) in sites.iter_mut().enumerate() {
+            site.id = id;
+        }
+        Ok((sites, Some(chart)))
     }
 
-    fn prepare_voronoi(&self, tolerance: f64) -> Result<(Vec<Site>, Option<CertifiedDelaunay>)> {
-        let sites = self.voronoi_sites(tolerance)?;
+    fn prepare_voronoi(
+        &self,
+        tolerance: f64,
+        frame: Option<GeographicFrame>,
+        boundary: VoronoiBoundary<'_>,
+    ) -> Result<(
+        Vec<Site>,
+        Option<CertifiedDelaunay>,
+        Option<PointSelectionChart>,
+    )> {
+        let (sites, chart) = self.voronoi_sites(tolerance, frame, boundary)?;
         if let Some(last) = sites.len().checked_sub(1) {
             u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         }
         let mesh = if sites.len() >= 2 {
-            Some(certified_delaunay(&sites)?)
+            Some(if let Some(frame) = chart.map(|chart| chart.frame()) {
+                let retained = sites
+                    .iter()
+                    .map(|site| -> Result<crate::geographic::ChartPointSite> {
+                        let retained = site.retained_chart_site.ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "retained Voronoi site lost its chart identity".into(),
+                            )
+                        })?;
+                        if retained.source_ordinal() != site.source_ordinal {
+                            return Err(GeometryErrorKind::Invalid(
+                                "retained Voronoi site lost its source occurrence".into(),
+                            )
+                            .into());
+                        }
+                        Ok(retained)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                crate::geometry::tessellation::delaunay::certified_delaunay_for_retained_points(
+                    frame, &retained,
+                )?
+            } else {
+                certified_delaunay(&sites)?
+            })
         } else {
             None
         };
-        Ok((sites, mesh))
+        Ok((sites, mesh, chart))
     }
 }
 
@@ -945,20 +1066,27 @@ impl Shape {
 /// snapping applied once at the public boundary, so the tessellators always
 /// receive a true site set in x order with dense ids.
 pub(super) fn canonical_voronoi_sites(mut points: Vec<Point>, tolerance: f64) -> Result<Vec<Site>> {
-    for point in &mut points {
+    let mut rows = points
+        .drain(..)
+        .enumerate()
+        .map(|(source_ordinal, point)| (source_ordinal, point))
+        .collect::<Vec<_>>();
+    for (_, point) in &mut rows {
         point.x += 0.0;
         point.y += 0.0;
     }
-    points.sort_unstable_by(|left, right| {
+    let mut seen = crate::collections::try_hash_set_with_capacity(rows.len())?;
+    rows.retain(|(_, point)| seen.insert(PointKey::new(*point)));
+    rows.sort_unstable_by(|(left_ordinal, left), (right_ordinal, right)| {
         left.x
             .total_cmp(&right.x)
             .then_with(|| left.y.total_cmp(&right.y))
+            .then_with(|| left_ordinal.cmp(right_ordinal))
     });
-    points.dedup_by(|left, right| PointKey::new(*left) == PointKey::new(*right));
-    let sites = points
+    let sites = rows
         .into_iter()
         .enumerate()
-        .map(|(id, point)| Site { id, point })
+        .map(|(id, (source_ordinal, point))| Site::raw(id, point, source_ordinal))
         .collect();
     if tolerance == 0.0 {
         return Ok(sites);

@@ -21,19 +21,18 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
     let mut y_index: BTreeSet<(u64, usize)> = BTreeSet::new();
     let mut candidates: Vec<usize> = Vec::new();
     for (ordinal, site) in sites.iter().enumerate() {
-        let point = site.point.xy();
-        let min_x = ordered(exact::Interval::exact(point.x).sub(radius_bounds).lo);
-        let y_bounds = exact::Interval::exact(point.y);
-        let min_y = ordered(y_bounds.sub(radius_bounds).lo);
-        let max_y = ordered(y_bounds.add(radius_bounds).hi);
+        let [x_bounds, y_bounds] = site.exact_point.bounds();
+        let min_x = x_bounds.sub(radius_bounds).lo;
+        let min_y = ordered(y_bounds.sub(radius_bounds).lo.next_down().next_down());
+        let max_y = ordered(y_bounds.add(radius_bounds).hi.next_up().next_up());
         while let Some(&oldest) = active.front() {
-            if ordered(
-                sites
-                    .get(oldest)
-                    .expect("active ordinals come from the source site enumeration")
-                    .point
-                    .x,
-            ) >= min_x
+            if sites
+                .get(oldest)
+                .expect("active ordinals come from the source site enumeration")
+                .exact_point
+                .bounds()[0]
+                .hi
+                >= min_x
             {
                 break;
             }
@@ -45,7 +44,8 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
                     sites
                         .get(expired)
                         .expect("expired ordinals come from the active site queue")
-                        .point
+                        .exact_point
+                        .round_nearest_even()?
                         .y,
                 ),
                 expired,
@@ -65,23 +65,25 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
         candidates.sort_unstable();
         let mut snapped = false;
         for &candidate in &candidates {
-            if exact::distance_within(
-                sites
-                    .get(candidate)
-                    .expect("candidate ordinals come from the source site enumeration")
-                    .point
-                    .xy(),
-                point,
-                radius,
-            )? {
+            let candidate = sites
+                .get(candidate)
+                .expect("candidate ordinals come from the source site enumeration");
+            let within = if candidate.retained_chart_site.is_none()
+                && site.retained_chart_site.is_none()
+            {
+                exact::distance_within(candidate.point.xy(), site.point.xy(), radius)?
+            } else {
+                exact::distance_within_points(&candidate.exact_point, &site.exact_point, radius)?
+            };
+            if within {
                 snapped = true;
                 break;
             }
         }
         if !snapped {
-            survivors.push(*site);
+            survivors.push(site.clone());
             active.push_back(ordinal);
-            y_index.insert((ordered(point.y), ordinal));
+            y_index.insert((ordered(site.exact_point.round_nearest_even()?.y), ordinal));
         }
     }
     Ok(survivors)
@@ -177,23 +179,31 @@ pub(super) fn delaunay_complex(
             .expect("face root comes from the Delaunay parent column");
         if *component == usize::MAX {
             *component = centers.len();
-            centers.push(exact::circumcenter(
+            let [a_site, b_site, c_site] = [
                 sites
                     .get(a)
-                    .expect("triangle site comes from the canonical site set")
-                    .point
-                    .xy(),
+                    .expect("triangle site comes from the canonical site set"),
                 sites
                     .get(b)
-                    .expect("triangle site comes from the canonical site set")
-                    .point
-                    .xy(),
+                    .expect("triangle site comes from the canonical site set"),
                 sites
                     .get(c)
-                    .expect("triangle site comes from the canonical site set")
-                    .point
-                    .xy(),
-            )?);
+                    .expect("triangle site comes from the canonical site set"),
+            ];
+            centers.push(
+                if a_site.retained_chart_site.is_none()
+                    && b_site.retained_chart_site.is_none()
+                    && c_site.retained_chart_site.is_none()
+                {
+                    exact::circumcenter(a_site.point.xy(), b_site.point.xy(), c_site.point.xy())?
+                } else {
+                    exact::circumcenter_points(
+                        &a_site.exact_point,
+                        &b_site.exact_point,
+                        &c_site.exact_point,
+                    )?
+                },
+            );
         }
     }
     // The union-find storage has the same length and lifetime as the final

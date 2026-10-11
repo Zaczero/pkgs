@@ -19,7 +19,7 @@ use crate::error::{Error, ErrorKind, ResourceError};
 use crate::geometry::embedding_search::{Unmetered, Work};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
-use crate::geometry::{GeometryErrorKind, Point, Result, XY};
+use crate::geometry::{GeometryErrorKind, Result, XY};
 
 mod dyadic;
 mod predicates;
@@ -1034,6 +1034,10 @@ impl Recipe {
 }
 
 impl ExactPoint {
+    pub(in crate::geometry) fn from_dyadics(x: ExactDyadic, y: ExactDyadic) -> Self {
+        Self::homogeneous(x, y, ExactDyadic::one())
+    }
+
     /// The ONLY constructor. Every homogeneous triple gets its certified
     /// interval here, so a point can never exist without its filter bound.
     fn homogeneous(x: ExactDyadic, y: ExactDyadic, w: ExactDyadic) -> Self {
@@ -1647,6 +1651,23 @@ pub(in crate::geometry) fn squared_distance_cmp_point(
     squared_distance_cmp_point_exact(origin, left, right)
 }
 
+pub(super) fn squared_distance_cmp_points(
+    origin: &ExactPoint,
+    left: &ExactPoint,
+    right: &ExactPoint,
+) -> Result<Ordering> {
+    Ok(
+        match signed_line_product(
+            &ExactLine::perpendicular_bisector_points(left, right)?,
+            origin,
+        )? {
+            ExactSign::Negative => Ordering::Less,
+            ExactSign::Zero => Ordering::Equal,
+            ExactSign::Positive => Ordering::Greater,
+        },
+    )
+}
+
 fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) -> Result<Ordering> {
     debug_assert!(origin.is_finite());
     Ok(
@@ -1863,64 +1884,90 @@ pub(super) fn axis_aligned_bounds<'a>(
     ])
 }
 
-pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[ExactPoint; 4]> {
+pub(super) fn rectangular_boundary_for_exact(
+    points: &[&ExactPoint],
+    padded: bool,
+) -> Result<[ExactPoint; 4]> {
     let first = points
         .first()
+        .copied()
         .ok_or_else(|| GeometryErrorKind::voronoi("empty Voronoi site set"))?;
-    let (mut min_x, mut max_x, mut min_y, mut max_y) = (first.x, first.x, first.y, first.y);
+    let x_axis = ExactDyadic::one();
+    let y_axis = ExactDyadic::zero();
+    let mut min_x = first.projected_coordinate(&x_axis, &y_axis)?;
+    let mut max_x = min_x.clone();
+    let mut min_y = first.projected_coordinate(&y_axis, &x_axis)?;
+    let mut max_y = min_y.clone();
     for point in points.iter().skip(1) {
-        min_x = min_x.min(point.x);
-        max_x = max_x.max(point.x);
-        min_y = min_y.min(point.y);
-        max_y = max_y.max(point.y);
+        let x = point.projected_coordinate(&x_axis, &y_axis)?;
+        if x.try_cmp(&min_x)?.is_lt() {
+            min_x = x.clone();
+        }
+        if x.try_cmp(&max_x)?.is_gt() {
+            max_x = x;
+        }
+        let y = point.projected_coordinate(&y_axis, &x_axis)?;
+        if y.try_cmp(&min_y)?.is_lt() {
+            min_y = y.clone();
+        }
+        if y.try_cmp(&max_y)?.is_gt() {
+            max_y = y;
+        }
     }
     if padded {
-        // Half the larger span, computed exactly, then each corner rounded
-        // OUTWARD to a double: the padded rectangle is a convenience frame
-        // and a double-valued one keeps every clip side representable, so the
-        // cells partition exactly the rectangle they report.
-        let span_x = try_difference(max_x, min_x)?;
-        let span_y = try_difference(max_y, min_y)?;
-        let span = if span_x.cmp(&span_y).is_gt() {
+        let span_x = max_x.try_subtract(&min_x)?;
+        let span_y = max_y.try_subtract(&min_y)?;
+        let span = if span_x.try_cmp(&span_y)?.is_gt() {
             span_x
         } else {
             span_y
         };
-        if span.is_zero() {
+        if span.numerator.is_zero() {
             return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
         }
-        let half = span.try_product(&ExactDyadic::from_f64(0.5))?;
-        let outward = |base: f64, add: bool| -> Result<f64> {
-            let base = ExactDyadic::from_f64(base);
-            let exact = if add {
-                ExactDyadic::try_add_refs(&base, &half)?
+        let half = span.try_product(&ExactRational::from_f64(0.5))?;
+        min_x = min_x.try_subtract(&half)?;
+        max_x = max_x.try_add(&half)?;
+        min_y = min_y.try_subtract(&half)?;
+        max_y = max_y.try_add(&half)?;
+
+        let outward = |value: &ExactRational, lower: bool| -> Result<ExactRational> {
+            let rounded = round_ratio(&value.numerator, &value.denominator)?;
+            let order = ExactRational::from_f64(rounded).try_cmp(value)?;
+            let rounded = if lower && order.is_gt() {
+                rounded.next_down()
+            } else if !lower && order.is_lt() {
+                rounded.next_up()
             } else {
-                ExactDyadic::try_subtract_refs(&base, &half)?
+                rounded
             };
-            let rounded = round_ratio(&exact, &ExactDyadic::one())?;
-            let overshoot = ExactDyadic::from_f64(rounded).cmp(&exact);
-            Ok(match (add, overshoot) {
-                (true, Ordering::Less) => rounded.next_up(),
-                (false, Ordering::Greater) => rounded.next_down(),
-                _ => rounded,
-            })
+            if !rounded.is_finite() {
+                return Err(
+                    GeometryErrorKind::voronoi("padded Voronoi frame overflows binary64").into(),
+                );
+            }
+            Ok(ExactRational::from_f64(rounded))
         };
-        min_x = outward(min_x, false)?;
-        max_x = outward(max_x, true)?;
-        min_y = outward(min_y, false)?;
-        max_y = outward(max_y, true)?;
-        if !(min_x.is_finite() && max_x.is_finite() && min_y.is_finite() && max_y.is_finite()) {
-            return Err(
-                GeometryErrorKind::voronoi("padded Voronoi frame overflows binary64").into(),
-            );
-        }
+        min_x = outward(&min_x, true)?;
+        max_x = outward(&max_x, false)?;
+        min_y = outward(&min_y, true)?;
+        max_y = outward(&max_y, false)?;
     }
     Ok([
-        ExactPoint::from_xy(XY::new(min_x, min_y)),
-        ExactPoint::from_xy(XY::new(max_x, min_y)),
-        ExactPoint::from_xy(XY::new(max_x, max_y)),
-        ExactPoint::from_xy(XY::new(min_x, max_y)),
+        ExactPoint::from_rationals(min_x.clone(), min_y.clone())?,
+        ExactPoint::from_rationals(max_x.clone(), min_y)?,
+        ExactPoint::from_rationals(max_x, max_y.clone())?,
+        ExactPoint::from_rationals(min_x, max_y)?,
     ])
+}
+
+impl ExactPoint {
+    fn from_rationals(x: ExactRational, y: ExactRational) -> Result<Self> {
+        let numerator_x = x.numerator.try_product(&y.denominator)?;
+        let numerator_y = y.numerator.try_product(&x.denominator)?;
+        let denominator = x.denominator.try_product(&y.denominator)?;
+        Ok(Self::homogeneous(numerator_x, numerator_y, denominator))
+    }
 }
 
 /// Exact orientation of three finite homogeneous points.  The sign is
@@ -2185,6 +2232,39 @@ pub(in crate::geometry) fn circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoin
         &ExactLine::perpendicular_bisector(a, b)?,
         &ExactLine::perpendicular_bisector(a, c)?,
     )
+}
+
+pub(in crate::geometry) fn circumcenter_points(
+    a: &ExactPoint,
+    b: &ExactPoint,
+    c: &ExactPoint,
+) -> Result<ExactPoint> {
+    if orient_points(a, b, c)? == ExactSign::Zero {
+        return Err(GeometryErrorKind::voronoi(
+            "cannot construct a circumcenter for collinear sites",
+        ));
+    }
+    line_intersection(
+        &ExactLine::perpendicular_bisector_points(a, b)?,
+        &ExactLine::perpendicular_bisector_points(a, c)?,
+    )
+}
+
+pub(super) fn distance_within_points(
+    origin: &ExactPoint,
+    point: &ExactPoint,
+    radius: f64,
+) -> Result<bool> {
+    let x_axis = ExactDyadic::one();
+    let zero = ExactDyadic::zero();
+    let x = |point: &ExactPoint| point.projected_coordinate(&x_axis, &zero);
+    let y = |point: &ExactPoint| point.projected_coordinate(&zero, &x_axis);
+    let dx = x(point)?.try_subtract(&x(origin)?)?;
+    let dy = y(point)?.try_subtract(&y(origin)?)?;
+    let distance_squared = dx.try_product(&dx)?.try_add(&dy.try_product(&dy)?)?;
+    let radius = ExactRational::from_f64(radius);
+    let radius_squared = radius.try_product(&radius)?;
+    Ok(distance_squared.try_cmp(&radius_squared)?.is_lt())
 }
 
 fn approximate_ratio_components(
