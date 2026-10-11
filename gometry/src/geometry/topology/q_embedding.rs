@@ -10354,7 +10354,7 @@ fn build_q_publication_chords(
     let mut sample_nodes = Vec::with_capacity(emission.publication.samples.len());
     for sample in &emission.publication.samples {
         budget.charge(1)?;
-        sample_nodes.push(nodes.intern_computed(frame, sample.exact_point.clone(), budget)?);
+        sample_nodes.push(nodes.intern_computed(frame, &sample.exact_point, budget)?);
     }
     let mut sample_source_ports = Vec::with_capacity(sample_nodes.len());
     for (sample_index, &node) in sample_nodes.iter().enumerate() {
@@ -16172,7 +16172,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         &self,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],
-        source_faces: Option<QFaceStructure>,
+        source_faces: Option<&QFaceStructure>,
         budget: &mut impl Work,
     ) -> Result<AssignedProducerProjection> {
         let q = &self.topology.q;
@@ -16234,7 +16234,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 points,
             });
         }
-        if let Some(source_faces) = source_faces.as_ref() {
+        if let Some(source_faces) = source_faces {
             budget.charge(
                 u64::try_from(source_faces.outgoing_nodes.len())
                     .map_err(|_| ResourceError::SizeOverflow)?,
@@ -19659,12 +19659,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        let mut producer_projection = self.certify_assigned_producer(
-            coordinates,
-            publication_coordinates,
-            source_faces,
-            budget,
-        )?;
+        let mut producer_projection = {
+            let source_faces = source_faces;
+            self.certify_assigned_producer(
+                coordinates,
+                publication_coordinates,
+                source_faces.as_ref(),
+                budget,
+            )?
+        };
         let publication_rejections =
             self.publication_graph_rejections(&producer_projection, budget)?;
         if !publication_rejections.is_empty() {
@@ -22969,7 +22972,7 @@ mod canonical_coordinate_tests {
         );
         let mut work = crate::geometry::Unmetered;
         let mut nodes = EmissionNodeRegistry::with_sources(&topology, &[], &mut work)?;
-        let node = nodes.intern_computed(frame, exact.clone(), &mut work)?;
+        let node = nodes.intern_computed(frame, &exact, &mut work)?;
         let mut publication = PublicationInventory {
             fragments: Vec::new(),
             samples: vec![super::super::emission::PublishedSample {

@@ -146,11 +146,11 @@ impl EmissionNodeRegistry {
     pub(super) fn intern_computed(
         &mut self,
         frame: GeographicFrame,
-        point: ExactChartPoint,
+        point: &ExactChartPoint,
         work: &mut impl Work,
     ) -> Result<EmissionNodeId> {
         work.charge(1)?;
-        let key = quotient_key_for_chart_position(frame, &point)?;
+        let key = quotient_key_for_chart_position(frame, point)?;
         self.intern(key.clone(), NodeAuthority::Computed(key), work)
     }
 
@@ -1101,11 +1101,11 @@ impl<'topology> EmissionBuilder<'topology> {
         let mut nodes = Vec::with_capacity(samples.len());
         for sample in samples {
             work.charge(1)?;
-            nodes.push(self.nodes.intern_computed(
-                self.topology.sources.frame,
-                sample.exact_point.try_clone_with_work(work)?,
-                work,
-            )?);
+            let point = sample.exact_point.try_clone_with_work(work)?;
+            nodes.push(
+                self.nodes
+                    .intern_computed(self.topology.sources.frame, &point, work)?,
+            );
         }
         Ok(nodes)
     }
@@ -1115,11 +1115,9 @@ impl<'topology> EmissionBuilder<'topology> {
         point: &ExactChartPoint,
         work: &mut impl Work,
     ) -> Result<EmissionNodeId> {
-        self.nodes.intern_computed(
-            self.topology.sources.frame,
-            point.try_clone_with_work(work)?,
-            work,
-        )
+        let point = point.try_clone_with_work(work)?;
+        self.nodes
+            .intern_computed(self.topology.sources.frame, &point, work)
     }
 
     pub(super) fn chord(
@@ -1301,7 +1299,7 @@ pub(super) type NativeLiteralUses = ShapeLiteralLayout<EmissionPortId>;
 pub(super) fn native_literal_uses_in_output_order(
     literal_uses: NativeLiteralUses,
     line_traces: Vec<TracedLine>,
-    order: CertifiedOverlayOrder,
+    order: &CertifiedOverlayOrder,
     work: &mut impl Work,
 ) -> Result<(NativeLiteralUses, Vec<TracedLine>)> {
     if literal_uses.lines.len() != line_traces.len() {
@@ -3883,7 +3881,7 @@ impl FragmentRecipes {
                 first,
                 Vec::new(),
                 ExactRational::zero(),
-                ExactRational::zero(),
+                &ExactRational::zero(),
                 true,
                 use_kind,
                 &mut emitted,
@@ -3908,12 +3906,15 @@ impl FragmentRecipes {
         if ranges.is_empty() {
             return Ok(());
         }
+        let longitude_displacement =
+            std::mem::replace(longitude_displacement, ExactRational::zero());
+        let latitude_displacement = std::mem::replace(latitude_displacement, ExactRational::zero());
         self.push_fragment(
             from,
             to,
             std::mem::take(ranges),
-            std::mem::replace(longitude_displacement, ExactRational::zero()),
-            std::mem::replace(latitude_displacement, ExactRational::zero()),
+            longitude_displacement,
+            &latitude_displacement,
             support_allowed,
             use_kind,
             emitted,
@@ -3927,7 +3928,7 @@ impl FragmentRecipes {
         to: QPortId,
         ranges: Vec<PendingSourceRange>,
         longitude_displacement: ExactRational,
-        latitude_displacement: ExactRational,
+        latitude_displacement: &ExactRational,
         support_allowed: bool,
         use_kind: SelectedUse,
         emitted: &mut Vec<FragmentRecipeId>,
@@ -3937,7 +3938,7 @@ impl FragmentRecipes {
         let ranges = producer_ranges(
             ranges,
             &longitude_displacement,
-            &latitude_displacement,
+            latitude_displacement,
             support_allowed,
             work,
         )?;
@@ -5587,7 +5588,7 @@ mod tests {
             TracedLine { member: 30, trace },
         ];
         let (ordered, ordered_traces) =
-            native_literal_uses_in_output_order(uses, line_traces, order, &mut work).unwrap();
+            native_literal_uses_in_output_order(uses, line_traces, &order, &mut work).unwrap();
         assert_eq!(
             ordered
                 .points

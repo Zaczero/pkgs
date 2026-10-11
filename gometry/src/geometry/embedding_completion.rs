@@ -331,7 +331,7 @@ pub(super) struct ShapeLiteralLayout<I> {
 impl<I> ShapeLiteralLayout<I> {
     pub(super) fn in_output_order(
         self,
-        order: CertifiedOverlayOrder,
+        order: &CertifiedOverlayOrder,
         work: &mut impl Work,
     ) -> Result<Self> {
         Ok(Self {

@@ -1157,12 +1157,12 @@ impl QEmissionPlan {
             true,
             work,
         )?;
-        let layout = layout.in_output_order(
-            order.ok_or_else(|| {
+        let layout = {
+            let order = order.ok_or_else(|| {
                 GeometryErrorKind::Invalid("source shape lost its literal output ordering".into())
-            })?,
-            work,
-        )?;
+            })?;
+            layout.in_output_order(&order, work)?
+        };
         Ok(SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
         })
@@ -1193,14 +1193,17 @@ impl QEmissionPlan {
             true,
             work,
         )?;
-        let (literal_uses, line_traces) = super::emission::native_literal_uses_in_output_order(
-            literal_uses,
-            line_traces,
-            order.ok_or_else(|| {
+        let (literal_uses, line_traces) = {
+            let order = order.ok_or_else(|| {
                 GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
-            })?,
-            work,
-        )?;
+            })?;
+            super::emission::native_literal_uses_in_output_order(
+                literal_uses,
+                line_traces,
+                &order,
+                work,
+            )?
+        };
         Ok(super::emission::NativeFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
             line_traces,
@@ -4952,12 +4955,12 @@ mod tests {
         )?;
         let (shape, order) =
             seal_output_parts(plan, points, lines, polygons, axes, axes, true, &mut work)?;
-        let layout = layout.in_output_order(
-            order.ok_or_else(|| {
+        let layout = {
+            let order = order.ok_or_else(|| {
                 GeometryErrorKind::Invalid("source boundary lost its literal row order".into())
-            })?,
-            &mut work,
-        )?;
+            })?;
+            layout.in_output_order(&order, &mut work)?
+        };
         Ok((shape, layout))
     }
 
