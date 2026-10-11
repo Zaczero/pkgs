@@ -375,7 +375,7 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             metric_access,
         };
         let pass = match certify_and_search_q_embedding(
-            certification,
+            &certification,
             &live_node_keys,
             drawing,
             preparation_work,
@@ -5238,7 +5238,7 @@ mod tests {
             operation,
             metric_access,
         };
-        certify_q_embedding_nearest(certification, live_keys, drawing, budget)
+        certify_q_embedding_nearest(&certification, live_keys, drawing, budget)
     }
 
     fn q_union_one_source(shape: &Shape, frame: GeographicFrame) -> Shape {

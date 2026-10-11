@@ -11119,6 +11119,7 @@ fn union_prepared_dependencies(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 struct UnifiedQClassInputs<'a> {
     topology: &'a ExactGeographicTopology,
     source_classes: &'a [QSourceClass],
@@ -11137,7 +11138,7 @@ struct UnifiedQClassInputs<'a> {
 }
 
 fn build_unified_q_classes(
-    inputs: UnifiedQClassInputs<'_>,
+    inputs: &UnifiedQClassInputs<'_>,
     budget: &mut impl Work,
 ) -> Result<(
     usize,
@@ -11161,7 +11162,7 @@ fn build_unified_q_classes(
         source_movable_axes,
         publication_domains,
         producer_witness,
-    } = inputs;
+    } = *inputs;
     let mut source_variable_count = 0_usize;
     for class in source_classes {
         budget.charge(1)?;
@@ -13439,6 +13440,7 @@ pub(super) struct QEmbeddingOutput {
     pub(super) family_state: Option<FeatureFamilyRegistry>,
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct QEmbeddingCertification<'topology, 'emission, 'access, 'metric, M: ChartMetric> {
     pub(super) topology: &'topology ExactGeographicTopology,
     pub(super) emission: &'emission QEmbeddingEmission<'topology, 'emission>,
@@ -15309,7 +15311,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let (source_base, classes, node_location, publication_location, class_states) =
             build_unified_q_classes(
-                UnifiedQClassInputs {
+                &UnifiedQClassInputs {
                     topology,
                     source_classes: &source_classes,
                     publication_variables: &published.variables,
@@ -21452,7 +21454,7 @@ fn search_q_embedding<M: ChartMetric, A: SearchAccount>(
 }
 
 pub(super) fn certify_and_search_q_embedding<'topology, M: ChartMetric, A: SearchAccount>(
-    certification: QEmbeddingCertification<'topology, '_, '_, '_, M>,
+    certification: &QEmbeddingCertification<'topology, '_, '_, '_, M>,
     live_keys: &[(EmittedNodeKey, QNodeId)],
     drawing: QEmissionDrawing<'topology>,
     budget: &mut A,
@@ -21464,7 +21466,7 @@ pub(super) fn certify_and_search_q_embedding<'topology, M: ChartMetric, A: Searc
 
 #[cfg(test)]
 pub(super) fn certify_q_embedding_nearest<'topology, M: ChartMetric, A: SearchAccount>(
-    certification: QEmbeddingCertification<'topology, '_, '_, '_, M>,
+    certification: &QEmbeddingCertification<'topology, '_, '_, '_, M>,
     live_keys: &[(EmittedNodeKey, QNodeId)],
     drawing: QEmissionDrawing<'topology>,
     budget: &mut A,
@@ -23036,7 +23038,7 @@ mod canonical_coordinate_tests {
         let producer_witness = PreparedProducerWitness::default();
         let (source_base, classes, source_location, publication_location, states) =
             build_unified_q_classes(
-                UnifiedQClassInputs {
+                &UnifiedQClassInputs {
                     topology: &topology,
                     source_classes: &[],
                     publication_variables: &domains.variables,
