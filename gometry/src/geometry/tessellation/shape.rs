@@ -505,34 +505,47 @@ impl Shape {
         )>,
     ) -> Result<Vec<Point>> {
         if self.topological_dimension() >= Dimension::Surface {
-            let mut triangles: Vec<[Point; 3]> = Vec::new();
+            let mut triangles = Vec::new();
             collect_sample_triangles(self, &mut triangles)?;
             // Every triangle uses one shared *per-axis* frame. Relative areas
             // retain the common `sx*sy` factor, while reciprocal spans remain
             // nonzero instead of collapsing to the lower-dimensional fallback.
-            let frame = triangles.first().and_then(|[origin, ..]| {
-                let extent_x =
-                    axis_extent(triangles.iter().flatten().map(|point| point.x), origin.x)?;
-                let extent_y =
-                    axis_extent(triangles.iter().flatten().map(|point| point.y), origin.y)?;
-                AxisFrame::from_origin_extents(*origin, extent_x, extent_y)
+            let frame = triangles.first().and_then(|triangle| {
+                let origin = triangle.points[0];
+                let extent_x = axis_extent(
+                    triangles
+                        .iter()
+                        .flat_map(|triangle| triangle.points)
+                        .map(|point| point.x),
+                    origin.x,
+                )?;
+                let extent_y = axis_extent(
+                    triangles
+                        .iter()
+                        .flat_map(|triangle| triangle.points)
+                        .map(|point| point.y),
+                    origin.y,
+                )?;
+                AxisFrame::from_origin_extents(origin, extent_x, extent_y)
             });
             let placed = sample_weighted(
                 count,
                 seed,
                 &triangles,
-                |[a, b, c]| {
+                |triangle| {
                     let Some(frame) = frame else {
                         return 0.0;
                     };
-                    let a = frame.frame_point(*a);
-                    let b = frame.frame_point(*b);
-                    let c = frame.frame_point(*c);
+                    let [a, b, c] = triangle.points;
+                    let a = frame.frame_point(a);
+                    let b = frame.frame_point(b);
+                    let c = frame.frame_point(c);
                     ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)).abs()
                 },
-                |[base, mid, apex], state| {
+                |triangle, state| {
                     // P = (1 - s) A + s (1 - t) B + s t C with s = sqrt(u):
                     // uniform over the triangle.
+                    let [base, mid, apex] = triangle.points;
                     let spread = uniform_f64(state).sqrt();
                     let blend = uniform_f64(state);
                     let x =

@@ -572,6 +572,75 @@ fn earcut_mixed_ring_succeeds_with_per_triangle_common_axes() {
 }
 
 #[test]
+fn earcut_id_callback_keeps_source_sites_and_distinct_bridge_occurrences() {
+    let shell = vec![
+        xyz(0.0, 0.0, 1.0),
+        xyz(4.0, 0.0, 2.0),
+        xyz(8.0, 0.0, 3.0),
+        xyz(8.0, 8.0, 4.0),
+        xyz(0.0, 8.0, 5.0),
+        xyz(0.0, 0.0, 1.0),
+    ];
+    let hole = vec![
+        xy(2.0, 2.0),
+        xy(2.0, 4.0),
+        xy(4.0, 4.0),
+        xy(4.0, 2.0),
+        xy(2.0, 2.0),
+    ];
+    let source = polygon(shell.clone(), vec![hole.clone()]);
+    let mut triangles = Vec::new();
+    super::earcut::earcut_polygon_with_ids(&source, &mut |triangle| {
+        triangles.push(triangle);
+        Ok(())
+    })
+    .unwrap();
+    assert!(!triangles.is_empty());
+
+    let mut occurrences_by_site = std::collections::HashMap::<
+        super::earcut::EarcutSiteId,
+        std::collections::HashSet<super::earcut::EarcutOccurrenceId>,
+    >::new();
+    let mut sites_by_occurrence = std::collections::HashMap::<
+        super::earcut::EarcutOccurrenceId,
+        super::earcut::EarcutSiteId,
+    >::new();
+    for (selected_face, triangle) in triangles.iter().enumerate() {
+        assert_eq!(triangle.face, selected_face);
+        let mut triangle_occurrences = std::collections::HashSet::new();
+        for corner in 0..3 {
+            let identity = triangle.corners[corner];
+            let source = match identity.site.ring {
+                0 => shell.get(identity.site.vertex),
+                1 => hole.get(identity.site.vertex),
+                ring => panic!("unexpected source ring {ring}"),
+            }
+            .expect("callback site ordinal belongs to its source ring");
+            assert_eq!(triangle.points[corner], *source);
+            assert_ne!(
+                (identity.site.ring, identity.site.vertex),
+                (0, 1),
+                "the removed collinear source corner must not be reidentified"
+            );
+            assert!(triangle_occurrences.insert(identity.occurrence));
+            if let Some(previous) = sites_by_occurrence.insert(identity.occurrence, identity.site) {
+                assert_eq!(previous, identity.site);
+            }
+            occurrences_by_site
+                .entry(identity.site)
+                .or_default()
+                .insert(identity.occurrence);
+        }
+    }
+    assert!(
+        occurrences_by_site
+            .values()
+            .any(|occurrences| occurrences.len() > 1),
+        "a bridge copy must keep its source site while owning another occurrence ID"
+    );
+}
+
+#[test]
 fn earcut_packed_axes_none_on_mixed_rings_some_on_homogeneous() {
     assert_eq!(
         Shape::Polygon(mixed_ring_polygon()).earcut_packed_axes(),

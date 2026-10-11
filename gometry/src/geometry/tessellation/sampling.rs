@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::geometry::tessellation::earcut_polygon_with;
+use crate::geometry::tessellation::{EarcutTriangle, earcut_polygon_with_ids};
 use crate::geometry::{Point, Shape};
 
 /// A common power-of-two factor that keeps weight products finite for
@@ -53,18 +53,18 @@ pub(crate) fn sample_weighted<T>(
 
 /// Triangles of every areal part, recursively through collections — the
 /// dimension-2 sample space.
-pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<[Point; 3]>) -> Result<()> {
+pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<EarcutTriangle>) -> Result<()> {
     match shape {
         Shape::Polygon(polygon) => {
-            earcut_polygon_with(polygon, &mut |a, b, c| {
-                out.push([a, b, c]);
+            earcut_polygon_with_ids(polygon, &mut |triangle| {
+                out.push(triangle);
                 Ok(())
             })?;
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
-                earcut_polygon_with(polygon, &mut |a, b, c| {
-                    out.push([a, b, c]);
+                earcut_polygon_with_ids(polygon, &mut |triangle| {
+                    out.push(triangle);
                     Ok(())
                 })?;
             }

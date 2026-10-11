@@ -83,7 +83,10 @@ pub(super) fn overlapping_rings_error(left: RingOwner, right: RingOwner) -> crat
 
 pub(crate) use delaunay::{CdtRefinement, constrained_triangle_vertices, delaunay_triangulation};
 use delaunay::{CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay};
-pub(crate) use earcut::{earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape};
+pub(crate) use earcut::{
+    EarcutTriangle, earcut_polygon_with, earcut_polygon_with_ids, point_in_ccw_triangle,
+    try_triangle_shape,
+};
 pub(crate) use sampling::{
     collect_sample_triangles, row_sample_seed, sample_weighted, uniform_f64, weight_scale,
 };
