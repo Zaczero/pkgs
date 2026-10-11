@@ -13059,7 +13059,7 @@ fn native_port_data(
         .periods
         .checked_add(lift_delta as i64)
         .ok_or(ResourceError::SizeOverflow)?;
-    let (longitude, spelling, source_record) = if let Some(bank) = bank {
+    let (longitude, spelling, source_record, bank) = if let Some(bank) = bank {
         let longitude = match bank {
             super::emission::ChartSide::East => frame.longitude().half_period(),
             super::emission::ChartSide::West => -frame.longitude().half_period(),
@@ -13070,27 +13070,44 @@ fn native_port_data(
             longitude,
             super::emission::PortSpelling::Seam(bank),
             retained_record,
+            Some(bank),
         )
     } else if let Some(record) = source_record {
-        if matches!(
-            quotient_key_for_chart_position_with_work(frame, source_chart_point, budget)?,
-            ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole
-        ) {
-            (
+        match quotient_key_for_chart_position_with_work(frame, source_chart_point, budget)? {
+            ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole => (
                 record.x,
                 super::emission::PortSpelling::Pole {
                     native_longitude: record.x,
                 },
                 Some(record),
-            )
-        } else {
-            (
+                None,
+            ),
+            ExactQuotientKey::Seam(_) => {
+                let side = if chart_periods.rem_euclid(2) == 0 {
+                    super::emission::ChartSide::West
+                } else {
+                    super::emission::ChartSide::East
+                };
+                let longitude = match side {
+                    super::emission::ChartSide::East => frame.longitude().half_period(),
+                    super::emission::ChartSide::West => -frame.longitude().half_period(),
+                };
+                let retained_record = (record.x.to_bits() == longitude.to_bits()).then_some(record);
+                (
+                    longitude,
+                    super::emission::PortSpelling::Seam(side),
+                    retained_record,
+                    Some(side),
+                )
+            },
+            ExactQuotientKey::Coordinate(_) => (
                 record.x,
                 super::emission::PortSpelling::Interior {
                     periods: chart_periods,
                 },
                 Some(record),
-            )
+                None,
+            ),
         }
     } else {
         match quotient_key_for_chart_position_with_work(frame, source_chart_point, budget)? {
@@ -13106,18 +13123,32 @@ fn native_port_data(
                         native_longitude: longitude,
                     },
                     None,
+                    None,
                 )
             },
-            ExactQuotientKey::Seam(_) => (
-                -frame.longitude().half_period(),
-                super::emission::PortSpelling::Seam(super::emission::ChartSide::West),
-                None,
-            ),
+            ExactQuotientKey::Seam(_) => {
+                let side = if chart_periods.rem_euclid(2) == 0 {
+                    super::emission::ChartSide::West
+                } else {
+                    super::emission::ChartSide::East
+                };
+                let longitude = match side {
+                    super::emission::ChartSide::East => frame.longitude().half_period(),
+                    super::emission::ChartSide::West => -frame.longitude().half_period(),
+                };
+                (
+                    longitude,
+                    super::emission::PortSpelling::Seam(side),
+                    None,
+                    Some(side),
+                )
+            },
             ExactQuotientKey::Coordinate(_) => (
                 candidate.native.x,
                 super::emission::PortSpelling::Interior {
                     periods: chart_periods,
                 },
+                None,
                 None,
             ),
         }
@@ -21194,6 +21225,75 @@ mod canonical_coordinate_tests {
             native_chart_vertex_key(&ports[0]),
             native_chart_vertex_key(&ports[1])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_seam_port_without_a_record_uses_its_assigned_bank() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let mut work = Unmetered;
+        for (longitude, side) in [
+            (180.0, super::super::emission::ChartSide::East),
+            (-180.0, super::super::emission::ChartSide::West),
+        ] {
+            let point = ExactChartPoint::from_rationals(
+                ExactRational::from_f64(longitude),
+                ExactRational::from_f64(-1.0),
+            );
+            let port = native_port_data(
+                frame,
+                EmissionNodeId(0),
+                QCandidate {
+                    native: XY::new(longitude, -1.0),
+                    periods: 0,
+                },
+                &point,
+                None,
+                Vec::new(),
+                None,
+                &mut work,
+            )?;
+
+            assert_eq!(port.point, point);
+            assert!(matches!(&port.spelling, PortSpelling::Seam(actual) if *actual == side));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_seam_source_record_keeps_its_chart_bank() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let mut work = Unmetered;
+        for (longitude, side) in [
+            (180.0, super::super::emission::ChartSide::East),
+            (-180.0, super::super::emission::ChartSide::West),
+        ] {
+            let point = ExactChartPoint::from_rationals(
+                ExactRational::from_f64(longitude),
+                ExactRational::from_f64(-1.0),
+            );
+            let record = Point::new_raw_xy(longitude, -1.0);
+            let port = native_port_data(
+                frame,
+                EmissionNodeId(0),
+                QCandidate {
+                    native: XY::new(longitude, -1.0),
+                    periods: 0,
+                },
+                &point,
+                Some(record),
+                Vec::new(),
+                None,
+                &mut work,
+            )?;
+
+            assert_eq!(port.point, point);
+            assert_eq!(
+                port.source_record.map(|record| record.x.to_bits()),
+                Some(longitude.to_bits())
+            );
+            assert!(matches!(&port.spelling, PortSpelling::Seam(actual) if *actual == side));
+        }
         Ok(())
     }
 
