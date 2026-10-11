@@ -31,7 +31,7 @@ use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, MOrdinate, Point,
-    Polygon, Ring, Shape, Work, ZOrdinate, interpolate_subdivision_ordinate,
+    Polygon, Ring, Shape, Work, ZOrdinate,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1525,6 +1525,27 @@ impl EndpointSide {
     }
 }
 
+fn interpolate_exact_reference_coordinate(
+    start: &ExactRational,
+    end: &ExactRational,
+    parameter: &ExactRational,
+    work: &mut impl Work,
+) -> Result<ExactRational> {
+    let displacement = end.try_subtract_with_work(start, work)?;
+    start.try_add_with_work(&displacement.try_product_with_work(parameter, work)?, work)
+}
+
+fn interpolate_exact_reference_point(
+    endpoints: &[ExactChartPoint; 2],
+    parameter: &ExactRational,
+    work: &mut impl Work,
+) -> Result<ExactChartPoint> {
+    Ok(ExactChartPoint::from_rationals(
+        interpolate_exact_reference_coordinate(&endpoints[0].x, &endpoints[1].x, parameter, work)?,
+        interpolate_exact_reference_coordinate(&endpoints[0].y, &endpoints[1].y, parameter, work)?,
+    ))
+}
+
 pub(super) struct PublishedSample {
     pub(super) request_row: RequestRowId,
     pub(super) family: FeatureFamily,
@@ -1554,6 +1575,61 @@ pub(super) struct PublicationInventory {
 }
 
 impl FragmentRecipe {
+    pub(super) fn reference_endpoints(
+        &self,
+        topology: &ExactGeographicTopology,
+        work: &mut impl Work,
+    ) -> Result<[ExactChartPoint; 2]> {
+        let start_port = topology
+            .q
+            .ports
+            .get(self.endpoints[0].0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("publication reference start port is unknown".into())
+            })?;
+        let end_port = topology
+            .q
+            .ports
+            .get(self.endpoints[1].0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("publication reference end port is unknown".into())
+            })?;
+        let start = start_port.point.try_clone_with_work(work)?;
+        let end = ExactChartPoint::from_rationals(
+            start.x.try_add_with_work(&self.exact_displacement, work)?,
+            end_port.point.y.try_clone_with_work(work)?,
+        );
+        let period = ExactRational::from_f64(topology.sources.frame.longitude().period());
+        let end_offset = end
+            .x
+            .try_subtract_with_work(&end_port.point.x, work)?
+            .try_quotient_with_work(&period, work)?;
+        let (_, denominator) = end_offset.parts();
+        if !denominator.is_one() {
+            return Err(GeometryErrorKind::Invalid(
+                "publication reference end is not an integral-period Q-port alias".into(),
+            )
+            .into());
+        }
+        if !quotient_key_for_chart_position_with_work(topology.sources.frame, &end, work)
+            .and_then(|end_key| {
+                let port_key = quotient_key_for_chart_position_with_work(
+                    topology.sources.frame,
+                    &end_port.point,
+                    work,
+                )?;
+                compare_quotient_keys_with_work(&end_key, &port_key, work)
+            })?
+            .is_eq()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "publication reference end disagrees with its Q-port identity".into(),
+            )
+            .into());
+        }
+        Ok([start, end])
+    }
+
     fn source_endpoint_record(
         &self,
         topology: &ExactGeographicTopology,
@@ -2795,6 +2871,7 @@ impl FragmentRecipes {
         let mut counts = vec![0_usize; self.values.len()];
         for recipe in &self.values {
             work.charge(1)?;
+            let exact_endpoints = recipe.reference_endpoints(topology, work)?;
             let source_start_record =
                 recipe.source_endpoint_record(topology, EndpointSide::Start, work)?;
             let source_end_record =
@@ -2807,16 +2884,6 @@ impl FragmentRecipes {
                 Some(point) => point,
                 None => coordinates.point(topology, recipe.endpoints[1])?,
             };
-            let exact_start = ExactChartPoint::from_rationals(
-                ExactRational::from_f64(start.x),
-                ExactRational::from_f64(start.y),
-            );
-            let exact_end = ExactChartPoint::from_rationals(
-                exact_start
-                    .x
-                    .try_add_with_work(&recipe.exact_displacement, work)?,
-                ExactRational::from_f64(end.y),
-            );
             budget.add(2)?;
             let publisher_start = Point::new_raw_xy(start.x, start.y);
             let publisher_end = Point::new_raw_xy(end.x, end.y);
@@ -2829,15 +2896,30 @@ impl FragmentRecipes {
                 &mut *budget,
                 |_, _, _| {
                     Ok(ComputedEdgeIntent::exact_lifted([
-                        &exact_start.x,
-                        &exact_end.x,
+                        &exact_endpoints[0].x,
+                        &exact_endpoints[1].x,
                     ]))
                 },
-                |_, _| ComputedVertexIntent::Preserved,
-                |_, endpoints, _, parameter, _| {
-                    let [start, end] = *endpoints;
+                |index, _| {
+                    if (index == 0 && source_start_record.is_some())
+                        || (index == 1 && source_end_record.is_some())
+                    {
+                        ComputedVertexIntent::Preserved
+                    } else {
+                        ComputedVertexIntent::Sampled
+                    }
+                },
+                |_, _, _, parameter, _| {
+                    let parameter = ExactRational::from_f64(parameter);
+                    let y = interpolate_exact_reference_coordinate(
+                        &exact_endpoints[0].y,
+                        &exact_endpoints[1].y,
+                        &parameter,
+                        work,
+                    )?
+                    .round_with_work(work)?;
                     Ok(ComputedSampleOrdinates {
-                        y: interpolate_subdivision_ordinate(start.y, end.y, parameter),
+                        y,
                         z: ZOrdinate(None),
                         m: MOrdinate(None),
                     })
@@ -2909,22 +2991,8 @@ impl FragmentRecipes {
                     )
                 })?;
                 let parameter = ExactRational::from_f64(parameter);
-                let exact_start_x = ExactRational::from_f64(start.x);
-                let exact_start_y = ExactRational::from_f64(start.y);
-                let exact_end_y = ExactRational::from_f64(end.y);
-                let exact_x = exact_start_x.try_add_with_work(
-                    &recipe
-                        .exact_displacement
-                        .try_product_with_work(&parameter, work)?,
-                    work,
-                )?;
-                let exact_y = exact_start_y.try_add_with_work(
-                    &exact_end_y
-                        .try_subtract_with_work(&exact_start_y, work)?
-                        .try_product_with_work(&parameter, work)?,
-                    work,
-                )?;
-                let exact_point = ExactChartPoint::from_rationals(exact_x, exact_y);
+                let exact_point =
+                    interpolate_exact_reference_point(&exact_endpoints, &parameter, work)?;
                 let retained_site =
                     crate::geometry::exact_arith::retained_exact_native_site_with_work(
                         topology.sources.frame.longitude(),
@@ -2987,7 +3055,7 @@ impl FragmentRecipes {
                 trace,
                 sample_range: sample_start..sample_end,
                 source_records: [source_start_record, source_end_record],
-                exact_endpoints: [exact_start, exact_end],
+                exact_endpoints,
             });
         }
         Ok(PublicationInventory {
@@ -3580,6 +3648,114 @@ mod tests {
         assert_source_record_bits(
             recipe.source_endpoint_record(&topology, EndpointSide::End, &mut work)?,
             second_edge.source[0],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn publication_preserves_authentic_start_and_samples_constructed_end() -> Result<()> {
+        let horizontal = endpoint_test_line(
+            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(Some(11.0))),
+            Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(13.0)), MOrdinate(Some(17.0))),
+        )?;
+        let vertical =
+            endpoint_test_line(Point::new_raw_xy(5.0, -1.0), Point::new_raw_xy(5.0, 1.0))?;
+        let source = Shape::geometry_collection(vec![horizontal, vertical])?;
+        let topology = endpoint_test_topology(&[source])?;
+        let edge = topology
+            .sources
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.source[0].x == 0.0
+                    && edge.source[0].y == 0.0
+                    && edge.source[1].x == 10.0
+                    && edge.source[1].y == 0.0
+            })
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("horizontal source edge is missing".into())
+            })?;
+        let [start_port, _] = *topology
+            .q
+            .source_edge_ports
+            .get(edge.id.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("horizontal source ports are missing".into())
+            })?;
+        let constructed_end = topology
+            .q
+            .ports
+            .iter()
+            .find(|port| {
+                port.point.x == ExactRational::from_f64(5.0)
+                    && port.point.y == ExactRational::zero()
+            })
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("constructed crossing port is missing".into())
+            })?;
+        let mut work = Unmetered;
+        let displacement = constructed_end.point.x.try_subtract_with_work(
+            &topology
+                .q
+                .ports
+                .get(start_port.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("horizontal start port is unknown".into())
+                })?
+                .point
+                .x,
+            &mut work,
+        )?;
+        let recipe = FragmentRecipe {
+            id: FragmentRecipeId(0),
+            endpoints: [start_port, constructed_end.id],
+            ranges: vec![DirectedSourceRange {
+                source_edge: edge.id,
+                range: ExactSourceRange {
+                    start: ExactRational::zero(),
+                    end: ExactRational::from_f64(0.5),
+                },
+                emitted: true,
+                producer_start: ExactRational::zero(),
+                producer_end: ExactRational::one(),
+                endpoint_only: false,
+            }],
+            exact_displacement: displacement,
+            use_kind: SelectedUse::Curve,
+        };
+        let coordinates = super::super::q_embedding::QCoordinates::build(&topology)?;
+        let recipes = FragmentRecipes {
+            values: vec![recipe],
+            walks: Vec::new(),
+        };
+        let publication = recipes.publish(&topology, &coordinates, "endpoint intent", &mut work)?;
+        let fragment = publication.fragments.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("endpoint intent fragment is missing".into())
+        })?;
+        assert_source_record_bits(fragment.source_records[0], edge.source[0]);
+        assert!(fragment.source_records[1].is_none());
+        assert_eq!(
+            fragment.exact_endpoints[0],
+            topology.q.ports[start_port.0 as usize].point
+        );
+        assert_eq!(fragment.exact_endpoints[1], constructed_end.point);
+        let end = fragment
+            .points
+            .last()
+            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint intent has no end".into()))?;
+        assert_eq!(
+            end.x.to_bits(),
+            fragment.exact_endpoints[1]
+                .x
+                .round_with_work(&mut work)?
+                .to_bits()
+        );
+        assert_eq!(
+            end.y.to_bits(),
+            fragment.exact_endpoints[1]
+                .y
+                .round_with_work(&mut work)?
+                .to_bits()
         );
         Ok(())
     }

@@ -7183,6 +7183,45 @@ mod tests {
             "geographic boundary",
             &mut crate::geometry::Unmetered,
         )?;
+        let mut witness_found = false;
+        let mut work = crate::geometry::Unmetered;
+        for recipe in plan.fragment_recipes.as_slice() {
+            let references = recipe.reference_endpoints(&topology, &mut work)?;
+            let start_x = references[0].x.round_with_work(&mut work)?;
+            let end_x = references[1].x.round_with_work(&mut work)?;
+            let anchored_end = ExactRational::from_f64(start_x)
+                .try_add_with_work(&recipe.exact_displacement, &mut work)?
+                .round_with_work(&mut work)?;
+            if start_x.to_bits() != 100.00000000000001_f64.to_bits()
+                || anchored_end.to_bits() != 99.99999999999997_f64.to_bits()
+            {
+                continue;
+            }
+            let assigned_end = nearest.point(&topology, recipe.endpoints[1])?;
+            assert_eq!(assigned_end.x.to_bits(), 99.99999999999999_f64.to_bits());
+            assert_eq!(end_x.to_bits(), assigned_end.x.to_bits());
+            let fragment = publication
+                .fragments
+                .get(recipe.id.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("near-ULP publication fragment is missing".into())
+                })?;
+            assert_eq!(fragment.exact_endpoints, references);
+            assert!(fragment.source_records[1].is_none());
+            let published_end = fragment.points.last().ok_or_else(|| {
+                GeometryErrorKind::Invalid("near-ULP publication has no end point".into())
+            })?;
+            assert_eq!(published_end.x.to_bits(), end_x.to_bits());
+            assert_eq!(
+                published_end.y.to_bits(),
+                references[1].y.round_with_work(&mut work)?.to_bits()
+            );
+            witness_found = true;
+        }
+        assert!(
+            witness_found,
+            "the captured near-ULP Q-reference interval must be published from its exact endpoints"
+        );
         let emission = build_q_emission_unmetered(&plan, &topology, &source_points, &publication)?;
 
         let exact_apex_x = ExactRational::from_f64(100.0);

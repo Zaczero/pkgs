@@ -7003,15 +7003,33 @@ fn published_domains(
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q computed publication sample is unknown".into())
             })?;
-        let longitude_site = crate::geometry::exact_arith::retained_exact_native_site_with_work(
-            frame.longitude(),
-            &sample.published_chart_point.x,
-            budget,
-        )?;
-        let nearest_candidate = QCandidate {
-            native: sample.point.xy(),
-            periods: longitude_site.periods(),
+        let exact = ExactNodePosition {
+            longitude: sample.exact_point.x.clone(),
+            latitude: sample.exact_point.y.clone(),
         };
+        *exact_positions.get_mut(node_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q publication exact-position slot is unknown".into())
+        })? = Some(exact.clone());
+        let [_, longitude_site, _] =
+            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
+                frame.longitude(),
+                &exact.longitude,
+                budget,
+            )?;
+        let nearest_candidate = QCandidate {
+            native: XY::new(
+                longitude_site.native,
+                exact.latitude.round_with_work(budget)?,
+            ),
+            periods: longitude_site.periods,
+        };
+        let nearest_point = candidate_chart_point_with_work(frame, nearest_candidate, budget)?;
+        if !nearest_point.try_eq_with_work(&sample.published_chart_point, budget)? {
+            return Err(GeometryErrorKind::Invalid(
+                "published nearest image differs from its exact source reference".into(),
+            )
+            .into());
+        }
         *nearest.get_mut(node_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q publication nearest-site slot is unknown".into())
         })? = Some(nearest_candidate);
@@ -7025,15 +7043,8 @@ fn published_domains(
             })? = vec![nearest_candidate];
             continue;
         }
-        let exact = ExactNodePosition {
-            longitude: sample.exact_point.x.clone(),
-            latitude: sample.exact_point.y.clone(),
-        };
         let movable_axes =
             inexact_published_axes_with_work(frame, &exact, nearest_candidate, budget)?;
-        *exact_positions.get_mut(node_index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("Q publication exact-position slot is unknown".into())
-        })? = Some(exact.clone());
         let fixed_longitude = matches!(key, ExactQuotientKey::Seam(_));
         let longitude_candidates = if movable_axes[0] && !fixed_longitude {
             crate::geometry::exact_arith::rounded_native_neighbors_with_work(
@@ -13849,7 +13860,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 .into());
             }
         }
-        let period = ExactRational::from_f64(frame.longitude().period());
         for (index, recipe) in emission.fragment_recipes.iter().enumerate() {
             budget.charge(1)?;
             if recipe.id.0 as usize != index {
@@ -13867,23 +13877,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             })?;
             emission.source_nodes.source_node(from.node)?;
             emission.source_nodes.source_node(to.node)?;
-            let endpoint_delta = to.point.x.try_subtract_with_work(&from.point.x, budget)?;
-            let periodic_difference = recipe
-                .exact_displacement
-                .try_subtract_with_work(&endpoint_delta, budget)?;
-            let turns = periodic_difference
-                .try_quotient_with_work(&period, budget)?
-                .round_with_work(budget)?;
-            if turns.fract() != 0.0
-                || !periodic_difference
-                    .try_cmp_with_work(
-                        &period.try_product_with_work(&ExactRational::from_f64(turns), budget)?,
-                        budget,
-                    )?
-                    .is_eq()
+            let reference_endpoints = recipe.reference_endpoints(topology, budget)?;
+            let publication_fragment =
+                emission.publication.fragments.get(index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "Q fragment has no frozen publication reference".into(),
+                    )
+                })?;
+            if !reference_endpoints[0]
+                .try_eq_with_work(&publication_fragment.exact_endpoints[0], budget)?
+                || !reference_endpoints[1]
+                    .try_eq_with_work(&publication_fragment.exact_endpoints[1], budget)?
             {
                 return Err(GeometryErrorKind::Invalid(
-                    "Q fragment recipe displacement does not match its quotient endpoints".into(),
+                    "Q publication reference differs from its exact recipe endpoints".into(),
                 )
                 .into());
             }
