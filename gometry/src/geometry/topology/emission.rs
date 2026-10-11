@@ -3597,11 +3597,12 @@ impl FragmentRecipes {
                 exact_endpoints,
             });
         }
+        let ordinates = vec![NodeOrdinates::default(); samples.len()];
         Ok(PublicationInventory {
             fragments,
-            ordinates: vec![NodeOrdinates::default(); samples.len()],
             samples,
             counts,
+            ordinates,
         })
     }
 
@@ -3623,10 +3624,10 @@ impl FragmentRecipes {
             endpoints,
             ranges: vec![DirectedSourceRange {
                 source_edge,
-                producer_start: ExactRational::zero(),
-                producer_end: ExactRational::one(),
                 range,
                 emitted: true,
+                producer_start: ExactRational::zero(),
+                producer_end: ExactRational::one(),
                 endpoint_only: false,
             }],
             exact_displacement,

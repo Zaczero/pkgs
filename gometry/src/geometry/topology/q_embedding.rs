@@ -9517,24 +9517,27 @@ fn trace_source_nodes(
                     (overlap_high, overlap_low)
                 };
                 budget.charge(1)?;
+                let producer_range = ExactSourceRange {
+                    start: producer_parameter_at_source(root_range, &source_start, budget)?,
+                    end: producer_parameter_at_source(root_range, &source_end, budget)?,
+                };
+                let span_range = ExactSourceRange {
+                    start: span_parameter_at_source(range, &source_start, budget)?,
+                    end: span_parameter_at_source(range, &source_end, budget)?,
+                };
+                let source_range = ExactSourceRange {
+                    start: source_start,
+                    end: source_end,
+                };
                 source_ranges.push(QProducerSourceRange {
                     root: root_range.root(),
                     source_edge: source.id,
                     source_lift: range.source_lift,
-                    producer_range: ExactSourceRange {
-                        start: producer_parameter_at_source(root_range, &source_start, budget)?,
-                        end: producer_parameter_at_source(root_range, &source_end, budget)?,
-                    },
-                    span_range: ExactSourceRange {
-                        start: span_parameter_at_source(range, &source_start, budget)?,
-                        end: span_parameter_at_source(range, &source_end, budget)?,
-                    },
-                    source_range: ExactSourceRange {
-                        start: source_start,
-                        end: source_end,
-                    },
+                    source_range,
+                    producer_range,
                     span: range.span,
                     owner: range.owner,
+                    span_range,
                     nodes: range.nodes,
                     ports: range.ports,
                 });
@@ -22333,13 +22336,13 @@ mod canonical_coordinate_tests {
         let west = point(-1.0, 0.0);
         let exact = vec![origin.clone(), east.clone(), north.clone(), west.clone()];
         let points = NativeReferencePoints {
+            exact,
             rounded: vec![
                 XY::new(0.0, 0.0),
                 XY::new(1.0, 0.0),
                 XY::new(0.0, 1.0),
                 XY::new(-1.0, 0.0),
             ],
-            exact,
         };
         let expected = [QDartId(1), QDartId(2), QDartId(3)];
         let mut ordered = [
