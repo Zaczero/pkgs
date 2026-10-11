@@ -82,7 +82,9 @@ use delaunay::{
 };
 pub(crate) use earcut::{earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape};
 pub(crate) use sampling::{
-    collect_sample_triangles, row_sample_seed, sample_weighted, uniform_f64, weight_scale,
+    GeographicSampleSegment, PreparedSampling, SampleOccurrenceId, SampleRecipe, SampleSupport,
+    collect_sample_atoms, collect_sample_triangles, row_sample_seed, sample_weighted, uniform_f64,
+    weight_scale,
 };
 use voronoi::{DelaunayComplex, delaunay_complex, snap_sites};
 

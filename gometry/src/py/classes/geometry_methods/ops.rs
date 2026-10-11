@@ -269,7 +269,14 @@ impl PyGeometry {
         // the two spellings of one operation disagree for the same input.
         let shape = Arc::clone(&self.shape);
         let points = py.detach(move || {
-            shape.sample_points_in_domain(count, crate::geometry::row_sample_seed(seed, 0), domain)
+            shape
+                .sample_point_receipts_in_domain(
+                    count,
+                    crate::geometry::row_sample_seed(seed, 0),
+                    0,
+                    domain,
+                )
+                .map(crate::geometry::PreparedSampling::into_points)
         })?;
         self.parts_to_array(points.into_iter().map(Shape::Point))
     }

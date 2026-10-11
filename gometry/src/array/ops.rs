@@ -581,7 +581,9 @@ impl PyGeometryArray {
                         let points = row
                             .row()
                             .try_with_shape(|shape| {
-                                shape.sample_points_in_domain(count, seed, domain)
+                                shape
+                                    .sample_point_receipts_in_domain(count, seed, logical, domain)
+                                    .map(crate::geometry::PreparedSampling::into_points)
                             })
                             .map_err(|error| (error, None))?;
                         (logical, Some(points))

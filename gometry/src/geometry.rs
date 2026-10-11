@@ -377,7 +377,9 @@ pub(crate) use segments::{
 };
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_with_work};
 pub(crate) use tessellation::exact::ExactRational;
-pub(crate) use tessellation::{CdtRefinement, VoronoiPolygonOutput, row_sample_seed};
+pub(crate) use tessellation::{
+    CdtRefinement, PreparedSampling, VoronoiPolygonOutput, row_sample_seed,
+};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeographicMetricKey;
 
