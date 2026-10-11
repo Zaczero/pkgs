@@ -79,7 +79,7 @@ pub(crate) fn resolve_source_root<M: ChartMetric>(
     )
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct RootRange {
     root: RootId,
     source_start: ExactRational,
@@ -89,6 +89,16 @@ pub(crate) struct RootRange {
 }
 
 impl RootRange {
+    pub(crate) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            root: self.root,
+            source_start: self.source_start.try_clone_with_work(work)?,
+            source_end: self.source_end.try_clone_with_work(work)?,
+            producer_start: self.producer_start.try_clone_with_work(work)?,
+            producer_end: self.producer_end.try_clone_with_work(work)?,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn whole(root: RootId) -> Self {
         Self {
@@ -717,7 +727,6 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
     Ok(output)
 }
 
-#[derive(Clone)]
 pub(crate) struct TraceRows {
     offsets: Vec<u32>,
     sample_offsets: Vec<u32>,
@@ -725,6 +734,28 @@ pub(crate) struct TraceRows {
 }
 
 impl TraceRows {
+    pub(crate) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        prepay_slots(self.offsets.len(), work)?;
+        prepay_slots(self.sample_offsets.len(), work)?;
+        prepay_slots(self.ranges.len(), work)?;
+        let mut offsets = Vec::new();
+        offsets.reserve(self.offsets.len());
+        offsets.extend(self.offsets.iter().copied());
+        let mut sample_offsets = Vec::new();
+        sample_offsets.reserve(self.sample_offsets.len());
+        sample_offsets.extend(self.sample_offsets.iter().copied());
+        let mut ranges = Vec::new();
+        ranges.reserve(self.ranges.len());
+        for range in &self.ranges {
+            ranges.push(range.try_clone_with_work(work)?);
+        }
+        Ok(Self {
+            offsets,
+            sample_offsets,
+            ranges,
+        })
+    }
+
     pub(crate) fn row(&self, edge: usize) -> Result<&[RootRange]> {
         let start = *self.offsets.get(edge).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace has no requested edge row".into())
@@ -938,30 +969,64 @@ pub(crate) struct TraceRowsBuilder {
 }
 
 impl TraceRowsBuilder {
-    pub(crate) fn new() -> Self {
-        Self {
-            offsets: vec![0],
+    pub(crate) fn new(work: &mut impl Work) -> Result<Self> {
+        prepay_slots(1, work)?;
+        prepay_slots(1, work)?;
+        let mut offsets = Vec::new();
+        offsets.reserve(1);
+        offsets.push(0);
+        let mut sample_offsets = Vec::new();
+        sample_offsets.reserve(1);
+        sample_offsets.push(0);
+        Ok(Self {
+            offsets,
             ranges: Vec::new(),
-            sample_offsets: vec![0],
+            sample_offsets,
             sample_ranges: Vec::new(),
-        }
+        })
     }
 
-    pub(crate) fn push_row(&mut self, ranges: impl IntoIterator<Item = RootRange>) -> Result<()> {
+    pub(crate) fn push_row<I>(&mut self, ranges: I, work: &mut impl Work) -> Result<()>
+    where
+        I: IntoIterator<Item = RootRange>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let ranges = ranges.into_iter();
+        let range_count = ranges.len();
+        let new_range_count = self
+            .ranges
+            .len()
+            .checked_add(range_count)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let offset = u32::try_from(new_range_count).map_err(|_| ResourceError::SizeOverflow)?;
+        prepay_slots(range_count, work)?;
+        prepay_slots(1, work)?;
+        self.ranges.reserve(range_count);
+        self.offsets.reserve(1);
         self.ranges.extend(ranges);
-        self.offsets
-            .push(u32::try_from(self.ranges.len()).map_err(|_| ResourceError::SizeOverflow)?);
+        self.offsets.push(offset);
         Ok(())
     }
 
-    pub(crate) fn push_sample_row(
-        &mut self,
-        ranges: impl IntoIterator<Item = RootRange>,
-    ) -> Result<()> {
+    pub(crate) fn push_sample_row<I>(&mut self, ranges: I, work: &mut impl Work) -> Result<()>
+    where
+        I: IntoIterator<Item = RootRange>,
+        I::IntoIter: ExactSizeIterator,
+    {
+        let ranges = ranges.into_iter();
+        let range_count = ranges.len();
+        let new_range_count = self
+            .sample_ranges
+            .len()
+            .checked_add(range_count)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let offset = u32::try_from(new_range_count).map_err(|_| ResourceError::SizeOverflow)?;
+        prepay_slots(range_count, work)?;
+        prepay_slots(1, work)?;
+        self.sample_ranges.reserve(range_count);
+        self.sample_offsets.reserve(1);
         self.sample_ranges.extend(ranges);
-        self.sample_offsets.push(
-            u32::try_from(self.sample_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        );
+        self.sample_offsets.push(offset);
         Ok(())
     }
 
@@ -972,6 +1037,10 @@ impl TraceRowsBuilder {
         local_end: &ExactRational,
         work: &mut impl Work,
     ) -> Result<()> {
+        prepay_slots(parents.len(), work)?;
+        prepay_slots(1, work)?;
+        self.ranges.reserve(parents.len());
+        self.offsets.reserve(1);
         for parent in parents {
             work.charge(1)?;
             if let Some(child) = parent.compose_with_work(local_start, local_end, work)? {
@@ -992,14 +1061,18 @@ impl TraceRowsBuilder {
             .checked_add(self.sample_ranges.len())
             .ok_or(ResourceError::SizeOverflow)?;
         u32::try_from(total).map_err(|_| ResourceError::SizeOverflow)?;
-        work.charge(u64::try_from(total).map_err(|_| ResourceError::SizeOverflow)?)?;
+        prepay_slots(total, work)?;
         let mut sample_offsets = self.sample_offsets;
-        for offset in &mut sample_offsets {
-            *offset = offset
-                .checked_add(edge_range_count)
-                .ok_or(ResourceError::SizeOverflow)?;
+        if edge_range_count > 0 {
+            prepay_slots(sample_offsets.len(), work)?;
+            for offset in &mut sample_offsets {
+                *offset = offset
+                    .checked_add(edge_range_count)
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
         }
-        let mut ranges = Vec::with_capacity(total);
+        let mut ranges = Vec::new();
+        ranges.reserve(total);
         ranges.extend(self.ranges);
         ranges.extend(self.sample_ranges);
         Ok(TraceRows {
@@ -1026,10 +1099,138 @@ fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Wor
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     use super::*;
     use crate::geometry::Unmetered;
+    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+
+    const TRACE_OPERATION: &str = "trace_storage_test";
+
+    #[derive(Clone, Copy)]
+    struct ChargeAttempt {
+        spent_before: u128,
+        ticks: u128,
+        progress: usize,
+        accepted: bool,
+    }
+
+    struct RecordingWork<'a> {
+        budget: &'a mut EvaluationBudget,
+        progress: Rc<Cell<usize>>,
+        spent: u128,
+        attempts: Vec<ChargeAttempt>,
+    }
+
+    impl Work for RecordingWork<'_> {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            let spent_before = self.spent;
+            let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
+            self.attempts.push(ChargeAttempt {
+                spent_before,
+                ticks: u128::from(ticks),
+                progress: self.progress.get(),
+                accepted: result.is_ok(),
+            });
+            if result.is_ok() {
+                self.spent += u128::from(ticks);
+            }
+            result
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            let ticks = u128::try_from(count).expect("usize fits u128")
+                * u128::try_from(ticks_per_item).expect("usize fits u128");
+            let spent_before = self.spent;
+            let result =
+                <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
+            self.attempts.push(ChargeAttempt {
+                spent_before,
+                ticks,
+                progress: self.progress.get(),
+                accepted: result.is_ok(),
+            });
+            if result.is_ok() {
+                self.spent += ticks;
+            }
+            result
+        }
+    }
+
+    fn refusing_budget(attempt: ChargeAttempt) -> EvaluationBudget {
+        assert!(attempt.ticks > 0);
+        EvaluationBudget::with_remaining_ticks_for_test(
+            TRACE_OPERATION,
+            0,
+            attempt
+                .spent_before
+                .checked_add(attempt.ticks - 1)
+                .expect("the calibrated allowance is representable"),
+        )
+        .expect("the calibrated allowance fits the actual EvaluationBudget")
+    }
+
+    fn assert_work_limit(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: TRACE_OPERATION,
+                ..
+            })
+        ));
+    }
+
+    struct ProgressRoots(Rc<Cell<usize>>);
+
+    impl RootCatalog for ProgressRoots {
+        fn resolve<M: ChartMetric>(
+            &self,
+            root: RootId,
+            parameter: &ExactRational,
+            axes: CoordinateAxes,
+            _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+            _state: &mut RootMetricState,
+            _fraction: &mut Option<f64>,
+            _work: &mut impl Work,
+        ) -> Result<NodeOrdinates> {
+            self.0.set(self.0.get() + 1);
+            let root_value =
+                u32::try_from(root.index()).map_err(|_| ResourceError::SizeOverflow)?;
+            let value = f64::from(root_value) + parameter.round()?;
+            let mut ordinates = NodeOrdinates::default();
+            if axes.has_z() {
+                ordinates.z.observe(Some(value));
+            }
+            if axes.has_m() {
+                ordinates.m.observe(Some(-value));
+            }
+            Ok(ordinates)
+        }
+    }
+
+    struct SignedZeroRoots;
+
+    impl RootCatalog for SignedZeroRoots {
+        fn resolve<M: ChartMetric>(
+            &self,
+            root: RootId,
+            _parameter: &ExactRational,
+            axes: CoordinateAxes,
+            _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+            _state: &mut RootMetricState,
+            _fraction: &mut Option<f64>,
+            _work: &mut impl Work,
+        ) -> Result<NodeOrdinates> {
+            let mut ordinates = NodeOrdinates::default();
+            if axes.has_z() {
+                ordinates
+                    .z
+                    .observe(Some(if root.index() == 0 { 0.0 } else { -0.0 }));
+            }
+            Ok(ordinates)
+        }
+    }
 
     struct Fuel(u64);
 
@@ -1089,9 +1290,12 @@ mod tests {
     fn identical_geometry_keeps_distinct_source_root_occurrences() -> Result<()> {
         let first = RootId::from_index(0);
         let second = RootId::from_index(1);
-        let mut rows = TraceRowsBuilder::new();
-        rows.push_row([RootRange::whole(first), RootRange::whole(second)])?;
         let mut work = Unmetered;
+        let mut rows = TraceRowsBuilder::new(&mut work)?;
+        rows.push_row(
+            [RootRange::whole(first), RootRange::whole(second)],
+            &mut work,
+        )?;
         let rows = rows.finish(&mut work)?;
         let requests = rows.requests_at(0, &ExactRational::from_f64(0.5), &mut work)?;
         assert_eq!(requests.len(), 2);
@@ -1109,13 +1313,16 @@ mod tests {
     fn request_dedup_keeps_first_occurrence_order() -> Result<()> {
         let first = RootId::from_index(7);
         let second = RootId::from_index(2);
-        let mut rows = TraceRowsBuilder::new();
-        rows.push_row([
-            RootRange::whole(first),
-            RootRange::whole(second),
-            RootRange::whole(first),
-        ])?;
         let mut work = Unmetered;
+        let mut rows = TraceRowsBuilder::new(&mut work)?;
+        rows.push_row(
+            [
+                RootRange::whole(first),
+                RootRange::whole(second),
+                RootRange::whole(first),
+            ],
+            &mut work,
+        )?;
         let rows = rows.finish(&mut work)?;
         let requests = rows.requests_at(0, &ExactRational::from_f64(0.5), &mut work)?;
         assert_eq!(requests.len(), 2);
@@ -1166,6 +1373,665 @@ mod tests {
         assert_eq!(table.axes(second)?, CoordinateAxes::XYZM);
         assert_eq!(table.axes(rounded)?, CoordinateAxes::XYZ);
         assert!(table.record(first_request)?.fraction.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn root_slots_are_dense_across_alternating_and_repeated_requests() -> Result<()> {
+        let first_root = RootId::from_index(7);
+        let second_root = RootId::from_index(2);
+        let third_root = RootId::from_index(5);
+        let first_parameter = ExactRational::from_f64(0.75);
+        let second_parameter = ExactRational::from_f64(0.25);
+        let third_parameter = ExactRational::from_f64(0.5);
+        let rows = [
+            RequestRowInput {
+                axes: CoordinateAxes::XY,
+                requests: vec![
+                    RootRequest {
+                        root: first_root,
+                        parameter: first_parameter.clone(),
+                    },
+                    RootRequest {
+                        root: second_root,
+                        parameter: second_parameter.clone(),
+                    },
+                ],
+            },
+            RequestRowInput {
+                axes: CoordinateAxes::XYZM,
+                requests: vec![
+                    RootRequest {
+                        root: first_root,
+                        parameter: first_parameter,
+                    },
+                    RootRequest {
+                        root: third_root,
+                        parameter: third_parameter,
+                    },
+                ],
+            },
+        ];
+        let mut work = Unmetered;
+        let table = RootRequestTable::from_rows(&rows, &mut work)?;
+        let first = RequestRowId::from_index(0)?;
+        let second = RequestRowId::from_index(1)?;
+        assert_eq!(table.root_count(), 3);
+        assert_eq!(table.root_state_slot(table.request_id_at(first, 0)?)?, 2);
+        assert_eq!(table.root_state_slot(table.request_id_at(first, 1)?)?, 0);
+        assert_eq!(table.root_state_slot(table.request_id_at(second, 0)?)?, 2);
+        assert_eq!(table.root_state_slot(table.request_id_at(second, 1)?)?, 1);
+        assert_eq!(
+            table.request_id_at(first, 0)?,
+            table.request_id_at(second, 0)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unique_request_records_pay_capacity_and_exact_parameter_clones() -> Result<()> {
+        let quarter_turn = ExactRational::from_f64(0.75);
+        let mut parameter = ExactRational::one();
+        let mut setup = Unmetered;
+        for _ in 0..100 {
+            parameter = parameter.try_product_with_work(&quarter_turn, &mut setup)?;
+        }
+        let request = RootRequest {
+            root: RootId::from_index(3),
+            parameter,
+        };
+        let target_attempts = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let mut records = Vec::new();
+            let id = push_unique_root_request(&mut records, &request, &mut work)?;
+            progress.set(1);
+            let record = records
+                .get(id.0 as usize)
+                .expect("the unique request was stored at its returned identifier");
+            assert_eq!(record.root, request.root);
+            assert_eq!(record.parameter, request.parameter);
+            assert_eq!(progress.get(), 1);
+            assert_eq!(work.attempts.first().map(|attempt| attempt.ticks), Some(1));
+            assert!(
+                work.attempts.len() > 1,
+                "the arbitrary-width exact parameter clone has its own Work charges"
+            );
+            [work.attempts[0], work.attempts[1]]
+        };
+
+        for target in target_attempts {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = refusing_budget(target);
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let mut records = Vec::new();
+            let error = match push_unique_root_request(&mut records, &request, &mut work) {
+                Err(error) => error,
+                Ok(_) => {
+                    panic!("request capacity and parameter payload must be paid before insert")
+                },
+            };
+            assert_work_limit(&error);
+            assert!(records.is_empty());
+            assert_eq!(progress.get(), 0);
+            let refusal = work
+                .attempts
+                .last()
+                .expect("the recorder observes the refused request-record phase");
+            assert!(!refusal.accepted);
+            assert_eq!(refusal.ticks, target.ticks);
+            assert_eq!(refusal.spent_before, target.spent_before);
+            assert_eq!(refusal.progress, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn root_state_storage_refusal_precedes_first_ordinate_resolution() -> Result<()> {
+        let requests = (0..7)
+            .map(|root| RootRequest {
+                root: RootId::from_index(root),
+                parameter: ExactRational::from_f64(0.5),
+            })
+            .collect();
+        let rows = [RequestRowInput {
+            axes: CoordinateAxes::XYZM,
+            requests,
+        }];
+        let table_attempt_count = {
+            let table_progress = Rc::new(Cell::new(0));
+            let mut table_budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut table_work = RecordingWork {
+                budget: &mut table_budget,
+                progress: Rc::clone(&table_progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let table = RootRequestTable::from_rows(&rows, &mut table_work)?;
+            assert_eq!(table.root_count(), 7);
+            assert_eq!(
+                table_work
+                    .attempts
+                    .iter()
+                    .filter(|attempt| attempt.ticks == 7)
+                    .count(),
+                3,
+                "the three occurrence-index vectors reserve seven slots; unique records pay individually"
+            );
+            table_work.attempts.len()
+        };
+
+        let target = {
+            let progress = Rc::new(Cell::new(0));
+            let roots = ProgressRoots(Rc::clone(&progress));
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let ordinates = resolve_request_rows::<crate::crs::GeodesicMetric, _>(
+                &rows, &roots, None, &mut work,
+            )?;
+            assert_eq!(ordinates.len(), 1);
+            assert_eq!(progress.get(), 7);
+            let target = *work
+                .attempts
+                .get(table_attempt_count)
+                .expect("dense root-state storage follows the complete request table");
+            assert!(target.accepted);
+            assert_eq!(target.ticks, 7);
+            assert_eq!(target.progress, 0);
+            target
+        };
+
+        let progress = Rc::new(Cell::new(0));
+        let roots = ProgressRoots(Rc::clone(&progress));
+        let mut budget = refusing_budget(target);
+        let mut work = RecordingWork {
+            budget: &mut budget,
+            progress: Rc::clone(&progress),
+            spent: 0,
+            attempts: Vec::new(),
+        };
+        let error = match resolve_request_rows::<crate::crs::GeodesicMetric, _>(
+            &rows, &roots, None, &mut work,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("root state allocation must be paid before ordinate resolution"),
+        };
+        assert_work_limit(&error);
+        assert_eq!(progress.get(), 0);
+        let refusal = work
+            .attempts
+            .last()
+            .expect("the recorder observes the refused root-state charge");
+        assert!(!refusal.accepted);
+        assert_eq!(refusal.ticks, target.ticks);
+        assert_eq!(refusal.spent_before, target.spent_before);
+        assert_eq!(refusal.progress, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn request_table_storage_refusal_precedes_first_ordinate_resolution() -> Result<()> {
+        let rows = [RequestRowInput {
+            axes: CoordinateAxes::XYZM,
+            requests: (0..7)
+                .map(|root| RootRequest {
+                    root: RootId::from_index(root),
+                    parameter: ExactRational::from_f64(0.5),
+                })
+                .collect(),
+        }];
+        let target = {
+            let progress = Rc::new(Cell::new(0));
+            let roots = ProgressRoots(Rc::clone(&progress));
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            resolve_request_rows::<crate::crs::GeodesicMetric, _>(&rows, &roots, None, &mut work)?;
+            assert_eq!(progress.get(), 7);
+            let target = *work
+                .attempts
+                .iter()
+                .rev()
+                .find(|attempt| attempt.progress == 0)
+                .expect("the first ordinate call has a preceding paid work event");
+            assert!(target.accepted);
+            target
+        };
+
+        let progress = Rc::new(Cell::new(0));
+        let roots = ProgressRoots(Rc::clone(&progress));
+        let mut budget = refusing_budget(target);
+        let mut work = RecordingWork {
+            budget: &mut budget,
+            progress: Rc::clone(&progress),
+            spent: 0,
+            attempts: Vec::new(),
+        };
+        let error = match resolve_request_rows::<crate::crs::GeodesicMetric, _>(
+            &rows, &roots, None, &mut work,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("request-table storage refusal must precede the first ordinate call"),
+        };
+        assert_work_limit(&error);
+        assert_eq!(progress.get(), 0);
+        let refusal = work
+            .attempts
+            .last()
+            .expect("the recorder observes the refused final pre-resolution charge");
+        assert!(!refusal.accepted);
+        assert_eq!(refusal.ticks, target.ticks);
+        assert_eq!(refusal.spent_before, target.spent_before);
+        assert_eq!(refusal.progress, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluation_only_and_unmetered_request_rows_are_bit_identical() -> Result<()> {
+        let rows = [
+            RequestRowInput {
+                axes: CoordinateAxes::XYZM,
+                requests: vec![RootRequest {
+                    root: RootId::from_index(7),
+                    parameter: ExactRational::from_f64(0.25),
+                }],
+            },
+            RequestRowInput {
+                axes: CoordinateAxes::XYZM,
+                requests: vec![RootRequest {
+                    root: RootId::from_index(2),
+                    parameter: ExactRational::from_f64(0.5),
+                }],
+            },
+            RequestRowInput {
+                axes: CoordinateAxes::XYZM,
+                requests: vec![RootRequest {
+                    root: RootId::from_index(7),
+                    parameter: ExactRational::from_f64(0.25),
+                }],
+            },
+        ];
+        let ordinate_bits = |values: &[NodeOrdinates]| {
+            values
+                .iter()
+                .map(|value| {
+                    (
+                        value.z.value().map(f64::to_bits),
+                        value.m.value().map(f64::to_bits),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let baseline_progress = Rc::new(Cell::new(0));
+        let baseline_roots = ProgressRoots(Rc::clone(&baseline_progress));
+        let mut unmetered = Unmetered;
+        let baseline = resolve_request_rows::<crate::crs::GeodesicMetric, _>(
+            &rows,
+            &baseline_roots,
+            None,
+            &mut unmetered,
+        )?;
+
+        let evaluation_progress = Rc::new(Cell::new(0));
+        let evaluation_roots = ProgressRoots(Rc::clone(&evaluation_progress));
+        let mut budget = EvaluationBudget::with_remaining_ticks_for_test(TRACE_OPERATION, 0, 0)?;
+        let evaluation_only = {
+            let mut work = EvaluationOnly::new(&mut budget);
+            resolve_request_rows::<crate::crs::GeodesicMetric, _>(
+                &rows,
+                &evaluation_roots,
+                None,
+                &mut work,
+            )?
+        };
+        assert_eq!(ordinate_bits(&baseline), ordinate_bits(&evaluation_only));
+        assert_eq!(evaluation_progress.get(), baseline_progress.get());
+        assert!(
+            <EvaluationBudget as Work>::charge(&mut budget, 1).is_err(),
+            "EvaluationOnly must not spend raw primitive-work allowance"
+        );
+
+        let ordinary_progress = Rc::new(Cell::new(0));
+        let ordinary_roots = ProgressRoots(Rc::clone(&ordinary_progress));
+        let mut ordinary = Unmetered;
+        let ordinary_result = resolve_request_rows::<crate::crs::GeodesicMetric, _>(
+            &rows,
+            &ordinary_roots,
+            None,
+            &mut ordinary,
+        )?;
+        assert_eq!(ordinate_bits(&baseline), ordinate_bits(&ordinary_result));
+        assert_eq!(ordinary_progress.get(), baseline_progress.get());
+        Ok(())
+    }
+
+    #[test]
+    fn distinct_root_signed_zero_values_remain_a_conflict() -> Result<()> {
+        let root_a = RootId::from_index(0);
+        let root_b = RootId::from_index(1);
+        let rows = [RequestRowInput {
+            axes: CoordinateAxes::XYZ,
+            requests: vec![
+                RootRequest {
+                    root: root_a,
+                    parameter: ExactRational::from_f64(0.5),
+                },
+                RootRequest {
+                    root: root_b,
+                    parameter: ExactRational::from_f64(0.5),
+                },
+            ],
+        }];
+        let mut work = Unmetered;
+        let output = resolve_request_rows::<crate::crs::GeodesicMetric, _>(
+            &rows,
+            &SignedZeroRoots,
+            None,
+            &mut work,
+        )?;
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].z.value(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_sample_rows_keep_their_offsets() -> Result<()> {
+        let root = RootId::from_index(4);
+        let mut work = Unmetered;
+        let mut builder = TraceRowsBuilder::new(&mut work)?;
+        for _ in 0..128 {
+            builder.push_sample_row([], &mut work)?;
+        }
+        builder.push_sample_row([RootRange::whole(root)], &mut work)?;
+        let rows = builder.finish(&mut work)?;
+
+        for sample in 0..128 {
+            assert!(rows.sample_requests_at(sample, &mut work)?.is_empty());
+        }
+        let last = rows.sample_requests_at(128, &mut work)?;
+        assert_eq!(last.len(), 1);
+        assert_eq!(last[0].root(), root);
+        Ok(())
+    }
+
+    #[test]
+    fn trace_row_clone_prepays_storage_and_exact_range_copies() -> Result<()> {
+        let root = RootId::from_index(8);
+        let quarter_turn = ExactRational::from_f64(0.75);
+        let mut source_start = ExactRational::one();
+        let mut setup = Unmetered;
+        for _ in 0..100 {
+            source_start = source_start.try_product_with_work(&quarter_turn, &mut setup)?;
+        }
+        let range = RootRange::from_mapped(
+            root,
+            source_start,
+            ExactRational::from_f64(0.75),
+            ExactRational::from_f64(0.125),
+            ExactRational::from_f64(0.875),
+        )?;
+        let mut builder = TraceRowsBuilder::new(&mut setup)?;
+        builder.push_row([range], &mut setup)?;
+        let rows = builder.finish(&mut setup)?;
+
+        let target_attempts = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let cloned = rows.try_clone_with_work(&mut work)?;
+            progress.set(1);
+            assert_eq!(cloned.row(0)?, rows.row(0)?);
+            assert_eq!(progress.get(), 1);
+            assert_eq!(
+                work.attempts
+                    .iter()
+                    .map(|attempt| attempt.ticks)
+                    .take(3)
+                    .collect::<Vec<_>>(),
+                [2, 1, 1]
+            );
+            let first_range_copy = work
+                .attempts
+                .get(3)
+                .copied()
+                .expect("the original-root exact payload clone has a Work charge");
+            assert!(first_range_copy.ticks > 1);
+            first_range_copy
+        };
+
+        let progress = Rc::new(Cell::new(0));
+        let mut budget = refusing_budget(target_attempts);
+        let mut work = RecordingWork {
+            budget: &mut budget,
+            progress: Rc::clone(&progress),
+            spent: 0,
+            attempts: Vec::new(),
+        };
+        let error = match rows.try_clone_with_work(&mut work) {
+            Err(error) => error,
+            Ok(_) => panic!("exact root-range copies must be paid before clone completion"),
+        };
+        assert_work_limit(&error);
+        assert_eq!(progress.get(), 0);
+        let refusal = work
+            .attempts
+            .last()
+            .expect("the recorder observes the refused exact-copy charge");
+        assert!(!refusal.accepted);
+        assert_eq!(refusal.ticks, target_attempts.ticks);
+        assert_eq!(refusal.spent_before, target_attempts.spent_before);
+        assert_eq!(refusal.progress, 0);
+        Ok(())
+    }
+
+    fn append_test_trace_row(work: &mut impl Work, progress: &Cell<usize>) -> Result<()> {
+        let mut builder = TraceRowsBuilder::new(work)?;
+        builder.push_row(
+            [
+                RootRange::whole(RootId::from_index(0)),
+                RootRange::whole(RootId::from_index(1)),
+                RootRange::whole(RootId::from_index(2)),
+                RootRange::whole(RootId::from_index(3)),
+            ],
+            work,
+        )?;
+        progress.set(1);
+        Ok(())
+    }
+
+    #[test]
+    fn trace_row_storage_and_offsets_refuse_before_append_progress() -> Result<()> {
+        let target_attempts = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            append_test_trace_row(&mut work, &progress)?;
+            assert_eq!(progress.get(), 1);
+            assert_eq!(
+                work.attempts
+                    .iter()
+                    .map(|attempt| attempt.ticks)
+                    .collect::<Vec<_>>(),
+                [1, 1, 4, 1]
+            );
+            [work.attempts[2], work.attempts[3]]
+        };
+
+        for target in target_attempts {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = refusing_budget(target);
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let error = append_test_trace_row(&mut work, &progress)
+                .expect_err("trace row storage and its offset must be paid before append");
+            assert_work_limit(&error);
+            assert_eq!(progress.get(), 0);
+            let refusal = work
+                .attempts
+                .last()
+                .expect("the recorder observes the refused reservation");
+            assert!(!refusal.accepted);
+            assert_eq!(refusal.ticks, target.ticks);
+            assert_eq!(refusal.spent_before, target.spent_before);
+            assert_eq!(refusal.progress, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sample_row_storage_and_offset_refuse_before_append_progress() -> Result<()> {
+        let target_attempts = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let mut builder = TraceRowsBuilder::new(&mut work)?;
+            builder.push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)?;
+            progress.set(1);
+            assert_eq!(progress.get(), 1);
+            assert_eq!(
+                work.attempts
+                    .iter()
+                    .map(|attempt| attempt.ticks)
+                    .collect::<Vec<_>>(),
+                [1, 1, 1, 1]
+            );
+            [work.attempts[2], work.attempts[3]]
+        };
+
+        for target in target_attempts {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = refusing_budget(target);
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let result = (|| {
+                let mut builder = TraceRowsBuilder::new(&mut work)?;
+                builder.push_sample_row([RootRange::whole(RootId::from_index(4))], &mut work)?;
+                progress.set(1);
+                Ok(())
+            })();
+            let error =
+                result.expect_err("sample row storage and offset must be paid before append");
+            assert_work_limit(&error);
+            assert_eq!(progress.get(), 0);
+            let refusal = work
+                .attempts
+                .last()
+                .expect("the recorder observes the refused sample-row reservation");
+            assert!(!refusal.accepted);
+            assert_eq!(refusal.ticks, target.ticks);
+            assert_eq!(refusal.spent_before, target.spent_before);
+            assert_eq!(refusal.progress, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn trace_finish_prepays_range_copy_and_sample_offsets() -> Result<()> {
+        fn finish_test_trace(work: &mut impl Work, progress: &Cell<usize>) -> Result<()> {
+            let mut setup = Unmetered;
+            let mut builder = TraceRowsBuilder::new(&mut setup)?;
+            builder.push_row(
+                [
+                    RootRange::whole(RootId::from_index(0)),
+                    RootRange::whole(RootId::from_index(1)),
+                    RootRange::whole(RootId::from_index(2)),
+                    RootRange::whole(RootId::from_index(3)),
+                ],
+                &mut setup,
+            )?;
+            builder.push_sample_row([], &mut setup)?;
+            builder.push_sample_row([], &mut setup)?;
+            let _rows = builder.finish(work)?;
+            progress.set(1);
+            Ok(())
+        }
+
+        let target_attempts = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(TRACE_OPERATION, 0)?;
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            finish_test_trace(&mut work, &progress)?;
+            assert_eq!(progress.get(), 1);
+            assert_eq!(
+                work.attempts
+                    .iter()
+                    .map(|attempt| attempt.ticks)
+                    .collect::<Vec<_>>(),
+                [4, 3]
+            );
+            [work.attempts[0], work.attempts[1]]
+        };
+
+        for target in target_attempts {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = refusing_budget(target);
+            let mut work = RecordingWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                attempts: Vec::new(),
+            };
+            let error = finish_test_trace(&mut work, &progress)
+                .expect_err("trace final storage and sample offsets must be paid before finish");
+            assert_work_limit(&error);
+            assert_eq!(progress.get(), 0);
+            let refusal = work
+                .attempts
+                .last()
+                .expect("the recorder observes the refused finish phase");
+            assert!(!refusal.accepted);
+            assert_eq!(refusal.ticks, target.ticks);
+            assert_eq!(refusal.spent_before, target.spent_before);
+            assert_eq!(refusal.progress, 0);
+        }
         Ok(())
     }
 
@@ -1224,12 +2090,15 @@ mod tests {
         let root = RootId::from_index(5);
         let start = ExactRational::from_f64(0.25);
         let end = ExactRational::from_f64(0.75);
-        let mut rows = TraceRowsBuilder::new();
-        rows.push_row([
-            RootRange::point(root, start.clone(), ExactRational::zero())?,
-            RootRange::point(root, end.clone(), ExactRational::one())?,
-        ])?;
         let mut work = Unmetered;
+        let mut rows = TraceRowsBuilder::new(&mut work)?;
+        rows.push_row(
+            [
+                RootRange::point(root, start.clone(), ExactRational::zero())?,
+                RootRange::point(root, end.clone(), ExactRational::one())?,
+            ],
+            &mut work,
+        )?;
         let rows = rows.finish(&mut work)?;
 
         let start_request = rows.requests_at(0, &ExactRational::zero(), &mut work)?;
@@ -1266,7 +2135,7 @@ mod tests {
         let owner = RootRange::point(root, source_parameter.clone(), half.clone())?;
         let mut work = Unmetered;
 
-        let mut left = TraceRowsBuilder::new();
+        let mut left = TraceRowsBuilder::new(&mut work)?;
         left.push_composed_row(
             std::slice::from_ref(&owner),
             &ExactRational::zero(),
@@ -1274,7 +2143,7 @@ mod tests {
             &mut work,
         )?;
         let left = left.finish(&mut work)?;
-        let mut right = TraceRowsBuilder::new();
+        let mut right = TraceRowsBuilder::new(&mut work)?;
         right.push_composed_row(
             std::slice::from_ref(&owner),
             &half,
@@ -1310,13 +2179,13 @@ mod tests {
         )?;
         let mut work = Unmetered;
 
-        let mut left = TraceRowsBuilder::new();
+        let mut left = TraceRowsBuilder::new(&mut work)?;
         left.push_composed_row(std::slice::from_ref(&owner), &zero, &quarter, &mut work)?;
         let left = left.finish(&mut work)?;
-        let mut middle = TraceRowsBuilder::new();
+        let mut middle = TraceRowsBuilder::new(&mut work)?;
         middle.push_composed_row(std::slice::from_ref(&owner), &quarter, &half, &mut work)?;
         let middle = middle.finish(&mut work)?;
-        let mut right = TraceRowsBuilder::new();
+        let mut right = TraceRowsBuilder::new(&mut work)?;
         right.push_composed_row(std::slice::from_ref(&owner), &half, &one, &mut work)?;
         let right = right.finish(&mut work)?;
 
@@ -1390,9 +2259,11 @@ mod tests {
             half.clone(),
             one,
         )?;
-        let mut rows = TraceRowsBuilder::new();
-        rows.push_row([left.clone(), right.clone()])?;
         let mut work = Unmetered;
+        let left_copy = left.try_clone_with_work(&mut work)?;
+        let right_copy = right.try_clone_with_work(&mut work)?;
+        let mut rows = TraceRowsBuilder::new(&mut work)?;
+        rows.push_row([left_copy, right_copy], &mut work)?;
         let rows = rows.finish(&mut work)?;
         let requests = rows.requests_at(0, &half, &mut work)?;
         assert_eq!(requests.len(), 2);
@@ -1407,12 +2278,12 @@ mod tests {
 
     #[test]
     fn composed_trace_charges_each_parent_range() -> Result<()> {
-        let mut rows = TraceRowsBuilder::new();
+        let mut work = Fuel(8);
+        let mut rows = TraceRowsBuilder::new(&mut work)?;
         let parents = [
             RootRange::whole(RootId::from_index(1)),
             RootRange::whole(RootId::from_index(2)),
         ];
-        let mut work = Fuel(1);
 
         assert!(
             rows.push_composed_row(
@@ -1428,11 +2299,15 @@ mod tests {
 
     #[test]
     fn finishing_trace_rows_charges_stored_ranges() -> Result<()> {
-        let mut rows = TraceRowsBuilder::new();
-        rows.push_row([
-            RootRange::whole(RootId::from_index(1)),
-            RootRange::whole(RootId::from_index(2)),
-        ])?;
+        let mut setup = Unmetered;
+        let mut rows = TraceRowsBuilder::new(&mut setup)?;
+        rows.push_row(
+            [
+                RootRange::whole(RootId::from_index(1)),
+                RootRange::whole(RootId::from_index(2)),
+            ],
+            &mut setup,
+        )?;
         let mut work = Fuel(1);
 
         assert!(rows.finish(&mut work).is_err());

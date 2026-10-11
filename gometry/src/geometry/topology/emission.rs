@@ -62,7 +62,7 @@ pub(super) enum PortSpelling {
     Pole { native_longitude: f64 },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum VertexOrigin {
     SourceNode(QNodeId),
     SourceSample,
@@ -195,13 +195,13 @@ pub(super) struct EmissionPort {
     occurrence_range: Range<usize>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct OccurrenceSource {
     pub(super) origin: VertexOrigin,
     pub(super) source_trace: Option<TraceRequestLocation>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct WrittenOccurrence {
     pub(super) origin: VertexOrigin,
     pub(super) source_trace: Option<TraceRequestLocation>,
@@ -222,13 +222,45 @@ pub(super) struct EmissionPart {
     pub(super) holes: Vec<Vec<EmissionChordId>>,
 }
 
-#[derive(Clone)]
 pub(super) struct NativePortData {
     pub(super) node: EmissionNodeId,
     pub(super) point: ExactChartPoint,
     pub(super) spelling: PortSpelling,
     pub(super) source_record: Option<Point>,
     pub(super) occurrences: Vec<OccurrenceSource>,
+}
+
+impl NativePortData {
+    pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        work.charge(
+            u64::try_from(self.occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let point = self.point.try_clone_with_work(work)?;
+        let mut occurrences = Vec::with_capacity(self.occurrences.len());
+        for occurrence in &self.occurrences {
+            occurrences.push(occurrence.try_clone_with_work(work)?);
+        }
+        Ok(Self {
+            node: self.node,
+            point,
+            spelling: self.spelling.clone(),
+            source_record: self.source_record,
+            occurrences,
+        })
+    }
+}
+
+impl OccurrenceSource {
+    fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            origin: self.origin,
+            source_trace: self
+                .source_trace
+                .as_ref()
+                .map(|location| location.try_clone_with_work(work))
+                .transpose()?,
+        })
+    }
 }
 
 fn exact_chart_points_equal_with_work(
@@ -564,11 +596,15 @@ pub(super) fn merge_native_port_data(
         .ok_or(ResourceError::SizeOverflow)?;
     work.charge(u64::try_from(occurrence_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut occurrences = Vec::with_capacity(occurrence_count);
-    occurrences.extend_from_slice(&left.occurrences);
-    occurrences.extend_from_slice(&right.occurrences);
+    for occurrence in &left.occurrences {
+        occurrences.push(occurrence.try_clone_with_work(work)?);
+    }
+    for occurrence in &right.occurrences {
+        occurrences.push(occurrence.try_clone_with_work(work)?);
+    }
     Ok(NativePortData {
         node: left.node,
-        point: left.point.clone(),
+        point: left.point.try_clone_with_work(work)?,
         spelling,
         source_record,
         occurrences,
@@ -733,7 +769,10 @@ pub(super) fn native_seam_edges(
             && !has_existing_area_edge(region, &low.east, &high.east, budget)?
         {
             edges.push(NativeAreaEdge {
-                vertices: [low.east.clone(), high.east.clone()],
+                vertices: [
+                    low.east.try_clone_with_work(budget)?,
+                    high.east.try_clone_with_work(budget)?,
+                ],
                 owner: NativeGraphEdgeOwner::Area { region },
                 kind: NativeAreaEdgeKind::SeamConnector,
             });
@@ -742,7 +781,10 @@ pub(super) fn native_seam_edges(
             && !has_existing_area_edge(region, &high.west, &low.west, budget)?
         {
             edges.push(NativeAreaEdge {
-                vertices: [high.west.clone(), low.west.clone()],
+                vertices: [
+                    high.west.try_clone_with_work(budget)?,
+                    low.west.try_clone_with_work(budget)?,
+                ],
                 owner: NativeGraphEdgeOwner::Area { region },
                 kind: NativeAreaEdgeKind::SeamConnector,
             });
@@ -942,30 +984,40 @@ pub(super) fn native_pole_edges(
             point: event.east.point.try_clone_with_work(budget)?,
             spelling: PortSpelling::Seam(ChartSide::East),
             source_record: None,
-            occurrences: vec![OccurrenceSource {
-                origin: VertexOrigin::Presentation,
-                source_trace: None,
-            }],
+            occurrences: {
+                budget.charge(1)?;
+                vec![OccurrenceSource {
+                    origin: VertexOrigin::Presentation,
+                    source_trace: None,
+                }]
+            },
         };
         let west = NativePortData {
             node: event.west.node,
             point: event.west.point.try_clone_with_work(budget)?,
             spelling: PortSpelling::Seam(ChartSide::West),
             source_record: None,
-            occurrences: vec![OccurrenceSource {
-                origin: VertexOrigin::Presentation,
-                source_trace: None,
-            }],
+            occurrences: {
+                budget.charge(1)?;
+                vec![OccurrenceSource {
+                    origin: VertexOrigin::Presentation,
+                    source_trace: None,
+                }]
+            },
         };
         match pole {
             ChartPole::North => {
                 path.push(east);
-                path.extend(known.iter().rev().cloned());
+                for port in known.iter().rev() {
+                    path.push(port.try_clone_with_work(budget)?);
+                }
                 path.push(west);
             },
             ChartPole::South => {
                 path.push(west);
-                path.extend(known.iter().cloned());
+                for port in known {
+                    path.push(port.try_clone_with_work(budget)?);
+                }
                 path.push(east);
             },
         }
@@ -999,7 +1051,10 @@ pub(super) fn native_pole_edges(
                 continue;
             }
             edges.push(NativeAreaEdge {
-                vertices: [start.clone(), end.clone()],
+                vertices: [
+                    start.try_clone_with_work(budget)?,
+                    end.try_clone_with_work(budget)?,
+                ],
                 owner: NativeGraphEdgeOwner::Area { region },
                 kind: NativeAreaEdgeKind::PolePresentation { pole },
             });
@@ -1416,7 +1471,11 @@ pub(super) fn materialize_native_parts(
         .into());
     }
     budget.charge(u64::try_from(line_traces.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let line_traces = line_traces.to_vec();
+    let mut cloned_line_traces = Vec::with_capacity(line_traces.len());
+    for line in line_traces {
+        cloned_line_traces.push(line.try_clone_with_work(budget)?);
+    }
+    let line_traces = cloned_line_traces;
     budget.charge(u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut points = Vec::with_capacity(plan.points.len());
     budget.charge(u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
@@ -1537,6 +1596,7 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
             CoordinateAxes::XY,
         ));
     }
+    work.charge(u64::try_from(plan.occurrences.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut request_rows = Vec::with_capacity(plan.occurrences.len());
     for occurrence in &plan.occurrences {
         work.charge(1)?;
@@ -1551,6 +1611,7 @@ pub(super) fn resolve_emission_ordinates<M: ChartMetric, C: RootCatalog>(
     }
     let resolved_requests = resolve_request_rows(&request_rows, roots, metric_access, work)?;
 
+    work.charge(u64::try_from(plan.ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut output = Vec::with_capacity(plan.ports.len());
     let mut has_z = declared_axes.has_z();
     let mut has_m = declared_axes.has_m();
@@ -1607,11 +1668,14 @@ fn source_requests_at_location(
     work: &mut impl Work,
 ) -> Result<Vec<RootRequest>> {
     match location {
-        TraceRequestLocation::Root { root, parameter } => Ok(vec![RootRequest::new_with_work(
-            *root,
-            parameter.try_clone_with_work(work)?,
-            work,
-        )?]),
+        TraceRequestLocation::Root { root, parameter } => {
+            work.charge(1)?;
+            Ok(vec![RootRequest::new_with_work(
+                *root,
+                parameter.try_clone_with_work(work)?,
+                work,
+            )?])
+        },
         TraceRequestLocation::Edge {
             recipe,
             edge,
@@ -2272,8 +2336,12 @@ impl SourceTrace {
         let input_vertex_count = edge_count
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut new_samples_by_edge = vec![0_usize; edge_count];
+        work.charge(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut new_samples_by_edge = Vec::new();
+        new_samples_by_edge.reserve(edge_count);
+        new_samples_by_edge.resize(edge_count, 0_usize);
         for sample in samples {
+            work.charge(1)?;
             let count = new_samples_by_edge
                 .get_mut(sample.edge_index)
                 .ok_or_else(|| {
@@ -2283,7 +2351,10 @@ impl SourceTrace {
                 })?;
             *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
-        let mut new_samples_before_vertex = vec![0_usize; input_vertex_count];
+        work.charge(u64::try_from(input_vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut new_samples_before_vertex = Vec::new();
+        new_samples_before_vertex.reserve(input_vertex_count);
+        new_samples_before_vertex.resize(input_vertex_count, 0_usize);
         for vertex in 1..input_vertex_count {
             work.charge(1)?;
             let previous = *new_samples_before_vertex.get(vertex - 1).ok_or_else(|| {
@@ -2301,8 +2372,14 @@ impl SourceTrace {
         let output_vertex_count = input_vertex_count
             .checked_add(samples.len())
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut output_rows = TraceRowsBuilder::new();
-        let mut output_samples = Vec::with_capacity(samples.len());
+        let output_sample_count = self
+            .samples
+            .len()
+            .checked_add(samples.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut output_rows = TraceRowsBuilder::new(work)?;
+        work.charge(u64::try_from(output_sample_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut output_samples = Vec::with_capacity(output_sample_count);
         let mut request_row_index = 0_usize;
         for sample in &self.samples {
             work.charge(1)?;
@@ -2342,7 +2419,7 @@ impl SourceTrace {
                     )
                 })
                 .collect::<Result<Vec<_>>>()?;
-            output_rows.push_sample_row(point_ranges)?;
+            output_rows.push_sample_row(point_ranges, work)?;
             output_samples.push(TracedSourceSample {
                 written_vertex,
                 edge: sample.edge,
@@ -2361,7 +2438,19 @@ impl SourceTrace {
         let mut previous_new_written_vertex = None;
         for edge_index in 0..edge_count {
             work.charge(1)?;
-            let mut boundaries = vec![zero.try_clone_with_work(work)?];
+            let boundary_capacity = new_samples_by_edge
+                .get(edge_index)
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("publication sample edge count is incomplete".into())
+                })?
+                .checked_add(2)
+                .ok_or(ResourceError::SizeOverflow)?;
+            work.charge(
+                u64::try_from(boundary_capacity).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            let mut boundaries = Vec::with_capacity(boundary_capacity);
+            boundaries.push(zero.try_clone_with_work(work)?);
             let mut previous_parameter = zero.try_clone_with_work(work)?;
             while let Some(sample) = samples.get(sample_index)
                 && sample.edge_index == edge_index
@@ -2403,7 +2492,7 @@ impl SourceTrace {
                         )
                     })
                     .collect::<Result<Vec<_>>>()?;
-                output_rows.push_sample_row(point_ranges)?;
+                output_rows.push_sample_row(point_ranges, work)?;
                 output_samples.push(TracedSourceSample {
                     written_vertex: sample.written_vertex,
                     edge: edge_index,
@@ -2511,10 +2600,28 @@ pub(super) fn next_recipe_walk<'walk>(
     Ok(walk)
 }
 
-#[derive(Clone)]
 pub(in crate::geometry) struct SourceTrace {
     pub(super) rows: TraceRows,
     pub(super) samples: Vec<TracedSourceSample>,
+}
+
+impl SourceTrace {
+    pub(in crate::geometry) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        work.charge(u64::try_from(self.samples.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let rows = self.rows.try_clone_with_work(work)?;
+        let mut samples = Vec::with_capacity(self.samples.len());
+        for sample in &self.samples {
+            samples.push(TracedSourceSample {
+                written_vertex: sample.written_vertex,
+                edge: sample.edge,
+                parameter: sample.parameter.try_clone_with_work(work)?,
+                request_row: sample.request_row,
+                has_source: sample.has_source,
+                endpoint_only: sample.endpoint_only,
+            });
+        }
+        Ok(Self { rows, samples })
+    }
 }
 
 struct SourceTraceSample {
@@ -2523,10 +2630,18 @@ struct SourceTraceSample {
     written_vertex: usize,
 }
 
-#[derive(Clone)]
 pub(in crate::geometry) struct TracedLine {
     pub(in crate::geometry) member: usize,
     pub(in crate::geometry) trace: SourceTrace,
+}
+
+impl TracedLine {
+    fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            member: self.member,
+            trace: self.trace.try_clone_with_work(work)?,
+        })
+    }
 }
 
 pub(in crate::geometry) struct PreparedNativeSource {
@@ -2541,10 +2656,10 @@ impl SourceTrace {
         edge_rows: impl IntoIterator<Item = Vec<RootRange>>,
         work: &mut impl Work,
     ) -> Result<Self> {
-        let mut rows = TraceRowsBuilder::new();
+        let mut rows = TraceRowsBuilder::new(work)?;
         for row in edge_rows {
             work.charge(1)?;
-            rows.push_row(row)?;
+            rows.push_row(row, work)?;
         }
         Ok(Self {
             rows: rows.finish(work)?,
@@ -2594,7 +2709,7 @@ impl SourceTrace {
 
         let zero = ExactRational::zero();
         let one = ExactRational::one();
-        let mut rows = TraceRowsBuilder::new();
+        let mut rows = TraceRowsBuilder::new(work)?;
         for &(edge, ref start, ref end) in slices {
             work.charge(1)?;
             if edge >= edge_count {
@@ -2603,17 +2718,29 @@ impl SourceTrace {
                 )
                 .into());
             }
-            let mut row = Vec::new();
-            for parent in self.rows.row(edge)? {
+            let parents = self.rows.row(edge)?;
+            let start_requests = requests_by_vertex.get(edge).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source trace start vertex is unknown".into())
+            })?;
+            let end_vertex = edge.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            let end_requests = requests_by_vertex.get(end_vertex).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source trace end vertex is unknown".into())
+            })?;
+            let row_capacity = parents
+                .len()
+                .checked_add(start_requests.len())
+                .and_then(|capacity| capacity.checked_add(end_requests.len()))
+                .ok_or(ResourceError::SizeOverflow)?;
+            work.charge(u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+            let mut row = Vec::with_capacity(row_capacity);
+            for parent in parents {
                 work.charge(1)?;
                 if let Some(child) = parent.compose_with_work(start, end, work)? {
                     row.push(child);
                 }
             }
             if start.try_cmp_with_work(&zero, work)?.is_eq() {
-                for request in requests_by_vertex.get(edge).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("source trace start vertex is unknown".into())
-                })? {
+                for request in start_requests {
                     work.charge(1)?;
                     row.push(RootRange::point_with_work(
                         request.root(),
@@ -2624,10 +2751,7 @@ impl SourceTrace {
                 }
             }
             if end.try_cmp_with_work(&one, work)?.is_eq() {
-                let vertex = edge.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                for request in requests_by_vertex.get(vertex).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("source trace end vertex is unknown".into())
-                })? {
+                for request in end_requests {
                     work.charge(1)?;
                     row.push(RootRange::point_with_work(
                         request.root(),
@@ -2637,7 +2761,7 @@ impl SourceTrace {
                     )?);
                 }
             }
-            rows.push_row(row)?;
+            rows.push_row(row, work)?;
         }
         Ok(Self {
             rows: rows.finish(work)?,
@@ -2646,7 +2770,7 @@ impl SourceTrace {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) enum TraceRequestLocation {
     Edge {
         recipe: FragmentRecipeId,
@@ -2663,6 +2787,30 @@ pub(super) enum TraceRequestLocation {
     },
 }
 
+impl TraceRequestLocation {
+    pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(match self {
+            Self::Edge {
+                recipe,
+                edge,
+                parameter,
+            } => Self::Edge {
+                recipe: *recipe,
+                edge: *edge,
+                parameter: parameter.try_clone_with_work(work)?,
+            },
+            Self::Sample { recipe, row } => Self::Sample {
+                recipe: *recipe,
+                row: *row,
+            },
+            Self::Root { root, parameter } => Self::Root {
+                root: *root,
+                parameter: parameter.try_clone_with_work(work)?,
+            },
+        })
+    }
+}
+
 pub(super) fn native_source_sample_occurrences(
     source_trace: Option<TraceRequestLocation>,
     source_requests: &[RootRequest],
@@ -2672,6 +2820,7 @@ pub(super) fn native_source_sample_occurrences(
         .len()
         .checked_add(usize::from(source_trace.is_some()))
         .ok_or(ResourceError::SizeOverflow)?;
+    work.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut occurrences = Vec::with_capacity(capacity);
     if let Some(source_trace) = source_trace {
         work.charge(1)?;
@@ -2700,14 +2849,28 @@ pub(super) fn native_source_sample_occurrences(
     Ok(occurrences)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct SourceSampleOccurrence {
     pub(super) trace: Option<TraceRequestLocation>,
     pub(super) endpoint_only: bool,
     pub(super) publication_sample: Option<usize>,
 }
 
-#[derive(Clone, Debug)]
+impl SourceSampleOccurrence {
+    pub(super) fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(Self {
+            trace: self
+                .trace
+                .as_ref()
+                .map(|location| location.try_clone_with_work(work))
+                .transpose()?,
+            endpoint_only: self.endpoint_only,
+            publication_sample: self.publication_sample,
+        })
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct TracedSourceSample {
     pub(super) written_vertex: usize,
     pub(super) edge: usize,
@@ -2740,6 +2903,9 @@ pub(super) fn resolve_publication_ordinates<M: ChartMetric>(
         )?;
         return Ok(vec![NodeOrdinates::default(); publication.samples.len()]);
     }
+    work.charge(
+        u64::try_from(publication.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut request_rows = Vec::with_capacity(publication.samples.len());
     for fragment in &publication.fragments {
         if fragment.trace.samples.len() != fragment.sample_range.len() {
@@ -2859,7 +3025,7 @@ pub(super) enum ChartSide {
     West,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(super) struct NativeCutFeature {
     pub(super) family: FeatureFamily,
     pub(super) seam_period_index: i64,
@@ -3344,13 +3510,24 @@ impl FragmentRecipes {
         fragments: &[FragmentRecipeId],
         work: &mut impl Work,
     ) -> Result<SourceTrace> {
-        let mut rows = TraceRowsBuilder::new();
+        let mut rows = TraceRowsBuilder::new(work)?;
         for &fragment_id in fragments {
             work.charge(1)?;
             let fragment = self.values.get(fragment_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source trace fragment is unknown".into())
             })?;
-            let mut row = Vec::new();
+            let row_capacity =
+                fragment
+                    .ranges
+                    .iter()
+                    .try_fold(0_usize, |count, range| -> Result<usize> {
+                        work.charge(1)?;
+                        count
+                            .checked_add(1 + usize::from(range.endpoint_only))
+                            .ok_or(ResourceError::SizeOverflow.into())
+                    })?;
+            work.charge(u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+            let mut row = Vec::with_capacity(row_capacity);
             for range in &fragment.ranges {
                 work.charge(1)?;
                 let root = RootId::from_index(range.source_edge.0);
@@ -3378,7 +3555,7 @@ impl FragmentRecipes {
                     )?);
                 }
             }
-            rows.push_row(row)?;
+            rows.push_row(row, work)?;
         }
         Ok(SourceTrace {
             rows: rows.finish(work)?,
@@ -3965,12 +4142,115 @@ impl FragmentRecipes {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
     use crate::geometry::Unmetered;
     use crate::geometry::embedding_completion::{
         ExactPoints, admit_known_graph, visit_shape_literals,
     };
-    use crate::geometry::ordinates::source_ordinate_values_at_fraction;
+    use crate::geometry::ordinates::{RootMetricState, source_ordinate_values_at_fraction};
+
+    const EMISSION_STORAGE_OPERATION: &str = "emission_storage_test";
+
+    #[derive(Clone, Copy)]
+    struct RecordedWorkCharge {
+        spent_before: u128,
+        ticks: u128,
+        progress: usize,
+        accepted: bool,
+    }
+
+    struct RecordedWork<'a> {
+        budget: &'a mut EvaluationBudget,
+        progress: Rc<Cell<usize>>,
+        spent: u128,
+        charges: Vec<RecordedWorkCharge>,
+    }
+
+    impl Work for RecordedWork<'_> {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            let spent_before = self.spent;
+            let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
+            self.charges.push(RecordedWorkCharge {
+                spent_before,
+                ticks: u128::from(ticks),
+                progress: self.progress.get(),
+                accepted: result.is_ok(),
+            });
+            if result.is_ok() {
+                self.spent += u128::from(ticks);
+            }
+            result
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            let ticks = u128::try_from(count).expect("usize fits u128")
+                * u128::try_from(ticks_per_item).expect("usize fits u128");
+            let spent_before = self.spent;
+            let result =
+                <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
+            self.charges.push(RecordedWorkCharge {
+                spent_before,
+                ticks,
+                progress: self.progress.get(),
+                accepted: result.is_ok(),
+            });
+            if result.is_ok() {
+                self.spent += ticks;
+            }
+            result
+        }
+    }
+
+    fn emission_budget_refusing_before(charge: RecordedWorkCharge) -> EvaluationBudget {
+        assert!(charge.ticks > 0);
+        EvaluationBudget::with_remaining_ticks_for_test(
+            EMISSION_STORAGE_OPERATION,
+            0,
+            charge
+                .spent_before
+                .checked_add(charge.ticks - 1)
+                .expect("the calibrated allowance is representable"),
+        )
+        .expect("the calibrated allowance fits the actual EvaluationBudget")
+    }
+
+    fn assert_emission_work_limit(error: &crate::error::Error) {
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: EMISSION_STORAGE_OPERATION,
+                ..
+            })
+        ));
+    }
+
+    struct ProgressRootCatalog(Rc<Cell<usize>>);
+
+    impl RootCatalog for ProgressRootCatalog {
+        fn resolve<M: ChartMetric>(
+            &self,
+            _root: RootId,
+            _parameter: &ExactRational,
+            axes: CoordinateAxes,
+            _metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+            _state: &mut RootMetricState,
+            _fraction: &mut Option<f64>,
+            _work: &mut impl Work,
+        ) -> Result<NodeOrdinates> {
+            self.0.set(self.0.get() + 1);
+            let mut ordinates = NodeOrdinates::default();
+            if axes.has_z() {
+                ordinates.z.observe(Some(10.0));
+            }
+            if axes.has_m() {
+                ordinates.m.observe(Some(20.0));
+            }
+            Ok(ordinates)
+        }
+    }
 
     fn pending_source_range(
         source_edge: u32,
@@ -4004,6 +4284,323 @@ mod tests {
         let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
+    }
+
+    #[test]
+    fn emission_ordinate_rows_and_ports_are_reserved_before_progress() -> Result<()> {
+        let empty = crate::io::parse_wkt("POINT EMPTY")?;
+        let topology = endpoint_test_topology(std::slice::from_ref(&empty))?;
+        let mut setup = Unmetered;
+        let node_registry = EmissionNodeRegistry::with_sources(&topology, &[], &mut setup)?;
+        let roots = [
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.25),
+                &mut setup,
+            )?,
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.5),
+                &mut setup,
+            )?,
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.75),
+                &mut setup,
+            )?,
+        ];
+        let occurrences = roots
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                Ok(WrittenOccurrence {
+                    origin: VertexOrigin::SourceSample,
+                    source_trace: Some(TraceRequestLocation::Root {
+                        root: request.root(),
+                        parameter: request.parameter().try_clone_with_work(&mut setup)?,
+                    }),
+                    request_row: RequestRowId::from_index(index)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let plan = ExpandedEmissionPlan {
+            topology: &topology,
+            selected_face_roots: Vec::new(),
+            node_registry,
+            ports: vec![
+                EmissionPort {
+                    node: EmissionNodeId(0),
+                    position: PortPosition::Projected {
+                        spelling: PortSpelling::Interior { periods: 0 },
+                    },
+                    source_record: None,
+                    occurrence_range: 0..2,
+                },
+                EmissionPort {
+                    node: EmissionNodeId(1),
+                    position: PortPosition::Projected {
+                        spelling: PortSpelling::Interior { periods: 0 },
+                    },
+                    source_record: None,
+                    occurrence_range: 2..3,
+                },
+            ],
+            occurrences,
+            chords: Vec::new(),
+            parts: Vec::new(),
+            lines: Vec::new(),
+            points: Vec::new(),
+            whole_sphere: false,
+        };
+        let publication = PublicationInventory {
+            fragments: Vec::new(),
+            samples: Vec::new(),
+            counts: Vec::new(),
+            ordinates: Vec::new(),
+        };
+
+        let targets = {
+            let progress = Rc::new(Cell::new(0));
+            let roots = ProgressRootCatalog(Rc::clone(&progress));
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0)?;
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let (ordinates, axes) = resolve_emission_ordinates::<crate::crs::GeodesicMetric, _>(
+                &plan,
+                &publication,
+                &[],
+                &roots,
+                CoordinateAxes::XYZM,
+                false,
+                EMISSION_STORAGE_OPERATION,
+                None,
+                &mut work,
+            )?;
+            assert_eq!(ordinates.len(), 2);
+            assert_eq!(axes, CoordinateAxes::XYZM);
+            assert_eq!(progress.get(), 3);
+            let request_rows = *work
+                .charges
+                .first()
+                .expect("source occurrence rows reserve their slots first");
+            assert_eq!(request_rows.ticks, 3);
+            assert_eq!(request_rows.progress, 0);
+            let output_ports = *work
+                .charges
+                .iter()
+                .find(|charge| charge.ticks == 2 && charge.progress == 3)
+                .expect("output port rows reserve their slots after request resolution");
+            [request_rows, output_ports]
+        };
+
+        for target in targets {
+            let progress = Rc::new(Cell::new(0));
+            let roots = ProgressRootCatalog(Rc::clone(&progress));
+            let mut budget = emission_budget_refusing_before(target);
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let error = match resolve_emission_ordinates::<crate::crs::GeodesicMetric, _>(
+                &plan,
+                &publication,
+                &[],
+                &roots,
+                CoordinateAxes::XYZM,
+                false,
+                EMISSION_STORAGE_OPERATION,
+                None,
+                &mut work,
+            ) {
+                Err(error) => error,
+                Ok(_) => {
+                    panic!("Native ordinate row and port storage must be paid before progress")
+                },
+            };
+            assert_emission_work_limit(&error);
+            assert_eq!(progress.get(), target.progress);
+            let refusal = work
+                .charges
+                .last()
+                .expect("the recorder observes the refused emission storage phase");
+            assert!(!refusal.accepted);
+            assert_eq!(refusal.ticks, target.ticks);
+            assert_eq!(refusal.spent_before, target.spent_before);
+            assert_eq!(refusal.progress, target.progress);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_sample_occurrences_reserve_before_copying_requests() -> Result<()> {
+        let mut setup = Unmetered;
+        let requests = [
+            RootRequest::new_with_work(
+                RootId::from_index(2),
+                ExactRational::from_f64(0.25),
+                &mut setup,
+            )?,
+            RootRequest::new_with_work(
+                RootId::from_index(5),
+                ExactRational::from_f64(0.75),
+                &mut setup,
+            )?,
+        ];
+        let target = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0)?;
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let occurrences = native_source_sample_occurrences(None, &requests, &mut work)?;
+            progress.set(1);
+            assert_eq!(occurrences.len(), 2);
+            assert_eq!(progress.get(), 1);
+            let target = *work
+                .charges
+                .first()
+                .expect("source request capacity is paid before occurrence writes");
+            assert_eq!(target.ticks, 2);
+            assert_eq!(target.progress, 0);
+            target
+        };
+
+        let progress = Rc::new(Cell::new(0));
+        let mut budget = emission_budget_refusing_before(target);
+        let mut work = RecordedWork {
+            budget: &mut budget,
+            progress: Rc::clone(&progress),
+            spent: 0,
+            charges: Vec::new(),
+        };
+        let error = match native_source_sample_occurrences(None, &requests, &mut work) {
+            Err(error) => error,
+            Ok(_) => panic!("source occurrence storage must be paid before copying requests"),
+        };
+        assert_emission_work_limit(&error);
+        assert_eq!(progress.get(), 0);
+        let refusal = work
+            .charges
+            .last()
+            .expect("the recorder observes the refused occurrence reservation");
+        assert!(!refusal.accepted);
+        assert_eq!(refusal.ticks, target.ticks);
+        assert_eq!(refusal.spent_before, target.spent_before);
+        assert_eq!(refusal.progress, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn native_port_clone_prepays_occurrences_and_root_parameter_limbs() -> Result<()> {
+        let mut setup = Unmetered;
+        let quarter_turn = ExactRational::from_f64(0.75);
+        let mut parameter = ExactRational::one();
+        for _ in 0..100 {
+            parameter = parameter.try_product_with_work(&quarter_turn, &mut setup)?;
+        }
+        let port = NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(0.25),
+                ExactRational::from_f64(0.5),
+            ),
+            spelling: PortSpelling::Interior { periods: 0 },
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin: VertexOrigin::SourceSample,
+                source_trace: Some(TraceRequestLocation::Root {
+                    root: RootId::from_index(3),
+                    parameter,
+                }),
+            }],
+        };
+        let target = {
+            let progress = Rc::new(Cell::new(0));
+            let mut budget = EvaluationBudget::new(EMISSION_STORAGE_OPERATION, 0)?;
+            let mut work = RecordedWork {
+                budget: &mut budget,
+                progress: Rc::clone(&progress),
+                spent: 0,
+                charges: Vec::new(),
+            };
+            let cloned = port.try_clone_with_work(&mut work)?;
+            progress.set(1);
+            assert_eq!(cloned.node, port.node);
+            assert_eq!(cloned.point, port.point);
+            let Some(TraceRequestLocation::Root {
+                root,
+                parameter: cloned_parameter,
+            }) = cloned
+                .occurrences
+                .first()
+                .and_then(|occurrence| occurrence.source_trace.as_ref())
+            else {
+                panic!("the cloned Native occurrence retains its direct source root");
+            };
+            assert_eq!(*root, RootId::from_index(3));
+            let Some(TraceRequestLocation::Root {
+                parameter: source_parameter,
+                ..
+            }) = port
+                .occurrences
+                .first()
+                .and_then(|occurrence| occurrence.source_trace.as_ref())
+            else {
+                panic!("the source Native occurrence retains its direct source root");
+            };
+            assert_eq!(cloned_parameter, source_parameter);
+            assert_eq!(progress.get(), 1);
+            assert_eq!(
+                work.charges
+                    .iter()
+                    .take(5)
+                    .map(|charge| charge.ticks)
+                    .collect::<Vec<_>>(),
+                [1, 1, 1, 1, 1]
+            );
+            let target = *work
+                .charges
+                .iter()
+                .find(|charge| charge.ticks > 1)
+                .expect("the wide root parameter copy has a multi-limb Work charge");
+            assert!(target.accepted);
+            target
+        };
+
+        let progress = Rc::new(Cell::new(0));
+        let mut budget = emission_budget_refusing_before(target);
+        let mut work = RecordedWork {
+            budget: &mut budget,
+            progress: Rc::clone(&progress),
+            spent: 0,
+            charges: Vec::new(),
+        };
+        let error = match port.try_clone_with_work(&mut work) {
+            Err(error) => error,
+            Ok(_) => {
+                panic!("Native source-root parameter limbs must be paid before clone completion")
+            },
+        };
+        assert_emission_work_limit(&error);
+        assert_eq!(progress.get(), 0);
+        let refusal = work
+            .charges
+            .last()
+            .expect("the recorder observes refusal during the root-parameter copy");
+        assert!(!refusal.accepted);
+        assert_eq!(refusal.ticks, target.ticks);
+        assert_eq!(refusal.spent_before, target.spent_before);
+        assert_eq!(refusal.progress, 0);
+        Ok(())
     }
 
     fn resolve_native_root_occurrences<M: ChartMetric>(
@@ -5524,7 +6121,7 @@ mod tests {
         let line_traces = vec![
             TracedLine {
                 member: 20,
-                trace: trace.clone(),
+                trace: trace.try_clone_with_work(&mut work)?,
             },
             TracedLine { member: 30, trace },
         ];
@@ -5820,14 +6417,17 @@ mod tests {
     fn recursive_source_trace_split_retains_a_prior_child_endpoint() -> Result<()> {
         let root = RootId::from_index(12);
         let old_parameter = ExactRational::from_f64(0.75);
-        let mut rows = TraceRowsBuilder::new();
-        rows.push_row([RootRange::whole(root)])?;
-        rows.push_sample_row([RootRange::point(
-            root,
-            old_parameter.clone(),
-            ExactRational::zero(),
-        )?])?;
         let mut work = Unmetered;
+        let mut rows = TraceRowsBuilder::new(&mut work)?;
+        rows.push_row([RootRange::whole(root)], &mut work)?;
+        rows.push_sample_row(
+            [RootRange::point(
+                root,
+                old_parameter.clone(),
+                ExactRational::zero(),
+            )?],
+            &mut work,
+        )?;
         let trace = SourceTrace {
             rows: rows.finish(&mut work)?,
             samples: vec![TracedSourceSample {

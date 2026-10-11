@@ -987,7 +987,7 @@ fn intern_native_chart_vertex(
     }
     budget.charge(3)?;
     let vertex = u32::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?;
-    points.push(data.point.clone());
+    points.push(data.point.try_clone_with_work(budget)?);
     vertex_keys.push(key);
     index.insert_with_work(
         NativeChartVertexIndex { key, index: vertex },
@@ -2762,9 +2762,11 @@ fn native_graph_cycle_vertex(
         )
         .into());
     }
-    let mut point = first_edge.vertices.get(endpoint).cloned().ok_or_else(|| {
-        GeometryErrorKind::Invalid("native graph cycle endpoint is unknown".into())
-    })?;
+    let mut point = first_edge
+        .vertices
+        .get(endpoint)
+        .ok_or_else(|| GeometryErrorKind::Invalid("native graph cycle endpoint is unknown".into()))?
+        .try_clone_with_work(budget)?;
     for &written_edge in cycle_edge.contributors.iter().skip(1) {
         budget.charge(1)?;
         if graph
@@ -5340,19 +5342,26 @@ fn append_native_line_edge(
     };
     budget.charge(2)?;
     let literal_producer_range = ExactSourceRange {
-        start: producer_start.clone(),
-        end: producer_end.clone(),
+        start: producer_start.try_clone_with_work(budget)?,
+        end: producer_end.try_clone_with_work(budget)?,
     };
     budget.charge(u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut trace_range_copy = Vec::with_capacity(trace_ranges.len());
+    for (edge, range) in &trace_ranges {
+        trace_range_copy.push((*edge, range.try_clone_with_work(budget)?));
+    }
     line_graph_edges.push(NativeAreaEdge {
-        vertices: [start.clone(), end.clone()],
+        vertices: [
+            start.try_clone_with_work(budget)?,
+            end.try_clone_with_work(budget)?,
+        ],
         owner,
         kind: NativeAreaEdgeKind::Producer {
             recipe,
             trace_edge,
             producer_start,
             producer_end,
-            trace_ranges: trace_ranges.clone(),
+            trace_ranges: trace_range_copy,
             known_spans,
         },
     });
@@ -5387,8 +5396,11 @@ fn finish_native_line_run(
         .into());
     }
     budget.charge(u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    reference_ports.reserve(run.vertices.len());
+    for vertex in &run.vertices {
+        reference_ports.push(vertex.try_clone_with_work(budget)?);
+    }
     budget.charge(u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    reference_ports.extend(run.vertices.iter().cloned());
     let ports = run
         .vertices
         .into_iter()
@@ -5668,12 +5680,18 @@ fn native_whole_sphere_cell_edges(
     let mut edges = Vec::with_capacity(CELL_EDGES.len());
     for (cell, start, end) in CELL_EDGES {
         let vertices = [
-            poles.get(start).cloned().ok_or_else(|| {
-                GeometryErrorKind::Invalid("whole-sphere cell start port is unknown".into())
-            })?,
-            poles.get(end).cloned().ok_or_else(|| {
-                GeometryErrorKind::Invalid("whole-sphere cell end port is unknown".into())
-            })?,
+            poles
+                .get(start)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("whole-sphere cell start port is unknown".into())
+                })?
+                .try_clone_with_work(budget)?,
+            poles
+                .get(end)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("whole-sphere cell end port is unknown".into())
+                })?
+                .try_clone_with_work(budget)?,
         ];
         edges.push(NativeAreaEdge {
             vertices,
@@ -7804,7 +7822,7 @@ pub(super) enum QVariableNode {
     Published(EmissionNodeId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum PublishedEndpoint {
     Source {
         port: QPortId,
@@ -7815,6 +7833,29 @@ enum PublishedEndpoint {
         node: EmissionNodeId,
         sample: usize,
     },
+}
+
+impl PublishedEndpoint {
+    fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(match self {
+            Self::Source {
+                port,
+                source_record,
+                sample,
+            } => Self::Source {
+                port: *port,
+                source_record: *source_record,
+                sample: sample
+                    .as_ref()
+                    .map(|sample| sample.try_clone_with_work(work))
+                    .transpose()?,
+            },
+            Self::Published { node, sample } => Self::Published {
+                node: *node,
+                sample: *sample,
+            },
+        })
+    }
 }
 
 fn publication_sample_index(endpoint: &PublishedEndpoint) -> Option<usize> {
@@ -7932,7 +7973,6 @@ fn nearest_publication_source_port_point(
         .try_clone_with_work(budget)
 }
 
-#[derive(Clone)]
 struct QPublishedChord {
     recipe: FragmentRecipeId,
     trace_edge: usize,
@@ -10455,7 +10495,8 @@ fn build_q_publication_chords(
         budget.charge(
             u64::try_from(published.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        let mut endpoints = vec![None; published.points.len()];
+        let mut endpoints = Vec::with_capacity(published.points.len());
+        endpoints.resize_with(published.points.len(), || None);
         for (sample_index, sample) in samples.iter().enumerate() {
             budget.charge(1)?;
             let written = sample.written_vertex;
@@ -10486,7 +10527,11 @@ fn build_q_publication_chords(
                         })?,
                     source_record: None,
                     sample: Some(SourceSampleOccurrence {
-                        trace: sample.source_trace.clone(),
+                        trace: sample
+                            .source_trace
+                            .as_ref()
+                            .map(|trace| trace.try_clone_with_work(budget))
+                            .transpose()?,
                         endpoint_only: sample.endpoint_only,
                         publication_sample: Some(publication_sample),
                     }),
@@ -10711,7 +10756,10 @@ fn build_q_publication_chords(
                 trace_edge: index,
                 generated,
                 nodes: [from_node, to_node],
-                endpoints: [from.clone(), to.clone()],
+                endpoints: [
+                    from.try_clone_with_work(budget)?,
+                    to.try_clone_with_work(budget)?,
+                ],
                 exact: [from_exact.clone(), to_exact.clone()],
                 reference_offsets: [
                     reference_offsets
@@ -13307,8 +13355,9 @@ fn native_q_port_data(
         None
     };
     let occurrences = if port.cut {
-        let source_requests = source_request.into_iter().collect::<Vec<_>>();
-        native_source_sample_occurrences(None, &source_requests, budget)?
+        let source_requests: &[RootRequest] =
+            source_request.as_ref().map_or(&[], std::slice::from_ref);
+        native_source_sample_occurrences(None, source_requests, budget)?
     } else {
         budget.charge(1)?;
         vec![OccurrenceSource {
@@ -14165,7 +14214,7 @@ fn source_lifted_native_port(
         };
         spelling
     };
-    let mut shifted = port.clone();
+    let mut shifted = port.try_clone_with_work(work)?;
     shifted.point = point;
     shifted.spelling = spelling;
     Ok(Some(shifted))
@@ -14216,11 +14265,11 @@ fn common_refine_native_edges(
         let mut split_points = Vec::with_capacity(2);
         split_points.push(NativeSplitPoint {
             parameter: producer_start.try_clone_with_work(budget)?,
-            data: vertices[0].clone(),
+            data: vertices[0].try_clone_with_work(budget)?,
         });
         split_points.push(NativeSplitPoint {
             parameter: producer_end.try_clone_with_work(budget)?,
-            data: vertices[1].clone(),
+            data: vertices[1].try_clone_with_work(budget)?,
         });
         for source in &known_spans {
             let (event_start, event_end) = native_events_for_span(boundaries, source.span, budget)?;
@@ -14409,7 +14458,10 @@ fn common_refine_native_edges(
             }
             budget.charge(1)?;
             refined.push(NativeAreaEdge {
-                vertices: [start.data.clone(), end.data.clone()],
+                vertices: [
+                    start.data.try_clone_with_work(budget)?,
+                    end.data.try_clone_with_work(budget)?,
+                ],
                 owner,
                 kind: NativeAreaEdgeKind::Producer {
                     recipe,
@@ -17662,11 +17714,16 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     }
                     if q_port.cut {
                         native_source_sample_occurrences(
-                            sample.trace.clone(),
+                            sample
+                                .trace
+                                .as_ref()
+                                .map(|trace| trace.try_clone_with_work(budget))
+                                .transpose()?,
                             source_requests,
                             budget,
                         )?
                     } else {
+                        budget.charge(2)?;
                         let mut occurrences = Vec::with_capacity(2);
                         if sample.trace.is_some() && !sample.endpoint_only {
                             occurrences.push(OccurrenceSource {
@@ -17681,7 +17738,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                 .map_or(super::emission::VertexOrigin::Presentation, |_| {
                                     super::emission::VertexOrigin::SourceSample
                                 }),
-                            source_trace: sample.trace.clone(),
+                            source_trace: sample
+                                .trace
+                                .as_ref()
+                                .map(|trace| trace.try_clone_with_work(budget))
+                                .transpose()?,
                         });
                         occurrences
                     }
@@ -17731,7 +17792,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         .map_or(super::emission::VertexOrigin::Presentation, |_| {
                             super::emission::VertexOrigin::SourceSample
                         }),
-                    source_trace: sample.source_trace.clone(),
+                    source_trace: sample
+                        .source_trace
+                        .as_ref()
+                        .map(|trace| trace.try_clone_with_work(budget))
+                        .transpose()?,
                 };
                 (*node, candidate, None, vec![occurrence])
             },
@@ -17779,7 +17844,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     ) -> Result<NativePortData> {
         let node = builder.intern_point(&feature.point, budget)?;
         let occurrences = native_source_sample_occurrences(
-            feature.source_trace.clone(),
+            feature
+                .source_trace
+                .as_ref()
+                .map(|trace| trace.try_clone_with_work(budget))
+                .transpose()?,
             source_requests,
             budget,
         )?;
@@ -19134,14 +19203,19 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
                 let normalized_events =
                     normalize_native_seam_events(self.topology.sources.frame, seam_events, budget)?;
-                let native_seam_vertices = normalized_events
-                    .iter()
-                    .map(|event| NativeSeamVertices {
-                        latitude: event.vertices.latitude.clone(),
-                        east: event.vertices.east.clone(),
-                        west: event.vertices.west.clone(),
-                    })
-                    .collect::<Vec<_>>();
+                budget.charge(
+                    u64::try_from(normalized_events.len())
+                        .map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
+                let mut native_seam_vertices = Vec::with_capacity(normalized_events.len());
+                for event in &normalized_events {
+                    budget.charge(1)?;
+                    native_seam_vertices.push(NativeSeamVertices {
+                        latitude: event.vertices.latitude.try_clone_with_work(budget)?,
+                        east: event.vertices.east.try_clone_with_work(budget)?,
+                        west: event.vertices.west.try_clone_with_work(budget)?,
+                    });
+                }
                 let seam_edges = native_seam_edges(
                     &bands,
                     &native_seam_vertices,
@@ -23189,7 +23263,7 @@ mod canonical_coordinate_tests {
                 source_trace: None,
             }],
         };
-        let port_id = builder.port(port_data.clone())?;
+        let port_id = builder.port(port_data.try_clone_with_work(&mut budget)?)?;
         let plan = builder.finish();
         let graph_builder = new_native_reference_graph_builder(&[], &[port_data], &mut budget)?;
         let graph = graph_builder.finish(topology.sources.frame, &mut budget)?;
