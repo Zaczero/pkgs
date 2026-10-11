@@ -319,6 +319,28 @@ fn validate_native_port_image(
             }
         },
         (
+            PortSpelling::Seam(left_side),
+            PortSpelling::Seam(right_side),
+            left_pole @ (ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole),
+            right_pole @ (ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole),
+        ) if left_side == right_side
+            && compare_quotient_keys_with_work(left_pole, right_pole, work)?.is_eq() =>
+        {
+            let longitude = ExactRational::from_f64(match left_side {
+                ChartSide::East => frame.longitude().half_period(),
+                ChartSide::West => -frame.longitude().half_period(),
+            });
+            if !left.point.x.try_cmp_with_work(&longitude, work)?.is_eq()
+                || !right.point.x.try_cmp_with_work(&longitude, work)?.is_eq()
+                || !exact_chart_points_equal_with_work(&left.point, &right.point, work)?
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "native pole-bank aliases disagree on their exact chart occurrence".into(),
+                )
+                .into());
+            }
+        },
+        (
             PortSpelling::Pole {
                 native_longitude: left_longitude,
             },
@@ -4449,6 +4471,45 @@ mod tests {
         assert!(
             merge_native_port_data(frame, &pole(10.0, 11.0), &pole(10.0, 11.0), &mut work).is_err(),
             "the pole spelling must remain an exact periodic image of the assigned point"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn same_seam_bank_occurrence_merges_at_a_pole() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let make_port = |side, origin| NativePortData {
+            node: EmissionNodeId(4),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(match side {
+                    ChartSide::East => frame.longitude().half_period(),
+                    ChartSide::West => -frame.longitude().half_period(),
+                }),
+                ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North)),
+            ),
+            spelling: PortSpelling::Seam(side),
+            source_record: None,
+            occurrences: vec![OccurrenceSource {
+                origin,
+                source_trace: None,
+            }],
+        };
+        let east_presentation = make_port(ChartSide::East, VertexOrigin::Presentation);
+        let east_source = make_port(ChartSide::East, VertexOrigin::SourceNode(QNodeId(3)));
+        let mut work = Unmetered;
+
+        let merged = merge_native_port_data(frame, &east_presentation, &east_source, &mut work)?;
+
+        assert_eq!(merged.point, east_presentation.point);
+        assert!(matches!(
+            merged.spelling,
+            PortSpelling::Seam(ChartSide::East)
+        ));
+        assert_eq!(merged.occurrences.len(), 2);
+        let west = make_port(ChartSide::West, VertexOrigin::Presentation);
+        assert!(
+            merge_native_port_data(frame, &east_presentation, &west, &mut work).is_err(),
+            "East and West seam-bank copies remain distinct at a pole"
         );
         Ok(())
     }
