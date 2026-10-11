@@ -6,8 +6,8 @@ use super::frame::{LocalCrsDefinition, estimate_local_crs_at, local_crs_fits_at}
 use crate::crs::{RuntimeState, geodesic_for_crs_at, transform_at};
 use crate::error::Result;
 use crate::geometry::{
-    ExpansionBudget, RefinedChainProvenance, RunIdentity, SegmentPlacement, Shape, line_segments,
-    segmentize_points_with_piece_counts_budgeted,
+    ChartSourceParameters, CoordSeq, ExpansionBudget, RefinedChainProvenance, RunIdentity,
+    SegmentPlacement, Shape, line_segments, segmentize_points_with_piece_counts_budgeted,
 };
 
 const LOCAL_INPUT_REFINEMENT_FRACTION: f64 = 1.0e-4;
@@ -25,6 +25,7 @@ fn local_projection_refinement_budget(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LocalInputPurpose {
     BoundarySupport,
+    ClearanceWitness,
     OriginalSites,
 }
 
@@ -202,24 +203,48 @@ impl PreparedLocalInput {
             }
 
             refined_any_chain = true;
-            let refined = segmentize_points_with_piece_counts_budgeted(
-                chain,
-                &piece_counts,
-                &SegmentPlacement::Chart(&geodesic, frame),
-                budget,
-            )?;
-            let mut piece_ends = Vec::with_capacity(piece_counts.len());
-            let mut end = 0_usize;
-            for pieces in &piece_counts {
-                end = end
-                    .checked_add(pieces.get())
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                piece_ends.push(end);
-            }
-            refined_chains.push(RefinedChainProvenance {
-                chain_index: current_chain,
-                piece_ends,
-            });
+            let retain_source_parameters = purpose == LocalInputPurpose::ClearanceWitness
+                && (chain.axes().has_z() || chain.axes().has_m());
+            let (refined, edge_ends, source_parameters) = if retain_source_parameters {
+                let (refined, ranges): (CoordSeq, ChartSourceParameters) =
+                    crate::geometry::segmentize_chart_points_with_piece_counts_budgeted(
+                        chain,
+                        &piece_counts,
+                        &geodesic,
+                        frame,
+                        budget,
+                    )?;
+                (refined, ranges.edge_ends, Some(ranges.parameters))
+            } else {
+                let refined = segmentize_points_with_piece_counts_budgeted(
+                    chain,
+                    &piece_counts,
+                    &SegmentPlacement::Chart(&geodesic, frame),
+                    budget,
+                )?;
+                let mut piece_ends = Vec::with_capacity(piece_counts.len());
+                let mut end = 0_usize;
+                for pieces in &piece_counts {
+                    end = end
+                        .checked_add(pieces.get())
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                    piece_ends.push(end);
+                }
+                (refined, piece_ends, None)
+            };
+            let provenance = match source_parameters {
+                Some(source_parameters) => RefinedChainProvenance::from_chart_parameters(
+                    current_chain,
+                    edge_ends,
+                    source_parameters,
+                )?,
+                None => RefinedChainProvenance {
+                    chain_index: current_chain,
+                    piece_ends: edge_ends,
+                    source_parameters: None,
+                },
+            };
+            refined_chains.push(provenance);
             Ok(Some(refined))
         };
         let refined_source = shape.map_chains(&mut refine_chain)?;
@@ -291,7 +316,7 @@ mod tests {
     use super::super::operations::geodesic_by_identity;
     use super::*;
     use crate::crs::runtime_state_snapshot;
-    use crate::geometry::{CoordSeq, Coordinates as _, LineSeq, XY};
+    use crate::geometry::{Coordinates as _, LineSeq, XY};
 
     fn sampled_projection_deviation(
         source_crs: &str,
@@ -706,7 +731,7 @@ mod tests {
             LocalInputPurpose::BoundarySupport,
             |sites: &Shape, support: &Shape, refined_chains: &[RefinedChainProvenance]| {
                 let Some(witness) =
-                    sites.minimum_clearance_plan_with_support(support, refined_chains)?
+                    sites.minimum_clearance_plan_with_support(support, refined_chains, false)?
                 else {
                     return Ok((
                         Vec::new(),
@@ -723,6 +748,7 @@ mod tests {
                 };
                 Ok((plan, Shape::LineString(LineSeq::segment(*start, *end)?)))
             },
+            |source_points, _, plan, _, _| crate::geometry::emit_from_original(source_points, plan),
             |points: Vec<crate::geometry::Point>| {
                 if points.is_empty() {
                     Ok(Shape::typed_empty(

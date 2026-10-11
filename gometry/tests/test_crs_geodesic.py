@@ -890,6 +890,131 @@ def test_geographic_local_certificate_supports_offset_and_minimum_clearance() ->
     assert witness.length == pytest.approx(clearance, rel=1.0e-6)
 
 
+def test_minimum_clearance_line_uses_the_original_root_after_support_refinement() -> (
+    None
+):
+    def fixture(
+        reverse: bool,
+    ) -> tuple[gm.Geometry, tuple[float, ...], tuple[float, ...]]:
+        root = [(0.0, 0.0, 10.0, 100.0), (1.0, 1.0, 210.0, 500.0)]
+        if reverse:
+            root.reverse()
+        linework = gm.from_wkt(
+            'MULTILINESTRING ZM ('
+            f'({root[0][0]} {root[0][1]} {root[0][2]} {root[0][3]},'
+            f' {root[1][0]} {root[1][1]} {root[1][2]} {root[1][3]}),'
+            '(0.5 0.5001 110 300,0.5002 0.5003 111 301))',
+            crs='OGC:CRS84',
+        )
+        return linework, root[0], root[1]
+
+    def chart_length(
+        start: tuple[float, ...], end: tuple[float, ...], stop: float
+    ) -> float:
+        parameters = np.linspace(0.0, stop, 4097)
+        longitudes = start[0] + parameters * (end[0] - start[0])
+        latitudes = start[1] + parameters * (end[1] - start[1])
+        lengths = GEOD.inv(
+            longitudes[:-1],
+            latitudes[:-1],
+            longitudes[1:],
+            latitudes[1:],
+        )[2]
+        return float(np.sum(lengths, dtype=np.float64))
+
+    def assert_root_ordinates(
+        witness: gm.LineString,
+        start: tuple[float, ...],
+        end: tuple[float, ...],
+    ) -> None:
+        foot = tuple(witness.coords)[1]
+        parameter = (foot[0] - start[0]) / (end[0] - start[0])
+        assert foot[1] == pytest.approx(
+            start[1] + parameter * (end[1] - start[1]), abs=1.0e-12
+        )
+        arclength_fraction = chart_length(start, end, parameter) / chart_length(
+            start, end, 1.0
+        )
+        assert foot[2] == pytest.approx(
+            start[2] + arclength_fraction * (end[2] - start[2]), abs=1.0e-8
+        )
+        assert foot[3] == pytest.approx(
+            start[3] + arclength_fraction * (end[3] - start[3]), abs=1.0e-8
+        )
+
+    forward = fixture(False)
+    reverse = fixture(True)
+    for linework, start, end in (forward, reverse):
+        assert_root_ordinates(linework.minimum_clearance_line(), start, end)
+
+    source_rows = gm.GeometryArray([forward[0], None, reverse[0]])[[2, 0, 1, 2]]
+    witnesses = source_rows.minimum_clearance_line()
+    expected_roots = [reverse, forward, None, reverse]
+    for witness, expected in zip(witnesses, expected_roots, strict=True):
+        if expected is None:
+            assert witness is None
+        else:
+            assert_root_ordinates(witness, expected[1], expected[2])
+
+
+def test_minimum_clearance_line_uses_the_source_grad_ellipsoid() -> None:
+    source_crs = pyproj.CRS.from_epsg(4807)
+    ellipsoid = source_crs.ellipsoid
+    geodesic = Geod(
+        a=ellipsoid.semi_major_metre,
+        rf=ellipsoid.inverse_flattening,
+    )
+    to_crs84 = pyproj.Transformer.from_crs(
+        source_crs,
+        pyproj.CRS.from_user_input('OGC:CRS84'),
+        always_xy=True,
+    )
+    root_start = (0.0, 48.0, 10.0, 100.0)
+    root_end = (2.0, 50.0, 210.0, 500.0)
+    linework = gm.from_wkt(
+        'MULTILINESTRING ZM ('
+        '(0 48 10 100,2 50 210 500),'
+        '(1 49.0001 110 300,1.0002 49.0003 111 301))',
+        crs=source_crs.to_wkt(),
+    )
+    witness = linework.minimum_clearance_line()
+    foot = tuple(witness.coords)[1]
+    parameter = (foot[0] - root_start[0]) / (root_end[0] - root_start[0])
+    assert foot[1] == pytest.approx(
+        root_start[1] + parameter * (root_end[1] - root_start[1]), abs=1.0e-10
+    )
+
+    native_parameters = np.linspace(0.0, parameter, 4097)
+    native_x = root_start[0] + native_parameters * (root_end[0] - root_start[0])
+    native_y = root_start[1] + native_parameters * (root_end[1] - root_start[1])
+    longitudes, latitudes = to_crs84.transform(native_x, native_y)
+    lengths = geodesic.inv(
+        longitudes[:-1],
+        latitudes[:-1],
+        longitudes[1:],
+        latitudes[1:],
+    )[2]
+    prefix = float(np.sum(lengths, dtype=np.float64))
+
+    native_parameters = np.linspace(0.0, 1.0, 4097)
+    native_x = root_start[0] + native_parameters * (root_end[0] - root_start[0])
+    native_y = root_start[1] + native_parameters * (root_end[1] - root_start[1])
+    longitudes, latitudes = to_crs84.transform(native_x, native_y)
+    lengths = geodesic.inv(
+        longitudes[:-1],
+        latitudes[:-1],
+        longitudes[1:],
+        latitudes[1:],
+    )[2]
+    fraction = prefix / float(np.sum(lengths, dtype=np.float64))
+    assert foot[2] == pytest.approx(
+        root_start[2] + fraction * (root_end[2] - root_start[2]), abs=1.0e-8
+    )
+    assert foot[3] == pytest.approx(
+        root_start[3] + fraction * (root_end[3] - root_start[3]), abs=1.0e-8
+    )
+
+
 @pytest.mark.parametrize('longitude', [3.0, 0.1, 5.9, 179.99, 180.0, -179.99])
 def test_geodesic_buffer_does_not_depend_on_the_utm_zone_position(
     longitude: float,

@@ -24,7 +24,8 @@ pub(crate) use ring::{
 #[cfg(test)]
 pub(crate) use segmentize::densify_points_budgeted;
 pub(crate) use segmentize::{
-    SegmentPlacement, SegmentPlacementOwned, densify_points_budgeted_with_placement,
+    ChartSourceParameters, SegmentPlacement, SegmentPlacementOwned,
+    densify_points_budgeted_with_placement, segmentize_chart_points_with_piece_counts_budgeted,
     segmentize_points_budgeted, segmentize_points_with_piece_counts_budgeted,
 };
 pub(crate) use simplify::{
