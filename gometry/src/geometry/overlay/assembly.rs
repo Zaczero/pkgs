@@ -320,7 +320,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn certified_overlay_order_tracks_sorted_point_slots() -> crate::error::Result<()> {
+    fn certified_overlay_order_tracks_sorted_point_slots() {
         let input = [Point::new_raw_xy(2.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
         let mut work = crate::geometry::Unmetered;
         let (shape, order) = build_certified_overlay_shape_with_axes_and_order(
@@ -329,16 +329,13 @@ mod tests {
             Vec::new(),
             CoordinateAxes::XY,
             &mut work,
-        )?;
+        )
+        .unwrap();
         assert_eq!(order.points, [1, 0]);
         let Shape::MultiPoint(points) = shape else {
-            return Err(crate::geometry::GeometryErrorKind::Invalid(
-                "two certified points did not produce a MultiPoint".into(),
-            )
-            .into());
+            panic!("two certified points did not produce a MultiPoint");
         };
         assert_eq!(points.point_at(0).x, 1.0);
         assert_eq!(points.point_at(1).x, 2.0);
-        Ok(())
     }
 }
