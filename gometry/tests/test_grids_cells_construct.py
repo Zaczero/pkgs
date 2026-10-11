@@ -84,6 +84,45 @@ def test_cell_construct_and_round_trip(grid: GridCase) -> None:
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_plural_cell_factories_accept_crs_tagged_multipoints(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    multipoint = gm.MultiPoint([(13.4, 52.5), (13.5, 52.6)], crs=4326)
+
+    assert grid.factory(multipoint, **kwargs) == grid.factory(
+        list(multipoint), **kwargs
+    )
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_plural_cell_factories_accept_empty_multipoints(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    empty = gm.MultiPoint([], crs=4326)
+    empty_cells = grid.factory(empty, **kwargs)
+
+    assert isinstance(empty_cells, gm.CellArray)
+    assert len(empty_cells) == 0
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+@pytest.mark.parametrize(
+    'geometry',
+    [
+        pytest.param(gm.Point(13.4, 52.5, crs=4326), id='scalar-point'),
+        pytest.param(
+            gm.LineString([(13.4, 52.5), (13.5, 52.6)], crs=4326),
+            id='linestring',
+        ),
+    ],
+)
+def test_plural_cell_factories_reject_other_scalar_geometry_kinds(
+    grid: GridCase,
+    geometry: gm.Geometry,
+) -> None:
+    with pytest.raises(gm.GeometryError):
+        grid.factory(geometry, **{grid.depth_kw: grid.depth})
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_cell_construct_canonicalizes_periodic_seam_aliases(grid: GridCase) -> None:
     owner = grid.make(-180.0, 23.0)
     assert grid.make(180.0, 23.0) == owner

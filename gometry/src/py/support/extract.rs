@@ -102,9 +102,9 @@ pub(crate) fn normalize_geometry_batch<'py>(
         .map(|_| value.len())
         .transpose()?
         .unwrap_or_default();
-    let iterator = value
-        .try_iter()
-        .map_err(|_| crate::broadcast::expected_geometry_or_array_for(value))?;
+    let iterator = crate::py_iter_or_error(value, || {
+        crate::broadcast::expected_geometry_or_array_for(value)
+    })?;
     let mut rows = Vec::with_capacity(capacity);
     for (logical_row, item) in iterator.enumerate() {
         let item = item?;

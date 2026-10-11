@@ -279,7 +279,7 @@ where
     C: CellArrayId + Send,
     D: Send,
 {
-    if values.cast::<crate::PyGeometry>().is_ok() {
+    if values.cast::<crate::PyGeometry>().is_ok() && values.cast::<crate::PyMultiPoint>().is_err() {
         return Err(GeometryError::new_err(format!(
             "cells expects a GeometryArray of Point or coordinate columns; use \
              {class_name}(point, {depth_kw}=...) for a single cell"

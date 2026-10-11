@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import gometry as gm
 import numpy as np
+import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 
 def test_scalar_array_metric_directions_preserve_missing_and_empty_rows() -> None:
@@ -77,6 +83,46 @@ def test_similarity_and_shortest_line_normalize_nullable_iterable_operands() -> 
                 [0.0, np.nan],
                 equal_nan=True,
             )
+
+
+@pytest.mark.parametrize(
+    'operation',
+    [
+        pytest.param(gm.hausdorff_distance, id='hausdorff'),
+        pytest.param(gm.frechet_distance, id='frechet'),
+        pytest.param(gm.shortest_line, id='shortest-line'),
+    ],
+)
+def test_metric_batch_normalization_preserves_provider_iteration_errors(
+    operation: Callable[..., object],
+) -> None:
+    failure = RuntimeError('row source unavailable')
+
+    class FailingRows:
+        def __iter__(self) -> Iterator[object]:
+            raise failure
+
+    line = gm.LineString([(0.0, 0.0), (2.0, 0.0)])
+    with pytest.raises(RuntimeError) as exc_info:
+        operation(FailingRows(), line)
+    assert exc_info.value is failure
+
+
+@pytest.mark.parametrize(
+    'operation',
+    [
+        pytest.param(gm.hausdorff_distance, id='hausdorff'),
+        pytest.param(gm.frechet_distance, id='frechet'),
+        pytest.param(gm.shortest_line, id='shortest-line'),
+    ],
+)
+def test_metric_batch_normalization_classifies_non_iterables(
+    operation: Callable[..., object],
+) -> None:
+    line = gm.LineString([(0.0, 0.0), (2.0, 0.0)])
+
+    with pytest.raises(TypeError):
+        operation(object(), line)
 
 
 def test_geographic_filled_metric_results_are_order_independent() -> None:

@@ -465,6 +465,7 @@ def _drop_missing_generic(
 def _check_require_row_types(
     nullable_array: gm.GeometryArray[gm.Point | None],
     nullable_groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
+    nullable_group_rows: gm.Groups[gm.GeometryArray[gm.Point] | None],
     nullable_rows: Iterable[gm.Point | None],
     foreign_rows: Iterable[gm.Point | str | None],
 ) -> None:
@@ -472,6 +473,11 @@ def _check_require_row_types(
     assert_type(
         gm.require(nullable_groups),
         gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(gm.require(nullable_group_rows), gm.GeometryArray[gm.Point])
+    assert_type(
+        gm.require(nullable_group_rows.values),
+        gm.GeometryArray[gm.Point],
     )
     assert_type(gm.require(nullable_rows), gm.GeometryArray[gm.Point | None])
     assert_type(
@@ -1240,6 +1246,8 @@ if TYPE_CHECKING:
     reveal_type(gm.from_geojson(feature_non_null, features=False))
     reveal_type(gm.from_geojson(feature_non_null, features=True))
     reveal_type(gm.from_geojson(arrow_text_column))
+    assert_type(gm.from_geojson(feature_row, features=True), gm.Features)
+    assert_type(gm.from_geojson(feature_rows, features=True), gm.Features)
 
     def _feature_result_for_runtime_flag(features: bool) -> None:
         reveal_type(gm.from_geojson(feature_text, features=features))
@@ -1271,6 +1279,37 @@ if TYPE_CHECKING:
             gm.Features,
         )
         assert_type(gm.from_geojson(_FeatureInterface(), features=True), gm.Features)
+        assert_type(gm.from_geojson([_FeatureInterface()], features=True), gm.Features)
+
+    def _feature_interface_roundtrips(
+        features: gm.Features,
+    ) -> None:
+        class _NullableFeatureInterface:
+            @property
+            def __geo_interface__(self) -> sht.GeoJsonFeature:
+                return feature_row
+
+        class _FeatureCollectionInterface:
+            @property
+            def __geo_interface__(self) -> sht.GeoJsonFeatureCollection:
+                return feature_collection
+
+        nullable_feature = _NullableFeatureInterface()
+        collection = _FeatureCollectionInterface()
+        assert_type(
+            gm.from_geojson(features.__geo_interface__, features=True),
+            gm.Features,
+        )
+        assert_type(gm.from_geojson(gm.to_feature(None), features=True), gm.Features)
+        assert_type(gm.from_geojson(gm.to_feature(POINT), features=True), gm.Features)
+        assert_type(gm.from_geojson(nullable_feature, features=True), gm.Features)
+        assert_type(gm.from_geojson([nullable_feature], features=True), gm.Features)
+        assert_type(gm.from_geojson(collection, features=True), gm.Features)
+        reveal_type(gm.from_geojson(collection))
+        assert_type(
+            gm.from_geojson(collection),
+            gm.GeometryArray[gm.Geometry | None],
+        )
 
     reveal_type(gm.points([(1.0, 2.0)]))
     reveal_type(gm.points(1.0, 2.0))

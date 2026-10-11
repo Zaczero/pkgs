@@ -785,9 +785,12 @@ fn build_python_features(
                     })
                     .map_err(PyErr::from);
             }
+            let feature = item
+                .getattr_opt(pyo3::intern!(py, "__geo_interface__"))?
+                .unwrap_or(item);
             let feature = python_feature_row(
                 py,
-                &item,
+                &feature,
                 feature_geometry_path(FeaturePathKind::Sequence, row),
             )?;
             reconcile_legacy_crs_detached(py, &feature, crs_for_rows.as_deref())?;

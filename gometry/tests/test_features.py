@@ -211,11 +211,30 @@ def test_from_geojson_features_accepts_geo_interface_feature_provider() -> None:
                 'id': 'provider-1',
             }
 
-    result = gm.from_geojson(FeatureProvider(), features=True)
+    provider = FeatureProvider()
+    scalar = gm.from_geojson(provider, features=True)
+    batched = (
+        gm.from_geojson([provider], features=True),
+        gm.from_geojson(iter([provider]), features=True),
+    )
 
-    assert result.geometries.to_wkt() == ['POINT (9 10)']
-    assert result.properties == ({'name': 'provider'},)
-    assert result.ids == ('provider-1',)
+    assert scalar.geometries.to_wkt() == ['POINT (9 10)']
+    assert scalar.properties == ({'name': 'provider'},)
+    assert scalar.ids == ('provider-1',)
+    for result in batched:
+        assert result.geometries == scalar.geometries
+        assert result.properties == scalar.properties
+        assert result.ids == scalar.ids
+
+
+def test_from_geojson_features_rejects_geometry_interface_rows() -> None:
+    class GeometryProvider:
+        @property
+        def __geo_interface__(self) -> dict[str, object]:
+            return {'type': 'Point', 'coordinates': [9, 10]}
+
+    with pytest.raises(gm.ParseError, match='each feature must have type "Feature"'):
+        gm.from_geojson([GeometryProvider()], features=True)
 
 
 def test_from_geojson_features_accepts_pandas_feature_columns() -> None:

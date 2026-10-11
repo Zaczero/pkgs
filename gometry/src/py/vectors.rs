@@ -445,8 +445,7 @@ impl Groups {
     }
 
     fn int64_row_matches(&self, row: usize, expected: &[i64]) -> bool {
-        let values = self.int64_row_slice(row);
-        values == expected
+        !self.row_is_missing(row) && self.int64_row_slice(row) == expected
     }
 
     fn row_matches(&self, row: usize, item: &Bound<'_, PyAny>) -> PyResult<bool> {
@@ -504,6 +503,9 @@ impl Groups {
             },
             GroupsContainsNeedle::Geometry(expected) => {
                 for row in 0..self.rows.len() {
+                    if self.row_is_missing(row) {
+                        continue;
+                    }
                     if geometry_arrays_equal(&self.geometry_row_view(row)?, &expected)? {
                         return Ok(true);
                     }
@@ -512,6 +514,9 @@ impl Groups {
             },
             GroupsContainsNeedle::Cells(expected) => {
                 for row in 0..self.rows.len() {
+                    if self.row_is_missing(row) {
+                        continue;
+                    }
                     if self.cell_row_view(row).logical_eq(&expected) {
                         return Ok(true);
                     }
