@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -340,6 +340,42 @@ def _check_epoch_input_families(
     reveal_type(gm.pluscode_recover(['CJ+2VX'], POINT))
     reveal_type(gm.pluscode_recover('CJ+2VX', [-1.2, -1.3], 51.0))
     reveal_type(gm.pluscode_recover('CJ+2VX', _coordinate_rows[:, 0], 51.0))
+
+    def _reveal_nullable_geocode_decoders() -> None:
+        reveal_type(gm.pluscode_polygon(['8FVC9G8F+6X']))
+        reveal_type(gm.pluscode_polygon(['8FVC9G8F+6X', None]))
+        reveal_type(gm.pluscode_shorten(['9C3W9QCJ+2VX'], POINT))
+        reveal_type(gm.pluscode_shorten(['9C3W9QCJ+2VX', None], POINT))
+        reveal_type(gm.pluscode_recover(['CJ+2VX'], POINT))
+        reveal_type(gm.pluscode_recover(['CJ+2VX', None], POINT))
+        reveal_type(gm.osm_shortlink_location(['0MbEUxVoG-']))
+        reveal_type(gm.osm_shortlink_location(['0MbEUxVoG-', None]))
+        assert_type(
+            gm.pluscode_polygon(['8FVC9G8F+6X']),
+            gm.GeometryArray[gm.Polygon],
+        )
+        assert_type(
+            gm.pluscode_polygon(['8FVC9G8F+6X', None]),
+            gm.GeometryArray[gm.Polygon | None],
+        )
+        assert_type(gm.pluscode_shorten(['9C3W9QCJ+2VX'], POINT), list[str])
+        assert_type(
+            gm.pluscode_shorten(['9C3W9QCJ+2VX', None], POINT),
+            list[str | None],
+        )
+        assert_type(gm.pluscode_recover(['CJ+2VX'], POINT), list[str])
+        assert_type(
+            gm.pluscode_recover(['CJ+2VX', None], POINT),
+            list[str | None],
+        )
+        assert_type(
+            gm.osm_shortlink_location(['0MbEUxVoG-']),
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], _Int64Array1D],
+        )
+        assert_type(
+            gm.osm_shortlink_location(['0MbEUxVoG-', None]),
+            tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], _Int64Array1D],
+        )
 
     reveal_type(gm.h3_cells(_dense_points, resolution=7))
     reveal_type(gm.h3_cells(_nullable_points, resolution=7))
@@ -1208,6 +1244,34 @@ if TYPE_CHECKING:
     def _feature_result_for_runtime_flag(features: bool) -> None:
         reveal_type(gm.from_geojson(feature_text, features=features))
 
+    def _reveal_serialized_feature_rows() -> None:
+        serialized_text = (
+            '{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]}}'
+        )
+        serialized_bytes = b'{"type":"Feature","geometry":null}'
+
+        class _FeatureInterface:
+            @property
+            def __geo_interface__(self) -> sht.GeoJsonFeatureNonNull:
+                return {
+                    'type': 'Feature',
+                    'geometry': {'type': 'Point', 'coordinates': [1.0, 2.0]},
+                    'properties': {'name': 'feature'},
+                }
+
+        reveal_type(gm.from_geojson([serialized_text, None], features=True))
+        reveal_type(gm.from_geojson([serialized_bytes, None], features=True))
+        reveal_type(gm.from_geojson(_FeatureInterface(), features=True))
+        assert_type(
+            gm.from_geojson([serialized_text, None], features=True),
+            gm.Features,
+        )
+        assert_type(
+            gm.from_geojson([serialized_bytes, None], features=True),
+            gm.Features,
+        )
+        assert_type(gm.from_geojson(_FeatureInterface(), features=True), gm.Features)
+
     reveal_type(gm.points([(1.0, 2.0)]))
     reveal_type(gm.points(1.0, 2.0))
     reveal_type(gm.Point((1.0, 2.0)))
@@ -1909,6 +1973,86 @@ if TYPE_CHECKING:
     reveal_type(gm.intersects(POLY, x=1.0, y=1.0))
     reveal_type(gm.intersects(POLY, x=0.0, y=[0.0, 1.0]))
     reveal_type(gm.intersects(POLYS, x=0.0, y=0.0))
+
+    def _reveal_overlay_batches() -> None:
+        # Object dtype erases item types; these casts retain the known rows.
+        point_array = cast(
+            'Iterable[gm.Point]',
+            np.asarray([POINT, gm.Point(2, 2)], dtype=object),
+        )
+        nullable_point_array = cast(
+            'Iterable[gm.Point | None]',
+            np.asarray([POINT, None], dtype=object),
+        )
+
+        reveal_type(gm.union(_point_rows, POINT))
+        reveal_type(gm.union(point_array, POINT))
+        reveal_type(gm.union(_nullable_point_rows, POINT))
+        reveal_type(gm.union(nullable_point_array, POINT))
+        reveal_type(gm.intersection(_point_rows, POINT))
+        reveal_type(gm.intersection(point_array, POINT))
+        reveal_type(gm.intersection(_nullable_point_rows, POINT))
+        reveal_type(gm.intersection(nullable_point_array, POINT))
+        reveal_type(gm.difference(_point_rows, POINT))
+        reveal_type(gm.difference(point_array, POINT))
+        reveal_type(gm.difference(_nullable_point_rows, POINT))
+        reveal_type(gm.difference(nullable_point_array, POINT))
+        reveal_type(gm.symmetric_difference(_point_rows, POINT))
+        reveal_type(gm.symmetric_difference(point_array, POINT))
+        reveal_type(gm.symmetric_difference(_nullable_point_rows, POINT))
+        reveal_type(gm.symmetric_difference(nullable_point_array, POINT))
+        reveal_type(gm.snap(_point_rows, POINT, 0.1))
+        reveal_type(gm.snap(point_array, POINT, 0.1))
+        reveal_type(gm.snap(_nullable_point_rows, POINT, 0.1))
+        reveal_type(gm.snap(nullable_point_array, POINT, 0.1))
+        reveal_type(gm.union(POINT, _point_rows))
+        reveal_type(gm.intersection(gm.MultiPoint([POINT]), _point_rows))
+        reveal_type(gm.difference(gm.MultiPoint([POINT]), _point_rows))
+        reveal_type(gm.snap(gm.MultiPoint([POINT]), _point_rows, 0.1))
+        assert_type(
+            gm.union(_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint],
+        )
+        assert_type(
+            gm.union(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+        )
+        assert_type(
+            gm.union(point_array, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint],
+        )
+        assert_type(
+            gm.union(nullable_point_array, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+        )
+        assert_type(gm.intersection(_point_rows, POINT), gm.GeometryArray[gm.Point])
+        assert_type(
+            gm.intersection(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | None],
+        )
+        assert_type(gm.difference(_point_rows, POINT), gm.GeometryArray[gm.Point])
+        assert_type(
+            gm.difference(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | None],
+        )
+        assert_type(
+            gm.symmetric_difference(_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint],
+        )
+        assert_type(
+            gm.symmetric_difference(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+        )
+        assert_type(gm.snap(_point_rows, POINT, 0.1), gm.GeometryArray[gm.Point])
+        assert_type(
+            gm.snap(_nullable_point_rows, POINT, 0.1),
+            gm.GeometryArray[gm.Point | None],
+        )
+        assert_type(
+            gm.snap(gm.MultiPoint([POINT]), _point_rows, 0.1),
+            gm.GeometryArray[gm.MultiPoint],
+        )
+
     reveal_type(gm.contains_properly(BATCH_POINTS, POINT))
     reveal_type(gm.covered_by(BATCH_POINTS, POINT))
     reveal_type(gm.covers(BATCH_POINTS, POINT))
@@ -1929,6 +2073,47 @@ if TYPE_CHECKING:
     reveal_type(gm.frechet_distance([LINE, None], LINE))
     reveal_type(gm.nearest_points(BATCH_POINTS, POINT))
     reveal_type(gm.shortest_line(BATCH_POINTS, POINT))
+
+    def _reveal_iterable_metrics() -> None:
+        # Object dtype erases item types; these casts retain the known rows.
+        point_array = cast(
+            'Iterable[gm.Point]',
+            np.asarray([POINT, gm.Point(2, 2)], dtype=object),
+        )
+        nullable_point_array = cast(
+            'Iterable[gm.Point | None]',
+            np.asarray([POINT, None], dtype=object),
+        )
+        line_rows: list[gm.LineString] = [LINE]
+        nullable_line_rows: list[gm.LineString | None] = [LINE, None]
+        line_array = cast('Iterable[gm.LineString]', np.asarray([LINE], dtype=object))
+        nullable_line_array = cast(
+            'Iterable[gm.LineString | None]',
+            np.asarray([LINE, None], dtype=object),
+        )
+
+        reveal_type(np.asarray([POINT, None], dtype=object))
+        reveal_type(gm.shortest_line(_point_rows, POINT))
+        reveal_type(gm.shortest_line(_nullable_point_rows, POINT))
+        reveal_type(gm.shortest_line(point_array, POINT))
+        reveal_type(gm.shortest_line(nullable_point_array, POINT))
+        reveal_type(gm.hausdorff_distance(_point_rows, POINT))
+        reveal_type(gm.hausdorff_distance(_nullable_point_rows, POINT))
+        reveal_type(gm.hausdorff_distance(point_array, POINT))
+        reveal_type(gm.hausdorff_distance(nullable_point_array, POINT))
+        reveal_type(gm.frechet_distance(line_rows, LINE))
+        reveal_type(gm.frechet_distance(nullable_line_rows, LINE))
+        reveal_type(gm.frechet_distance(line_array, LINE))
+        reveal_type(gm.frechet_distance(nullable_line_array, LINE))
+        assert_type(
+            gm.shortest_line(_nullable_point_rows, POINT),
+            gm.GeometryArray[gm.LineString | None],
+        )
+        assert_type(
+            gm.frechet_distance(nullable_line_rows, LINE),
+            npt.NDArray[np.float64],
+        )
+
     reveal_type(gm.shared_paths([LINE, None], LINE))
     reveal_type(POINTS.parts)
     reveal_type(MULTIPOINTS.parts)
@@ -2457,6 +2642,15 @@ assert_type(POLY & POINTS, gm.GeometryArray[gm.Point])
 assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon])
 assert_type(POINTS[:1], gm.GeometryArray[gm.Point])
 assert_type(POINTS.concat(POINTS), gm.GeometryArray[gm.Point])
+if TYPE_CHECKING:
+
+    def _reveal_concat_positions() -> None:
+        reveal_type(POINTS.concat(POINTS))
+        reveal_type(POINTS.concat(POINTS, POINTS))
+        assert_type(POINTS.concat(POINTS), gm.GeometryArray[gm.Point])
+        assert_type(POINTS.concat(POINTS, POINTS), gm.GeometryArray[gm.Point])
+
+
 MULTI = gm.MultiPoint([(0.0, 0.0), (1.0, 1.0)])
 assert_type(MULTI.parts[0], gm.Point)
 assert_type(MULTI.parts[:1], list[gm.Point])

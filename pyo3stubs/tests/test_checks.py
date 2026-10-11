@@ -558,6 +558,36 @@ def test_single_overload_flagged(tmp_path, pristine_stub):
     )
 
 
+def test_overload_hygiene_ignores_bound_receiver_kind_but_checks_operands(
+    tmp_path, pristine_stub
+):
+    stub = (
+        pristine_stub
+        + """\
+
+class ReceiverKinds:
+    @overload
+    def receiver(self, /, value: int) -> int: ...
+    @overload
+    def receiver(self, value: str) -> str: ...
+
+    @overload
+    def operand(self, value: int, /) -> int: ...
+    @overload
+    def operand(self, value: str) -> str: ...
+"""
+    )
+
+    errors = structural(make_config(tmp_path, stub_text=stub))
+
+    assert not any('ReceiverKinds.receiver.self' in error for error in errors), errors
+    assert any(
+        'ReceiverKinds.operand.value' in error
+        and 'POSITIONAL_ONLY != canonical POSITIONAL_OR_KEYWORD' in error
+        for error in errors
+    ), errors
+
+
 def test_finality_flags_missing_final(tmp_path, pristine_stub):
     mutated = seeded(pristine_stub, '@final\nclass Sealed:', 'class Sealed:')
     errors = structural(make_config(tmp_path, stub_text=mutated))

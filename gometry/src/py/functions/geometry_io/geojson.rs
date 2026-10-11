@@ -164,7 +164,9 @@ fn parse_geojson_concrete_row(
 ///
 /// features : bool, default varies by call form
 ///     Preserve Feature properties and IDs in a ``Features`` result. Geometry-
-///     only inputs are not valid when this is ``True``.
+///     only inputs are not valid when this is ``True``. Feature row iterables
+///     accept Feature mappings or serialized Feature text/bytes; ``None`` rows
+///     retain alignment with a missing geometry, missing properties, and no ID.
 ///
 /// crs : CRS-like, default 'OGC:CRS84'
 ///     CRS to attach. `geojson` coordinates are WGS84 by specification, so
@@ -630,6 +632,33 @@ fn feature_row_from_meta(
     })
 }
 
+fn parse_serialized_feature_row(
+    text: &str,
+    geometry_path: String,
+    crs: Option<&str>,
+) -> crate::error::Result<FeatureRow> {
+    let metadata = support::deserialize_json::<FeatureTopMeta>(text.as_bytes())?;
+    let (mut rows, legacy_crs, collection) = metadata.into_rows()?;
+    if collection || rows.len() != 1 {
+        return Err(io::IoError::geojson(
+            "each serialized row must be a GeoJSON Feature",
+        ));
+    }
+    let feature = feature_row_from_meta(
+        rows.pop().expect("one parsed Feature has one row"),
+        geometry_path,
+    )?;
+    if let Some(legacy_crs) = legacy_crs {
+        io::GeoJsonCrs::new(io::LegacyGeoJsonCrsPolicy::Fixed(crs))
+            .reconcile_declaration(&legacy_crs)?;
+    }
+    feature.reconcile_legacy_crs(&mut io::GeoJsonCrs::new(io::LegacyGeoJsonCrsPolicy::Fixed(
+        crs,
+    )))?;
+    validate_text_side_data(&feature)?;
+    Ok(feature)
+}
+
 fn build_python_features(
     py: Python<'_>,
     data: &Bound<'_, PyAny>,
@@ -718,6 +747,44 @@ fn build_python_features(
         py,
         iter.enumerate().map(move |(row, item)| {
             let item = item?;
+            if item.is_none() {
+                return Ok(FeatureRow {
+                    geometry: FeatureGeometryInput::Null,
+                    geometry_path: feature_geometry_path(FeaturePathKind::Sequence, row),
+                    properties: FeatureSideData::Python(py.None()),
+                    id: FeatureSideData::Python(py.None()),
+                    legacy_crs: None,
+                });
+            }
+            if let Ok(text) = item.cast::<PyString>() {
+                let text: PyBackedStr = text.extract()?;
+                let row_crs = crs_for_rows.clone();
+                return py
+                    .detach(move || {
+                        parse_serialized_feature_row(
+                            text.as_ref(),
+                            feature_geometry_path(FeaturePathKind::Sequence, row),
+                            row_crs.as_deref(),
+                        )
+                    })
+                    .map_err(PyErr::from);
+            }
+            if is_py_bytes_or_bytearray(&item)? {
+                let bytes = copy_one_byte_buffer(&item)?;
+                let row_crs = crs_for_rows.clone();
+                return py
+                    .detach(move || {
+                        let text = String::from_utf8(bytes).map_err(|error| {
+                            io::IoError::geojson(format!("invalid GeoJSON feature JSON: {error}"))
+                        })?;
+                        parse_serialized_feature_row(
+                            &text,
+                            feature_geometry_path(FeaturePathKind::Sequence, row),
+                            row_crs.as_deref(),
+                        )
+                    })
+                    .map_err(PyErr::from);
+            }
             let feature = python_feature_row(
                 py,
                 &item,

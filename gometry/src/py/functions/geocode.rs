@@ -1,3 +1,4 @@
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyString};
 
@@ -14,7 +15,7 @@ pub(crate) use pyfuncs::{
 
 enum CodeInput {
     Scalar(String),
-    Many(Vec<String>),
+    Many(Vec<Option<String>>),
 }
 
 impl CodeInput {
@@ -23,6 +24,23 @@ impl CodeInput {
             let text = text.to_str()?;
             return Ok(Self::Scalar(text.to_owned()));
         }
-        crate::collect_py_strings(value, name).map(Self::Many)
+        let iter = crate::py_iter_or_error(value, || {
+            PyTypeError::new_err(format!("{name} must be an iterable of strings"))
+        })?;
+        let mut out = Vec::new();
+        crate::reserve_from_py_len(value, &mut out)?;
+        for (index, item) in iter.enumerate() {
+            let item = item?;
+            crate::check_python_signals(value.py(), index)?;
+            if item.is_none() {
+                out.push(None);
+                continue;
+            }
+            let text = item.cast::<PyString>().map_err(|_| {
+                PyTypeError::new_err(format!("{name} elements have the wrong type"))
+            })?;
+            out.push(Some(text.to_str()?.to_owned()));
+        }
+        Ok(Self::Many(out))
     }
 }

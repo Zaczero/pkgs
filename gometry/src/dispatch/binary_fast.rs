@@ -328,8 +328,10 @@ fn dispatch_similarity_metric(
     unit: Option<DistanceUnit>,
     make_operation: impl Fn(usize) -> PyResult<SimilarityOp>,
 ) -> PyResult<Py<PyAny>> {
-    let left_array = crate::broadcast::exact_geometry_array(left);
-    let right_array = crate::broadcast::exact_geometry_array(right);
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let left_array = crate::broadcast::exact_geometry_array(&left);
+    let right_array = crate::broadcast::exact_geometry_array(&right);
     let array_len = match (left_array, right_array) {
         (Some(array), _) | (None, Some(array)) => Some(array.len()),
         (None, None) => None,
@@ -337,8 +339,8 @@ fn dispatch_similarity_metric(
     let Some(len) = array_len else {
         let operation = make_operation(1)?;
         let metric_op = operation.metric_op();
-        let left_input = classify_required(left)?;
-        let right_input = classify_required(right)?;
+        let left_input = classify_required(&left)?;
+        let right_input = classify_required(&right)?;
         let admission =
             super::binary::admit_binary_inputs(left_input, right_input, metric_op.name())?;
         return super::binary::dispatch_binary_admitted(
@@ -350,8 +352,8 @@ fn dispatch_similarity_metric(
     };
     let operation = make_operation(len)?;
     let metric_op = operation.metric_op();
-    let left_input = classify_required(left)?;
-    let right_input = classify_required(right)?;
+    let left_input = classify_required(&left)?;
+    let right_input = classify_required(&right)?;
     let admission = super::binary::admit_binary_inputs(left_input, right_input, metric_op.name())?;
     dispatch_similarity_array_lane(py, &admission, operation, unit)
 }

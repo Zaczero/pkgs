@@ -41,6 +41,44 @@ def test_three_d_no_fast_scalar_array_lane_preserves_direction_and_missing() -> 
         )
 
 
+def test_similarity_and_shortest_line_normalize_nullable_iterable_operands() -> None:
+    point = gm.Point(1.0, 1.0)
+    reference = gm.Point(3.0, 1.0)
+    line = gm.LineString([(0.0, 0.0), (2.0, 0.0)])
+
+    def batches(values):
+        return (
+            lambda: values,
+            lambda: iter(values),
+            lambda: np.asarray(values, dtype=object),
+        )
+
+    for batch in batches([point, None]):
+        for reverse in (False, True):
+            left = (lambda: reference) if reverse else batch
+            right = batch if reverse else (lambda: reference)
+            result = gm.shortest_line(left(), right())
+            assert result.to_wkt() == [
+                'LINESTRING (3 1, 1 1)' if reverse else 'LINESTRING (1 1, 3 1)',
+                None,
+            ]
+            np.testing.assert_allclose(
+                gm.hausdorff_distance(left(), right()),
+                [2.0, np.nan],
+                equal_nan=True,
+            )
+
+    for batch in batches([line, None]):
+        for reverse in (False, True):
+            left = (lambda: line) if reverse else batch
+            right = batch if reverse else (lambda: line)
+            np.testing.assert_allclose(
+                gm.frechet_distance(left(), right()),
+                [0.0, np.nan],
+                equal_nan=True,
+            )
+
+
 def test_geographic_filled_metric_results_are_order_independent() -> None:
     polygon = gm.box(0.0, 0.0, 1.0, 1.0, crs=4326)
     point = gm.Point(0.5, 0.5, crs=4326)

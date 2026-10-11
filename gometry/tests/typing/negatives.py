@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 
     # Unknown keyword arguments are rejected.
     POINT.buffer(1.0, wrong_kw=2)  # type: ignore[call-arg]
+    gm.from_geojson(POINT.__geo_interface__, features=True)  # type: ignore[arg-type]
 
     # Algorithm options are available only for the matching literal method.
     POINT.triangulate(method='delaunay', min_angle=10.0)  # type: ignore[call-overload]
@@ -175,6 +176,9 @@ if TYPE_CHECKING:
     _dense_overlay: gm.GeometryArray[gm.Geometry] = gm.intersection(
         gm.GeometryArray([POINT, None]), POLY
     )  # type: ignore[assignment]
+    _wrong_union_rows: list[gm.Geometry | int] = [POINT, 1]
+    gm.union(_wrong_union_rows, POINT)  # type: ignore[arg-type]
+    POINTS.concat(other=POINTS)  # type: ignore[call-overload]
 
     def _reject_unchecked_nullable_group(
         groups: gm.Groups[gm.GeometryArray[gm.Point | None]],

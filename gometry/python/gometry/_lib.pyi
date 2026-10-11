@@ -387,6 +387,26 @@ _GeoJsonScalar: TypeAlias = (
     str | bytes | bytearray | memoryview | Mapping[str, Any] | SupportsGeoInterface
 )
 
+_GeoJsonFeatureRow: TypeAlias = (
+    str | Buffer | GeoJsonFeatureNonNull | SupportsGeoInterface[GeoJsonFeatureNonNull]
+)
+_GeoJsonFeatureBatch: TypeAlias = (
+    Sequence[_GeoJsonFeatureRow | None]
+    | Iterator[_GeoJsonFeatureRow | None]
+    | Iterable[
+        GeoJsonFeatureNonNull | SupportsGeoInterface[GeoJsonFeatureNonNull] | None
+    ]
+    | np.ndarray[Any, np.dtype[Any]]
+)
+_GeoJsonFeatureInput: TypeAlias = (
+    str
+    | Buffer
+    | GeoJsonFeatureNonNull
+    | GeoJsonFeatureCollection
+    | SupportsGeoInterface[GeoJsonFeatureNonNull]
+    | _GeoJsonFeatureBatch
+)
+
 # One geometry-like row accepted by the canonical collection-ingest boundary.
 # Strings deliberately stay out: text has an ambiguous WKT/GeoJSON grammar and
 # therefore goes through ``from_wkt`` / ``from_geojson`` explicitly.
@@ -8006,25 +8026,30 @@ class GeometryArray(Sequence[_GeometryT_co]):
     def concat(
         self: GeometryArray[_GeometryT_co],
         other: GeometryArray[_GeometryOtherT],
+        /,
         *others: GeometryArray[_GeometryOtherT],
     ) -> GeometryArray[_GeometryT_co | _GeometryOtherT]: ...
     @overload
     def concat(
         self: GeometryArray[_GeometryT_co],
         other: GeometryArray[_GeometryOtherT | None],
+        /,
         *others: GeometryArray[_GeometryOtherT | None],
     ) -> GeometryArray[_GeometryT_co | _GeometryOtherT | None]: ...
     @overload
     def concat(
         self: GeometryArray[_GeometryT_co],
     ) -> GeometryArray[_GeometryT_co]:
-        """Concatenate one or more arrays sharing this array's CRS and epoch.
+        """Concatenate zero or more arrays sharing this array's CRS and epoch.
+        With no arrays, return this array.
 
         Parameters
         ----------
-        other, *others : GeometryArray
-            Arrays to append in order; each must share this array's CRS and
-            epoch. The zero-argument form omits both names and returns this array.
+        other : GeometryArray
+            First array to append; it must share this array's CRS and epoch.
+        others : GeometryArray
+            Additional arrays to append in order; each must share this array's
+            CRS and epoch.
 
         Returns
         -------
@@ -17198,26 +17223,38 @@ def length_3d(
 def snap(geom: _GeometryT, reference: Geometry, tolerance: float) -> _GeometryT: ...
 @overload
 def snap(
-    geom: GeometryArray[_GeometryT],
-    reference: Geometry | GeometryArray[_GeometryOtherT],
+    geom: MultiPoint,
+    reference: _GeometryBatch[_GeometryOtherT],
+    tolerance: FloatInput,
+) -> GeometryArray[MultiPoint]: ...
+@overload
+def snap(
+    geom: MultiPoint,
+    reference: _GeometryBatch[_GeometryOtherT | None],
+    tolerance: FloatInput,
+) -> GeometryArray[MultiPoint | None]: ...
+@overload
+def snap(
+    geom: _GeometryBatch[_GeometryT],
+    reference: Geometry | _GeometryBatch[_GeometryOtherT],
     tolerance: FloatInput,
 ) -> GeometryArray[_GeometryT]: ...
 @overload
 def snap(
-    geom: GeometryArray[_GeometryT | None],
-    reference: Geometry | GeometryArray[_GeometryOtherT | None],
+    geom: _GeometryBatch[_GeometryT | None],
+    reference: Geometry | _GeometryBatch[_GeometryOtherT | None],
     tolerance: FloatInput,
 ) -> GeometryArray[_GeometryT | None]: ...
 @overload
 def snap(
     geom: _GeometryT,
-    reference: GeometryArray[_GeometryOtherT],
+    reference: _GeometryBatch[_GeometryOtherT],
     tolerance: FloatInput,
 ) -> GeometryArray[_GeometryT]: ...
 @overload
 def snap(
     geom: _GeometryT,
-    reference: GeometryArray[_GeometryOtherT | None],
+    reference: _GeometryBatch[_GeometryOtherT | None],
     tolerance: FloatInput,
 ) -> GeometryArray[_GeometryT | None]: ...
 @overload
@@ -17251,9 +17288,9 @@ def snap(
 
     Parameters
     ----------
-    geom : Geometry or GeometryArray
-        Geometry whose vertices are moved.
-    reference : Geometry or GeometryArray
+    geom : Geometry, GeometryArray, or iterable of Geometry or None
+        Geometry whose vertices are moved. Missing rows remain missing.
+    reference : Geometry, GeometryArray, or iterable of Geometry or None
         Target geometry to snap onto.
     tolerance : float or sequence of float
         Maximum finite non-negative snap distance in coordinate space:
@@ -17263,7 +17300,7 @@ def snap(
     Returns
     -------
     Geometry or GeometryArray
-        Snapped result(s).
+        Snapped result(s), with missing rows preserved.
 
     Raises
     ------
@@ -19805,83 +19842,83 @@ def intersection(
 ) -> MultiPoint | Point: ...
 @overload
 def intersection(
-    left: GeometryArray[Point],
-    right: Geometry | GeometryArray[_GeometryOtherT],
-) -> GeometryArray[Point]: ...
-@overload
-def intersection(
-    left: Point,
-    right: GeometryArray[_GeometryOtherT],
-) -> GeometryArray[Point]: ...
-@overload
-def intersection(
-    left: GeometryArray[_GeometryT],
-    right: Point | GeometryArray[Point],
-) -> GeometryArray[Point]: ...
-@overload
-def intersection(
-    left: Geometry,
-    right: GeometryArray[Point],
-) -> GeometryArray[Point]: ...
-@overload
-def intersection(
-    left: GeometryArray[MultiPoint],
-    right: Geometry | GeometryArray[_GeometryOtherT],
+    left: MultiPoint,
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[MultiPoint | Point]: ...
 @overload
 def intersection(
     left: MultiPoint,
-    right: GeometryArray[_GeometryOtherT],
+    right: _GeometryBatch[_GeometryOtherT | None],
+) -> GeometryArray[MultiPoint | Point | None]: ...
+@overload
+def intersection(
+    left: _GeometryBatch[Point],
+    right: Geometry | _GeometryBatch[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: Point,
+    right: _GeometryBatch[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: _GeometryBatch[_GeometryT],
+    right: Point | _GeometryBatch[Point],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: Geometry,
+    right: _GeometryBatch[Point],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: _GeometryBatch[MultiPoint],
+    right: Geometry | _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[MultiPoint | Point]: ...
 @overload
 def intersection(
-    left: GeometryArray[_GeometryT],
-    right: MultiPoint | GeometryArray[MultiPoint],
+    left: _GeometryBatch[_GeometryT],
+    right: MultiPoint | _GeometryBatch[MultiPoint],
 ) -> GeometryArray[MultiPoint | Point]: ...
 @overload
 def intersection(
     left: Geometry,
-    right: GeometryArray[MultiPoint],
+    right: _GeometryBatch[MultiPoint],
 ) -> GeometryArray[MultiPoint | Point]: ...
 @overload
 def intersection(
-    left: GeometryArray[Point | None],
-    right: Geometry | GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[Point | None],
+    right: Geometry | _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[Point | None]: ...
 @overload
 def intersection(
     left: Point,
-    right: GeometryArray[_GeometryOtherT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[Point | None]: ...
 @overload
 def intersection(
-    left: GeometryArray[_GeometryT | None],
-    right: Point | GeometryArray[Point | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: Point | _GeometryBatch[Point | None],
 ) -> GeometryArray[Point | None]: ...
 @overload
 def intersection(
     left: Geometry,
-    right: GeometryArray[Point | None],
+    right: _GeometryBatch[Point | None],
 ) -> GeometryArray[Point | None]: ...
 @overload
 def intersection(
-    left: GeometryArray[MultiPoint | None],
-    right: Geometry | GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[MultiPoint | None],
+    right: Geometry | _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[MultiPoint | Point | None]: ...
 @overload
 def intersection(
-    left: MultiPoint,
-    right: GeometryArray[_GeometryOtherT | None],
-) -> GeometryArray[MultiPoint | Point | None]: ...
-@overload
-def intersection(
-    left: GeometryArray[_GeometryT | None],
-    right: MultiPoint | GeometryArray[MultiPoint | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: MultiPoint | _GeometryBatch[MultiPoint | None],
 ) -> GeometryArray[MultiPoint | Point | None]: ...
 @overload
 def intersection(
     left: Geometry,
-    right: GeometryArray[MultiPoint | None],
+    right: _GeometryBatch[MultiPoint | None],
 ) -> GeometryArray[MultiPoint | Point | None]: ...
 @overload
 def intersection(
@@ -19891,32 +19928,32 @@ def intersection(
 @overload
 def intersection(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def intersection(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
 ) -> GeometryArray[Geometry]: ...
 @overload
 def intersection(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def intersection(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def intersection(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def intersection(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def intersection(
@@ -19933,14 +19970,14 @@ def intersection(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and batch operands broadcast pairwise; batch lengths must match.
+        Operands must share CRS and coordinate epoch.
 
     Returns
     -------
     Geometry or GeometryArray
-        One result per input pair.
+        One result per input pair; missing rows remain missing.
 
     Raises
     ------
@@ -19967,23 +20004,23 @@ def union(
 ) -> Point | MultiPoint: ...
 @overload
 def union(
-    left: GeometryArray[Point | MultiPoint],
-    right: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+    left: _GeometryBatch[Point | MultiPoint],
+    right: Point | MultiPoint | _GeometryBatch[Point | MultiPoint],
 ) -> GeometryArray[Point | MultiPoint]: ...
 @overload
 def union(
     left: Point | MultiPoint,
-    right: GeometryArray[Point | MultiPoint],
+    right: _GeometryBatch[Point | MultiPoint],
 ) -> GeometryArray[Point | MultiPoint]: ...
 @overload
 def union(
-    left: GeometryArray[Point | MultiPoint | None],
-    right: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+    left: _GeometryBatch[Point | MultiPoint | None],
+    right: Point | MultiPoint | _GeometryBatch[Point | MultiPoint | None],
 ) -> GeometryArray[Point | MultiPoint | None]: ...
 @overload
 def union(
     left: Point | MultiPoint,
-    right: GeometryArray[Point | MultiPoint | None],
+    right: _GeometryBatch[Point | MultiPoint | None],
 ) -> GeometryArray[Point | MultiPoint | None]: ...
 @overload
 def union(
@@ -19993,32 +20030,32 @@ def union(
 @overload
 def union(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def union(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
 ) -> GeometryArray[Geometry]: ...
 @overload
 def union(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def union(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def union(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def union(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def union(
@@ -20033,14 +20070,14 @@ def union(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and batch operands broadcast pairwise; batch lengths must match.
+        Operands must share CRS and coordinate epoch.
 
     Returns
     -------
     Geometry or GeometryArray
-        One result per input pair.
+        One result per input pair; missing rows remain missing.
 
     Raises
     ------
@@ -20075,43 +20112,43 @@ def difference(
 ) -> MultiPoint | Point: ...
 @overload
 def difference(
-    left: GeometryArray[Point],
-    right: Geometry | GeometryArray[_GeometryOtherT],
-) -> GeometryArray[Point]: ...
-@overload
-def difference(
-    left: Point,
-    right: GeometryArray[_GeometryOtherT],
-) -> GeometryArray[Point]: ...
-@overload
-def difference(
-    left: GeometryArray[MultiPoint],
-    right: Geometry | GeometryArray[_GeometryOtherT],
+    left: MultiPoint,
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[MultiPoint | Point]: ...
 @overload
 def difference(
     left: MultiPoint,
-    right: GeometryArray[_GeometryOtherT],
-) -> GeometryArray[MultiPoint | Point]: ...
-@overload
-def difference(
-    left: GeometryArray[Point | None],
-    right: Geometry | GeometryArray[_GeometryOtherT | None],
-) -> GeometryArray[Point | None]: ...
-@overload
-def difference(
-    left: Point,
-    right: GeometryArray[_GeometryOtherT | None],
-) -> GeometryArray[Point | None]: ...
-@overload
-def difference(
-    left: GeometryArray[MultiPoint | None],
-    right: Geometry | GeometryArray[_GeometryOtherT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[MultiPoint | Point | None]: ...
 @overload
 def difference(
-    left: MultiPoint,
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[Point],
+    right: Geometry | _GeometryBatch[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def difference(
+    left: Point,
+    right: _GeometryBatch[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def difference(
+    left: _GeometryBatch[MultiPoint],
+    right: Geometry | _GeometryBatch[_GeometryOtherT],
+) -> GeometryArray[MultiPoint | Point]: ...
+@overload
+def difference(
+    left: _GeometryBatch[Point | None],
+    right: Geometry | _GeometryBatch[_GeometryOtherT | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def difference(
+    left: Point,
+    right: _GeometryBatch[_GeometryOtherT | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def difference(
+    left: _GeometryBatch[MultiPoint | None],
+    right: Geometry | _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[MultiPoint | Point | None]: ...
 @overload
 def difference(
@@ -20121,32 +20158,32 @@ def difference(
 @overload
 def difference(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def difference(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
 ) -> GeometryArray[Geometry]: ...
 @overload
 def difference(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def difference(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def difference(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def difference(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def difference(
@@ -20161,15 +20198,15 @@ def difference(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
         Geometry to subtract from (``left``) and geometry subtracted
-        (``right``). Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+        (``right``). Scalar and batch operands broadcast pairwise; batch
+        lengths must match. Operands must share CRS and coordinate epoch.
 
     Returns
     -------
     Geometry or GeometryArray
-        One result per input pair.
+        One result per input pair; missing rows remain missing.
 
     Raises
     ------
@@ -20196,23 +20233,23 @@ def symmetric_difference(
 ) -> Point | MultiPoint: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray[Point | MultiPoint],
-    right: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+    left: _GeometryBatch[Point | MultiPoint],
+    right: Point | MultiPoint | _GeometryBatch[Point | MultiPoint],
 ) -> GeometryArray[Point | MultiPoint]: ...
 @overload
 def symmetric_difference(
     left: Point | MultiPoint,
-    right: GeometryArray[Point | MultiPoint],
+    right: _GeometryBatch[Point | MultiPoint],
 ) -> GeometryArray[Point | MultiPoint]: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray[Point | MultiPoint | None],
-    right: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+    left: _GeometryBatch[Point | MultiPoint | None],
+    right: Point | MultiPoint | _GeometryBatch[Point | MultiPoint | None],
 ) -> GeometryArray[Point | MultiPoint | None]: ...
 @overload
 def symmetric_difference(
     left: Point | MultiPoint,
-    right: GeometryArray[Point | MultiPoint | None],
+    right: _GeometryBatch[Point | MultiPoint | None],
 ) -> GeometryArray[Point | MultiPoint | None]: ...
 @overload
 def symmetric_difference(
@@ -20222,32 +20259,32 @@ def symmetric_difference(
 @overload
 def symmetric_difference(
     left: Geometry,
-    right: GeometryArray[_GeometryT],
+    right: _GeometryBatch[_GeometryT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray[_GeometryT],
+    left: _GeometryBatch[_GeometryT],
     right: Geometry,
 ) -> GeometryArray[Geometry]: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray[_GeometryT],
-    right: GeometryArray[_GeometryOtherT],
+    left: _GeometryBatch[_GeometryT],
+    right: _GeometryBatch[_GeometryOtherT],
 ) -> GeometryArray[Geometry]: ...
 @overload
 def symmetric_difference(
     left: Geometry,
-    right: GeometryArray[_GeometryT | None],
+    right: _GeometryBatch[_GeometryT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray[_GeometryT | None],
+    left: _GeometryBatch[_GeometryT | None],
     right: Geometry,
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def symmetric_difference(
-    left: GeometryArray[_GeometryT | None],
-    right: GeometryArray[_GeometryOtherT | None],
+    left: _GeometryBatch[_GeometryT | None],
+    right: _GeometryBatch[_GeometryOtherT | None],
 ) -> GeometryArray[Geometry | None]: ...
 @overload
 def symmetric_difference(
@@ -20263,14 +20300,14 @@ def symmetric_difference(
 
     Parameters
     ----------
-    left, right : Geometry or GeometryArray
-        Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-        coordinate epoch.
+    left, right : Geometry, GeometryArray, or iterable of Geometry or None
+        Scalar and batch operands broadcast pairwise; batch lengths must match.
+        Operands must share CRS and coordinate epoch.
 
     Returns
     -------
     Geometry or GeometryArray
-        One result per input pair.
+        One result per input pair; missing rows remain missing.
 
     Raises
     ------
@@ -21499,12 +21536,11 @@ def from_geojson(
 ) -> Geometry | GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
-    data: _GeoJsonScalar
+    data: _GeoJsonFeatureInput
     | PandasSeries
     | PolarsSeries
     | PyArrowArray
-    | PyArrowChunkedArray
-    | Iterable[_GeoJsonScalar | None],
+    | PyArrowChunkedArray,
     *,
     features: Literal[True],
     crs: CrsInput | None = 'OGC:CRS84',
@@ -21512,12 +21548,11 @@ def from_geojson(
 ) -> Features: ...
 @overload
 def from_geojson(
-    data: _GeoJsonScalar
+    data: _GeoJsonFeatureInput
     | PandasSeries
     | PolarsSeries
     | PyArrowArray
-    | PyArrowChunkedArray
-    | Iterable[_GeoJsonScalar | None],
+    | PyArrowChunkedArray,
     *,
     features: bool,
     crs: CrsInput | None = 'OGC:CRS84',
@@ -21547,7 +21582,9 @@ def from_geojson(
 
     features : bool, default varies by call form
         Preserve Feature properties and IDs in a ``Features`` result. Geometry-
-        only inputs are not valid when this is ``True``.
+        only inputs are not valid when this is ``True``. Feature row iterables
+        accept Feature mappings or serialized Feature text/bytes; ``None`` rows
+        retain alignment with a missing geometry, missing properties, and no ID.
 
     crs : CRS-like, default 'OGC:CRS84'
         CRS to attach. `geojson` coordinates are WGS84 by specification, so
@@ -23586,7 +23623,11 @@ def pluscode_polygon(code: str) -> Polygon: ...
 @overload
 def pluscode_polygon(
     code: Iterable[str],
-) -> GeometryArray[Polygon]:
+) -> GeometryArray[Polygon]: ...
+@overload
+def pluscode_polygon(
+    code: Iterable[str | None],
+) -> GeometryArray[Polygon | None]:
     """Return the rectangular cell a plus code covers, as a WGS84 ``Polygon``.
 
     Parameters
@@ -23598,6 +23639,7 @@ def pluscode_polygon(
     -------
     Polygon or GeometryArray
         The code cell(s), CRS ``OGC:CRS84``.
+        Missing code rows produce missing polygons.
 
     Raises
     ------
@@ -23646,7 +23688,15 @@ def pluscode_shorten(
 @overload
 def pluscode_shorten(
     code: Iterable[str], reference: FloatInput, lat: FloatInput
-) -> list[str]:
+) -> list[str]: ...
+@overload
+def pluscode_shorten(
+    code: Iterable[str | None], reference: Point, lat: None = None
+) -> list[str | None]: ...
+@overload
+def pluscode_shorten(
+    code: Iterable[str | None], reference: FloatInput, lat: FloatInput
+) -> list[str | None]:
     """Shorten a full plus code relative to a nearby reference point.
 
     Removes two to six leading digits that the reference location implies;
@@ -23654,7 +23704,7 @@ def pluscode_shorten(
 
     Parameters
     ----------
-    code : str or iterable of str
+    code : str or iterable of str or None
         A full, unpadded plus code with at least 6 digits.
     reference : Point or float
         A CRS-aware reference point or longitude column.
@@ -23664,8 +23714,9 @@ def pluscode_shorten(
 
     Returns
     -------
-    str or list of str
+    str or list of str or None
         The shortened code(s) — or the original when the reference is too far.
+        Missing code rows produce ``None`` entries.
 
     Raises
     ------
@@ -23720,12 +23771,20 @@ def pluscode_recover(
 @overload
 def pluscode_recover(
     code: Iterable[str], reference: FloatInput, lat: FloatInput
-) -> list[str]:
+) -> list[str]: ...
+@overload
+def pluscode_recover(
+    code: Iterable[str | None], reference: Point, lat: None = None
+) -> list[str | None]: ...
+@overload
+def pluscode_recover(
+    code: Iterable[str | None], reference: FloatInput, lat: FloatInput
+) -> list[str | None]:
     """Recover the nearest full plus code from a shortened one.
 
     Parameters
     ----------
-    code : str or iterable of str
+    code : str or iterable of str or None
         A short plus code (e.g. ``'9G8F+6X'``); a full code passes through
         normalized.
     reference : Point or float
@@ -23736,8 +23795,9 @@ def pluscode_recover(
 
     Returns
     -------
-    str or list of str
+    str or list of str or None
         The full plus code(s) closest to the reference.
+        Missing code rows produce ``None`` entries.
 
     Raises
     ------
@@ -23856,6 +23916,14 @@ def osm_shortlink_location(
     npt.NDArray[np.float64],
     npt.NDArray[np.float64],
     np.ndarray[tuple[int], np.dtype[np.int64]],
+]: ...
+@overload
+def osm_shortlink_location(
+    code: Iterable[str | None],
+) -> tuple[
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    np.ndarray[tuple[int], np.dtype[np.int64]],
 ]:
     """Parse an OSM shortlink code back into its location and zoom.
 
@@ -23863,14 +23931,15 @@ def osm_shortlink_location(
 
     Parameters
     ----------
-    code : str or iterable of str
+    code : str or iterable of str or None
         The shortlink code(s) (the part after ``osm.org/go/``).
 
     Returns
     -------
     tuple
         Scalar input returns ``(lon, lat, zoom)``. Bulk input returns
-        ``(lon_array, lat_array, zoom_array)``.
+        ``(lon_array, lat_array, zoom_array)``. Missing rows retain their
+        position with NaN longitude/latitude and zoom ``-1``.
 
     Raises
     ------

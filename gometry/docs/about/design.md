@@ -231,13 +231,15 @@ scalar encoder.
 Global function families use the prefixes `crs_`, `h3_`, `s2_`, `geohash_`,
 `tile_`, `pluscode_`, and `osm_shortlink_`. Each grid family has free functions
 for covers, cell construction, and bounding-cell lookup such as
-[`h3_bounding_cell`][gometry.h3_bounding_cell], plus set algebra such as
+[`h3_bounding_cell`][gometry.h3_bounding_cell], and cell-set algebra such as
+[`h3_union`][gometry.h3_union], [`s2_intersection`][gometry.s2_intersection],
+and [`tile_difference`][gometry.tile_difference]. Geometry overlays such as
 [`union`][gometry.union], [`intersection`][gometry.intersection], and
-[`difference`][gometry.difference], while operations on one cell or
-[`CellArray`][gometry.CellArray] remain on that typed value. Grid terms retain
-their domain meanings: H3 uses `resolution`, S2 uses `level`, geohash uses
-`precision`, and tiles use `zoom`. These prefixes group functions in `gm.`
-completion and alphabetical reference lists.
+[`difference`][gometry.difference] operate on geometries, not cells. Operations
+on one cell or [`CellArray`][gometry.CellArray] remain on that typed value. Grid
+terms retain their domain meanings: H3 uses `resolution`, S2 uses `level`,
+geohash uses `precision`, and tiles use `zoom`. These prefixes group functions
+in `gm.` completion and alphabetical reference lists.
 
 The four cell systems share the `cell`/`cells` operation shape, boundaries, set
 operations, and compact/uncompact behavior.
