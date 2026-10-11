@@ -9153,12 +9153,14 @@ impl PreparedProducerWitness {
                         })?;
                     let supported = matches!(
                         (recipe.use_kind, edge.kind),
-                        (SelectedUse::Curve, SourceEdgeKind::Line { .. })
-                            | (SelectedUse::Curve, SourceEdgeKind::Ring {
-                                kind: crate::geometry::RingKind::Collapsed,
-                                ..
-                            },)
-                            | (SelectedUse::ArealBoundaryLine, SourceEdgeKind::Ring { .. })
+                        (
+                            SelectedUse::Curve,
+                            SourceEdgeKind::Line { .. }
+                                | SourceEdgeKind::Ring {
+                                    kind: crate::geometry::RingKind::Collapsed,
+                                    ..
+                                },
+                        ) | (SelectedUse::ArealBoundaryLine, SourceEdgeKind::Ring { .. })
                     );
                     if !supported {
                         return Err(GeometryErrorKind::Invalid(
