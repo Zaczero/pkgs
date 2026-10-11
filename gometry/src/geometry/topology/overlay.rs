@@ -5050,65 +5050,86 @@ mod tests {
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
         let plan = build_q_plan(&topology, OverlayOp::Union)?;
-        let line_index = plan
+        let directed_ports = |step: LineStep| -> Result<[QPortId; 2]> {
+            let span = topology
+                .q
+                .spans
+                .get(step.span)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q curve path names an unknown span".into())
+                })?;
+            Ok(match step.from_endpoint {
+                SpanEndpoint::Start => span.ports,
+                SpanEndpoint::End => [span.ports[1], span.ports[0]],
+            })
+        };
+        let mut cut_join = None;
+        for (line_index, line_path) in plan
             .line_paths
             .iter()
-            .position(|line| line.origin == QLineOrigin::Curve)
-            .ok_or_else(|| GeometryErrorKind::Invalid("full-turn line path is missing".into()))?;
-        let line_path = plan
-            .line_paths
-            .get(line_index)
-            .ok_or_else(|| GeometryErrorKind::Invalid("full-turn line path is unknown".into()))?;
-
-        let mut cut_join = None;
-        for pair in line_path.path.array_windows::<2>() {
-            let [left, right] = pair;
-            let left_span = topology
-                .q
-                .spans
-                .get(left.span)
-                .ok_or_else(|| GeometryErrorKind::Invalid("left Q span is unknown".into()))?;
-            let right_span = topology
-                .q
-                .spans
-                .get(right.span)
-                .ok_or_else(|| GeometryErrorKind::Invalid("right Q span is unknown".into()))?;
-            let left_to = match left.from_endpoint {
-                SpanEndpoint::Start => left_span.ports[1],
-                SpanEndpoint::End => left_span.ports[0],
+            .enumerate()
+            .filter(|(_, line)| line.origin == QLineOrigin::Curve)
+        {
+            let (Some(first_step), Some(last_step)) = (
+                line_path.path.first().copied(),
+                line_path.path.last().copied(),
+            ) else {
+                continue;
             };
-            let right_from = match right.from_endpoint {
-                SpanEndpoint::Start => right_span.ports[0],
-                SpanEndpoint::End => right_span.ports[1],
-            };
-            let left_port = topology
+            let first_from = directed_ports(first_step)?[0];
+            let last_to = directed_ports(last_step)?[1];
+            let first_node = topology
                 .q
                 .ports
-                .get(left_to.0 as usize)
-                .ok_or_else(|| GeometryErrorKind::Invalid("left cut port is unknown".into()))?;
-            let right_port =
-                topology.q.ports.get(right_from.0 as usize).ok_or_else(|| {
+                .get(first_from.0 as usize)
+                .ok_or_else(|| GeometryErrorKind::Invalid("curve start port is unknown".into()))?
+                .node;
+            let last_node = topology
+                .q
+                .ports
+                .get(last_to.0 as usize)
+                .ok_or_else(|| GeometryErrorKind::Invalid("curve end port is unknown".into()))?
+                .node;
+            let line_closed = first_node == last_node;
+            for (step_index, &left) in line_path.path.iter().enumerate() {
+                let right = match line_path.path.get(step_index + 1).copied() {
+                    Some(right) => right,
+                    None if line_closed => *line_path.path.first().ok_or_else(|| {
+                        GeometryErrorKind::Invalid("closed curve path is empty".into())
+                    })?,
+                    None => continue,
+                };
+                let [left_from, left_to] = directed_ports(left)?;
+                let [right_from, _] = directed_ports(right)?;
+                let left_span =
+                    topology.q.spans.get(left.span).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("left Q span is unknown".into())
+                    })?;
+                let right_span =
+                    topology.q.spans.get(right.span).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("right Q span is unknown".into())
+                    })?;
+                let left_port =
+                    topology.q.ports.get(left_to.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("left cut port is unknown".into())
+                    })?;
+                let right_port = topology.q.ports.get(right_from.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("right cut port is unknown".into())
                 })?;
-            if left_port.cut && right_port.cut && left_port.node == right_port.node {
+                if !left_port.cut || !right_port.cut || left_port.node != right_port.node {
+                    continue;
+                }
                 let left_owner = left_span.owners.get(left.owner).ok_or_else(|| {
                     GeometryErrorKind::Invalid("left cut span has no source owner".into())
                 })?;
                 let right_owner = right_span.owners.get(right.owner).ok_or_else(|| {
                     GeometryErrorKind::Invalid("right cut span has no source owner".into())
                 })?;
-                assert_eq!(left_owner.source_edge, right_owner.source_edge);
-                let left_from = match left.from_endpoint {
-                    SpanEndpoint::Start => left_span.ports[0],
-                    SpanEndpoint::End => left_span.ports[1],
-                };
-                let right_from_port = match right.from_endpoint {
-                    SpanEndpoint::Start => right_span.ports[0],
-                    SpanEndpoint::End => right_span.ports[1],
-                };
+                if left_owner.source_edge != right_owner.source_edge {
+                    continue;
+                }
                 let left_forward = (left_from == left_span.ports[0]) != left_owner.reversed;
-                let right_forward =
-                    (right_from_port == right_span.ports[0]) != right_owner.reversed;
+                let right_forward = (right_from == right_span.ports[0]) != right_owner.reversed;
                 let left_end = if left_forward {
                     &left_owner.source_range.end
                 } else {
@@ -5119,14 +5140,27 @@ mod tests {
                 } else {
                     &right_owner.source_range.end
                 };
-                assert_eq!(left_end, right_start);
-                cut_join = Some((left_owner.source_edge, left_end.clone()));
+                if left_end != right_start {
+                    continue;
+                }
+                cut_join = Some((
+                    line_index,
+                    line_closed,
+                    left_owner.source_edge,
+                    left_end.clone(),
+                ));
+                break;
+            }
+            if cut_join.is_some() {
                 break;
             }
         }
-        let (source_edge, source_parameter) = cut_join.ok_or_else(|| {
-            GeometryErrorKind::Invalid("full-turn line has no adjacent synthetic cut ports".into())
-        })?;
+        let (line_index, line_closed, source_edge, source_parameter) =
+            cut_join.ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "curve paths have no adjacent or closure synthetic cut ports".into(),
+                )
+            })?;
 
         let walk = plan
             .fragment_recipes
@@ -5135,6 +5169,7 @@ mod tests {
             .find(|walk| walk.owner == super::super::emission::RecipeWalkOwner::Line(line_index))
             .ok_or_else(|| GeometryErrorKind::Invalid("full-turn recipe walk is missing".into()))?;
         let mut cut_recipe = None;
+        let mut recipe_ranges = Vec::new();
         for &recipe_id in &walk.fragments {
             let recipe = plan
                 .fragment_recipes
@@ -5149,17 +5184,34 @@ mod tests {
             if !recipe.ranges.is_empty() {
                 assert_eq!(recipe_sources.len(), 1);
             }
-            if let Some(pair) = recipe.ranges.array_windows::<2>().find(|pair| {
-                pair[0].source_edge == source_edge
-                    && pair[1].source_edge == source_edge
-                    && pair[0].range.end == source_parameter
-                    && pair[1].range.start == source_parameter
-            }) {
-                cut_recipe = Some((
-                    pair[0].producer_start.clone(),
-                    pair[0].producer_end.clone(),
-                    pair[1].producer_end.clone(),
-                ));
+            recipe_ranges.extend(recipe.ranges.iter().map(|range| {
+                (
+                    range.source_edge,
+                    range.range.start.clone(),
+                    range.range.end.clone(),
+                    range.producer_start.clone(),
+                    range.producer_end.clone(),
+                )
+            }));
+        }
+        for index in 0..recipe_ranges.len() {
+            let left = recipe_ranges
+                .get(index)
+                .ok_or_else(|| GeometryErrorKind::Invalid("cut recipe range is unknown".into()))?;
+            let right = match recipe_ranges.get(index + 1) {
+                Some(right) => right,
+                None if line_closed => recipe_ranges.first().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("closed cut recipe has no range".into())
+                })?,
+                None => continue,
+            };
+            if left.0 == source_edge
+                && right.0 == source_edge
+                && left.2 == source_parameter
+                && right.1 == source_parameter
+            {
+                cut_recipe = Some((left.3.clone(), left.4.clone(), right.4.clone()));
+                break;
             }
         }
         let (start, middle, end) = cut_recipe.ok_or_else(|| {
