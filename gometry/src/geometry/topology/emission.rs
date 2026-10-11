@@ -3,7 +3,8 @@ use std::ops::Range;
 
 use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceRange, FallibleAvl, SourceEdgeId,
-    compare_quotient_keys, quotient_key_for_chart_position,
+    compare_quotient_keys, compare_quotient_keys_with_work, quotient_key_for_chart_position,
+    quotient_key_for_chart_position_with_work,
 };
 use super::overlay::QEmissionPlan;
 use super::q::{
@@ -13,7 +14,7 @@ use super::q::{
 use crate::error::{ResourceError, Result};
 use crate::geographic::{
     ChartPole, ComputedEdgeIntent, ComputedSampleOrdinates, ComputedVertexIntent, GeographicFrame,
-    publish_computed_chain_with_vertex_intents_and_samples,
+    Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::embedding_completion::{
     FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout,
@@ -1502,6 +1503,28 @@ pub(super) struct FragmentRecipe {
     pub(super) use_kind: SelectedUse,
 }
 
+#[derive(Clone, Copy)]
+enum EndpointSide {
+    Start,
+    End,
+}
+
+impl EndpointSide {
+    const fn index(self) -> usize {
+        match self {
+            Self::Start => 0,
+            Self::End => 1,
+        }
+    }
+
+    fn parameter(self) -> ExactRational {
+        match self {
+            Self::Start => ExactRational::zero(),
+            Self::End => ExactRational::one(),
+        }
+    }
+}
+
 pub(super) struct PublishedSample {
     pub(super) request_row: RequestRowId,
     pub(super) family: FeatureFamily,
@@ -1534,9 +1557,10 @@ impl FragmentRecipe {
     fn source_endpoint_record(
         &self,
         topology: &ExactGeographicTopology,
-        local_parameter: &ExactRational,
+        side: EndpointSide,
         work: &mut impl Work,
     ) -> Result<Option<Point>> {
+        let local_parameter = side.parameter();
         for range in &self.ranges {
             if !range.emitted {
                 continue;
@@ -1588,14 +1612,14 @@ impl FragmentRecipe {
                 continue;
             }
             let parameter = range.range.compose_with_work(&within, &within, work)?.start;
-            let endpoint = if parameter.is_zero() {
-                Some(0)
+            let root_side = if parameter.is_zero() {
+                Some(EndpointSide::Start)
             } else if parameter.is_one() {
-                Some(1)
+                Some(EndpointSide::End)
             } else {
                 None
             };
-            let Some(endpoint) = endpoint else {
+            let Some(root_side) = root_side else {
                 continue;
             };
             let edge = topology
@@ -1605,7 +1629,61 @@ impl FragmentRecipe {
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("publication endpoint source edge is unknown".into())
                 })?;
-            return Ok(edge.source.get(endpoint).copied());
+            let Some(record) = edge.source.get(root_side.index()).copied() else {
+                continue;
+            };
+            let port_id = *self.endpoints.get(side.index()).ok_or_else(|| {
+                GeometryErrorKind::Invalid("publication endpoint port is unknown".into())
+            })?;
+            let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("publication endpoint Q port is unknown".into())
+            })?;
+            let admitted_y = Latitude::from_admitted(topology.sources.frame, record.y).get();
+            let record_point = ExactChartPoint::from_rationals(
+                ExactRational::from_f64(record.x),
+                ExactRational::from_f64(admitted_y),
+            );
+            let record_key = quotient_key_for_chart_position_with_work(
+                topology.sources.frame,
+                &record_point,
+                work,
+            )?;
+            let port_key = quotient_key_for_chart_position_with_work(
+                topology.sources.frame,
+                &port.point,
+                work,
+            )?;
+            if !compare_quotient_keys_with_work(&record_key, &port_key, work)?.is_eq() {
+                continue;
+            }
+            if matches!(
+                &record_key,
+                ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole
+            ) {
+                let longitude = topology.sources.frame.longitude();
+                let (record_longitude, _) =
+                    crate::geometry::exact_arith::split_rational_native_site_with_work(
+                        &record_point.x,
+                        longitude.period(),
+                        longitude.half_period(),
+                        work,
+                    )?;
+                let (port_longitude, _) =
+                    crate::geometry::exact_arith::split_rational_native_site_with_work(
+                        &port.point.x,
+                        longitude.period(),
+                        longitude.half_period(),
+                        work,
+                    )?;
+                if !record_longitude
+                    .as_ref()
+                    .try_cmp_with_work(port_longitude.as_ref(), work)?
+                    .is_eq()
+                {
+                    continue;
+                }
+            }
+            return Ok(Some(record));
         }
         Ok(None)
     }
@@ -2718,9 +2796,9 @@ impl FragmentRecipes {
         for recipe in &self.values {
             work.charge(1)?;
             let source_start_record =
-                recipe.source_endpoint_record(topology, &ExactRational::zero(), work)?;
+                recipe.source_endpoint_record(topology, EndpointSide::Start, work)?;
             let source_end_record =
-                recipe.source_endpoint_record(topology, &ExactRational::one(), work)?;
+                recipe.source_endpoint_record(topology, EndpointSide::End, work)?;
             let start = match source_start_record {
                 Some(point) => point,
                 None => coordinates.point(topology, recipe.endpoints[0])?,
@@ -3303,6 +3381,289 @@ mod tests {
             latitude_start: ExactRational::from_f64(latitude_start),
             latitude_end: ExactRational::from_f64(latitude_end),
         }
+    }
+
+    fn endpoint_test_line(start: Point, end: Point) -> Result<Shape> {
+        Ok(Shape::LineString(crate::geometry::LineSeq::try_new(
+            CoordSeq::try_from_points(&[start, end])?,
+        )?))
+    }
+
+    fn endpoint_test_topology(shapes: &[Shape]) -> Result<ExactGeographicTopology> {
+        let frame = GeographicFrame::crs84();
+        let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
+    }
+
+    fn endpoint_test_recipe(
+        endpoints: [QPortId; 2],
+        source_edge: SourceEdgeId,
+        source_start: ExactRational,
+        source_end: ExactRational,
+    ) -> FragmentRecipe {
+        FragmentRecipe {
+            id: FragmentRecipeId(0),
+            endpoints,
+            ranges: vec![DirectedSourceRange {
+                source_edge,
+                range: ExactSourceRange {
+                    start: source_start,
+                    end: source_end,
+                },
+                emitted: true,
+                producer_start: ExactRational::zero(),
+                producer_end: ExactRational::one(),
+                endpoint_only: false,
+            }],
+            exact_displacement: ExactRational::from_f64(1.0),
+            use_kind: SelectedUse::Curve,
+        }
+    }
+
+    fn assert_source_record_bits(actual: Option<Point>, expected: Point) {
+        let actual = actual.expect("authenticated source endpoint must be retained");
+        assert_eq!(actual.x.to_bits(), expected.x.to_bits());
+        assert_eq!(actual.y.to_bits(), expected.y.to_bits());
+        assert_eq!(actual.z().map(f64::to_bits), expected.z().map(f64::to_bits));
+        assert_eq!(actual.m().map(f64::to_bits), expected.m().map(f64::to_bits));
+    }
+
+    #[test]
+    fn source_endpoint_record_uses_local_side_and_composed_root_side() -> Result<()> {
+        let start = Point::new_raw_axes(-0.0, -0.0, ZOrdinate(Some(-0.0)), MOrdinate(Some(17.0)));
+        let end = Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(23.0)), MOrdinate(Some(29.0)));
+        let topology = endpoint_test_topology(&[endpoint_test_line(start, end)?])?;
+        let edge =
+            topology.sources.edges.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("endpoint test edge is missing".into())
+            })?;
+        let ports = *topology
+            .q
+            .source_edge_ports
+            .get(edge.id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint test ports are missing".into()))?;
+        let zero = ExactRational::zero();
+        let one = ExactRational::one();
+        let mut work = Unmetered;
+
+        let forward = endpoint_test_recipe(ports, edge.id, zero.clone(), one.clone());
+        assert_source_record_bits(
+            forward.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            edge.source[0],
+        );
+        assert_source_record_bits(
+            forward.source_endpoint_record(&topology, EndpointSide::End, &mut work)?,
+            edge.source[1],
+        );
+
+        let reverse = endpoint_test_recipe([ports[1], ports[0]], edge.id, one, zero);
+        assert_source_record_bits(
+            reverse.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            edge.source[1],
+        );
+        assert_source_record_bits(
+            reverse.source_endpoint_record(&topology, EndpointSide::End, &mut work)?,
+            edge.source[0],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partial_root_endpoint_does_not_claim_an_authentic_source_record() -> Result<()> {
+        let topology = endpoint_test_topology(&[endpoint_test_line(
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(10.0, 0.0),
+        )?])?;
+        let edge =
+            topology.sources.edges.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("endpoint test edge is missing".into())
+            })?;
+        let ports = *topology
+            .q
+            .source_edge_ports
+            .get(edge.id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("endpoint test ports are missing".into()))?;
+        let recipe = endpoint_test_recipe(
+            ports,
+            edge.id,
+            ExactRational::from_f64(0.25),
+            ExactRational::from_f64(0.75),
+        );
+        let mut work = Unmetered;
+
+        assert!(
+            recipe
+                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)?
+                .is_none()
+        );
+        assert!(
+            recipe
+                .source_endpoint_record(&topology, EndpointSide::End, &mut work)?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_endpoint_record_accepts_each_matching_owner_orientation() -> Result<()> {
+        let first = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
+            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(11.0)), MOrdinate(Some(101.0))),
+            Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(12.0)), MOrdinate(Some(102.0))),
+        ])?)?;
+        let second = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
+            Point::new_raw_axes(10.0, 0.0, ZOrdinate(Some(21.0)), MOrdinate(Some(201.0))),
+            Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(22.0)), MOrdinate(Some(202.0))),
+        ])?)?;
+        let shape = Shape::multi_line_string(
+            crate::geometry::CoordinateAxes::new(
+                crate::geometry::HasZ(true),
+                crate::geometry::HasM(true),
+            ),
+            vec![first, second],
+        );
+        let topology = endpoint_test_topology(&[shape])?;
+        assert_eq!(topology.sources.edges.len(), 2);
+        let first_edge =
+            topology.sources.edges.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("first endpoint owner is missing".into())
+            })?;
+        let second_edge =
+            topology.sources.edges.get(1).ok_or_else(|| {
+                GeometryErrorKind::Invalid("second endpoint owner is missing".into())
+            })?;
+        let endpoints = *topology
+            .q
+            .source_edge_ports
+            .get(first_edge.id.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("first endpoint owner ports are missing".into())
+            })?;
+        let second_endpoints = *topology
+            .q
+            .source_edge_ports
+            .get(second_edge.id.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("second endpoint owner ports are missing".into())
+            })?;
+        assert_eq!(endpoints, [second_endpoints[1], second_endpoints[0]]);
+        let zero = ExactRational::zero();
+        let one = ExactRational::one();
+        let mut recipe = endpoint_test_recipe(endpoints, first_edge.id, zero.clone(), one.clone());
+        recipe.ranges.push(DirectedSourceRange {
+            source_edge: second_edge.id,
+            range: ExactSourceRange {
+                start: one,
+                end: zero,
+            },
+            emitted: true,
+            producer_start: ExactRational::zero(),
+            producer_end: ExactRational::one(),
+            endpoint_only: false,
+        });
+        let mut work = Unmetered;
+
+        assert_source_record_bits(
+            recipe.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            first_edge.source[0],
+        );
+        assert_source_record_bits(
+            recipe.source_endpoint_record(&topology, EndpointSide::End, &mut work)?,
+            first_edge.source[1],
+        );
+
+        recipe.ranges.swap(0, 1);
+        assert_source_record_bits(
+            recipe.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            second_edge.source[1],
+        );
+        assert_source_record_bits(
+            recipe.source_endpoint_record(&topology, EndpointSide::End, &mut work)?,
+            second_edge.source[0],
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_endpoint_record_admits_pole_latitude_but_keeps_its_spelling() -> Result<()> {
+        let frame = GeographicFrame::crs84();
+        let pole = frame.pole();
+        let first = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
+            Point::new_raw_axes(
+                17.0,
+                pole.next_up(),
+                ZOrdinate(Some(31.0)),
+                MOrdinate(Some(37.0)),
+            ),
+            Point::new_raw_axes(18.0, 80.0, ZOrdinate(Some(41.0)), MOrdinate(Some(43.0))),
+        ])?)?;
+        let second = crate::geometry::LineSeq::try_new(CoordSeq::try_from_points(&[
+            Point::new_raw_axes(19.0, pole, ZOrdinate(Some(47.0)), MOrdinate(Some(53.0))),
+            Point::new_raw_axes(20.0, 80.0, ZOrdinate(Some(59.0)), MOrdinate(Some(61.0))),
+        ])?)?;
+        let shape = Shape::multi_line_string(
+            crate::geometry::CoordinateAxes::new(
+                crate::geometry::HasZ(true),
+                crate::geometry::HasM(true),
+            ),
+            vec![first, second],
+        );
+        let topology = endpoint_test_topology(&[shape])?;
+        let first_edge = topology
+            .sources
+            .edges
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("first pole edge is missing".into()))?;
+        let second_edge = topology
+            .sources
+            .edges
+            .get(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("second pole edge is missing".into()))?;
+        let first_ports = *topology
+            .q
+            .source_edge_ports
+            .get(first_edge.id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("first pole ports are missing".into()))?;
+        let second_ports = *topology
+            .q
+            .source_edge_ports
+            .get(second_edge.id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("second pole ports are missing".into()))?;
+        let first_pole = topology
+            .q
+            .ports
+            .get(first_ports[0].0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("first pole port is missing".into()))?;
+        let second_pole = topology
+            .q
+            .ports
+            .get(second_ports[0].0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("second pole port is missing".into()))?;
+        assert_eq!(first_pole.node, second_pole.node);
+        assert_ne!(first_ports[0], second_ports[0]);
+        let mut work = Unmetered;
+        let matching = endpoint_test_recipe(
+            first_ports,
+            first_edge.id,
+            ExactRational::zero(),
+            ExactRational::one(),
+        );
+        assert_source_record_bits(
+            matching.source_endpoint_record(&topology, EndpointSide::Start, &mut work)?,
+            first_edge.source[0],
+        );
+        let wrong_pole_spelling = endpoint_test_recipe(
+            [second_ports[0], first_ports[1]],
+            first_edge.id,
+            ExactRational::zero(),
+            ExactRational::one(),
+        );
+        assert!(
+            wrong_pole_spelling
+                .source_endpoint_record(&topology, EndpointSide::Start, &mut work)?
+                .is_none()
+        );
+        Ok(())
     }
 
     #[test]
