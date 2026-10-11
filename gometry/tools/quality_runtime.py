@@ -92,6 +92,17 @@ def _quality_fixed_input_paths(root: Path) -> tuple[tuple[str, Path], ...]:
 
 
 def read_quality_receipt(root: Path) -> dict[str, Any]:
+    """Read a receipt that is well-formed and was built by the pinned Maturin."""
+    return _load_quality_receipt(root, current_toolchain=True)
+
+
+def _load_quality_receipt(root: Path, *, current_toolchain: bool) -> dict[str, Any]:
+    """Validate a receipt's shape; require the pinned Maturin only when asked.
+
+    Preparing a runtime reads the previous receipt to decide whether it can be
+    reused. A receipt from an older Maturin is stale, not malformed, and must
+    lead to a rebuild instead of a crash.
+    """
     path = quality_receipt_path(root)
     try:
         receipt = json.loads(path.read_text(encoding='utf-8'))
@@ -313,7 +324,12 @@ def read_quality_receipt(root: Path) -> dict[str, Any]:
         or not all(isinstance(argument, str) and argument for argument in command)
     ):
         raise AssertionError(f'quality runtime build command is malformed: {path}')
-    if build.get('maturin_version') != MATURIN_VERSION:
+    maturin_version = build.get('maturin_version')
+    if (
+        not isinstance(maturin_version, str)
+        or not maturin_version
+        or (current_toolchain and maturin_version != MATURIN_VERSION)
+    ):
         raise AssertionError(f'quality runtime Maturin version is malformed: {path}')
     wheel = receipt['wheel']
     if not isinstance(wheel, dict) or set(wheel) != {
@@ -333,7 +349,7 @@ def read_quality_receipt(root: Path) -> dict[str, Any]:
         or not isinstance(wheel.get('filename'), str)
         or Path(wheel['filename']).name != wheel['filename']
         or not wheel['filename'].endswith('.whl')
-        or wheel.get('generator') != f'maturin ({MATURIN_VERSION})'
+        or wheel.get('generator') != f'maturin ({maturin_version})'
         or not isinstance(wheel.get('extension_member'), str)
         or not wheel['extension_member'].startswith('gometry/')
         or '..' in Path(wheel['extension_member']).parts
@@ -784,7 +800,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
     receipt_path = quality_receipt_path(root)
     current_members = python_members
     if receipt_path.is_file():
-        previous = read_quality_receipt(root)
+        previous = _load_quality_receipt(root, current_toolchain=False)
         previous_build = previous['build']
         previous_source = previous['source']
         previous_wheel = previous['wheel']

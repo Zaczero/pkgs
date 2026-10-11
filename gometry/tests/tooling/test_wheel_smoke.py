@@ -2192,7 +2192,9 @@ def test_corrupt_quality_wheel_is_not_rebuilt(
         },
     }
     monkeypatch.setattr(runtime, 'quality_receipt_path', lambda _root: receipt_path)
-    monkeypatch.setattr(runtime, 'read_quality_receipt', lambda _root: previous)
+    monkeypatch.setattr(
+        runtime, '_load_quality_receipt', lambda _root, **_kwargs: previous
+    )
     monkeypatch.setattr(runtime, 'prepare_license_outputs', lambda _root: None)
     monkeypatch.setattr(
         runtime,
@@ -2419,6 +2421,22 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
         artifact_common._prepared_input_identity(refreshed_prepared['files'])
     )
     assert builds == 1
+
+    receipt_path = quality_runtime.quality_receipt_path(root)
+    stale = json.loads(receipt_path.read_text(encoding='utf-8'))
+    stale['build']['maturin_version'] = '1.0.0'
+    stale['wheel']['generator'] = 'maturin (1.0.0)'
+    receipt_path.write_text(json.dumps(stale), encoding='utf-8')
+    with pytest.raises(AssertionError, match='Maturin version is malformed'):
+        quality_runtime.read_quality_receipt(root)
+
+    rebuilt = quality_runtime.prepare_quality_runtime(
+        root,
+        scratch=root / 'target' / 'quality-runtime',
+    )
+    assert builds == 2
+    assert rebuilt['build']['maturin_version'] == artifact_common.MATURIN_VERSION
+    quality_runtime.read_quality_receipt(root)
 
 
 def _quality_package_members(
