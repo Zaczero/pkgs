@@ -9151,18 +9151,15 @@ impl PreparedProducerWitness {
                                 "producer linework root edge is unknown".into(),
                             )
                         })?;
-                    let supported = match (recipe.use_kind, edge.kind) {
-                        (SelectedUse::Curve, SourceEdgeKind::Line { .. }) => true,
-                        (
-                            SelectedUse::Curve,
-                            SourceEdgeKind::Ring {
+                    let supported = matches!(
+                        (recipe.use_kind, edge.kind),
+                        (SelectedUse::Curve, SourceEdgeKind::Line { .. })
+                            | (SelectedUse::Curve, SourceEdgeKind::Ring {
                                 kind: crate::geometry::RingKind::Collapsed,
                                 ..
-                            },
-                        ) => true,
-                        (SelectedUse::ArealBoundaryLine, SourceEdgeKind::Ring { .. }) => true,
-                        _ => false,
-                    };
+                            },)
+                            | (SelectedUse::ArealBoundaryLine, SourceEdgeKind::Ring { .. })
+                    );
                     if !supported {
                         return Err(GeometryErrorKind::Invalid(
                             "producer linework root has an incompatible selected use".into(),
