@@ -12,7 +12,9 @@ use crate::NonNegative;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartSpanGuard, GeographicFrame, GeographicInputs, PeriodicAxis};
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
-use crate::geometry::overlay::{ExactSourceInventory, SubdivisionPart, rect_polygon};
+use crate::geometry::overlay::{
+    ExactSourceInventory, SubdivisionPart, SubdivisionRootCatalog, rect_polygon,
+};
 use crate::geometry::topology::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
 use crate::geometry::{
     Bounds, Component, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
@@ -27,6 +29,7 @@ thread_local! {
     static SUBDIVISION_WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     static SOURCE_LINE_MEMBER_COUNT_CALLS: Cell<usize> = const { Cell::new(0) };
     static SUBDIVISION_LINE_MEMBER_RANGES: RefCell<Vec<(u64, usize, usize)>> = const { RefCell::new(Vec::new()) };
+    static SOURCE_ORDINATE_AXIS_SCANS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -57,6 +60,16 @@ fn subdivision_line_member_ranges() -> Vec<(u64, usize, usize)> {
 #[cfg(test)]
 fn subdivision_work() -> (usize, usize) {
     SUBDIVISION_WORK.with(Cell::get)
+}
+
+#[cfg(test)]
+fn reset_source_ordinate_axis_scans() {
+    SOURCE_ORDINATE_AXIS_SCANS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn source_ordinate_axis_scans() -> usize {
+    SOURCE_ORDINATE_AXIS_SCANS.with(Cell::get)
 }
 
 pub(crate) trait RdpEdgeSpanGuard: Copy {
@@ -327,57 +340,66 @@ pub(crate) const fn axis_halves(bounds: Bounds, split_x: bool, cut: f64) -> [Bou
 /// ordinates. The source values, rather than a rounded child, own this decision:
 /// a dense cluster beside a remote vertex therefore gets a finite complexity
 /// split without a second median retry.
-fn source_median_cut(
+fn source_median_cut<W: Work>(
     shape: &Shape,
     split_x: bool,
     bounds: Bounds,
     owner_coordinate_count: usize,
-) -> Option<f64> {
-    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count);
+    work: &mut W,
+) -> Result<Option<f64>> {
+    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count, work)?;
     let middle = ordinates.len() / 2;
     let (low, high) = if split_x {
         (bounds.minx(), bounds.maxx())
     } else {
         (bounds.miny(), bounds.maxy())
     };
-    ordinates
-        .windows(2)
-        .enumerate()
-        .filter_map(|(lower_index, pair)| {
-            let upper_index = lower_index.wrapping_add(1);
-            let lower = *pair.first().expect("median window has a lower ordinate");
-            let upper = *pair.last().expect("median window has an upper ordinate");
-            if lower >= upper {
-                return None;
+    let mut best: Option<(usize, usize, f64)> = None;
+    for (lower_index, pair) in ordinates.windows(2).enumerate() {
+        work.charge(1)?;
+        let upper_index = lower_index.wrapping_add(1);
+        let lower = *pair.first().expect("median window has a lower ordinate");
+        let upper = *pair.last().expect("median window has an upper ordinate");
+        let cut = f64::midpoint(lower, upper);
+        if low < cut && cut < high {
+            let candidate = (upper_index.abs_diff(middle), upper_index, cut);
+            if best
+                .is_none_or(|(distance, index, _)| (candidate.0, candidate.1) < (distance, index))
+            {
+                best = Some(candidate);
             }
-            let cut = f64::midpoint(lower, upper);
-            (low < cut && cut < high).then_some((upper_index.abs_diff(middle), upper_index, cut))
-        })
-        .min_by_key(|&(distance, index, _)| (distance, index))
-        .map(|(_, _, cut)| cut)
+        }
+    }
+    Ok(best.map(|(_, _, cut)| cut))
 }
 
-fn source_vertex_cut(
+fn source_vertex_cut<W: Work>(
     shape: &Shape,
     split_x: bool,
     bounds: Bounds,
     owner_coordinate_count: usize,
-) -> Option<f64> {
-    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count);
+    work: &mut W,
+) -> Result<Option<f64>> {
+    let ordinates = source_ordinates(shape, split_x, owner_coordinate_count, work)?;
     let middle = ordinates.len() / 2;
     let (low, high) = if split_x {
         (bounds.minx(), bounds.maxx())
     } else {
         (bounds.miny(), bounds.maxy())
     };
-    ordinates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &ordinate)| {
-            (low < ordinate && ordinate < high).then_some((index.abs_diff(middle), index, ordinate))
-        })
-        .min_by_key(|&(distance, index, _)| (distance, index))
-        .map(|(_, _, cut)| cut)
+    let mut best: Option<(usize, usize, f64)> = None;
+    for (index, &ordinate) in ordinates.iter().enumerate() {
+        work.charge(1)?;
+        if low < ordinate && ordinate < high {
+            let candidate = (index.abs_diff(middle), index, ordinate);
+            if best.is_none_or(|(distance, best_index, _)| {
+                (candidate.0, candidate.1) < (distance, best_index)
+            }) {
+                best = Some(candidate);
+            }
+        }
+    }
+    Ok(best.map(|(_, _, cut)| cut))
 }
 
 fn bounds_midpoint_cut(bounds: Bounds, split_x: bool) -> Option<f64> {
@@ -390,18 +412,108 @@ fn bounds_midpoint_cut(bounds: Bounds, split_x: bool) -> Option<f64> {
     (low < cut && cut < high).then_some(cut)
 }
 
-fn source_ordinates(shape: &Shape, split_x: bool, owner_coordinate_count: usize) -> Vec<f64> {
+fn source_cut<W: Work>(
+    shape: &Shape,
+    split_x: bool,
+    bounds: Bounds,
+    owner_coordinate_count: usize,
+    vertex_cut: bool,
+    work: &mut W,
+) -> Result<Option<f64>> {
+    if vertex_cut {
+        if let Some(cut) = bounds_midpoint_cut(bounds, split_x) {
+            return Ok(Some(cut));
+        }
+        match source_vertex_cut(shape, split_x, bounds, owner_coordinate_count, work)? {
+            Some(cut) => Ok(Some(cut)),
+            None => source_median_cut(shape, split_x, bounds, owner_coordinate_count, work),
+        }
+    } else {
+        source_median_cut(shape, split_x, bounds, owner_coordinate_count, work)
+    }
+}
+
+fn preferred_source_cut<W: Work>(
+    shape: &Shape,
+    bounds: Bounds,
+    owner_coordinate_count: usize,
+    vertex_cut: bool,
+    work: &mut W,
+) -> Result<Option<(bool, f64)>> {
+    let x_longer = (bounds.maxx() - bounds.minx()) >= (bounds.maxy() - bounds.miny());
+    let first = source_cut(
+        shape,
+        x_longer,
+        bounds,
+        owner_coordinate_count,
+        vertex_cut,
+        work,
+    )?;
+    if let Some(cut) = first {
+        return Ok(Some((x_longer, cut)));
+    }
+    let second = source_cut(
+        shape,
+        !x_longer,
+        bounds,
+        owner_coordinate_count,
+        vertex_cut,
+        work,
+    )?;
+    Ok(second.map(|cut| (!x_longer, cut)))
+}
+
+fn source_ordinates<W: Work>(
+    shape: &Shape,
+    split_x: bool,
+    owner_coordinate_count: usize,
+    work: &mut W,
+) -> Result<Vec<f64>> {
+    let count = u64::try_from(owner_coordinate_count).map_err(|_| ResourceError::SizeOverflow)?;
+    work.charge(count)?;
+    work.charge(count)?;
+    #[cfg(test)]
+    SOURCE_ORDINATE_AXIS_SCANS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let mut ordinates = Vec::with_capacity(owner_coordinate_count);
     shape.for_each_first_point_run(|point| {
         ordinates.push(if split_x { point.x } else { point.y });
     });
-    ordinates.sort_unstable_by(f64::total_cmp);
-    #[expect(
-        clippy::float_cmp,
-        reason = "source ordinates are finite and exact equality merges signed zero but preserves adjacent vertices"
-    )]
-    ordinates.dedup_by(|left, right| *left == *right);
-    ordinates
+    if ordinates.len() != owner_coordinate_count {
+        return Err(GeometryErrorKind::Invalid(
+            "subdivision source ordinate count does not match its admitted owner count".into(),
+        )
+        .into());
+    }
+    crate::geometry::segments::try_sort_by_with_work(&mut ordinates, work, |left, right, _work| {
+        Ok(left.total_cmp(right))
+    })?;
+    let mut unique = 0_usize;
+    for index in 0..ordinates.len() {
+        work.charge(1)?;
+        let ordinate = *ordinates.get(index).ok_or(ResourceError::SizeOverflow)?;
+        #[expect(
+            clippy::float_cmp,
+            reason = "source ordinates are finite and exact equality merges signed zero but preserves adjacent vertices"
+        )]
+        let duplicate = if unique == 0 {
+            false
+        } else {
+            *ordinates
+                .get(unique.wrapping_sub(1))
+                .ok_or(ResourceError::SizeOverflow)?
+                == ordinate
+        };
+        if !duplicate {
+            if unique != index {
+                *ordinates
+                    .get_mut(unique)
+                    .ok_or(ResourceError::SizeOverflow)? = ordinate;
+            }
+            unique = unique.wrapping_add(1);
+        }
+    }
+    ordinates.truncate(unique);
+    Ok(ordinates)
 }
 
 fn push_subdivision_members(
@@ -432,6 +544,48 @@ fn push_subdivision_members(
     let members = shape.parts().collect::<Vec<_>>();
     if members.is_empty() {
         return Ok(false);
+    }
+    if let Some(polygon_traces) = item.polygon_traces.take() {
+        if !matches!(shape, Shape::MultiPolygon(_)) {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon ring traces were attached to a non-multipart polygon shape".into(),
+            )
+            .into());
+        }
+        let mut traces = polygon_traces.into_iter();
+        let mut member_traces = Vec::with_capacity(members.len());
+        for member in &members {
+            let Shape::Polygon(polygon) = member else {
+                return Err(GeometryErrorKind::Invalid(
+                    "multipolygon member is not a polygon".into(),
+                )
+                .into());
+            };
+            let ring_count = polygon.rings().count();
+            let ring_traces = traces.by_ref().take(ring_count).collect::<Vec<_>>();
+            if ring_traces.len() != ring_count {
+                return Err(GeometryErrorKind::Invalid(
+                    "polygon ring traces do not match multipart members".into(),
+                )
+                .into());
+            }
+            member_traces.push(ring_traces);
+        }
+        if traces.next().is_some() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon ring traces contain an unassigned multipart member".into(),
+            )
+            .into());
+        }
+        for (member, polygon_traces) in members.into_iter().zip(member_traces).rev() {
+            work.push(SubdivisionWorkItem::with_polygon_traces(
+                member,
+                polygon_traces,
+                item.vertex_cut,
+                item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+            ));
+        }
+        return Ok(true);
     }
     let member_traces = match item.traces.take() {
         Some(traces) if traces.len() == members.len() => Some(traces),
@@ -550,6 +704,7 @@ fn stage_line_vertices(
                 traces: None,
                 source_line_members: None,
                 trace_axes: None,
+                polygon_traces: None,
                 vertex_cut: item.vertex_cut,
             },
         });
@@ -726,6 +881,7 @@ struct SubdivisionWorkItem {
     bounds: Option<Bounds>,
     coordinate_count: Option<usize>,
     traces: Option<Vec<SourceTrace>>,
+    polygon_traces: Option<Vec<SourceTrace>>,
     source_line_members: Option<std::ops::Range<usize>>,
     trace_axes: Option<crate::geometry::CoordinateAxes>,
     vertex_cut: bool,
@@ -744,6 +900,7 @@ impl SubdivisionWorkItem {
             bounds,
             coordinate_count,
             traces: None,
+            polygon_traces: None,
             source_line_members,
             trace_axes: None,
             vertex_cut,
@@ -763,6 +920,27 @@ impl SubdivisionWorkItem {
             bounds,
             coordinate_count,
             traces: Some(traces),
+            polygon_traces: None,
+            source_line_members: None,
+            trace_axes: Some(trace_axes),
+            vertex_cut,
+        }
+    }
+
+    fn with_polygon_traces(
+        shape: Shape,
+        polygon_traces: Vec<SourceTrace>,
+        vertex_cut: bool,
+        trace_axes: crate::geometry::CoordinateAxes,
+    ) -> Self {
+        let bounds = shape.bounds();
+        let coordinate_count = ShapeCountQuery::default().coordinate_count(&shape);
+        Self {
+            shape,
+            bounds,
+            coordinate_count,
+            traces: None,
+            polygon_traces: Some(polygon_traces),
             source_line_members: None,
             trace_axes: Some(trace_axes),
             vertex_cut,
@@ -806,6 +984,9 @@ struct NativeSubdivisionContext<'a> {
     skipped: BTreeSet<usize>,
     selected_members: BTreeSet<usize>,
     family_state: Option<FeatureFamilyRegistry>,
+    ordinary_roots: Option<SubdivisionRootCatalog>,
+    ordinary_line_traces: Option<Vec<SourceTrace>>,
+    ordinary_polygon_traces: Option<Vec<SourceTrace>>,
     initialized: bool,
 }
 
@@ -825,6 +1006,9 @@ impl<'a> NativeSubdivisionContext<'a> {
             skipped: BTreeSet::new(),
             selected_members: BTreeSet::new(),
             family_state: None,
+            ordinary_roots: None,
+            ordinary_line_traces: None,
+            ordinary_polygon_traces: None,
             initialized: false,
         }
     }
@@ -1246,6 +1430,28 @@ pub(crate) fn split<M: crate::geometry::ChartMetric>(
     // Recursive Native children need a producer-to-family projection that
     // this public subdivision entry point does not carry.
     let mut native = NativeSubdivisionContext::new(&original, frame, SubdivisionPath::Ordinary);
+    if let Some(frame) = frame
+        && ShapeCountQuery::default()
+            .coordinate_count(&original)
+            .is_some_and(|count| count > max_vertices)
+    {
+        match &original {
+            Shape::LineString(_) | Shape::MultiLineString(_) => {
+                let (roots, traces) = SubdivisionRootCatalog::from_line_shape(&original, frame)?;
+                native.ordinary_roots = Some(roots);
+                native.ordinary_line_traces = Some(traces);
+            },
+            Shape::Polygon(_) | Shape::MultiPolygon(_) => {
+                let (roots, traces) = SubdivisionRootCatalog::from_polygon_shape(&original, frame)?;
+                native.ordinary_roots = Some(roots);
+                native.ordinary_polygon_traces = Some(traces);
+            },
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => {},
+        }
+    }
     split_with_context(shape, max_vertices, drop, context, &mut native, out, budget)
 }
 
@@ -1266,7 +1472,29 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
     } else {
         None
     };
-    let item = SubdivisionWorkItem::new(shape, false, source_line_members);
+    let mut item = SubdivisionWorkItem::new(shape, false, source_line_members);
+    if native.ordinary_roots.is_some()
+        && matches!(
+            &item.shape,
+            Shape::LineString(_) | Shape::MultiLineString(_)
+        )
+    {
+        item.traces = Some(native.ordinary_line_traces.take().ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "ordinary subdivision root catalog lost its source line traces".into(),
+            )
+        })?);
+        item.trace_axes = Some(item.shape.axes());
+    } else if native.ordinary_roots.is_some()
+        && matches!(&item.shape, Shape::Polygon(_) | Shape::MultiPolygon(_))
+    {
+        item.polygon_traces = Some(native.ordinary_polygon_traces.take().ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "ordinary subdivision root catalog lost its polygon ring traces".into(),
+            )
+        })?);
+        item.trace_axes = Some(item.shape.axes());
+    }
     work.push(item);
     while let Some(mut item) = work.pop() {
         #[cfg(test)]
@@ -1397,30 +1625,23 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
             return Err(GeometryErrorKind::unrepresentable_output("subdivide"));
         };
         let owner_coordinate_count = owner_coordinate_count(&item.shape, item_coordinate_count);
-        let source_cut = |split_x| {
-            if item.vertex_cut {
-                if let Some(cut) = bounds_midpoint_cut(bounds, split_x) {
-                    return Some(cut);
-                }
-                match source_vertex_cut(&item.shape, split_x, bounds, owner_coordinate_count) {
-                    Some(cut) => Some(cut),
-                    None => source_median_cut(&item.shape, split_x, bounds, owner_coordinate_count),
-                }
-            } else {
-                source_median_cut(&item.shape, split_x, bounds, owner_coordinate_count)
-            }
-        };
-        let x_cut = source_cut(true);
-        let y_cut = source_cut(false);
-        let x_longer = (bounds.maxx() - bounds.minx()) >= (bounds.maxy() - bounds.miny());
-        let candidate = if x_longer {
-            x_cut
-                .map(|cut| (true, cut))
-                .or_else(|| y_cut.map(|cut| (false, cut)))
+        let candidate = if let Some(source_work) = native.budget.as_mut() {
+            preferred_source_cut(
+                &item.shape,
+                bounds,
+                owner_coordinate_count,
+                item.vertex_cut,
+                source_work,
+            )?
         } else {
-            y_cut
-                .map(|cut| (false, cut))
-                .or_else(|| x_cut.map(|cut| (true, cut)))
+            let mut source_work = Unmetered;
+            preferred_source_cut(
+                &item.shape,
+                bounds,
+                owner_coordinate_count,
+                item.vertex_cut,
+                &mut source_work,
+            )?
         };
         let Some((split_x, cut)) = candidate else {
             if !item.vertex_cut {
@@ -1452,25 +1673,73 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
         if let Some(frame) = native.frame {
             partition.set_geographic_frame(frame);
         }
-        let trace_rooted = item.traces.is_some() && native.topology.is_some();
+        let polygon_rooted = item.polygon_traces.is_some() && native.ordinary_roots.is_some();
+        let trace_rooted =
+            item.traces.is_some() && (native.topology.is_some() || native.ordinary_roots.is_some());
         let children = {
-            if trace_rooted {
-                let trace_work = native.budget.as_mut().ok_or_else(|| {
+            if polygon_rooted {
+                let roots = native.ordinary_roots.as_ref().ok_or_else(|| {
                     GeometryErrorKind::Invalid(
-                        "native traced subdivision has no operation budget".into(),
+                        "ordinary polygon traces have no original root catalog".into(),
                     )
                 })?;
-                inventory.subdivision_parts_with_budget(
+                let polygon_traces = item.polygon_traces.as_deref().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "ordinary polygon root catalog lost its ring traces".into(),
+                    )
+                })?;
+                let mut trace_work = Unmetered;
+                inventory.subdivision_polygon_parts_with_roots(
                     &partition,
                     &item.shape,
-                    item.traces.as_deref(),
-                    crate::geometry::CoordinateAxes::XY,
-                    false,
+                    polygon_traces,
+                    roots,
+                    item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+                    drop,
                     [1, 2],
                     budget,
                     context,
-                    trace_work,
+                    &mut trace_work,
                 )?
+            } else if trace_rooted {
+                if let Some(topology) = native.topology.as_ref() {
+                    let trace_work = native.budget.as_mut().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "native traced subdivision has no operation budget".into(),
+                        )
+                    })?;
+                    inventory.subdivision_parts_with_budget(
+                        &partition,
+                        &item.shape,
+                        item.traces.as_deref(),
+                        topology,
+                        crate::geometry::CoordinateAxes::XY,
+                        false,
+                        [1, 2],
+                        budget,
+                        context,
+                        trace_work,
+                    )?
+                } else {
+                    let roots = native.ordinary_roots.as_ref().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "ordinary source traces have no original root catalog".into(),
+                        )
+                    })?;
+                    let mut trace_work = Unmetered;
+                    inventory.subdivision_parts_with_roots(
+                        &partition,
+                        &item.shape,
+                        item.traces.as_deref(),
+                        roots,
+                        item.trace_axes.unwrap_or_else(|| item.shape.axes()),
+                        drop,
+                        [1, 2],
+                        budget,
+                        context,
+                        &mut trace_work,
+                    )?
+                }
             } else {
                 let [left, right] = inventory.subdivision_parts(
                     &partition,
@@ -1485,10 +1754,12 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                     SubdivisionPart {
                         shape: left,
                         traces: None,
+                        polygon_traces: None,
                     },
                     SubdivisionPart {
                         shape: right,
                         traces: None,
+                        polygon_traces: None,
                     },
                 ]
             }
@@ -1565,6 +1836,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 bounds: child_bounds,
                 coordinate_count: child_coordinate_count,
                 traces: child.traces,
+                polygon_traces: child.polygon_traces,
                 source_line_members: None,
                 trace_axes: item.trace_axes,
                 vertex_cut: !progress,
@@ -3005,6 +3277,40 @@ mod subdivision_tests {
         ))
     }
 
+    #[derive(Default)]
+    struct CountingWork {
+        charged: u64,
+    }
+
+    impl Work for CountingWork {
+        fn charge(&mut self, units: u64) -> Result<()> {
+            self.charged = self
+                .charged
+                .checked_add(units)
+                .ok_or(ResourceError::SizeOverflow)?;
+            Ok(())
+        }
+    }
+
+    struct RemainingWork {
+        remaining: u64,
+        refused: Option<u64>,
+    }
+
+    impl Work for RemainingWork {
+        fn charge(&mut self, units: u64) -> Result<()> {
+            if units > self.remaining {
+                self.refused = Some(units);
+                self.remaining = 0;
+                return Err(
+                    GeometryErrorKind::Invalid("test work allowance exhausted".into()).into(),
+                );
+            }
+            self.remaining = self.remaining.wrapping_sub(units);
+            Ok(())
+        }
+    }
+
     fn all_points(shape: &Shape) -> Vec<Point> {
         let mut points = Vec::new();
         shape.for_each_point(|point| points.push(point));
@@ -3130,6 +3436,365 @@ mod subdivision_tests {
     }
 
     #[test]
+    fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> Result<()> {
+        let crs = concat!(
+            "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",
+            "SPHEROID[\"Custom\",7000000,150]],PRIMEM[\"Greenwich\",0],",
+            "UNIT[\"grad\",0.015707963267948967],",
+            "AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]"
+        );
+        let model = crate::crs::metric_model(Some(crs))?;
+        let crate::crs::MetricModel::Geodesic { frame, .. } = &model else {
+            return Err(crate::crs::CrsError::invalid("custom test CRS is not geographic").into());
+        };
+        let metric = crate::crs::GeodesicMetric::from_model(&model)?;
+        let metric_access_calls = std::cell::Cell::new(0_usize);
+        let metric_access = || -> Result<&crate::crs::GeodesicMetric> {
+            metric_access_calls.set(metric_access_calls.get().saturating_add(1));
+            Ok(&metric)
+        };
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(*frame),
+            Some(&metric_access),
+        );
+        let degrees = [
+            (2.0, 0.0),
+            (4.0, 1.0),
+            (0.0, 0.0),
+            (12.0, 6.0),
+            (10.0, 6.1),
+            (8.0, 6.2),
+            (6.0, 6.3),
+            (8.0, 6.4),
+            (10.0, 6.5),
+            (12.0, 6.6),
+            (10.0, 6.7),
+            (8.0, 6.8),
+        ];
+        let points = degrees
+            .iter()
+            .enumerate()
+            .map(|(index, &(longitude, latitude))| {
+                let z = match index {
+                    0 => 20.0,
+                    1 => 30.0,
+                    2 => 10.0,
+                    3 => 210.0,
+                    _ => 310.0 + 100.0 * (index - 4) as f64,
+                };
+                let m = match index {
+                    0 => 200.0,
+                    1 => 300.0,
+                    2 => 100.0,
+                    3 => 1100.0,
+                    _ => 2100.0 + 1000.0 * (index - 4) as f64,
+                };
+                Point::new_raw_axes(
+                    longitude * (10.0 / 9.0),
+                    latitude * (10.0 / 9.0),
+                    crate::geometry::ZOrdinate(Some(z)),
+                    crate::geometry::MOrdinate(Some(m)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let shape = line_shape(&points);
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        drop(crate::geometry::ordinates::take_source_arc_observations());
+        split(shape, 8, false, &context, &mut parts, &mut budget)?;
+        let observations = crate::geometry::ordinates::take_source_arc_observations();
+        assert_eq!(metric_access_calls.get(), observations.len());
+        let output_points = parts.iter().flat_map(all_points).collect::<Vec<_>>();
+        let scale = 10.0 / 9.0;
+        assert!(
+            output_points
+                .iter()
+                .any(|point| point.x == 5.0 * scale && point.y == 2.5 * scale)
+        );
+        assert!(
+            output_points
+                .iter()
+                .any(|point| point.x == 7.0 * scale && point.y == 3.5 * scale)
+        );
+        let second_cut = output_points
+            .iter()
+            .find(|point| point.x == 7.0 * scale && point.y == 3.5 * scale)
+            .expect("the right child is cut a second time at the original-root site");
+        let root_request = observations
+            .iter()
+            .find(|observation| {
+                observation.source[0].x == 0.0
+                    && observation.source[0].y == 0.0
+                    && observation.source[1].x == 12.0 * scale
+                    && observation.source[1].y == 6.0 * scale
+                    && (observation.parameter - 7.0 / 12.0).abs() <= 1e-15
+            })
+            .expect("the second cut resolves against the original grad-frame edge");
+        assert_eq!(second_cut.z(), root_request.z);
+        assert_eq!(second_cut.m(), root_request.m);
+        assert!(
+            (second_cut.z().unwrap() - 126.777_239_929_426_68).abs() <= 2e-5,
+            "the original ellipsoidal arc gives the second cut Z"
+        );
+        assert!(
+            (second_cut.m().unwrap() - 683.886_199_647_133_4).abs() <= 1e-4,
+            "the original ellipsoidal arc gives the second cut M"
+        );
+        let mut counts = ShapeCountQuery::default();
+        assert!(parts.iter().all(|part| {
+            counts
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 8)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_geographic_polygon_subdivision_carries_shell_roots_across_cuts() -> Result<()> {
+        let crs = concat!(
+            "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",
+            "SPHEROID[\"Custom\",7000000,150]],PRIMEM[\"Greenwich\",0],",
+            "UNIT[\"grad\",0.015707963267948967],",
+            "AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]"
+        );
+        let model = crate::crs::metric_model(Some(crs))?;
+        let crate::crs::MetricModel::Geodesic { frame, .. } = &model else {
+            return Err(crate::crs::CrsError::invalid("custom test CRS is not geographic").into());
+        };
+        let metric = crate::crs::GeodesicMetric::from_model(&model)?;
+        let metric_access_calls = std::cell::Cell::new(0_usize);
+        let metric_access = || -> Result<&crate::crs::GeodesicMetric> {
+            metric_access_calls.set(metric_access_calls.get().saturating_add(1));
+            Ok(&metric)
+        };
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(*frame),
+            Some(&metric_access),
+        );
+        let scale = 10.0 / 9.0;
+        let xy = [
+            (0.0, 0.0),
+            (12.0, 6.0),
+            (12.0, 6.3),
+            (12.0, 6.6),
+            (12.0, 7.0),
+            (12.0, 7.5),
+            (10.0, 7.5),
+            (8.0, 7.5),
+            (6.0, 7.5),
+            (4.0, 7.5),
+            (2.0, 7.5),
+            (0.0, 7.5),
+            (0.0, 0.0),
+        ];
+        let z = [
+            10.0, 210.0, 310.0, 410.0, 510.0, 610.0, 710.0, 810.0, 910.0, 1010.0, 1110.0, 1210.0,
+            10.0,
+        ];
+        let m = [
+            100.0, 1100.0, 2100.0, 3100.0, 4100.0, 5100.0, 6100.0, 7100.0, 8100.0, 9100.0, 10100.0,
+            11100.0, 100.0,
+        ];
+        let points = xy
+            .iter()
+            .zip(z)
+            .zip(m)
+            .map(|((&(x, y), z), m)| {
+                Point::new_raw_axes(
+                    x * scale,
+                    y * scale,
+                    crate::geometry::ZOrdinate(Some(z)),
+                    crate::geometry::MOrdinate(Some(m)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let shape = ring_shape(&points);
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        drop(crate::geometry::ordinates::take_source_arc_observations());
+        split(shape, 8, false, &context, &mut parts, &mut budget)?;
+        let observations = crate::geometry::ordinates::take_source_arc_observations();
+        let output_points = parts.iter().flat_map(all_points).collect::<Vec<_>>();
+        assert!(
+            output_points
+                .iter()
+                .any(|point| point.x == 5.0 * scale && point.y == 2.5 * scale)
+        );
+        let second_cut = output_points
+            .iter()
+            .find(|point| point.x == 7.0 * scale && point.y == 3.5 * scale)
+            .expect("the right polygon child is cut at the second source-root site");
+        assert!(observations.iter().any(|observation| {
+            observation.source[0].x == 0.0
+                && observation.source[0].y == 0.0
+                && observation.source[1].x == 12.0 * scale
+                && observation.source[1].y == 6.0 * scale
+                && (observation.parameter - 7.0 / 12.0).abs() <= 1e-15
+        }));
+        assert!(metric_access_calls.get() > 0);
+        assert!((second_cut.z().unwrap() - 126.777_239_929_426_68).abs() <= 2e-5);
+        assert!((second_cut.m().unwrap() - 683.886_199_647_133_4).abs() <= 1e-4);
+        let mut counts = ShapeCountQuery::default();
+        assert!(parts.iter().all(|part| {
+            counts
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 8)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn preferred_axis_cut_scans_only_the_preferred_axis_and_keeps_x_ties() {
+        let x_wide = line_shape(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(10.0, 1.0),
+            Point::new_raw_xy(20.0, 2.0),
+            Point::new_raw_xy(30.0, 3.0),
+        ]);
+        reset_source_ordinate_axis_scans();
+        let mut work = Unmetered;
+        assert!(
+            preferred_source_cut(&x_wide, x_wide.bounds().unwrap(), 4, false, &mut work)
+                .unwrap()
+                .is_some_and(|(split_x, cut)| split_x && (0.0..30.0).contains(&cut))
+        );
+        assert_eq!(source_ordinate_axis_scans(), 1);
+
+        let y_wide = line_shape(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 10.0),
+            Point::new_raw_xy(2.0, 20.0),
+            Point::new_raw_xy(3.0, 30.0),
+        ]);
+        reset_source_ordinate_axis_scans();
+        let mut work = Unmetered;
+        assert!(
+            preferred_source_cut(&y_wide, y_wide.bounds().unwrap(), 4, false, &mut work)
+                .unwrap()
+                .is_some_and(|(split_x, cut)| !split_x && (0.0..30.0).contains(&cut))
+        );
+        assert_eq!(source_ordinate_axis_scans(), 1);
+
+        let equal_extents = line_shape(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(10.0, 1.0),
+            Point::new_raw_xy(1.0, 10.0),
+            Point::new_raw_xy(9.0, 9.0),
+        ]);
+        reset_source_ordinate_axis_scans();
+        let mut work = Unmetered;
+        assert!(
+            preferred_source_cut(
+                &equal_extents,
+                equal_extents.bounds().unwrap(),
+                4,
+                false,
+                &mut work,
+            )
+            .unwrap()
+            .is_some_and(|(split_x, _)| split_x)
+        );
+        assert_eq!(source_ordinate_axis_scans(), 1);
+    }
+
+    #[test]
+    fn preferred_axis_falls_back_only_when_it_has_no_representable_cut() {
+        let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
+        let alternate_only = line_shape(&[
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(adjacent, 2.5e-17),
+            Point::new_raw_xy(1.0, 5.0e-17),
+            Point::new_raw_xy(adjacent, 1.0e-16),
+        ]);
+        reset_source_ordinate_axis_scans();
+        let mut work = Unmetered;
+        assert!(
+            preferred_source_cut(
+                &alternate_only,
+                alternate_only.bounds().unwrap(),
+                4,
+                false,
+                &mut work,
+            )
+            .unwrap()
+            .is_some_and(|(split_x, cut)| !split_x && cut > 0.0 && cut < 1.0e-16)
+        );
+        assert_eq!(source_ordinate_axis_scans(), 2);
+
+        let neither_axis = line_shape(&[
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(adjacent, adjacent),
+            Point::new_raw_xy(1.0, 1.0),
+            Point::new_raw_xy(adjacent, adjacent),
+        ]);
+        reset_source_ordinate_axis_scans();
+        let mut work = Unmetered;
+        assert_eq!(
+            preferred_source_cut(
+                &neither_axis,
+                neither_axis.bounds().unwrap(),
+                4,
+                false,
+                &mut work,
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(source_ordinate_axis_scans(), 2);
+    }
+
+    #[test]
+    fn preferred_axis_refusal_precedes_the_alternate_axis_scan() {
+        let adjacent = f64::from_bits(1.0_f64.to_bits() + 1);
+        let shape = line_shape(&[
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(adjacent, 2.5e-17),
+            Point::new_raw_xy(1.0, 5.0e-17),
+            Point::new_raw_xy(adjacent, 1.0e-16),
+        ]);
+        let bounds = shape.bounds().unwrap();
+        reset_source_ordinate_axis_scans();
+        let mut counting = CountingWork::default();
+        assert_eq!(
+            source_cut(&shape, true, bounds, 4, false, &mut counting).unwrap(),
+            None
+        );
+        assert_eq!(source_ordinate_axis_scans(), 1);
+
+        reset_source_ordinate_axis_scans();
+        let mut work = RemainingWork {
+            remaining: counting.charged,
+            refused: None,
+        };
+        assert!(
+            preferred_source_cut(&shape, bounds, 4, false, &mut work).is_err(),
+            "the preferred axis account cannot refuse and then enter the alternate scan"
+        );
+        assert_eq!(source_ordinate_axis_scans(), 1);
+        assert_eq!(work.refused, Some(4));
+    }
+
+    #[test]
+    fn preferred_axis_vertex_retry_keeps_the_bounds_midpoint_first() {
+        let shape = line_shape(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(10.0, 1.0),
+            Point::new_raw_xy(20.0, 2.0),
+            Point::new_raw_xy(30.0, 3.0),
+        ]);
+        reset_source_ordinate_axis_scans();
+        let bounds = shape.bounds().unwrap();
+        let mut work = Unmetered;
+        assert_eq!(
+            preferred_source_cut(&shape, bounds, 4, true, &mut work).unwrap(),
+            Some((true, f64::midpoint(bounds.minx(), bounds.maxx())))
+        );
+        assert_eq!(source_ordinate_axis_scans(), 0);
+    }
+
+    #[test]
     fn recursive_subdivision_keeps_each_child_count_with_its_shape() {
         let mut points = (0..32)
             .map(|index| {
@@ -3212,7 +3877,7 @@ mod subdivision_tests {
             Point::new_raw_xy(adjacent, 0.0),
         ]);
 
-        let ordinates = source_ordinates(&shape, true, 6);
+        let ordinates = source_ordinates(&shape, true, 6, &mut Unmetered).unwrap();
 
         assert_eq!(ordinates.len(), 5);
         assert_eq!(ordinates[0].to_bits(), (-30.0_f64).to_bits());

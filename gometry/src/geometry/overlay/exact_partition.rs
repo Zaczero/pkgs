@@ -25,12 +25,13 @@ use std::sync::Arc;
 #[cfg(test)]
 use crate::collections::HashMap;
 use crate::error::ResourceError;
-#[cfg(test)]
-use crate::geometry::Coordinates as _;
+use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
-    RootMetricState, SourceArcContext, SourceArcRequest, source_arc_ordinates,
+    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
+    SourceArcContext, SourceArcMetricAccess, SourceArcRequest, resolve_request_rows,
+    resolve_source_root, source_arc_ordinates,
 };
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
@@ -42,10 +43,10 @@ use crate::geometry::segments::{
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
-    Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind,
-    GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon,
-    PolygonizeFull, RepairMethod, Result, Ring, RingKind, Segment, Shape, SharedShapeOwners,
-    Unmetered, Work, XY, ZOrdinate, same_point, segment_contact_exact, storage,
+    Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
+    GeometryErrorKind, GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey,
+    Polygon, PolygonizeFull, RepairMethod, Result, Ring, RingKind, Segment, Shape,
+    SharedShapeOwners, Unmetered, Work, XY, ZOrdinate, same_point, segment_contact_exact, storage,
 };
 #[cfg(test)]
 use crate::geometry::{for_each_candidate_pair, single_chain};
@@ -155,6 +156,7 @@ pub(in crate::geometry) struct NodeId(pub u32);
 pub(super) struct ResolvedNodePoints<'e, 'p> {
     embedding: &'e embedding::Embedding<'p>,
     by_node: Option<Vec<Option<(ZOrdinate, MOrdinate)>>>,
+    by_xy: Option<Vec<Option<XY>>>,
 }
 
 impl ResolvedNodePoints<'_, '_> {
@@ -163,6 +165,13 @@ impl ResolvedNodePoints<'_, '_> {
     }
 
     pub(super) fn get(&self, node: NodeId, xy: XY) -> Option<Point> {
+        let xy = self
+            .by_xy
+            .as_ref()
+            .and_then(|points| points.get(node.0 as usize))
+            .copied()
+            .flatten()
+            .unwrap_or(xy);
         let Some(by_node) = &self.by_node else {
             return Some(Point::new_raw_xy(xy.x, xy.y));
         };
@@ -188,8 +197,155 @@ impl<'e, 'p> ResolvedNodePoints<'e, 'p> {
         embedding: &'e embedding::Embedding<'p>,
         by_node: Option<Vec<Option<(ZOrdinate, MOrdinate)>>>,
     ) -> Self {
-        Self { embedding, by_node }
+        Self {
+            embedding,
+            by_node,
+            by_xy: None,
+        }
     }
+
+    const fn from_embedding_with_xy(
+        embedding: &'e embedding::Embedding<'p>,
+        by_node: Option<Vec<Option<(ZOrdinate, MOrdinate)>>>,
+        by_xy: Vec<Option<XY>>,
+    ) -> Self {
+        Self {
+            embedding,
+            by_node,
+            by_xy: Some(by_xy),
+        }
+    }
+}
+
+fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work>(
+    partition: &'p ExactPartition<'_>,
+    embedding: &'e embedding::Embedding<'p>,
+    nodes: &[NodeId],
+    mut requests_by_node: Vec<Vec<RootRequest>>,
+    axes: CoordinateAxes,
+    roots: &C,
+    root_positions: Option<&SubdivisionRootCatalog>,
+    fallback_inventory: Option<&ExactSourceInventory>,
+    context: &SourceArcContext<'_, '_, M>,
+    work: &mut W,
+) -> Result<ResolvedNodePoints<'e, 'p>> {
+    if !axes.has_z() && !axes.has_m() && root_positions.is_none() {
+        return Ok(ResolvedNodePoints::from_embedding(embedding, None));
+    }
+    work.charge(u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let rooted_xy = if let Some(root_positions) = root_positions {
+        let mut rooted_xy = vec![None; partition.node_count()];
+        for &node in nodes {
+            let requests = requests_by_node.get(node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("subdivision emission node is unknown".into())
+            })?;
+            let mut position = None;
+            let mut agrees = true;
+            for request in requests {
+                let Some(candidate) = root_positions.source_node_position(
+                    request.root(),
+                    request.parameter(),
+                    work,
+                )?
+                else {
+                    continue;
+                };
+                if position.is_some_and(|previous| !same_point(previous, candidate)) {
+                    agrees = false;
+                    break;
+                }
+                position = Some(candidate);
+            }
+            if agrees {
+                let slot = rooted_xy.get_mut(node.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "subdivision source position node is outside its partition".into(),
+                    )
+                })?;
+                *slot = position;
+            }
+        }
+        Some(rooted_xy)
+    } else {
+        None
+    };
+    if !axes.has_z() && !axes.has_m() {
+        return Ok(match rooted_xy {
+            Some(rooted_xy) => {
+                ResolvedNodePoints::from_embedding_with_xy(embedding, None, rooted_xy)
+            },
+            None => ResolvedNodePoints::from_embedding(embedding, None),
+        });
+    }
+    let fallback_nodes = if fallback_inventory.is_some() {
+        nodes
+            .iter()
+            .copied()
+            .filter(|node| {
+                requests_by_node
+                    .get(node.0 as usize)
+                    .is_some_and(Vec::is_empty)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let mut request_rows = Vec::with_capacity(nodes.len());
+    for &node in nodes {
+        work.charge(1)?;
+        let requests = requests_by_node.get_mut(node.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("subdivision emission node is unknown".into())
+        })?;
+        request_rows.push(RequestRowInput {
+            axes,
+            requests: std::mem::take(requests),
+        });
+    }
+    let ordinates = resolve_request_rows(&request_rows, roots, context.metric_access(), work)?;
+    if ordinates.len() != nodes.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "original-root resolution returned incomplete subdivision ordinates".into(),
+        )
+        .into());
+    }
+    let mut by_node = vec![None; partition.node_count()];
+    for (&node, ordinate) in nodes.iter().zip(ordinates) {
+        let slot = by_node.get_mut(node.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("subdivision output node is outside its partition".into())
+        })?;
+        *slot = Some((ZOrdinate(ordinate.z.value()), MOrdinate(ordinate.m.value())));
+    }
+    if let Some(fallback_inventory) = fallback_inventory {
+        if !fallback_nodes.is_empty() {
+            work.charge(
+                u64::try_from(fallback_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
+            let fallback = fallback_inventory.resolve_node_points(
+                partition,
+                embedding,
+                fallback_nodes.iter().copied(),
+                axes,
+                context,
+                None,
+            )?;
+            for node in fallback_nodes {
+                if let Some(ordinates) = fallback.ordinates(node) {
+                    let slot = by_node.get_mut(node.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "fallback subdivision node is outside the partition".into(),
+                        )
+                    })?;
+                    *slot = Some(ordinates);
+                }
+            }
+        }
+    }
+    Ok(match rooted_xy {
+        Some(rooted_xy) => {
+            ResolvedNodePoints::from_embedding_with_xy(embedding, Some(by_node), rooted_xy)
+        },
+        None => ResolvedNodePoints::from_embedding(embedding, Some(by_node)),
+    })
 }
 
 #[cfg(test)]
@@ -692,11 +848,358 @@ impl SourceArcRecord {
     }
 }
 
+pub(in crate::geometry) struct SubdivisionRootCatalog {
+    inventory: ExactSourceInventory,
+    frame: GeographicFrame,
+}
+
+impl SubdivisionRootCatalog {
+    pub(in crate::geometry) fn from_line_shape(
+        shape: &Shape,
+        frame: GeographicFrame,
+    ) -> Result<(Self, Vec<crate::geometry::topology::SourceTrace>)> {
+        let source = LineSource::from_shape(shape).ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "ordinary subdivision roots require a line source shape".into(),
+            )
+        })?;
+        let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+        let mut line_traces = Vec::with_capacity(match source {
+            LineSource::LineString(_) => 1,
+            LineSource::MultiLineString(lines) => lines.len(),
+        });
+        let mut source_edge = 0_usize;
+        let mut work = Unmetered;
+        let mut push_line = |line: &LineSeq| -> Result<()> {
+            let mut edge_rows = Vec::with_capacity(line.len().saturating_sub(1));
+            for _ in line.segment_pairs() {
+                let root_index =
+                    u32::try_from(source_edge).map_err(|_| ResourceError::SizeOverflow)?;
+                source_edge = source_edge
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                let zero = ExactRational::zero();
+                let one = ExactRational::one();
+                edge_rows.push(vec![RootRange::from_mapped_with_work(
+                    RootId::from_index(root_index),
+                    zero.clone(),
+                    one.clone(),
+                    zero,
+                    one,
+                    &mut work,
+                )?]);
+            }
+            line_traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
+                edge_rows, &mut work,
+            )?);
+            Ok(())
+        };
+        match source {
+            LineSource::LineString(line) => push_line(line)?,
+            LineSource::MultiLineString(lines) => {
+                for line in lines.iter() {
+                    push_line(line)?;
+                }
+            },
+        }
+        if source_edge != inventory.source_segments.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "subdivision root traces do not cover the original line inventory".into(),
+            )
+            .into());
+        }
+        Ok((Self { inventory, frame }, line_traces))
+    }
+
+    pub(in crate::geometry) fn from_polygon_shape(
+        shape: &Shape,
+        frame: GeographicFrame,
+    ) -> Result<(Self, Vec<crate::geometry::topology::SourceTrace>)> {
+        let ring_ranges = polygon_source_ring_ranges(shape)?;
+        let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+        let source_edge_count = ring_ranges.iter().try_fold(0_usize, |count, range| {
+            count
+                .checked_add(range.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        if source_edge_count != inventory.source_segments.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon root traces do not cover the original ring inventory".into(),
+            )
+            .into());
+        }
+        let mut traces = Vec::with_capacity(ring_ranges.len());
+        let mut source_edge = 0_usize;
+        let mut work = Unmetered;
+        for range in ring_ranges {
+            let mut edge_rows = Vec::with_capacity(range.len());
+            while source_edge < range.end {
+                let root = RootId::from_index(
+                    u32::try_from(source_edge).map_err(|_| ResourceError::SizeOverflow)?,
+                );
+                let zero = ExactRational::zero();
+                let one = ExactRational::one();
+                edge_rows.push(vec![RootRange::from_mapped_with_work(
+                    root,
+                    zero.clone(),
+                    one.clone(),
+                    zero,
+                    one,
+                    &mut work,
+                )?]);
+                source_edge = source_edge
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+            }
+            traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
+                edge_rows, &mut work,
+            )?);
+        }
+        Ok((Self { inventory, frame }, traces))
+    }
+
+    fn source_pair(&self, root: RootId) -> Result<[Point; 2]> {
+        if let Some(points) = self.inventory.source_points.as_ref() {
+            return points
+                .get(root.index())
+                .map(|record| record.points)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "ordinary subdivision trace references an unknown original source edge"
+                            .into(),
+                    )
+                    .into()
+                });
+        }
+        let segment = self
+            .inventory
+            .source_segments
+            .get(root.index())
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "ordinary subdivision trace references an unknown original source edge".into(),
+                )
+            })?;
+        Ok([segment.start.point(), segment.end.point()])
+    }
+
+    fn source_displacement(
+        &self,
+        source: &[Point; 2],
+    ) -> Result<(crate::geographic::RetainedChartDisplacement, f64)> {
+        let longitude = self.frame.longitude();
+        let connection = longitude
+            .chart_connection(source[0].x, source[1].x)
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        let displacement = connection.retained();
+        Ok((displacement, displacement.delta_native(longitude)))
+    }
+
+    fn source_position(
+        &self,
+        root: RootId,
+        parameter: &ExactRational,
+        work: &mut impl Work,
+    ) -> Result<Option<XY>> {
+        if parameter.is_zero() || parameter.is_one() {
+            return Ok(None);
+        }
+        let source = self.source_pair(root)?;
+        let [start, end] = source;
+        let (_, delta) = self.source_displacement(&source)?;
+        let parameter = parameter.round_with_work(work)?;
+        let lifted_x =
+            crate::geometry::interpolate_subdivision_ordinate(start.x, start.x + delta, parameter);
+        let y = crate::geometry::interpolate_subdivision_ordinate(start.y, end.y, parameter);
+        let x = self
+            .frame
+            .longitude()
+            .canonicalize(lifted_x)
+            .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+            .get();
+        Ok(Some(XY::new(x, y)))
+    }
+
+    fn source_node_position(
+        &self,
+        root: RootId,
+        parameter: &ExactRational,
+        work: &mut impl Work,
+    ) -> Result<Option<XY>> {
+        if parameter.is_zero() || parameter.is_one() {
+            return Ok(None);
+        }
+        let source = self.source_pair(root)?;
+        let raw_delta = source[1].x - source[0].x;
+        let (_, delta) = self.source_displacement(&source)?;
+        if delta.to_bits() == raw_delta.to_bits() {
+            return Ok(None);
+        }
+        self.source_position(root, parameter, work)
+    }
+
+    fn seam_parameter(&self, root: RootId, work: &mut impl Work) -> Result<Option<ExactRational>> {
+        let source = self.source_pair(root)?;
+        let start = source[0].x;
+        let (_, delta) = self.source_displacement(&source)?;
+        if delta == 0.0 {
+            return Ok(None);
+        }
+        let end = start + delta;
+        let (low, high) = if start < end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        let longitude = self.frame.longitude();
+        let seam_index = ((low - longitude.half_period()) / longitude.period()).floor();
+        let seam = longitude.half_period() + (seam_index + 1.0) * longitude.period();
+        if seam <= low || seam >= high {
+            return Ok(None);
+        }
+        let numerator = ExactRational::from_f64(seam)
+            .try_subtract_with_work(&ExactRational::from_f64(start), work)?;
+        let parameter = numerator.try_quotient_with_work(&ExactRational::from_f64(delta), work)?;
+        Ok(Some(parameter))
+    }
+}
+
+impl RootCatalog for SubdivisionRootCatalog {
+    fn resolve<M: ChartMetric>(
+        &self,
+        root: RootId,
+        parameter: &ExactRational,
+        axes: CoordinateAxes,
+        metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
+        state: &mut RootMetricState,
+        fraction: &mut Option<f64>,
+        work: &mut impl Work,
+    ) -> Result<NodeOrdinates> {
+        if !axes.has_z() && !axes.has_m() {
+            return Ok(NodeOrdinates::default());
+        }
+        let record = self
+            .inventory
+            .source_points
+            .as_ref()
+            .and_then(|points| points.get(root.index()))
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "ordinary subdivision trace references an unknown original source edge".into(),
+                )
+            })?;
+        let source = record.points;
+        let (displacement, _) = self.source_displacement(&source)?;
+        let mut metric_state = record.metric.get();
+        let result = resolve_source_root(
+            self.frame,
+            &source,
+            displacement,
+            parameter,
+            axes,
+            metric_access,
+            &mut metric_state,
+            fraction,
+            work,
+        );
+        record.metric.set(metric_state);
+        *state = metric_state;
+        result
+    }
+}
+
 struct SourceSpanTraceView {
     span: u32,
     reversed: bool,
     source_start: ExactRational,
     source_end: ExactRational,
+}
+
+struct SourceLineTraceViews {
+    source_ids: Vec<usize>,
+    views: Vec<Vec<SourceSpanTraceView>>,
+}
+
+struct SourceLineSeamCut {
+    parameter: ExactRational,
+    coordinate: XY,
+    requests: Vec<RootRequest>,
+}
+
+struct SourceLineSeamSample {
+    coordinate: XY,
+    requests: Vec<RootRequest>,
+}
+
+#[derive(Clone, Copy)]
+enum TracedSourceLineVertex {
+    Node(NodeId),
+    Seam(usize),
+}
+
+struct TracedSourceLineRun {
+    member: usize,
+    vertices: Vec<TracedSourceLineVertex>,
+    trace_slices: Vec<(usize, ExactRational, ExactRational)>,
+}
+
+fn mapped_root_ranges_between_requests<W: Work>(
+    start_requests: &[RootRequest],
+    end_requests: &[RootRequest],
+    work: &mut W,
+) -> Result<Vec<RootRange>> {
+    let zero = ExactRational::zero();
+    let one = ExactRational::one();
+    let mut ranges = Vec::new();
+    for start in start_requests {
+        work.charge(1)?;
+        let Some(end) = end_requests
+            .iter()
+            .find(|request| request.root() == start.root())
+        else {
+            continue;
+        };
+        ranges.push(RootRange::from_mapped_with_work(
+            start.root(),
+            start.parameter().clone(),
+            end.parameter().clone(),
+            zero.clone(),
+            one.clone(),
+            work,
+        )?);
+    }
+    Ok(ranges)
+}
+
+trait SubdivisionTraceWork: Work {
+    fn embed<'p>(
+        &mut self,
+        partition: &'p ExactPartition<'_>,
+        emissions: &[&embedding::Emission],
+        operation: &'static str,
+    ) -> Result<embedding::Embedding<'p>>;
+}
+
+impl SubdivisionTraceWork for crate::geometry::embedding_search::EvaluationBudget {
+    fn embed<'p>(
+        &mut self,
+        partition: &'p ExactPartition<'_>,
+        emissions: &[&embedding::Emission],
+        operation: &'static str,
+    ) -> Result<embedding::Embedding<'p>> {
+        partition.embed_with_budget(emissions, operation, self)
+    }
+}
+
+impl SubdivisionTraceWork for Unmetered {
+    fn embed<'p>(
+        &mut self,
+        partition: &'p ExactPartition<'_>,
+        emissions: &[&embedding::Emission],
+        operation: &'static str,
+    ) -> Result<embedding::Embedding<'p>> {
+        partition.embed(emissions, operation)
+    }
 }
 
 struct SourceLineRun {
@@ -746,6 +1249,7 @@ fn push_source_line_run<W: Work + ?Sized>(
 pub(in crate::geometry) struct SubdivisionPart {
     pub shape: Shape,
     pub traces: Option<Vec<crate::geometry::topology::SourceTrace>>,
+    pub polygon_traces: Option<Vec<crate::geometry::topology::SourceTrace>>,
 }
 
 fn remove_node_antennas(mut nodes: Vec<NodeId>) -> Option<Vec<NodeId>> {
@@ -2460,17 +2964,318 @@ impl ExactSourceInventory {
         Ok([first, second])
     }
 
-    pub(in crate::geometry) fn subdivision_parts_with_budget<M: ChartMetric>(
+    pub(in crate::geometry) fn subdivision_parts_with_budget<M: ChartMetric, C: RootCatalog>(
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
         source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
-        declared_axes: crate::geometry::CoordinateAxes,
+        roots: &C,
+        declared_axes: CoordinateAxes,
         strict: bool,
         clip_operands: [usize; 2],
         budget: &mut ExpansionBudget,
         context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut crate::geometry::embedding_search::EvaluationBudget,
+    ) -> Result<[SubdivisionPart; 2]> {
+        self.subdivision_parts_traced(
+            partition,
+            source_shape,
+            source_traces,
+            roots,
+            None,
+            declared_axes,
+            strict,
+            clip_operands,
+            budget,
+            context,
+            trace_work,
+        )
+    }
+
+    pub(in crate::geometry) fn subdivision_parts_with_roots<M: ChartMetric>(
+        &self,
+        partition: &ExactPartition<'_>,
+        source_shape: &Shape,
+        source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
+        roots: &SubdivisionRootCatalog,
+        declared_axes: CoordinateAxes,
+        strict: bool,
+        clip_operands: [usize; 2],
+        budget: &mut ExpansionBudget,
+        context: &SourceArcContext<'_, '_, M>,
+        trace_work: &mut Unmetered,
+    ) -> Result<[SubdivisionPart; 2]> {
+        match source_traces {
+            None => self.subdivision_parts_traced(
+                partition,
+                source_shape,
+                None,
+                roots,
+                Some(roots),
+                declared_axes,
+                strict,
+                clip_operands,
+                budget,
+                context,
+                trace_work,
+            ),
+            Some(source_traces) => {
+                if LineSource::from_shape(source_shape).is_some() {
+                    return self.subdivision_parts_traced(
+                        partition,
+                        source_shape,
+                        Some(source_traces),
+                        roots,
+                        Some(roots),
+                        declared_axes,
+                        strict,
+                        clip_operands,
+                        budget,
+                        context,
+                        trace_work,
+                    );
+                }
+                self.subdivision_polygon_parts_with_roots(
+                    partition,
+                    source_shape,
+                    source_traces,
+                    roots,
+                    declared_axes,
+                    strict,
+                    clip_operands,
+                    budget,
+                    context,
+                    trace_work,
+                )
+            },
+        }
+    }
+
+    pub(in crate::geometry) fn subdivision_polygon_parts_with_roots<M: ChartMetric>(
+        &self,
+        partition: &ExactPartition<'_>,
+        source_shape: &Shape,
+        source_traces: &[crate::geometry::topology::SourceTrace],
+        roots: &SubdivisionRootCatalog,
+        declared_axes: CoordinateAxes,
+        strict: bool,
+        clip_operands: [usize; 2],
+        budget: &mut ExpansionBudget,
+        context: &SourceArcContext<'_, '_, M>,
+        trace_work: &mut Unmetered,
+    ) -> Result<[SubdivisionPart; 2]> {
+        let ring_ranges = polygon_source_ring_ranges(source_shape)?;
+        if source_traces.len() != ring_ranges.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon source traces do not match the shell and hole rings".into(),
+            )
+            .into());
+        }
+        for (range, trace) in ring_ranges.iter().zip(source_traces) {
+            if trace.edge_count() != range.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "polygon source trace edge count differs from its ring".into(),
+                )
+                .into());
+            }
+        }
+        let operands = self.operand_count();
+        if clip_operands
+            .iter()
+            .any(|&operand| operand >= operands || operand == 0)
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "exact subdivision clip operand is out of range".into(),
+            )
+            .into());
+        }
+
+        let (topology, edges) = partition.local_topology()?;
+        let global = partition.global_faces(&topology, &edges)?;
+        let winding_rings = self.winding_source_rings();
+        let facts =
+            self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
+        let protected = self.ordinate_protected_nodes(partition, declared_axes)?;
+        let preserved_spans = {
+            let mut roles = Vec::with_capacity(partition.spans.len());
+            for span in 0..partition.spans.len() {
+                roles.push(
+                    partition
+                        .provenance
+                        .owners(span)
+                        .iter()
+                        .any(|&(source, _)| {
+                            self.source_operands.get(source as usize).copied() == Some(0)
+                        }),
+                );
+            }
+            roles
+        };
+        let mut plans = Vec::with_capacity(clip_operands.len());
+        for &clip_operand in &clip_operands {
+            let cells = self.select_subdivision_cells(
+                partition,
+                &topology,
+                &global,
+                &facts,
+                0,
+                clip_operand,
+            );
+            plans.push(cells.emission_plan_with_protected(
+                partition,
+                &topology,
+                &edges,
+                &global,
+                protected.as_deref(),
+                Some(&preserved_spans),
+            )?);
+        }
+        let polygon_edge_roles = plans
+            .iter()
+            .map(|plan| plan.polygon_edge_roles(partition, &topology, &edges, &preserved_spans))
+            .collect::<Result<Vec<_>>>()?;
+        let emissions: Vec<_> = plans
+            .iter()
+            .map(|plan| plan.emission(&topology, &edges))
+            .collect();
+        let emission_refs: Vec<_> = emissions.iter().collect();
+        let embedding = partition.embed(&emission_refs, "subdivide")?;
+        let mut node_parts = Vec::with_capacity(plans.len());
+        for (plan, emission) in plans.iter().zip(&emissions) {
+            node_parts.push(plan.build_node_parts(partition, &topology, emission)?);
+        }
+        trace_work.charge(
+            u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut nodes = Vec::new();
+        let mut seen = vec![false; partition.node_count()];
+        for emission in &emissions {
+            for &[start, end] in &emission.items {
+                for node in [start, end] {
+                    trace_work.charge(1)?;
+                    let admitted = seen.get_mut(node.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "subdivision emission references an unknown node".into(),
+                        )
+                    })?;
+                    if !*admitted {
+                        *admitted = true;
+                        nodes.push(node);
+                    }
+                }
+            }
+        }
+        let views = self.source_line_trace_views(partition, trace_work)?;
+        let requests_by_node = self.polygon_node_root_requests(
+            partition,
+            &nodes,
+            &ring_ranges,
+            source_traces,
+            &views,
+            trace_work,
+        )?;
+        let mut polygon_traces = Vec::with_capacity(plans.len());
+        for (parts, roles) in node_parts.iter().zip(&polygon_edge_roles) {
+            polygon_traces.push(self.polygon_ring_traces_from_nodes(
+                &parts.polygons,
+                roles,
+                &requests_by_node,
+                trace_work,
+            )?);
+        }
+        let by_node = resolve_traced_node_requests(
+            partition,
+            &embedding,
+            &nodes,
+            requests_by_node,
+            declared_axes,
+            roots,
+            Some(roots),
+            Some(self),
+            context,
+            trace_work,
+        )?;
+        let old_polygon_xy = node_parts
+            .iter()
+            .map(|parts| self.polygon_node_xy(&parts.polygons, &by_node))
+            .collect::<Result<Vec<_>>>()?;
+        let mut node_parts = node_parts.into_iter();
+        let mut polygon_edge_roles = polygon_edge_roles.into_iter();
+        let first_roles = polygon_edge_roles.next().ok_or_else(|| {
+            GeometryErrorKind::Invalid("first polygon edge-role plan is unknown".into())
+        })?;
+        let first_publication = Some((first_roles.clone(), roots.frame, &mut *budget));
+        let first = self.node_parts_to_shape_resolved(
+            node_parts.next().ok_or_else(|| {
+                GeometryErrorKind::Invalid("first subdivision polygon part is unknown".into())
+            })?,
+            &embedding,
+            &by_node,
+            declared_axes,
+            strict,
+            "subdivide",
+            first_publication,
+        )?;
+        let first_traces = self.align_published_polygon_traces(
+            &first,
+            &old_polygon_xy[0],
+            &first_roles,
+            polygon_traces.remove(0),
+            roots.frame,
+            trace_work,
+        )?;
+        let first_traces = (!first_traces.is_empty()).then_some(first_traces);
+        let second_roles = polygon_edge_roles.next().ok_or_else(|| {
+            GeometryErrorKind::Invalid("second polygon edge-role plan is unknown".into())
+        })?;
+        let second_publication = Some((second_roles.clone(), roots.frame, &mut *budget));
+        let second = self.node_parts_to_shape_resolved(
+            node_parts.next().ok_or_else(|| {
+                GeometryErrorKind::Invalid("second subdivision polygon part is unknown".into())
+            })?,
+            &embedding,
+            &by_node,
+            declared_axes,
+            strict,
+            "subdivide",
+            second_publication,
+        )?;
+        let second_traces = self.align_published_polygon_traces(
+            &second,
+            &old_polygon_xy[1],
+            &second_roles,
+            polygon_traces.remove(0),
+            roots.frame,
+            trace_work,
+        )?;
+        let second_traces = (!second_traces.is_empty()).then_some(second_traces);
+        Ok([
+            SubdivisionPart {
+                shape: first,
+                traces: None,
+                polygon_traces: first_traces,
+            },
+            SubdivisionPart {
+                shape: second,
+                traces: None,
+                polygon_traces: second_traces,
+            },
+        ])
+    }
+
+    fn subdivision_parts_traced<M: ChartMetric, C: RootCatalog, W: SubdivisionTraceWork>(
+        &self,
+        partition: &ExactPartition<'_>,
+        source_shape: &Shape,
+        source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
+        roots: &C,
+        root_positions: Option<&SubdivisionRootCatalog>,
+        declared_axes: crate::geometry::CoordinateAxes,
+        strict: bool,
+        clip_operands: [usize; 2],
+        budget: &mut ExpansionBudget,
+        context: &SourceArcContext<'_, '_, M>,
+        trace_work: &mut W,
     ) -> Result<[SubdivisionPart; 2]> {
         let Some(source_traces) = source_traces else {
             let [left, right] = self.subdivision_parts(
@@ -2486,10 +3291,12 @@ impl ExactSourceInventory {
                 SubdivisionPart {
                     shape: left,
                     traces: None,
+                    polygon_traces: None,
                 },
                 SubdivisionPart {
                     shape: right,
                     traces: None,
+                    polygon_traces: None,
                 },
             ]);
         };
@@ -2545,8 +3352,8 @@ impl ExactSourceInventory {
         trace_work.charge(
             u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        let mut seen = vec![false; partition.node_count()];
         let mut nodes = Vec::new();
+        let mut seen = vec![false; partition.node_count()];
         for emission in &emissions {
             for &[start, end] in &emission.items {
                 for node in [start, end] {
@@ -2563,10 +3370,8 @@ impl ExactSourceInventory {
                 }
             }
         }
-        let embedding = partition.embed_with_budget(&emission_refs, "subdivide", trace_work)?;
-        let by_node =
-            self.resolve_node_points(partition, &embedding, nodes, declared_axes, context, None)?;
-        let views = partition.source_span_trace_views(&self.source_segments, trace_work)?;
+        let embedding = trace_work.embed(partition, &emission_refs, "subdivide")?;
+        let views = self.source_line_trace_views(partition, trace_work)?;
         let mut run_plans = Vec::with_capacity(selected.len());
         for spans in &selected {
             run_plans.push(self.source_line_runs(
@@ -2578,6 +3383,18 @@ impl ExactSourceInventory {
                 trace_work,
             )?);
         }
+        let by_node = self.resolve_traced_source_line_points(
+            partition,
+            &embedding,
+            &nodes,
+            &run_plans,
+            source_traces,
+            declared_axes,
+            roots,
+            root_positions,
+            context,
+            trace_work,
+        )?;
         let mut parts = Vec::with_capacity(run_plans.len());
         for runs in run_plans {
             parts.push(self.emit_traced_source_line_shape(
@@ -2585,8 +3402,11 @@ impl ExactSourceInventory {
                 runs,
                 source_traces,
                 &by_node,
+                roots,
+                root_positions,
                 declared_axes,
                 strict,
+                context,
                 trace_work,
             )?);
         }
@@ -2595,6 +3415,536 @@ impl ExactSourceInventory {
             parts.next().expect("two subdivision selections"),
             parts.next().expect("two subdivision selections"),
         ])
+    }
+
+    fn source_line_trace_views<W: Work + ?Sized>(
+        &self,
+        partition: &ExactPartition<'_>,
+        work: &mut W,
+    ) -> Result<SourceLineTraceViews> {
+        let all_views = partition.source_span_trace_views(&self.source_segments, work)?;
+        if all_views.len() != self.source_operands.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "exact source trace views do not match the partition source inventory".into(),
+            )
+            .into());
+        }
+        let mut source_ids = Vec::new();
+        let mut views = Vec::new();
+        for (source, source_views) in all_views.into_iter().enumerate() {
+            work.charge(1)?;
+            if self.source_operands.get(source).copied() == Some(0) {
+                source_ids.push(source);
+                views.push(source_views);
+            }
+        }
+        Ok(SourceLineTraceViews { source_ids, views })
+    }
+
+    fn polygon_node_root_requests<W: Work>(
+        &self,
+        partition: &ExactPartition<'_>,
+        nodes: &[NodeId],
+        ring_ranges: &[Range<usize>],
+        ring_traces: &[crate::geometry::topology::SourceTrace],
+        views: &SourceLineTraceViews,
+        work: &mut W,
+    ) -> Result<Vec<Vec<RootRequest>>> {
+        if ring_ranges.len() != ring_traces.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon source ring ranges do not match their root traces".into(),
+            )
+            .into());
+        }
+        let edge_count = ring_ranges.iter().try_fold(0_usize, |count, range| {
+            count
+                .checked_add(range.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        if edge_count != views.source_ids.len() || views.source_ids.len() != views.views.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon operand-0 source rows do not match the ring trace inventory".into(),
+            )
+            .into());
+        }
+        let mut ring_of_source = vec![None; self.source_segments.len()];
+        for (ring, range) in ring_ranges.iter().enumerate() {
+            for source in range.clone() {
+                let slot = ring_of_source.get_mut(source).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "polygon ring ranges are outside the source segment inventory".into(),
+                    )
+                })?;
+                *slot = Some((ring, source - range.start));
+            }
+        }
+        let mut visible_nodes = vec![false; partition.node_count()];
+        for &node in nodes {
+            let slot = visible_nodes.get_mut(node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon emission node is unknown".into())
+            })?;
+            *slot = true;
+        }
+        let mut requests_by_node = Vec::new();
+        requests_by_node.resize_with(partition.node_count(), Vec::new);
+        for (&full_source, source_views) in views.source_ids.iter().zip(&views.views) {
+            work.charge(1)?;
+            if self.source_operands.get(full_source).copied() != Some(0) {
+                return Err(GeometryErrorKind::Invalid(
+                    "polygon trace remap includes a clip-operand source".into(),
+                )
+                .into());
+            }
+            let (ring, edge) = ring_of_source
+                .get(full_source)
+                .copied()
+                .flatten()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "polygon source remap has no shell or hole trace".into(),
+                    )
+                })?;
+            let trace = ring_traces.get(ring).ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon source ring trace is unknown".into())
+            })?;
+            let ring_range = ring_ranges.get(ring).ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon ring source range is unknown".into())
+            })?;
+            if trace.edge_count() != ring_range.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "polygon source trace edge count differs from its ring".into(),
+                )
+                .into());
+            }
+            for view in source_views {
+                work.charge(1)?;
+                let span = *partition.spans.get(view.span as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("polygon source trace span is unknown".into())
+                })?;
+                let endpoints = if view.reversed {
+                    [
+                        (span.start, &view.source_end),
+                        (span.end, &view.source_start),
+                    ]
+                } else {
+                    [
+                        (span.start, &view.source_start),
+                        (span.end, &view.source_end),
+                    ]
+                };
+                for (node, parameter) in endpoints {
+                    if !visible_nodes.get(node.0 as usize).copied().unwrap_or(false) {
+                        continue;
+                    }
+                    let requests = trace.requests_at(edge, parameter, work)?;
+                    let row = requests_by_node.get_mut(node.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "polygon source trace node is outside the partition".into(),
+                        )
+                    })?;
+                    work.charge(
+                        u64::try_from(requests.len()).map_err(|_| ResourceError::SizeOverflow)?,
+                    )?;
+                    row.extend(requests);
+                }
+            }
+        }
+        Ok(requests_by_node)
+    }
+
+    fn polygon_ring_traces_from_nodes<W: Work>(
+        &self,
+        polygons: &[Vec<Vec<NodeId>>],
+        computed_edges: &[Vec<Vec<bool>>],
+        requests_by_node: &[Vec<RootRequest>],
+        work: &mut W,
+    ) -> Result<Vec<crate::geometry::topology::SourceTrace>> {
+        if polygons.len() != computed_edges.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon ring traces do not match the emitted polygon parts".into(),
+            )
+            .into());
+        }
+        let ring_count = polygons.iter().try_fold(0_usize, |count, polygon| {
+            count
+                .checked_add(polygon.len())
+                .ok_or(ResourceError::SizeOverflow)
+        })?;
+        let mut traces = Vec::with_capacity(ring_count);
+        for (polygon_index, polygon) in polygons.iter().enumerate() {
+            let roles = computed_edges.get(polygon_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon edge-role part is unknown".into())
+            })?;
+            if roles.len() != polygon.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "polygon edge roles do not match shell and hole rings".into(),
+                )
+                .into());
+            }
+            for (ring, roles) in polygon.iter().zip(roles) {
+                let edge_count = ring.len().saturating_sub(1);
+                if roles.len() != edge_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "polygon edge roles do not match a closed ring".into(),
+                    )
+                    .into());
+                }
+                let mut edge_rows = Vec::with_capacity(edge_count);
+                for (edge, &computed) in roles.iter().enumerate() {
+                    work.charge(1)?;
+                    if computed {
+                        edge_rows.push(Vec::new());
+                        continue;
+                    }
+                    let start = *ring.get(edge).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("polygon trace start node is unknown".into())
+                    })?;
+                    let end = *ring.get(edge.wrapping_add(1)).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("polygon trace end node is unknown".into())
+                    })?;
+                    let start_requests =
+                        requests_by_node.get(start.0 as usize).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "polygon trace start node has no source request row".into(),
+                            )
+                        })?;
+                    let end_requests = requests_by_node.get(end.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "polygon trace end node has no source request row".into(),
+                        )
+                    })?;
+                    edge_rows.push(mapped_root_ranges_between_requests(
+                        start_requests,
+                        end_requests,
+                        work,
+                    )?);
+                }
+                traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
+                    edge_rows, work,
+                )?);
+            }
+        }
+        Ok(traces)
+    }
+
+    fn polygon_node_xy(
+        &self,
+        polygons: &[Vec<Vec<NodeId>>],
+        by_node: &ResolvedNodePoints<'_, '_>,
+    ) -> Result<Vec<Vec<Vec<XY>>>> {
+        let coordinates = by_node.coordinates();
+        polygons
+            .iter()
+            .map(|polygon| {
+                polygon
+                    .iter()
+                    .map(|ring| {
+                        ring.iter()
+                            .map(|&node| {
+                                Ok(by_node
+                                    .point(node, embedding::Embedding::xy_at(coordinates, node))
+                                    .xy())
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn align_published_polygon_traces<W: Work>(
+        &self,
+        shape: &Shape,
+        old_xy: &[Vec<Vec<XY>>],
+        computed_edges: &[Vec<Vec<bool>>],
+        source_traces: Vec<crate::geometry::topology::SourceTrace>,
+        frame: GeographicFrame,
+        work: &mut W,
+    ) -> Result<Vec<crate::geometry::topology::SourceTrace>> {
+        let mut polygons = Vec::new();
+        collect_polygon_parts(shape, &mut polygons);
+        if polygons.len() != old_xy.len() || polygons.len() != computed_edges.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "published polygons do not match their subdivision trace rows".into(),
+            )
+            .into());
+        }
+        let mut traces = Vec::with_capacity(source_traces.len());
+        let mut trace_index = 0_usize;
+        for (polygon_index, polygon) in polygons.into_iter().enumerate() {
+            let old_rings = old_xy.get(polygon_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("unpublished polygon trace rows are unknown".into())
+            })?;
+            let edge_roles = computed_edges.get(polygon_index).ok_or_else(|| {
+                GeometryErrorKind::Invalid("published polygon edge roles are unknown".into())
+            })?;
+            let published_rings = polygon.rings().collect::<Vec<_>>();
+            if old_rings.len() != edge_roles.len() || published_rings.len() != old_rings.len() {
+                return Err(GeometryErrorKind::Invalid(
+                    "published shell and hole rows do not match their source roles".into(),
+                )
+                .into());
+            }
+            for ((old_ring, roles), published_ring) in
+                old_rings.iter().zip(edge_roles).zip(published_rings)
+            {
+                let source_trace = source_traces.get(trace_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("polygon ring source trace is unknown".into())
+                })?;
+                trace_index = trace_index
+                    .checked_add(1)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                let old_edge_count = old_ring.len().saturating_sub(1);
+                if roles.len() != old_edge_count || source_trace.edge_count() != old_edge_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "polygon trace rows do not match their stored ring edges".into(),
+                    )
+                    .into());
+                }
+                let published = published_ring.coords();
+                let published_edge_count = published.coord_count().saturating_sub(1);
+                let mut output_edge = 0_usize;
+                let mut edge_rows = Vec::with_capacity(published_edge_count);
+                for (edge, &computed) in roles.iter().enumerate() {
+                    let target = *old_ring.get(edge.wrapping_add(1)).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("polygon trace endpoint is unknown".into())
+                    })?;
+                    let source_row = if computed {
+                        Vec::new()
+                    } else {
+                        mapped_root_ranges_between_requests(
+                            &source_trace.requests_at(edge, &ExactRational::zero(), work)?,
+                            &source_trace.requests_at(edge, &ExactRational::one(), work)?,
+                            work,
+                        )?
+                    };
+                    let mut emitted = 0_usize;
+                    loop {
+                        if output_edge >= published_edge_count {
+                            return Err(GeometryErrorKind::Invalid(
+                                "polygon publication lost a ring endpoint".into(),
+                            )
+                            .into());
+                        }
+                        let endpoint = published.nth_coord(output_edge.wrapping_add(1));
+                        edge_rows.push(source_row.clone());
+                        output_edge = output_edge
+                            .checked_add(1)
+                            .ok_or(ResourceError::SizeOverflow)?;
+                        emitted = emitted.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+                        if same_published_polygon_xy(frame, endpoint.xy(), target)? {
+                            break;
+                        }
+                        if !computed {
+                            return Err(GeometryErrorKind::Invalid(
+                                "a preserved polygon source edge expanded during publication"
+                                    .into(),
+                            )
+                            .into());
+                        }
+                    }
+                    if !computed && emitted != 1 {
+                        return Err(GeometryErrorKind::Invalid(
+                            "a source polygon edge has more than one published occurrence".into(),
+                        )
+                        .into());
+                    }
+                }
+                if output_edge != published_edge_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "polygon publication added an unassigned edge".into(),
+                    )
+                    .into());
+                }
+                traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
+                    edge_rows, work,
+                )?);
+            }
+        }
+        if trace_index != source_traces.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "polygon source traces include an unassigned ring".into(),
+            )
+            .into());
+        }
+        Ok(traces)
+    }
+
+    fn resolve_traced_source_line_points<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work>(
+        &self,
+        partition: &'p ExactPartition<'_>,
+        embedding: &'e embedding::Embedding<'p>,
+        nodes: &[NodeId],
+        run_plans: &[Vec<SourceLineRun>],
+        source_traces: &[crate::geometry::topology::SourceTrace],
+        axes: CoordinateAxes,
+        roots: &C,
+        root_positions: Option<&SubdivisionRootCatalog>,
+        context: &SourceArcContext<'_, '_, M>,
+        work: &mut W,
+    ) -> Result<ResolvedNodePoints<'e, 'p>> {
+        if !axes.has_z() && !axes.has_m() && root_positions.is_none() {
+            return Ok(ResolvedNodePoints::from_embedding(embedding, None));
+        }
+        work.charge(
+            u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut requests_by_node = Vec::new();
+        requests_by_node.resize_with(partition.node_count(), Vec::new);
+        for runs in run_plans {
+            for run in runs {
+                if run.nodes.len() != run.trace_slices.len().saturating_add(1) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "traced source line run vertices do not match its edge slices".into(),
+                    )
+                    .into());
+                }
+                let trace = source_traces.get(run.member).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source line trace member is unknown".into())
+                })?;
+                for (edge_index, (source_edge, start, end)) in run.trace_slices.iter().enumerate() {
+                    let start_node = *run.nodes.get(edge_index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("source line trace start node is unknown".into())
+                    })?;
+                    let end_node = *run.nodes.get(edge_index.wrapping_add(1)).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("source line trace end node is unknown".into())
+                    })?;
+                    let start_requests = trace.requests_at(*source_edge, start, work)?;
+                    let end_requests = trace.requests_at(*source_edge, end, work)?;
+                    let start_row =
+                        requests_by_node
+                            .get_mut(start_node.0 as usize)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "source line trace start node is outside the partition".into(),
+                                )
+                            })?;
+                    work.charge(
+                        u64::try_from(start_requests.len())
+                            .map_err(|_| ResourceError::SizeOverflow)?,
+                    )?;
+                    start_row.extend(start_requests);
+                    let end_row =
+                        requests_by_node
+                            .get_mut(end_node.0 as usize)
+                            .ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "source line trace end node is outside the partition".into(),
+                                )
+                            })?;
+                    work.charge(
+                        u64::try_from(end_requests.len())
+                            .map_err(|_| ResourceError::SizeOverflow)?,
+                    )?;
+                    end_row.extend(end_requests);
+                }
+            }
+        }
+        resolve_traced_node_requests(
+            partition,
+            embedding,
+            nodes,
+            requests_by_node,
+            axes,
+            roots,
+            root_positions,
+            None,
+            context,
+            work,
+        )
+    }
+
+    fn source_line_seam_cuts<W: Work>(
+        &self,
+        trace: &crate::geometry::topology::SourceTrace,
+        source_edge: usize,
+        start: &ExactRational,
+        end: &ExactRational,
+        roots: &SubdivisionRootCatalog,
+        work: &mut W,
+    ) -> Result<Vec<SourceLineSeamCut>> {
+        let start_requests = trace.requests_at(source_edge, start, work)?;
+        let end_requests = trace.requests_at(source_edge, end, work)?;
+        let mut cuts = Vec::<SourceLineSeamCut>::new();
+        for start_request in start_requests {
+            work.charge(1)?;
+            let Some(end_request) = end_requests
+                .iter()
+                .find(|request| request.root() == start_request.root())
+            else {
+                continue;
+            };
+            let Some(root_parameter) = roots.seam_parameter(start_request.root(), work)? else {
+                continue;
+            };
+            let root_order = start_request
+                .parameter()
+                .try_cmp_with_work(end_request.parameter(), work)?;
+            if root_order.is_eq() {
+                continue;
+            }
+            let before = start_request
+                .parameter()
+                .try_cmp_with_work(&root_parameter, work)?;
+            let after = end_request
+                .parameter()
+                .try_cmp_with_work(&root_parameter, work)?;
+            let crosses = if root_order.is_lt() {
+                before.is_lt() && after.is_gt()
+            } else {
+                before.is_gt() && after.is_lt()
+            };
+            if !crosses {
+                continue;
+            }
+            let root_width = end_request
+                .parameter()
+                .try_subtract_with_work(start_request.parameter(), work)?;
+            let root_offset =
+                root_parameter.try_subtract_with_work(start_request.parameter(), work)?;
+            let edge_fraction = root_offset.try_quotient_with_work(&root_width, work)?;
+            let edge_width = end.try_subtract_with_work(start, work)?;
+            let parameter = start.try_add_with_work(
+                &edge_width.try_product_with_work(&edge_fraction, work)?,
+                work,
+            )?;
+            if parameter.try_cmp_with_work(start, work)?.is_le()
+                || parameter.try_cmp_with_work(end, work)?.is_ge()
+            {
+                continue;
+            }
+            let coordinate = roots.source_position(start_request.root(), &root_parameter, work)?;
+            let Some(coordinate) = coordinate else {
+                return Err(GeometryErrorKind::Invalid(
+                    "an original seam crossing has no source-chart position".into(),
+                )
+                .into());
+            };
+            let requests = trace.requests_at(source_edge, &parameter, work)?;
+            let mut insert_at = cuts.len();
+            let mut duplicate = false;
+            for (index, existing) in cuts.iter().enumerate() {
+                match parameter.try_cmp_with_work(&existing.parameter, work)? {
+                    Ordering::Less => {
+                        insert_at = index;
+                        break;
+                    },
+                    Ordering::Equal => {
+                        duplicate = true;
+                        break;
+                    },
+                    Ordering::Greater => {},
+                }
+            }
+            if !duplicate {
+                cuts.insert(insert_at, SourceLineSeamCut {
+                    parameter,
+                    coordinate,
+                    requests,
+                });
+            }
+        }
+        Ok(cuts)
     }
 
     fn subdivision_line_parts<M: ChartMetric>(
@@ -2665,7 +4015,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         ranges: &[Range<usize>],
-        views: &[Vec<SourceSpanTraceView>],
+        views: &SourceLineTraceViews,
         selected: &[bool],
         source_traces: &[crate::geometry::topology::SourceTrace],
         work: &mut W,
@@ -2677,6 +4027,12 @@ impl ExactSourceInventory {
         if source_traces.len() != ranges.len() {
             return Err(GeometryErrorKind::Invalid(
                 "source trace rows do not match the line members".into(),
+            )
+            .into());
+        }
+        if views.source_ids.len() != views.views.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "exact subdivision line view remap does not match its source rows".into(),
             )
             .into());
         }
@@ -2704,11 +4060,18 @@ impl ExactSourceInventory {
             let mut run = Vec::new();
             let mut trace_slices = Vec::new();
             for source in range.clone() {
-                let source_views = views.get(source).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "exact subdivision line provenance lost a source segment".into(),
+                let (Some(full_source), Some(source_views)) = (
+                    views.source_ids.get(source).copied(),
+                    views.views.get(source),
+                ) else {
+                    continue;
+                };
+                if self.source_operands.get(full_source).copied() != Some(0) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "exact subdivision line remap includes a clip-operand source".into(),
                     )
-                })?;
+                    .into());
+                }
                 for view in source_views {
                     work.charge(1)?;
                     let is_selected = *selected.get(view.span as usize).ok_or_else(|| {
@@ -2764,7 +4127,7 @@ impl ExactSourceInventory {
             }
             push_source_line_run(&mut runs, member, &mut run, &mut trace_slices, true, work)?;
         }
-        if source_offset != views.len() {
+        if source_offset != views.source_ids.len() {
             return Err(GeometryErrorKind::Invalid(
                 "line member source ranges omit partition source segments".into(),
             )
@@ -2773,43 +4136,217 @@ impl ExactSourceInventory {
         Ok(runs)
     }
 
-    fn emit_traced_source_line_shape<W: Work>(
+    fn emit_traced_source_line_shape<M: ChartMetric, C: RootCatalog, W: Work>(
         &self,
         source_kind: GeometryKind,
         runs: Vec<SourceLineRun>,
         source_traces: &[crate::geometry::topology::SourceTrace],
         by_node: &ResolvedNodePoints,
+        roots: &C,
+        root_positions: Option<&SubdivisionRootCatalog>,
         declared_axes: CoordinateAxes,
         strict: bool,
+        context: &SourceArcContext<'_, '_, M>,
         work: &mut W,
     ) -> Result<SubdivisionPart> {
-        let node_count = runs.iter().try_fold(0_usize, |count, run| {
+        if root_positions.is_none() {
+            let node_count = runs.iter().try_fold(0_usize, |count, run| {
+                count
+                    .checked_add(run.nodes.len())
+                    .ok_or(ResourceError::SizeOverflow)
+            })?;
+            work.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+            let mut line_nodes = Vec::with_capacity(node_count);
+            for run in &runs {
+                line_nodes.extend(run.nodes.iter().copied());
+            }
+            let line_axes = bucket_axes(
+                line_nodes.iter().copied(),
+                by_node,
+                declared_axes,
+                strict,
+                "subdivide",
+            )?;
+            let coordinates = by_node.coordinates();
+            let mut lines = Vec::with_capacity(runs.len());
+            for run in &runs {
+                let mut points = Vec::with_capacity(run.nodes.len());
+                for &node in &run.nodes {
+                    work.charge(1)?;
+                    points.push(with_axes(
+                        by_node.point(node, embedding::Embedding::xy_at(coordinates, node)),
+                        line_axes,
+                    ));
+                }
+                lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
+            }
+            if lines.is_empty() {
+                return Ok(SubdivisionPart {
+                    shape: Shape::typed_empty(source_kind, declared_axes),
+                    traces: Some(Vec::new()),
+                    polygon_traces: None,
+                });
+            }
+            work.charge(u64::try_from(runs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            let mut traces = Vec::with_capacity(runs.len());
+            for run in runs {
+                let source_trace = source_traces.get(run.member).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source line trace member is unknown".into())
+                })?;
+                traces.push(source_trace.compose_edges(&run.trace_slices, work)?);
+            }
+            return Ok(SubdivisionPart {
+                shape: Shape::narrow_lines(line_axes, lines),
+                traces: Some(traces),
+                polygon_traces: None,
+            });
+        }
+
+        let root_positions = root_positions.expect("ordinary trace path has its root catalog");
+        let mut seam_samples = Vec::new();
+        let mut traced_runs = Vec::with_capacity(runs.len());
+        for run in runs {
+            if run.nodes.len() != run.trace_slices.len().saturating_add(1) {
+                return Err(GeometryErrorKind::Invalid(
+                    "traced source line run vertices do not match its edge slices".into(),
+                )
+                .into());
+            }
+            let trace = source_traces.get(run.member).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source line trace member is unknown".into())
+            })?;
+            let mut vertices =
+                Vec::with_capacity(run.nodes.len().saturating_add(run.trace_slices.len()));
+            let first = *run.nodes.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("traced source line run has no first vertex".into())
+            })?;
+            vertices.push(TracedSourceLineVertex::Node(first));
+            let mut trace_slices = Vec::new();
+            for (edge_index, (source_edge, start, end)) in run.trace_slices.iter().enumerate() {
+                let cuts = self.source_line_seam_cuts(
+                    trace,
+                    *source_edge,
+                    start,
+                    end,
+                    root_positions,
+                    work,
+                )?;
+                let mut slice_start = start.clone();
+                for cut in cuts {
+                    trace_slices.push((
+                        *source_edge,
+                        slice_start,
+                        cut.parameter.try_clone_with_work(work)?,
+                    ));
+                    let sample_index = seam_samples.len();
+                    seam_samples.push(SourceLineSeamSample {
+                        coordinate: cut.coordinate,
+                        requests: cut.requests,
+                    });
+                    vertices.push(TracedSourceLineVertex::Seam(sample_index));
+                    slice_start = cut.parameter;
+                }
+                trace_slices.push((*source_edge, slice_start, end.clone()));
+                let node = *run.nodes.get(edge_index.wrapping_add(1)).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("source line trace end node is unknown".into())
+                })?;
+                vertices.push(TracedSourceLineVertex::Node(node));
+            }
+            traced_runs.push(TracedSourceLineRun {
+                member: run.member,
+                vertices,
+                trace_slices,
+            });
+        }
+
+        let seam_ordinates = if declared_axes.has_z() || declared_axes.has_m() {
+            let mut request_rows = Vec::with_capacity(seam_samples.len());
+            for sample in &mut seam_samples {
+                request_rows.push(RequestRowInput {
+                    axes: declared_axes,
+                    requests: std::mem::take(&mut sample.requests),
+                });
+            }
+            resolve_request_rows(&request_rows, roots, context.metric_access(), work)?
+        } else {
+            vec![NodeOrdinates::default(); seam_samples.len()]
+        };
+        if seam_ordinates.len() != seam_samples.len() {
+            return Err(GeometryErrorKind::Invalid(
+                "original-root seam resolution returned incomplete source ordinates".into(),
+            )
+            .into());
+        }
+        let node_count = traced_runs.iter().try_fold(0_usize, |count, run| {
             count
-                .checked_add(run.nodes.len())
+                .checked_add(
+                    run.vertices
+                        .iter()
+                        .filter(|vertex| matches!(vertex, TracedSourceLineVertex::Node(_)))
+                        .count(),
+                )
                 .ok_or(ResourceError::SizeOverflow)
         })?;
         work.charge(u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut line_nodes = Vec::with_capacity(node_count);
-        for run in &runs {
-            line_nodes.extend(run.nodes.iter().copied());
+        for run in &traced_runs {
+            for vertex in &run.vertices {
+                if let TracedSourceLineVertex::Node(node) = vertex {
+                    line_nodes.push(*node);
+                }
+            }
         }
-        let line_axes = bucket_axes(
+        let mut line_axes = bucket_axes(
             line_nodes.iter().copied(),
             by_node,
             declared_axes,
             strict,
             "subdivide",
         )?;
+        let mut has_z = line_axes.has_z();
+        let mut has_m = line_axes.has_m();
+        for ordinates in &seam_ordinates {
+            has_z &= ordinates.z.value().is_some();
+            has_m &= ordinates.m.value().is_some();
+        }
+        if strict && (has_z != declared_axes.has_z() || has_m != declared_axes.has_m()) {
+            return Err(GeometryErrorKind::ordinate_dropped("subdivide"));
+        }
+        line_axes = CoordinateAxes::new(crate::geometry::HasZ(has_z), crate::geometry::HasM(has_m));
+
         let coordinates = by_node.coordinates();
-        let mut lines = Vec::with_capacity(runs.len());
-        for run in &runs {
-            let mut points = Vec::with_capacity(run.nodes.len());
-            for &node in &run.nodes {
+        let mut lines = Vec::with_capacity(traced_runs.len());
+        for run in &traced_runs {
+            let mut points = Vec::with_capacity(run.vertices.len());
+            for vertex in &run.vertices {
                 work.charge(1)?;
-                points.push(with_axes(
-                    by_node.point(node, embedding::Embedding::xy_at(coordinates, node)),
-                    line_axes,
-                ));
+                points.push(match *vertex {
+                    TracedSourceLineVertex::Node(node) => with_axes(
+                        by_node.point(node, embedding::Embedding::xy_at(coordinates, node)),
+                        line_axes,
+                    ),
+                    TracedSourceLineVertex::Seam(sample_index) => {
+                        let sample = seam_samples.get(sample_index).ok_or_else(|| {
+                            GeometryErrorKind::Invalid("source seam sample is unknown".into())
+                        })?;
+                        let ordinates =
+                            seam_ordinates.get(sample_index).copied().ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "source seam ordinate row is unknown".into(),
+                                )
+                            })?;
+                        Point::new_raw_axes(
+                            sample.coordinate.x,
+                            sample.coordinate.y,
+                            crate::geometry::ZOrdinate(
+                                line_axes.has_z().then(|| ordinates.z.value()).flatten(),
+                            ),
+                            crate::geometry::MOrdinate(
+                                line_axes.has_m().then(|| ordinates.m.value()).flatten(),
+                            ),
+                        )
+                    },
+                });
             }
             lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
         }
@@ -2817,11 +4354,12 @@ impl ExactSourceInventory {
             return Ok(SubdivisionPart {
                 shape: Shape::typed_empty(source_kind, declared_axes),
                 traces: Some(Vec::new()),
+                polygon_traces: None,
             });
         }
-        work.charge(u64::try_from(runs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut traces = Vec::with_capacity(runs.len());
-        for run in runs {
+        work.charge(u64::try_from(traced_runs.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let mut traces = Vec::with_capacity(traced_runs.len());
+        for run in traced_runs {
             let source_trace = source_traces.get(run.member).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source line trace member is unknown".into())
             })?;
@@ -2830,6 +4368,7 @@ impl ExactSourceInventory {
         Ok(SubdivisionPart {
             shape: Shape::narrow_lines(line_axes, lines),
             traces: Some(traces),
+            polygon_traces: None,
         })
     }
 
@@ -4850,6 +6389,64 @@ fn source_line_ranges(source: LineSource<'_>) -> Result<Vec<Range<usize>>> {
         },
     }
     Ok(ranges)
+}
+
+fn polygon_source_ring_ranges(shape: &Shape) -> Result<Vec<Range<usize>>> {
+    let polygons: Vec<&Polygon> = match shape {
+        Shape::Polygon(polygon) => vec![polygon],
+        Shape::MultiPolygon(polygons) => polygons.iter().collect(),
+        _ => {
+            return Err(GeometryErrorKind::Invalid(
+                "subdivision ring traces require a polygonal source shape".into(),
+            )
+            .into());
+        },
+    };
+    let mut ranges = Vec::new();
+    let mut offset = 0_usize;
+    for polygon in polygons {
+        for ring in polygon.rings() {
+            let start = offset;
+            for _ in ring.segment_pairs() {
+                offset = offset.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            }
+            ranges.push(start..offset);
+        }
+    }
+    Ok(ranges)
+}
+
+fn collect_polygon_parts<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) {
+    match shape {
+        Shape::Polygon(polygon) => polygons.push(polygon),
+        Shape::MultiPolygon(multipolygon) => polygons.extend(multipolygon.iter()),
+        Shape::GeometryCollection(collection) => {
+            for member in collection {
+                collect_polygon_parts(member, polygons);
+            }
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => {},
+    }
+}
+
+fn same_published_polygon_xy(frame: GeographicFrame, left: XY, right: XY) -> Result<bool> {
+    let longitude = frame.longitude();
+    let left_x = longitude
+        .canonicalize(left.x)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+        .get();
+    let right_x = longitude
+        .canonicalize(right.x)
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?
+        .get();
+    Ok(same_point(
+        XY::new(left_x, left.y),
+        XY::new(right_x, right.y),
+    ))
 }
 
 #[expect(
