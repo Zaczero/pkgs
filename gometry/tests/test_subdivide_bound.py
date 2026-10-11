@@ -330,3 +330,27 @@ def test_geographic_subdivide_resolves_seam_ordinates_on_the_original_root() -> 
     for coordinate in seam_vertices:
         assert coordinate[2] == pytest.approx(10 + 200 * arclength_fraction, abs=2e-5)
         assert coordinate[3] == pytest.approx(100 + 1000 * arclength_fraction, abs=1e-4)
+
+
+def test_geographic_polygon_subdivide_keeps_seam_source_edges_bounded() -> None:
+    polygon = gm.Polygon(
+        [
+            (179, -2),
+            (-179, -2),
+            (-179, -1),
+            (-179, 0),
+            (-179, 1),
+            (-179, 2),
+            (179, 2),
+            (179, 1),
+            (179, 0),
+            (179, -1),
+            (179, -2),
+        ],
+        crs='EPSG:4326',
+    )
+
+    parts = polygon.subdivide(max_vertices=8)
+
+    assert len(parts) == 2
+    assert all(part.num_coordinates <= 8 for part in parts)

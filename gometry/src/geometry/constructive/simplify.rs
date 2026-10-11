@@ -30,6 +30,7 @@ thread_local! {
     static SOURCE_LINE_MEMBER_COUNT_CALLS: Cell<usize> = const { Cell::new(0) };
     static SUBDIVISION_LINE_MEMBER_RANGES: RefCell<Vec<(u64, usize, usize)>> = const { RefCell::new(Vec::new()) };
     static SOURCE_ORDINATE_AXIS_SCANS: Cell<usize> = const { Cell::new(0) };
+    static ORDINARY_ROOT_CATALOG_BUILDS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -70,6 +71,16 @@ fn reset_source_ordinate_axis_scans() {
 #[cfg(test)]
 fn source_ordinate_axis_scans() -> usize {
     SOURCE_ORDINATE_AXIS_SCANS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn reset_ordinary_root_catalog_builds() {
+    ORDINARY_ROOT_CATALOG_BUILDS.with(|builds| builds.set(0));
+}
+
+#[cfg(test)]
+fn ordinary_root_catalog_builds() -> usize {
+    ORDINARY_ROOT_CATALOG_BUILDS.with(Cell::get)
 }
 
 pub(crate) trait RdpEdgeSpanGuard: Copy {
@@ -1430,49 +1441,64 @@ pub(crate) fn split<M: crate::geometry::ChartMetric>(
     // Recursive Native children need a producer-to-family projection that
     // this public subdivision entry point does not carry.
     let mut native = NativeSubdivisionContext::new(&original, frame, SubdivisionPath::Ordinary);
+    let mut line_member_counts = SourceLineMemberCountMemo::default();
+    let mut item = SubdivisionWorkItem::new(shape, false, None);
     if let Some(frame) = frame
-        && ShapeCountQuery::default()
-            .coordinate_count(&original)
+        && item
+            .coordinate_count
             .is_some_and(|count| count > max_vertices)
+        && matches!(
+            &item.shape,
+            Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+        )
     {
-        match &original {
-            Shape::LineString(_) | Shape::MultiLineString(_) => {
-                let (roots, traces) = SubdivisionRootCatalog::from_line_shape(&original, frame)?;
-                native.ordinary_roots = Some(roots);
-                native.ordinary_line_traces = Some(traces);
-            },
-            Shape::Polygon(_) | Shape::MultiPolygon(_) => {
-                let (roots, traces) = SubdivisionRootCatalog::from_polygon_shape(&original, frame)?;
-                native.ordinary_roots = Some(roots);
-                native.ordinary_polygon_traces = Some(traces);
-            },
-            Shape::Point(_)
-            | Shape::MultiPoint(_)
-            | Shape::GeometryCollection(_)
-            | Shape::Empty(..) => {},
+        // Area output XY must stay attached to its clip topology; only line
+        // support needs source-chart XY relocation.
+        let root_xy_positions_needed =
+            matches!(
+                &item.shape,
+                Shape::LineString(_) | Shape::MultiLineString(_)
+            ) && SubdivisionRootCatalog::needs_root_xy_positions(&item.shape, item.bounds, frame);
+        let axes = item.shape.axes();
+        if axes.has_z() || axes.has_m() || root_xy_positions_needed {
+            #[cfg(test)]
+            ORDINARY_ROOT_CATALOG_BUILDS.with(|builds| {
+                builds.set(builds.get().saturating_add(1));
+            });
+            match &original {
+                Shape::LineString(_) | Shape::MultiLineString(_) => {
+                    let (roots, traces) = SubdivisionRootCatalog::from_line_shape(
+                        &original,
+                        frame,
+                        root_xy_positions_needed,
+                    )?;
+                    native.ordinary_roots = Some(roots);
+                    native.ordinary_line_traces = Some(traces);
+                },
+                Shape::Polygon(_) | Shape::MultiPolygon(_) => {
+                    let (roots, traces) = SubdivisionRootCatalog::from_polygon_shape(
+                        &original,
+                        frame,
+                        root_xy_positions_needed,
+                    )?;
+                    native.ordinary_roots = Some(roots);
+                    native.ordinary_polygon_traces = Some(traces);
+                },
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => {},
+            }
         }
     }
-    split_with_context(shape, max_vertices, drop, context, &mut native, out, budget)
-}
-
-fn split_with_context<M: crate::geometry::ChartMetric>(
-    shape: Shape,
-    max_vertices: usize,
-    drop: bool,
-    context: &SourceArcContext<'_, '_, M>,
-    native: &mut NativeSubdivisionContext<'_>,
-    out: &mut Vec<Shape>,
-    budget: &mut ExpansionBudget,
-) -> Result<()> {
-    let mut work = Vec::with_capacity(1);
-    let mut staged = Vec::new();
-    let mut line_member_counts = SourceLineMemberCountMemo::default();
-    let source_line_members = if native.frame.is_some() {
-        Some(0..source_line_member_count(&shape, &mut line_member_counts)?)
+    item.source_line_members = if frame.is_some() {
+        Some(0..source_line_member_count(&item.shape, &mut line_member_counts)?)
     } else {
         None
     };
-    let mut item = SubdivisionWorkItem::new(shape, false, source_line_members);
     if native.ordinary_roots.is_some()
         && matches!(
             &item.shape,
@@ -1495,6 +1521,30 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
         })?);
         item.trace_axes = Some(item.shape.axes());
     }
+    split_with_context(
+        item,
+        max_vertices,
+        drop,
+        context,
+        &mut native,
+        &mut line_member_counts,
+        out,
+        budget,
+    )
+}
+
+fn split_with_context<M: crate::geometry::ChartMetric>(
+    item: SubdivisionWorkItem,
+    max_vertices: usize,
+    drop: bool,
+    context: &SourceArcContext<'_, '_, M>,
+    native: &mut NativeSubdivisionContext<'_>,
+    line_member_counts: &mut SourceLineMemberCountMemo,
+    out: &mut Vec<Shape>,
+    budget: &mut ExpansionBudget,
+) -> Result<()> {
+    let mut work = Vec::with_capacity(1);
+    let mut staged = Vec::new();
     work.push(item);
     while let Some(mut item) = work.pop() {
         #[cfg(test)]
@@ -1531,7 +1581,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
             && let (Some(frame), Some(line_members)) =
                 (native.frame, item.source_line_members.clone())
         {
-            let line_count = source_line_member_count(&item.shape, &mut line_member_counts)?;
+            let line_count = source_line_member_count(&item.shape, line_member_counts)?;
             if line_members.len() != line_count {
                 return Err(GeometryErrorKind::Invalid(
                     "subdivision source line members do not match the current source shape".into(),
@@ -1544,10 +1594,10 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                     frame,
                     max_vertices,
                     line_members.start,
-                    &mut line_member_counts,
+                    line_member_counts,
                 )?;
                 if !candidates.is_empty() {
-                    native.prepare(max_vertices, budget, &candidates, &mut line_member_counts)?;
+                    native.prepare(max_vertices, budget, &candidates, line_member_counts)?;
                 }
             }
             if native.has_selected_member(&line_members) {
@@ -1578,7 +1628,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                         &mut item,
                         max_vertices,
                         &mut work,
-                        &mut line_member_counts,
+                        line_member_counts,
                     )? {
                         continue;
                     }
@@ -1605,7 +1655,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 &mut item,
                 max_vertices,
                 &mut work,
-                &mut line_member_counts,
+                line_member_counts,
             )?
         {
             continue;
@@ -1615,7 +1665,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 &mut item,
                 max_vertices,
                 &mut work,
-                &mut line_member_counts,
+                line_member_counts,
             )? {
                 continue;
             }
@@ -1655,7 +1705,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 &mut item,
                 max_vertices,
                 &mut work,
-                &mut line_member_counts,
+                line_member_counts,
             )? {
                 continue;
             }
@@ -1781,7 +1831,7 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 &mut item,
                 max_vertices,
                 &mut work,
-                &mut line_member_counts,
+                line_member_counts,
             )? {
                 continue;
             }
@@ -3277,6 +3327,26 @@ mod subdivision_tests {
         ))
     }
 
+    fn wgs84_geodesic_metric() -> Result<(GeographicFrame, crate::crs::GeodesicMetric)> {
+        let model = crate::crs::metric_model(Some("EPSG:4326"))?;
+        let crate::crs::MetricModel::Geodesic { frame, .. } = &model else {
+            return Err(crate::crs::CrsError::invalid("WGS84 test CRS is not geographic").into());
+        };
+        Ok((*frame, crate::crs::GeodesicMetric::from_model(&model)?))
+    }
+
+    fn subdivision_output_vertices(parts: &[Shape]) -> usize {
+        let mut counts = ShapeCountQuery::default();
+        parts
+            .iter()
+            .map(|part| {
+                counts
+                    .coordinate_count(part)
+                    .expect("subdivision output has a coordinate count")
+            })
+            .sum()
+    }
+
     #[derive(Default)]
     struct CountingWork {
         charged: u64,
@@ -3433,6 +3503,305 @@ mod subdivision_tests {
                 .coordinate_count(part)
                 .is_some_and(|count| count <= 8)
         }));
+    }
+
+    #[test]
+    fn ordinary_geographic_xy_polygon_skips_unneeded_root_catalog() -> Result<()> {
+        let mut points = (0..127)
+            .map(|index| {
+                let angle = 2.0 * std::f64::consts::PI * index as f64 / 127.0;
+                Point::new_raw_xy(8.0 * angle.cos(), 8.0 * angle.sin())
+            })
+            .collect::<Vec<_>>();
+        points.push(points[0]);
+        let shape = ring_shape(&points);
+        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            None,
+        );
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        reset_ordinary_root_catalog_builds();
+        crate::geometry::ordinates::reset_root_range_mapping_counts();
+        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        split(shape, 16, false, &context, &mut parts, &mut budget)?;
+
+        assert_eq!(parts.len(), 16);
+        assert_eq!(ordinary_root_catalog_builds(), 0);
+        assert_eq!(
+            crate::geometry::ordinates::root_range_mapping_counts(),
+            (0, 0)
+        );
+        assert_eq!(
+            crate::geometry::overlay::subdivision_root_xy_position_calls(),
+            0
+        );
+        let mut counts = ShapeCountQuery::default();
+        assert!(parts.iter().all(|part| {
+            counts
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 16)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_geographic_xy_line_without_chart_transit_skips_root_catalog() -> Result<()> {
+        let points = (0..128)
+            .map(|index| {
+                let fraction = index as f64 / 127.0;
+                Point::new_raw_xy(
+                    -9.0 + 18.0 * fraction,
+                    2.0 * (3.0 * std::f64::consts::PI * fraction).sin(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let shape = line_shape(&points);
+        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            None,
+        );
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        reset_ordinary_root_catalog_builds();
+        crate::geometry::ordinates::reset_root_range_mapping_counts();
+        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        split(shape, 16, false, &context, &mut parts, &mut budget)?;
+
+        assert_eq!(parts.len(), 16);
+        assert_eq!(ordinary_root_catalog_builds(), 0);
+        assert_eq!(
+            crate::geometry::ordinates::root_range_mapping_counts(),
+            (0, 0)
+        );
+        assert_eq!(
+            crate::geometry::overlay::subdivision_root_xy_position_calls(),
+            0
+        );
+        assert!(parts.iter().all(|part| {
+            ShapeCountQuery::default()
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 16)
+        }));
+
+        let wide_points = (0..128)
+            .map(|index| {
+                let fraction = index as f64 / 127.0;
+                Point::new_raw_xy(
+                    -170.0 + 340.0 * fraction,
+                    2.0 * (3.0 * std::f64::consts::PI * fraction).sin(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut wide_parts = Vec::new();
+        let mut wide_budget = ExpansionBudget::new("subdivide", "max_vertices");
+        reset_ordinary_root_catalog_builds();
+        crate::geometry::ordinates::reset_root_range_mapping_counts();
+        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        split(
+            line_shape(&wide_points),
+            16,
+            false,
+            &context,
+            &mut wide_parts,
+            &mut wide_budget,
+        )?;
+        assert_eq!(wide_parts.len(), 16);
+        assert_eq!(ordinary_root_catalog_builds(), 0);
+        assert_eq!(
+            crate::geometry::ordinates::root_range_mapping_counts(),
+            (0, 0)
+        );
+        assert_eq!(
+            crate::geometry::overlay::subdivision_root_xy_position_calls(),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_geographic_xy_line_builds_one_root_catalog_across_cuts() -> Result<()> {
+        let mut points = vec![
+            Point::new_raw_xy(179.0, 0.0),
+            Point::new_raw_xy(-179.0, 30.0),
+        ];
+        points.extend((0..126).map(|index| {
+            let fraction = index as f64 / 125.0;
+            Point::new_raw_xy(-178.0 + 28.0 * fraction, 31.0 + 4.0 * fraction)
+        }));
+        let shape = line_shape(&points);
+        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            None,
+        );
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        reset_ordinary_root_catalog_builds();
+        crate::geometry::ordinates::reset_root_range_mapping_counts();
+        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        reset_subdivision_work();
+        split(shape, 16, false, &context, &mut parts, &mut budget)?;
+
+        assert_eq!(ordinary_root_catalog_builds(), 1);
+        assert!(subdivision_work().1 > 1);
+        assert!(parts.iter().all(|part| {
+            ShapeCountQuery::default()
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 16)
+        }));
+        let (endpoint_requests, interior_mappings) =
+            crate::geometry::ordinates::root_range_mapping_counts();
+        assert!(endpoint_requests > 0);
+        assert!(
+            interior_mappings <= subdivision_output_vertices(&parts).saturating_mul(4),
+            "only inserted cut vertices need interior original-root mapping"
+        );
+        assert!(
+            crate::geometry::overlay::subdivision_root_xy_position_calls()
+                <= subdivision_output_vertices(&parts).saturating_mul(4),
+            "root XY correction should only visit emitted cut vertices"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_geographic_xy_polygon_seam_uses_partition_roots_only() -> Result<()> {
+        let points = [
+            (179.0, -2.0),
+            (-179.0, -2.0),
+            (-179.0, -1.0),
+            (-179.0, 0.0),
+            (-179.0, 1.0),
+            (-179.0, 2.0),
+            (179.0, 2.0),
+            (179.0, 1.0),
+            (179.0, 0.0),
+            (179.0, -1.0),
+            (179.0, -2.0),
+        ]
+        .map(|(x, y)| Point::new_raw_xy(x, y));
+        let shape = ring_shape(&points);
+        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
+            None,
+        );
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        reset_ordinary_root_catalog_builds();
+        crate::geometry::ordinates::reset_root_range_mapping_counts();
+        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        split(shape, 8, false, &context, &mut parts, &mut budget)?;
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(ordinary_root_catalog_builds(), 0);
+        assert_eq!(
+            crate::geometry::ordinates::root_range_mapping_counts(),
+            (0, 0)
+        );
+        assert_eq!(
+            crate::geometry::overlay::subdivision_root_xy_position_calls(),
+            0
+        );
+        assert!(parts.iter().all(|part| {
+            ShapeCountQuery::default()
+                .coordinate_count(part)
+                .is_some_and(|count| count <= 8)
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_geographic_zm_polygon_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()>
+    {
+        let (frame, metric) = wgs84_geodesic_metric()?;
+        let metric_access = || -> Result<&crate::crs::GeodesicMetric> { Ok(&metric) };
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            Some(&metric_access),
+        );
+        let mut points = (0..127)
+            .map(|index| {
+                let angle = 2.0 * std::f64::consts::PI * index as f64 / 127.0;
+                Point::new_raw_axes(
+                    8.0 * angle.cos(),
+                    8.0 * angle.sin(),
+                    crate::geometry::ZOrdinate(Some(index as f64 + 1.0)),
+                    crate::geometry::MOrdinate(Some(1000.0 + index as f64)),
+                )
+            })
+            .collect::<Vec<_>>();
+        points.push(points[0]);
+        let shape = ring_shape(&points);
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        reset_ordinary_root_catalog_builds();
+        crate::geometry::ordinates::reset_root_range_mapping_counts();
+        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        split(shape, 16, false, &context, &mut parts, &mut budget)?;
+
+        assert_eq!(parts.len(), 16);
+        assert_eq!(ordinary_root_catalog_builds(), 1);
+        let (endpoint_requests, interior_mappings) =
+            crate::geometry::ordinates::root_range_mapping_counts();
+        assert!(endpoint_requests > 0);
+        assert!(
+            interior_mappings <= subdivision_output_vertices(&parts).saturating_mul(4),
+            "interior original-root mappings should track inserted output vertices"
+        );
+        assert_eq!(
+            crate::geometry::overlay::subdivision_root_xy_position_calls(),
+            0
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_geographic_zm_line_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()> {
+        let (frame, metric) = wgs84_geodesic_metric()?;
+        let metric_access = || -> Result<&crate::crs::GeodesicMetric> { Ok(&metric) };
+        let context = SourceArcContext::new(
+            crate::geometry::TopologyDomain::Geographic(frame),
+            Some(&metric_access),
+        );
+        let points = (0..128)
+            .map(|index| {
+                let fraction = index as f64 / 127.0;
+                Point::new_raw_axes(
+                    -9.0 + 18.0 * fraction,
+                    2.0 * (3.0 * std::f64::consts::PI * fraction).sin(),
+                    crate::geometry::ZOrdinate(Some(index as f64 + 1.0)),
+                    crate::geometry::MOrdinate(Some(1000.0 + index as f64)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let shape = line_shape(&points);
+        let mut parts = Vec::new();
+        let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
+
+        reset_ordinary_root_catalog_builds();
+        crate::geometry::ordinates::reset_root_range_mapping_counts();
+        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        split(shape, 16, false, &context, &mut parts, &mut budget)?;
+
+        assert_eq!(parts.len(), 16);
+        assert_eq!(ordinary_root_catalog_builds(), 1);
+        let (endpoint_requests, interior_mappings) =
+            crate::geometry::ordinates::root_range_mapping_counts();
+        assert!(endpoint_requests > 0);
+        assert!(
+            interior_mappings <= subdivision_output_vertices(&parts).saturating_mul(4),
+            "interior original-root mappings should track inserted output vertices"
+        );
+        assert_eq!(
+            crate::geometry::overlay::subdivision_root_xy_position_calls(),
+            0
+        );
+        Ok(())
     }
 
     #[test]

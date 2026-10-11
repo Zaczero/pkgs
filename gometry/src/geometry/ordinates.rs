@@ -21,6 +21,8 @@ pub(crate) use trace::{
     RequestRowId, RequestRowInput, RootCatalog, RootId, RootRange, RootRequest, TraceRows,
     TraceRowsBuilder, resolve_request_rows, resolve_source_root,
 };
+#[cfg(test)]
+pub(crate) use trace::{reset_root_range_mapping_counts, root_range_mapping_counts};
 
 pub(crate) type SourceArcMetricAccess<'access, 'metric, M = crate::crs::GeodesicMetric> =
     dyn Fn() -> crate::error::Result<&'metric M> + 'access;

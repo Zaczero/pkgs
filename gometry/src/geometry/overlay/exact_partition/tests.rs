@@ -320,7 +320,10 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
                 (partial_end_z, 70.0),
             ])?,
         ]);
-        let (roots, initial_traces) = SubdivisionRootCatalog::from_line_shape(&original, frame)?;
+        let root_xy_positions_needed =
+            SubdivisionRootCatalog::needs_root_xy_positions(&original, original.bounds(), frame);
+        let (roots, initial_traces) =
+            SubdivisionRootCatalog::from_line_shape(&original, frame, root_xy_positions_needed)?;
         drop(initial_traces);
 
         let zero = ExactRational::zero();

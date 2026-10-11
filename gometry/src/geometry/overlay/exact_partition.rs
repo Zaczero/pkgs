@@ -64,6 +64,7 @@ mod relate;
 #[cfg(test)]
 thread_local! {
     static SOURCE_LINE_RUNS_CALLS: Cell<usize> = const { Cell::new(0) };
+    static SUBDIVISION_ROOT_XY_POSITION_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -74,6 +75,16 @@ fn reset_source_line_runs_calls() {
 #[cfg(test)]
 fn source_line_runs_calls() -> usize {
     SOURCE_LINE_RUNS_CALLS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_subdivision_root_xy_position_calls() {
+    SUBDIVISION_ROOT_XY_POSITION_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn subdivision_root_xy_position_calls() -> usize {
+    SUBDIVISION_ROOT_XY_POSITION_CALLS.with(Cell::get)
 }
 
 pub(in crate::geometry) use construction::Forest as ExactPointForest;
@@ -225,17 +236,55 @@ fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work>
     axes: CoordinateAxes,
     roots: &C,
     root_positions: Option<&SubdivisionRootCatalog>,
+    root_xy_nodes: Option<&[bool]>,
     fallback_inventory: Option<&ExactSourceInventory>,
     context: &SourceArcContext<'_, '_, M>,
     work: &mut W,
 ) -> Result<ResolvedNodePoints<'e, 'p>> {
-    if !axes.has_z() && !axes.has_m() && root_positions.is_none() {
+    if root_positions.is_some() != root_xy_nodes.is_some() {
+        return Err(GeometryErrorKind::Invalid(
+            "subdivision root positions and node selection disagree".into(),
+        )
+        .into());
+    }
+    let has_root_xy_nodes = if let Some(root_xy_nodes) = root_xy_nodes {
+        if root_xy_nodes.len() != partition.node_count() {
+            return Err(GeometryErrorKind::Invalid(
+                "subdivision root-position node selection has the wrong length".into(),
+            )
+            .into());
+        }
+        let mut any = false;
+        for &node in nodes {
+            any |= *root_xy_nodes.get(node.0 as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "subdivision root-position node is outside its partition".into(),
+                )
+            })?;
+        }
+        any
+    } else {
+        false
+    };
+    if !axes.has_z() && !axes.has_m() && !has_root_xy_nodes {
         return Ok(ResolvedNodePoints::from_embedding(embedding, None));
     }
     work.charge(u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let rooted_xy = if let Some(root_positions) = root_positions {
+    let rooted_xy = if let Some(root_positions) = root_positions
+        && has_root_xy_nodes
+    {
+        let root_xy_nodes = root_xy_nodes.ok_or_else(|| {
+            GeometryErrorKind::Invalid("subdivision root-position node selection is missing".into())
+        })?;
         let mut rooted_xy = vec![None; partition.node_count()];
         for &node in nodes {
+            if !root_xy_nodes.get(node.0 as usize).copied().ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "subdivision root-position node is outside its partition".into(),
+                )
+            })? {
+                continue;
+            }
             let requests = requests_by_node.get(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("subdivision emission node is unknown".into())
             })?;
@@ -346,6 +395,22 @@ fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work>
         },
         None => ResolvedNodePoints::from_embedding(embedding, Some(by_node)),
     })
+}
+
+fn mark_root_xy_node(
+    root_xy_nodes: &mut [bool],
+    node: NodeId,
+    local_parameter: &ExactRational,
+    appended_requests: usize,
+) -> Result<()> {
+    if appended_requests == 0 || local_parameter.is_zero() || local_parameter.is_one() {
+        return Ok(());
+    }
+    let slot = root_xy_nodes.get_mut(node.0 as usize).ok_or_else(|| {
+        GeometryErrorKind::Invalid("subdivision root-position node is outside its partition".into())
+    })?;
+    *slot = true;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -851,12 +916,40 @@ impl SourceArcRecord {
 pub(in crate::geometry) struct SubdivisionRootCatalog {
     inventory: ExactSourceInventory,
     frame: GeographicFrame,
+    root_xy_positions_needed: bool,
 }
 
 impl SubdivisionRootCatalog {
+    pub(in crate::geometry) fn needs_root_xy_positions(
+        shape: &Shape,
+        bounds: Option<Bounds>,
+        frame: GeographicFrame,
+    ) -> bool {
+        // The envelope certifies the common local case without another vertex
+        // walk; wider envelopes need an edge-level chart check before rooting.
+        if bounds.is_some_and(|bounds| {
+            frame
+                .longitude()
+                .ordinary_chart_edge(bounds.minx(), bounds.maxx())
+        }) {
+            return false;
+        }
+        let mut needed = false;
+        let Ok(()) = shape.try_for_each_segment_chain(|chain| {
+            for segment in crate::geometry::line_segments(chain) {
+                needed |= !frame
+                    .longitude()
+                    .ordinary_chart_edge(segment.start.x, segment.end.x);
+            }
+            Ok::<_, std::convert::Infallible>(())
+        });
+        needed
+    }
+
     pub(in crate::geometry) fn from_line_shape(
         shape: &Shape,
         frame: GeographicFrame,
+        root_xy_positions_needed: bool,
     ) -> Result<(Self, Vec<crate::geometry::topology::SourceTrace>)> {
         let source = LineSource::from_shape(shape).ok_or_else(|| {
             GeometryErrorKind::Invalid(
@@ -908,12 +1001,20 @@ impl SubdivisionRootCatalog {
             )
             .into());
         }
-        Ok((Self { inventory, frame }, line_traces))
+        Ok((
+            Self {
+                inventory,
+                frame,
+                root_xy_positions_needed,
+            },
+            line_traces,
+        ))
     }
 
     pub(in crate::geometry) fn from_polygon_shape(
         shape: &Shape,
         frame: GeographicFrame,
+        root_xy_positions_needed: bool,
     ) -> Result<(Self, Vec<crate::geometry::topology::SourceTrace>)> {
         let ring_ranges = polygon_source_ring_ranges(shape)?;
         let inventory = ExactSourceInventory::from_shapes(&[shape])?;
@@ -955,7 +1056,18 @@ impl SubdivisionRootCatalog {
                 edge_rows, &mut work,
             )?);
         }
-        Ok((Self { inventory, frame }, traces))
+        Ok((
+            Self {
+                inventory,
+                frame,
+                root_xy_positions_needed,
+            },
+            traces,
+        ))
+    }
+
+    pub(in crate::geometry) const fn root_xy_positions_needed(&self) -> bool {
+        self.root_xy_positions_needed
     }
 
     fn source_pair(&self, root: RootId) -> Result<[Point; 2]> {
@@ -1026,10 +1138,21 @@ impl SubdivisionRootCatalog {
         parameter: &ExactRational,
         work: &mut impl Work,
     ) -> Result<Option<XY>> {
+        #[cfg(test)]
+        SUBDIVISION_ROOT_XY_POSITION_CALLS.with(|calls| {
+            calls.set(calls.get().saturating_add(1));
+        });
         if parameter.is_zero() || parameter.is_one() {
             return Ok(None);
         }
         let source = self.source_pair(root)?;
+        if self
+            .frame
+            .longitude()
+            .ordinary_chart_edge(source[0].x, source[1].x)
+        {
+            return Ok(None);
+        }
         let raw_delta = source[1].x - source[0].x;
         let (_, delta) = self.source_displacement(&source)?;
         if delta.to_bits() == raw_delta.to_bits() {
@@ -1041,6 +1164,13 @@ impl SubdivisionRootCatalog {
     fn seam_parameter(&self, root: RootId, work: &mut impl Work) -> Result<Option<ExactRational>> {
         let source = self.source_pair(root)?;
         let start = source[0].x;
+        if self
+            .frame
+            .longitude()
+            .ordinary_chart_edge(source[0].x, source[1].x)
+        {
+            return Ok(None);
+        }
         let (_, delta) = self.source_displacement(&source)?;
         if delta == 0.0 {
             return Ok(None);
@@ -3005,13 +3135,14 @@ impl ExactSourceInventory {
         context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
+        let root_positions = roots.root_xy_positions_needed().then_some(roots);
         match source_traces {
             None => self.subdivision_parts_traced(
                 partition,
                 source_shape,
                 None,
                 roots,
-                Some(roots),
+                root_positions,
                 declared_axes,
                 strict,
                 clip_operands,
@@ -3026,7 +3157,7 @@ impl ExactSourceInventory {
                         source_shape,
                         Some(source_traces),
                         roots,
-                        Some(roots),
+                        root_positions,
                         declared_axes,
                         strict,
                         clip_operands,
@@ -3166,12 +3297,14 @@ impl ExactSourceInventory {
             }
         }
         let views = self.source_line_trace_views(partition, trace_work)?;
-        let requests_by_node = self.polygon_node_root_requests(
+        let root_positions = roots.root_xy_positions_needed().then_some(roots);
+        let (requests_by_node, root_xy_nodes) = self.polygon_node_root_requests(
             partition,
             &nodes,
             &ring_ranges,
             source_traces,
             &views,
+            root_positions.is_some(),
             trace_work,
         )?;
         let mut polygon_traces = Vec::with_capacity(plans.len());
@@ -3190,7 +3323,8 @@ impl ExactSourceInventory {
             requests_by_node,
             declared_axes,
             roots,
-            Some(roots),
+            root_positions,
+            root_xy_nodes.as_deref(),
             Some(self),
             context,
             trace_work,
@@ -3221,6 +3355,7 @@ impl ExactSourceInventory {
             &old_polygon_xy[0],
             &first_roles,
             polygon_traces.remove(0),
+            roots,
             roots.frame,
             trace_work,
         )?;
@@ -3245,6 +3380,7 @@ impl ExactSourceInventory {
             &old_polygon_xy[1],
             &second_roles,
             polygon_traces.remove(0),
+            roots,
             roots.frame,
             trace_work,
         )?;
@@ -3448,8 +3584,9 @@ impl ExactSourceInventory {
         ring_ranges: &[Range<usize>],
         ring_traces: &[crate::geometry::topology::SourceTrace],
         views: &SourceLineTraceViews,
+        track_root_xy_nodes: bool,
         work: &mut W,
-    ) -> Result<Vec<Vec<RootRequest>>> {
+    ) -> Result<(Vec<Vec<RootRequest>>, Option<Vec<bool>>)> {
         if ring_ranges.len() != ring_traces.len() {
             return Err(GeometryErrorKind::Invalid(
                 "polygon source ring ranges do not match their root traces".into(),
@@ -3487,6 +3624,7 @@ impl ExactSourceInventory {
         }
         let mut requests_by_node = Vec::new();
         requests_by_node.resize_with(partition.node_count(), Vec::new);
+        let mut root_xy_nodes = track_root_xy_nodes.then(|| vec![false; partition.node_count()]);
         for (&full_source, source_views) in views.source_ids.iter().zip(&views.views) {
             work.charge(1)?;
             if self.source_operands.get(full_source).copied() != Some(0) {
@@ -3536,20 +3674,20 @@ impl ExactSourceInventory {
                     if !visible_nodes.get(node.0 as usize).copied().unwrap_or(false) {
                         continue;
                     }
-                    let requests = trace.requests_at(edge, parameter, work)?;
                     let row = requests_by_node.get_mut(node.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "polygon source trace node is outside the partition".into(),
                         )
                     })?;
-                    work.charge(
-                        u64::try_from(requests.len()).map_err(|_| ResourceError::SizeOverflow)?,
-                    )?;
-                    row.extend(requests);
+                    let added = trace.append_requests_at(edge, parameter, row, work)?;
+                    work.charge(u64::try_from(added).map_err(|_| ResourceError::SizeOverflow)?)?;
+                    if let Some(root_xy_nodes) = root_xy_nodes.as_mut() {
+                        mark_root_xy_node(root_xy_nodes, node, parameter, added)?;
+                    }
                 }
             }
         }
-        Ok(requests_by_node)
+        Ok((requests_by_node, root_xy_nodes))
     }
 
     fn polygon_ring_traces_from_nodes<W: Work>(
@@ -3658,6 +3796,7 @@ impl ExactSourceInventory {
         old_xy: &[Vec<Vec<XY>>],
         computed_edges: &[Vec<Vec<bool>>],
         source_traces: Vec<crate::geometry::topology::SourceTrace>,
+        roots: &SubdivisionRootCatalog,
         frame: GeographicFrame,
         work: &mut W,
     ) -> Result<Vec<crate::geometry::topology::SourceTrace>> {
@@ -3669,8 +3808,9 @@ impl ExactSourceInventory {
             )
             .into());
         }
-        let mut traces = Vec::with_capacity(source_traces.len());
-        let mut trace_index = 0_usize;
+        let trace_count = source_traces.len();
+        let mut source_traces = source_traces.into_iter();
+        let mut traces = Vec::with_capacity(trace_count);
         for (polygon_index, polygon) in polygons.into_iter().enumerate() {
             let old_rings = old_xy.get(polygon_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("unpublished polygon trace rows are unknown".into())
@@ -3688,12 +3828,9 @@ impl ExactSourceInventory {
             for ((old_ring, roles), published_ring) in
                 old_rings.iter().zip(edge_roles).zip(published_rings)
             {
-                let source_trace = source_traces.get(trace_index).ok_or_else(|| {
+                let source_trace = source_traces.next().ok_or_else(|| {
                     GeometryErrorKind::Invalid("polygon ring source trace is unknown".into())
                 })?;
-                trace_index = trace_index
-                    .checked_add(1)
-                    .ok_or(ResourceError::SizeOverflow)?;
                 let old_edge_count = old_ring.len().saturating_sub(1);
                 if roles.len() != old_edge_count || source_trace.edge_count() != old_edge_count {
                     return Err(GeometryErrorKind::Invalid(
@@ -3703,65 +3840,109 @@ impl ExactSourceInventory {
                 }
                 let published = published_ring.coords();
                 let published_edge_count = published.coord_count().saturating_sub(1);
+                let source_start = *old_ring.first().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("published polygon source ring is empty".into())
+                })?;
+                let mut published_start = None;
+                for index in 0..published_edge_count {
+                    if same_published_polygon_xy(
+                        frame,
+                        published.nth_coord(index).xy(),
+                        source_start,
+                    )? {
+                        published_start = Some(index);
+                        break;
+                    }
+                }
+                let Some(published_start) = published_start else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "published polygon ring lost its source start vertex".into(),
+                    )
+                    .into());
+                };
+
+                let mut slices = Vec::with_capacity(published_edge_count);
+                let zero = ExactRational::zero();
+                let one = ExactRational::one();
                 let mut output_edge = 0_usize;
-                let mut edge_rows = Vec::with_capacity(published_edge_count);
                 for (edge, &computed) in roles.iter().enumerate() {
                     let target = *old_ring.get(edge.wrapping_add(1)).ok_or_else(|| {
                         GeometryErrorKind::Invalid("polygon trace endpoint is unknown".into())
                     })?;
-                    let source_row = if computed {
-                        Vec::new()
-                    } else {
-                        mapped_root_ranges_between_requests(
-                            &source_trace.requests_at(edge, &ExactRational::zero(), work)?,
-                            &source_trace.requests_at(edge, &ExactRational::one(), work)?,
-                            work,
-                        )?
-                    };
-                    let mut emitted = 0_usize;
+                    let mut intermediate = Vec::new();
                     loop {
                         if output_edge >= published_edge_count {
+                            let published_vertices = (0..published_edge_count)
+                                .map(|index| published.nth_coord(index).xy())
+                                .collect::<Vec<_>>();
                             return Err(GeometryErrorKind::Invalid(
-                                "polygon publication lost a ring endpoint".into(),
+                                format!(
+                                    "polygon publication lost ring endpoint at source edge {edge}; start={published_start}, output_edge={output_edge}/{published_edge_count}, old_ring={old_ring:?}, published={published_vertices:?}"
+                                )
+                                .into(),
                             )
                             .into());
                         }
-                        let endpoint = published.nth_coord(output_edge.wrapping_add(1));
-                        edge_rows.push(source_row.clone());
+                        let endpoint_index =
+                            published_start.wrapping_add(output_edge).wrapping_add(1)
+                                % published_edge_count;
+                        let endpoint = published.nth_coord(endpoint_index).xy();
                         output_edge = output_edge
                             .checked_add(1)
                             .ok_or(ResourceError::SizeOverflow)?;
-                        emitted = emitted.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                        if same_published_polygon_xy(frame, endpoint.xy(), target)? {
+                        if same_published_polygon_xy(frame, endpoint, target)? {
                             break;
                         }
-                        if !computed {
+                        intermediate.push(endpoint);
+                    }
+                    if computed {
+                        slices.extend(
+                            (0..intermediate.len().wrapping_add(1))
+                                .map(|_| (edge, zero.clone(), one.clone())),
+                        );
+                        continue;
+                    }
+                    if intermediate.is_empty() {
+                        slices.push((edge, zero.clone(), one.clone()));
+                        continue;
+                    }
+                    let cuts =
+                        self.source_line_seam_cuts(&source_trace, edge, &zero, &one, roots, work)?;
+                    if cuts.len() != intermediate.len() {
+                        return Err(GeometryErrorKind::Invalid(
+                            "published polygon seam vertices do not match their source trace"
+                                .into(),
+                        )
+                        .into());
+                    }
+                    for (cut, &endpoint) in cuts.iter().zip(&intermediate) {
+                        if !same_published_polygon_xy(frame, endpoint, cut.coordinate)? {
                             return Err(GeometryErrorKind::Invalid(
-                                "a preserved polygon source edge expanded during publication"
+                                "published polygon seam vertex differs from its source trace"
                                     .into(),
                             )
                             .into());
                         }
                     }
-                    if !computed && emitted != 1 {
-                        return Err(GeometryErrorKind::Invalid(
-                            "a source polygon edge has more than one published occurrence".into(),
-                        )
-                        .into());
+                    let mut start = zero.clone();
+                    for cut in cuts {
+                        let end = cut.parameter;
+                        slices.push((edge, start, end.clone()));
+                        start = end;
                     }
+                    slices.push((edge, start, one.clone()));
                 }
-                if output_edge != published_edge_count {
+                if output_edge != published_edge_count || slices.len() != published_edge_count {
                     return Err(GeometryErrorKind::Invalid(
-                        "polygon publication added an unassigned edge".into(),
+                        "polygon publication added an untraced edge".into(),
                     )
                     .into());
                 }
-                traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
-                    edge_rows, work,
-                )?);
+                slices.rotate_right(published_start);
+                traces.push(source_trace.compose_edges(&slices, work)?);
             }
         }
-        if trace_index != source_traces.len() {
+        if source_traces.next().is_some() {
             return Err(GeometryErrorKind::Invalid(
                 "polygon source traces include an unassigned ring".into(),
             )
@@ -3791,6 +3972,7 @@ impl ExactSourceInventory {
         )?;
         let mut requests_by_node = Vec::new();
         requests_by_node.resize_with(partition.node_count(), Vec::new);
+        let mut root_xy_nodes = root_positions.map(|_| vec![false; partition.node_count()]);
         for runs in run_plans {
             for run in runs {
                 if run.nodes.len() != run.trace_slices.len().saturating_add(1) {
@@ -3809,8 +3991,6 @@ impl ExactSourceInventory {
                     let end_node = *run.nodes.get(edge_index.wrapping_add(1)).ok_or_else(|| {
                         GeometryErrorKind::Invalid("source line trace end node is unknown".into())
                     })?;
-                    let start_requests = trace.requests_at(*source_edge, start, work)?;
-                    let end_requests = trace.requests_at(*source_edge, end, work)?;
                     let start_row =
                         requests_by_node
                             .get_mut(start_node.0 as usize)
@@ -3819,11 +3999,14 @@ impl ExactSourceInventory {
                                     "source line trace start node is outside the partition".into(),
                                 )
                             })?;
+                    let start_added =
+                        trace.append_requests_at(*source_edge, start, start_row, work)?;
                     work.charge(
-                        u64::try_from(start_requests.len())
-                            .map_err(|_| ResourceError::SizeOverflow)?,
+                        u64::try_from(start_added).map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
-                    start_row.extend(start_requests);
+                    if let Some(root_xy_nodes) = root_xy_nodes.as_mut() {
+                        mark_root_xy_node(root_xy_nodes, start_node, start, start_added)?;
+                    }
                     let end_row =
                         requests_by_node
                             .get_mut(end_node.0 as usize)
@@ -3832,11 +4015,13 @@ impl ExactSourceInventory {
                                     "source line trace end node is outside the partition".into(),
                                 )
                             })?;
+                    let end_added = trace.append_requests_at(*source_edge, end, end_row, work)?;
                     work.charge(
-                        u64::try_from(end_requests.len())
-                            .map_err(|_| ResourceError::SizeOverflow)?,
+                        u64::try_from(end_added).map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
-                    end_row.extend(end_requests);
+                    if let Some(root_xy_nodes) = root_xy_nodes.as_mut() {
+                        mark_root_xy_node(root_xy_nodes, end_node, end, end_added)?;
+                    }
                 }
             }
         }
@@ -3848,6 +4033,7 @@ impl ExactSourceInventory {
             axes,
             roots,
             root_positions,
+            root_xy_nodes.as_deref(),
             None,
             context,
             work,

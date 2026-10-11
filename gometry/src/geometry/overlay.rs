@@ -141,6 +141,10 @@ pub(in crate::geometry) use exact_partition::{
 };
 #[cfg(test)]
 pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
+#[cfg(test)]
+pub(crate) use exact_partition::{
+    reset_subdivision_root_xy_position_calls, subdivision_root_xy_position_calls,
+};
 pub(in crate::geometry) use nary::{
     binary_cartesian_difference_without_partition_budget,
     binary_cartesian_intersection_with_edge_roles, overlay_all_geographic_from_with_metric,

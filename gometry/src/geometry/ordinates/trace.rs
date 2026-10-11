@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::cell::Cell;
+
 use super::{
     NodeOrdinates, RootMetricState, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates,
 };
@@ -6,6 +9,26 @@ use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{ChartMetric, CoordinateAxes, GeometryErrorKind, Point, Work};
+
+#[cfg(test)]
+thread_local! {
+    static ROOT_RANGE_ENDPOINT_REQUESTS: Cell<usize> = const { Cell::new(0) };
+    static ROOT_RANGE_INTERIOR_MAPPINGS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_root_range_mapping_counts() {
+    ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| count.set(0));
+    ROOT_RANGE_INTERIOR_MAPPINGS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn root_range_mapping_counts() -> (usize, usize) {
+    (
+        ROOT_RANGE_ENDPOINT_REQUESTS.with(Cell::get),
+        ROOT_RANGE_INTERIOR_MAPPINGS.with(Cell::get),
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RootId(u32);
@@ -297,6 +320,40 @@ impl RootRange {
         work: &mut impl Work,
     ) -> Result<Option<ExactRational>> {
         check_unit_parameter_with_work(producer_parameter, work)?;
+        if producer_parameter.is_zero() {
+            if self.producer_start.is_zero() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_start.try_clone_with_work(work)?));
+            }
+            if self.producer_end.is_zero() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_end.try_clone_with_work(work)?));
+            }
+            return Ok(None);
+        }
+        if producer_parameter.is_one() {
+            if self.producer_start.is_one() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_start.try_clone_with_work(work)?));
+            }
+            if self.producer_end.is_one() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_end.try_clone_with_work(work)?));
+            }
+            return Ok(None);
+        }
         if self
             .producer_start
             .try_cmp_with_work(&self.producer_end, work)?
@@ -329,6 +386,10 @@ impl RootRange {
         {
             return Ok(None);
         }
+        #[cfg(test)]
+        ROOT_RANGE_INTERIOR_MAPPINGS.with(|count| {
+            count.set(count.get().saturating_add(1));
+        });
         let producer_width = self
             .producer_end
             .try_subtract_with_work(&self.producer_start, work)?;
@@ -774,7 +835,35 @@ impl TraceRows {
         local: &ExactRational,
         work: &mut impl Work,
     ) -> Result<Vec<RootRequest>> {
+        if let [owner] = self.row(edge)? {
+            return Ok(owner
+                .request_at_with_work(local, work)?
+                .into_iter()
+                .collect());
+        }
         Ok(self.requests_with_support_at(edge, local, work)?.0)
+    }
+
+    pub(crate) fn append_requests_at(
+        &self,
+        edge: usize,
+        local: &ExactRational,
+        requests: &mut Vec<RootRequest>,
+        work: &mut impl Work,
+    ) -> Result<usize> {
+        let owners = self.row(edge)?;
+        if let [owner] = owners {
+            work.charge(1)?;
+            if let Some(request) = owner.request_at_with_work(local, work)? {
+                requests.push(request);
+                return Ok(1);
+            }
+            return Ok(0);
+        }
+        let (additional, _) = unique_requests_at(owners, local, work)?;
+        let count = additional.len();
+        requests.extend(additional);
+        Ok(count)
     }
 
     pub(crate) fn requests_with_support_at(
@@ -801,6 +890,13 @@ fn unique_requests_at(
     local: &ExactRational,
     work: &mut impl Work,
 ) -> Result<(Vec<RootRequest>, bool)> {
+    if let [owner] = owners {
+        let Some(request) = owner.request_at_with_work(local, work)? else {
+            return Ok((Vec::new(), false));
+        };
+        let endpoint_only = owner.is_point_support_with_work(work)?;
+        return Ok((vec![request], endpoint_only));
+    }
     check_unit_parameter_with_work(local, work)?;
     let mut requests = Vec::new();
     let mut has_request = false;
@@ -983,6 +1079,10 @@ impl TraceRowsBuilder {
 }
 
 fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Work) -> Result<()> {
+    if parameter.is_zero() || parameter.is_one() {
+        work.charge(1)?;
+        return Ok(());
+    }
     let zero = ExactRational::zero();
     let one = ExactRational::one();
     if parameter.try_cmp_with_work(&zero, work)?.is_lt()
