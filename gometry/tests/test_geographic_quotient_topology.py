@@ -1002,6 +1002,19 @@ def test_union_merges_seam_adjacent_source_rings_into_one_shell() -> None:
     assert not gm.equals(result, west)
 
 
+def test_union_keeps_disconnected_seam_boxes_as_multipolygon() -> None:
+    east = gm.box(170, 0, 175, 5, crs=4326)
+    west = gm.box(-175, 0, -170, 5, crs=4326)
+
+    result = gm.union_all([east, west])
+
+    assert result.geometry_type == 'MultiPolygon'
+    assert len(result.parts) == 2
+    assert gm.contains(result, gm.Point(172.5, 2.5, crs=4326))
+    assert gm.contains(result, gm.Point(-172.5, 2.5, crs=4326))
+    assert not gm.contains(result, gm.Point(180, 2.5, crs=4326))
+
+
 def test_geographic_array_candidates_keep_periodic_envelope_selectivity() -> None:
     source = seam_box()
     distant = gm.box(-10, -1, 10, 1, crs=4326)
