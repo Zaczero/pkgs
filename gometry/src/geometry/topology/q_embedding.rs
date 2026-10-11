@@ -13424,6 +13424,24 @@ pub(super) struct QEmbeddingOutput {
     pub(super) family_state: Option<FeatureFamilyRegistry>,
 }
 
+fn native_reference_global_check<T>(
+    result: Result<T>,
+    mut reject_classes: impl FnMut() -> Result<Vec<usize>>,
+) -> Result<GlobalCheck<T>> {
+    match result {
+        Ok(reference) => Ok(GlobalCheck::Pass(reference)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::NativeRefinementMismatch)
+            ) =>
+        {
+            Ok(GlobalCheck::Reject(reject_classes()?))
+        },
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) struct QEmbeddingPass {
     pub(super) output: QEmbeddingOutput,
     #[cfg(test)]
@@ -13983,66 +14001,112 @@ fn clip_native_source_span_use(
     }))
 }
 
+fn native_port_spelling_at_assigned_point(
+    point: &ExactChartPoint,
+    frame: GeographicFrame,
+    work: &mut impl Work,
+) -> Result<Option<PortSpelling>> {
+    match quotient_key_for_chart_position_with_work(frame, point, work)? {
+        ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole => {
+            let longitude = point.x.round_with_work(work)?;
+            if ExactRational::from_f64(longitude)
+                .try_cmp_with_work(&point.x, work)?
+                .is_eq()
+            {
+                Ok(Some(PortSpelling::Pole {
+                    native_longitude: longitude,
+                }))
+            } else {
+                Ok(None)
+            }
+        },
+        ExactQuotientKey::Seam(_) => {
+            let half = ExactRational::from_f64(frame.longitude().half_period());
+            let west = ExactRational::zero().try_subtract_with_work(&half, work)?;
+            if point.x.try_cmp_with_work(&half, work)?.is_eq() {
+                Ok(Some(PortSpelling::Seam(super::emission::ChartSide::East)))
+            } else if point.x.try_cmp_with_work(&west, work)?.is_eq() {
+                Ok(Some(PortSpelling::Seam(super::emission::ChartSide::West)))
+            } else {
+                Ok(None)
+            }
+        },
+        ExactQuotientKey::Coordinate(_) => {
+            let (_, lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+                &point.x,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
+            let Some(periods) = lift.to_f64_exact_scaled(0) else {
+                return Ok(None);
+            };
+            if !periods.is_finite()
+                || periods.fract() != 0.0
+                || periods < i64::MIN as f64
+                || periods >= -(i64::MIN as f64)
+            {
+                return Ok(None);
+            }
+            Ok(Some(PortSpelling::Interior {
+                periods: periods as i64,
+            }))
+        },
+    }
+}
+
 fn source_lifted_native_port(
     port: &NativePortData,
     source_lift: i64,
+    assigned_point: &ExactChartPoint,
     frame: GeographicFrame,
     work: &mut impl Work,
-) -> Result<NativePortData> {
-    if source_lift == 0 {
-        return Ok(port.clone());
-    }
+) -> Result<Option<NativePortData>> {
     let period = ExactRational::from_f64(frame.longitude().period());
     let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(source_lift));
-    let point = ExactChartPoint::from_rationals(
-        port.point
-            .x
-            .try_add_with_work(&lift.try_product_with_work(&period, work)?, work)?,
-        port.point.y.try_clone_with_work(work)?,
-    );
-    let half = ExactRational::from_f64(frame.longitude().half_period());
-    let west = ExactRational::zero().try_subtract_with_work(&half, work)?;
-    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
-    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
-    let pole = point.y.try_cmp_with_work(&south, work)?.is_eq()
-        || point.y.try_cmp_with_work(&north, work)?.is_eq();
-    let spelling = if pole {
-        let longitude = point.x.round_with_work(work)?;
-        if !ExactRational::from_f64(longitude)
-            .try_cmp_with_work(&point.x, work)?
-            .is_eq()
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "native source lift has no exact pole longitude spelling".into(),
-            )
-            .into());
-        }
-        PortSpelling::Pole {
-            native_longitude: longitude,
-        }
-    } else if point.x.try_cmp_with_work(&half, work)?.is_eq() {
-        PortSpelling::Seam(super::emission::ChartSide::East)
-    } else if point.x.try_cmp_with_work(&west, work)?.is_eq() {
-        PortSpelling::Seam(super::emission::ChartSide::West)
+    let lifted_x = port
+        .point
+        .x
+        .try_add_with_work(&lift.try_product_with_work(&period, work)?, work)?;
+    let lifted_y = port.point.y.try_clone_with_work(work)?;
+    if !lifted_y.try_cmp_with_work(&assigned_point.y, work)?.is_eq() {
+        return Ok(None);
+    }
+    let lifted_point = ExactChartPoint::from_rationals(lifted_x, lifted_y);
+    let source_key = quotient_key_for_chart_position_with_work(frame, &lifted_point, work)?;
+    let assigned_key = quotient_key_for_chart_position_with_work(frame, assigned_point, work)?;
+    if !compare_quotient_keys_with_work(&source_key, &assigned_key, work)?.is_eq() {
+        return Ok(None);
+    }
+    let turns = assigned_point
+        .x
+        .try_subtract_with_work(&lifted_point.x, work)?
+        .try_quotient_with_work(&period, work)?;
+    if !turns.is_integer() {
+        return Ok(None);
+    }
+    let aligned_x = lifted_point
+        .x
+        .try_add_with_work(&period.try_product_with_work(&turns, work)?, work)?;
+    if !aligned_x
+        .try_cmp_with_work(&assigned_point.x, work)?
+        .is_eq()
+    {
+        return Ok(None);
+    }
+    let point = ExactChartPoint::from_rationals(aligned_x, lifted_point.y);
+    let spelling = if point.try_eq_with_work(&port.point, work)? {
+        port.spelling.clone()
     } else {
-        match port.spelling {
-            PortSpelling::Interior { periods } => PortSpelling::Interior {
-                periods: periods
-                    .checked_add(source_lift)
-                    .ok_or(ResourceError::SizeOverflow)?,
-            },
-            PortSpelling::Seam(_) | PortSpelling::Pole { .. } => {
-                return Err(GeometryErrorKind::Invalid(
-                    "native source lift has no matching seam or pole spelling".into(),
-                )
-                .into());
-            },
-        }
+        let Some(spelling) = native_port_spelling_at_assigned_point(&point, frame, work)? else {
+            return Ok(None);
+        };
+        spelling
     };
     let mut shifted = port.clone();
     shifted.point = point;
     shifted.spelling = spelling;
-    Ok(shifted)
+    Ok(Some(shifted))
 }
 
 fn common_refine_native_edges(
@@ -14121,6 +14185,30 @@ fn common_refine_native_edges(
                 {
                     continue;
                 }
+                let expected_port = if event.parameter.is_zero() {
+                    source.ports.first().copied().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "native Q-span incidence has no first endpoint port".into(),
+                        )
+                    })?
+                } else if event.parameter.is_one() {
+                    source.ports.get(1).copied().ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "native Q-span incidence has no second endpoint port".into(),
+                        )
+                    })?
+                } else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native known-span event is not an endpoint Q port".into(),
+                    )
+                    .into());
+                };
+                if event.port != expected_port {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native known-span event changed its endpoint Q-port identity".into(),
+                    )
+                    .into());
+                }
                 let parameter = interpolate_producer_parameter(
                     &source.producer_range.start,
                     &source.producer_range.end,
@@ -14148,14 +14236,18 @@ fn common_refine_native_edges(
                     &local,
                     budget,
                 )?;
-                let data =
-                    source_lifted_native_port(&event.data, source.source_lift, frame, budget)?;
+                let Some(data) = source_lifted_native_port(
+                    &event.data,
+                    source.source_lift,
+                    &point,
+                    frame,
+                    budget,
+                )?
+                else {
+                    return Err(GeometryErrorKind::NativeRefinementMismatch.into());
+                };
                 if !point.try_eq_with_work(&data.point, budget)? {
-                    return Err(GeometryErrorKind::Invalid(
-                        "declared coincident producer uses disagree at a known Q-span endpoint"
-                            .into(),
-                    )
-                    .into());
+                    return Err(GeometryErrorKind::NativeRefinementMismatch.into());
                 }
                 budget.charge(1)?;
                 split_points.push(NativeSplitPoint { parameter, data });
@@ -19501,7 +19593,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     self.freeze_native_families(budget)?;
                     let native_cut_features =
                         self.materialize_native_cut_features(&producer_projection, budget)?;
-                    let reference = self.prepare_native_reference(
+                    let prepared_reference = self.prepare_native_reference(
                         &drawing,
                         &ring_roles,
                         &producer_projection,
@@ -19509,7 +19601,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         publication_coordinates,
                         &native_cut_features,
                         budget,
-                    )?;
+                    );
+                    let reference = match native_reference_global_check(prepared_reference, || {
+                        self.all_outer_repair_classes(budget)
+                    })? {
+                        GlobalCheck::Pass(reference) => reference,
+                        GlobalCheck::Reject(classes) => {
+                            return Ok(GlobalCheck::Reject(classes));
+                        },
+                    };
                     let native = match self.search_native_cut_candidates(
                         &reference,
                         &native_cut_features,
@@ -21397,6 +21497,335 @@ mod canonical_coordinate_tests {
             },
         }
         Ok((demand, constructed_seam_vertex))
+    }
+
+    fn reversed_lift_native_refinement_fixture(
+        event: NativePortData,
+        event_port: QPortId,
+    ) -> (NativeAreaEdge, NativeKnownSpanBoundary) {
+        let producer_port = |node, longitude| NativePortData {
+            node: EmissionNodeId(node),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(longitude),
+                ExactRational::from_f64(-80.0),
+            ),
+            spelling: PortSpelling::Interior { periods: 0 },
+            source_record: None,
+            occurrences: Vec::new(),
+        };
+        let source = NativeSourceSpanUse {
+            span: ChartSpanId(0),
+            owner: 0,
+            source_edge: SourceEdgeId(0),
+            source_lift: -1,
+            source_range: ExactSourceRange {
+                start: ExactRational::from_f64(0.5),
+                end: ExactRational::zero(),
+            },
+            producer_range: ExactSourceRange {
+                start: ExactRational::from_f64(0.5),
+                end: ExactRational::one(),
+            },
+            span_range: ExactSourceRange {
+                start: ExactRational::zero(),
+                end: ExactRational::one(),
+            },
+            nodes: [QNodeId(0), QNodeId(1)],
+            ports: [QPortId(0), QPortId(1)],
+            face_germs: None,
+        };
+        let edge = NativeAreaEdge {
+            vertices: [producer_port(0, -180.0), producer_port(1, -120.0)],
+            owner: NativeGraphEdgeOwner::Area { region: 0 },
+            kind: NativeAreaEdgeKind::Producer {
+                recipe: FragmentRecipeId(4),
+                trace_edge: 0,
+                producer_start: ExactRational::zero(),
+                producer_end: ExactRational::one(),
+                trace_ranges: Vec::new(),
+                known_spans: vec![source],
+            },
+        };
+        let boundary = NativeKnownSpanBoundary {
+            span: ChartSpanId(0),
+            parameter: ExactRational::zero(),
+            port: event_port,
+            data: event,
+        };
+        (edge, boundary)
+    }
+
+    struct NativeRefinementSearch {
+        classes: Vec<Vec<u8>>,
+        visits: Vec<u8>,
+    }
+
+    impl Problem for NativeRefinementSearch {
+        type Node = u8;
+        type Candidate = u8;
+        type Key = u8;
+        type ClassState = ();
+        type Output = u8;
+
+        fn classes(&self) -> &[Vec<Self::Node>] {
+            &self.classes
+        }
+
+        fn fixed_keys<W: Work>(
+            &self,
+            _class: usize,
+            _variables: &[Self::Node],
+            work: &mut W,
+        ) -> Result<Vec<Self::Key>> {
+            work.charge(1)?;
+            Ok(Vec::new())
+        }
+
+        fn compare_nodes<W: Work>(
+            &self,
+            left: Self::Node,
+            right: Self::Node,
+            work: &mut W,
+        ) -> Result<std::cmp::Ordering> {
+            work.charge(1)?;
+            Ok(left.cmp(&right))
+        }
+
+        fn fill_candidates<W: Work>(
+            &self,
+            _node: Self::Node,
+            candidates: &mut Vec<Self::Candidate>,
+            work: &mut W,
+        ) -> Result<()> {
+            work.charge(2)?;
+            candidates.extend([0, 1]);
+            Ok(())
+        }
+
+        fn compare_candidates<W: Work>(
+            &self,
+            _node: Self::Node,
+            left: Self::Candidate,
+            right: Self::Candidate,
+            work: &mut W,
+        ) -> Result<std::cmp::Ordering> {
+            work.charge(1)?;
+            Ok(left.cmp(&right))
+        }
+
+        fn candidate_key(&self, candidate: Self::Candidate) -> Self::Key {
+            candidate
+        }
+
+        fn prepare_class<A: SearchAccount>(
+            &self,
+            _class: usize,
+            _variables: &[Self::Node],
+            account: &mut A,
+        ) -> Result<Self::ClassState> {
+            account.charge_evaluations(1)?;
+            Ok(())
+        }
+
+        fn check_local<A: SearchAccount>(
+            &self,
+            _class_state: &Self::ClassState,
+            _class: usize,
+            _variables: &[Self::Node],
+            _rank: usize,
+            _assigned: &[Option<Self::Candidate>],
+            account: &mut A,
+        ) -> Result<bool> {
+            account.charge_evaluations(1)?;
+            Ok(true)
+        }
+
+        fn check_global<A: SearchAccount>(
+            &mut self,
+            assignments: &[ClassAssignment<'_, Self::Node, Self::Candidate>],
+            account: &mut A,
+        ) -> Result<GlobalCheck<Self::Output>> {
+            account.charge_evaluations(1)?;
+            let candidate = assignments
+                .first()
+                .and_then(|assignment| assignment.values.first())
+                .copied()
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("native refinement search has no assignment".into())
+                })?;
+            self.visits.push(candidate);
+            let prepared = if candidate == 0 {
+                Err(GeometryErrorKind::NativeRefinementMismatch.into())
+            } else {
+                Ok(candidate)
+            };
+            native_reference_global_check(prepared, || Ok(vec![0]))
+        }
+    }
+
+    #[test]
+    fn native_refinement_mismatch_rejects_first_candidate_and_searches_next() -> Result<()> {
+        let mut problem = NativeRefinementSearch {
+            classes: vec![vec![0]],
+            visits: Vec::new(),
+        };
+        let mut budget = EvaluationBudget::new("native incidence search control", 0)?;
+
+        let outcome = run_with_budget(&mut problem, &mut budget)?;
+
+        let SearchOutcome::Pass(assignment) = outcome else {
+            return Err(GeometryErrorKind::Invalid(
+                "native incidence search exhausted after a repairable rejection".into(),
+            )
+            .into());
+        };
+        assert_eq!(assignment.output, 1);
+        assert_eq!(problem.visits, [0, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_native_refinement_source_remains_a_hard_error() -> Result<()> {
+        let result: Result<u8> =
+            Err(GeometryErrorKind::Invalid("corrupt source-span port map".into()).into());
+
+        match native_reference_global_check(result, || Ok(vec![0])) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            )),
+            Ok(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "corrupt source-span data was treated as a candidate rejection".into(),
+                )
+                .into());
+            },
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_refinement_aligns_a_reversed_source_lift_to_the_assigned_leaf() -> Result<()> {
+        let event = NativePortData {
+            node: EmissionNodeId(2),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(-150.0),
+                ExactRational::from_f64(-80.0),
+            ),
+            spelling: PortSpelling::Interior { periods: 0 },
+            source_record: None,
+            occurrences: Vec::new(),
+        };
+        let (edge, boundary) = reversed_lift_native_refinement_fixture(event, QPortId(0));
+        let refined = common_refine_native_edges(
+            vec![edge],
+            &[boundary],
+            GeographicFrame::crs84(),
+            &mut Unmetered,
+        )?;
+
+        assert_eq!(refined.len(), 2);
+        let split = refined
+            .first()
+            .and_then(|edge| edge.vertices.get(1))
+            .ok_or_else(|| GeometryErrorKind::Invalid("refined split port is missing".into()))?;
+        assert_eq!(
+            split.point,
+            ExactChartPoint::from_rationals(
+                ExactRational::from_f64(-150.0),
+                ExactRational::from_f64(-80.0),
+            )
+        );
+        assert_eq!(split.node, EmissionNodeId(2));
+        let NativeAreaEdgeKind::Producer { known_spans, .. } = &refined
+            .get(1)
+            .ok_or_else(|| GeometryErrorKind::Invalid("second refined edge is missing".into()))?
+            .kind
+        else {
+            return Err(GeometryErrorKind::Invalid(
+                "refinement changed the producer edge kind".into(),
+            )
+            .into());
+        };
+        let known = known_spans
+            .first()
+            .ok_or_else(|| GeometryErrorKind::Invalid("reversed source span was lost".into()))?;
+        assert_eq!(known.source_range.start, ExactRational::from_f64(0.5));
+        assert_eq!(known.source_range.end, ExactRational::zero());
+        assert_eq!(known.source_lift, -1);
+        Ok(())
+    }
+
+    #[test]
+    fn noncoincident_native_refinement_junctions_are_typed_candidate_rejections() -> Result<()> {
+        for (longitude, latitude) in [(-149.5, -80.0), (-150.0, (-80.0_f64).next_up())] {
+            let event = NativePortData {
+                node: EmissionNodeId(2),
+                point: ExactChartPoint::from_rationals(
+                    ExactRational::from_f64(longitude),
+                    ExactRational::from_f64(latitude),
+                ),
+                spelling: PortSpelling::Interior { periods: 0 },
+                source_record: None,
+                occurrences: Vec::new(),
+            };
+            let (edge, boundary) = reversed_lift_native_refinement_fixture(event, QPortId(0));
+            let error = match common_refine_native_edges(
+                vec![edge],
+                &[boundary],
+                GeographicFrame::crs84(),
+                &mut Unmetered,
+            ) {
+                Err(error) => error,
+                Ok(_) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "noncoincident native refinement event was accepted".into(),
+                    )
+                    .into());
+                },
+            };
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::NativeRefinementMismatch)
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_native_span_port_map_propagates_through_candidate_classification() -> Result<()> {
+        let event = NativePortData {
+            node: EmissionNodeId(2),
+            point: ExactChartPoint::from_rationals(
+                ExactRational::from_f64(-150.0),
+                ExactRational::from_f64(-80.0),
+            ),
+            spelling: PortSpelling::Interior { periods: 0 },
+            source_record: None,
+            occurrences: Vec::new(),
+        };
+        let (edge, boundary) = reversed_lift_native_refinement_fixture(event, QPortId(1));
+        let result = common_refine_native_edges(
+            vec![edge],
+            &[boundary],
+            GeographicFrame::crs84(),
+            &mut Unmetered,
+        )
+        .map(|_| ());
+
+        match native_reference_global_check(result, || Ok(vec![0])) {
+            Err(error) => assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+            )),
+            Ok(_) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "corrupt Q-span port identity was treated as a candidate rejection".into(),
+                )
+                .into());
+            },
+        }
+        Ok(())
     }
 
     #[test]
