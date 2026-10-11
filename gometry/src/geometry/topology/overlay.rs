@@ -757,7 +757,7 @@ pub(super) fn source_ring_reuse_matches(
         let (source_start, source_end) = if reverse {
             (edge.source[1], edge.source[0])
         } else {
-            (edge.source[0], edge.source[1])
+            edge.source.into()
         };
         if !edge.source_interval_reads_as(
             topology.sources.frame,
@@ -1839,7 +1839,7 @@ fn build_fragment_recipes(
                 GeometryErrorKind::Invalid("Q line recipe span is unknown".into())
             })?;
             let (from, to) = match step.from_endpoint {
-                SpanEndpoint::Start => (span.ports[0], span.ports[1]),
+                SpanEndpoint::Start => span.ports.into(),
                 SpanEndpoint::End => (span.ports[1], span.ports[0]),
             };
             spans.push(DirectedSpan {

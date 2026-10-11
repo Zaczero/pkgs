@@ -3688,7 +3688,7 @@ fn validate_native_written_chord_transport(
                 let (expected_start, expected_end) = if *reversed {
                     (endpoints[1], endpoints[0])
                 } else {
-                    (endpoints[0], endpoints[1])
+                    (*endpoints).into()
                 };
                 if (start_vertex, end_vertex) != (expected_start, expected_end) {
                     return Err(GeometryErrorKind::Invalid(
@@ -3803,7 +3803,7 @@ fn validate_native_written_chord_transport(
                     let (atom_start, atom_end) = if atom_use.reversed {
                         (endpoints[1], endpoints[0])
                     } else {
-                        (endpoints[0], endpoints[1])
+                        (*endpoints).into()
                     };
                     if previous_end.is_some_and(|previous| previous != atom_start) {
                         return Err(GeometryErrorKind::Invalid(
@@ -4425,7 +4425,7 @@ fn validate_native_materialized_chord_row(
                     let (atom_start, atom_end) = if atom_use.reversed {
                         (endpoints[1], endpoints[0])
                     } else {
-                        (endpoints[0], endpoints[1])
+                        (*endpoints).into()
                     };
                     if atom_start != previous_vertex {
                         return Ok(false);
@@ -8197,7 +8197,7 @@ pub(super) fn source_line_reuse_is_complete(
         let (source_start, source_end) = if reverse {
             (edge.source[1], edge.source[0])
         } else {
-            (edge.source[0], edge.source[1])
+            edge.source.into()
         };
         if !edge.source_interval_reads_as(
             topology.sources.frame,
