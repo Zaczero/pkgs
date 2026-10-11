@@ -657,7 +657,7 @@ fn native_seam_vertex_index(
     let mut low = 0_usize;
     let mut high = events.len();
     while low < high {
-        let middle = low + (high - low) / 2;
+        let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native seam event index is unknown".into())
         })?;
@@ -2285,10 +2285,13 @@ impl SourceTrace {
         let mut new_samples_before_vertex = vec![0_usize; input_vertex_count];
         for vertex in 1..input_vertex_count {
             work.charge(1)?;
-            let previous = *new_samples_before_vertex.get(vertex - 1).ok_or_else(|| {
-                GeometryErrorKind::Invalid("publication sample prefix is incomplete".into())
-            })?;
-            let edge_samples = *new_samples_by_edge.get(vertex - 1).ok_or_else(|| {
+            let previous_vertex = vertex.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+            let previous = *new_samples_before_vertex
+                .get(previous_vertex)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("publication sample prefix is incomplete".into())
+                })?;
+            let edge_samples = *new_samples_by_edge.get(previous_vertex).ok_or_else(|| {
                 GeometryErrorKind::Invalid("publication sample edge count is incomplete".into())
             })?;
             *new_samples_before_vertex.get_mut(vertex).ok_or_else(|| {

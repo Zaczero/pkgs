@@ -1106,7 +1106,9 @@ impl<'a> NativeSubdivisionContext<'a> {
                         requests: Vec::new(),
                     };
                     if vertex > 0 {
-                        let incoming = trace.requests_at(vertex - 1, &one, budget)?;
+                        let previous_vertex =
+                            vertex.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+                        let incoming = trace.requests_at(previous_vertex, &one, budget)?;
                         budget.charge(
                             u64::try_from(incoming.len())
                                 .map_err(|_| ResourceError::SizeOverflow)?,
@@ -3310,7 +3312,8 @@ mod subdivision_tests {
                     expanded_line_ranges(member, next, output)?;
                     next = end;
                 }
-                Ok(next - start)
+                next.checked_sub(start)
+                    .ok_or_else(|| ResourceError::SizeOverflow.into())
             },
             Shape::LineString(line) => {
                 let end = start.checked_add(1).ok_or(ResourceError::SizeOverflow)?;

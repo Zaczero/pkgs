@@ -165,7 +165,8 @@ where
     }
     for offset in 1..start_capacity {
         work.charge(1)?;
-        let previous = *topology.starts.get(offset - 1).ok_or_else(|| {
+        let previous_offset = offset.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
+        let previous = *topology.starts.get(previous_offset).ok_or_else(|| {
             GeometryErrorKind::Invalid("indexed graph CSR prefix is incomplete".into())
         })?;
         let degree = *topology.starts.get(offset).ok_or_else(|| {

@@ -1165,13 +1165,17 @@ fn stable_wall_face_keys(
     stable_edge_ids: &[u32],
     work: &mut impl Work,
 ) -> Result<(Vec<Vec<u32>>, Vec<u32>)> {
-    if topology.face_starts.is_empty() || faces.walk_faces.len() + 1 != topology.face_starts.len() {
+    let walk_count = topology.face_starts.len().checked_sub(1).ok_or_else(|| {
+        GeometryErrorKind::Invalid(
+            "stable areal wall correspondence has inconsistent face tables".into(),
+        )
+    })?;
+    if faces.walk_faces.len() != walk_count {
         return Err(GeometryErrorKind::Invalid(
             "stable areal wall correspondence has inconsistent face tables".into(),
         )
         .into());
     }
-    let walk_count = topology.face_starts.len() - 1;
     let face_count = usize::try_from(faces.count).map_err(|_| ResourceError::SizeOverflow)?;
     work.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut face_keys = vec![Vec::<u32>::new(); face_count];
@@ -1180,8 +1184,9 @@ fn stable_wall_face_keys(
             *topology.face_starts.get(walk).ok_or_else(|| {
                 GeometryErrorKind::Invalid("stable face walk start is missing".into())
             })? as usize;
+        let next_walk = walk.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         let end =
-            *topology.face_starts.get(walk + 1).ok_or_else(|| {
+            *topology.face_starts.get(next_walk).ok_or_else(|| {
                 GeometryErrorKind::Invalid("stable face walk end is missing".into())
             })? as usize;
         let slots = topology.face_slots.get(start..end).ok_or_else(|| {

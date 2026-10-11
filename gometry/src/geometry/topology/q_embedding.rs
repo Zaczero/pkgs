@@ -732,7 +732,10 @@ impl RayPoints for NativeReferenceRayPoints<'_> {
         let point = if index < self.base.rounded.len() {
             self.base.rounded[index]
         } else {
-            self.rounded_queries[index - self.base.rounded.len()]
+            let query_index = index
+                .checked_sub(self.base.rounded.len())
+                .expect("query IDs follow the base graph point columns");
+            self.rounded_queries[query_index]
         };
         match self.transform {
             NativeRayTransform::Identity => point,
@@ -7504,13 +7507,16 @@ fn published_domains(
         } else {
             [nearest_candidate.native.y; 3]
         };
-        let longitude_count = if movable_axes[0] && !fixed_longitude {
+        let longitude_count: usize = if movable_axes[0] && !fixed_longitude {
             3
         } else {
             1
         };
-        let latitude_count = if movable_axes[1] { 3 } else { 1 };
-        let mut domain = Vec::with_capacity(longitude_count * latitude_count);
+        let latitude_count: usize = if movable_axes[1] { 3 } else { 1 };
+        let domain_capacity = longitude_count
+            .checked_mul(latitude_count)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut domain = Vec::with_capacity(domain_capacity);
         for longitude in longitude_candidates.iter().take(longitude_count) {
             for &latitude in latitude_candidates.iter().take(latitude_count) {
                 budget.charge(1)?;
@@ -14003,7 +14009,7 @@ fn native_events_for_span(
     let mut high = events.len();
     while low < high {
         budget.charge(1)?;
-        let middle = low + (high - low) / 2;
+        let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
         })?;
@@ -14017,7 +14023,7 @@ fn native_events_for_span(
     high = events.len();
     while low < high {
         budget.charge(1)?;
-        let middle = low + (high - low) / 2;
+        let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
         })?;
@@ -17287,7 +17293,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let mut high = selected_regions.len();
                 while low < high {
                     budget.charge(1)?;
-                    let middle = low + (high - low) / 2;
+                    let middle = low.midpoint(high);
                     let candidate = selected_regions.get(middle).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "generated area use has no selected-region authority".into(),
