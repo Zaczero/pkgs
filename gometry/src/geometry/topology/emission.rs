@@ -1728,24 +1728,27 @@ pub(super) fn native_port_point(
     let site = sites.get(port.node.0 as usize).ok_or_else(|| {
         GeometryErrorKind::Invalid("native drawing node has no assigned site".into())
     })?;
-    let (longitude, latitude) = if let Some(record) = port.source_record {
-        (record.x, record.y)
-    } else {
-        let spelling = match &port.position {
-            PortPosition::Source { spelling } | PortPosition::Projected { spelling } => spelling,
-        };
-        let longitude = match spelling {
-            PortSpelling::Interior { .. } => site.longitude.native().get(),
-            PortSpelling::Seam(ChartSide::East) => {
-                plan.topology.sources.frame.longitude().half_period()
-            },
-            PortSpelling::Seam(ChartSide::West) => {
-                -plan.topology.sources.frame.longitude().half_period()
-            },
-            PortSpelling::Pole { native_longitude } => *native_longitude,
-        };
-        (longitude, site.latitude)
-    };
+    let (longitude, latitude) = port.source_record.map_or_else(
+        || {
+            let spelling = match &port.position {
+                PortPosition::Source { spelling } | PortPosition::Projected { spelling } => {
+                    spelling
+                },
+            };
+            let longitude = match spelling {
+                PortSpelling::Interior { .. } => site.longitude.native().get(),
+                PortSpelling::Seam(ChartSide::East) => {
+                    plan.topology.sources.frame.longitude().half_period()
+                },
+                PortSpelling::Seam(ChartSide::West) => {
+                    -plan.topology.sources.frame.longitude().half_period()
+                },
+                PortSpelling::Pole { native_longitude } => *native_longitude,
+            };
+            (longitude, site.latitude)
+        },
+        |record| (record.x, record.y),
+    );
     let ordinates = ordinates.get(port_id.0 as usize).copied().ok_or_else(|| {
         GeometryErrorKind::Invalid("native drawing port has no resolved ordinates".into())
     })?;

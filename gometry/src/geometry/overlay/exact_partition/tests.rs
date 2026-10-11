@@ -6734,10 +6734,10 @@ impl<P: Problem<Output = ()>> Problem for TestVerifier<'_, P> {
         right: Self::Node,
         work: &mut W,
     ) -> Result<Ordering> {
-        match self.node_order {
-            Some(compare) => Ok(compare(left, right)),
-            None => self.inner.compare_nodes(left, right, work),
-        }
+        self.node_order.map_or_else(
+            || self.inner.compare_nodes(left, right, work),
+            |compare| Ok(compare(left, right)),
+        )
     }
 
     fn fill_candidates<W: Work>(

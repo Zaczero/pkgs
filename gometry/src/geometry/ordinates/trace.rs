@@ -47,11 +47,13 @@ pub(crate) fn resolve_source_root<M: ChartMetric>(
     let request = SourceArcRequest::new(frame, source, axes, parameter, || Ok(longitude))?;
     source_arc_ordinates(
         &request,
-        || match metric_access {
-            Some(access) => access(),
-            None => Err(crate::crs::CrsError::invalid(
+        || {
+            metric_access.map_or_else(
+                || Err(crate::crs::CrsError::invalid(
                 "geographic source-ordinate carry requires the operation's CRS metric authority",
-            )),
+                )),
+                |access| access(),
+            )
         },
         state,
         fraction,
@@ -436,10 +438,9 @@ pub(crate) struct RequestRowId(u32);
 
 impl RequestRowId {
     pub(crate) fn from_index(index: usize) -> Result<Self> {
-        match u32::try_from(index) {
-            Ok(index) => Ok(Self(index)),
-            Err(_) => Err(ResourceError::SizeOverflow.into()),
-        }
+        u32::try_from(index)
+            .map(Self)
+            .map_err(|_| ResourceError::SizeOverflow.into())
     }
 
     pub(crate) const fn index(self) -> usize {
