@@ -35,6 +35,7 @@ from typing import (
     NotRequired,
     Protocol,
     Self,
+    SupportsFloat,
     SupportsIndex,
     TypeAlias,
     TypedDict,
@@ -63,6 +64,10 @@ ScalarFloatArray: TypeAlias = np.ndarray[
 FloatScalar: TypeAlias = (
     float | np.floating[Any] | np.signedinteger[Any] | np.unsignedinteger[Any]
 )
+# Epochs use Python's numeric conversion protocols while retaining the NumPy
+# scalar and zero-dimensional array inputs supported by the native boundary.
+# This private alias is shared by `_lib.pyi` and optional Python adapters.
+_EpochInput: TypeAlias = SupportsFloat | SupportsIndex | FloatScalar | ScalarFloatArray  # noqa: PYI047
 
 if TYPE_CHECKING:
     # Static consumers see the nominal optional dependency types. Runtime

@@ -56,7 +56,7 @@ impl PyPoint {
     /// crs : CRS-like, optional
     ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
     ///
     /// Returns
@@ -121,7 +121,7 @@ impl PyPoint {
     /// crs : CRS-like or None, optional
     ///     Replace or clear the CRS label.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Replace or clear the coordinate epoch.
     ///
     /// Returns
@@ -255,7 +255,7 @@ impl PyLineString {
     /// crs : CRS-like, optional
     ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
     ///
     /// Returns
@@ -328,7 +328,7 @@ impl PyPolygon {
     /// crs : CRS-like, optional
     ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
     ///
     /// Returns
@@ -393,7 +393,7 @@ impl PyMultiPoint {
     /// crs : CRS-like, optional
     ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
     ///
     /// Returns
@@ -456,7 +456,7 @@ impl PyMultiLineString {
     /// crs : CRS-like, optional
     ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
     ///
     /// Returns
@@ -509,7 +509,7 @@ impl PyMultiPolygon {
     /// crs : CRS-like, optional
     ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
     ///
     /// Returns
@@ -563,7 +563,7 @@ impl PyGeometryCollection {
     /// crs : CRS-like, optional
     ///     Any supported CRS input. Declares the frame; does not transform coordinates.
     ///
-    /// epoch : float or None, optional
+    /// epoch : numeric scalar, 0-D numeric array, or None, optional
     ///     Coordinate epoch (decimal year) for time-dependent frames.
     ///
     /// Returns

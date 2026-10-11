@@ -388,11 +388,43 @@
   border-radius: 3px;
 }
 
-/* Tabs sit on teal, so the page's accent ring is not reliably visible there. */
+/* Header links and palette labels sit on teal in both color schemes. */
+[data-md-color-primary="teal"] .md-header a:focus-visible,
+[data-md-color-primary="teal"] .md-header__button:focus-visible,
+[data-md-color-primary="teal"] .md-tabs__link:focus-visible {
+  outline-color: #ffffff;
+}
+
+[data-md-color-primary="teal"]
+  .md-header__option:has(.md-option.focus-visible)
+  label.md-header__button:not([hidden]) {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Mobile and expanded search use the page surface; collapsed desktop search
+   overlays translucent teal. Match each ring to the surface beside it. */
+[data-md-color-primary="teal"] .md-search__input:focus-visible {
+  outline-color: var(--md-accent-fg-color);
+}
+
 @media screen and (min-width: 60em) {
-  .md-tabs__link:focus-visible {
+  [data-md-color-primary="teal"] [data-md-toggle="search"]:not(:checked) ~ .md-header
+    .md-search__input:focus-visible {
     outline-color: #ffffff;
   }
+}
+
+[data-md-color-primary="teal"] [data-md-toggle="search"]:checked ~ .md-header
+  .md-search__input:focus-visible {
+  outline-color: var(--gometry-teal);
+}
+
+[data-md-color-scheme="slate"][data-md-color-primary="teal"]
+  [data-md-toggle="search"]:checked ~ .md-header
+  .md-search__input:focus-visible {
+  outline-color: #ffffff;
 }
 
 /* Overload groups start with every accepted call visible. The native disclosure

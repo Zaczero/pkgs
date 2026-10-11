@@ -117,7 +117,7 @@ m : float, optional
     M (measure) ordinate.
 crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -133,7 +133,7 @@ x, y, z, m : sequence of float, optional
     Column form: parallel ordinate arrays, one entry per point.
 crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -149,7 +149,7 @@ x, y, z, m : sequence of float, optional
     Column form: parallel ordinate arrays, one entry per vertex.
 crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -163,7 +163,7 @@ lines : iterable of LineString or coordinate sequences, optional
     The member lines; omitted builds an empty multilinestring.
 crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -181,7 +181,7 @@ x, y, z, m : sequence of float, optional
     Column form for the exterior ring: parallel ordinate arrays.
 crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -195,7 +195,7 @@ polygons : iterable of Polygon or (shell, holes) pairs, optional
     The member polygons; omitted builds an empty multipolygon.
 crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -209,7 +209,7 @@ geometries : sequence of Geometry, optional
     The member geometries, of any types; omitted builds an empty collection.
 crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 

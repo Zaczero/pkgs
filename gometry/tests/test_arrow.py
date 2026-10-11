@@ -15,6 +15,7 @@ import sys
 from typing import Any, cast
 
 import gometry as gm
+import numpy as np
 import pytest
 from gometry._lib import CRS as _CRS
 
@@ -522,6 +523,17 @@ def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
     assert restored.epoch == 2020.0
     assert restored[0].crs.to_epsg() == 4326
     assert restored[0].epoch == 2020.0
+
+
+def test_from_arrow_epoch_accepts_numpy_scalar_and_index_protocol() -> None:
+    class IndexEpoch:
+        def __index__(self) -> int:
+            return 2024
+
+    arrow = gm.GeometryArray([gm.Point(1.0, 2.0)]).to_arrow()
+    for epoch, expected in ((np.float64(2023.5), 2023.5), (IndexEpoch(), 2024.0)):
+        restored = gm.from_arrow(arrow, crs=4326, epoch=epoch)
+        assert restored.epoch == expected
 
 
 @pytest.mark.parametrize(

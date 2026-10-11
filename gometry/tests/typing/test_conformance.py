@@ -20,7 +20,7 @@ static type.
 from __future__ import annotations
 
 import types
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -97,6 +97,10 @@ NORMALIZED: bool = True
 _GeometryT = TypeVar('_GeometryT', bound=gm.Geometry)
 
 if TYPE_CHECKING:
+    from decimal import Decimal
+    from fractions import Fraction
+    from typing import SupportsFloat
+
     _dense_points: gm.GeometryArray[gm.Point] = gm.GeometryArray([POINT])
     _nullable_points: gm.GeometryArray[gm.Point | None] = gm.GeometryArray([
         POINT,
@@ -106,6 +110,214 @@ if TYPE_CHECKING:
     _nullable_point_rows: list[gm.Point | None] = [POINT, None]
     _coordinate_rows = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
     _geometry_rows: list[gm.Geometry | None] = [POLY, None]
+
+
+def _check_epoch_input_families(
+    float_epoch: SupportsFloat,
+    index_epoch: SupportsIndex,
+    decimal_epoch: Decimal,
+    fraction_epoch: Fraction,
+    numpy_float_epoch: np.float64,
+    numpy_index_epoch: np.int64,
+    numpy_array_epoch: np.ndarray[tuple[()], np.dtype[np.float64]],
+    arrow_column: pa.Array,
+    polars_column: sht.PolarsSeries,
+    wkb_rows: np.ndarray[tuple[int], np.dtype[np.uint8]],
+    bounds_rows: np.ndarray[tuple[int, int], np.dtype[np.float64]],
+    coordinate_rows: np.ndarray[tuple[int], np.dtype[np.float64]],
+    features: bool,
+) -> None:
+    reveal_type(gm.Point(epoch=None))
+    reveal_type(gm.Point(POINT, crs=4326, epoch=float_epoch))
+    reveal_type(gm.Point(1, 2, crs=4326, epoch=float_epoch))
+    reveal_type(gm.Point(1, 2, crs=4326, epoch=decimal_epoch))
+    reveal_type(gm.Point(1, 2, crs=4326, epoch=fraction_epoch))
+    reveal_type(gm.LineString([(0, 0), (1, 1)], crs=4326, epoch=index_epoch))
+    reveal_type(gm.LineString(x=[0, 1], y=[0, 1], crs=4326, epoch=numpy_float_epoch))
+    reveal_type(
+        gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)], crs=4326, epoch=numpy_float_epoch)
+    )
+    reveal_type(
+        gm.Polygon(
+            x=[0, 1, 1, 0],
+            y=[0, 0, 1, 0],
+            crs=4326,
+            epoch=numpy_array_epoch,
+        )
+    )
+    reveal_type(gm.MultiPoint([(0, 0), (1, 1)], crs=4326, epoch=numpy_index_epoch))
+    reveal_type(gm.MultiPoint(x=[0, 1], y=[0, 1], crs=4326, epoch=numpy_array_epoch))
+    reveal_type(
+        gm.MultiLineString([[(0, 0), (1, 1)]], crs=4326, epoch=numpy_array_epoch)
+    )
+    reveal_type(
+        gm.MultiPolygon(
+            [[[(0, 0), (1, 0), (1, 1), (0, 0)]]],
+            crs=4326,
+            epoch=float_epoch,
+        )
+    )
+    reveal_type(gm.GeometryCollection([POINT], crs=4326, epoch=index_epoch))
+
+    reveal_type(gm.GeometryArray([POINT], crs=4326, epoch=numpy_index_epoch))
+    reveal_type(gm.GeometryArray([POINT, None], crs=4326, epoch=numpy_array_epoch))
+    reveal_type(gm.box(0, 0, 1, 1, crs=4326, epoch=float_epoch))
+    reveal_type(gm.box(170, -10, -170, 10, crs=4326, wrap='split', epoch=index_epoch))
+    reveal_type(gm.boxes(0, 0, [1, 2], [1, 2], crs=4326, epoch=index_epoch))
+    reveal_type(
+        gm.boxes(
+            [170, -10],
+            [-10, -10],
+            [-170, 10],
+            [10, 10],
+            crs=4326,
+            wrap='split',
+            epoch=numpy_float_epoch,
+        )
+    )
+    reveal_type(gm.points([(0, 0), (1, 1)], crs=4326, epoch=numpy_float_epoch))
+    reveal_type(gm.points([0, 1], [0, 1], crs=4326, epoch=index_epoch))
+    reveal_type(gm.line_strings([[(0, 0), (1, 1)]], crs=4326, epoch=numpy_index_epoch))
+    reveal_type(
+        gm.polygons([[(0, 0), (1, 0), (1, 1), (0, 0)]], crs=4326, epoch=index_epoch)
+    )
+    reveal_type(gm.multi_points([[(0, 0), (1, 1)]], crs=4326, epoch=float_epoch))
+    reveal_type(
+        gm.multi_line_strings([[[(0, 0), (1, 1)]]], crs=4326, epoch=numpy_array_epoch)
+    )
+    reveal_type(
+        gm.multi_polygons(
+            [[[[(0, 0), (1, 0), (1, 1), (0, 0)]]]],
+            crs=4326,
+            epoch=numpy_float_epoch,
+        )
+    )
+
+    reveal_type(gm.from_wkt('POINT (0 0)', crs=4326, epoch=index_epoch))
+    reveal_type(
+        gm.from_wkt(['POINT (0 0)', 'POINT (1 1)'], crs=4326, epoch=float_epoch)
+    )
+    reveal_type(gm.from_wkt(['POINT (0 0)', None], crs=4326, epoch=numpy_array_epoch))
+    reveal_type(gm.from_wkt(arrow_column, crs=4326, epoch=numpy_index_epoch))
+    reveal_type(
+        gm.from_wkb(b'\x01\x01\x00\x00\x00' + b'\x00' * 16, crs=4326, epoch=index_epoch)
+    )
+    reveal_type(
+        gm.from_wkb(
+            [b'\x01\x01\x00\x00\x00' + b'\x00' * 16], crs=4326, epoch=float_epoch
+        )
+    )
+    reveal_type(gm.from_wkb(wkb_rows, crs=4326, epoch=numpy_array_epoch))
+    reveal_type(gm.from_wkb(arrow_column, crs=4326, epoch=numpy_index_epoch))
+    reveal_type(
+        gm.from_geojson(
+            '{"type":"Point","coordinates":[0,0]}',
+            crs=4326,
+            epoch=numpy_float_epoch,
+        )
+    )
+    reveal_type(
+        gm.from_geojson(
+            '{"type":"Point","coordinates":[0,0]}',
+            features=True,
+            crs=4326,
+            epoch=index_epoch,
+        )
+    )
+    reveal_type(
+        gm.from_geojson(
+            ['{"type":"Point","coordinates":[0,0]}', None],
+            crs=4326,
+            epoch=numpy_array_epoch,
+        )
+    )
+    reveal_type(
+        gm.from_geojson(
+            '{"type":"Point","coordinates":[0,0]}',
+            features=features,
+            crs=4326,
+            epoch=numpy_index_epoch,
+        )
+    )
+    reveal_type(gm.from_geojson(arrow_column, crs=4326, epoch=float_epoch))
+    reveal_type(gm.from_polyline('encoded', crs=4326, epoch=float_epoch))
+    reveal_type(gm.from_polyline(['encoded', None], crs=4326, epoch=numpy_array_epoch))
+    reveal_type(gm.from_polyline(arrow_column, crs=4326, epoch=index_epoch))
+    reveal_type(gm.from_arrow(arrow_column, crs=4326, epoch=numpy_index_epoch))
+    reveal_type(gm.from_polars(polars_column, crs=4326, epoch=index_epoch))
+
+    reveal_type(POINT.with_epoch(numpy_float_epoch))
+    reveal_type(POINT.with_epoch(None))
+    reveal_type(POINT.__replace__(epoch=index_epoch))
+    reveal_type(POINT.to_crs(3857, epoch=numpy_index_epoch))
+    reveal_type(POINTS.with_epoch(numpy_array_epoch))
+    reveal_type(POINTS.to_crs(3857, epoch=float_epoch))
+    reveal_type(
+        gm.CRS(4326).operation(3857, source_epoch=index_epoch, target_epoch=float_epoch)
+    )
+    reveal_type(
+        gm.CRS(4326).operations(
+            3857, source_epoch=numpy_index_epoch, target_epoch=numpy_float_epoch
+        )
+    )
+    reveal_type(
+        gm.crs_transform(
+            4326,
+            3857,
+            1.0,
+            2.0,
+            source_epoch=index_epoch,
+            target_epoch=float_epoch,
+        )
+    )
+    reveal_type(
+        gm.crs_transform(
+            4326,
+            3857,
+            coordinate_rows,
+            2.0,
+            source_epoch=numpy_index_epoch,
+            target_epoch=numpy_float_epoch,
+        )
+    )
+    reveal_type(
+        gm.crs_transform_bounds(
+            4326,
+            3857,
+            (0.0, 0.0, 1.0, 1.0),
+            source_epoch=numpy_index_epoch,
+            target_epoch=numpy_float_epoch,
+        )
+    )
+    reveal_type(
+        gm.crs_transform_bounds(
+            4326,
+            3857,
+            bounds_rows,
+            source_epoch=index_epoch,
+            target_epoch=numpy_float_epoch,
+        )
+    )
+    reveal_type(
+        gm.crs_roundtrip(
+            4326,
+            3857,
+            1.0,
+            2.0,
+            source_epoch=index_epoch,
+            target_epoch=float_epoch,
+        )
+    )
+    reveal_type(
+        gm.crs_roundtrip(
+            4326,
+            3857,
+            coordinate_rows,
+            2.0,
+            source_epoch=numpy_index_epoch,
+            target_epoch=numpy_float_epoch,
+        )
+    )
 
     reveal_type(gm.pluscode_encode(POINT))
     reveal_type(gm.pluscode_encode(8.0, 47.0))
@@ -915,6 +1127,19 @@ assert_type(POINT, gm.Point)
 assert_type(POINTS, gm.GeometryArray[gm.Point])
 assert_type(gm.MultiPoint([POINT, gm.Point(2, 2)]), gm.MultiPoint)
 if TYPE_CHECKING:
+    _multipoint_sequence: Sequence[gm.Point] = gm.MultiPoint([(0, 0), (1, 1)])
+    _multiline_sequence: Sequence[gm.LineString] = gm.MultiLineString([
+        [(0, 0), (1, 1)]
+    ])
+    _multipolygon_sequence: Sequence[gm.Polygon] = gm.MultiPolygon([
+        [[(0, 0), (1, 0), (1, 1), (0, 0)]]
+    ])
+    _geometrycollection_sequence: Sequence[gm.Geometry] = gm.GeometryCollection([POINT])
+    reveal_type(_multipoint_sequence)
+    reveal_type(_multiline_sequence)
+    reveal_type(_multipolygon_sequence)
+    reveal_type(_geometrycollection_sequence)
+
     from collections.abc import Hashable, Iterable, Mapping
     from pathlib import Path
     from tempfile import TemporaryDirectory

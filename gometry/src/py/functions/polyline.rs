@@ -318,7 +318,7 @@ pub(crate) fn polyline_of(geometry: &PyGeometry, factor: f64) -> PyResult<String
 /// crs : CRS-like or None, default 'OGC:CRS84'
 ///     Frame for the decoded longitude/latitude coordinates. Only WGS84
 ///     longitude/latitude CRS are valid; pass ``None`` for CRS-free output.
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) to attach as frame metadata.
 ///
 /// Returns

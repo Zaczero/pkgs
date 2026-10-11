@@ -49,7 +49,7 @@ use crate::py::numpy;
 /// ccw : bool, default True
 ///     If ``True`` the ring is counter-clockwise; ``False`` makes it clockwise.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns
@@ -124,7 +124,7 @@ pub(super) fn box_(
 ///     CRS label (EPSG code, authority string, or WKT); attached as metadata,
 ///     coordinates are not transformed.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns
@@ -450,7 +450,7 @@ fn try_points_from_arc_columns(
 /// ccw : bool, default True
 ///     If ``True`` each ring is counter-clockwise; ``False`` makes it clockwise.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns
@@ -550,7 +550,7 @@ pub(super) fn boxes(
 /// crs : CRS-like, optional
 ///     CRS applied to every linestring.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns
@@ -604,7 +604,7 @@ pub(super) fn line_strings(
 /// crs : CRS-like, optional
 ///     CRS applied to every polygon.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns
@@ -658,7 +658,7 @@ pub(super) fn polygons(
 /// crs : CRS-like, optional
 ///     CRS applied to every multipoint.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns
@@ -712,7 +712,7 @@ pub(super) fn multi_points(
 /// crs : CRS-like, optional
 ///     CRS applied to every multilinestring.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns
@@ -766,7 +766,7 @@ pub(super) fn multi_line_strings(
 /// crs : CRS-like, optional
 ///     CRS applied to every multipolygon.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) for time-dependent frames.
 ///
 /// Returns

@@ -177,7 +177,7 @@ fn parse_geojson_concrete_row(
 ///     top-level ``crs`` member (pre-RFC 7946) is ignored when it agrees with
 ///     ``crs=`` and raises on conflict or unsupported declarations.
 ///
-/// epoch : float, optional
+/// epoch : numeric scalar or 0-D numeric array, optional
 ///     Coordinate epoch (decimal year) to attach as frame metadata.
 ///
 /// Returns

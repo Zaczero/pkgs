@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections.abc as cabc
 import copy
+import functools
 import gc
 import math
 import pickle
@@ -53,11 +54,20 @@ def test_native_pyclass_type_objects_are_immutable() -> None:
     assert not mutable, f'mutable native type objects: {mutable}'
 
 
-def test_registered_native_sequences_declare_sequence_flag() -> None:
-    """ABC registration and native pattern-matching flags stay in parity."""
+def test_registered_sequence_types_keep_their_pattern_matching_flags() -> None:
+    """Multipart ABC registration does not opt geometry objects into sequence patterns."""
     sequence_flag = 1 << 5  # CPython's Py_TPFLAGS_SEQUENCE.
+    multipart_types = {
+        gm.MultiPoint,
+        gm.MultiLineString,
+        gm.MultiPolygon,
+        gm.GeometryCollection,
+    }
     for native_type in gm._NATIVE_SEQUENCE_TYPES:
-        assert native_type.__flags__ & sequence_flag, native_type.__name__
+        has_sequence_flag = bool(native_type.__flags__ & sequence_flag)
+        assert has_sequence_flag is (native_type not in multipart_types), (
+            native_type.__name__
+        )
 
 
 def _regular_polygon(
@@ -427,6 +437,47 @@ def test_all_declared_native_sequences_are_registered_and_matchable() -> None:
                 assert len(rest) == len(value) - 1
             case _:
                 pytest.fail(f'{type(value).__name__} did not match as a sequence')
+
+
+def test_multipart_geometries_are_sequences_and_stay_numpy_atomic() -> None:
+    @functools.singledispatch
+    def sequence_dispatch(value: object) -> str:
+        return 'other'
+
+    @sequence_dispatch.register(cabc.Sequence)
+    def _(value: cabc.Sequence[object]) -> str:
+        return 'sequence'
+
+    geometries = (
+        gm.MultiPoint([(0, 0), (1, 1)]),
+        gm.MultiLineString([[(0, 0), (1, 1)]]),
+        gm.MultiPolygon([[[(0, 0), (1, 0), (1, 1), (0, 0)]]]),
+        gm.GeometryCollection([gm.Point(0, 0)]),
+    )
+    for geometry in geometries:
+        assert isinstance(geometry, cabc.Sequence)
+        assert sequence_dispatch(geometry) == 'sequence'
+
+        match geometry:
+            case [_, *_]:
+                pytest.fail(
+                    f'{type(geometry).__name__} matched an anonymous sequence pattern'
+                )
+            case _:
+                pass
+
+        array = gm.GeometryArray([geometry])
+        assert len(array) == 1 and array[0] == geometry
+        with pytest.raises(TypeError, match='GeometryArray requires an iterable'):
+            gm.GeometryArray(geometry)
+
+        scalar = np.asarray(geometry)
+        assert scalar.shape == ()
+        assert scalar.item() is geometry
+
+        nested = np.array([geometry, geometry], dtype=object)
+        assert nested.shape == (2,)
+        assert nested[0] is geometry and nested[1] is geometry
 
 
 def test_sequence_index_count_windows_across_native_views() -> None:

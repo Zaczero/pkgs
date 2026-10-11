@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 import pickle
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from fractions import Fraction
 from typing import Any, cast
 
 import gometry as gm
+import numpy as np
 import pytest
 
 _GEOMETRY_EPOCH = 2024.5
@@ -195,6 +199,41 @@ def _bound_crs(source: dict[str, Any], target: dict[str, Any]) -> str:
 def _datum(crs: object) -> dict[str, Any]:
     info = gm.CRS(crs).info
     return cast('dict[str, Any]', info['datum'])
+
+
+class _FloatEpoch:
+    def __float__(self) -> float:
+        return 2025.5
+
+
+class _IndexEpoch:
+    def __index__(self) -> int:
+        return 2026
+
+
+def test_epoch_inputs_convert_numeric_protocols_and_numpy_values() -> None:
+    inputs = (
+        (np.float64(2020.5), 2020.5),
+        (np.int64(2021), 2021.0),
+        (np.array(2022.5), 2022.5),
+        (Decimal('2023.5'), 2023.5),
+        (Fraction(4049, 2), 2024.5),
+        (_FloatEpoch(), 2025.5),
+        (_IndexEpoch(), 2026.0),
+    )
+    point = gm.Point(10.0, 50.0, crs=4326)
+    for value, expected in inputs:
+        assert point.with_epoch(value).epoch == expected
+        assert gm.Point(10.0, 50.0, crs=4326, epoch=value).epoch == expected
+
+
+@pytest.mark.parametrize(
+    'epoch',
+    [date(2020, 1, 1), datetime(2020, 1, 1, tzinfo=UTC)],
+)
+def test_epoch_rejects_calendar_values(epoch: date | datetime) -> None:
+    with pytest.raises(TypeError, match='epoch must be a finite float'):
+        gm.Point(10.0, 50.0, crs=4326, epoch=epoch)
 
 
 def _reject_epoch(crs: object) -> None:

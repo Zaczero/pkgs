@@ -216,12 +216,16 @@ del _get_type_hints
 
 del annotations
 
-# These native containers honor the full sequence protocol (len/getitem/iter/
-# reversed/in/index/count); registering makes `isinstance(value, Sequence)`
-# true. Each class also declares `sequence` natively so immutable type objects
-# do not need this registration to acquire Py_TPFLAGS_SEQUENCE.
+# These native containers honor Python's sequence operations; registration
+# makes `isinstance(value, Sequence)` and ABC-based dispatch recognize them.
+# Only sequence-pattern containers declare the native sequence flag. Multipart
+# geometries keep it clear so NumPy continues to treat each geometry atomically.
 _NATIVE_SEQUENCE_TYPES = (
     GeometryArray,
+    MultiPoint,
+    MultiLineString,
+    MultiPolygon,
+    GeometryCollection,
     CellArray,
     Groups,
     GeometryParts,
