@@ -521,9 +521,7 @@ pub(super) fn merge_native_port_data(
         .into());
     }
     validate_native_port_image(frame, left, right, work)?;
-    let spelling = match (&left.spelling, &right.spelling) {
-        (left, _) => left.clone(),
-    };
+    let spelling = left.spelling.clone();
     for port in [left, right] {
         if let Some(record) = port.source_record {
             validate_native_source_record(frame, port, record, work)?;
