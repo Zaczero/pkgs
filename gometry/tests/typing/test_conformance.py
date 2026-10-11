@@ -465,6 +465,7 @@ def _drop_missing_generic(
 def _check_require_row_types(
     nullable_array: gm.GeometryArray[gm.Point | None],
     nullable_groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
+    nullable_group_rows: gm.Groups[gm.GeometryArray[gm.Point] | None],
     nullable_rows: Iterable[gm.Point | None],
     foreign_rows: Iterable[gm.Point | str | None],
 ) -> None:
@@ -472,6 +473,11 @@ def _check_require_row_types(
     assert_type(
         gm.require(nullable_groups),
         gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(gm.require(nullable_group_rows), gm.GeometryArray[gm.Point])
+    assert_type(
+        gm.require(nullable_group_rows.values),
+        gm.GeometryArray[gm.Point],
     )
     assert_type(gm.require(nullable_rows), gm.GeometryArray[gm.Point | None])
     assert_type(

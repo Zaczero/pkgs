@@ -1096,6 +1096,16 @@ def test_present_empty_cell_group_contains_empty_cover_row() -> None:
     assert present_empty.index(empty_cells) == 0
 
 
+def test_require_nullable_groups_matches_their_present_values() -> None:
+    rows = gm.GeometryArray([gm.Point(1, 2), None, gm.Point(3, 4)])
+
+    required_groups = gm.require(rows.parts)
+    required_values = gm.require(rows.parts.values)
+
+    assert required_groups == required_values
+    assert required_groups.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
 @pytest.mark.parametrize(
     ('geometry', 'member_type'),
     [

@@ -21704,6 +21704,13 @@ def require(
 ) -> GeometryArray[_GeometryRowT]: ...
 @overload
 def require(
+    value: Groups[GeometryArray[_GeometryRowT] | None],
+    *,
+    crs: CrsInput | None = None,
+    axes: CoordinateAxes | None = None,
+) -> GeometryArray[_GeometryRowT]: ...
+@overload
+def require(
     value: str | Buffer | Mapping[str, Any] | SupportsGeoInterface,
     *,
     crs: CrsInput | None = None,
