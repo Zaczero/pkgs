@@ -417,23 +417,29 @@ pub(crate) fn nearest_line(pair: Option<&(Point, Point)>, common: CoordinateAxes
 
 /// Publish a computed nearest-pair line with the displacement retained by its
 /// metric producer.
-pub(crate) fn nearest_line_with_intent(
+pub(crate) fn nearest_line_with_intent<'metric, M>(
     pair: Option<&(Point, Point)>,
     common: CoordinateAxes,
     frame: crate::geographic::GeographicFrame,
     intent: crate::geographic::ComputedEdgeIntent<'_>,
-) -> Result<Shape> {
+    source_context: &SourceArcContext<'_, 'metric, M>,
+) -> Result<Shape>
+where
+    M: ChartMetric + 'metric,
+{
     let Some(pair) = pair else {
         return nearest_line(None, common);
     };
     let points: [Point; 2] = coerce_to_common_axes(pair.0, pair.1).into();
     let mut budget = ExpansionBudget::new("shortest_line", "computed edges");
-    let published = crate::geographic::publish_computed_chain(
+    let published = publish_native_computed_chain(
         frame,
         points.as_slice(),
         false,
         &mut budget,
+        source_context,
         |_, _, _| Ok(intent),
+        |_, _| crate::geographic::ComputedVertexIntent::Canonical,
     )?;
     match published {
         Some(points) => Ok(Shape::LineString(LineSeq::from_proven(

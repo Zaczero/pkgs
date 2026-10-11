@@ -175,6 +175,12 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
             state,
             |crs, metric| {
                 let (semi_major, flattening) = metric.ellipsoid_parameters();
+                let frame = crate::geometry::ChartMetric::chart_frame(metric);
+                let metric_access = || Ok(metric);
+                let source_context = crate::geometry::SourceArcContext::new(
+                    crate::geometry::TopologyDomain::Geographic(frame),
+                    Some(&metric_access),
+                );
                 let present = (|| -> Result<Vec<Shape>, (usize, crate::error::Error)> {
                     let mut shapes = Vec::with_capacity(present_count);
                     for row in array_rows.present_rows() {
@@ -209,20 +215,18 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                         let common =
                             crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                         let line = match witness {
-                            Some((start, end, step)) => {
-                                let frame = crate::geometry::ChartMetric::chart_frame(metric);
-                                crate::geometry::nearest_line_with_intent(
-                                    Some(&(start, end)),
-                                    common,
+                            Some((start, end, step)) => crate::geometry::nearest_line_with_intent(
+                                Some(&(start, end)),
+                                common,
+                                frame,
+                                crate::geographic::ComputedEdgeIntent::retained_chart_witness(
                                     frame,
-                                    crate::geographic::ComputedEdgeIntent::retained_chart_witness(
-                                        frame,
-                                        [start.x, end.x],
-                                        step,
-                                    )
-                                    .map_err(|error| (logical, error))?,
+                                    [start.x, end.x],
+                                    step,
                                 )
-                            },
+                                .map_err(|error| (logical, error))?,
+                                &source_context,
+                            ),
                             None => crate::geometry::nearest_line(None, common),
                         }
                         .map_err(|error| (logical, error))?;

@@ -880,6 +880,7 @@ pub(crate) fn metric_shortest_line_resolved(
                         ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [
                             start.x, end.x,
                         ])?,
+                        source_context,
                     )
                 },
                 (_, TopologyDomain::Cartesian) => {
@@ -918,6 +919,7 @@ pub(crate) fn metric_shortest_line_resolved(
                         [start.x, end.x],
                         intent,
                     )?,
+                    source_context,
                 ),
                 None => crate::geometry::nearest_line(None, common),
             }
@@ -1483,7 +1485,7 @@ mod minimum_clearance_computed_edge_tests {
 
 #[cfg(test)]
 mod planar_nearest_source_ordinate_tests {
-    use super::metric_nearest_points_resolved;
+    use super::{metric_nearest_points_resolved, metric_shortest_line_resolved};
     use crate::crs::{GeodesicMetric, MetricModel, ResolvedMetric};
     use crate::geometry::{
         ChartMetric, FrameDependentCaches, LineSeq, Point, PreparedPlan, Shape, SourceArcContext,
@@ -1492,14 +1494,20 @@ mod planar_nearest_source_ordinate_tests {
 
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
 
-    fn segmented_length(metric: &GeodesicMetric, end: Point) -> f64 {
+    fn segmented_length(metric: &GeodesicMetric, start: Point, end: Point) -> f64 {
         (0..8)
             .map(|index| {
                 let start_parameter = index as f64 / 8.0;
                 let end_parameter = (index + 1) as f64 / 8.0;
-                let start = Point::new_raw_xy(end.x * start_parameter, end.y * start_parameter);
-                let end = Point::new_raw_xy(end.x * end_parameter, end.y * end_parameter);
-                let edge = metric.chart_edge(start, end).unwrap();
+                let start_point = Point::new_raw_xy(
+                    start.x + (end.x - start.x) * start_parameter,
+                    start.y + (end.y - start.y) * start_parameter,
+                );
+                let end_point = Point::new_raw_xy(
+                    start.x + (end.x - start.x) * end_parameter,
+                    start.y + (end.y - start.y) * end_parameter,
+                );
+                let edge = metric.chart_edge(start_point, end_point).unwrap();
                 metric.chart_edge_length(&edge).unwrap()
             })
             .sum()
@@ -1559,11 +1567,106 @@ mod planar_nearest_source_ordinate_tests {
 
         assert_eq!((left.x, left.y), (60.4, 30.2));
         assert_eq!((right.x, right.y), (60.0, 31.0));
-        let fraction = segmented_length(&metric, Point::new_raw_xy(left.x, left.y))
-            / segmented_length(&metric, Point::new_raw_xy(120.0, 60.0));
+        let origin = Point::new_raw_xy(0.0, 0.0);
+        let fraction = segmented_length(&metric, origin, Point::new_raw_xy(left.x, left.y))
+            / segmented_length(&metric, origin, Point::new_raw_xy(120.0, 60.0));
         assert!((left.z().unwrap() - (10.0 + 200.0 * fraction)).abs() < 1.0e-9);
         assert!((left.m().unwrap() - (100.0 + 400.0 * fraction)).abs() < 1.0e-9);
         assert_eq!(right.z(), Some(7.0));
         assert_eq!(right.m(), Some(9.0));
+    }
+
+    #[test]
+    fn shortest_line_samples_follow_the_retained_half_and_full_turn_chords() {
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
+        let metric = GeodesicMetric::from_model(&model).unwrap();
+        let frame = metric.frame;
+        let geodesic = ResolvedMetric::from_model(&model).unwrap();
+        let planar = ResolvedMetric::from_model(&MetricModel::COORDINATE).unwrap();
+        let metric_access = || Ok(&metric);
+        let source_context =
+            SourceArcContext::new(TopologyDomain::Geographic(frame), Some(&metric_access));
+
+        let half_turn_start = Point::new_axes(
+            0.0,
+            0.0,
+            crate::geometry::ZOrdinate(Some(10.0)),
+            crate::geometry::MOrdinate(Some(100.0)),
+        )
+        .unwrap();
+        let half_turn_end = Point::new_axes(
+            180.0,
+            60.0,
+            crate::geometry::ZOrdinate(Some(210.0)),
+            crate::geometry::MOrdinate(Some(500.0)),
+        )
+        .unwrap();
+        let left = PreparedPlan::new(Shape::Point(half_turn_start));
+        let right = PreparedPlan::new(Shape::Point(half_turn_end));
+        let origin = Point::new_raw_xy(0.0, 0.0);
+        let half_turn_total = segmented_length(&metric, origin, Point::new_raw_xy(180.0, 60.0));
+        for resolved in [&planar, &geodesic] {
+            let Shape::LineString(line) = metric_shortest_line_resolved(
+                resolved,
+                &left,
+                &right,
+                TopologyDomain::Geographic(frame),
+                &source_context,
+            )
+            .unwrap() else {
+                panic!("shortest_line publishes a line");
+            };
+            let sample = line
+                .as_coords()
+                .iter()
+                .find(|point| point.x.abs() == 90.0 && point.y == 30.0)
+                .expect("the half-turn producer chord has a midpoint");
+            let producer_midpoint = Point::new_raw_xy(90.0, 30.0);
+            let fraction = segmented_length(&metric, origin, producer_midpoint) / half_turn_total;
+            assert!((sample.z().unwrap() - (10.0 + 200.0 * fraction)).abs() < 1.0e-9);
+            assert!((sample.m().unwrap() - (100.0 + 400.0 * fraction)).abs() < 1.0e-9);
+        }
+
+        let full_turn_start = Point::new_axes(
+            0.0,
+            1.0,
+            crate::geometry::ZOrdinate(Some(10.0)),
+            crate::geometry::MOrdinate(Some(100.0)),
+        )
+        .unwrap();
+        let full_turn_end = Point::new_axes(
+            360.0,
+            60.0,
+            crate::geometry::ZOrdinate(Some(210.0)),
+            crate::geometry::MOrdinate(Some(500.0)),
+        )
+        .unwrap();
+        let left = PreparedPlan::new(Shape::Point(full_turn_start));
+        let right = PreparedPlan::new(Shape::Point(full_turn_end));
+        let origin = Point::new_raw_xy(0.0, 1.0);
+        let total = segmented_length(&metric, origin, Point::new_raw_xy(360.0, 60.0));
+        let Shape::LineString(line) = metric_shortest_line_resolved(
+            &planar,
+            &left,
+            &right,
+            TopologyDomain::Geographic(frame),
+            &source_context,
+        )
+        .unwrap() else {
+            panic!("shortest_line publishes a line");
+        };
+        for (index, parameter) in [0.25, 0.5, 0.75].into_iter().enumerate() {
+            let y = 1.0 + 59.0 * parameter;
+            let sample = line
+                .as_coords()
+                .iter()
+                .find(|point| (point.y - y).abs() < 1.0e-12)
+                .unwrap_or_else(|| panic!("missing full-turn sample at index {index}"));
+            let producer_sample = Point::new_raw_xy(360.0 * parameter, 1.0 + 59.0 * parameter);
+            let fraction = segmented_length(&metric, origin, producer_sample) / total;
+            assert!((sample.z().unwrap() - (10.0 + 200.0 * fraction)).abs() < 1.0e-9);
+            assert!((sample.m().unwrap() - (100.0 + 400.0 * fraction)).abs() < 1.0e-9);
+        }
     }
 }
