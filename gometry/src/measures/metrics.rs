@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use crate::dispatch::{MetricOp, kernels};
+use crate::dispatch::{MetricOp, MetricResolver, kernels};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
 pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult<Py<PyAny>> {
@@ -248,6 +248,49 @@ pub(crate) fn length_natural_array(
     )
 }
 
+fn snap_metric_resolver(
+    geometry: &Bound<'_, PyAny>,
+    geometry_array: Option<&PyGeometryArray>,
+) -> MetricResolver {
+    let has_ordinates = geometry_array.map_or_else(
+        || {
+            crate::exact_geometry(geometry).map_or(true, |geometry| {
+                let axes = geometry.shape.axes();
+                axes.has_z() || axes.has_m()
+            })
+        },
+        |array| array.has_z() || array.has_m(),
+    );
+    if has_ordinates {
+        MetricResolver::GeographicCarry
+    } else {
+        MetricResolver::None
+    }
+}
+
+fn snap_prepared(
+    left: &crate::geometry::PreparedPlan,
+    right: &crate::geometry::PreparedPlan,
+    tolerance: f64,
+    context: &crate::dispatch::CachelessRowContext<'_>,
+) -> crate::error::Result<crate::geometry::Shape> {
+    let source = left.shape();
+    let axes = source.axes();
+    if !axes.has_z() && !axes.has_m() {
+        return source.snap(right.shape(), tolerance);
+    }
+    let metric_access = || {
+        context.metric.geographic_chart_metric()?.ok_or_else(|| {
+            crate::crs::CrsError::invalid(
+                "geographic snap source ordinates require the operation's CRS metric",
+            )
+        })
+    };
+    let source_context =
+        crate::geometry::SourceArcContext::new(context.domain, Some(&metric_access));
+    source.snap_with_context(right.shape(), tolerance, &source_context)
+}
+
 /// Snap vertices of ``geom`` onto ``reference`` within ``tolerance``.
 ///
 /// Each source vertex snaps independently to its nearest reference vertex at
@@ -261,8 +304,10 @@ pub(crate) fn length_natural_array(
 /// whose distance from both endpoints is greater than ``tolerance`` is
 /// inserted at its reference X/Y. Insertions follow segment order; equal
 /// projections are ordered by reference X/Y. Snapped source vertices retain
-/// their own Z/M, while inserted vertices interpolate Z/M from the source
-/// segment. Consecutive line coordinates with identical X/Y are emitted once,
+/// their own Z/M. Inserted geographic vertices keep the reference X/Y and use
+/// the source edge's ellipsoidal arclength at the exact projection parameter;
+/// Cartesian vertices interpolate along the source segment. Consecutive line
+/// coordinates with identical X/Y are emitted once,
 /// keeping the first. If that leaves only one coordinate, the snapped start
 /// and end are retained as two endpoints, which may share X/Y. Closed rings
 /// are reclosed.
@@ -307,6 +352,7 @@ pub(crate) fn snap(
 ) -> PyResult<Py<PyAny>> {
     let geom_array = crate::broadcast::exact_geometry_array(geom);
     let ref_array = crate::broadcast::exact_geometry_array(reference);
+    let resolver = snap_metric_resolver(geom, geom_array);
     let Some(len) = geom_array.or(ref_array).map(PyGeometryArray::len) else {
         let tolerance = finite_f64_required("tolerance", tolerance)?;
         return Python::attach(|py| {
@@ -315,8 +361,8 @@ pub(crate) fn snap(
                 geom,
                 reference,
                 crate::dispatch::Operation::Snap.name(),
-                crate::dispatch::MetricResolver::None,
-                move |left, right, _ctx| left.shape().snap(right.shape(), tolerance),
+                resolver,
+                move |left, right, context| snap_prepared(left, right, tolerance, context),
             )
         });
     };
@@ -332,10 +378,9 @@ pub(crate) fn snap(
                     left,
                     right,
                     "snap",
-                    crate::dispatch::MetricResolver::None,
-                    move |left, right, ctx| {
-                        left.shape()
-                            .snap(right.shape(), tolerance.get(ctx.lane.row()))
+                    resolver,
+                    move |left, right, context| {
+                        snap_prepared(left, right, tolerance.get(context.lane.row()), context)
                     },
                 )?;
                 return Ok(array.into_pyobject(py)?.unbind().into());
@@ -345,10 +390,9 @@ pub(crate) fn snap(
                 geom,
                 reference,
                 "snap",
-                crate::dispatch::MetricResolver::GeographicCarry,
-                move |left, right, ctx| {
-                    left.shape()
-                        .snap(right.shape(), tolerance.get(ctx.lane.row()))
+                resolver,
+                move |left, right, context| {
+                    snap_prepared(left, right, tolerance.get(context.lane.row()), context)
                 },
             );
         };
@@ -357,8 +401,8 @@ pub(crate) fn snap(
             geom,
             reference,
             crate::dispatch::Operation::Snap.name(),
-            crate::dispatch::MetricResolver::None,
-            move |left, right, _ctx| left.shape().snap(right.shape(), scalar),
+            resolver,
+            move |left, right, context| snap_prepared(left, right, scalar, context),
         )
     })
 }

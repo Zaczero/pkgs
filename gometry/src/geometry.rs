@@ -201,6 +201,7 @@ pub(crate) use constructive::{
 };
 use constructive::{
     SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
+    snap_ring_to_reference_with_context,
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
@@ -916,9 +917,17 @@ impl Polygon {
     }
 
     /// Snap every ring onto the reference; `None` when the shell collapses.
-    fn snap_to_reference(&self, reference: &SnapReference) -> Result<Option<Self>> {
+    fn snap_to_reference<M: ChartMetric>(
+        &self,
+        reference: &SnapReference,
+        context: Option<&SourceArcContext<'_, '_, M>>,
+    ) -> Result<Option<Self>> {
         self.map_rings_collapsing(|ring| {
-            CoordSeq::try_from_points(&snap_ring_to_reference(ring, reference)?).map(Some)
+            let points = match context {
+                Some(context) => snap_ring_to_reference_with_context(ring, reference, context)?,
+                None => snap_ring_to_reference(ring, reference)?,
+            };
+            CoordSeq::try_from_points(&points).map(Some)
         })
     }
 }

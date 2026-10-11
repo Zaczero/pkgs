@@ -35,6 +35,15 @@ def _assert_split_sample(
     assert before[2:] == pytest.approx(ordinates, rel=1e-12, abs=1e-12)
 
 
+def _assert_snap_sample(
+    point: tuple[float, ...],
+    xy: tuple[float, float],
+    ordinates: tuple[float, float],
+) -> None:
+    assert point[:2] == xy
+    assert point[2:] == pytest.approx(ordinates, rel=1e-12, abs=1e-12)
+
+
 @pytest.mark.parametrize(
     'length',
     [1.0e6, 2.0**60, 2.0**200, 2.0**500, 2.0**1000],
@@ -132,6 +141,133 @@ def test_toleranced_split_uses_projection_parameter_for_ordinates() -> None:
         projection,
         expected,
     )
+
+
+@pytest.mark.parametrize(
+    ('crs', 'end', 'cut'),
+    [
+        pytest.param(4326, (120.0, 60.0), (60.0, 30.0), id='degrees'),
+        pytest.param(4807, (120.0, 60.0), (60.0, 30.0), id='grads-clarke-1880'),
+        pytest.param(
+            WEST_RADIAN_SOUTH_GRAD_CRS,
+            (2.0, 60.0),
+            (1.0, 30.0),
+            id='west-radians-south-grads',
+        ),
+    ],
+)
+def test_scalar_snap_uses_original_root_arclength(
+    crs: int | str,
+    end: tuple[float, float],
+    cut: tuple[float, float],
+) -> None:
+    source = gm.LineString(
+        [(0.0, 0.0), end],
+        z=[10.0, 210.0],
+        m=[100.0, 500.0],
+        crs=crs,
+    )
+    reference = gm.Point(*cut, crs=crs)
+    expected = _root_ordinates(crs, (0.0, 0.0), end, cut)
+
+    snapped = gm.snap(source, reference, tolerance=0.0)
+
+    _assert_snap_sample(tuple(snapped.coords[1]), cut, expected)
+
+
+def test_toleranced_snap_keeps_reference_xy_and_projection_parameter() -> None:
+    source = gm.LineString(
+        [(0.0, 0.0), (120.0, 60.0)],
+        z=[10.0, 210.0],
+        m=[100.0, 500.0],
+        crs=4326,
+    )
+    xy = (60.0, 30.01)
+    parameter = (xy[0] * 120.0 + xy[1] * 60.0) / (120.0**2 + 60.0**2)
+    projection = (120.0 * parameter, 60.0 * parameter)
+    expected = _root_ordinates(4326, (0.0, 0.0), (120.0, 60.0), projection)
+    references = (
+        gm.MultiPoint([xy], crs=4326),
+        gm.MultiPoint(
+            [xy, *((0.1 * index, 10.0) for index in range(1, 32))],
+            crs=4326,
+        ),
+    )
+
+    for reference in references:
+        snapped = gm.snap(source, reference, tolerance=0.02)
+        _assert_snap_sample(tuple(snapped.coords[1]), xy, expected)
+
+
+def test_snap_array_source_uses_root_arclength_for_row_tolerances() -> None:
+    source = gm.LineString(
+        [(0.0, 0.0), (120.0, 60.0)],
+        z=[10.0, 210.0],
+        m=[100.0, 500.0],
+        crs=4326,
+    )
+    xy = (60.0, 30.01)
+    parameter = (xy[0] * 120.0 + xy[1] * 60.0) / (120.0**2 + 60.0**2)
+    projection = (120.0 * parameter, 60.0 * parameter)
+    expected = _root_ordinates(4326, (0.0, 0.0), (120.0, 60.0), projection)
+    sources = gm.GeometryArray([source, None, source])[[2, 0, 1]]
+    reference = gm.MultiPoint([xy], crs=4326)
+
+    snapped = gm.snap(sources, reference, [0.02, 0.02, 0.02])
+
+    assert snapped.is_missing.tolist() == [False, False, True]
+    _assert_snap_sample(tuple(snapped[0].coords[1]), xy, expected)
+    _assert_snap_sample(tuple(snapped[1].coords[1]), xy, expected)
+
+
+def test_snap_fixed_source_uses_root_arclength_for_reference_array_tolerances() -> None:
+    source = gm.LineString(
+        [(0.0, 0.0), (120.0, 60.0)],
+        z=[10.0, 210.0],
+        m=[100.0, 500.0],
+        crs=4326,
+    )
+    xy = (60.0, 30.01)
+    parameter = (xy[0] * 120.0 + xy[1] * 60.0) / (120.0**2 + 60.0**2)
+    projection = (120.0 * parameter, 60.0 * parameter)
+    expected = _root_ordinates(4326, (0.0, 0.0), (120.0, 60.0), projection)
+    small = gm.MultiPoint([xy], crs=4326)
+    indexed = gm.MultiPoint(
+        [xy, *((0.1 * index, 10.0) for index in range(1, 32))],
+        crs=4326,
+    )
+    references = gm.GeometryArray([small, indexed])
+
+    snapped = gm.snap(source, references, [0.02, 0.02])
+
+    _assert_snap_sample(tuple(snapped[0].coords[1]), xy, expected)
+    _assert_snap_sample(tuple(snapped[1].coords[1]), xy, expected)
+
+
+def test_snap_paired_arrays_use_root_arclength_for_scalar_tolerance() -> None:
+    source = gm.LineString(
+        [(0.0, 0.0), (120.0, 60.0)],
+        z=[10.0, 210.0],
+        m=[100.0, 500.0],
+        crs=4326,
+    )
+    xy = (60.0, 30.01)
+    parameter = (xy[0] * 120.0 + xy[1] * 60.0) / (120.0**2 + 60.0**2)
+    projection = (120.0 * parameter, 60.0 * parameter)
+    expected = _root_ordinates(4326, (0.0, 0.0), (120.0, 60.0), projection)
+    sources = gm.GeometryArray([source, source])[[1, 0]]
+    references = gm.GeometryArray([
+        gm.MultiPoint([xy], crs=4326),
+        gm.MultiPoint(
+            [xy, *((0.1 * index, 10.0) for index in range(1, 32))],
+            crs=4326,
+        ),
+    ])
+
+    snapped = gm.snap(sources, references, 0.02)
+
+    _assert_snap_sample(tuple(snapped[0].coords[1]), xy, expected)
+    _assert_snap_sample(tuple(snapped[1].coords[1]), xy, expected)
 
 
 def test_split_array_and_group_adapters_resolve_original_roots() -> None:

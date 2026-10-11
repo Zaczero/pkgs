@@ -33,7 +33,7 @@ pub(crate) use simplify::{
 };
 pub(crate) use snap::{
     SnapReference, remove_repeated_line_points, remove_repeated_points,
-    remove_repeated_ring_points, snap_ring_to_reference,
+    remove_repeated_ring_points, snap_ring_to_reference, snap_ring_to_reference_with_context,
 };
 pub(in crate::geometry) use walk::winding_region;
 pub(crate) use walk::{

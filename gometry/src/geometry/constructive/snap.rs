@@ -4,12 +4,13 @@ use std::ops::ControlFlow;
 use crate::NonNegative;
 use crate::geometry::constructive::Result;
 use crate::geometry::{
-    Bounds, BulkRTree, CoordSeq, Coordinates, GeometryErrorKind, GeometryKind, LineSeq,
-    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, RepairMethod, Ring, RunIdentity,
-    Segment, SegmentProjection, Shape, SourceArcContext, TopologyDomain, XY,
-    bounds_distance_squared, dedup_consecutive_points, point_distance,
-    point_segment_distance_and_projection, points_dwithin, push_distinct_xy_position,
-    repair_shape_in_frame, same_point, same_topological_coordinate, validate_shape_in_frame,
+    Bounds, BulkRTree, ChartMetric, CoordSeq, Coordinates, GeometryErrorKind, GeometryKind,
+    LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, RepairMethod, Ring,
+    RootMetricState, RunIdentity, Segment, SegmentProjection, Shape, SourceArcContext,
+    TopologyDomain, XY, bounds_distance_squared, dedup_consecutive_points,
+    interpolate_source_projection, point_distance, point_segment_distance_and_projection,
+    points_dwithin, push_distinct_xy_position, repair_shape_in_frame, same_point,
+    same_topological_coordinate, validate_shape_in_frame,
 };
 
 const SNAP_INDEX_MIN_POINTS: usize = 32;
@@ -120,9 +121,36 @@ impl SnapReference {
     /// Reference vertices to drop into the open segment `start -> end`, in
     /// ascending order along it: every reference within tolerance of the
     /// segment but of neither endpoint, placed at its projection (XY from
-    /// the reference, Z/M interpolated), with only references at an
-    /// identical projected position deduplicated.
+    /// the reference), with only references at an identical projected position
+    /// deduplicated.
     pub(crate) fn insertions(&self, start: Point, end: Point) -> crate::error::Result<Vec<Point>> {
+        self.insertions_with(start, end, |projection, _root_state| {
+            projection.interpolate_point(start, end)
+        })
+    }
+
+    /// Geographic sibling that resolves source ordinates at the exact
+    /// retained projection parameter.
+    pub(crate) fn insertions_with_context<M: ChartMetric>(
+        &self,
+        start: Point,
+        end: Point,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> crate::error::Result<Vec<Point>> {
+        self.insertions_with(start, end, |projection, root_state| {
+            interpolate_source_projection(context, start, end, projection, root_state)
+        })
+    }
+
+    fn insertions_with(
+        &self,
+        start: Point,
+        end: Point,
+        mut interpolate: impl FnMut(
+            &SegmentProjection,
+            &mut Option<RootMetricState>,
+        ) -> crate::error::Result<Point>,
+    ) -> crate::error::Result<Vec<Point>> {
         if same_point(start, end) {
             return Ok(Vec::new());
         }
@@ -136,6 +164,7 @@ impl SnapReference {
         // this runs once per source segment, and a tolerance window admits a
         // handful of references out of the whole set.
         let mut candidates: Vec<(SegmentProjection, Point)> = Vec::new();
+        let mut root_state = None;
         let mut consider = |reference: XY| -> crate::error::Result<()> {
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
@@ -149,7 +178,7 @@ impl SnapReference {
                 return Ok(());
             }
             if !projection.is_start() && !projection.is_end() {
-                let mut point = projection.interpolate_point(start, end)?;
+                let mut point = interpolate(&projection, &mut root_state)?;
                 point.x = reference.x;
                 point.y = reference.y;
                 candidates.push((projection, point));
@@ -243,6 +272,26 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
 ) -> crate::error::Result<Vec<Point>> {
+    snap_line_to_reference_with(points, reference, |start, end| {
+        reference.insertions(start, end)
+    })
+}
+
+pub(crate) fn snap_line_to_reference_with_context<C: Coordinates + ?Sized, M: ChartMetric>(
+    points: &C,
+    reference: &SnapReference,
+    context: &SourceArcContext<'_, '_, M>,
+) -> crate::error::Result<Vec<Point>> {
+    snap_line_to_reference_with(points, reference, |start, end| {
+        reference.insertions_with_context(start, end, context)
+    })
+}
+
+fn snap_line_to_reference_with<C: Coordinates + ?Sized>(
+    points: &C,
+    reference: &SnapReference,
+    mut insertions: impl FnMut(Point, Point) -> crate::error::Result<Vec<Point>>,
+) -> crate::error::Result<Vec<Point>> {
     if points.coord_count() < 2 {
         return Ok(snap_points_to_reference(points, reference));
     }
@@ -251,7 +300,7 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     push_distinct_xy_position(&mut result, reference.snap_point(points.nth_coord(0)));
 
     for [start, end] in points.segment_pairs() {
-        for point in reference.insertions(start, end)? {
+        for point in insertions(start, end)? {
             push_distinct_xy_position(&mut result, point);
         }
         push_distinct_xy_position(&mut result, reference.snap_point(end));
@@ -270,8 +319,28 @@ pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
 ) -> crate::error::Result<Vec<Point>> {
+    snap_ring_to_reference_with(points, reference, |points, reference| {
+        snap_line_to_reference(points, reference)
+    })
+}
+
+pub(crate) fn snap_ring_to_reference_with_context<C: Coordinates + ?Sized, M: ChartMetric>(
+    points: &C,
+    reference: &SnapReference,
+    context: &SourceArcContext<'_, '_, M>,
+) -> crate::error::Result<Vec<Point>> {
+    snap_ring_to_reference_with(points, reference, |points, reference| {
+        snap_line_to_reference_with_context(points, reference, context)
+    })
+}
+
+fn snap_ring_to_reference_with<C: Coordinates + ?Sized>(
+    points: &C,
+    reference: &SnapReference,
+    snap_line: impl FnOnce(&C, &SnapReference) -> crate::error::Result<Vec<Point>>,
+) -> crate::error::Result<Vec<Point>> {
     let len = points.coord_count();
-    let mut result = snap_line_to_reference(points, reference)?;
+    let mut result = snap_line(points, reference)?;
     if result.len() > 1
         && len > 1
         && same_point(points.nth_coord(0), points.nth_coord(len.wrapping_sub(1)))
@@ -382,6 +451,28 @@ pub(crate) fn remove_repeated_line_points(points: &CoordSeq, tolerance: f64) -> 
 
 impl Shape {
     pub fn snap(&self, reference: &Self, tolerance: f64) -> Result<Self> {
+        self.snap_impl::<crate::crs::GeodesicMetric>(
+            reference,
+            tolerance,
+            None::<&SourceArcContext<'static, 'static>>,
+        )
+    }
+
+    pub(crate) fn snap_with_context<M: ChartMetric>(
+        &self,
+        reference: &Self,
+        tolerance: f64,
+        context: &SourceArcContext<'_, '_, M>,
+    ) -> Result<Self> {
+        self.snap_impl(reference, tolerance, Some(context))
+    }
+
+    fn snap_impl<M: ChartMetric>(
+        &self,
+        reference: &Self,
+        tolerance: f64,
+        context: Option<&SourceArcContext<'_, '_, M>>,
+    ) -> Result<Self> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let reference_bounds = reference.bounds();
         // Boxes farther apart than the tolerance snap to the identity: no
@@ -404,7 +495,7 @@ impl Shape {
         }
         let engine = SnapReference::build(&reference_points, tolerance);
         drop(reference_points);
-        self.snap_using_reference(reference_bounds, &engine)
+        self.snap_using_reference(reference_bounds, &engine, context)
     }
 
     fn outside_snap_range(&self, reference_bounds: Option<Bounds>, tolerance: f64) -> bool {
@@ -415,27 +506,36 @@ impl Shape {
             })
     }
 
-    fn snap_using_reference(
+    fn snap_using_reference<M: ChartMetric>(
         &self,
         reference_bounds: Option<Bounds>,
         engine: &SnapReference,
+        context: Option<&SourceArcContext<'_, '_, M>>,
     ) -> Result<Self> {
         Ok(match self {
             Self::Point(point) => Self::Point(engine.snap_point(*point)),
             Self::MultiPoint(points) => {
                 Self::MultiPoint(points.map_values(|point| engine.snap_point(point))?)
             },
-            Self::LineString(points) => Self::LineString(LineSeq::try_new(
-                CoordSeq::try_from_points(&snap_line_to_reference(points, engine)?)?,
-            )?),
+            Self::LineString(points) => {
+                let points = match context {
+                    Some(context) => snap_line_to_reference_with_context(points, engine, context)?,
+                    None => snap_line_to_reference(points, engine)?,
+                };
+                Self::LineString(LineSeq::try_new(CoordSeq::try_from_points(&points)?)?)
+            },
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
-                    LineSeq::try_new(CoordSeq::try_from_points(&snap_line_to_reference(
-                        line, engine,
-                    )?)?)
+                    let points = match context {
+                        Some(context) => {
+                            snap_line_to_reference_with_context(line, engine, context)?
+                        },
+                        None => snap_line_to_reference(line, engine)?,
+                    };
+                    LineSeq::try_new(CoordSeq::try_from_points(&points)?)
                 })?)
             },
-            Self::Polygon(polygon) => polygon.snap_to_reference(engine)?.map_or_else(
+            Self::Polygon(polygon) => polygon.snap_to_reference(engine, context)?.map_or_else(
                 || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
                 Self::Polygon,
             ),
@@ -445,7 +545,7 @@ impl Shape {
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(polygon) => Ok(polygon
-                            .snap_to_reference(engine)?
+                            .snap_to_reference(engine, context)?
                             .map_or(MultiMember::Empty, MultiMember::Value)),
                     })
                     .collect::<Result<Vec<_>>>()?;
@@ -456,7 +556,7 @@ impl Shape {
                     if geometry.outside_snap_range(reference_bounds, engine.tolerance) {
                         Ok(geometry.clone())
                     } else {
-                        geometry.snap_using_reference(reference_bounds, engine)
+                        geometry.snap_using_reference(reference_bounds, engine, context)
                     }
                 })?)
             },
