@@ -226,9 +226,7 @@ fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
         .source_span_trace_views(&inventory.source_segments, &mut work)
         .unwrap();
     let selected = vec![false; partition.spans.len()];
-    let traces = [
-        crate::geometry::topology::SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap(),
-    ];
+    let traces = [SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap()];
 
     assert!(
         ranges.iter().map(Range::len).sum::<usize>() < views.len(),

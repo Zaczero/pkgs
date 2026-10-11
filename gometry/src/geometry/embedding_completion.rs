@@ -9,7 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
-use crate::geometry::arrangement::IndexedTopology;
+use crate::geometry::arrangement::{
+    IndexedTopology, indexed_edge_slots_with_work, indexed_topology_from_edges_with_work,
+};
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{
     CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, compare_departures_with_work,
     graph_global_faces_with_work,
@@ -17,7 +20,8 @@ use crate::geometry::overlay::{
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::{
-    ExactChartPoint, exact_segments_intersect, vector_cross, vector_difference,
+    ExactChartPoint, exact_segments_intersect, point_on_exact_segment, vector_cross,
+    vector_difference,
 };
 use crate::geometry::{
     Bounds, CoordinateAxes, GeometryErrorKind, Point, Shape, Work, XY,
@@ -77,12 +81,7 @@ impl RayPoints for ExactPoints {
         }
     }
 
-    fn orientation(
-        &self,
-        a: u32,
-        b: u32,
-        c: u32,
-    ) -> Result<crate::geometry::exact_arith::ExactSign> {
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
         let a = self
             .exact
             .get(a as usize)
@@ -748,12 +747,7 @@ pub(super) fn admit_known_graph(
         .into());
     }
     let (topology, edge_of_slot) = indexed_topology(&points, &edge_nodes, work)?;
-    let edge_slots = crate::geometry::arrangement::indexed_edge_slots_with_work(
-        &edge_nodes,
-        &topology,
-        &edge_of_slot,
-        work,
-    )?;
+    let edge_slots = indexed_edge_slots_with_work(&edge_nodes, &topology, &edge_of_slot, work)?;
     Ok(AdmittedGraph {
         points,
         edge_nodes,
@@ -1004,7 +998,7 @@ fn indexed_topology(
     edge_nodes: &[[u32; 2]],
     work: &mut impl Work,
 ) -> Result<(IndexedTopology, Vec<u32>)> {
-    crate::geometry::arrangement::indexed_topology_from_edges_with_work(
+    indexed_topology_from_edges_with_work(
         points.exact.len(),
         edge_nodes,
         work,
@@ -1538,7 +1532,7 @@ fn point_edge_contacts_preserved(
                     )
                     .into()));
                 };
-                match crate::geometry::topology::point_on_exact_segment(point, start, end) {
+                match point_on_exact_segment(point, start, end) {
                     Ok(false) => ControlFlow::Continue(()),
                     Ok(true) => {
                         if let Err(error) = work.charge(1) {
@@ -1656,16 +1650,12 @@ fn edges_have_only_vertex_contacts(
                         .into()));
                     };
                     match (
-                        crate::geometry::topology::point_on_exact_segment(
+                        point_on_exact_segment(
                             left_other_point,
                             right_start_point,
                             right_end_point,
                         ),
-                        crate::geometry::topology::point_on_exact_segment(
-                            right_other_point,
-                            left_start_point,
-                            left_end_point,
-                        ),
+                        point_on_exact_segment(right_other_point, left_start_point, left_end_point),
                     ) {
                         (Ok(false), Ok(false)) => ControlFlow::Continue(()),
                         (Ok(_), Ok(_)) => {

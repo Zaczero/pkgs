@@ -9,10 +9,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 mod rdp;
 
 use crate::NonNegative;
+use crate::crs::GeodesicMetric;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartSpanGuard, GeographicFrame, GeographicInputs, PeriodicAxis};
 use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw_keep};
+use crate::geometry::embedding_search::EvaluationBudget;
+use crate::geometry::ordinates::{NodeOrdinates, RequestRowInput, resolve_request_rows};
 use crate::geometry::overlay::{ExactSourceInventory, SubdivisionPart, rect_polygon};
+use crate::geometry::tessellation::exact::ExactRational;
+use crate::geometry::topology::overlay::prepare_native_source_lines;
 use crate::geometry::topology::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
 use crate::geometry::{
     Bounds, Component, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
@@ -524,11 +529,7 @@ fn stage_line_vertices(
             let mut slices = Vec::with_capacity(end.saturating_sub(start).saturating_sub(1));
             for edge in start..end.saturating_sub(1) {
                 work.charge(1)?;
-                slices.push((
-                    edge,
-                    crate::geometry::tessellation::exact::ExactRational::zero(),
-                    crate::geometry::tessellation::exact::ExactRational::one(),
-                ));
+                slices.push((edge, ExactRational::zero(), ExactRational::one()));
             }
             Some(vec![trace.compose_edges(&slices, work)?])
         } else {
@@ -801,7 +802,7 @@ struct NativeSubdivisionContext<'a> {
     frame: Option<GeographicFrame>,
     path: SubdivisionPath,
     topology: Option<crate::geometry::ExactGeographicTopology>,
-    budget: Option<crate::geometry::embedding_search::EvaluationBudget>,
+    budget: Option<EvaluationBudget>,
     prepared: BTreeMap<usize, PreparedNativeLine>,
     skipped: BTreeSet<usize>,
     selected_members: BTreeSet<usize>,
@@ -882,7 +883,7 @@ impl<'a> NativeSubdivisionContext<'a> {
             .into());
         }
 
-        let mut budget = crate::geometry::embedding_search::EvaluationBudget::new("subdivide", 0)?;
+        let mut budget = EvaluationBudget::new("subdivide", 0)?;
         let topology =
             crate::geometry::ExactGeographicTopology::from_views_with_work_and_expansion_budget(
                 frame,
@@ -893,9 +894,7 @@ impl<'a> NativeSubdivisionContext<'a> {
 
         let mut prepared = BTreeMap::new();
         let members = selected_axes.keys().copied().collect::<Vec<_>>();
-        let mut native = crate::geometry::topology::overlay::prepare_native_source_lines::<
-            crate::crs::GeodesicMetric,
-        >(
+        let mut native = prepare_native_source_lines::<GeodesicMetric>(
             &topology,
             &members,
             crate::geometry::CoordinateAxes::XY,
@@ -1046,8 +1045,8 @@ impl<'a> NativeSubdivisionContext<'a> {
         let budget = self.budget.as_mut().ok_or_else(|| {
             GeometryErrorKind::Invalid("native subdivision lost its operation budget".into())
         })?;
-        let zero = crate::geometry::tessellation::exact::ExactRational::zero();
-        let one = crate::geometry::tessellation::exact::ExactRational::one();
+        let zero = ExactRational::zero();
+        let one = ExactRational::one();
         let mut request_rows = Vec::new();
         let mut reconstructions = Vec::new();
         for (item_index, item) in staged.iter().enumerate() {
@@ -1092,7 +1091,7 @@ impl<'a> NativeSubdivisionContext<'a> {
                     .charge(u64::try_from(line.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
                 let row_start = request_rows.len();
                 for vertex in 0..line.len() {
-                    let mut row = crate::geometry::ordinates::RequestRowInput {
+                    let mut row = RequestRowInput {
                         axes: declared_axes,
                         requests: Vec::new(),
                     };
@@ -1129,14 +1128,9 @@ impl<'a> NativeSubdivisionContext<'a> {
         let ordinates = if reconstructions.iter().all(|reconstruction| {
             !reconstruction.declared_axes.has_z() && !reconstruction.declared_axes.has_m()
         }) {
-            vec![crate::geometry::ordinates::NodeOrdinates::default(); request_rows.len()]
+            vec![NodeOrdinates::default(); request_rows.len()]
         } else {
-            crate::geometry::ordinates::resolve_request_rows(
-                &request_rows,
-                topology,
-                context.metric_access(),
-                budget,
-            )?
+            resolve_request_rows(&request_rows, topology, context.metric_access(), budget)?
         };
         if ordinates.len() != request_rows.len() {
             return Err(GeometryErrorKind::Invalid(

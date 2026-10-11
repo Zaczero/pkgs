@@ -51,7 +51,13 @@ use crate::geometry::embedding_search::{
     ClassAssignment, EvaluationBudget, GlobalCheck, Problem, SearchAccount, SearchOutcome,
     proximity_limit, run_with_budget, swept_bounds,
 };
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::exact_arith::{
+    ExactSign, RoundedNativeSite, retained_exact_native_site_with_work,
+    round_native_longitude_with_work, rounded_native_neighbors_with_work,
+    split_rational_native_site_with_work,
+};
+#[cfg(test)]
+use crate::geometry::ordinates::RequestRowId;
 use crate::geometry::ordinates::{
     NodeOrdinates, RootId, RootRange, RootRequest, SourceArcMetricAccess,
 };
@@ -5722,11 +5728,7 @@ impl QCoordinates {
                 super::q::CanonicalQNodeKey::Chart(key) => match key {
                     ExactQuotientKey::Coordinate(point) => {
                         let [_, nearest, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                frame.longitude(),
-                                &point.x,
-                                work,
-                            )?;
+                            rounded_native_neighbors_with_work(frame.longitude(), &point.x, work)?;
                         (
                             nearest.native,
                             nearest.periods,
@@ -5747,12 +5749,11 @@ impl QCoordinates {
                             q.ports.get(first_port_id.0 as usize).ok_or_else(|| {
                                 GeometryErrorKind::Invalid("Q pole port is unknown".into())
                             })?;
-                        let [_, nearest, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                frame.longitude(),
-                                &first_port.point.x,
-                                work,
-                            )?;
+                        let [_, nearest, _] = rounded_native_neighbors_with_work(
+                            frame.longitude(),
+                            &first_port.point.x,
+                            work,
+                        )?;
                         (
                             nearest.native,
                             nearest.periods,
@@ -5765,11 +5766,7 @@ impl QCoordinates {
                     latitude,
                 } => {
                     let [_, nearest, _] =
-                        crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                            frame.longitude(),
-                            longitude,
-                            work,
-                        )?;
+                        rounded_native_neighbors_with_work(frame.longitude(), longitude, work)?;
                     (
                         nearest.native,
                         nearest.periods,
@@ -5795,11 +5792,7 @@ impl QCoordinates {
                         GeometryErrorKind::Invalid("Q pole port is unknown".into())
                     })?;
                     let [_, rounded, _] =
-                        crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                            frame.longitude(),
-                            &port.point.x,
-                            work,
-                        )?;
+                        rounded_native_neighbors_with_work(frame.longitude(), &port.point.x, work)?;
                     *pole_port_longitude
                         .get_mut(port_id.0 as usize)
                         .ok_or_else(|| {
@@ -6795,9 +6788,7 @@ fn assigned_port_point(
     let periods = pole_port_periods.unwrap_or(candidate.periods);
     let center = center.try_add_with_work(
         &period.try_product_with_work(
-            &ExactRational::from_dyadic(
-                crate::geometry::tessellation::exact::ExactDyadic::from_i64(periods),
-            ),
+            &ExactRational::from_dyadic(ExactDyadic::from_i64(periods)),
             budget,
         )?,
         budget,
@@ -7347,9 +7338,7 @@ fn inexact_published_axes_with_work(
     nearest: QCandidate,
     work: &mut impl Work,
 ) -> Result<[bool; 2]> {
-    let lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(nearest.periods),
-    );
+    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(nearest.periods));
     let nearest_longitude = ExactRational::from_f64(nearest.native.x).try_add_with_work(
         &ExactRational::from_f64(frame.longitude().period()).try_product_with_work(&lift, work)?,
         work,
@@ -7444,11 +7433,7 @@ fn published_domains(
             GeometryErrorKind::Invalid("Q publication exact-position slot is unknown".into())
         })? = Some(exact.clone());
         let [_, longitude_site, _] =
-            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                frame.longitude(),
-                &exact.longitude,
-                budget,
-            )?;
+            rounded_native_neighbors_with_work(frame.longitude(), &exact.longitude, budget)?;
         let nearest_candidate = QCandidate {
             native: XY::new(
                 longitude_site.native,
@@ -7480,13 +7465,9 @@ fn published_domains(
             inexact_published_axes_with_work(frame, &exact, nearest_candidate, budget)?;
         let fixed_longitude = matches!(key, ExactQuotientKey::Seam(_));
         let longitude_candidates = if movable_axes[0] && !fixed_longitude {
-            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                frame.longitude(),
-                &exact.longitude,
-                budget,
-            )?
+            rounded_native_neighbors_with_work(frame.longitude(), &exact.longitude, budget)?
         } else {
-            [crate::geometry::exact_arith::RoundedNativeSite {
+            [RoundedNativeSite {
                 native: nearest_candidate.native.x,
                 periods: nearest_candidate.periods,
             }; 3]
@@ -7587,13 +7568,9 @@ fn candidate_domains(
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("movable Q node has no exact position".into())
                 })?;
-            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                frame.longitude(),
-                &exact.longitude,
-                budget,
-            )?
+            rounded_native_neighbors_with_work(frame.longitude(), &exact.longitude, budget)?
         } else {
-            let site = crate::geometry::exact_arith::RoundedNativeSite {
+            let site = RoundedNativeSite {
                 native: nearest_xy.x,
                 periods: nearest_periods,
             };
@@ -7693,11 +7670,8 @@ fn native_cut_candidate_domain(
     exact: &ExactChartPoint,
     budget: &mut impl Work,
 ) -> Result<Vec<QCandidate>> {
-    let [_, longitude, _] = crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-        frame.longitude(),
-        &exact.x,
-        budget,
-    )?;
+    let [_, longitude, _] =
+        rounded_native_neighbors_with_work(frame.longitude(), &exact.x, budget)?;
     let nearest_y = exact.y.round_with_work(budget)?;
     let fixed_y = matches!(
         quotient_key_for_chart_position_with_work(frame, exact, budget)?,
@@ -8087,8 +8061,7 @@ fn strict_native_bank_event(
         return Ok(false);
     }
     budget.charge(1)?;
-    let start_site =
-        crate::geometry::exact_arith::retained_exact_native_site_with_work(axis, start, budget)?;
+    let start_site = retained_exact_native_site_with_work(axis, start, budget)?;
     let period = ExactRational::from_f64(axis.period());
     let half = ExactRational::from_f64(axis.half_period());
     let periods = start_site.periods();
@@ -8098,9 +8071,7 @@ fn strict_native_bank_event(
         let immediately_lower = periods.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
         let lower_bank = half.try_add_with_work(
             &period.try_product_with_work(
-                &ExactRational::from_dyadic(
-                    crate::geometry::tessellation::exact::ExactDyadic::from_i64(immediately_lower),
-                ),
+                &ExactRational::from_dyadic(ExactDyadic::from_i64(immediately_lower)),
                 budget,
             )?,
             budget,
@@ -8113,9 +8084,7 @@ fn strict_native_bank_event(
     };
     let bank = half.try_add_with_work(
         &period.try_product_with_work(
-            &ExactRational::from_dyadic(
-                crate::geometry::tessellation::exact::ExactDyadic::from_i64(bank_index),
-            ),
+            &ExactRational::from_dyadic(ExactDyadic::from_i64(bank_index)),
             budget,
         )?,
         budget,
@@ -10224,13 +10193,13 @@ fn align_native_chart_lift(
     budget: &mut impl Work,
 ) -> Result<ExactChartPoint> {
     let longitude = frame.longitude();
-    let (_, point_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, point_lift) = split_rational_native_site_with_work(
         &point.x,
         longitude.period(),
         longitude.half_period(),
         budget,
     )?;
-    let (_, reference_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, reference_lift) = split_rational_native_site_with_work(
         &reference.x,
         longitude.period(),
         longitude.half_period(),
@@ -13042,9 +13011,7 @@ fn candidate_chart_point_with_work(
     candidate: QCandidate,
     work: &mut impl Work,
 ) -> Result<ExactChartPoint> {
-    let lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(candidate.periods),
-    );
+    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(candidate.periods));
     Ok(ExactChartPoint::from_rationals(
         ExactRational::from_f64(candidate.native.x).try_add_with_work(
             &ExactRational::from_f64(frame.longitude().period())
@@ -13087,7 +13054,7 @@ fn native_port_data(
     budget: &mut impl Work,
 ) -> Result<super::emission::NativePortData> {
     let longitude_axis = frame.longitude();
-    let (_, chart_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, chart_lift) = split_rational_native_site_with_work(
         &source_chart_point.x,
         longitude_axis.period(),
         longitude_axis.half_period(),
@@ -13165,7 +13132,7 @@ fn native_port_data(
     } else {
         match quotient_key_for_chart_position_with_work(frame, source_chart_point, budget)? {
             ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole => {
-                let longitude = crate::geometry::exact_arith::round_native_longitude_with_work(
+                let longitude = round_native_longitude_with_work(
                     frame.longitude(),
                     &source_chart_point.x,
                     budget,
@@ -13241,13 +13208,13 @@ fn align_native_port_to_seam(
     let old_periods = *periods;
     let longitude =
         nearest_exact_longitude_alias_with_work(frame, &port.point.x, &seam.point.x, budget)?;
-    let (_, old_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, old_lift) = split_rational_native_site_with_work(
         &port.point.x,
         frame.longitude().period(),
         frame.longitude().half_period(),
         budget,
     )?;
-    let (_, new_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, new_lift) = split_rational_native_site_with_work(
         &longitude,
         frame.longitude().period(),
         frame.longitude().half_period(),
@@ -13355,9 +13322,7 @@ fn exact_squared_displacement(
     candidate: QCandidate,
     work: &mut impl Work,
 ) -> Result<ExactRational> {
-    let lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(candidate.periods),
-    );
+    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(candidate.periods));
     let longitude = ExactRational::from_f64(candidate.native.x).try_add_with_work(
         &ExactRational::from_f64(frame.longitude().period()).try_product_with_work(&lift, work)?,
         work,
@@ -13379,9 +13344,7 @@ fn published_candidate_radius(
     let period = ExactRational::from_f64(frame.longitude().period());
     for candidate in candidates {
         budget.charge(1)?;
-        let lift = ExactRational::from_dyadic(
-            crate::geometry::tessellation::exact::ExactDyadic::from_i64(candidate.periods),
-        );
+        let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(candidate.periods));
         let longitude = ExactRational::from_f64(candidate.native.x)
             .try_add_with_work(&period.try_product_with_work(&lift, budget)?, budget)?;
         let dx = longitude.try_subtract_with_work(&exact.longitude, budget)?;
@@ -14115,7 +14078,7 @@ fn native_port_spelling_at_assigned_point(
             }
         },
         ExactQuotientKey::Coordinate(_) => {
-            let (_, lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+            let (_, lift) = split_rational_native_site_with_work(
                 &point.x,
                 frame.longitude().period(),
                 frame.longitude().half_period(),
@@ -16468,20 +16431,18 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             )
                         })?;
                     let longitude = self.topology.sources.frame.longitude();
-                    let (_, source_lift) =
-                        crate::geometry::exact_arith::split_rational_native_site_with_work(
-                            &target_source_point.x,
-                            longitude.period(),
-                            longitude.half_period(),
-                            budget,
-                        )?;
-                    let (_, output_lift) =
-                        crate::geometry::exact_arith::split_rational_native_site_with_work(
-                            &target.x,
-                            longitude.period(),
-                            longitude.half_period(),
-                            budget,
-                        )?;
+                    let (_, source_lift) = split_rational_native_site_with_work(
+                        &target_source_point.x,
+                        longitude.period(),
+                        longitude.half_period(),
+                        budget,
+                    )?;
+                    let (_, output_lift) = split_rational_native_site_with_work(
+                        &target.x,
+                        longitude.period(),
+                        longitude.half_period(),
+                        budget,
+                    )?;
                     let lift_delta = source_lift.try_subtract_with_work(output_lift, budget)?;
                     let longitude_shift = ExactRational::from_f64(longitude.period())
                         .try_product_with_work(&ExactRational::from_dyadic(lift_delta), budget)?;
@@ -18438,18 +18399,16 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         if chord.nodes[0] == chord.nodes[1] && left_candidate != right_candidate {
                             continue;
                         }
-                        let left_site =
-                            crate::geometry::exact_arith::retained_exact_native_site_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &left_point.x,
-                                budget,
-                            )?;
-                        let right_site =
-                            crate::geometry::exact_arith::retained_exact_native_site_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &right_point.x,
-                                budget,
-                            )?;
+                        let left_site = retained_exact_native_site_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &left_point.x,
+                            budget,
+                        )?;
+                        let right_site = retained_exact_native_site_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &right_point.x,
+                            budget,
+                        )?;
                         if left_site.periods() == right_site.periods() {
                             continue;
                         }
@@ -19068,12 +19027,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     let node = builder.intern_point(&chart_point, budget)?;
                     let node_index = node.0 as usize;
                     if node_index == sites.len() {
-                        let [_, longitude, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &chart_point.x,
-                                budget,
-                            )?;
+                        let [_, longitude, _] = rounded_native_neighbors_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &chart_point.x,
+                            budget,
+                        )?;
                         sites.push(Some(assigned_emission_site(
                             self.topology.sources.frame,
                             QCandidate {
@@ -19090,12 +19048,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                         .into());
                     } else if sites[node_index].is_none() {
-                        let [_, longitude, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &chart_point.x,
-                                budget,
-                            )?;
+                        let [_, longitude, _] = rounded_native_neighbors_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &chart_point.x,
+                            budget,
+                        )?;
                         sites[node_index] = Some(assigned_emission_site(
                             self.topology.sources.frame,
                             QCandidate {
@@ -22700,7 +22657,7 @@ mod canonical_coordinate_tests {
             Vec::new(),
         ));
         let topology = topology(&[source])?;
-        let operation = crate::geometry::overlay::OverlayOp::Union;
+        let operation = OverlayOp::Union;
         let mut budget = EvaluationBudget::new("native whole-sphere cover", 0)?;
         let plan = super::super::overlay::QEmissionPlan::build(&topology, operation, &mut budget)?;
         assert!(matches!(&plan.polygons, PolygonPlan::WholeSphere(_)));
@@ -23006,7 +22963,7 @@ mod canonical_coordinate_tests {
         let mut publication = PublicationInventory {
             fragments: Vec::new(),
             samples: vec![super::super::emission::PublishedSample {
-                request_row: crate::geometry::ordinates::RequestRowId::from_index(0)?,
+                request_row: RequestRowId::from_index(0)?,
                 family: super::super::emission::FeatureFamily {
                     parent: super::super::emission::FeatureFamilyParent::Fragment(
                         super::super::emission::FragmentRecipeId(0),
@@ -23555,17 +23512,14 @@ mod canonical_coordinate_tests {
         ];
         let topology = topology(&shapes)?;
         let mut budget = EvaluationBudget::new("q native domain", 0)?;
-        let plan = super::super::overlay::QEmissionPlan::build(
-            &topology,
-            crate::geometry::overlay::OverlayOp::Union,
-            &mut budget,
-        )?;
+        let plan =
+            super::super::overlay::QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
         let source_points = vec![None; topology.sources.points.len()];
         let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
         let publication = plan.fragment_recipes.publish(
             &topology,
             &nearest,
-            crate::geometry::overlay::OverlayOp::Union.name(),
+            OverlayOp::Union.name(),
             &mut budget,
         )?;
         let emission =

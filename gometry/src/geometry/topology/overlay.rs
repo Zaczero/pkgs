@@ -41,7 +41,7 @@ use crate::geometry::overlay::{
     build_certified_overlay_shape_with_axes_and_order,
 };
 use crate::geometry::segments::try_sort_by_with_work;
-use crate::geometry::tessellation::exact::ExactRational;
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, Shape, Work, XY, ZOrdinate,
@@ -1197,10 +1197,7 @@ impl QEmissionPlan {
             work,
         )?;
         Ok(super::emission::NativeFrozenDrawing {
-            buffers: crate::geometry::embedding_completion::FrozenLiteralBuffers::shapes(
-                shape,
-                literal_uses,
-            ),
+            buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
             line_traces,
         })
     }
@@ -1941,9 +1938,7 @@ fn push_source_edge_recipe(
     let native_delta =
         ExactRational::from_f64(end.get()).try_subtract(&ExactRational::from_f64(start.get()))?;
     let lift = retained.periods();
-    let period_lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(lift),
-    );
+    let period_lift = ExactRational::from_dyadic(ExactDyadic::from_i64(lift));
     let mut displacement = native_delta.try_add(&period.try_product(&period_lift)?)?;
     let (endpoints, range) = if reverse {
         displacement = ExactRational::zero().try_subtract(&displacement)?;
@@ -7633,7 +7628,10 @@ mod tests {
                 continue;
             }
             let assigned_end = nearest.point(&topology, recipe.endpoints[1])?;
-            assert_eq!(assigned_end.x.to_bits(), 99.999_999_999_999_99_f64.to_bits());
+            assert_eq!(
+                assigned_end.x.to_bits(),
+                99.999_999_999_999_99_f64.to_bits()
+            );
             assert_eq!(end_x.to_bits(), assigned_end.x.to_bits());
             let fragment = publication
                 .fragments

@@ -23,10 +23,16 @@ pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
 };
 use crate::geometry::embedding_search::{EvaluationBudget, SearchAccount};
+use crate::geometry::exact_arith::{
+    retained_exact_native_site_with_work, split_rational_native_site_with_work,
+};
+#[cfg(test)]
+use crate::geometry::ordinates::AxisValue;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowId, RequestRowInput, RootCatalog, RootId, RootRange, RootRequest,
     SourceArcMetricAccess, TraceRows, TraceRowsBuilder, resolve_request_rows,
 };
+use crate::geometry::overlay::CertifiedOverlayOrder;
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
@@ -266,20 +272,18 @@ fn validate_native_port_image(
             ExactQuotientKey::Coordinate(_),
         ) => {
             let longitude = frame.longitude();
-            let (left_native, left_lift) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &left.point.x,
-                    longitude.period(),
-                    longitude.half_period(),
-                    work,
-                )?;
-            let (right_native, right_lift) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &right.point.x,
-                    longitude.period(),
-                    longitude.half_period(),
-                    work,
-                )?;
+            let (left_native, left_lift) = split_rational_native_site_with_work(
+                &left.point.x,
+                longitude.period(),
+                longitude.half_period(),
+                work,
+            )?;
+            let (right_native, right_lift) = split_rational_native_site_with_work(
+                &right.point.x,
+                longitude.period(),
+                longitude.half_period(),
+                work,
+            )?;
             if !left_native
                 .as_ref()
                 .try_cmp_with_work(right_native.as_ref(), work)?
@@ -353,34 +357,30 @@ fn validate_native_port_image(
             let same_spelling = left_longitude.to_bits() == right_longitude.to_bits();
             let left_longitude = ExactRational::from_f64(*left_longitude);
             let right_longitude = ExactRational::from_f64(*right_longitude);
-            let (left_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &left_longitude,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
-            let (right_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &right_longitude,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
-            let (left_point_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &left.point.x,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
-            let (right_point_native, _) =
-                crate::geometry::exact_arith::split_rational_native_site_with_work(
-                    &right.point.x,
-                    frame.longitude().period(),
-                    frame.longitude().half_period(),
-                    work,
-                )?;
+            let (left_native, _) = split_rational_native_site_with_work(
+                &left_longitude,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
+            let (right_native, _) = split_rational_native_site_with_work(
+                &right_longitude,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
+            let (left_point_native, _) = split_rational_native_site_with_work(
+                &left.point.x,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
+            let (right_point_native, _) = split_rational_native_site_with_work(
+                &right.point.x,
+                frame.longitude().period(),
+                frame.longitude().half_period(),
+                work,
+            )?;
             if !same_spelling
                 || !left_native
                     .as_ref()
@@ -421,13 +421,13 @@ pub(super) fn native_source_record_quotient_key(
     let record_key = quotient_key_for_chart_position_with_work(frame, &record_point, work)?;
     let assigned_key = quotient_key_for_chart_position_with_work(frame, assigned, work)?;
     let longitude = frame.longitude();
-    let (record_native, _) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (record_native, _) = split_rational_native_site_with_work(
         &record_point.x,
         longitude.period(),
         longitude.half_period(),
         work,
     )?;
-    let (assigned_native, _) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (assigned_native, _) = split_rational_native_site_with_work(
         &assigned.x,
         longitude.period(),
         longitude.half_period(),
@@ -1301,7 +1301,7 @@ pub(super) type NativeLiteralUses = ShapeLiteralLayout<EmissionPortId>;
 pub(super) fn native_literal_uses_in_output_order(
     literal_uses: NativeLiteralUses,
     line_traces: Vec<TracedLine>,
-    order: crate::geometry::overlay::CertifiedOverlayOrder,
+    order: CertifiedOverlayOrder,
     work: &mut impl Work,
 ) -> Result<(NativeLiteralUses, Vec<TracedLine>)> {
     if literal_uses.lines.len() != line_traces.len() {
@@ -2234,20 +2234,18 @@ impl FragmentRecipe {
                 ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole
             ) {
                 let longitude = topology.sources.frame.longitude();
-                let (record_longitude, _) =
-                    crate::geometry::exact_arith::split_rational_native_site_with_work(
-                        &record_point.x,
-                        longitude.period(),
-                        longitude.half_period(),
-                        work,
-                    )?;
-                let (port_longitude, _) =
-                    crate::geometry::exact_arith::split_rational_native_site_with_work(
-                        &port.point.x,
-                        longitude.period(),
-                        longitude.half_period(),
-                        work,
-                    )?;
+                let (record_longitude, _) = split_rational_native_site_with_work(
+                    &record_point.x,
+                    longitude.period(),
+                    longitude.half_period(),
+                    work,
+                )?;
+                let (port_longitude, _) = split_rational_native_site_with_work(
+                    &port.point.x,
+                    longitude.period(),
+                    longitude.half_period(),
+                    work,
+                )?;
                 if !record_longitude
                     .as_ref()
                     .try_cmp_with_work(port_longitude.as_ref(), work)?
@@ -2880,14 +2878,9 @@ pub(super) fn native_cut_features(
     work: &mut impl Work,
 ) -> Result<Vec<NativeCutFeature>> {
     let axis = topology.sources.frame.longitude();
-    let start_site =
-        crate::geometry::exact_arith::retained_exact_native_site_with_work(axis, &start.x, work)?;
+    let start_site = retained_exact_native_site_with_work(axis, &start.x, work)?;
     let producer_end_x = start.x.try_add_with_work(assigned_displacement, work)?;
-    let end_site = crate::geometry::exact_arith::retained_exact_native_site_with_work(
-        axis,
-        &producer_end_x,
-        work,
-    )?;
+    let end_site = retained_exact_native_site_with_work(axis, &producer_end_x, work)?;
     let mut features = Vec::new();
     if start_site.periods() < end_site.periods() {
         let mut period_index = start_site.periods();
@@ -2951,9 +2944,7 @@ fn append_native_cut_feature(
     let half = ExactRational::from_f64(axis.half_period());
     let seam = half.try_add_with_work(
         &period.try_product_with_work(
-            &ExactRational::from_dyadic(
-                crate::geometry::tessellation::exact::ExactDyadic::from_i64(period_index),
-            ),
+            &ExactRational::from_dyadic(ExactDyadic::from_i64(period_index)),
             work,
         )?,
         work,
@@ -3532,17 +3523,13 @@ impl FragmentRecipes {
                 let parameter = ExactRational::from_f64(parameter);
                 let exact_point =
                     interpolate_exact_reference_point(&exact_endpoints, &parameter, work)?;
-                let retained_site =
-                    crate::geometry::exact_arith::retained_exact_native_site_with_work(
-                        topology.sources.frame.longitude(),
-                        &exact_point.x,
-                        work,
-                    )?;
-                let period_offset = ExactRational::from_dyadic(
-                    crate::geometry::tessellation::exact::ExactDyadic::from_i64(
-                        retained_site.periods(),
-                    ),
-                );
+                let retained_site = retained_exact_native_site_with_work(
+                    topology.sources.frame.longitude(),
+                    &exact_point.x,
+                    work,
+                )?;
+                let period_offset =
+                    ExactRational::from_dyadic(ExactDyadic::from_i64(retained_site.periods()));
                 let published_x = ExactRational::from_f64(point.x).try_add_with_work(
                     &ExactRational::from_f64(topology.sources.frame.longitude().period())
                         .try_product_with_work(&period_offset, work)?,
@@ -5173,7 +5160,7 @@ mod tests {
             ordinates: Vec::new(),
         };
         let mut source_ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
-        let mut source_z = crate::geometry::ordinates::AxisValue::default();
+        let mut source_z = AxisValue::default();
         source_z.observe(Some(7.0));
         source_ordinates
             .get_mut(source_node.0 as usize)
@@ -5515,7 +5502,7 @@ mod tests {
             ],
             polygons: Vec::new(),
         };
-        let order = crate::geometry::overlay::CertifiedOverlayOrder {
+        let order = CertifiedOverlayOrder {
             points: vec![1, 0],
             lines: vec![1, 0],
             polygons: Vec::new(),

@@ -14,7 +14,9 @@ use crate::geographic::{
     GeographicFrame, Latitude, RetainedChartDisplacement, RingDomain, RingSummary,
     ScalarGeographicView, SeamIdentity,
 };
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::exact_arith::{
+    ExactSign, retained_source_interval_reads_as, split_rational_native_site_with_work,
+};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{CompactLimbs, ExactDyadic, ExactRational};
 use crate::geometry::{
@@ -261,7 +263,7 @@ pub(super) fn quotient_key_for_chart_position_with_work(
     point: &ExactChartPoint,
     work: &mut impl Work,
 ) -> Result<ExactQuotientKey> {
-    let (native, _) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (native, _) = split_rational_native_site_with_work(
         &point.x,
         frame.longitude().period(),
         frame.longitude().half_period(),
@@ -667,7 +669,7 @@ impl ExactSourceEdge {
             .longitude()
             .chart_step(start.x, end.x)
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
-        crate::geometry::exact_arith::retained_source_interval_reads_as(
+        retained_source_interval_reads_as(
             longitude,
             frame,
             [source_start.y, source_end.y],

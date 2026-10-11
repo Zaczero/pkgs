@@ -28,6 +28,7 @@ use crate::error::ResourceError;
 #[cfg(test)]
 use crate::geometry::Coordinates as _;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
+use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
     RootMetricState, SourceArcContext, SourceArcRequest, source_arc_ordinates,
@@ -41,6 +42,7 @@ use crate::geometry::segments::{
     stored_cross_sign, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
+use crate::geometry::topology::SourceTrace;
 use crate::geometry::{
     Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind,
     GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon,
@@ -745,7 +747,7 @@ fn push_source_line_run<W: Work + ?Sized>(
 
 pub(in crate::geometry) struct SubdivisionPart {
     pub shape: Shape,
-    pub traces: Option<Vec<crate::geometry::topology::SourceTrace>>,
+    pub traces: Option<Vec<SourceTrace>>,
 }
 
 fn remove_node_antennas(mut nodes: Vec<NodeId>) -> Option<Vec<NodeId>> {
@@ -2464,13 +2466,13 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
-        source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
+        source_traces: Option<&[SourceTrace]>,
         declared_axes: crate::geometry::CoordinateAxes,
         strict: bool,
         clip_operands: [usize; 2],
         budget: &mut ExpansionBudget,
         context: &SourceArcContext<'_, '_, M>,
-        trace_work: &mut crate::geometry::embedding_search::EvaluationBudget,
+        trace_work: &mut EvaluationBudget,
     ) -> Result<[SubdivisionPart; 2]> {
         let Some(source_traces) = source_traces else {
             let [left, right] = self.subdivision_parts(
@@ -2667,7 +2669,7 @@ impl ExactSourceInventory {
         ranges: &[Range<usize>],
         views: &[Vec<SourceSpanTraceView>],
         selected: &[bool],
-        source_traces: &[crate::geometry::topology::SourceTrace],
+        source_traces: &[SourceTrace],
         work: &mut W,
     ) -> Result<Vec<SourceLineRun>> {
         #[cfg(test)]
@@ -2777,7 +2779,7 @@ impl ExactSourceInventory {
         &self,
         source_kind: GeometryKind,
         runs: Vec<SourceLineRun>,
-        source_traces: &[crate::geometry::topology::SourceTrace],
+        source_traces: &[SourceTrace],
         by_node: &ResolvedNodePoints,
         declared_axes: CoordinateAxes,
         strict: bool,
