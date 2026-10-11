@@ -233,11 +233,10 @@ fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
         "the partition inventory includes clip-rectangle segments"
     );
     reset_source_line_runs_calls();
-    let error = match inventory
-        .source_line_runs(&partition, &ranges, &views, &selected, &traces, &mut work)
-    {
-        Ok(_) => panic!("clip-rectangle segments have no source-line trace"),
-        Err(error) => error,
+    let Err(error) =
+        inventory.source_line_runs(&partition, &ranges, &views, &selected, &traces, &mut work)
+    else {
+        panic!("clip-rectangle segments have no source-line trace");
     };
     assert_eq!(source_line_runs_calls(), 1);
     assert!(

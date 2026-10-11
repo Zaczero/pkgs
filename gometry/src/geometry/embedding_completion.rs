@@ -1504,14 +1504,11 @@ fn point_edge_contacts_preserved(
                 if let Err(error) = work.charge(1) {
                     return ControlFlow::Break(Err(error));
                 }
-                let vertex = match isolated_vertices.get(point_index).copied() {
-                    Some(vertex) => vertex,
-                    None => {
-                        return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
-                            "point-contact sweep returned an unknown point".into(),
-                        )
-                        .into()));
-                    },
+                let Some(vertex) = isolated_vertices.get(point_index).copied() else {
+                    return ControlFlow::Break(Err(GeometryErrorKind::Invalid(
+                        "point-contact sweep returned an unknown point".into(),
+                    )
+                    .into()));
                 };
                 let [start, end] = match edge_nodes.get(edge_index) {
                     Some(edge) => *edge,

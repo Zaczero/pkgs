@@ -21860,19 +21860,16 @@ mod canonical_coordinate_tests {
                 occurrences: Vec::new(),
             };
             let (edge, boundary) = reversed_lift_native_refinement_fixture(event, QPortId(0));
-            let error = match common_refine_native_edges(
+            let Err(error) = common_refine_native_edges(
                 vec![edge],
                 &[boundary],
                 GeographicFrame::crs84(),
                 &mut Unmetered,
-            ) {
-                Err(error) => error,
-                Ok(_) => {
-                    return Err(GeometryErrorKind::Invalid(
-                        "noncoincident native refinement event was accepted".into(),
-                    )
-                    .into());
-                },
+            ) else {
+                return Err(GeometryErrorKind::Invalid(
+                    "noncoincident native refinement event was accepted".into(),
+                )
+                .into());
             };
             assert!(matches!(
                 error.kind(),
