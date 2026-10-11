@@ -54,9 +54,7 @@ let
 
     # docs-{serve,build,deploy} act on the package in CWD. Each requires a
     # properdocs.yml and docs tooling in the default dev dependency group.
-    # Convention: site_url in properdocs.yml is the canonical
-    # hostname; deploy rsyncs the build into edge:/var/www/<that-host>/. The
-    # Caddyfile entry for the host is maintained by hand on edge.
+    # site_url selects the fleet's Cloudflare static publication.
     (makeScript "docs-serve" ''
       export MATURIN_IMPORT_HOOK_ENABLED=0
       unset SOURCE_DATE_EPOCH
@@ -104,14 +102,17 @@ let
 
       docs-build
 
-      echo "Target: edge:/var/www/$host/"
+      echo "Target: $host on Cloudflare"
       if [ "$dry_run" = true ]; then
-        echo "DRY RUN: rsync skipped."
+        echo "DRY RUN: publication skipped."
       else
-        rsync -avL --mkpath --delete-after \
-          site/ "edge:/var/www/$host/"
+        set -o pipefail
+        printf -v command 'fleet-static-publish %q' "$host"
+        # The hostname is parsed locally and quoted for the remote shell.
+        # shellcheck disable=SC2029
+        tar --dereference -C site -cf - . | ssh edge "$command"
       fi
-      echo "Done. The Caddyfile entry for $host is maintained by hand on edge."
+      echo "Done."
     '')
   ];
 
