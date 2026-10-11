@@ -1344,6 +1344,14 @@ impl GlobalFaces {
         bounds: impl Fn(usize, usize) -> bool,
         work: &mut W,
     ) -> Result<Vec<Vec<u32>>> {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        enum DartState {
+            Omitted,
+            Pending,
+            Walked,
+        }
+
         let slots = topology.targets.len();
         let walk_count = topology.face_starts.len().checked_sub(1).ok_or_else(|| {
             GeometryErrorKind::Invalid("indexed graph face starts have no sentinel".into())
@@ -1365,13 +1373,6 @@ impl GlobalFaces {
             .into());
         }
         work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        #[repr(u8)]
-        enum DartState {
-            Omitted,
-            Pending,
-            Walked,
-        }
 
         let mut state = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {

@@ -2834,14 +2834,6 @@ fn native_whole_sphere_cell_points(
     cell: u8,
     budget: &mut impl Work,
 ) -> Result<[ExactChartPoint; 6]> {
-    // Away from the collapsed poles and sewn seam, these are disjoint strips.
-    let half = ExactRational::from_f64(frame.longitude().half_period());
-    let quarter = half.try_product_with_work(&ExactRational::from_f64(0.5), budget)?;
-    let zero = ExactRational::zero();
-    let negative_half = zero.try_subtract_with_work(&half, budget)?;
-    let negative_quarter = zero.try_subtract_with_work(&quarter, budget)?;
-    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
-    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
     fn point(
         longitude: &ExactRational,
         latitude: &ExactRational,
@@ -2852,6 +2844,15 @@ fn native_whole_sphere_cell_points(
             latitude.try_clone_with_work(budget)?,
         ))
     }
+
+    // Away from the collapsed poles and sewn seam, these are disjoint strips.
+    let half = ExactRational::from_f64(frame.longitude().half_period());
+    let quarter = half.try_product_with_work(&ExactRational::from_f64(0.5), budget)?;
+    let zero = ExactRational::zero();
+    let negative_half = zero.try_subtract_with_work(&half, budget)?;
+    let negative_quarter = zero.try_subtract_with_work(&quarter, budget)?;
+    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
+    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
     if !negative_half
         .try_cmp_with_work(&negative_quarter, budget)?
         .is_lt()
@@ -5585,6 +5586,21 @@ fn native_whole_sphere_cell_edges(
     families: &mut FeatureFamilyRegistry,
     budget: &mut impl SearchAccount,
 ) -> Result<Vec<NativeAreaEdge>> {
+    const CELL_EDGES: [(u8, usize, usize); 12] = [
+        (0, 0, 1),
+        (0, 1, 2),
+        (0, 2, 7),
+        (0, 7, 6),
+        (0, 6, 5),
+        (0, 5, 0),
+        (1, 2, 3),
+        (1, 3, 4),
+        (1, 4, 9),
+        (1, 9, 8),
+        (1, 8, 7),
+        (1, 7, 2),
+    ];
+
     let longitude = frame.longitude();
     let half = ExactRational::from_f64(longitude.half_period());
     let quarter = half.try_product_with_work(&ExactRational::from_f64(0.5), budget)?;
@@ -5665,20 +5681,6 @@ fn native_whole_sphere_cell_edges(
     }
     families.synchronize_budget(budget)?;
 
-    const CELL_EDGES: [(u8, usize, usize); 12] = [
-        (0, 0, 1),
-        (0, 1, 2),
-        (0, 2, 7),
-        (0, 7, 6),
-        (0, 6, 5),
-        (0, 5, 0),
-        (1, 2, 3),
-        (1, 3, 4),
-        (1, 4, 9),
-        (1, 9, 8),
-        (1, 8, 7),
-        (1, 7, 2),
-    ];
     budget.charge(u64::try_from(CELL_EDGES.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut edges = Vec::with_capacity(CELL_EDGES.len());
     for (cell, start, end) in CELL_EDGES {
