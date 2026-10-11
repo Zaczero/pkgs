@@ -25,11 +25,22 @@ use crate::geometry::{
 #[cfg(test)]
 thread_local! {
     static SUBDIVISION_WORK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+    static SOURCE_LINE_MEMBER_COUNT_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
 fn reset_subdivision_work() {
     SUBDIVISION_WORK.with(|work| work.set((0, 0)));
+}
+
+#[cfg(test)]
+fn reset_source_line_member_count_calls() {
+    SOURCE_LINE_MEMBER_COUNT_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+fn source_line_member_count_calls() -> usize {
+    SOURCE_LINE_MEMBER_COUNT_CALLS.with(Cell::get)
 }
 
 #[cfg(test)]
@@ -434,29 +445,35 @@ fn push_subdivision_members(
             ));
         }
     } else {
-        let member_line_ranges = if let Some(parent_range) = source_line_members
-            && parent_range.len() == source_line_member_count(shape)?
-        {
-            let mut next = parent_range.start;
-            let mut ranges = Vec::with_capacity(members.len());
-            for member in &members {
-                let count = source_line_member_count(member)?;
-                let end = next.checked_add(count).ok_or(ResourceError::SizeOverflow)?;
-                ranges.push(Some(next..end));
-                next = end;
+        let member_line_ranges = if let Some(parent_range) = source_line_members {
+            if parent_range.len() == source_line_member_count(shape)? {
+                let mut next = parent_range.start;
+                let mut ranges = Vec::with_capacity(members.len());
+                for member in &members {
+                    let count = source_line_member_count(member)?;
+                    let end = next.checked_add(count).ok_or(ResourceError::SizeOverflow)?;
+                    ranges.push(next..end);
+                    next = end;
+                }
+                Some(ranges)
+            } else {
+                None
             }
-            ranges
         } else {
-            std::iter::repeat_with(|| None)
-                .take(members.len())
-                .collect::<Vec<_>>()
+            None
         };
-        for (member, source_line_members) in members.into_iter().zip(member_line_ranges).rev() {
-            work.push(SubdivisionWorkItem::new(
-                member,
-                vertex_cut,
-                source_line_members,
-            ));
+        if let Some(member_line_ranges) = member_line_ranges {
+            for (member, source_line_members) in members.into_iter().zip(member_line_ranges).rev() {
+                work.push(SubdivisionWorkItem::new(
+                    member,
+                    vertex_cut,
+                    Some(source_line_members),
+                ));
+            }
+        } else {
+            for member in members.into_iter().rev() {
+                work.push(SubdivisionWorkItem::new(member, vertex_cut, None));
+            }
         }
     }
     Ok(true)
@@ -558,6 +575,8 @@ fn owner_coordinate_count(shape: &Shape, logical_count: Option<usize>) -> usize 
 }
 
 fn source_line_member_count(shape: &Shape) -> Result<usize> {
+    #[cfg(test)]
+    SOURCE_LINE_MEMBER_COUNT_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     let mut count = 0_usize;
     shape.try_for_each_component(&mut |component| -> Result<()> {
         if matches!(component, Component::LineString(_)) {
@@ -1130,8 +1149,12 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
 ) -> Result<()> {
     let mut work = Vec::with_capacity(1);
     let mut staged = Vec::new();
-    let source_line_count = source_line_member_count(&shape)?;
-    let item = SubdivisionWorkItem::new(shape, false, Some(0..source_line_count));
+    let source_line_members = if native.frame.is_some() {
+        Some(0..source_line_member_count(&shape)?)
+    } else {
+        None
+    };
+    let item = SubdivisionWorkItem::new(shape, false, source_line_members);
     work.push(item);
     while let Some(mut item) = work.pop() {
         #[cfg(test)]
@@ -3016,6 +3039,24 @@ mod subdivision_tests {
         assert_eq!(ordinates[2].abs().to_bits(), 0.0_f64.to_bits());
         assert_eq!(ordinates[3].to_bits(), 1.0_f64.to_bits());
         assert_eq!(ordinates[4].to_bits(), adjacent.to_bits());
+    }
+
+    #[test]
+    fn cartesian_shared_subdivision_never_counts_source_line_members() {
+        let base = crate::io::parse_wkt("POLYGON ((0 0,1 0,1 1,0 1,0 0))").unwrap();
+        reset_source_line_member_count_calls();
+        for depth in [4, 8, 16, 40, 128] {
+            let mut shared = base.clone();
+            for _ in 0..depth {
+                shared = Shape::geometry_collection(vec![shared.clone(), shared])
+                    .expect("shared collection depth is admitted");
+            }
+            let parts = shared
+                .subdivide_with_context(8, false, &crate::geometry::SourceArcContext::cartesian())
+                .expect("Cartesian shared subdivision succeeds");
+            assert!(!parts.is_empty(), "depth {depth}");
+        }
+        assert_eq!(source_line_member_count_calls(), 0);
     }
 
     #[test]
