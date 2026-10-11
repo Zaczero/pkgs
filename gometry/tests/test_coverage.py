@@ -158,6 +158,71 @@ def test_geographic_zero_tolerance_simplify_keeps_valid_disjoint_rows_as_identit
     assert gm.coverage_is_valid(simplified)
 
 
+def test_nonzero_geographic_simplify_keeps_disjoint_chart_support() -> None:
+    seam = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    greenwich = gm.Polygon(
+        [(-5, -1), (5, -1), (5, 1), (-5, 1)],
+        crs='OGC:CRS84',
+    )
+
+    simplified = gm.coverage_simplify([seam, greenwich], 0.5)
+
+    assert gm.coverage_is_valid(simplified)
+    assert gm.covers(simplified[0], gm.Point(175, 5, crs='OGC:CRS84'))
+    assert not gm.covers(simplified[0], gm.Point(0, 0, crs='OGC:CRS84'))
+    assert gm.covers(simplified[1], gm.Point(0, 0, crs='OGC:CRS84'))
+    assert not gm.covers(simplified[1], gm.Point(175, 5, crs='OGC:CRS84'))
+
+
+def test_nonzero_geographic_simplify_reduces_disjoint_row_boundary() -> None:
+    seam = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    central = gm.Polygon(
+        [(-5, -1), (5, -1), (5, 1), (0, 1.2), (-5, 1)],
+        crs='OGC:CRS84',
+    )
+
+    simplified = gm.coverage_simplify([seam, central], 0.5, method='dp')
+
+    assert len(simplified[1].exterior.coords) < len(central.exterior.coords)
+    assert gm.coverage_is_valid(simplified)
+
+
+def test_nonzero_geographic_simplify_preserves_measured_disjoint_rows() -> None:
+    crs = '+proj=longlat +a=7000000 +rf=150 +type=crs'
+    ring = [
+        (0.0, 45.0, 35.25, 551.0),
+        (90.0, 54.0, 40.0, 600.0),
+        (180.0, 63.0, 45.0, 675.0),
+        (275.0, 72.5, 49.5, 726.0),
+        (275.0, 82.5, 60.0, 800.0),
+        (180.0, 73.0, 55.0, 775.0),
+        (90.0, 64.0, 50.0, 650.0),
+        (0.0, 55.0, 45.0, 600.0),
+        (0.0, 45.0, 35.25, 551.0),
+    ]
+    source = gm.Polygon(ring, crs=crs)
+    separate = gm.box(-5, -80, -1, -75, crs=crs)
+
+    simplified = gm.coverage_simplify([source, separate], 0.1, method='vw')
+
+    assert gm.coverage_is_valid(simplified)
+    assert simplified[0].has_z
+    assert simplified[0].has_m
+    source_ordinates = {(x, y): (z, m) for x, y, z, m in ring}
+    for x, y, z, m in simplified[0].exterior.coords:
+        if (x, y) in source_ordinates:
+            assert (z, m) == source_ordinates[(x, y)]
+        else:
+            assert math.isfinite(z)
+            assert math.isfinite(m)
+
+
 def test_geographic_disjoint_coverage_union_keeps_its_output_bytes() -> None:
     seam = gm.Polygon(
         [(170, 0), (-170, 0), (-170, 10), (170, 10)],

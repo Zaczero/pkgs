@@ -111,7 +111,7 @@ fn validate_gap_width(gap_width: f64) -> Result<()> {
     Ok(())
 }
 
-fn validate_polygonal_rows<S: std::borrow::Borrow<Shape>>(rows: &[S]) -> Result<()> {
+pub(crate) fn validate_polygonal_rows<S: std::borrow::Borrow<Shape>>(rows: &[S]) -> Result<()> {
     for row in rows {
         match row.borrow() {
             Shape::Polygon(_)

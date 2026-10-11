@@ -2,7 +2,9 @@ use std::collections::BinaryHeap;
 use std::num::NonZeroUsize;
 
 use crate::error::Result;
-use crate::geometry::coverage::{AABB, HashMap, Reverse, coverage_rows, valid_coverage_rows};
+use crate::geometry::coverage::{
+    AABB, HashMap, Reverse, coverage_rows, valid_coverage_rows, validate_polygonal_rows,
+};
 use crate::geometry::overlay::{ExactChainView, ExactPartition, ExactSourceInventory, NodeId};
 use crate::geometry::segment_index::ChordIndex;
 use crate::geometry::{
@@ -657,8 +659,8 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
     }
     let domain = source_context.domain();
     let identity = same_topological_coordinate(tolerance, 0.0);
-    let prepared = if identity {
-        match domain {
+    if identity {
+        let prepared = match domain {
             TopologyDomain::Cartesian => valid_coverage_rows(rows, "coverage_simplify")?.rows,
             TopologyDomain::Geographic(_) => {
                 if !crate::geometry::coverage_is_valid_with_domain(rows, 0.0, domain)? {
@@ -669,17 +671,42 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
                 }
                 coverage_rows(rows, 0.0)?.rows
             },
-        }
-    } else {
-        valid_coverage_rows(rows, "coverage_simplify")?.rows
-    };
+        };
+        return Ok(prepared.iter().map(|row| row.shape.clone()).collect());
+    }
     let geographic_frame = match domain {
         TopologyDomain::Geographic(frame) => Some(frame),
         TopologyDomain::Cartesian => None,
     };
-    if identity {
-        return Ok(prepared.iter().map(|row| row.shape.clone()).collect());
+    if let TopologyDomain::Geographic(frame) = domain {
+        validate_polygonal_rows(rows)?;
+        let analysis =
+            crate::geometry::analyze_geographic_coverage(rows, frame, 0.0, "coverage_simplify")?;
+        if !analysis.is_valid() {
+            return Err(GeometryErrorKind::InvalidCoverage {
+                operation: "coverage_simplify",
+            }
+            .into());
+        }
+        // Independent row simplification is safe only without shared spans or
+        // source winding whose directed chart roots must remain joint.
+        if rows.len() > 1
+            && !analysis.has_shared_boundary()
+            && analysis.source_edges_match_shortest_chart()?
+            && analysis.source_rings_are_ordinary()
+        {
+            return simplify_unshared_geographic_rows(
+                rows,
+                tolerance,
+                method,
+                simplify_boundary,
+                frame,
+                source_context,
+            );
+        }
     }
+
+    let prepared = valid_coverage_rows(rows, "coverage_simplify")?.rows;
 
     let mut all_segments = Vec::with_capacity(prepared.iter().map(|row| row.segments.len()).sum());
     for row in &prepared {
@@ -795,6 +822,123 @@ pub(crate) fn coverage_simplify_with_context<S: std::borrow::Borrow<Shape>>(
             }
         })
         .collect()
+}
+
+fn simplify_unshared_geographic_rows<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    tolerance: f64,
+    method: SimplifyMethod,
+    simplify_boundary: bool,
+    frame: crate::geographic::GeographicFrame,
+    source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+) -> Result<Vec<Shape>> {
+    // With no shared Q span, rows have no boundary chain to replay. Simplify
+    // them in their geographic frame, then keep the group only if its shared
+    // Q validation still passes.
+    let original: Vec<_> = rows.iter().map(|row| row.borrow().clone()).collect();
+    if !simplify_boundary {
+        return Ok(original);
+    }
+
+    let mut computed_edge_budget =
+        crate::geometry::ExpansionBudget::new("coverage_simplify", "computed edges");
+    let mut simplified = Vec::with_capacity(rows.len());
+    for row in rows {
+        let source = row.borrow();
+        let output = match method {
+            SimplifyMethod::Vw => {
+                source.simplify_vw_geographic(tolerance, true, frame.longitude())?
+            },
+            SimplifyMethod::Dp => {
+                source.simplify_dp_geographic(tolerance, true, frame.longitude())?
+            },
+        };
+        let Some(edge_roles) = geographic_edge_roles(source, &output)? else {
+            return Ok(original);
+        };
+        simplified.push(publish_coverage_edge_roles(
+            output,
+            edge_roles,
+            frame,
+            source_context,
+            &mut computed_edge_budget,
+        )?);
+    }
+
+    if crate::geometry::coverage_is_valid_with_domain(
+        &simplified,
+        0.0,
+        TopologyDomain::Geographic(frame),
+    )? {
+        Ok(simplified)
+    } else {
+        Ok(original)
+    }
+}
+
+fn geographic_edge_roles(
+    source: &Shape,
+    output: &Shape,
+) -> Result<Option<crate::geometry::PolygonPartEdgeRoles>> {
+    match (source, output) {
+        (Shape::Polygon(source), Shape::Polygon(output)) => {
+            Ok(polygon_edge_roles(source, output)?.map(|roles| vec![roles]))
+        },
+        (Shape::MultiPolygon(source), Shape::MultiPolygon(output))
+            if source.len() == output.len() =>
+        {
+            let mut roles = Vec::with_capacity(source.len());
+            for (source_member, output_member) in source
+                .members_with_values()
+                .zip(output.members_with_values())
+            {
+                match (source_member, output_member) {
+                    (
+                        crate::geometry::MultiMember::Value(source),
+                        crate::geometry::MultiMember::Value(output),
+                    ) => {
+                        let Some(edge_roles) = polygon_edge_roles(source, output)? else {
+                            return Ok(None);
+                        };
+                        roles.push(edge_roles);
+                    },
+                    (crate::geometry::MultiMember::Empty, crate::geometry::MultiMember::Empty) => {
+                        roles.push(Vec::new())
+                    },
+                    _ => return Ok(None),
+                }
+            }
+            Ok(Some(roles))
+        },
+        (Shape::Empty(..), Shape::Empty(..)) if source == output => Ok(Some(Vec::new())),
+        _ => Ok(None),
+    }
+}
+
+fn polygon_edge_roles(source: &Polygon, output: &Polygon) -> Result<Option<Vec<Vec<bool>>>> {
+    let source_rings: Vec<_> = source.rings().collect();
+    let output_rings: Vec<_> = output.rings().collect();
+    if source_rings.len() != output_rings.len() {
+        return Ok(None);
+    }
+    Ok(Some(
+        source_rings
+            .iter()
+            .zip(output_rings)
+            .map(|(source_ring, output_ring)| {
+                let mut source_edges =
+                    crate::collections::try_hash_set_with_capacity(source_ring.len())?;
+                for edge in line_segments(source_ring) {
+                    if !same_point(edge.start, edge.end) {
+                        source_edges.insert(undirected_segment_edge_key(edge));
+                    }
+                }
+                Ok(line_segments(output_ring)
+                    .map(|edge| !source_edges.contains(&undirected_segment_edge_key(edge)))
+                    .collect())
+            })
+            .collect::<Result<Vec<_>>>()?,
+    ))
 }
 
 fn publish_coverage_edge_roles(

@@ -48,6 +48,41 @@ struct NodeEdge {
     interior: bool,
 }
 
+pub(crate) struct GeographicCoverageAnalysis {
+    pub(crate) topology: ExactGeographicTopology,
+    pub(crate) span_rows: Vec<Vec<usize>>,
+    pub(crate) invalid_source_segments: Vec<Vec<Segment>>,
+}
+
+impl GeographicCoverageAnalysis {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.invalid_source_segments.iter().all(Vec::is_empty)
+    }
+
+    pub(crate) fn has_shared_boundary(&self) -> bool {
+        self.topology.sources.row_count > 1 && self.span_rows.iter().any(|rows| rows.len() > 1)
+    }
+
+    pub(crate) fn source_edges_match_shortest_chart(&self) -> Result<bool> {
+        let frame = self.topology.sources.frame;
+        for edge in &self.topology.sources.edges {
+            let [start, end] = edge.source;
+            if !edge.source_interval_reads_as(frame, false, start, end)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn source_rings_are_ordinary(&self) -> bool {
+        self.topology.sources.rings.iter().all(|ring| {
+            ring.summary.chart_turn == 0
+                && ring.summary.domain == crate::geographic::RingDomain::Ordinary
+                && !ring.summary.exact_axis_band
+        })
+    }
+}
+
 /// Return each offending original source edge in its input row.
 ///
 /// Q supplies the shared geographic noding and row-face relation. The
@@ -59,6 +94,15 @@ pub(crate) fn invalid_coverage_source_segments<S: Borrow<Shape>>(
     gap_width: f64,
     operation: &'static str,
 ) -> Result<Vec<Vec<Segment>>> {
+    Ok(analyze_geographic_coverage(rows, frame, gap_width, operation)?.invalid_source_segments)
+}
+
+pub(crate) fn analyze_geographic_coverage<S: Borrow<Shape>>(
+    rows: &[S],
+    frame: GeographicFrame,
+    gap_width: f64,
+    operation: &'static str,
+) -> Result<GeographicCoverageAnalysis> {
     if !(gap_width.is_finite() && gap_width >= 0.0) {
         return Err(GeometryErrorKind::NonNegativeFinite("gap_width", gap_width).into());
     }
@@ -292,7 +336,11 @@ pub(crate) fn invalid_coverage_source_segments<S: Borrow<Shape>>(
                 end: XY::new(edge.source[1].x, edge.source[1].y),
             });
     }
-    Ok(output)
+    Ok(GeographicCoverageAnalysis {
+        topology,
+        span_rows,
+        invalid_source_segments: output,
+    })
 }
 
 impl ChartBounds {
