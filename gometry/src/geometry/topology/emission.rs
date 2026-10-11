@@ -1345,7 +1345,7 @@ pub(super) struct NativeMaterializedParts {
 }
 
 impl NativeMaterializedParts {
-    pub(super) fn validate_literal_uses(&self) -> Result<()> {
+    pub(super) fn validate_literal_uses(&self, work: &mut impl Work) -> Result<()> {
         if self.literal_uses.points.len() != self.points.len()
             || self.literal_uses.lines.len() != self.lines.len()
             || self.literal_uses.polygons.len() != self.polygons.len()
@@ -1355,7 +1355,14 @@ impl NativeMaterializedParts {
             )
             .into());
         }
-        for (point, uses) in self.points.iter().zip(&self.literal_uses.points) {
+        for index in 0..self.points.len() {
+            work.charge(1)?;
+            let point = self.points.get(index).expect("point row count was checked");
+            let uses = self
+                .literal_uses
+                .points
+                .get(index)
+                .expect("point-use row count was checked");
             if CoordinateAxes::from_point(*point) != uses.axes {
                 return Err(GeometryErrorKind::Invalid(
                     "native point axes differ from its logical output policy".into(),
@@ -1363,7 +1370,14 @@ impl NativeMaterializedParts {
                 .into());
             }
         }
-        for (line, uses) in self.lines.iter().zip(&self.literal_uses.lines) {
+        for index in 0..self.lines.len() {
+            work.charge(1)?;
+            let line = self.lines.get(index).expect("line row count was checked");
+            let uses = self
+                .literal_uses
+                .lines
+                .get(index)
+                .expect("line-use row count was checked");
             if line.len() != uses.images.len() || line.axes() != uses.axes {
                 return Err(GeometryErrorKind::Invalid(
                     "native line literal-use rows do not match their coordinates".into(),
@@ -1371,20 +1385,38 @@ impl NativeMaterializedParts {
                 .into());
             }
         }
-        for (polygon, uses) in self.polygons.iter().zip(&self.literal_uses.polygons) {
+        for index in 0..self.polygons.len() {
+            work.charge(1)?;
+            let polygon = self
+                .polygons
+                .get(index)
+                .expect("polygon row count was checked");
+            let uses = self
+                .literal_uses
+                .polygons
+                .get(index)
+                .expect("polygon-use row count was checked");
             if polygon.shell.coords().len() != uses.shell.images.len()
                 || polygon.holes.len() != uses.holes.len()
                 || polygon.shell.coords().axes() != uses.axes
                 || uses.shell.axes != uses.axes
-                || uses.holes.iter().any(|hole| hole.axes != uses.axes)
             {
                 return Err(GeometryErrorKind::Invalid(
                     "native polygon literal-use rows do not match their rings".into(),
                 )
                 .into());
             }
-            for (hole, uses) in polygon.holes.iter().zip(&uses.holes) {
-                if hole.coords().len() != uses.images.len() {
+            for hole_index in 0..polygon.holes.len() {
+                work.charge(1)?;
+                let hole = polygon
+                    .holes
+                    .get(hole_index)
+                    .expect("hole row count was checked");
+                let hole_uses = uses
+                    .holes
+                    .get(hole_index)
+                    .expect("hole-use row count was checked");
+                if hole.coords().len() != hole_uses.images.len() || hole_uses.axes != uses.axes {
                     return Err(GeometryErrorKind::Invalid(
                         "native hole literal-use rows do not match their coordinates".into(),
                     )
@@ -4200,6 +4232,90 @@ mod tests {
         materialize_native_parts(&plan, &sites, &ordinates, axes, &line_traces, work)
     }
 
+    fn literal_test_sequence(count: usize) -> LiteralSequence<EmissionPortId> {
+        LiteralSequence {
+            output: 0,
+            axes: CoordinateAxes::XY,
+            images: (0..count)
+                .map(|index| EmissionPortId(u32::try_from(index).expect("test image fits u32")))
+                .collect(),
+        }
+    }
+
+    fn empty_literal_test_parts() -> NativeMaterializedParts {
+        NativeMaterializedParts {
+            axes: CoordinateAxes::XY,
+            points: Vec::new(),
+            lines: Vec::new(),
+            polygons: Vec::new(),
+            line_traces: Vec::new(),
+            literal_uses: NativeLiteralUses {
+                points: Vec::new(),
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        }
+    }
+
+    fn point_literal_test_parts() -> NativeMaterializedParts {
+        let point = Point::new_raw_xy(3.0, 4.0);
+        NativeMaterializedParts {
+            axes: CoordinateAxes::XY,
+            points: vec![point],
+            literal_uses: NativeLiteralUses {
+                points: vec![LiteralPoint {
+                    output: 0,
+                    axes: CoordinateAxes::XY,
+                    image: EmissionPortId(0),
+                }],
+                ..empty_literal_test_parts().literal_uses
+            },
+            ..empty_literal_test_parts()
+        }
+    }
+
+    fn line_literal_test_parts() -> Result<NativeMaterializedParts> {
+        let mut parts = empty_literal_test_parts();
+        parts.lines.push(CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+        ])?);
+        parts.literal_uses.lines.push(literal_test_sequence(2));
+        Ok(parts)
+    }
+
+    fn polygon_literal_test_parts(with_hole: bool) -> Result<NativeMaterializedParts> {
+        let shell = Ring::try_from_closed(CoordSeq::try_from_points(&[
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ])?)?;
+        let holes = if with_hole {
+            vec![Ring::try_from_closed(CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.25, 0.25),
+                Point::new_raw_xy(0.5, 0.25),
+                Point::new_raw_xy(0.25, 0.5),
+                Point::new_raw_xy(0.25, 0.25),
+            ])?)?]
+        } else {
+            Vec::new()
+        };
+        let uses = LiteralPolygon {
+            output: 0,
+            axes: CoordinateAxes::XY,
+            shell: literal_test_sequence(4),
+            holes: with_hole
+                .then(|| literal_test_sequence(4))
+                .into_iter()
+                .collect(),
+        };
+        let mut parts = empty_literal_test_parts();
+        parts.polygons.push(Polygon::new(shell, holes));
+        parts.literal_uses.polygons.push(uses);
+        Ok(parts)
+    }
+
     fn resolve_native_root_occurrences<M: ChartMetric>(
         topology: &ExactGeographicTopology,
         port_id: QPortId,
@@ -5886,6 +6002,62 @@ mod tests {
                 last.m.to_bits()
             ],
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_literal_validation_charges_each_metadata_row_before_inspection() -> Result<()> {
+        let mut all_rows = point_literal_test_parts();
+        let mut line_rows = line_literal_test_parts()?;
+        all_rows.lines.append(&mut line_rows.lines);
+        all_rows
+            .literal_uses
+            .lines
+            .append(&mut line_rows.literal_uses.lines);
+        let mut polygon_rows = polygon_literal_test_parts(true)?;
+        all_rows.polygons.append(&mut polygon_rows.polygons);
+        all_rows
+            .literal_uses
+            .polygons
+            .append(&mut polygon_rows.literal_uses.polygons);
+
+        let mut funded = RecordingWork::with_remaining("literal metadata", 100)?;
+        all_rows.validate_literal_uses(&mut funded)?;
+        assert_eq!(funded.attempted, [1, 1, 1, 1]);
+        assert_eq!(funded.accepted, [1, 1, 1, 1]);
+
+        for parts in [
+            point_literal_test_parts(),
+            line_literal_test_parts()?,
+            polygon_literal_test_parts(false)?,
+        ] {
+            let mut work = RecordingWork::with_remaining("literal metadata", 0)?;
+            let error = parts.validate_literal_uses(&mut work).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                    operation: "literal metadata",
+                    constructed: 1,
+                    ..
+                })
+            ));
+            assert_eq!(work.attempted, [1]);
+            assert!(work.accepted.is_empty());
+        }
+
+        let parts = polygon_literal_test_parts(true)?;
+        let mut work = RecordingWork::with_remaining("literal metadata", 1)?;
+        let error = parts.validate_literal_uses(&mut work).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "literal metadata",
+                constructed: 1,
+                ..
+            })
+        ));
+        assert_eq!(work.attempted, [1, 1]);
+        assert_eq!(work.accepted, [1]);
         Ok(())
     }
 
