@@ -388,22 +388,34 @@ _GeoJsonScalar: TypeAlias = (
 )
 
 _GeoJsonFeatureRow: TypeAlias = (
-    str | Buffer | GeoJsonFeatureNonNull | SupportsGeoInterface[GeoJsonFeatureNonNull]
+    str
+    | Buffer
+    | GeoJsonFeature
+    | GeoJsonFeatureNonNull
+    | SupportsGeoInterface[GeoJsonFeature]
+    | SupportsGeoInterface[GeoJsonFeatureNonNull]
 )
 _GeoJsonFeatureBatch: TypeAlias = (
     Sequence[_GeoJsonFeatureRow | None]
     | Iterator[_GeoJsonFeatureRow | None]
     | Iterable[
-        GeoJsonFeatureNonNull | SupportsGeoInterface[GeoJsonFeatureNonNull] | None
+        GeoJsonFeature
+        | GeoJsonFeatureNonNull
+        | SupportsGeoInterface[GeoJsonFeature]
+        | SupportsGeoInterface[GeoJsonFeatureNonNull]
+        | None
     ]
     | np.ndarray[Any, np.dtype[Any]]
 )
 _GeoJsonFeatureInput: TypeAlias = (
     str
     | Buffer
+    | GeoJsonFeature
     | GeoJsonFeatureNonNull
     | GeoJsonFeatureCollection
+    | SupportsGeoInterface[GeoJsonFeature]
     | SupportsGeoInterface[GeoJsonFeatureNonNull]
+    | SupportsGeoInterface[GeoJsonFeatureCollection]
     | _GeoJsonFeatureBatch
 )
 
@@ -21501,6 +21513,30 @@ def from_geojson(
     crs: CrsInput | None = 'OGC:CRS84',
     epoch: _EpochInput | None = None,
 ) -> Geometry: ...
+@overload
+def from_geojson(
+    data: SupportsGeoInterface[GeoJsonGeometry],
+    *,
+    features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> Geometry: ...
+@overload
+def from_geojson(
+    data: SupportsGeoInterface[GeoJsonFeatureNonNull],
+    *,
+    features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> Geometry: ...
+@overload
+def from_geojson(
+    data: SupportsGeoInterface[GeoJsonFeatureCollection],
+    *,
+    features: Literal[False] = False,
+    crs: CrsInput | None = 'OGC:CRS84',
+    epoch: _EpochInput | None = None,
+) -> GeometryArray[Geometry | None]: ...
 @overload
 def from_geojson(
     data: _GeoJsonScalar,

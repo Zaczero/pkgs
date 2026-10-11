@@ -1240,6 +1240,8 @@ if TYPE_CHECKING:
     reveal_type(gm.from_geojson(feature_non_null, features=False))
     reveal_type(gm.from_geojson(feature_non_null, features=True))
     reveal_type(gm.from_geojson(arrow_text_column))
+    assert_type(gm.from_geojson(feature_row, features=True), gm.Features)
+    assert_type(gm.from_geojson(feature_rows, features=True), gm.Features)
 
     def _feature_result_for_runtime_flag(features: bool) -> None:
         reveal_type(gm.from_geojson(feature_text, features=features))
@@ -1271,6 +1273,37 @@ if TYPE_CHECKING:
             gm.Features,
         )
         assert_type(gm.from_geojson(_FeatureInterface(), features=True), gm.Features)
+        assert_type(gm.from_geojson([_FeatureInterface()], features=True), gm.Features)
+
+    def _feature_interface_roundtrips(
+        features: gm.Features,
+    ) -> None:
+        class _NullableFeatureInterface:
+            @property
+            def __geo_interface__(self) -> sht.GeoJsonFeature:
+                return feature_row
+
+        class _FeatureCollectionInterface:
+            @property
+            def __geo_interface__(self) -> sht.GeoJsonFeatureCollection:
+                return feature_collection
+
+        nullable_feature = _NullableFeatureInterface()
+        collection = _FeatureCollectionInterface()
+        assert_type(
+            gm.from_geojson(features.__geo_interface__, features=True),
+            gm.Features,
+        )
+        assert_type(gm.from_geojson(gm.to_feature(None), features=True), gm.Features)
+        assert_type(gm.from_geojson(gm.to_feature(POINT), features=True), gm.Features)
+        assert_type(gm.from_geojson(nullable_feature, features=True), gm.Features)
+        assert_type(gm.from_geojson([nullable_feature], features=True), gm.Features)
+        assert_type(gm.from_geojson(collection, features=True), gm.Features)
+        reveal_type(gm.from_geojson(collection))
+        assert_type(
+            gm.from_geojson(collection),
+            gm.GeometryArray[gm.Geometry | None],
+        )
 
     reveal_type(gm.points([(1.0, 2.0)]))
     reveal_type(gm.points(1.0, 2.0))

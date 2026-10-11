@@ -52,6 +52,12 @@ if TYPE_CHECKING:
     POINT.buffer(1.0, wrong_kw=2)  # type: ignore[call-arg]
     gm.from_geojson(POINT.__geo_interface__, features=True)  # type: ignore[arg-type]
 
+    class _GeometryInterfaceProvider:
+        @property
+        def __geo_interface__(self) -> sht.GeoJsonPointGeometry: ...
+
+    gm.from_geojson([_GeometryInterfaceProvider()], features=True)  # type: ignore[arg-type]
+
     # Algorithm options are available only for the matching literal method.
     POINT.triangulate(method='delaunay', min_angle=10.0)  # type: ignore[call-overload]
     POINT.triangulate(method='earcut', max_area=1.0)  # type: ignore[call-overload]
