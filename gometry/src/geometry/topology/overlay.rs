@@ -27,7 +27,7 @@ use super::q_embedding::{
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, SeamIdentity};
 use crate::geometry::embedding_completion::{
-    CheckedAssignment, FrozenLiteralBuffers, LiteralCheck, ShapeLiteralLayout, bind_literals,
+    FrozenLiteralBuffers, LiteralCheck, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_search::{
     EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
@@ -438,19 +438,17 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             operation,
             preparation_work,
         )?;
-        let images = CheckedAssignment::new(super::q_embedding::QSourceImages {
+        let sealed = match super::q_embedding::bind_source_only(
+            source,
             topology,
-            source_ports: None,
-            publication: &[],
-        });
-        let mut chart = super::q_embedding::AssignedSourceChart {
-            topology,
-            source_ports: None,
-            source_ordinates: &ordinates,
-            publication_points: &[],
-            publication_ordinates: &[],
-        };
-        let sealed = match bind_literals(source.buffers, &mut chart, &images, preparation_work)? {
+            None,
+            &ordinates,
+            None,
+            &[],
+            &[],
+            &[],
+            preparation_work,
+        )? {
             LiteralCheck::Pass(sealed) => sealed,
             LiteralCheck::Reject(_) => {
                 return Err(GeometryErrorKind::Invalid(
@@ -4974,23 +4972,18 @@ mod tests {
         layout: ShapeLiteralLayout<QSourceImage>,
     ) -> Result<LiteralCheck<QSourceImage>> {
         let mut work = crate::geometry::Unmetered;
-        let images = super::super::q_embedding::QSourceImages {
-            topology,
-            source_ports: None,
-            publication: &[],
-        };
         let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
-        let mut chart = super::super::q_embedding::AssignedSourceChart {
+        super::super::q_embedding::bind_source_only(
+            super::super::emission::SourceFrozenDrawing {
+                buffers: FrozenLiteralBuffers::shapes(shape, layout),
+            },
             topology,
-            source_ports: None,
-            source_ordinates: &ordinates,
-            publication_points: &[],
-            publication_ordinates: &[],
-        };
-        bind_literals(
-            FrozenLiteralBuffers::shapes(shape, layout),
-            &mut chart,
-            &images,
+            None,
+            &ordinates,
+            None,
+            &[],
+            &[],
+            &[],
             &mut work,
         )
     }
@@ -5052,13 +5045,9 @@ mod tests {
         let topology = ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())?;
         let plan = build_q_plan(&topology, OverlayOp::Union)?;
         let directed_ports = |step: LineStep| -> Result<[QPortId; 2]> {
-            let span = topology
-                .q
-                .spans
-                .get(step.span)
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("Q curve path names an unknown span".into())
-                })?;
+            let span = topology.q.spans.get(step.span).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q curve path names an unknown span".into())
+            })?;
             Ok(match step.from_endpoint {
                 SpanEndpoint::Start => span.ports,
                 SpanEndpoint::End => [span.ports[1], span.ports[0]],

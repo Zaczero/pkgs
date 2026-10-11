@@ -15,9 +15,9 @@ use super::emission::{
     NativeFaceId, NativeGraphEdgeOwner, NativePortData, NativeSeamEvent, NativeSeamVertices,
     NativeSourceFaceGerm, NativeSourceSpanUse, NodeAuthority, OccurrenceSource, PortPosition,
     PortSpelling, PublicationInventory, QSourceImage, RecipeWalk, RecipeWalkOwner,
-    SealedSourceDrawing, SelectedNativeSeamBand, SelectedUse, SourceSampleOccurrence, SourceTrace,
-    TraceRequestLocation, TracedLine, merge_native_port_data, native_pole_edges, native_seam_edges,
-    native_source_sample_occurrences,
+    SealedSourceDrawing, SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing,
+    SourceSampleOccurrence, SourceTrace, TraceRequestLocation, TracedLine, merge_native_port_data,
+    native_pole_edges, native_seam_edges, native_source_sample_occurrences,
 };
 use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceEdge, ExactSourceRange, ExactSourceRing,
@@ -43,9 +43,9 @@ use crate::geographic::{
 };
 use crate::geometry::embedding_completion::{
     AdmittedGraph, AdmittedLayout, CheckedAssignment, CheckedImages,
-    ExactPoints as NativeReferencePoints, LiteralChart, LiteralCheck, LogicalArealWalk,
-    ShapeLiteralLayout, admit_candidate, admit_known_graph, admit_logical_layout, bind_literals,
-    exact_chord_fraction,
+    ExactPoints as NativeReferencePoints, FrozenLiteralBuffers, LiteralChart, LiteralCheck,
+    LogicalArealWalk, SealedOutput, ShapeLiteralLayout, admit_candidate, admit_known_graph,
+    admit_logical_layout, bind_literals, exact_chord_fraction,
 };
 use crate::geometry::embedding_search::{
     ClassAssignment, EvaluationBudget, GlobalCheck, Problem, SearchAccount, SearchOutcome,
@@ -3894,36 +3894,62 @@ fn validate_native_materialized_port(
     Ok(vertex_point == &point)
 }
 
-struct NativeCandidateImages<'a, 'topology> {
-    reference: &'a NativeReference<'topology>,
-    points: &'a NativeReferencePoints,
+struct NativeCandidateAssignment<'reference, 'topology> {
+    reference: &'reference NativeReference<'topology>,
+    checked: CheckedAssignment<'reference>,
 }
 
-impl CheckedImages<EmissionPortId> for NativeCandidateImages<'_, '_> {
+impl<'reference, 'topology> NativeCandidateAssignment<'reference, 'topology> {
+    fn issue(
+        reference: &'reference NativeReference<'topology>,
+        checked: CheckedAssignment<'reference>,
+    ) -> Result<Self> {
+        if !checked.is_for(&reference.graph.common, &reference.dimension) {
+            return Err(GeometryErrorKind::Invalid(
+                "native checked assignment does not belong to its reference graph and layout"
+                    .into(),
+            )
+            .into());
+        }
+        Ok(Self { reference, checked })
+    }
+
+    fn points(&self) -> &NativeReferencePoints {
+        self.checked.points()
+    }
+}
+
+struct NativeLiteralReceiver<'assignment, 'reference, 'topology> {
+    assignment: &'assignment NativeCandidateAssignment<'reference, 'topology>,
+    sites: &'assignment [AssignedSite],
+    ordinates: &'assignment [NodeOrdinates],
+    port_records: &'assignment mut [Option<Point>],
+}
+
+impl CheckedImages<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
     fn image(&self, image: EmissionPortId) -> Result<&ExactChartPoint> {
         let vertex = *self
+            .assignment
             .reference
             .port_vertices
             .get(image.0 as usize)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("native literal image has no graph vertex".into())
             })?;
-        self.points.exact.get(vertex as usize).ok_or_else(|| {
-            GeometryErrorKind::Invalid("native literal image vertex is outside the graph".into())
+        self.assignment
+            .points()
+            .exact
+            .get(vertex as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "native literal image vertex is outside the graph".into(),
+                )
                 .into()
-        })
+            })
     }
 }
 
-struct NativeLiteralChart<'a, 'topology> {
-    reference: &'a NativeReference<'topology>,
-    sites: &'a [AssignedSite],
-    ordinates: &'a [NodeOrdinates],
-    points: &'a NativeReferencePoints,
-    port_records: Vec<Option<Point>>,
-}
-
-impl LiteralChart<EmissionPortId> for NativeLiteralChart<'_, '_> {
+impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
     fn read_point<W: Work>(
         &mut self,
         _output: u32,
@@ -3934,14 +3960,14 @@ impl LiteralChart<EmissionPortId> for NativeLiteralChart<'_, '_> {
         work: &mut W,
     ) -> Result<Option<ExactChartPoint>> {
         if !validate_native_materialized_port(
-            self.reference,
+            self.assignment.reference,
             image,
             record,
             self.sites,
             self.ordinates,
             stored_axes,
-            &mut self.port_records,
-            &self.points.exact,
+            self.port_records,
+            &self.assignment.points().exact,
             work,
         )? {
             return Ok(None);
@@ -3950,6 +3976,37 @@ impl LiteralChart<EmissionPortId> for NativeLiteralChart<'_, '_> {
             ExactRational::from_f64(record.x),
             ExactRational::from_f64(record.y),
         )))
+    }
+}
+
+impl NativeCandidateAssignment<'_, '_> {
+    fn bind_completed_native(
+        &self,
+        buffers: FrozenLiteralBuffers<EmissionPortId>,
+        sites: &[AssignedSite],
+        ordinates: &[NodeOrdinates],
+        port_records: &mut [Option<Point>],
+        work: &mut impl Work,
+    ) -> Result<Option<SealedOutput<EmissionPortId>>> {
+        let mut receiver = NativeLiteralReceiver {
+            assignment: self,
+            sites,
+            ordinates,
+            port_records,
+        };
+        let LiteralCheck::Pass(sealed) = bind_literals(buffers, &mut receiver, work)? else {
+            return Ok(None);
+        };
+        if !validate_native_sealed_layout(
+            self.reference,
+            sealed.shape_layout(),
+            receiver.port_records,
+            self.points(),
+            work,
+        )? {
+            return Ok(None);
+        }
+        Ok(Some(sealed))
     }
 }
 
@@ -4036,10 +4093,10 @@ fn q_source_image_xy_bits(
     Ok(Some([record.x.to_bits(), record.y.to_bits()]))
 }
 
-pub(super) struct QSourceImages<'a> {
-    pub(super) topology: &'a ExactGeographicTopology,
-    pub(super) source_ports: Option<&'a [Option<ExactChartPoint>]>,
-    pub(super) publication: &'a [ExactChartPoint],
+struct QSourceImages<'a> {
+    topology: &'a ExactGeographicTopology,
+    source_ports: Option<&'a [Option<ExactChartPoint>]>,
+    publication: &'a [ExactChartPoint],
 }
 
 impl QSourceImages<'_> {
@@ -4091,12 +4148,12 @@ impl CheckedImages<QSourceImage> for QSourceImages<'_> {
     }
 }
 
-pub(super) struct AssignedSourceChart<'a> {
-    pub(super) topology: &'a ExactGeographicTopology,
-    pub(super) source_ports: Option<&'a [Option<ExactChartPoint>]>,
-    pub(super) source_ordinates: &'a [NodeOrdinates],
-    pub(super) publication_points: &'a [XY],
-    pub(super) publication_ordinates: &'a [NodeOrdinates],
+struct AssignedSourceChart<'a> {
+    topology: &'a ExactGeographicTopology,
+    source_ports: Option<&'a [Option<ExactChartPoint>]>,
+    source_ordinates: &'a [NodeOrdinates],
+    publication_points: &'a [XY],
+    publication_ordinates: &'a [NodeOrdinates],
 }
 
 impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
@@ -4238,6 +4295,84 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
             },
         }
     }
+}
+
+struct SourceOnlyReceipt<'a> {
+    images: QSourceImages<'a>,
+    chart: AssignedSourceChart<'a>,
+    publication: Option<&'a PublicationInventory>,
+}
+
+impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
+    fn image(&self, image: QSourceImage) -> Result<&ExactChartPoint> {
+        if let QSourceImage::PublicationSample(sample) = image
+            && self
+                .publication
+                .and_then(|publication| publication.samples.get(sample as usize))
+                .is_none()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "source-only literal sample is outside its publication context".into(),
+            )
+            .into());
+        }
+        self.images.image(image)
+    }
+}
+
+impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
+    fn read_point<W: Work>(
+        &mut self,
+        output: u32,
+        image: QSourceImage,
+        record: Point,
+        expected_axes: crate::geometry::CoordinateAxes,
+        stored_axes: crate::geometry::CoordinateAxes,
+        work: &mut W,
+    ) -> Result<Option<ExactChartPoint>> {
+        self.chart
+            .read_point(output, image, record, expected_axes, stored_axes, work)
+    }
+}
+
+pub(super) fn bind_source_only(
+    source: SourceFrozenDrawing,
+    topology: &ExactGeographicTopology,
+    source_ports: Option<&[Option<ExactChartPoint>]>,
+    source_ordinates: &[NodeOrdinates],
+    publication: Option<&PublicationInventory>,
+    publication_images: &[ExactChartPoint],
+    publication_points: &[XY],
+    publication_ordinates: &[NodeOrdinates],
+    work: &mut impl Work,
+) -> Result<LiteralCheck<QSourceImage>> {
+    if publication_images.len() != publication_points.len()
+        || publication_images.len() != publication_ordinates.len()
+        || publication
+            .is_some_and(|publication| publication.samples.len() != publication_images.len())
+        || (publication.is_none() && !publication_images.is_empty())
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "source-only publication images do not match their operation context".into(),
+        )
+        .into());
+    }
+    let mut receipt = SourceOnlyReceipt {
+        images: QSourceImages {
+            topology,
+            source_ports,
+            publication: publication_images,
+        },
+        chart: AssignedSourceChart {
+            topology,
+            source_ports,
+            source_ordinates,
+            publication_points,
+            publication_ordinates,
+        },
+        publication,
+    };
+    bind_literals(source.buffers, &mut receipt, work)
 }
 
 fn validate_native_materialized_chord_row(
@@ -4614,37 +4749,40 @@ fn validate_native_sealed_layout(
     Ok(true)
 }
 
-fn native_candidate_edges_preserve_embedding(
-    reference: &NativeReference<'_>,
-    points: &NativeReferencePoints,
+fn native_candidate_edges_preserve_embedding<'reference, 'topology>(
+    reference: &'reference NativeReference<'topology>,
+    points: NativeReferencePoints,
     budget: &mut impl Work,
-) -> Result<bool> {
+) -> Result<Option<NativeCandidateAssignment<'reference, 'topology>>> {
     let graph = &reference.graph;
-    let Some(candidate) = admit_candidate(&graph.common, &reference.dimension, points, budget)?
+    let Some(checked) = admit_candidate(&graph.common, &reference.dimension, points, budget)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
-    native_graph_sewing_matches(
+    if !native_graph_sewing_matches(
         &graph.sewing,
         &graph.vertex_keys,
-        &candidate.points.exact,
+        &checked.points().exact,
         reference.plan.topology.sources.frame,
         budget,
-    )
+    )? {
+        return Ok(None);
+    }
+    Ok(Some(NativeCandidateAssignment::issue(reference, checked)?))
 }
 
-struct NativeCandidateState {
+struct NativeCandidateState<'reference, 'topology> {
     port_records: Vec<Option<Point>>,
-    points: NativeReferencePoints,
+    assignment: NativeCandidateAssignment<'reference, 'topology>,
 }
 
-fn validate_native_materialized_candidate(
-    reference: &NativeReference<'_>,
+fn validate_native_materialized_candidate<'reference, 'topology>(
+    reference: &'reference NativeReference<'topology>,
     parts: &super::emission::NativeMaterializedParts,
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],
     budget: &mut impl Work,
-) -> Result<Option<NativeCandidateState>> {
+) -> Result<Option<NativeCandidateState<'reference, 'topology>>> {
     parts.validate_literal_uses()?;
     if parts.points.len() != reference.plan.points.len()
         || parts.lines.len() != reference.plan.lines.len()
@@ -4874,12 +5012,14 @@ fn validate_native_materialized_candidate(
             }
         }
     }
-    if !native_candidate_edges_preserve_embedding(reference, &candidate_points, budget)? {
+    let Some(assignment) =
+        native_candidate_edges_preserve_embedding(reference, candidate_points, budget)?
+    else {
         return Ok(None);
-    }
+    };
     Ok(Some(NativeCandidateState {
         port_records,
-        points: candidate_points,
+        assignment,
     }))
 }
 
@@ -19467,7 +19607,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             &reference.line_traces,
             budget,
         )?;
-        let Some(candidate) = validate_native_materialized_candidate(
+        let Some(mut candidate) = validate_native_materialized_candidate(
             reference,
             &parts,
             &assigned_sites,
@@ -19481,30 +19621,22 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .emission
             .plan
             .seal_native_parts(parts, self.declared_axes, budget)?;
-        let mut chart = NativeLiteralChart {
-            reference,
-            sites: &assigned_sites,
-            ordinates: &ordinates,
-            points: &candidate.points,
-            port_records: candidate.port_records,
-        };
-        let images = CheckedAssignment::new(NativeCandidateImages {
-            reference,
-            points: &candidate.points,
-        });
-        let sealed = match bind_literals(frozen.buffers, &mut chart, &images, budget)? {
-            LiteralCheck::Pass(sealed) => sealed,
-            LiteralCheck::Reject(_) => return Ok(None),
-        };
-        if !validate_native_sealed_layout(
-            reference,
-            sealed.shape_layout(),
-            &chart.port_records,
-            &candidate.points,
-            budget,
-        )? {
-            return Ok(None);
+        if !std::ptr::eq(candidate.assignment.reference, reference) {
+            return Err(GeometryErrorKind::Invalid(
+                "native completion assignment belongs to another reference".into(),
+            )
+            .into());
         }
+        let Some(sealed) = candidate.assignment.bind_completed_native(
+            frozen.buffers,
+            &assigned_sites,
+            &ordinates,
+            &mut candidate.port_records,
+            budget,
+        )?
+        else {
+            return Ok(None);
+        };
         Ok(Some(super::emission::CompletedNativeDrawing {
             sealed,
             line_traces: frozen.line_traces,
@@ -19771,19 +19903,17 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         self.operation,
                         budget,
                     )?;
-                    let images = CheckedAssignment::new(QSourceImages {
-                        topology: self.topology,
-                        source_ports: Some(&producer_projection.source_ports),
-                        publication: &publication_chart_points,
-                    });
-                    let mut chart = AssignedSourceChart {
-                        topology: self.topology,
-                        source_ports: Some(&producer_projection.source_ports),
-                        source_ordinates: &self.ordinates,
-                        publication_points: &publication_points,
-                        publication_ordinates: &publication_ordinates,
-                    };
-                    let sealed = match bind_literals(source.buffers, &mut chart, &images, budget)? {
+                    let sealed = match bind_source_only(
+                        source,
+                        self.topology,
+                        Some(&producer_projection.source_ports),
+                        &self.ordinates,
+                        Some(self.emission.publication),
+                        &publication_chart_points,
+                        &publication_points,
+                        &publication_ordinates,
+                        budget,
+                    )? {
                         LiteralCheck::Pass(sealed) => sealed,
                         LiteralCheck::Reject(images) => {
                             let mut variables = Vec::with_capacity(images.len());
@@ -22165,6 +22295,76 @@ mod canonical_coordinate_tests {
     }
 
     #[test]
+    fn source_only_receipt_binds_the_current_publication_buffers() -> Result<()> {
+        use super::super::emission::{
+            FeatureFamily, FeatureFamilyParent, FragmentRecipeId, PublicationInventory,
+            PublishedSample, SampleProducerKind,
+        };
+        use crate::geometry::Shape;
+        use crate::geometry::embedding_completion::LiteralPoint;
+        use crate::geometry::ordinates::RequestRowId;
+
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let point = Point::new_raw_xy(7.0, 6.0);
+        let exact = ExactChartPoint::from_rationals(
+            ExactRational::from_f64(7.0),
+            ExactRational::from_f64(6.0),
+        );
+        let publication = PublicationInventory {
+            fragments: Vec::new(),
+            samples: vec![PublishedSample {
+                request_row: RequestRowId::from_index(0)?,
+                family: FeatureFamily {
+                    parent: FeatureFamilyParent::Fragment(FragmentRecipeId(0)),
+                    producer: SampleProducerKind::Publication,
+                    occurrence: 0,
+                },
+                parameter: ExactRational::from_f64(0.5),
+                written_vertex: 0,
+                point,
+                exact_point: exact.clone(),
+                published_chart_point: exact.clone(),
+                source_trace: None,
+                endpoint_only: false,
+            }],
+            counts: vec![1],
+            ordinates: vec![NodeOrdinates::default()],
+        };
+        let source = SourceFrozenDrawing {
+            buffers: FrozenLiteralBuffers::shapes(Shape::Point(point), ShapeLiteralLayout {
+                points: vec![LiteralPoint {
+                    output: 0,
+                    axes: crate::geometry::CoordinateAxes::XY,
+                    image: QSourceImage::PublicationSample(0),
+                }],
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            }),
+        };
+        let source_ordinates = [];
+        let publication_images = [exact];
+        let publication_points = [XY::new(7.0, 6.0)];
+        let publication_ordinates = [NodeOrdinates::default()];
+        let mut work = Unmetered;
+
+        assert!(matches!(
+            bind_source_only(
+                source,
+                &topology,
+                None,
+                &source_ordinates,
+                Some(&publication),
+                &publication_images,
+                &publication_points,
+                &publication_ordinates,
+                &mut work,
+            )?,
+            LiteralCheck::Pass(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn constructed_seam_vertex_still_requires_native_completion() -> Result<()> {
         let source = crate::io::parse_wkt("POLYGON ((170 0, -170 10, 170 10, 170 0))")?;
         let cutter = crate::io::parse_wkt("POLYGON ((180 2, 185 2, 185 8, 180 8, 180 2))")?;
@@ -23135,18 +23335,18 @@ mod canonical_coordinate_tests {
         Ok(())
     }
 
-    #[test]
-    fn native_literal_readback_rejects_a_post_pass_published_port_mutation() -> Result<()> {
+    fn single_sample_native_reference<'topology>(
+        topology: &'topology ExactGeographicTopology,
+        budget: &mut EvaluationBudget,
+        assigned: QCandidate,
+    ) -> Result<(NativeReference<'topology>, EmissionPortId)> {
         use super::super::emission::{
-            EmissionBuilder, FeatureFamily, FeatureFamilyParent, FragmentRecipeId, NativePortData,
-            OccurrenceSource, PortSpelling, PublishedSample, SampleProducerKind, VertexOrigin,
-            native_port_point,
+            EmissionBuilder, FeatureFamily, FeatureFamilyParent, PublishedSample,
+            SampleProducerKind, VertexOrigin,
         };
         use crate::geometry::ordinates::RequestRowId;
 
-        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
-        let mut budget = EvaluationBudget::new("native literal readback", 0)?;
-        let selected = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+        let selected = QEmissionPlan::build(topology, OverlayOp::Union, budget)?;
         let exact = ExactChartPoint::from_rationals(
             ExactRational::from_f64(10.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
             ExactRational::from_f64(1.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
@@ -23169,17 +23369,13 @@ mod canonical_coordinate_tests {
             source_trace: None,
             endpoint_only: false,
         };
-        let mut builder = EmissionBuilder::new(&topology, &selected, &[], false, &mut budget)?;
-        let sample_nodes = builder.reserve_publication_nodes(&[sample], &mut budget)?;
+        let mut builder = EmissionBuilder::new(topology, &selected, &[], false, budget)?;
+        let sample_nodes = builder.reserve_publication_nodes(&[sample], budget)?;
         let sample_node = *sample_nodes.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("Native literal fixture has no sample node".into())
         })?;
-        let assigned = QCandidate {
-            native: XY::new(10.0, 1.0),
-            periods: 0,
-        };
         let assigned_point =
-            candidate_chart_point_with_work(topology.sources.frame, assigned, &mut budget)?;
+            candidate_chart_point_with_work(topology.sources.frame, assigned, budget)?;
         let port_data = NativePortData {
             node: sample_node,
             point: assigned_point.clone(),
@@ -23191,18 +23387,19 @@ mod canonical_coordinate_tests {
             }],
         };
         let port_id = builder.port(port_data.clone())?;
+        builder.point(port_id)?;
         let plan = builder.finish();
-        let graph_builder = new_native_reference_graph_builder(&[], &[port_data], &mut budget)?;
-        let graph = graph_builder.finish(topology.sources.frame, &mut budget)?;
+        let graph_builder = new_native_reference_graph_builder(&[], &[port_data], budget)?;
+        let graph = graph_builder.finish(topology.sources.frame, budget)?;
         let dimension =
-            admit_logical_layout(&graph.common, Vec::new(), Some(&graph.faces), &mut budget)?;
+            admit_logical_layout(&graph.common, Vec::new(), Some(&graph.faces), budget)?;
         let vertex = graph.local_vertex(
             native_emission_port_key(
                 plan.ports
                     .get(port_id.0 as usize)
                     .ok_or_else(|| GeometryErrorKind::Invalid("sample port is unknown".into()))?,
             ),
-            &mut budget,
+            budget,
         )?;
         let reference = NativeReference {
             plan,
@@ -23221,6 +23418,25 @@ mod canonical_coordinate_tests {
             pole_sectors: Vec::new(),
             graph,
         };
+        Ok((reference, port_id))
+    }
+
+    #[test]
+    fn native_literal_readback_rejects_a_post_pass_published_port_mutation() -> Result<()> {
+        use super::super::emission::native_port_point;
+
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("native literal readback", 0)?;
+        let assigned = QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        };
+        let (reference, port_id) =
+            single_sample_native_reference(&topology, &mut budget, assigned)?;
+        let vertex = *reference
+            .port_vertices
+            .get(port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample graph vertex is unknown".into()))?;
         let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
         let ordinates = [NodeOrdinates::default()];
         let mut record = native_port_point(
@@ -23237,16 +23453,26 @@ mod canonical_coordinate_tests {
             .ok_or_else(|| GeometryErrorKind::Invalid("published vertex is unknown".into()))?
             .y = ExactRational::from_f64(record.y);
         let candidate_points = NativeReferencePoints::from_exact(exact_points, &mut budget)?;
-        let mut chart = NativeLiteralChart {
-            reference: &reference,
+        let checked = admit_candidate(
+            &reference.graph.common,
+            &reference.dimension,
+            candidate_points,
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("mutated native test assignment was not admitted".into())
+        })?;
+        let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
+        let mut port_records = vec![None; reference.plan.ports.len()];
+        let mut receiver = NativeLiteralReceiver {
+            assignment: &assignment,
             sites: &sites,
             ordinates: &ordinates,
-            points: &candidate_points,
-            port_records: vec![None; reference.plan.ports.len()],
+            port_records: &mut port_records,
         };
 
         assert!(
-            chart
+            receiver
                 .read_point(
                     0,
                     port_id,
@@ -23257,6 +23483,87 @@ mod canonical_coordinate_tests {
                 )?
                 .is_none(),
             "final Native literal binding must reject a post-Pass endpoint mutation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_assignment_factory_rejects_crosswired_graph_layout_and_images() -> Result<()> {
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("crosswired native receiver", 0)?;
+        let (reference, _) = single_sample_native_reference(&topology, &mut budget, QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        })?;
+        let (other_reference, _) =
+            single_sample_native_reference(&topology, &mut budget, QCandidate {
+                native: XY::new(11.0, 1.0),
+                periods: 0,
+            })?;
+        let foreign_assignment = admit_candidate(
+            &other_reference.graph.common,
+            &other_reference.dimension,
+            other_reference.graph.points.clone(),
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("foreign reference assignment was not admitted".into())
+        })?;
+
+        assert!(
+            NativeCandidateAssignment::issue(&reference, foreign_assignment).is_err(),
+            "a graph, layout, and image from another native reference must not issue a receiver"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_receiver_rejects_missing_producer_literal_rows() -> Result<()> {
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("native literal row binding", 0)?;
+        let assigned = QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        };
+        let (reference, _) = single_sample_native_reference(&topology, &mut budget, assigned)?;
+        let checked = admit_candidate(
+            &reference.graph.common,
+            &reference.dimension,
+            reference.graph.points.clone(),
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("unchanged Native reference assignment was rejected".into())
+        })?;
+        let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
+        let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
+        let ordinates = [NodeOrdinates::default()];
+        let mut port_records = vec![None; reference.plan.ports.len()];
+        let missing_rows = FrozenLiteralBuffers::shapes(
+            crate::geometry::Shape::Empty(
+                crate::geometry::GeometryKind::Point,
+                crate::geometry::CoordinateAxes::XY,
+            ),
+            ShapeLiteralLayout {
+                points:
+                    Vec::<crate::geometry::embedding_completion::LiteralPoint<EmissionPortId>>::new(
+                    ),
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        );
+
+        assert!(
+            assignment
+                .bind_completed_native(
+                    missing_rows,
+                    &sites,
+                    &ordinates,
+                    &mut port_records,
+                    &mut budget,
+                )?
+                .is_none(),
+            "a sealed output that omits the producer's point row must not pass"
         );
         Ok(())
     }
