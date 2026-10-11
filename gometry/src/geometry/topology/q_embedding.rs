@@ -15243,41 +15243,6 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     rejected.extend_from_slice(&junction.dependencies);
                 }
             }
-            for linework in &self.prepared_producer.linework {
-                budget.charge(1)?;
-                if linework.use_kind != SelectedUse::ArealBoundaryLine {
-                    continue;
-                }
-                let chord = self.publication_chords.get(linework.chord).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "assigned areal-line projection references an unknown leaf".into(),
-                    )
-                })?;
-                for &range_index in &linework.source_ranges {
-                    budget.charge(1)?;
-                    let range = chord.source_ranges.get(range_index).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "assigned areal-line projection references an unknown source range"
-                                .into(),
-                        )
-                    })?;
-                    let original_faces = q.span_global_faces.get(range.span).copied().flatten();
-                    let assigned_faces = source_faces
-                        .global
-                        .span_global_faces
-                        .get(range.span)
-                        .copied()
-                        .flatten();
-                    if original_faces.is_some() != assigned_faces.is_some() {
-                        budget.charge(
-                            u64::try_from(linework.dependencies.len())
-                                .map_err(|_| ResourceError::SizeOverflow)?,
-                        )?;
-                        rejected.extend_from_slice(&linework.dependencies);
-                        break;
-                    }
-                }
-            }
         } else {
             for linework in &self.prepared_producer.linework {
                 budget.charge(1)?;
