@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::array::PyGeometryArray;
 #[cfg(test)]
 use crate::broadcast::metrics::ShapeData;
@@ -5,13 +7,14 @@ use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
     PyGeometry, PyResult, Shape, crs,
 };
+use crate::crs::frame::Frame;
 use crate::crs::local::{LocalInputPurpose, PreparedLocalInput, geodesic_by_identity};
 use crate::dispatch::MetricOp;
 use crate::geographic::{ComputedEdgeIntent, GeographicFrame, lonlat as geographic};
 use crate::geometry::storage::packed_columns::PackedColumns;
 use crate::geometry::storage::{PackedStorage, PointRows};
 use crate::geometry::{
-    FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, TopologyDomain,
+    FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, SourceArcContext, TopologyDomain,
     emit_from_original, storage,
 };
 #[cfg(test)]
@@ -39,6 +42,35 @@ fn dispatch_resolved_metric<R>(
     match metric {
         crs::ResolvedMetric::Planar { to_metre } => planar(to_metre.get()),
         crs::ResolvedMetric::Geodesic(metric) => run_geodesic(metric),
+    }
+}
+
+/// Provide the admitted source ellipsoid only if a planar witness requests
+/// eligible interior ordinates.
+pub(crate) fn with_source_arc_context<T>(
+    metric: &crs::ResolvedMetric,
+    frame: &Frame,
+    domain: TopologyDomain,
+    publish: impl FnOnce(&SourceArcContext<'_, '_, crs::GeodesicMetric>) -> T,
+) -> T {
+    match (metric, domain) {
+        (crs::ResolvedMetric::Geodesic(metric), TopologyDomain::Geographic(_)) => {
+            let metric_access = || Ok(metric);
+            let source_context = SourceArcContext::new(domain, Some(&metric_access));
+            publish(&source_context)
+        },
+        (crs::ResolvedMetric::Planar { .. }, TopologyDomain::Geographic(_)) => {
+            let metric = OnceLock::new();
+            let metric_access = || {
+                metric.get_or_try_init(|| {
+                    let model = crs::metric_model(frame.crs_str())?;
+                    crs::GeodesicMetric::from_model(&model)
+                })
+            };
+            let source_context = SourceArcContext::new(domain, Some(&metric_access));
+            publish(&source_context)
+        },
+        (_, TopologyDomain::Cartesian) => publish(&SourceArcContext::cartesian()),
     }
 }
 
@@ -789,13 +821,14 @@ pub(crate) fn metric_nearest_points_resolved(
     a_cache: &FrameDependentCaches,
     b: &PreparedPlan,
     b_cache: &FrameDependentCaches,
+    source_context: &SourceArcContext<'_, '_, crs::GeodesicMetric>,
 ) -> crate::error::Result<Option<(Point, Point)>> {
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(None);
     }
     dispatch_resolved_metric(
         metric,
-        |_| a.nearest_points(b),
+        |_| a.nearest_points_with_source_context(b, source_context),
         |metric| {
             let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
                 &metric.geodesic,
@@ -825,6 +858,7 @@ pub(crate) fn metric_shortest_line_resolved(
     a: &PreparedPlan,
     b: &PreparedPlan,
     domain: TopologyDomain,
+    source_context: &SourceArcContext<'_, '_, crs::GeodesicMetric>,
 ) -> crate::error::Result<Shape> {
     let common = crate::geometry::common_axes(a.shape(), b.shape());
     match metric {
@@ -835,6 +869,7 @@ pub(crate) fn metric_shortest_line_resolved(
                 &FrameDependentCaches::default(),
                 b,
                 &FrameDependentCaches::default(),
+                source_context,
             )?;
             match (pair.as_ref(), domain) {
                 (Some((start, end)), TopologyDomain::Geographic(frame)) => {
@@ -1335,7 +1370,7 @@ mod minimum_clearance_computed_edge_tests {
     use super::{metric_minimum_clearance_line, metric_shortest_line_resolved};
     use crate::geographic::GeographicFrame;
     use crate::geometry::{
-        CoordSeq, LineSeq, MultiPoint, Point, PreparedPlan, Shape, TopologyDomain,
+        CoordSeq, LineSeq, MultiPoint, Point, PreparedPlan, Shape, SourceArcContext, TopologyDomain,
     };
 
     #[test]
@@ -1377,6 +1412,7 @@ mod minimum_clearance_computed_edge_tests {
         let frame = GeographicFrame::crs84();
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
         let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+        let source_context = SourceArcContext::cartesian();
         let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(179.8, 0.0)));
         let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(-179.8, 1.0)));
         let output = metric_shortest_line_resolved(
@@ -1384,6 +1420,7 @@ mod minimum_clearance_computed_edge_tests {
             &left,
             &right,
             TopologyDomain::Geographic(frame),
+            &source_context,
         )
         .unwrap();
         let Shape::LineString(line) = output else {
@@ -1406,6 +1443,7 @@ mod minimum_clearance_computed_edge_tests {
         let frame = GeographicFrame::crs84();
         let model = crate::crs::metric_model(Some("EPSG:4326")).unwrap();
         let metric = crate::crs::ResolvedMetric::from_model(&model).unwrap();
+        let source_context = SourceArcContext::cartesian();
         let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(179.8, 0.0)));
         let line = Shape::LineString(
             LineSeq::try_new(
@@ -1423,6 +1461,7 @@ mod minimum_clearance_computed_edge_tests {
             &left,
             &right,
             TopologyDomain::Geographic(frame),
+            &source_context,
         )
         .unwrap();
         let Shape::LineString(line) = output else {
@@ -1439,5 +1478,92 @@ mod minimum_clearance_computed_edge_tests {
             .unwrap()
             .delta(axis);
         assert!(step.abs() < 1.0, "seam connector step is {step}");
+    }
+}
+
+#[cfg(test)]
+mod planar_nearest_source_ordinate_tests {
+    use super::metric_nearest_points_resolved;
+    use crate::crs::{GeodesicMetric, MetricModel, ResolvedMetric};
+    use crate::geometry::{
+        ChartMetric, FrameDependentCaches, LineSeq, Point, PreparedPlan, Shape, SourceArcContext,
+        TopologyDomain,
+    };
+
+    const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
+
+    fn segmented_length(metric: &GeodesicMetric, end: Point) -> f64 {
+        (0..8)
+            .map(|index| {
+                let start_parameter = index as f64 / 8.0;
+                let end_parameter = (index + 1) as f64 / 8.0;
+                let start = Point::new_raw_xy(end.x * start_parameter, end.y * start_parameter);
+                let end = Point::new_raw_xy(end.x * end_parameter, end.y * end_parameter);
+                let edge = metric.chart_edge(start, end).unwrap();
+                metric.chart_edge_length(&edge).unwrap()
+            })
+            .sum()
+    }
+
+    #[test]
+    fn planar_nearest_witness_keeps_xy_and_resolves_source_root_ordinates() {
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let metric_model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
+        let metric = GeodesicMetric::from_model(&metric_model).unwrap();
+        let frame = metric.frame;
+        let source = Shape::LineString(
+            LineSeq::segment(
+                Point::new_axes(
+                    0.0,
+                    0.0,
+                    crate::geometry::ZOrdinate(Some(10.0)),
+                    crate::geometry::MOrdinate(Some(100.0)),
+                )
+                .unwrap(),
+                Point::new_axes(
+                    120.0,
+                    60.0,
+                    crate::geometry::ZOrdinate(Some(210.0)),
+                    crate::geometry::MOrdinate(Some(500.0)),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        );
+        let query = Shape::Point(
+            Point::new_axes(
+                60.0,
+                31.0,
+                crate::geometry::ZOrdinate(Some(7.0)),
+                crate::geometry::MOrdinate(Some(9.0)),
+            )
+            .unwrap(),
+        );
+        let planar = ResolvedMetric::from_model(&MetricModel::COORDINATE).unwrap();
+        let source_plan = PreparedPlan::new(source);
+        let query_plan = PreparedPlan::new(query);
+        let metric_access = || Ok(&metric);
+        let source_context =
+            SourceArcContext::new(TopologyDomain::Geographic(frame), Some(&metric_access));
+
+        let (left, right) = metric_nearest_points_resolved(
+            &planar,
+            &source_plan,
+            &FrameDependentCaches::default(),
+            &query_plan,
+            &FrameDependentCaches::default(),
+            &source_context,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!((left.x, left.y), (60.4, 30.2));
+        assert_eq!((right.x, right.y), (60.0, 31.0));
+        let fraction = segmented_length(&metric, Point::new_raw_xy(left.x, left.y))
+            / segmented_length(&metric, Point::new_raw_xy(120.0, 60.0));
+        assert!((left.z().unwrap() - (10.0 + 200.0 * fraction)).abs() < 1.0e-9);
+        assert!((left.m().unwrap() - (100.0 + 400.0 * fraction)).abs() < 1.0e-9);
+        assert_eq!(right.z(), Some(7.0));
+        assert_eq!(right.m(), Some(9.0));
     }
 }

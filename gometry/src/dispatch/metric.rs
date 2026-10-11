@@ -329,6 +329,32 @@ pub(crate) struct CachelessRowContext<'a> {
     pub lane: Lane,
 }
 
+impl CachelessRowContext<'_> {
+    pub(crate) fn with_source_arc_context<T>(
+        &self,
+        publish: impl FnOnce(
+            &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
+        ) -> crate::error::Result<T>,
+    ) -> crate::error::Result<T> {
+        if !self.domain.is_geographic() {
+            return publish(&crate::geometry::SourceArcContext::cartesian());
+        }
+        let metric_access = || {
+            self.metric
+                .source_chart_metric(self.frame.crs_str())?
+                .ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic source-ordinate samples require the operation's CRS metric",
+                    )
+                    .into()
+                })
+        };
+        let source_context =
+            crate::geometry::SourceArcContext::new(self.domain, Some(&metric_access));
+        publish(&source_context)
+    }
+}
+
 pub(crate) struct LinearReferenceRow<'a> {
     pub lane: Lane,
     pub metric: &'a ResolvedMetric,

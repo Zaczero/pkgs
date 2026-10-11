@@ -41,6 +41,6 @@ pub(crate) use pair::{
     metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points_resolved,
     metric_shortest_line_resolved, pair_distance_geodesic, pair_distance_planar,
     pair_dwithin_geodesic, pair_dwithin_planar, resolve_metric, resolve_metric_3d,
-    resolve_metric_at, same_storage_similarity_metric_zeros,
+    resolve_metric_at, same_storage_similarity_metric_zeros, with_source_arc_context,
 };
 pub(crate) use similarity::{SimilarityOp, array_crs_frechet_metric_per_densify};

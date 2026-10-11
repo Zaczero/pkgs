@@ -40,6 +40,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
     array: &PyGeometryArray,
     fixed_is_left: bool,
     model: crate::crs::MetricModel,
+    domain: crate::geometry::TopologyDomain,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
     let fixed_plan = fixed.prepared_plan();
     let fixed_cache = fixed.frame_cache();
@@ -95,38 +96,49 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
         return nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned());
     }
     let resolved = crate::crs::ResolvedMetric::from_model(&model)?;
+    let source_frame = fixed.frame.clone();
     let pairs = py
         .detach(move || {
-            let mut rows = array_owned.row_operation();
-            rows.rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
-                .map(|logical_row| {
-                    let ArrayRow::Present(row) = logical_row else {
-                        return Ok((None, CoordinateAxes::XY));
-                    };
-                    let element = rows.prepared(row)?;
-                    let common = crate::geometry::common_axes(fixed_plan.shape(), element.shape());
-                    let fixed_cache = crate::geometry::FrameDependentCaches::default();
-                    let element_cache = crate::geometry::FrameDependentCaches::default();
-                    if fixed_is_left {
-                        metric_nearest_points_resolved(
-                            &resolved,
-                            &fixed_plan,
-                            &fixed_cache,
-                            &element,
-                            &element_cache,
-                        )
-                    } else {
-                        metric_nearest_points_resolved(
-                            &resolved,
-                            &element,
-                            &element_cache,
-                            &fixed_plan,
-                            &fixed_cache,
-                        )
-                    }
-                    .map(|pair| (pair, common))
-                })
-                .collect_rows()
+            crate::broadcast::with_source_arc_context(
+                &resolved,
+                &source_frame,
+                domain,
+                |source_context| {
+                    let mut rows = array_owned.row_operation();
+                    rows.rows_with_missing(|| (None::<(Point, Point)>, CoordinateAxes::XY))
+                        .map(|logical_row| {
+                            let ArrayRow::Present(row) = logical_row else {
+                                return Ok((None, CoordinateAxes::XY));
+                            };
+                            let element = rows.prepared(row)?;
+                            let common =
+                                crate::geometry::common_axes(fixed_plan.shape(), element.shape());
+                            let fixed_cache = crate::geometry::FrameDependentCaches::default();
+                            let element_cache = crate::geometry::FrameDependentCaches::default();
+                            if fixed_is_left {
+                                metric_nearest_points_resolved(
+                                    &resolved,
+                                    &fixed_plan,
+                                    &fixed_cache,
+                                    &element,
+                                    &element_cache,
+                                    source_context,
+                                )
+                            } else {
+                                metric_nearest_points_resolved(
+                                    &resolved,
+                                    &element,
+                                    &element_cache,
+                                    &fixed_plan,
+                                    &fixed_cache,
+                                    source_context,
+                                )
+                            }
+                            .map(|pair| (pair, common))
+                        })
+                        .collect_rows()
+                },
+            )
         })
         .map_err(crate::broadcast::rows_err)?;
     nearest_point_columns_masked(pairs, array.frame.clone(), array.missing().cloned())

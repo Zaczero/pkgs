@@ -176,7 +176,7 @@ pub(crate) fn unary_convex_hull(
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
         && PointSelectionChart::accepts_point_set(shape)
-        && let Some(hull) = with_native_source_context(ctx, |source_context| {
+        && let Some(hull) = ctx.with_source_arc_context(|source_context| {
             point_set_convex_hull_shape(shape, frame, data.bounds(), source_context)
         })?
     {
@@ -461,7 +461,7 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
         && PointSelectionChart::accepts_point_set(shape)
-        && let Some(rectangle) = with_native_source_context(ctx, |source_context| {
+        && let Some(rectangle) = ctx.with_source_arc_context(|source_context| {
             point_set_minimum_rotated_rectangle_shape(shape, frame, data.bounds(), source_context)
         })?
     {
@@ -481,7 +481,7 @@ fn publish_raw_computed_if_geographic(
 ) -> Result<Shape> {
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(shape),
-        TopologyDomain::Geographic(frame) => with_native_source_context(ctx, |source_context| {
+        TopologyDomain::Geographic(frame) => ctx.with_source_arc_context(|source_context| {
             crate::geometry::publish_raw_computed_shape_with_context(
                 &shape,
                 frame,
@@ -490,26 +490,6 @@ fn publish_raw_computed_if_geographic(
             )
         }),
     }
-}
-
-fn with_native_source_context<T>(
-    ctx: &CachelessRowContext<'_>,
-    publish: impl FnOnce(
-        &crate::geometry::SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
-    ) -> Result<T>,
-) -> Result<T> {
-    let metric_access = || {
-        ctx.metric
-            .source_chart_metric(ctx.frame.crs_str())?
-            .ok_or_else(|| {
-                crate::crs::CrsError::invalid(
-                    "geographic computed-edge source ordinates require the operation's CRS metric",
-                )
-                .into()
-            })
-    };
-    let source_context = crate::geometry::SourceArcContext::new(ctx.domain, Some(&metric_access));
-    publish(&source_context)
 }
 
 fn publish_computed_point_or_raw_if_geographic(

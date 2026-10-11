@@ -33,8 +33,8 @@ pub(crate) use aabb::{
 #[cfg(test)]
 pub(crate) use engine::NEAREST_WORK;
 pub(crate) use engine::{
-    ClearanceFacetBvh, Facet, FacetBvh, NearestCandidate, NearestTarget, PreparedLinework,
-    facet_point_distance_columns, update_nearest_candidate,
+    ClearanceFacetBvh, Facet, FacetBvh, NearestCandidate, NearestSourceProjection, NearestTarget,
+    PreparedLinework, facet_point_distance_columns, update_nearest_candidate,
 };
 pub(crate) use simd::simd_point_facet_distance_squared;
 

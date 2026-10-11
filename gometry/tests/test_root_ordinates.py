@@ -57,6 +57,22 @@ def _assert_root_sample(
     assert isclose(point[3], expected_m, rel_tol=0.0, abs_tol=2e-7)
 
 
+def _assert_source_point_ordinates(
+    point: gm.Point,
+    *,
+    start: tuple[float, float, float, float],
+    end: tuple[float, float, float, float],
+    crs: str,
+) -> None:
+    fraction = _chart_length(start[:2], (point.x, point.y), 1.0, crs) / _chart_length(
+        start[:2], end[:2], 1.0, crs
+    )
+    expected_z = start[2] + (end[2] - start[2]) * fraction
+    expected_m = start[3] + (end[3] - start[3]) * fraction
+    assert isclose(point.z, expected_z, rel_tol=0.0, abs_tol=2e-8)
+    assert isclose(point.m, expected_m, rel_tol=0.0, abs_tol=2e-7)
+
+
 def test_raw_hull_and_degenerate_rectangle_samples_use_the_producer_root() -> None:
     for crs in CRS_CASES:
         source = gm.from_wkt(
@@ -153,3 +169,48 @@ def test_point_chart_hull_closing_chord_uses_the_retained_long_root() -> None:
                 parameter=0.5,
                 crs=crs,
             )
+
+
+def test_planar_nearest_points_keep_the_selected_xy_and_resolve_source_roots() -> None:
+    start = (0.0, 0.0, 10.0, 100.0)
+    end = (120.0, 60.0, 210.0, 500.0)
+
+    for crs in CRS_CASES:
+        source = gm.from_wkt(
+            'LINESTRING ZM (0 0 10 100, 120 60 210 500)',
+            crs=crs,
+        )
+        query = gm.from_wkt('POINT ZM (60 31 7 9)', crs=crs)
+        planar_left, planar_right = gm.nearest_points(source, query, unit='planar')
+
+        assert isclose(planar_left.x, 60.4, rel_tol=0.0, abs_tol=1e-13)
+        assert isclose(planar_left.y, 30.2, rel_tol=0.0, abs_tol=1e-13)
+        _assert_source_point_ordinates(planar_left, start=start, end=end, crs=crs)
+        assert (planar_right.x, planar_right.y, planar_right.z, planar_right.m) == (
+            60.0,
+            31.0,
+            7.0,
+            9.0,
+        )
+
+        geodesic_left, _ = gm.nearest_points(source, query)
+        assert (geodesic_left.x, geodesic_left.y) != (planar_left.x, planar_left.y)
+        _assert_source_point_ordinates(geodesic_left, start=start, end=end, crs=crs)
+
+        source_rows = gm.GeometryArray([source, None, source, source], crs=crs)[
+            [3, 1, 0]
+        ]
+        query_rows = gm.GeometryArray([query, query, query], crs=crs)
+        fixed_left, _ = gm.nearest_points(source_rows, query, unit='planar')
+        _, fixed_right = gm.nearest_points(query, source_rows, unit='planar')
+        paired_left, _ = gm.nearest_points(source_rows, query_rows, unit='planar')
+
+        for result in (fixed_left, fixed_right, paired_left):
+            assert result[1] is None
+            for index in (0, 2):
+                _assert_source_point_ordinates(
+                    result[index],
+                    start=start,
+                    end=end,
+                    crs=crs,
+                )
