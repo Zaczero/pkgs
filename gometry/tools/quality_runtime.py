@@ -92,6 +92,17 @@ def _quality_fixed_input_paths(root: Path) -> tuple[tuple[str, Path], ...]:
 
 
 def read_quality_receipt(root: Path) -> dict[str, Any]:
+    """Read a receipt that is well-formed and was built by the pinned Maturin."""
+    return _load_quality_receipt(root, current_toolchain=True)
+
+
+def _load_quality_receipt(root: Path, *, current_toolchain: bool) -> dict[str, Any]:
+    """Validate a receipt's shape; require the pinned Maturin only when asked.
+
+    Preparing a runtime reads the previous receipt to decide whether it can be
+    reused. A receipt from an older Maturin is stale, not malformed, and must
+    lead to a rebuild instead of a crash.
+    """
     path = quality_receipt_path(root)
     try:
         receipt = json.loads(path.read_text(encoding='utf-8'))
@@ -313,7 +324,12 @@ def read_quality_receipt(root: Path) -> dict[str, Any]:
         or not all(isinstance(argument, str) and argument for argument in command)
     ):
         raise AssertionError(f'quality runtime build command is malformed: {path}')
-    if build.get('maturin_version') != MATURIN_VERSION:
+    maturin_version = build.get('maturin_version')
+    if (
+        not isinstance(maturin_version, str)
+        or not maturin_version
+        or (current_toolchain and maturin_version != MATURIN_VERSION)
+    ):
         raise AssertionError(f'quality runtime Maturin version is malformed: {path}')
     wheel = receipt['wheel']
     if not isinstance(wheel, dict) or set(wheel) != {
@@ -333,7 +349,7 @@ def read_quality_receipt(root: Path) -> dict[str, Any]:
         or not isinstance(wheel.get('filename'), str)
         or Path(wheel['filename']).name != wheel['filename']
         or not wheel['filename'].endswith('.whl')
-        or wheel.get('generator') != f'maturin ({MATURIN_VERSION})'
+        or wheel.get('generator') != f'maturin ({maturin_version})'
         or not isinstance(wheel.get('extension_member'), str)
         or not wheel['extension_member'].startswith('gometry/')
         or '..' in Path(wheel['extension_member']).parts
@@ -404,11 +420,34 @@ def quality_settings(root: Path, environment: Mapping[str, str]) -> dict[str, An
     for path in config_files:
         logical = f'cargo-config/{path.resolve().as_posix().lstrip("/")}'
         files[logical] = sha256_file(path)
+    for name in (
+        'PYO3_CONFIG_FILE',
+        'CMAKE_TOOLCHAIN_FILE',
+        *sorted(
+            name for name in environment if name.startswith('CMAKE_TOOLCHAIN_FILE_')
+        ),
+    ):
+        selected = environment.get(name)
+        if not selected:
+            continue
+        path = Path(selected)
+        if not path.is_absolute():
+            path = root / path
+        if not path.is_file():
+            raise AssertionError(f'quality build configuration file is missing: {path}')
+        logical = f'build-config/{name}/{path.resolve().as_posix().lstrip("/")}'
+        files[logical] = sha256_file(path)
     variables = {
         'MATURIN_PEP517_ARGS',
         'CARGO_BUILD_TARGET',
+        'CARGO_BUILD_RUSTC',
+        'CARGO_BUILD_RUSTC_WRAPPER',
+        'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER',
         'RUSTFLAGS',
         'CARGO_ENCODED_RUSTFLAGS',
+        'RUSTC',
+        'RUSTC_WRAPPER',
+        'RUSTC_WORKSPACE_WRAPPER',
         'RUSTUP_TOOLCHAIN',
         'CARGO_HOME',
         'SOURCE_DATE_EPOCH',
@@ -423,11 +462,18 @@ def quality_settings(root: Path, environment: Mapping[str, str]) -> dict[str, An
         'CPPFLAGS',
         'TARGET_CFLAGS',
         'TARGET_CXXFLAGS',
+        'TARGET_CC',
+        'TARGET_CXX',
+        'TARGET_AR',
         'HOST_CFLAGS',
         'HOST_CXXFLAGS',
+        'HOST_CC',
+        'HOST_CXX',
+        'HOST_AR',
         'CC',
         'CXX',
         'AR',
+        'CROSS_COMPILE',
         'CMAKE_ARGS',
         'CMAKE_TOOLCHAIN_FILE',
         'CMAKE_C_FLAGS',
@@ -447,9 +493,16 @@ def quality_settings(root: Path, environment: Mapping[str, str]) -> dict[str, An
             'CC_',
             'CXX_',
             'AR_',
+            'CMAKE_TOOLCHAIN_FILE_',
             'NIX_DONT_SET_RPATH_',
             'CARGO_PROFILE_',
         ))
+    )
+    variables.update(
+        name
+        for name in environment
+        if name.startswith('CARGO_TARGET_')
+        and name.rsplit('_', 1)[-1] in {'LINKER', 'RUSTFLAGS'}
     )
     ordered_variables = sorted(variables)
     environment_values = {name: environment.get(name) for name in ordered_variables}
@@ -478,9 +531,10 @@ def validate_quality_producer_inputs(
     ):
         raise TypeError('quality receipt has no producer input identity')
     build_cargo = build.get('cargo')
-    if not isinstance(build_cargo, dict) or source.get('cargo') != build_cargo.get(
-        'dependencies'
-    ):
+    dependencies = (
+        build_cargo.get('dependencies') if isinstance(build_cargo, dict) else None
+    )
+    if not isinstance(dependencies, dict) or source.get('cargo') != dependencies:
         raise AssertionError(
             'quality receipt source and build dependency identities disagree'
         )
@@ -539,21 +593,10 @@ def validate_quality_producer_inputs(
     if quality_settings(root, settings_environment) != build_settings:
         raise QualityPreparationRequired('quality runtime build settings are stale')
 
-    compiler = _tool_output(['rustc', '-vV'], cwd=root)
-    if compiler != build.get('compiler', {}).get('rustc_vv'):
-        raise QualityPreparationRequired('quality runtime compiler receipt is stale')
-    cargo_version = _tool_output(['cargo', '--version'], cwd=root)
-    if cargo_version != build_cargo.get('version'):
-        raise QualityPreparationRequired('quality runtime Cargo receipt is stale')
-    metadata = cargo_metadata(root.parent, locked=True)
-    dependencies = {
-        'lock_sha256': sha256_file(root.parent / 'Cargo.lock'),
-        'required_sources': required_source_records(metadata, root=root.parent),
-    }
-    if dependencies != build_cargo.get('dependencies'):
-        raise QualityPreparationRequired(
-            'quality runtime Cargo dependency receipt is stale'
-        )
+    # The receipt records Cargo's producer-time resolution; admission binds it
+    # to the current manifests, lockfile and build settings without invoking Cargo.
+    if dependencies.get('lock_sha256') != sha256_file(root.parent / 'Cargo.lock'):
+        raise QualityPreparationRequired('quality runtime Cargo.lock input is stale')
 
 
 def _materialize_quality_package(
@@ -757,7 +800,7 @@ def prepare_quality_runtime(root: Path, *, scratch: Path) -> dict[str, Any]:
     receipt_path = quality_receipt_path(root)
     current_members = python_members
     if receipt_path.is_file():
-        previous = read_quality_receipt(root)
+        previous = _load_quality_receipt(root, current_toolchain=False)
         previous_build = previous['build']
         previous_source = previous['source']
         previous_wheel = previous['wheel']

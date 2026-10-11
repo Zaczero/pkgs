@@ -97,6 +97,10 @@ TEXT_SIGNATURE_DEFAULT_ALIASES = {
         value='overlap',
         reason='The CellRule variant is exposed as its public token.',
     ),
+    'ConfigureArgument::Omitted': TextSignatureDefault(
+        value=Ellipsis,
+        reason='The omitted-argument sentinel is presented as `...`; explicit None remains distinct.',
+    ),
     'DEFAULT_MITER_LIMIT': TextSignatureDefault(
         value=5.0,
         reason='The named miter-limit constant is exposed as the numeric default.',

@@ -2,6 +2,11 @@
 > `get_coordinates(..., return_index=True)` entry point at commit `b8e785c8`.
 > It is retained as evidence for that release and does not measure the current
 > `.coords` plus NumPy matrix/row-index path. No replacement timing is claimed.
+>
+> Historical prepared-predicate measurements: the prepared XY row and
+> certified batch-boundary curve below measured `gometry.contains_xy` at
+> commit `b8e785c8`. They do not measure the current
+> `gometry.contains(..., x=..., y=...)` wrapper; no replacement timing is claimed.
 
 ## Run environment
 
@@ -168,7 +173,7 @@ Dimension `holes` in `holes`; each point is an independent paired workload.
 
 Endpoint growth (250 → 4k): gometry median 16.598x, comparator median 16.836x, gometry/work 1.037x, comparator/work 1.052x.
 
-#### contains_xy: certified batch boundary
+#### contains coordinate probes: certified batch boundary
 
 Dimension `probe-count` in `probes`; each point is an independent paired workload.
 

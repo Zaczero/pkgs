@@ -267,7 +267,9 @@ def test_ordinary_geographic_single_cut_subdivide_carries_source_arclength_zm() 
 
     groups = gm.GeometryArray([polygon, None, polygon]).subdivide(max_vertices=8)
     assert len(groups) == 3
-    assert [len(groups[index]) for index in range(3)] == [2, 0, 2]
+    assert [
+        None if groups[index] is None else len(groups[index]) for index in range(3)
+    ] == [2, None, 2]
     for index in (0, 2):
         assert all(part.coordinate_axes == 'XYZM' for part in groups[index])
         coordinates = np.asarray(groups[index].coords, dtype=np.float64).tolist()
@@ -457,7 +459,9 @@ def test_ordinary_geographic_nullable_polygonize_array_uses_source_arclength() -
     groups = gm.GeometryArray([linework, None, linework]).polygonize()
 
     assert len(groups) == 3
-    assert [len(groups[index]) for index in range(3)] == [2, 0, 2]
+    assert [
+        None if groups[index] is None else len(groups[index]) for index in range(3)
+    ] == [2, None, 2]
     expected_z, _ = _source_zm_at_latitude(-5.0)
     for index in (0, 2):
         polygons = groups[index]
@@ -721,8 +725,8 @@ _URUGUAY_CLIP = (
 
 
 def test_dissolve_keeps_sliver_faces_without_representable_interior() -> None:
-    argentina = gm.from_wkt(_ARGENTINA_CLIP).set_crs(4326)
-    uruguay = gm.from_wkt(_URUGUAY_CLIP).set_crs(4326)
+    argentina = gm.from_wkt(_ARGENTINA_CLIP).with_crs(4326)
+    uruguay = gm.from_wkt(_URUGUAY_CLIP).with_crs(4326)
     # A disjoint seam member needs membership probes for faces it does not bound.
     seam = _thin_seam_polygon(179.0, -179.0, 1.0)
 

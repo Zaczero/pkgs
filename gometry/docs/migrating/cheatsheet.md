@@ -54,7 +54,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | Shapely | gometry |
 |---|---|
 | `a.contains(b)` / `shapely.contains(a, b)` | [`gm.contains(a, b)`][gometry.contains] |
-| `a.contains_properly(b)` / [`gm.contains_properly(prep, b)`][gometry.contains_properly] | `gm.contains_properly(a, b)` (also prepared, and as an index/join predicate) |
+| `shapely.contains_properly(a, b)` | [`gm.contains_properly(a, b)`][gometry.contains_properly] (also `gm.contains_properly(prep, b)` for prepared geometries, and as an index/join predicate) |
 | `a.within(b)` / `shapely.within(a, b)` | [`gm.within(a, b)`][gometry.within] |
 | `a.intersects(b)` / `shapely.intersects(a, b)` | [`gm.intersects(a, b)`][gometry.intersects] |
 | `a.covers(b)` / `a.covered_by(b)` | [`gm.covers(a, b)`][gometry.covers] / [`gm.covered_by(a, b)`][gometry.covered_by] |
@@ -63,8 +63,8 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `a.equals(b)` | [`gm.equals(a, b)`][gometry.equals] |
 | normalized equality | [`gm.equals_exact(a.normalize(), b.normalize())`][gometry.equals_exact] |
 | `a.relate(b)` / `a.relate_pattern(b, p)` | [`gm.relate(a, b)`][gometry.relate] / [`gm.relate_pattern(a, b, p)`][gometry.relate_pattern] |
-| `shapely.contains_xy(g, x, y)` | [`gm.contains_xy(g, x, y)`][gometry.contains_xy] |
-| `shapely.intersects_xy(g, x, y)` | [`gm.intersects_xy(g, x, y)`][gometry.intersects_xy] |
+| `shapely.contains_xy(g, x, y)` | [`gm.contains(g, x=x, y=y)`][gometry.contains] |
+| `shapely.intersects_xy(g, x, y)` | [`gm.intersects(g, x=x, y=y)`][gometry.intersects] |
 | `a.dwithin(b, d)` | [`gm.dwithin(a, b, distance, unit=…)`][gometry.dwithin] / [`idx.query(..., predicate="dwithin", distance=..., unit=...)`][gometry.SpatialIndex.query] |
 
 ### Measurement
@@ -134,12 +134,12 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `geom.is_valid` | [`geom.is_valid`][gometry.Geometry.is_valid] | Unchanged; [`geom.validate()`][gometry.Geometry.validate] adds the reason/location. |
 | `explain_validity(geom)` | `report.reason` / `report.location` | |
 | `make_valid(geom)` | [`geom.repair()`][gometry.Geometry.repair] | Canonical spelling. |
-| `set_precision(g, grid_size)` | [`geom.snap_to_grid(grid_size=..., repair=...)`][gometry.Geometry.snap_to_grid] | Closest fixed-grid snap. `grid_size` must be positive and finite; unlike `coverage_clean(grid_size=0)`, zero is invalid. Optional `repair=`. No JTS snap-rounding precision model in v1. |
+| `set_precision(g, grid_size)` | [`geom.snap_to_grid(grid_size=..., repair=...)`][gometry.Geometry.snap_to_grid] | Closest fixed-grid snap. `grid_size` must be positive and finite; unlike `coverage_clean(grid_size=0)`, zero is invalid. Optional `repair=`. JTS-style snap-rounding precision models are not supported. |
 | — | [`geom.quantize(precision)`][gometry.Geometry.quantize] | Decimal-place rounding of coordinates (different model from `set_precision`). |
 | `require(...)` at boundary | [`gm.require(obj, crs=..., axes=...)`][gometry.require] | Storage contract. |
 | `geom.is_empty` / `is_ring` / `is_simple` / `is_closed` | [`geom.is_empty`][gometry.Geometry.is_empty] / [`geom.is_ring`][gometry.Geometry.is_ring] / [`geom.is_simple`][gometry.Geometry.is_simple] / [`geom.is_closed`][gometry.Geometry.is_closed] | |
 | `is_ccw(ring)` | `g.is_ccw` / [`geom.is_ccw`][gometry.Geometry.is_ccw] | Closed `LineString` winding. |
-| `force_2d(g)` / `force_3d(g, z)` | `g.force_2d()` / `g.force_3d(z)` | `force_3d` fills only missing Z. Set values everywhere with `g.set_z(z)` / `g.set_m(m)`; `None` clears an axis. |
+| `force_2d(g)` / `force_3d(g, z)` | `g.force_2d()` / `g.force_3d(z)` | `force_3d` fills only missing Z. Replace values everywhere with `g.with_coordinates(z=z, m=m)`; `None` clears an axis. |
 
 ### IO
 
@@ -149,15 +149,15 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | EWKB | `gm.from_wkb(b)` / `g.to_wkb(include_srid=True)` |
 | [WKT](https://www.ogc.org/standard/sfa/) `from_wkt(s)` / `to_wkt(g)` | [`gm.from_wkt(s)`][gometry.from_wkt] / `g.to_wkt()` |
 | [GeoJSON](https://datatracker.ietf.org/doc/html/rfc7946) | `gm.from_geojson(obj)` / `g.to_geojson()` |
-| GeoJSON features w/ attributes | [`gm.from_features(fc)`][gometry.from_features] → validated [`Features`][gometry.Features] record; inverse [`gm.to_feature_collection(geoms, properties=..., ids=...)`][gometry.to_feature_collection] |
+| GeoJSON features w/ attributes | [`gm.from_geojson(fc, features=True)`][gometry.from_geojson] → validated [`Features`][gometry.Features] record; serialize it with [`Features.__geo_interface__`](../ecosystem/text-formats.md#features__geo_interface__), or use [`gm.to_feature_collection(geoms, properties=..., ids=...)`][gometry.to_feature_collection] for separate columns |
 | `geom.__geo_interface__` | [`geom.__geo_interface__`](../ecosystem/text-formats.md#__geo_interface__) |
 | [GeoArrow](https://geoarrow.org/) | [`gm.from_arrow(obj)`][gometry.from_arrow] / [`geom.to_arrow()`][gometry.Geometry.to_arrow] |
 | `shapely.to_wkb(Point(...))` / `shapely.to_wkb(box(...))` | [`gm.Point(x, y).to_wkb(precision=...)`][gometry.Geometry.to_wkb] / `gm.box(...).to_wkb(include_srid=..., precision=...)` |
 | `shapely.to_wkt(Point(...))` / `shapely.to_wkt(box(...))` | [`gm.Point(x, y).to_wkt(precision=...)`][gometry.Geometry.to_wkt] / `gm.box(...).to_wkt(precision=...)` |
 
 Shapely's `to_wkt(output_dimension=2)` becomes `geom.force_2d().to_wkt()` in
-gometry. Remove geometry axes before writing with `force_2d()`, `set_z(None)`,
-or `set_m(None)`; use `coords.select(...)` to choose a coordinate-view layout
+gometry. Remove geometry axes before writing with `force_2d()`,
+`with_coordinates(z=None)`, or `with_coordinates(m=None)`; use `coords.select(...)` to choose a coordinate-view layout
 for coordinate exports without changing the geometry.
 
 ### Indexing & prepared
@@ -176,7 +176,7 @@ for coordinate exports without changing the geometry.
 | pyproj | gometry | Notes |
 |---|---|---|
 | `CRS.from_epsg(4326)` | [`gm.CRS(4326)`][gometry.CRS] | CRS object; [`geom.crs`][gometry.Geometry.crs] returns one. |
-| `gdf.set_crs(c)` | [`geom.set_crs(c)`][gometry.Geometry.set_crs] | |
+| `gdf.set_crs(c)` | [`geom.with_crs(c)`][gometry.Geometry.with_crs] | |
 | `gdf.to_crs(c)` | [`geom.to_crs(c)`][gometry.Geometry.to_crs] | |
 | `Transformer.from_crs(a, b)` + `.transform(x, y)` | [`gm.crs_transform(a, b, x, y, z=..., t=...)`][gometry.crs_transform] | |
 | `transformer.transform_bounds(...)` | [`gm.crs_transform_bounds(...)`][gometry.crs_transform_bounds] | |
@@ -186,12 +186,12 @@ for coordinate exports without changing the geometry.
 | `crs.is_geographic` / `is_projected` | [`gm.CRS(c).is_geographic`][gometry.CRS.is_geographic] / `.is_projected` | `is_*` property family. |
 | `crs.axis_info` | [`gm.CRS(c).axis_order`][gometry.CRS.axis_order] | Diagnostic only; boundary stays X/Y. |
 | `crs.to_authority()` / `to_epsg()` | [`gm.CRS(c).to_authority()`][gometry.CRS.to_authority] / `.to_epsg()` | |
-| `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()` / `.to_projjson_dict()` | |
-| `crs == other` | `gm.CRS(c) == other` | `CRS` compares by code/string. |
+| `crs.to_wkt()` / `to_proj4()` / `to_json()` | [`gm.CRS(c).to_wkt()`][gometry.CRS.to_wkt] / `.to_proj()` / `.to_projjson()`; pass `as_dict=True` for a mapping | |
+| `crs == other` | `gm.CRS(c) == gm.CRS(other)` | Structural equality compares stored definitions; use `same_as` for operational equivalence. |
 | `CRS.from_user_input(...)` normalize | [`gm.CRS(c).definition`][gometry.CRS.definition] / [`gm.CRS(c).identify()`][gometry.CRS.identify] | `definition` retains normalized authored text; `identify()` supplies authority metadata. |
 | `crs.to_2d()` / `to_3d()` | [`gm.CRS(c).to_2d()`][gometry.CRS.to_2d] / `.to_3d()` | Return a `CRS`. |
 | unit / factors | [`gm.crs_unit(c)`][gometry.crs_unit] / [`gm.crs_units(c)`][gometry.crs_units] / [`gm.CRS(c).factors(lon, lat)`][gometry.CRS.factors] | |
-| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_search(...)`][gometry.crs_search] / [`gm.crs_catalog(...)`][gometry.crs_catalog] | Global `crs_*` functions (not `CRS` classmethods). There is no `gm.crs_list`. |
+| database / search | [`gm.crs_authorities()`][gometry.crs_authorities] / [`gm.crs_codes(...)`][gometry.crs_codes] / [`gm.crs_catalog(name=...)`][gometry.crs_catalog] | Global `crs_*` functions (not `CRS` classmethods). There is no `gm.crs_list`. |
 | catalogs | [`gm.crs_ellipsoids()`][gometry.crs_ellipsoids] / [`gm.crs_prime_meridians()`][gometry.crs_prime_meridians] / [`gm.crs_proj_operations()`][gometry.crs_proj_operations] / [`gm.crs_utm_zones(...)`][gometry.crs_utm_zones] / [`gm.crs_celestial_bodies()`][gometry.crs_celestial_bodies] | |
 | operations | [`gm.CRS(a).operation(b)`][gometry.CRS.operation] / `.operations(b)` / `.operation(b, at=(x, y))` / [`gm.crs_apply(...)`][gometry.crs_apply] | |
 | grid lookup | [`gm.crs_grid(...)`][gometry.crs_grid] | Local grid metadata and availability. |
@@ -226,7 +226,7 @@ for coordinate exports without changing the geometry.
 |---|---|---|
 | `CellId.from_lat_lng(...).parent(level)` | [`gm.S2Cell(point, level=...)`][gometry.S2Cell] | |
 | `Cell(cell_id)` boundary | [`cell.polygon`][gometry.Cell.polygon] / [`cells.polygon`][gometry.CellArray.polygon] | |
-| `RegionCoverer().get_covering(region)` | [`gm.s2_cover_adaptive(geom, ...)`][gometry.s2_cover_adaptive] | `target_cells` guides refinement; `max_cells` is the hard output cap. |
+| `RegionCoverer().get_covering(region)` | [`gm.s2_cover(geom, ...)`][gometry.s2_cover] | `target_cells` guides refinement; `max_cells` is the hard output cap. |
 | `RegionCoverer(min_level=L, max_level=L).get_covering(region)` | [`gm.s2_cover(geom, level=L, max_cells=...)`][gometry.s2_cover] | The requested level is never coarsened. |
 | `CellUnion` set ops | [`gm.s2_union(a, b)`][gometry.s2_union] / [`gm.s2_intersection(a, b)`][gometry.s2_intersection] / [`gm.s2_difference(a, b)`][gometry.s2_difference] | |
 | `CellUnion.normalize()` / expand | `cells.compact()` / `cells.uncompact(level)` | |

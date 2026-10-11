@@ -80,7 +80,7 @@ def _wheel(
         'fixture-1.dist-info/METADATA': b'Name: gometry\nVersion: 1.0\n',
         'fixture-1.dist-info/WHEEL': (
             b'Wheel-Version: 1.0\n'
-            b'Generator: maturin (1.14.1)\n'
+            b'Generator: maturin (1.15.0)\n'
             b'Tag: cp314-cp314-manylinux_2_17_x86_64\n'
         ),
     }
@@ -114,7 +114,7 @@ def _quality_wheel(
         f'{dist_info}/METADATA': (f'Name: gometry\nVersion: {version}\n'.encode()),
         f'{dist_info}/WHEEL': (
             b'Wheel-Version: 1.0\n'
-            b'Generator: maturin (1.14.1)\n'
+            b'Generator: maturin (1.15.0)\n'
             b'Tag: cp314-cp314-manylinux_2_17_x86_64\n'
         ),
         **{
@@ -146,6 +146,30 @@ def _source_root(tmp_path: Path) -> Path:
     (root / 'native' / 'build.c').write_text(
         'int value(void) { return 1; }\n', encoding='utf-8'
     )
+    return root
+
+
+def _quality_settings_root(tmp_path: Path) -> Path:
+    workspace = tmp_path / 'settings-workspace'
+    root = workspace / 'gometry'
+    files = {
+        workspace / 'Cargo.toml': '[workspace]\n',
+        workspace / 'Cargo.lock': 'version = 4\n',
+        workspace / '.cargo' / 'config.toml': '[build]\n',
+        root / 'Cargo.toml': '[package]\nname = "gometry"\n',
+        root / 'pyproject.toml': '[project]\nname = "gometry"\n',
+        root / 'rust-toolchain.toml': '[toolchain]\nchannel = "nightly"\n',
+        root / 'native' / 'proj-sys' / 'PROJSRC' / 'proj-9.6.2.tar.gz': (
+            'fixture archive'
+        ),
+        root / 'README.md': 'readme\n',
+        root / 'LICENSE-APACHE.md': 'apache license\n',
+        root / 'LICENSE-MIT.md': 'mit license\n',
+        root / 'LICENSE-THIRD-PARTY.md': 'third-party notices\n',
+    }
+    for path, contents in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding='utf-8')
     return root
 
 
@@ -377,7 +401,7 @@ def test_stage_sdist_keeps_initial_readme_commit_eligibility(
                 )
             archive.add(
                 root / 'python' / 'gometry',
-                arcname=f'{package_root}/gometry/python/gometry',
+                arcname=f'{package_root}/python/gometry',
             )
 
     monkeypatch.setattr(source_artifact, '_run_maturin_sdist', run_maturin_sdist)
@@ -422,6 +446,28 @@ def test_stage_sdist_keeps_initial_readme_commit_eligibility(
     assert readme.read_bytes() == original_readme
 
 
+def test_sdist_python_member_identity_uses_maturin_package_root(
+    tmp_path: Path,
+) -> None:
+    sdist = tmp_path / 'gometry-1.0.0.tar.gz'
+    package_files = {
+        'gometry-1.0.0/python/gometry/__init__.py': b'value = 17\n',
+        'gometry-1.0.0/python/gometry/_lib.pyi': b'def value() -> int: ...\n',
+        'gometry-1.0.0/python/gometry/py.typed': b'',
+    }
+    with tarfile.open(sdist, 'w:gz') as archive:
+        for name, payload in package_files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+
+    assert source_artifact.sdist_python_member_hashes(sdist) == {
+        'gometry/__init__.py': hashlib.sha256(b'value = 17\n').hexdigest(),
+        'gometry/_lib.pyi': hashlib.sha256(b'def value() -> int: ...\n').hexdigest(),
+        'gometry/py.typed': hashlib.sha256(b'').hexdigest(),
+    }
+
+
 def test_stage_sdist_propagates_missing_source_input_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -444,6 +490,146 @@ def test_stage_sdist_propagates_missing_source_input_error(
         assert not output_dir.exists()
     finally:
         moved_source_dir.rename(source_dir)
+
+
+@pytest.mark.parametrize(
+    ('name', 'value'),
+    [
+        pytest.param('RUSTC', '/toolchain/bin/rustc', id='rustc'),
+        pytest.param('RUSTC_WRAPPER', '/wrappers/rustc', id='rustc-wrapper'),
+        pytest.param(
+            'RUSTC_WORKSPACE_WRAPPER',
+            '/wrappers/workspace-rustc',
+            id='workspace-rustc-wrapper',
+        ),
+        pytest.param(
+            'CARGO_BUILD_RUSTC_WRAPPER',
+            '/wrappers/cargo-rustc',
+            id='cargo-rustc-wrapper',
+        ),
+        pytest.param(
+            'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER',
+            '/wrappers/cargo-workspace-rustc',
+            id='cargo-workspace-rustc-wrapper',
+        ),
+        pytest.param(
+            'CARGO_BUILD_RUSTC',
+            '/toolchain/bin/rustc',
+            id='cargo-build-rustc',
+        ),
+        pytest.param('RUSTFLAGS', '-C target-cpu=x86-64-v3', id='rust-flags'),
+        pytest.param(
+            'CARGO_ENCODED_RUSTFLAGS',
+            '-C\x1ftarget-cpu=x86-64-v3',
+            id='encoded-rust-flags',
+        ),
+        pytest.param(
+            'CARGO_BUILD_TARGET',
+            'aarch64-unknown-linux-gnu',
+            id='cargo-build-target',
+        ),
+        pytest.param('CC', '/wrappers/cc', id='cc-wrapper'),
+        pytest.param('CXX', '/wrappers/cxx', id='cxx-wrapper'),
+        pytest.param('AR', '/wrappers/ar', id='ar-wrapper'),
+        pytest.param(
+            'CC_x86_64_unknown_linux_gnu',
+            '/wrappers/target-cc',
+            id='target-cc-wrapper',
+        ),
+        pytest.param(
+            'CXX_x86_64_unknown_linux_gnu',
+            '/wrappers/target-cxx',
+            id='target-cxx-wrapper',
+        ),
+        pytest.param(
+            'AR_x86_64_unknown_linux_gnu',
+            '/wrappers/target-ar',
+            id='target-ar-wrapper',
+        ),
+        pytest.param(
+            'CFLAGS_x86_64_unknown_linux_gnu',
+            '-fno-omit-frame-pointer',
+            id='target-c-flags',
+        ),
+        pytest.param(
+            'CXXFLAGS_x86_64_unknown_linux_gnu',
+            '-fno-omit-frame-pointer',
+            id='target-cxx-flags',
+        ),
+        pytest.param(
+            'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER',
+            '/wrappers/target-linker',
+            id='target-linker',
+        ),
+        pytest.param(
+            'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS',
+            '-C target-cpu=x86-64-v3',
+            id='cargo-target-rust-flags',
+        ),
+    ],
+)
+def test_quality_settings_identity_tracks_compiler_and_target_selectors(
+    tmp_path: Path,
+    name: str,
+    value: str,
+) -> None:
+    root = _quality_settings_root(tmp_path)
+    environment = {'CARGO_HOME': str(tmp_path / 'cargo-home')}
+    initial = quality_runtime.quality_settings(root, environment)
+    changed = quality_runtime.quality_settings(root, environment | {name: value})
+
+    assert changed['identity_sha256'] != initial['identity_sha256']
+
+
+def test_quality_settings_identity_ignores_cargo_target_output_directory(
+    tmp_path: Path,
+) -> None:
+    root = _quality_settings_root(tmp_path)
+    environment = {'CARGO_HOME': str(tmp_path / 'cargo-home')}
+    initial = quality_runtime.quality_settings(root, environment)
+    changed = quality_runtime.quality_settings(
+        root,
+        environment | {'CARGO_TARGET_DIR': str(tmp_path / 'target')},
+    )
+
+    assert changed['identity_sha256'] == initial['identity_sha256']
+
+
+@pytest.mark.parametrize(
+    ('name', 'filename'),
+    [
+        pytest.param('PYO3_CONFIG_FILE', 'pyo3-config.txt', id='pyo3-config'),
+        pytest.param(
+            'CMAKE_TOOLCHAIN_FILE',
+            'toolchain.cmake',
+            id='cmake-toolchain',
+        ),
+        pytest.param(
+            'CMAKE_TOOLCHAIN_FILE_x86_64_unknown_linux_gnu',
+            'target-toolchain.cmake',
+            id='target-cmake-toolchain',
+        ),
+    ],
+)
+def test_quality_settings_identity_tracks_selected_config_bytes(
+    tmp_path: Path,
+    name: str,
+    filename: str,
+) -> None:
+    root = _quality_settings_root(tmp_path)
+    config = tmp_path / filename
+    config.write_text('selected configuration v1\n', encoding='utf-8')
+    environment = {
+        'CARGO_HOME': str(tmp_path / 'cargo-home'),
+        name: str(config),
+    }
+    initial = quality_runtime.quality_settings(root, environment)
+
+    config.write_text('selected configuration v2\n', encoding='utf-8')
+    changed = quality_runtime.quality_settings(root, environment)
+
+    assert changed['files'] != initial['files']
+    assert changed['identity_sha256'] != initial['identity_sha256']
 
 
 def test_producer_commit_binding_uses_captured_finite_input_projection(
@@ -780,6 +966,19 @@ def test_runtime_completion_rechecks_admitted_package_bytes(
     monkeypatch.setattr(runtime_artifact, 'python_member_hashes', lambda _path: {})
     with pytest.raises(AssertionError, match='Python files changed'):
         runtime_artifact.verify_runtime_completion(admission, runtime)
+
+
+def test_runtime_admission_uses_receipt_without_build_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_build_tool(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail('runtime admission invoked producer build tooling')
+
+    monkeypatch.setattr(quality_runtime, '_tool_output', unexpected_build_tool)
+    monkeypatch.setattr(quality_runtime, 'cargo_metadata', unexpected_build_tool)
+    admission = runtime_artifact.inspect_runtime_inputs(GOMETRY_ROOT)
+    runtime = runtime_artifact.verify_admitted_runtime(admission)
+    runtime_artifact.verify_runtime_completion(admission, runtime)
 
 
 @pytest.mark.parametrize(
@@ -1993,7 +2192,9 @@ def test_corrupt_quality_wheel_is_not_rebuilt(
         },
     }
     monkeypatch.setattr(runtime, 'quality_receipt_path', lambda _root: receipt_path)
-    monkeypatch.setattr(runtime, 'read_quality_receipt', lambda _root: previous)
+    monkeypatch.setattr(
+        runtime, '_load_quality_receipt', lambda _root, **_kwargs: previous
+    )
     monkeypatch.setattr(runtime, 'prepare_license_outputs', lambda _root: None)
     monkeypatch.setattr(
         runtime,
@@ -2220,6 +2421,22 @@ def test_quality_runtime_receipt_round_trips_and_refreshes_prepared_inputs(
         artifact_common._prepared_input_identity(refreshed_prepared['files'])
     )
     assert builds == 1
+
+    receipt_path = quality_runtime.quality_receipt_path(root)
+    stale = json.loads(receipt_path.read_text(encoding='utf-8'))
+    stale['build']['maturin_version'] = '1.0.0'
+    stale['wheel']['generator'] = 'maturin (1.0.0)'
+    receipt_path.write_text(json.dumps(stale), encoding='utf-8')
+    with pytest.raises(AssertionError, match='Maturin version is malformed'):
+        quality_runtime.read_quality_receipt(root)
+
+    rebuilt = quality_runtime.prepare_quality_runtime(
+        root,
+        scratch=root / 'target' / 'quality-runtime',
+    )
+    assert builds == 2
+    assert rebuilt['build']['maturin_version'] == artifact_common.MATURIN_VERSION
+    quality_runtime.read_quality_receipt(root)
 
 
 def _quality_package_members(

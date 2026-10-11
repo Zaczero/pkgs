@@ -423,20 +423,26 @@ impl PyGeometryArray {
     ///     use `.row_index` to recover source-row alignment, or call
     ///     `drop_missing()` first for an explicit dense path.
     #[getter]
-    pub fn coords(&self) -> PyCoordinates {
-        PyCoordinates::new(self.coordinate_view())
+    pub fn coords(slf: &Bound<'_, Self>) -> PyCoordinates {
+        PyCoordinates::new(
+            slf.borrow().coordinate_view(),
+            slf.clone().unbind().into_any(),
+        )
     }
 
-    /// Select rows by integer, slice, or fancy index.
+    /// Select rows by integer-like scalar, slice, or fancy index.
     ///
-    /// An ``int`` returns one typed geometry (or raises ``IndexError``).
-    /// A ``slice`` or integer sequence / boolean mask returns a gathered
-    /// ``GeometryArray`` (missing rows stay missing).
+    /// An ``int``, object implementing ``__index__``, or zero-dimensional
+    /// integer ndarray returns one typed geometry. A ``slice``, integer
+    /// sequence, one-dimensional integer ndarray, or boolean mask returns a
+    /// gathered ``GeometryArray``; missing rows stay missing. Boolean scalars
+    /// and NumPy index arrays with rank above one raise ``TypeError``.
     ///
     /// Returns
     /// -------
-    /// Geometry or GeometryArray
-    ///     Scalar geometry for an int index; array for slice/fancy selection.
+    /// Geometry, None, or GeometryArray
+    ///     Scalar geometry for integer-like scalar selection; array for
+    ///     slice or one-dimensional fancy selection.
     pub fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         array_getitem(self, py, index)
     }
@@ -957,21 +963,21 @@ impl PyGeometryArray {
         Ok(bytes.into_pyint(py))
     }
 
-    /// `sys.getsizeof` support: the wrapper plus this array's logical
+    /// `sys.getsizeof` support: Python's allocation base plus this array's logical
     /// Rust-side heap — coordinate payload, CSR offsets, row maps, missing
     /// mask, cache owners and their already-materialized contents, spilled CRS
     /// frame text, and any already-materialized prepared-geometry / frame
     /// sidecars.
     /// Lazy cache slots that have not been populated do not inflate the total.
-    /// Shared backing buffers are accounted like NumPy views: the logical view
-    /// is reported, not the whole shared parent allocation.
+    /// Shared backing buffers use the logical view estimate, not the whole
+    /// shared parent allocation.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    pub fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
+    pub fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     pub fn __repr__(&self) -> PyResult<String> {

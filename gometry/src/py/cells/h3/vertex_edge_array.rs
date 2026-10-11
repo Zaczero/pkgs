@@ -15,6 +15,7 @@ use crate::geometry::storage::{
     RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows,
 };
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, LineSeq};
+use crate::py::arrow_c;
 use crate::py::cells::grid_kind::membership_id;
 use crate::py::cells::h3::{
     DirectedEdgeIndex, LatLng, PyH3Edge, PyH3Vertex, VertexIndex, collect_h3_index_ids,
@@ -307,6 +308,49 @@ macro_rules! h3_index_array_common {
             #[expect(non_upper_case_globals, reason = "Python dunder name")]
             const __array_ufunc__: Option<Py<PyAny>> = None;
 
+            /// Export the H3 index IDs as an Arrow ``uint64`` column.
+            ///
+            /// The exported values contain no null slots. Slices retain their
+            /// source buffer; gathered selections own their materialized IDs.
+            ///
+            /// Parameters
+            /// ----------
+            /// requested_schema : capsule or None, default None
+            ///     A matching Arrow C schema capsule. A different schema is rejected.
+            ///
+            /// Returns
+            /// -------
+            /// tuple of capsule
+            ///     The Arrow schema and array capsules. Their owners retain the ID
+            ///     buffer until the consumer releases the array.
+            ///
+            /// Raises
+            /// ------
+            /// TypeError
+            ///     If ``requested_schema`` does not match the exported ``uint64`` type.
+            #[pyo3(signature = (requested_schema=None, /))]
+            fn __arrow_c_array__(
+                &self,
+                py: Python<'_>,
+                requested_schema: Option<&Bound<'_, PyAny>>,
+            ) -> PyResult<Py<PyAny>> {
+                let length = self.len();
+                let (ids, start) = if let Some(rows) =
+                    self.selection_ref().csr_rows(0..length)
+                {
+                    (Arc::clone(&self.ids), rows.start)
+                } else {
+                    (Arc::from(self.logical_ids_vec()), 0)
+                };
+                let array = arrow_c::primitive_u64_arc_array_windowed(ids, start, length)?;
+                arrow_c::array_capsules_with_schema(
+                    py,
+                    arrow_c::primitive_u64_schema(true),
+                    array,
+                    requested_schema,
+                )
+            }
+
             $(#[$constructor_doc])*
             #[new]
             fn new(values: &Bound<'_, PyAny>) -> PyResult<Self> {
@@ -316,8 +360,12 @@ macro_rules! h3_index_array_common {
                 })
             }
 
-            fn __sizeof__(&self) -> usize {
-                self.total_size()
+            fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+                crate::py::sizeof::python_sizeof(
+                    slf.py(),
+                    slf.as_any(),
+                    slf.borrow().heap_bytes(),
+                )
             }
 
             /// Logical id payload in bytes (``len * 8``).
@@ -349,10 +397,14 @@ macro_rules! h3_index_array_common {
                 self.len() != 0
             }
 
-            /// Select by integer, slice, or fancy index.
+            /// Select by integer-like scalar, slice, or fancy index.
             ///
-            /// An ``int`` returns one edge/vertex. A ``slice`` or fancy index
-            /// returns an array of the same type.
+            /// An ``int``, object implementing ``__index__``, or
+            /// zero-dimensional integer ndarray returns one edge/vertex. A
+            /// ``slice``, integer sequence, one-dimensional integer ndarray,
+            /// or boolean mask returns an array of the same type. Boolean
+            /// scalars and NumPy index arrays with rank above one raise
+            /// ``TypeError``.
             ///
             /// Returns
             /// -------

@@ -203,6 +203,29 @@ def test_coordinates_equality_tracks_selected_layouts() -> None:
     assert padded != xy
 
 
+def test_coordinates_equality_uses_python_float_equality_for_signed_zero() -> None:
+    positive = gm.points([0.0, 1.0], [0.0, 2.0]).coords
+    negative = gm.points([-0.0, 1.0], [0.0, 2.0]).coords
+
+    assert positive == [(0.0, 0.0), (1.0, 2.0)]
+    assert negative == positive
+    assert positive == negative
+    assert negative == [(0.0, 0.0), (1.0, 2.0)]
+
+
+def test_coordinates_support_numeric_numpy_ufuncs() -> None:
+    coords = gm.LineString([(0.0, 1.0), (2.0, 3.0)]).coords
+
+    np.testing.assert_array_equal(np.isfinite(coords), [[True, True], [True, True]])
+    np.testing.assert_array_equal(np.add(coords, 1.0), [[1.0, 2.0], [3.0, 4.0]])
+    np.testing.assert_array_equal(np.add.reduce(coords, axis=0), [2.0, 4.0])
+
+    matrix = np.asarray(coords)
+    assert matrix.flags.writeable is False
+    with pytest.raises(ValueError, match='read-only'):
+        np.add(coords, 1.0, out=matrix)
+
+
 def test_coordinates_equality_propagates_type_errors_after_iterator_admission() -> None:
     coords = gm.Point(1.0, 2.0).coords
     iteration_error = TypeError('coordinates provider failed after one row')
@@ -296,7 +319,7 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
     assert parts.offsets.tolist() == [0, 1, 2]
     assert [row.to_wkt() for row in parts[0]] == ['POINT (9 9)']
     assert [row.to_wkt() for row in parts[1]] == [values[1].to_wkt()]
-    assert [ring.crs for ring in rings] == ['EPSG:4326', 'EPSG:4326']
+    assert [ring.crs for ring in rings] == [gm.CRS('EPSG:4326')] * 2
     assert [ring.to_wkt() for ring in list(rings)] == [
         'LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)',
         'LINESTRING (1 1, 3 1, 3 3, 1 3, 1 1)',
@@ -328,7 +351,8 @@ def test_parts_and_rings_collections_keep_groups_and_flat_values() -> None:
         'POINT EMPTY',
     ]
     assert parts[3].to_wkt() == []
-    assert parts[4].to_wkt() == []
+    assert parts[4] is None
+    assert parts.is_missing.tolist() == [False, False, False, False, True]
 
     rings = (
         gm
@@ -723,8 +747,8 @@ def _coordinate_roundtrip_geometries() -> list[gm.Geometry]:
 
 
 @pytest.mark.parametrize('geom', _coordinate_roundtrip_geometries())
-def test_set_coordinates_round_trips_coordinates_view(geom: gm.Geometry) -> None:
-    out = geom.set_coordinates(geom.coords)
+def test_with_coordinates_round_trips_coordinates_view(geom: gm.Geometry) -> None:
+    out = geom.with_coordinates(geom.coords)
     assert gm.equals_exact(out, geom)
     assert out.crs == geom.crs
     assert out.epoch == geom.epoch
@@ -760,7 +784,7 @@ def test_m06_empty_coords_view_uses_declared_axes(
     """m06: empty geometries expose coords width from declared empty axes.
 
     EXACT repro: ``np.asarray(from_wkt('POINT Z EMPTY').coords).shape`` is
-    ``(0, 3)`` (not ``(0, 2)``), and ``g.set_coordinates(g.coords)`` round-trips.
+    ``(0, 3)`` (not ``(0, 2)``), and ``g.with_coordinates(g.coords)`` round-trips.
     """
     g = gm.from_wkt(wkt)
     assert g.coordinate_axes == axes
@@ -769,7 +793,7 @@ def test_m06_empty_coords_view_uses_declared_axes(
     assert matrix.shape == (0, width)
     assert matrix.dtype == np.float64
 
-    out = g.set_coordinates(g.coords)
+    out = g.with_coordinates(g.coords)
     assert out.coordinate_axes == axes
     assert out.geometry_type == g.geometry_type
     assert out.is_empty
@@ -777,9 +801,9 @@ def test_m06_empty_coords_view_uses_declared_axes(
     assert np.asarray(out.coords).shape == (0, width)
 
 
-def test_set_coordinates_array_mask_and_row_map_round_trip() -> None:
+def test_with_coordinates_array_mask_and_row_map_round_trip() -> None:
     arr = gm.GeometryArray([gm.Point(1, 2), None, gm.Point(3, 4)])
-    out = arr.set_coordinates(arr.coords)
+    out = arr.with_coordinates(arr.coords)
     assert list(out)[1] is None
     assert gm.equals_exact(out[0], gm.Point(1, 2))
     assert gm.equals_exact(out[2], gm.Point(3, 4))
@@ -787,32 +811,34 @@ def test_set_coordinates_array_mask_and_row_map_round_trip() -> None:
     assert int(out.num_coordinates.sum()) == len(out.coords)
 
     selected = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1), gm.Point(2, 2)])[::-1]
-    selected_out = selected.set_coordinates(selected.coords)
+    selected_out = selected.with_coordinates(selected.coords)
     assert selected_out.to_wkt() == selected.to_wkt()
 
 
-def test_set_coordinates_validation_errors() -> None:
+def test_with_coordinates_validation_errors() -> None:
     line = gm.LineString([(0, 0), (1, 1)])
     with pytest.raises(gm.InvalidGeometryError, match='two-dimensional'):
-        line.set_coordinates(np.array([0.0, 0.0]))
+        line.with_coordinates(np.array([0.0, 0.0]))
     with pytest.raises(gm.InvalidGeometryError, match='two-dimensional'):
-        line.set_coordinates(np.zeros((1, 2, 1)))
+        line.with_coordinates(np.zeros((1, 2, 1)))
     with pytest.raises(gm.InvalidGeometryError, match='length 2'):
-        line.set_coordinates(np.array([[0.0, 0.0]]))
+        line.with_coordinates(np.array([[0.0, 0.0]]))
     with pytest.raises(gm.InvalidGeometryError, match='width 2'):
-        line.set_coordinates(np.zeros((2, 3)))
+        line.with_coordinates(np.zeros((2, 3)))
     with pytest.raises(gm.InvalidGeometryError, match='finite'):
-        line.set_coordinates(np.array([[0.0, 0.0], [np.nan, 1.0]]))
+        line.with_coordinates(np.array([[0.0, 0.0], [np.nan, 1.0]]))
     with pytest.raises(gm.GeometryError, match='cannot mix'):
-        line.set_coordinates(np.asarray(line.coords), x=[0.0, 1.0], y=[0.0, 1.0])
-    with pytest.raises(gm.InvalidGeometryError, match='z coordinates require'):
-        line.set_coordinates(x=[0.0, 1.0], y=[0.0, 1.0], z=[1.0, 2.0])
+        line.with_coordinates(np.asarray(line.coords), x=[0.0, 1.0], y=[0.0, 1.0])
+    with pytest.raises(TypeError, match='unexpected keyword'):
+        line.with_coordinates(coordinates=np.asarray(line.coords))
+    xyz = line.with_coordinates(x=[0.0, 1.0], y=[0.0, 1.0], z=[1.0, 2.0])
+    assert xyz.to_wkt() == 'LINESTRING Z (0 0 1, 1 1 2)'
 
     poly = gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)])
     opened = np.asarray(poly.coords).copy()
     opened[-1] = [9.0, 9.0]
     with pytest.raises(gm.InvalidGeometryError, match='ring must be closed'):
-        poly.set_coordinates(opened)
+        poly.with_coordinates(opened)
 
 
 @pytest.mark.parametrize(
@@ -824,7 +850,7 @@ def test_set_coordinates_validation_errors() -> None:
         pytest.param('m', 'line', id='line-m'),
     ],
 )
-def test_set_coordinates_keyword_axis_rejects_members_without_that_axis(
+def test_with_coordinates_column_adds_an_ordinate_to_every_collection_member(
     axis: str,
     kind: str,
 ) -> None:
@@ -838,18 +864,71 @@ def test_set_coordinates_keyword_axis_rejects_members_without_that_axis(
     geometry = gm.GeometryCollection([with_axis, without_axis])
     count = with_axis.num_coordinates + without_axis.num_coordinates
     replacement = {
-        'x': [10.0 + index for index in range(count)],
-        'y': [20.0 + index for index in range(count)],
         axis: [30.0 + index for index in range(count)],
     }
 
     for source in (geometry, gm.GeometryArray([geometry])):
-        with pytest.raises(gm.InvalidGeometryError) as error:
-            source.set_coordinates(**replacement)
-        assert (
-            str(error.value)
-            == 'coordinates must preserve each coordinate sequence axes'
-        )
+        updated = source.with_coordinates(**replacement)
+        row = updated if isinstance(updated, gm.Geometry) else updated[0]
+        axes = 'XYZ' if axis == 'z' else 'XYM'
+        assert [part.coordinate_axes for part in row.parts] == [axes, axes]
+        ordinates = [
+            value
+            for part in row.parts
+            for value in (part.coords.z if axis == 'z' else part.coords.m)
+        ]
+        assert ordinates == [30.0 + index for index in range(count)]
+
+
+def test_with_coordinates_broadcasts_scalars_preserves_omissions_and_drops_axes() -> (
+    None
+):
+    line = gm.from_wkt('LINESTRING ZM (0 0 1 10, 1 1 2 20)')
+
+    assert line.with_coordinates() == line
+    assert line.with_coordinates(None) == line
+    assert line.with_coordinates(None, x=5.0) == line.with_coordinates(x=5.0)
+    changed = line.with_coordinates(x=5.0, z=7.0)
+    assert changed.to_wkt() == 'LINESTRING ZM (5 0 7 10, 5 1 7 20)'
+    assert changed.with_coordinates(z=None).to_wkt() == 'LINESTRING M (5 0 10, 5 1 20)'
+    assert changed.with_coordinates(m=None).to_wkt() == 'LINESTRING Z (5 0 7, 5 1 7)'
+
+    added = gm.LineString([(0.0, 0.0), (1.0, 1.0)]).with_coordinates(z=3.0)
+    assert added.to_wkt() == 'LINESTRING Z (0 0 3, 1 1 3)'
+
+    with pytest.raises(
+        gm.InvalidGeometryError, match='X and Y ordinates cannot be removed'
+    ):
+        line.with_coordinates(x=None)
+
+
+def test_with_coordinates_columns_follow_flattened_present_array_vertices() -> None:
+    values = gm.GeometryArray([gm.LineString([(0, 1), (2, 3)]), None, gm.Point(4, 5)])
+    updated = values.with_coordinates(m=[10.0, 20.0, 30.0])
+
+    assert updated.to_wkt() == [
+        'LINESTRING M (0 1 10, 2 3 20)',
+        None,
+        'POINT M (4 5 30)',
+    ]
+
+
+def test_with_coordinates_retags_empty_collection_members() -> None:
+    geometry = gm.GeometryCollection([
+        gm.Point(),
+        gm.LineString([(0.0, 1.0), (2.0, 3.0)]),
+    ])
+    updated = geometry.with_coordinates(z=[10.0, 20.0])
+
+    assert [part.coordinate_axes for part in updated.parts] == ['XYZ', 'XYZ']
+    assert [part.to_wkt() for part in updated.parts] == [
+        'POINT Z EMPTY',
+        'LINESTRING Z (0 1 10, 2 3 20)',
+    ]
+
+    nullable = gm.GeometryArray([geometry, None]).with_coordinates(m=[30.0, 40.0])
+    assert nullable.is_missing.tolist() == [False, True]
+    assert [part.coordinate_axes for part in nullable[0].parts] == ['XYM', 'XYM']
 
 
 def test_points_reject_mismatched_z_and_m_column_lengths() -> None:
@@ -859,21 +938,21 @@ def test_points_reject_mismatched_z_and_m_column_lengths() -> None:
         gm.points([0.0, 1.0], [0.0, 1.0], m=[3.0])
 
 
-def test_set_coordinates_rejects_mismatched_z_and_m_column_lengths() -> None:
+def test_with_coordinates_rejects_mismatched_z_and_m_column_lengths() -> None:
     line = gm.LineString([(0.0, 0.0, 1.0, 10.0), (1.0, 1.0, 2.0, 20.0)])
     with pytest.raises(gm.InvalidGeometryError, match='z must have length 2'):
-        line.set_coordinates(x=[3.0, 4.0], y=[5.0, 6.0], z=[7.0], m=[30.0, 40.0])
+        line.with_coordinates(x=[3.0, 4.0], y=[5.0, 6.0], z=[7.0], m=[30.0, 40.0])
     with pytest.raises(gm.InvalidGeometryError, match='m must have length 2'):
-        line.set_coordinates(x=[3.0, 4.0], y=[5.0, 6.0], z=[7.0, 8.0], m=[30.0])
+        line.with_coordinates(x=[3.0, 4.0], y=[5.0, 6.0], z=[7.0, 8.0], m=[30.0])
 
 
-def test_set_coordinates_accepts_positive_negative_and_zero_strides() -> None:
+def test_with_coordinates_accepts_positive_negative_and_zero_strides() -> None:
     line = gm.LineString([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
     storage = np.array([[10.0, 20.0], [11.0, 21.0], [12.0, 22.0]])
 
-    positive = line.set_coordinates(x=storage[:, 0], y=storage[:, 1])
-    negative = line.set_coordinates(x=storage[::-1, 0], y=storage[::-1, 1])
-    zero = line.set_coordinates(
+    positive = line.with_coordinates(x=storage[:, 0], y=storage[:, 1])
+    negative = line.with_coordinates(x=storage[::-1, 0], y=storage[::-1, 1])
+    zero = line.with_coordinates(
         x=np.broadcast_to(30.0, 3),
         y=np.broadcast_to(40.0, 3),
     )
@@ -888,7 +967,7 @@ def test_numpy_scalar_coordinates_and_float32_matrix_are_admitted() -> None:
 
     line = gm.LineString([(0.0, 0.0), (1.0, 1.0)])
     replacement = np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32)
-    out = line.set_coordinates(replacement)
+    out = line.with_coordinates(replacement)
     assert out.to_wkt() == 'LINESTRING (5 6, 7 8)'
     assert out.coords.x.dtype == np.float64
     assert out.coords.y.dtype == np.float64
@@ -906,8 +985,8 @@ def test_numpy_scalar_coordinates_and_float32_matrix_are_admitted() -> None:
         'POLYGON ZM ((0 0 1 2, 1 0 1 2, 0 1 1 2, 0 0 1 2))',
     ],
 )
-def test_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
-    """N5: Z/M-only open rings must fail set_coordinates (pack/pickle parity).
+def test_with_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
+    """N5: Z/M-only open rings must fail with_coordinates (pack/pickle parity).
 
     XY-only closure used to admit these into trusted storage; the unpickler
     (same_active_position) then rejected them — self-inconsistency.
@@ -921,7 +1000,7 @@ def test_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
     # Width is 3 for Z/M, 4 for ZM — always mutate the last column index >= 2.
     coords[-1, 2] = 9.0
     with pytest.raises(gm.InvalidGeometryError) as error:
-        poly.set_coordinates(coords)
+        poly.with_coordinates(coords)
     assert str(error.value) == 'polygon ring must be closed'
 
     # Packed-array path (uniform polygon column)
@@ -929,7 +1008,7 @@ def test_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
     arr_coords = np.asarray(arr.coords).copy()
     arr_coords[-1, 2] = 9.0
     with pytest.raises(gm.InvalidGeometryError) as error:
-        arr.set_coordinates(arr_coords)
+        arr.with_coordinates(arr_coords)
     assert str(error.value) == 'polygon ring must be closed'
 
     # map_coordinates opens the same way
@@ -947,22 +1026,22 @@ def test_set_coordinates_rejects_active_ordinate_open_ring(wkt: str) -> None:
     keep = np.asarray(poly.coords).copy()
     keep[0, 2] = 7.0
     keep[-1, 2] = 7.0
-    kept = poly.set_coordinates(keep)
+    kept = poly.with_coordinates(keep)
     assert pickle.loads(pickle.dumps(kept)) == kept
     arr_keep = np.asarray(arr.coords).copy()
     arr_keep[0, 2] = 7.0
     arr_keep[-1, 2] = 7.0
-    kept_arr = arr.set_coordinates(arr_keep)
+    kept_arr = arr.with_coordinates(arr_keep)
     assert pickle.loads(pickle.dumps(kept_arr)) == kept_arr
 
     # Interior-only change still succeeds
     interior = np.asarray(poly.coords).copy()
     interior[1, 0] = 1.5
-    moved = poly.set_coordinates(interior)
+    moved = poly.with_coordinates(interior)
     assert pickle.loads(pickle.dumps(moved)) == moved
 
 
-def test_set_coordinates_xy_ring_unchanged() -> None:
+def test_with_coordinates_xy_ring_unchanged() -> None:
     """2D rings still reject XY-open and accept closed replacements."""
     import pickle
 
@@ -970,11 +1049,11 @@ def test_set_coordinates_xy_ring_unchanged() -> None:
     opened = np.asarray(poly.coords).copy()
     opened[-1] = [9.0, 9.0]
     with pytest.raises(gm.InvalidGeometryError, match='ring must be closed'):
-        poly.set_coordinates(opened)
-    kept = poly.set_coordinates(np.asarray(poly.coords).copy())
+        poly.with_coordinates(opened)
+    kept = poly.with_coordinates(np.asarray(poly.coords).copy())
     assert pickle.loads(pickle.dumps(kept)) == kept
     arr = gm.GeometryArray([poly])
-    kept_arr = arr.set_coordinates(np.asarray(arr.coords).copy())
+    kept_arr = arr.with_coordinates(np.asarray(arr.coords).copy())
     assert pickle.loads(pickle.dumps(kept_arr)) == kept_arr
 
 
@@ -990,7 +1069,7 @@ def test_set_coordinates_xy_ring_unchanged() -> None:
     ],
     ids=['slice_tail', 'slice_head', 'gather_one', 'gather_two'],
 )
-def test_set_coordinates_selection_rejects_z_open_ring(select) -> None:
+def test_with_coordinates_selection_rejects_z_open_ring(select) -> None:
     """N5: sliced/gathered packed arrays use the detached replacement path.
 
     That path had a parallel XY-only ring check (packed_columns) that still
@@ -1010,7 +1089,7 @@ def test_set_coordinates_selection_rejects_z_open_ring(select) -> None:
     # Break Z on the last vertex of the view's coordinate matrix.
     opened[-1, 2] = 9.0
     with pytest.raises(gm.InvalidGeometryError) as error:
-        view.set_coordinates(opened)
+        view.with_coordinates(opened)
     assert str(error.value) == 'polygon ring must be closed'
 
     def open_measure(c: np.ndarray) -> np.ndarray:
@@ -1024,11 +1103,11 @@ def test_set_coordinates_selection_rejects_z_open_ring(select) -> None:
     # Closure-preserving: mutate only an interior vertex, then pickle-round-trip.
     keep = np.asarray(view.coords).copy()
     keep[1, 2] = 8.0  # second vertex is always interior on a 4-vertex ring
-    kept = view.set_coordinates(keep)
+    kept = view.with_coordinates(keep)
     assert pickle.loads(pickle.dumps(kept)) == kept
 
 
-def test_set_coordinates_nullable_polygon_error_uses_logical_row() -> None:
+def test_with_coordinates_nullable_polygon_error_uses_logical_row() -> None:
     polygon = gm.from_wkt('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))')
     array = gm.GeometryArray([None, polygon, None, polygon])
     opened = np.asarray(array.coords).copy()
@@ -1037,12 +1116,85 @@ def test_set_coordinates_nullable_polygon_error_uses_logical_row() -> None:
     with pytest.raises(
         gm.InvalidGeometryError, match='polygon ring must be closed'
     ) as error:
-        array.set_coordinates(opened)
+        array.with_coordinates(opened)
 
     assert error.value.__notes__ == ['while processing array element 3']
 
 
-def test_set_coordinates_nullable_polygon_carries_measure_columns() -> None:
+@pytest.mark.parametrize(
+    ('selection', 'expected_row'),
+    [
+        pytest.param('identity', 3, id='identity-row-3'),
+        pytest.param('gather', 2, id='gather-row-2'),
+        pytest.param('reverse', 0, id='reverse-row-0'),
+    ],
+)
+@pytest.mark.parametrize(
+    ('ring_end', 'ordinate'),
+    [
+        pytest.param(3, 0, id='shell-x'),
+        pytest.param(7, 0, id='hole-x'),
+        pytest.param(3, 2, id='shell-m'),
+        pytest.param(7, 2, id='hole-m'),
+    ],
+)
+@pytest.mark.parametrize(
+    'operation',
+    ['with_coordinates', 'map_coordinates'],
+    ids=['replacement', 'callback'],
+)
+def test_with_coordinates_mixed_nullable_present_empty_replacement_reports_gathered_row(
+    selection: str, expected_row: int, ring_end: int, ordinate: int, operation: str
+) -> None:
+    polygon = gm.from_wkt(
+        'POLYGON M ((0 0 11, 4 0 12, 4 4 13, 0 0 11), (1 1 21, 2 1 22, 2 2 23, 1 1 21))'
+    )
+    source = gm.GeometryArray([
+        None,
+        gm.from_wkt('POLYGON M EMPTY'),
+        None,
+        polygon,
+        polygon,
+    ])
+    match selection:
+        case 'identity':
+            selected = source
+        case 'gather':
+            selected = source[[0, 1, 4, 3]]
+        case 'reverse':
+            selected = source[::-1]
+
+    opened = np.asarray(selected.coords).copy()
+    opened[ring_end, ordinate] += 0.5
+
+    def replace() -> gm.GeometryArray:
+        if operation == 'with_coordinates':
+            return selected.with_coordinates(opened)
+        return selected.map_coordinates(lambda _coordinates: opened.copy())
+
+    with pytest.raises(gm.InvalidGeometryError) as error:
+        replace()
+
+    assert str(error.value) == 'polygon ring must be closed'
+    assert error.value.__notes__ == [f'while processing array element {expected_row}']
+
+
+def test_mixed_coordinate_replacement_length_error_has_no_row_note() -> None:
+    polygon = gm.from_wkt(
+        'POLYGON M ((0 0 11, 4 0 12, 4 4 13, 0 0 11), (1 1 21, 2 1 22, 2 2 23, 1 1 21))'
+    )
+    array = gm.GeometryArray([None, gm.from_wkt('POLYGON M EMPTY'), polygon])
+    coordinates = np.asarray(array.coords)
+
+    with pytest.raises(
+        gm.InvalidGeometryError, match='coordinates must have length'
+    ) as error:
+        array.with_coordinates(coordinates[:-1])
+
+    assert not getattr(error.value, '__notes__', [])
+
+
+def test_with_coordinates_nullable_polygon_carries_measure_columns() -> None:
     first = gm.from_wkt('POLYGON M ((0 0 10, 1 0 20, 1 1 30, 0 1 40, 0 0 10))')
     second = gm.from_wkt('POLYGON M ((2 2 50, 3 2 60, 3 3 70, 2 3 80, 2 2 50))')
     array = gm.GeometryArray([None, first, None, second])
@@ -1052,7 +1204,7 @@ def test_set_coordinates_nullable_polygon_carries_measure_columns() -> None:
     xs[1] = 1.5
     xs[6] = 3.5
 
-    out = array.set_coordinates(x=xs, y=ys)
+    out = array.with_coordinates(x=xs, y=ys)
 
     assert out.is_missing.tolist() == [True, False, True, False]
     np.testing.assert_array_equal(
@@ -1063,11 +1215,11 @@ def test_set_coordinates_nullable_polygon_carries_measure_columns() -> None:
     )
 
 
-def test_set_coordinates_per_axis_and_num_coordinates() -> None:
+def test_with_coordinates_per_axis_and_num_coordinates() -> None:
     line = gm.from_wkt('LINESTRING ZM (0 0 5 50, 1 1 6 60)')
-    moved = line.set_coordinates(x=[10.0, 11.0], y=[20.0, 21.0])
+    moved = line.with_coordinates(x=[10.0, 11.0], y=[20.0, 21.0])
     assert moved.to_wkt() == 'LINESTRING ZM (10 20 5 50, 11 21 6 60)'
-    changed = line.set_coordinates(
+    changed = line.with_coordinates(
         x=[10.0, 11.0], y=[20.0, 21.0], z=[7.0, 8.0], m=[70.0, 80.0]
     )
     assert changed.to_wkt() == 'LINESTRING ZM (10 20 7 70, 11 21 8 80)'
@@ -1123,13 +1275,13 @@ def test_map_coordinates_matches_shapely_transform() -> None:
     assert mapped.to_wkt() == shapely.to_wkt(oracle, trim=True)
 
 
-def test_set_coordinates_matches_shapely_set_coordinates() -> None:
+def test_with_coordinates_matches_shapely_result() -> None:
     shapely = pytest.importorskip('shapely')
     geom = gm.Polygon([(0, 0), (2, 0), (1, 1), (0, 0)])
     coords = np.asarray(geom.coords).copy()
     coords[:, 0] += 5.0
     coords[:, 1] += 7.0
-    out = geom.set_coordinates(coords)
+    out = geom.with_coordinates(coords)
     oracle = shapely.set_coordinates(shapely.from_wkt(geom.to_wkt()), coords)
     assert out.to_wkt() == shapely.to_wkt(oracle, trim=True)
 
@@ -1137,7 +1289,7 @@ def test_set_coordinates_matches_shapely_set_coordinates() -> None:
 def test_heterogeneous_gc_coordinate_identity_is_noop() -> None:
     """D22: mixed-axes GeometryCollection set/map identity is an exact no-op.
 
-    EXACT repro: ``GeometryCollection([Point Z, Point XY]).set_coordinates(g.coords)``
+    EXACT repro: ``GeometryCollection([Point Z, Point XY]).with_coordinates(g.coords)``
     and ``map_coordinates(lambda x: x)`` must preserve each member's axes
     (not force union-layout NaN padding into finite validation).
     """
@@ -1145,7 +1297,7 @@ def test_heterogeneous_gc_coordinate_identity_is_noop() -> None:
     assert g.coordinate_axes == 'XYZ'
     assert [part.coordinate_axes for part in g.parts] == ['XYZ', 'XY']
 
-    set_out = g.set_coordinates(g.coords)
+    set_out = g.with_coordinates(g.coords)
     assert set_out == g
     assert [part.coordinate_axes for part in set_out.parts] == ['XYZ', 'XY']
 
@@ -1154,7 +1306,7 @@ def test_heterogeneous_gc_coordinate_identity_is_noop() -> None:
     assert [part.coordinate_axes for part in map_out.parts] == ['XYZ', 'XY']
 
     arr = gm.GeometryArray([g])
-    assert arr.set_coordinates(arr.coords)[0] == g
+    assert arr.with_coordinates(arr.coords)[0] == g
     assert arr.map_coordinates(lambda coords: coords)[0] == g
 
     # Multi-row array with a heterogeneous GC row (exact D22 array gap repro).
@@ -1163,14 +1315,14 @@ def test_heterogeneous_gc_coordinate_identity_is_noop() -> None:
     assert map_multi[0] == g
     assert map_multi[1] == gm.Point(0, 0)
     assert [part.coordinate_axes for part in map_multi[0].parts] == ['XYZ', 'XY']
-    set_multi = multi.set_coordinates(multi.coords)
+    set_multi = multi.with_coordinates(multi.coords)
     assert set_multi[0] == g
     assert set_multi[1] == gm.Point(0, 0)
     assert [part.coordinate_axes for part in set_multi[0].parts] == ['XYZ', 'XY']
 
     # Uniform geometries remain unchanged.
     uniform = gm.GeometryCollection([gm.Point(1, 2, z=3), gm.Point(4, 5, z=6)])
-    assert uniform.set_coordinates(uniform.coords) == uniform
+    assert uniform.with_coordinates(uniform.coords) == uniform
     assert uniform.map_coordinates(lambda coords: coords) == uniform
 
     # Uniform-axes array columnar path still applies non-trivial transforms.

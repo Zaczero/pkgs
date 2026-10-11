@@ -44,7 +44,10 @@ impl AngularFactor {
         })
     }
 
-    pub(crate) fn degrees_to_native(self, degrees: f64, period: f64) -> f64 {
+    pub(crate) fn degrees_to_native(self, degrees: f64) -> f64 {
+        let Some(period) = self.recognized_period() else {
+            return degrees.to_radians() / self.0;
+        };
         #[expect(
             clippy::float_cmp,
             reason = "the degree fast path is the exact conventional 360-unit identity"
@@ -52,13 +55,13 @@ impl AngularFactor {
         if period == 360.0 {
             return degrees;
         }
-        self.recognized_period().map_or_else(
-            || degrees.to_radians() / self.0,
-            |selected| degrees / 360.0 * selected,
-        )
+        degrees / 360.0 * period
     }
 
-    pub(crate) fn native_to_degrees(self, value: f64, period: f64) -> f64 {
+    pub(crate) fn native_to_degrees(self, value: f64) -> f64 {
+        let Some(period) = self.recognized_period() else {
+            return (value * self.0).to_degrees();
+        };
         #[expect(
             clippy::float_cmp,
             reason = "the degree fast path is the exact conventional 360-unit identity"
@@ -66,10 +69,7 @@ impl AngularFactor {
         if period == 360.0 {
             return value;
         }
-        self.recognized_period().map_or_else(
-            || (value * self.0).to_degrees(),
-            |selected| value / (selected / 4.0) * 90.0,
-        )
+        value / (period / 4.0) * 90.0
     }
 }
 
@@ -400,7 +400,7 @@ impl PeriodicAxis {
         (self.period.fract() == 0.0).then_some(self.period)
     }
 
-    pub(crate) fn ordinary_longitude_bound(self) -> f64 {
+    pub(crate) const fn ordinary_longitude_bound(self) -> f64 {
         self.half_period
     }
 
@@ -519,10 +519,6 @@ impl PeriodicAxis {
 
     /// Wrap a finite longitude with the canonical remainder and signed-zero
     /// spelling. Ingress must already have rejected non-finite values.
-    #[expect(
-        clippy::float_cmp,
-        reason = "exact zero and integer seam aliases are part of the coordinate contract"
-    )]
     pub(super) fn wrap_admitted(self, value: f64) -> CanonicalLongitude {
         debug_assert!(
             value.is_finite(),
@@ -1043,8 +1039,7 @@ impl GeographicFrame {
                 admitted_latitude
             }
         } else {
-            self.latitude_unit
-                .native_to_degrees(admitted_latitude, self.pole)
+            self.latitude_unit.native_to_degrees(admitted_latitude)
                 * self.latitude_orientation_sign()
         })
     }
@@ -1107,7 +1102,7 @@ impl GeographicFrame {
             latitude
         } else {
             self.latitude_unit
-                .degrees_to_native(latitude * self.latitude_orientation_sign(), self.pole)
+                .degrees_to_native(latitude * self.latitude_orientation_sign())
         };
         (longitude, latitude)
     }

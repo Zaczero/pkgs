@@ -183,7 +183,7 @@ def test_crs_error_on_invalid_crs() -> None:
     with pytest.raises(errors.CRSError, match='cannot create CRS'):
         gm.CRS('not-a-crs')
     with pytest.raises(errors.CRSError, match='re-tag'):
-        gm.Point(0, 0, crs=4326).set_crs(3857)
+        gm.Point(0, 0, crs=4326).with_crs(3857)
 
 
 def test_crs_mismatch_error_on_index_frame_guard() -> None:
@@ -235,7 +235,7 @@ def test_crs_mismatch_error_on_frame_conflicts() -> None:
 def test_epoch_without_crs_is_a_crs_error_not_a_mismatch() -> None:
     with pytest.raises(
         errors.CRSError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ) as raised:
         gm.Point(0, 0, epoch=2020.0)
     assert not isinstance(raised.value, errors.CRSMismatchError)
@@ -270,7 +270,7 @@ def test_geometry_error_on_grid_parameters() -> None:
     with pytest.raises(errors.GeometryError, match='H3 resolution must be between'):
         gm.h3_cover(square, resolution=99)
     with pytest.raises(errors.GeometryError, match='S2 level'):
-        gm.s2_cover_adaptive(square, max_cells=4, min_level=99)
+        gm.s2_cover(square, max_cells=4, min_level=99)
     with pytest.raises(errors.ParseError, match='invalid H3 cell token') as h3_info:
         gm.H3Cell('zzz')
     assert h3_info.value.format == 'h3'
@@ -347,7 +347,7 @@ def test_export_srid_without_epsg_is_crs_error() -> None:
     # CRS84 is a PostGIS wire alias (encodes as SRID 4326); a truly non-EPSG
     # non-alias CRS still raises CRSError.
     ewkb = gm.Point(0, 0, crs='OGC:CRS84').to_wkb(include_srid=True)
-    assert gm.from_wkb(ewkb).crs == 'EPSG:4326'
+    assert gm.from_wkb(ewkb).crs == gm.CRS('EPSG:4326')
     with pytest.raises(
         errors.CRSError, match='EWKB SRID requires an EPSG-authority CRS'
     ):
@@ -544,7 +544,7 @@ def test_ewkt_prefix_recognition_is_shared_between_classifier_and_parser() -> No
         'srid=4326;POINT (1 2)',
         '  SrId=4326;POINT (1 2)',
     ):
-        assert gm.require(text).crs == 'EPSG:4326', text
+        assert gm.require(text).crs == gm.CRS('EPSG:4326'), text
 
     # a malformed SRID must reach the WKT parser's diagnostic, not GeoJSON
     with pytest.raises(gm.ParseError):

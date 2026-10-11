@@ -182,8 +182,8 @@ def _malformed_documents() -> list[Any]:
 def _read(reader: str, value: object) -> object:
     if reader == 'from_geojson':
         return gm.from_geojson(value, crs=None)
-    if reader == 'from_features':
-        return gm.from_features(value, crs=None)
+    if reader == 'from_geojson_features':
+        return gm.from_geojson(value, crs=None, features=True)
     if reader == 'require':
         return gm.require(value, crs=None)
     raise AssertionError(f'unexpected reader: {reader}')
@@ -192,8 +192,8 @@ def _read(reader: str, value: object) -> object:
 @pytest.mark.parametrize(
     'reader',
     [
-        pytest.param('from_geojson', id='from_geojson'),
-        pytest.param('from_features', id='from_features'),
+        pytest.param('from_geojson', id='geometry-only'),
+        pytest.param('from_geojson_features', id='features'),
         pytest.param('require', id='require'),
     ],
 )
@@ -248,7 +248,7 @@ def test_require_keeps_geometric_validity_error_for_both_carriers() -> None:
         assert getattr(exc_info.value, 'format', None) is None
 
 
-def test_from_features_property_depth_matches_text_and_mapping() -> None:
+def test_from_geojson_property_depth_matches_text_and_mapping() -> None:
     nested: Any = 1
     for _ in range(130):
         nested = [nested]
@@ -261,7 +261,7 @@ def test_from_features_property_depth_matches_text_and_mapping() -> None:
 
     for value in (text, feature):
         with pytest.raises(gm.ParseError) as exc_info:
-            gm.from_features(value, crs=None)
+            gm.from_geojson(value, crs=None, features=True)
         assert exc_info.value.format == 'geojson'
         errors.append(exc_info.value)
 

@@ -31,12 +31,16 @@ from typing import (
     Generic,
     Literal,
     NamedTuple,
+    Never,
     NotRequired,
     Protocol,
     Self,
+    SupportsFloat,
+    SupportsIndex,
     TypeAlias,
     TypedDict,
     TypeVar,
+    cast,
 )
 
 import numpy as np
@@ -60,6 +64,10 @@ ScalarFloatArray: TypeAlias = np.ndarray[
 FloatScalar: TypeAlias = (
     float | np.floating[Any] | np.signedinteger[Any] | np.unsignedinteger[Any]
 )
+# Epochs use Python's numeric conversion protocols while retaining the NumPy
+# scalar and zero-dimensional array inputs supported by the native boundary.
+# This private alias is shared by `_lib.pyi` and optional Python adapters.
+_EpochInput: TypeAlias = SupportsFloat | SupportsIndex | FloatScalar | ScalarFloatArray  # noqa: PYI047
 
 if TYPE_CHECKING:
     # Static consumers see the nominal optional dependency types. Runtime
@@ -75,6 +83,7 @@ if TYPE_CHECKING:
 
     PyArrowArray: TypeAlias = pa.Array | pa.ExtensionArray
     PyArrowChunkedArray: TypeAlias = pa.ChunkedArray
+    PyArrowNativeFile: TypeAlias = pa.NativeFile
     PyArrowTable: TypeAlias = pa.Table
     PyArrowRecordBatch: TypeAlias = pa.RecordBatch
     PyArrowRecordBatchReader: TypeAlias = pa.RecordBatchReader
@@ -88,6 +97,7 @@ if TYPE_CHECKING:
 else:
     PyArrowArray: TypeAlias = ForwardRef('pa.Array | pa.ExtensionArray')
     PyArrowChunkedArray: TypeAlias = ForwardRef('pa.ChunkedArray')
+    PyArrowNativeFile: TypeAlias = ForwardRef('pa.NativeFile')
     PyArrowTable: TypeAlias = ForwardRef('pa.Table')
     PyArrowRecordBatch: TypeAlias = ForwardRef('pa.RecordBatch')
     PyArrowRecordBatchReader: TypeAlias = ForwardRef('pa.RecordBatchReader')
@@ -151,8 +161,27 @@ if TYPE_CHECKING:
         from typing_extensions import TypeVar as _DefaultTypeVar
 
     _ExtremeT = _DefaultTypeVar('_ExtremeT', default=Point)
+    _GeoJsonInterfaceT_co = _DefaultTypeVar(
+        '_GeoJsonInterfaceT_co',
+        bound=Mapping[str, Any],
+        covariant=True,
+        default=Mapping[str, Any],
+    )
+    _GroupMissingT_co = _DefaultTypeVar(
+        '_GroupMissingT_co',
+        Never,
+        None,
+        covariant=True,
+        default=Never,
+    )
 else:
     _ExtremeT = TypeVar('_ExtremeT')
+    _GeoJsonInterfaceT_co = TypeVar(
+        '_GeoJsonInterfaceT_co',
+        bound=Mapping[str, Any],
+        covariant=True,
+    )
+    _GroupMissingT_co = TypeVar('_GroupMissingT_co', covariant=True)
 
 __all__ = [
     'ArrowEncoding',
@@ -228,6 +257,7 @@ __all__ = [
     'PyArrowArray',
     'PyArrowCapsule',
     'PyArrowChunkedArray',
+    'PyArrowNativeFile',
     'PyArrowRecordBatch',
     'PyArrowRecordBatchReader',
     'PyArrowTable',
@@ -478,7 +508,7 @@ CrsKind: TypeAlias = Literal[
     'unknown',
 ]
 
-#: ``kind=`` filter accepted by ``gm.crs_search`` / ``gm.crs_catalog``
+#: ``kind=`` filter accepted by ``gm.crs_catalog``
 #: (``CrsObjectKind::parse_crs`` — CRS types only).
 CrsCatalogKind: TypeAlias = Literal[
     'crs',
@@ -594,12 +624,13 @@ FeatureId: TypeAlias = str | int | float | None
 
 
 class Features:
-    """Aligned feature columns returned by ``from_features``.
+    """Aligned feature columns returned by ``from_geojson(..., features=True)``.
 
     Unpack as ``geometries, properties, ids = features``. Each metadata entry
     corresponds to the geometry at the same row; use ``len(features.geometries)``
     for the feature count. The outer columns are fixed, while property
-    dictionaries remain editable.
+    dictionaries remain editable. ``__geo_interface__`` exposes the aligned
+    record as a GeoJSON FeatureCollection.
     """
 
     __slots__ = ('geometries', 'ids', 'properties')
@@ -794,25 +825,46 @@ class Features:
     # object.__hash__ as callable and cannot express this contract.
     __hash__: ClassVar[None] = None  # type: ignore[assignment]
 
-    def __replace__(self, /, **changes: Any) -> Features:
+    def __copy__(self) -> Self:
+        """Return a new record sharing its existing columns."""
+        return type(self)._from_normalized(self.geometries, self.properties, self.ids)
+
+    def __replace__(
+        self,
+        /,
+        *,
+        geometries: GeometryArray[Geometry | None] = cast('Any', ...),
+        properties: Mapping[str, Any]
+        | Iterable[Mapping[str, Any] | None]
+        | None = cast('Any', ...),
+        ids: Iterable[FeatureId] | None = cast('Any', ...),
+    ) -> Self:
         """Return a new ``Features`` with the given fields replaced.
 
-        Matches frozen-dataclass / ``copy.replace`` semantics: only the three
-        column fields are accepted; unknown keywords raise ``TypeError``.
-        Unspecified fields keep the receiver's values (re-validated by
-        ``__init__`` so row alignment stays enforced).
+        Omitted fields retain their existing objects. Supplied fields pass
+        through the validating constructor, which checks row alignment and
+        normalizes properties and ids.
         """
-        known = ('geometries', 'properties', 'ids')
-        for key in changes:
-            if key not in known:
-                raise TypeError(
-                    f'Features.__replace__() got an unexpected keyword argument {key!r}'
-                )
-        return type(self)(
-            changes.get('geometries', self.geometries),
-            changes.get('properties', self.properties),
-            changes.get('ids', self.ids),
+        if geometries is ... and properties is ... and ids is ...:
+            return self.__copy__()
+
+        validated = type(self)(
+            self.geometries if geometries is ... else geometries,
+            self.properties if properties is ... else properties,
+            self.ids if ids is ... else ids,
         )
+        return type(self)._from_normalized(
+            self.geometries if geometries is ... else validated.geometries,
+            self.properties if properties is ... else validated.properties,
+            self.ids if ids is ... else validated.ids,
+        )
+
+    @property
+    def __geo_interface__(self) -> GeoJsonFeatureCollection:
+        """Return a fresh GeoJSON FeatureCollection with this record's metadata."""
+        from gometry._lib import to_feature_collection
+
+        return to_feature_collection(self)
 
     def __reduce__(
         self,
@@ -863,10 +915,12 @@ def _restore_features_v1(
 class Extremes(NamedTuple, Generic[_ExtremeT]):
     """The westmost/southmost/eastmost/northmost vertices of a geometry.
 
-    Returned by `Geometry.extremes` (four `Point` fields) and
-    `GeometryArray.extremes` (four row-aligned ``GeometryArray[Point]``
-    columns); unpacks as ``(west, south, east, north)``, or use the named
-    fields. Ties keep the first vertex in storage order; Z/M ride along.
+    Returned by `Geometry.extremes()` (four scalar `Point` fields, or ``None``
+    for an empty geometry) and `GeometryArray.extremes()` (four row-aligned
+    ``GeometryArray[Point | None]`` columns; missing rows remain missing and
+    present empty rows contain empty points). Unpacks as ``(west, south, east,
+    north)``; ties keep the first vertex in storage order, and Z/M ordinates are
+    carried through.
     """
 
     west: _ExtremeT
@@ -891,45 +945,50 @@ def _restore_extremes_v1(
     return Extremes(west, south, east, north)
 
 
-class PolygonizeResult(NamedTuple):
+class PolygonizeResult(NamedTuple, Generic[_GroupMissingT_co]):
     """Full polygonization output: the polygons plus the leftover linework.
 
     Returned by `polygonize_all(diagnostics=True)`; unpacks as ``(polygons, cut_edges,
     dangles, invalid_rings)``, or use the named fields. ``polygons`` is the
-    pooled result; each diagnostic is a ``Groups[GeometryArray[LineString]]``
-    with one row per input source.
+    pooled result; each diagnostic is a `Groups` of `GeometryArray[LineString]`
+    rows, one per input source. Missing sources yield ``None`` rows, distinct
+    from present sources with no diagnostic linework. The generic argument is
+    ``None`` when source rows may be missing; it defaults to ``Never`` for dense
+    source rows.
     """
 
     polygons: GeometryArray[Polygon]
     """The polygons formed from the noded linework."""
 
-    cut_edges: Groups[GeometryArray[LineString]]
+    cut_edges: Groups[GeometryArray[LineString] | _GroupMissingT_co]
     """Noded edges that are not part of a polygon, grouped by source row."""
 
-    dangles: Groups[GeometryArray[LineString]]
+    dangles: Groups[GeometryArray[LineString] | _GroupMissingT_co]
     """Noded edges with at least one free end, grouped by source row."""
 
-    invalid_rings: Groups[GeometryArray[LineString]]
+    invalid_rings: Groups[GeometryArray[LineString] | _GroupMissingT_co]
     """Invalid noded rings or duplicate edges, grouped by source row."""
 
-    def __reduce__(self) -> tuple[Callable[..., PolygonizeResult], tuple[Any, ...]]:
+    def __reduce__(
+        self,
+    ) -> tuple[Callable[..., PolygonizeResult[_GroupMissingT_co]], tuple[Any, ...]]:
         return _restore_polygonize_result_v1, tuple(self)
 
 
 def _restore_polygonize_result_v1(
     polygons: GeometryArray[Polygon],
-    cut_edges: Groups[GeometryArray[LineString]],
-    dangles: Groups[GeometryArray[LineString]],
-    invalid_rings: Groups[GeometryArray[LineString]],
-) -> PolygonizeResult:
+    cut_edges: Groups[GeometryArray[LineString] | _GroupMissingT_co],
+    dangles: Groups[GeometryArray[LineString] | _GroupMissingT_co],
+    invalid_rings: Groups[GeometryArray[LineString] | _GroupMissingT_co],
+) -> PolygonizeResult[_GroupMissingT_co]:
     return PolygonizeResult(polygons, cut_edges, dangles, invalid_rings)
 
 
-class SupportsGeoInterface(Protocol):
-    """Any object exposing a GeoJSON-like ``__geo_interface__`` mapping."""
+class SupportsGeoInterface(Protocol[_GeoJsonInterfaceT_co]):
+    """Any object exposing a typed GeoJSON-like ``__geo_interface__`` mapping."""
 
     @property
-    def __geo_interface__(self) -> Mapping[str, Any]: ...
+    def __geo_interface__(self) -> _GeoJsonInterfaceT_co: ...
 
 
 class SupportsArrowArray(Protocol):
@@ -954,6 +1013,30 @@ class SupportsToWkt(Protocol):
     """
 
     def to_wkt(self) -> str: ...
+
+
+class _SupportsToAuthority(Protocol):
+    def to_authority(
+        self,
+    ) -> tuple[str, str | SupportsIndex] | list[str | SupportsIndex] | None: ...
+
+
+class _SupportsToEpsg(Protocol):
+    def to_epsg(self) -> SupportsIndex | None: ...
+
+
+class _SupportsToJson(Protocol):
+    def to_json(self) -> str: ...
+
+
+class _SupportsCrsHolder(Protocol):
+    @property
+    def crs(self) -> CrsInput | None: ...
+
+
+class _SupportsSrsHolder(Protocol):
+    @property
+    def srs(self) -> CrsInput | None: ...
 
 
 #: A float lane: any iterable of floats, or a PEP-3118 buffer exporter
@@ -983,16 +1066,22 @@ ParseFormat: TypeAlias = Literal[
 ]
 
 #: Anything accepted where a CRS is expected: an authority string
-#: (``'EPSG:4326'``, WKT, PROJ), an EPSG code, an ``(authority, code)`` pair,
-#: a PROJJSON/CF mapping, or any object exposing ``to_wkt()`` (``gometry.CRS``,
-#: ``pyproj.CRS``).
+#: (``'EPSG:4326'``, WKT, PROJ), an integer-like EPSG code, an
+#: ``(authority, code)`` pair, a PROJJSON/CF mapping, or a CRS-like object
+#: exposing a supported conversion or holder protocol (including ``gometry.CRS``
+#: and ``pyproj.CRS``).
 CrsInput: TypeAlias = (
     str
-    | int
-    | tuple[str, str | int]
-    | list[str | int]
+    | SupportsIndex
+    | tuple[str, str | SupportsIndex]
+    | list[str | SupportsIndex]
     | Mapping[str, Any]
     | SupportsToWkt
+    | _SupportsToAuthority
+    | _SupportsToEpsg
+    | _SupportsToJson
+    | _SupportsCrsHolder
+    | _SupportsSrsHolder
 )
 
 # ---------------------------------------------------------------------------
@@ -1070,9 +1159,10 @@ keys are rejected at parse time.
 class GeoJsonFeature(TypedDict):
     """A gometry-parseable GeoJSON Feature object (RFC 7946 §3.2).
 
-    ``geometry`` may be ``None`` for missing rows in bulk FeatureCollection /
-    ``from_features`` ingestion. Scalar ``from_geojson`` of a Feature rejects
-    null geometry — use :class:`GeoJsonFeatureNonNull` for that overload.
+    ``geometry`` may be ``None`` in a FeatureCollection, in a GeoJSON row
+    column, or with ``from_geojson(..., features=True)``. Geometry-only
+    decoding rejects a scalar null-geometry Feature; use
+    :class:`GeoJsonFeatureNonNull` for that overload.
     """
 
     type: Literal['Feature']

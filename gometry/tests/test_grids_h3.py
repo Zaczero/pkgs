@@ -13,10 +13,11 @@ from itertools import pairwise
 from typing import Any, cast
 
 import gometry as gm
-import h3
 import numpy as np
 import pytest
 from gometry import _lib
+
+from tests._support import h3_oracle
 
 
 def test_h3_point_cell_and_boundary() -> None:
@@ -40,7 +41,7 @@ def test_h3_point_cell_and_boundary() -> None:
     assert all(isinstance(value, gm.H3Cell) for value in cells)
     assert str(cell)
     assert boundary.geometry_type == 'Polygon'
-    assert boundary.crs == 'OGC:CRS84'
+    assert boundary.crs == gm.CRS('OGC:CRS84')
     assert cell.parent(6).resolution == 6
     assert len(cell.parent(6).children(7)) == 7
     disk = cell.grid_disk(0)
@@ -196,8 +197,8 @@ def test_h3_polygon_coverage() -> None:
     assert int(coverage[0]) in coverage
     assert str(coverage[0]) in coverage
     assert gm.H3Cell(30.0, 52.0, resolution=7) not in coverage
-    assert coverage.polygon.crs == 'OGC:CRS84'
-    assert coverage.compact().uncompact(7).polygon.crs == 'OGC:CRS84'
+    assert coverage.polygon.crs == gm.CRS('OGC:CRS84')
+    assert coverage.compact().uncompact(7).polygon.crs == gm.CRS('OGC:CRS84')
     assert isinstance(np.asarray(coverage, dtype=object)[0], gm.H3Cell)
     with pytest.raises(TypeError, match=r'ufunc|does not support'):
         np.add(coverage, coverage)
@@ -538,7 +539,7 @@ def test_h3_vertices_canonical_identity() -> None:
     assert int(vertex) == vertex.id
     with pytest.raises(gm.ParseError):
         gm.H3Cell(vertex.token)
-    assert vertex.point.crs == 'OGC:CRS84'
+    assert vertex.point.crs == gm.CRS('OGC:CRS84')
     assert pickle.loads(pickle.dumps(vertex)) == vertex
     assert copy.copy(vertex) is vertex
     assert copy.deepcopy(vertex) is vertex
@@ -582,7 +583,7 @@ def test_h3_directed_edges() -> None:
     assert gm.H3Edge(edge.id) == edge
     boundary = edge.line
     assert isinstance(boundary, gm.LineString)
-    assert boundary.crs == 'OGC:CRS84'
+    assert boundary.crs == gm.CRS('OGC:CRS84')
     assert 1000 < edge.length < 3000
     edges = cell.edges
     assert isinstance(edges, gm.H3EdgeArray)
@@ -764,7 +765,7 @@ def test_h3_to_polygon_dissolves_shared_edges() -> None:
     coverage = gm.h3_cover(gm.box(13.2, 52.4, 13.6, 52.6, crs=4326), resolution=6)
     outline = coverage.to_polygon()
     assert outline.geometry_type == 'Polygon'
-    assert outline.crs == 'OGC:CRS84'
+    assert outline.crs == gm.CRS('OGC:CRS84')
     assert outline.is_valid
     union = gm.union_all(coverage.polygon)
     assert (outline ^ union).area <= 1e-06 * outline.area
@@ -938,7 +939,7 @@ def _minor_arc_latitude_extrema(
 
 
 def _analytic_h3_within_box(
-    resolution: int, west: float, south: float, east: float, north: float
+    h3: Any, resolution: int, west: float, south: float, east: float, north: float
 ) -> set[str]:
     """Native vertices plus analytic arc latitudes for an axis-aligned box."""
     expected = set()
@@ -975,11 +976,12 @@ def _analytic_h3_within_box(
 def test_h3_within_polar_box_matches_independent_arc_extrema(
     resolution: int, count: int
 ) -> None:
+    h3 = h3_oracle()
     source = gm.box(-180.0, 70.0, 180.0, 90.0, crs=4326)
     actual = {
         cell.token for cell in gm.h3_cover(source, resolution, cell_rule='within')
     }
-    expected = _analytic_h3_within_box(resolution, -180.0, 70.0, 180.0, 90.0)
+    expected = _analytic_h3_within_box(h3, resolution, -180.0, 70.0, 180.0, 90.0)
     assert len(expected) == count
     assert actual == expected
     if resolution == 2:
@@ -990,6 +992,7 @@ def test_h3_within_polar_box_matches_independent_arc_extrema(
 def test_h3_within_central_box_is_analytic_strict_overlap_subset(
     resolution: int, count: int
 ) -> None:
+    h3 = h3_oracle()
     source = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326)
     within = {
         cell.token for cell in gm.h3_cover(source, resolution, cell_rule='within')
@@ -997,7 +1000,7 @@ def test_h3_within_central_box_is_analytic_strict_overlap_subset(
     overlap = {
         cell.token for cell in gm.h3_cover(source, resolution, cell_rule='overlap')
     }
-    assert within == _analytic_h3_within_box(resolution, -10.0, -10.0, 10.0, 10.0)
+    assert within == _analytic_h3_within_box(h3, resolution, -10.0, -10.0, 10.0, 10.0)
     assert len(within) == count
     assert within < overlap
 
@@ -1013,6 +1016,7 @@ def test_h3_overlap_keeps_both_closed_owners_at_native_arc_midpoint() -> None:
 
 def test_h3_within_never_uses_the_chord_proxy_as_a_containment_certificate() -> None:
     """The true first H3 arc exits its own planar presentation polygon."""
+    h3 = h3_oracle()
     import shapely
 
     cell = gm.H3Cell(0x82754FFFFFFFFFF)
@@ -1076,6 +1080,7 @@ def test_h3_within_emits_no_cell_with_an_independent_spherical_arc_witness(
     token: str,
 ) -> None:
     """Vertices and exact arc midpoints red-team nearby/special-cell outputs."""
+    h3 = h3_oracle()
     import shapely
 
     owner = gm.H3Cell(token)
@@ -1252,13 +1257,14 @@ def test_h3_cover_partial_north_cap_exact() -> None:
 
 def test_h3_cover_source_gate_counterexample_barrier_gate() -> None:
     """box(0,60,60,88) r2: the outline reaches the polar cell."""
+    h3 = h3_oracle()
     source = gm.box(0.0, 60.0, 60.0, 88.0, crs=4326)
     actual = _assert_h3_cover_universe_equal(
         source, 2, expected_counts=(104, 56, 77, 104)
     )
     assert {
         gm.H3Cell(value).token for value in actual['within']
-    } == _analytic_h3_within_box(2, 0.0, 60.0, 60.0, 88.0)
+    } == _analytic_h3_within_box(h3, 2, 0.0, 60.0, 60.0, 88.0)
 
 
 def test_h3_cover_south_polar_symmetry() -> None:
@@ -1271,9 +1277,10 @@ def test_h3_cover_south_polar_symmetry() -> None:
 
 
 def test_h3_cover_full_longitude_nonpolar_band() -> None:
+    h3 = h3_oracle()
     source = gm.box(-180.0, -4.0, 180.0, 4.0, crs=4326)
     actual = {cell.token for cell in gm.h3_cover(source, 1, cell_rule='within')}
-    expected = _analytic_h3_within_box(1, -180.0, -4.0, 180.0, 4.0)
+    expected = _analytic_h3_within_box(h3, 1, -180.0, -4.0, 180.0, 4.0)
     assert expected
     assert actual == expected
 

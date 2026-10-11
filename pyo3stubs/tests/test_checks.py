@@ -558,6 +558,36 @@ def test_single_overload_flagged(tmp_path, pristine_stub):
     )
 
 
+def test_overload_hygiene_ignores_bound_receiver_kind_but_checks_operands(
+    tmp_path, pristine_stub
+):
+    stub = (
+        pristine_stub
+        + """\
+
+class ReceiverKinds:
+    @overload
+    def receiver(self, /, value: int) -> int: ...
+    @overload
+    def receiver(self, value: str) -> str: ...
+
+    @overload
+    def operand(self, value: int, /) -> int: ...
+    @overload
+    def operand(self, value: str) -> str: ...
+"""
+    )
+
+    errors = structural(make_config(tmp_path, stub_text=stub))
+
+    assert not any('ReceiverKinds.receiver.self' in error for error in errors), errors
+    assert any(
+        'ReceiverKinds.operand.value' in error
+        and 'POSITIONAL_ONLY != canonical POSITIONAL_OR_KEYWORD' in error
+        for error in errors
+    ), errors
+
+
 def test_finality_flags_missing_final(tmp_path, pristine_stub):
     mutated = seeded(pristine_stub, '@final\nclass Sealed:', 'class Sealed:')
     errors = structural(make_config(tmp_path, stub_text=mutated))
@@ -893,6 +923,33 @@ def test_text_signature_flags_param_drift(tmp_path, pristine_src):
     )
     errors = text_signature(make_config(tmp_path, src_text=mutated))
     assert any('text_signature params' in e for e in errors), errors
+
+
+def test_text_signature_matches_keyword_only_args_after_module_receiver(
+    tmp_path,
+    pristine_src,
+):
+    source = seeded(
+        seeded(
+            pristine_src,
+            'signature = (a, b = "x"),',
+            'signature = (*, a, b = "x"),',
+        ),
+        'text_signature = "(a, b=\'x\')"',
+        'text_signature = "($module, /, *, a, b=\'x\')"',
+    )
+    assert text_signature(make_config(tmp_path, src_text=source)) == []
+
+    positional_source = seeded(
+        source,
+        'signature = (*, a, b = "x"),',
+        'signature = (a, b = "x"),',
+    )
+    positional_root = tmp_path / 'positional'
+    positional_root.mkdir()
+    errors = text_signature(make_config(positional_root, src_text=positional_source))
+    assert len(errors) == 1, errors
+    assert 'text_signature params' in errors[0]
 
 
 def test_text_signature_flags_literal_default_drift(tmp_path, pristine_src):

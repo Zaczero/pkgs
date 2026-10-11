@@ -404,6 +404,19 @@ fn grid_kind_from_cell(value: &Bound<'_, PyAny>) -> Option<GridKind> {
         .then_some(GridKind::GeohashCell)
 }
 
+pub(super) fn grid_kind_from_value(value: &Bound<'_, PyAny>) -> Option<GridKind> {
+    grid_kind_from_cell(value)
+}
+
+pub(super) fn is_raw_identity(value: &Bound<'_, PyAny>, kind: GridKind) -> bool {
+    if value.cast::<PyString>().is_ok() {
+        return true;
+    }
+    kind != GridKind::GeohashCell
+        && value.cast_exact::<pyo3::types::PyBool>().is_err()
+        && (value.cast::<PyInt>().is_ok() || is_custom_index_provider(value))
+}
+
 fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     let Ok(array) = ids.cast::<PyUntypedArray>() else {
         return Ok(None);

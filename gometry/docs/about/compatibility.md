@@ -43,8 +43,8 @@ CRS, epoch, missing-row, and loss behavior.
 
 | Boundary | Extra and minimum dependency | Supported entry points | Important boundary behavior |
 | --- | --- | --- | --- |
-| Arrow / GeoArrow | `gometry[arrow]`, `pyarrow>=24.0.0` for PyArrow objects | [`to_arrow`][gometry.Geometry.to_arrow], [`from_arrow`][gometry.from_arrow] | Native Arrow capsules do not require PyArrow; the C provider is a trusted ABI participant and buffer contents are validated. |
-| pandas | `gometry[pandas]`, `pandas>=3.0.3` | [`to_pandas`][gometry.GeometryArray.to_pandas], [`from_pandas`][gometry.from_pandas] | Uses gometry's extension storage; missing rows remain missing. |
+| Arrow / GeoArrow | `gometry[arrow]`, `pyarrow>=24.0.0` for PyArrow objects | [`to_arrow`][gometry.Geometry.to_arrow], [`from_arrow`][gometry.from_arrow] | Geometry uses GeoArrow capsules; cell arrays export primitive IDs or geohash tokens without PyArrow. C providers are trusted ABI participants and their buffer contents are validated. |
+| pandas | `gometry[pandas]`, `pandas>=3.0.3`; `gometry[arrow]` for GeoArrow-backed `ArrowDtype` | [`to_pandas`][gometry.GeometryArray.to_pandas], [`from_pandas`][gometry.from_pandas] | Extension storage is shared; object Series rows and GeoArrow-backed Arrow columns are imported, and missing values become missing rows. |
 | Polars | `gometry[polars]`, `polars>=1.42.0` | [`to_polars`][gometry.GeometryArray.to_polars], [`from_polars`][gometry.from_polars] | Uses WKB/EWKB binary storage; non-EPSG CRS and coordinate epochs need explicit restoration or loss acknowledgement. |
 | GeoPandas | `gometry[geopandas]`, `geopandas>=1.1.4` | [`to_geopandas`][gometry.GeometryArray.to_geopandas], [`from_geopandas`][gometry.from_geopandas] | Converts through the GeoPandas/Shapely boundary; coordinate epochs require explicit loss acknowledgement on export. |
 | GeoParquet | `gometry[arrow]` | [`to_geoparquet`][gometry.GeometryArray.to_geoparquet], [`from_geoparquet`][gometry.from_geoparquet] | Uses PyArrow and GeoParquet column metadata; see [Arrow & storage](../ecosystem/arrow.md) for CRS and epoch portability. |

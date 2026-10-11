@@ -8,9 +8,13 @@ import gometry as gm
 import pytest
 
 
-def test_set_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
-    point = gm.Point(1, 2).set_crs(4326)
-    points = (gm.points([1.0, 2.0], [2.0, 3.0])).set_crs(4326)
+def test_with_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
+    raw_point = gm.Point(1, 2)
+    point = raw_point.with_crs(4326)
+    raw_points = gm.points([1.0, 2.0], [2.0, 3.0])
+    points = raw_points.with_crs(4326)
+    assert raw_point.crs is None
+    assert raw_points.crs is None
     measured = gm.Point(1, 2, z=3, m=4, crs=4326)
     epoch_point = gm.Point(1, 2, z=3, crs=4979, epoch=2010.0)
     epoch_points = gm.points([1.0, 2.0], [2.0, 3.0], crs=4326, epoch=2010.0)
@@ -20,8 +24,8 @@ def test_set_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
     dynamic_epoch_b = gm.Point(
         3657660.66, 255768.55, z=5201382.11, crs=7789, epoch=2020.0
     )
-    assert point.crs == 'EPSG:4326'
-    assert points.crs == 'EPSG:4326'
+    assert point.crs == gm.CRS('EPSG:4326')
+    assert points.crs == gm.CRS('EPSG:4326')
     assert point.epoch is None
     assert epoch_point.epoch == 2010.0
     assert epoch_points.epoch == 2010.0
@@ -31,8 +35,8 @@ def test_set_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
     with pytest.raises(ValueError, match='one shared coordinate epoch'):
         gm.GeometryArray([dynamic_epoch_a, dynamic_epoch_b])
     assert gm.GeometryArray([point], epoch=2020.0)[0].epoch == 2020.0
-    assert point.to_crs('EPSG:4326').crs == 'EPSG:4326'
-    assert (points).to_crs(3857).crs == 'EPSG:3857'
+    assert point.to_crs('EPSG:4326').crs == gm.CRS('EPSG:4326')
+    assert (points).to_crs(3857).crs == gm.CRS('EPSG:3857')
     dynamic_epoch_array = gm.GeometryArray([dynamic_epoch_a, dynamic_epoch_a]).to_crs(
         7660
     )
@@ -41,7 +45,7 @@ def test_set_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
     measured_web = measured.to_crs(3857)
     epoch_geocentric = epoch_point.to_crs(4978)
     epoch_target = epoch_point.to_crs(4978, epoch=2020.0)
-    assert web_mercator.crs == 'EPSG:3857'
+    assert web_mercator.crs == gm.CRS('EPSG:3857')
     assert web_mercator.epoch is None
     expected_dynamic_epoch_coordinates = [
         dynamic_epoch_a.to_crs(7660).coords.to_nested(),
@@ -91,70 +95,74 @@ def test_set_crs_assigns_and_to_crs_transforms_web_mercator() -> None:
         gm.Point(1, 2).to_crs(3857)
 
 
-def test_set_epoch_assigns_clears_and_guards_retag() -> None:
+def test_with_epoch_assigns_clears_and_guards_retag() -> None:
     point = gm.Point(1, 2, crs=4326)
-    stamped = point.set_epoch(2020.0)
+    stamped = point.with_epoch(2020.0)
     assert stamped.epoch == 2020.0
+    assert point.epoch is None
     assert str(stamped) == 'POINT (1 2)'
-    assert stamped.crs == 'EPSG:4326'
-    assert stamped.set_epoch(None).epoch is None
-    with pytest.raises(ValueError, match='set_epoch would change the coordinate epoch'):
-        stamped.set_epoch(2024.0)
-    assert stamped.set_epoch(2024.0, overwrite=True).epoch == 2024.0
-    assert stamped.set_epoch(2020.0).epoch == 2020.0
+    assert stamped.crs == gm.CRS('EPSG:4326')
+    assert stamped.with_epoch(None).epoch is None
+    with pytest.raises(
+        ValueError, match='with_epoch would change the coordinate epoch'
+    ):
+        stamped.with_epoch(2024.0)
+    assert stamped.with_epoch(2024.0, overwrite=True).epoch == 2024.0
+    assert stamped.with_epoch(2020.0).epoch == 2020.0
     with pytest.raises(ValueError, match='finite decimal year'):
-        point.set_epoch(float('inf'))
-    assert (gm.Point(0, 0, crs=4326)).set_epoch(2021.5).epoch == 2021.5
+        point.with_epoch(float('inf'))
+    assert (gm.Point(0, 0, crs=4326)).with_epoch(2021.5).epoch == 2021.5
     array = gm.GeometryArray([
         gm.Point(0, 0, crs=4326),
         gm.Point(1, 1, crs=4326),
-    ]).set_epoch(2015.0)
+    ]).with_epoch(2015.0)
     assert array.epoch == 2015.0
     assert [item.epoch for item in array] == [2015.0, 2015.0]
-    assert array.set_epoch(None).epoch is None
+    assert array.with_epoch(None).epoch is None
+    assert array.epoch == 2015.0
 
 
-def test_epoch_requires_a_crs_and_set_crs_none_clears_it() -> None:
+def test_epoch_requires_a_crs_and_with_crs_none_clears_it() -> None:
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.Point(0, 0, epoch=2020.0)
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
-        gm.Point(0, 0).set_epoch(2020.0)
+        gm.Point(0, 0).with_epoch(2020.0)
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gm.GeometryArray([gm.Point(0, 0)], epoch=2020.0)
     with pytest.raises(
         ValueError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
-        gm.points([0], [0]).set_epoch(2020.0)
+        gm.points([0], [0]).with_epoch(2020.0)
     assert gm.Point(10, 20, epoch=2020.0, crs=4326).epoch == 2020.0
     stamped = gm.Point(0, 0, crs=4326, epoch=2020.0)
-    cleared = stamped.set_crs(None)
+    cleared = stamped.with_crs(None)
     assert cleared.crs is None and cleared.epoch is None
-    assert stamped.set_crs(3857, overwrite=True).epoch == 2020.0
-    array = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).set_epoch(2020.0)
-    cleared_array = array.set_crs(None)
+    assert stamped.with_crs(3857, overwrite=True).epoch == 2020.0
+    array = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).with_epoch(2020.0)
+    cleared_array = array.with_crs(None)
     assert cleared_array.crs is None and cleared_array.epoch is None
     assert [item.epoch for item in cleared_array] == [None]
-    assert gm.Point(0, 0, crs=4326).set_epoch(-0.0).epoch == 0.0
+    assert gm.Point(0, 0, crs=4326).with_epoch(-0.0).epoch == 0.0
     point = gm.Point(1, 2, crs=4326)
     with pytest.raises(TypeError):
         point.to_crs(3857, source_epoch=2020.0)
     with pytest.raises(TypeError):
         point.to_crs(3857, target_epoch=2020.0)
-    assert point.set_epoch(2020.0).to_crs(4326).epoch == 2020.0
-    assert point.set_epoch(2010.0).to_crs(4978, epoch=2020.0).epoch == 2020.0
-    assert point.set_epoch(2020.0).to_crs(4326, only_best=True).epoch == 2020.0
-    assert point.set_epoch(2020.0).to_crs(3857).epoch == 2020.0
-    stamped_array = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).set_epoch(2020.0)
+    assert point.with_epoch(2020.0).to_crs(4326).epoch == 2020.0
+    assert point.with_epoch(2010.0).to_crs(4978, epoch=2020.0).epoch == 2020.0
+    assert point.with_epoch(2020.0).to_crs(4326, only_best=True).epoch == 2020.0
+    assert point.with_epoch(2020.0).to_crs(3857).epoch == 2020.0
+    stamped_array = gm.GeometryArray([gm.Point(0, 0, crs=4326)]).with_epoch(2020.0)
     assert stamped_array.to_crs(4326, only_best=True).epoch == 2020.0
     assert stamped_array.to_crs(3857).epoch == 2020.0
 
@@ -168,7 +176,7 @@ def test_epoch_requires_an_admitted_crs_at_the_shared_frame_owner(
         lambda: gm.GeometryArray([gm.Point(1.0, 2.0)], crs=2180, epoch=2020.0),
         lambda: gm.points([1.0], [2.0], crs=2180, epoch=2020.0),
         lambda: gm.box(0.0, 0.0, 1.0, 1.0, crs=2180, epoch=2020.0),
-        lambda: gm.Point(1.0, 2.0, crs=2180).set_epoch(2020.0),
+        lambda: gm.Point(1.0, 2.0, crs=2180).with_epoch(2020.0),
     ):
         with pytest.raises(ValueError, match=message):
             make()
@@ -177,7 +185,7 @@ def test_epoch_requires_an_admitted_crs_at_the_shared_frame_owner(
     with pytest.raises(ValueError, match=message):
         observed.to_crs(2180, epoch=2025.5)
     with pytest.raises(ValueError, match=message):
-        observed.set_crs(2180, overwrite=True)
+        observed.with_crs(2180, overwrite=True)
     assert capsys.readouterr().err == ''
 
     # The WGS84 ensemble and true dynamic datums remain usable end to end.
@@ -187,22 +195,24 @@ def test_epoch_requires_an_admitted_crs_at_the_shared_frame_owner(
 
 def test_estimate_local_crs_normalizes_frames_and_preserves_datums() -> None:
     geom = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    assert geom.estimate_local_crs() == 'EPSG:32634'
-    assert geom.to_crs(3857).estimate_local_crs() == 'EPSG:32634'
-    assert geom.to_crs(32634).estimate_local_crs() == 'EPSG:32634'
-    assert gm.Point(21, 52, z=9, crs=4979).estimate_local_crs() == 'EPSG:32634'
+    assert geom.estimate_local_crs() == gm.CRS('EPSG:32634')
+    assert geom.to_crs(3857).estimate_local_crs() == gm.CRS('EPSG:32634')
+    assert geom.to_crs(32634).estimate_local_crs() == gm.CRS('EPSG:32634')
+    assert gm.Point(21, 52, z=9, crs=4979).estimate_local_crs() == gm.CRS('EPSG:32634')
     osgb = gm.Point(530000, 180000, crs=27700)
     osgb_local = osgb.estimate_local_crs()
     assert osgb_local.info['name'] == 'Local conformal CRS'
     assert osgb_local.info['datum']['name'] == gm.CRS(27700).info['datum']['name']
-    assert gm.Point(-74.0, 41.0, crs=4269).estimate_local_crs() == 'EPSG:26918'
-    assert gm.Point(500000, 4500000, crs=26918).estimate_local_crs() == 'EPSG:26918'
-    assert gm.Point(6.0, 60.0, crs=4326).estimate_local_crs() == 'EPSG:32632'
-    assert gm.Point(9.0, 78.0, crs=4326).estimate_local_crs() == 'EPSG:32633'
+    assert gm.Point(-74.0, 41.0, crs=4269).estimate_local_crs() == gm.CRS('EPSG:26918')
+    assert gm.Point(500000, 4500000, crs=26918).estimate_local_crs() == gm.CRS(
+        'EPSG:26918'
+    )
+    assert gm.Point(6.0, 60.0, crs=4326).estimate_local_crs() == gm.CRS('EPSG:32632')
+    assert gm.Point(9.0, 78.0, crs=4326).estimate_local_crs() == gm.CRS('EPSG:32633')
     antimeridian = gm.LineString([(179.0, 0.0), (-179.0, 0.0)], crs=4326)
     assert antimeridian.estimate_local_crs().is_projected
     array = gm.GeometryArray([gm.Point(20.5, 51.5), gm.Point(21.5, 52.5)], crs=4326)
-    assert array.estimate_local_crs() == 'EPSG:32634'
+    assert array.estimate_local_crs() == gm.CRS('EPSG:32634')
     assert gm.Point(0.0, 89.0, crs=4326).estimate_local_crs().is_projected
     assert gm.Point(0.0, -89.0, crs=4326).estimate_local_crs().is_projected
     with pytest.raises(ValueError, match='present, non-empty'):
@@ -293,7 +303,7 @@ def test_estimate_local_crs_prefers_datum_matched_utm_and_preserves_other_datums
     point = gm.Point(x, y, crs=crs) if z is None else gm.Point(x, y, z=z, crs=crs)
     local = point.estimate_local_crs()
     if expected is not None:
-        assert local == expected
+        assert local == gm.CRS(expected)
         return
 
     source_datum = gm.CRS(crs).info['datum']
@@ -306,12 +316,12 @@ def test_derived_geometries_inherit_the_full_frame() -> None:
     binary ops require one frame (docs/guide/crs.md, 'frame doctrine').
     """
     geom = gm.Point(21.0, 52.0, crs=4326, epoch=2020.0)
-    other = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326).set_epoch(2020.0)
+    other = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326).with_epoch(2020.0)
     for derived in (geom.buffer(1.0), geom.centroid(), gm.intersection(geom, other)):
         assert str(derived.crs) == str(geom.crs)
         assert derived.epoch == 2020.0
     with pytest.raises(gm.CRSMismatchError):
-        gm.distance(geom, other.set_epoch(2010.0, overwrite=True))
+        gm.distance(geom, other.with_epoch(2010.0, overwrite=True))
 
 
 def test_to_crs_epoch_survives_exactly_while_the_target_admits_it() -> None:

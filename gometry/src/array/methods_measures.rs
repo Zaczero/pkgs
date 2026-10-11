@@ -65,13 +65,16 @@ fn ring_payload_len(array: &PyGeometryArray) -> Option<usize> {
 
 #[pymethods]
 impl PyGeometryArray {
-    /// Concatenate one or more arrays sharing this array's CRS and epoch.
+    /// Concatenate zero or more arrays sharing this array's CRS and epoch.
+    /// With no arrays, return this array.
     ///
     /// Parameters
     /// ----------
-    /// *others : GeometryArray
-    ///     Arrays to append, in order; each must share this array's CRS and
-    ///     epoch. With no arguments the array itself is returned.
+    /// other : GeometryArray
+    ///     First array to append; it must share this array's CRS and epoch.
+    /// others : GeometryArray
+    ///     Additional arrays to append in order; each must share this array's
+    ///     CRS and epoch.
     ///
     /// Returns
     /// -------

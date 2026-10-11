@@ -97,30 +97,33 @@ print("matching indices:", [i for i, h in enumerate(hits) if h])
 
 ```
 
-A sequence argument returns one typed mask from a native batch. Broadcasting is
-strict: **scalar-vs-sequence** broadcasts, and **equal-length sequences** are
-compared pairwise; mismatched non-scalar lengths raise. Many-to-many work uses a
+A sequence argument returns one typed mask from a native batch. Lists, object
+arrays, and other iterables of `Geometry | None` are normalized to geometry
+rows; missing rows remain at their original positions. Broadcasting is strict:
+**scalar-vs-sequence** broadcasts, and **equal-length sequences** are compared
+pairwise; mismatched non-scalar lengths raise. Many-to-many work uses a
 [`gm.SpatialIndex`][gometry.SpatialIndex] or [`gm.join`][gometry.join].
 
-### The `_xy` coordinate path
+### Coordinate predicates
 
-When you are testing against raw coordinates rather than [`Point`][gometry.Point] objects,
-[`contains_xy`][gometry.contains_xy] and [`intersects_xy`][gometry.intersects_xy]
-skip constructing the point entirely:
+Use the same predicate with keyword-only `x` and `y` when testing raw
+coordinates. This keeps the point-probe kernel without constructing
+[`Point`][gometry.Point] objects:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 region = gm.box(0, 0, 10, 10)
-print(gm.contains_xy(region, 5, 5))
-print(repr(gm.intersects_xy(region, [5, 30], [5, 5])))
+print(gm.contains(region, x=5, y=5))
+print(repr(gm.intersects(region, x=[5, 30], y=[5, 5])))
 
 ```
 
-The coordinates are interpreted in the geometry's CRS. Geographic inputs use
-the same antimeridian and pole topology as predicates against explicit
-`Point` objects, including strict interior versus boundary
-contact at the frame's periodic seam and poles (±180°/±90° for EPSG:4326).
+Provide either a right-hand geometry or both coordinate keywords. The
+coordinates are interpreted in the left geometry's CRS. Geographic inputs use
+the same antimeridian and pole topology as predicates against explicit points,
+including strict interior versus boundary contact at the frame's periodic seam
+and poles (±180°/±90° for EPSG:4326).
 
 ## Robust predicates
 

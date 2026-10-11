@@ -9,6 +9,7 @@ use crate::error::Result;
 use crate::geographic::{GeodeticPole, GeographicFrame, ScalarGeographicView};
 use crate::geometry::antimeridian::validate_structure;
 use crate::geometry::distance::ChartParts;
+use crate::geometry::interval::Interval;
 use crate::geometry::point_location::{PointQueryPlan, PreparedPointQueries};
 use crate::geometry::source_support::{
     OccupiedToward, PointMembership, SourcePointLocation, cartesian_point_location_and_area,
@@ -700,7 +701,7 @@ impl PreparedPlan {
     ) -> Result<bool> {
         if self
             .bounds()
-            .is_none_or(|bounds| !bounds.contains_xy(point.xy()))
+            .is_none_or(|bounds| !bounds.contains_point(point.xy()))
         {
             return Ok(false);
         }
@@ -1367,10 +1368,8 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn backend_floor(self) -> f64 {
-        crate::geometry::interval::Interval::exact(self.semi_major)
-            .mul(crate::geometry::interval::Interval::exact(
-                Self::BACKEND_RELATIVE,
-            ))
+        Interval::exact(self.semi_major)
+            .mul(Interval::exact(Self::BACKEND_RELATIVE))
             .upper()
     }
 
@@ -1383,13 +1382,9 @@ impl GeodesicNumericalPolicy {
     }
 
     pub(crate) fn evaluation_allowance(self, evaluations: f64) -> f64 {
-        crate::geometry::interval::Interval::exact(self.semi_major)
-            .mul(crate::geometry::interval::Interval::exact(
-                Self::BACKEND_RELATIVE,
-            ))
-            .mul(crate::geometry::interval::Interval::exact(
-                evaluations.max(1.0),
-            ))
+        Interval::exact(self.semi_major)
+            .mul(Interval::exact(Self::BACKEND_RELATIVE))
+            .mul(Interval::exact(evaluations.max(1.0)))
             .upper()
     }
 }
@@ -1474,7 +1469,7 @@ impl DwithinOutcome {
             Self::Within => Ok(true),
             Self::Outside => Ok(false),
             Self::Unresolved => Err(crate::crs::CrsError::message(
-                "geodesic dwithin did not converge within 128 point-edge evaluations",
+                "geodesic dwithin could not certify the threshold within its evaluation work limit",
             )),
         }
     }
@@ -1505,11 +1500,9 @@ mod dwithin_outcome_tests {
         let error = DwithinOutcome::Unresolved
             .into_bool()
             .expect_err("a bool cannot encode an unresolved threshold");
-        assert!(
-            error
-                .to_string()
-                .contains("geodesic dwithin did not converge within 128 point-edge evaluations")
-        );
+        assert!(error.to_string().contains(
+            "geodesic dwithin could not certify the threshold within its evaluation work limit"
+        ));
     }
 }
 
@@ -1582,7 +1575,22 @@ pub(crate) trait ChartMetric {
     ) -> Result<Point>;
     fn chart_edge_differential(&self, edge: &ChartEdge, parameter: f64) -> ChartEdgeDifferential;
     fn chart_edge_differential_bounds(&self, edge: &ChartEdge) -> ChartEdgeDifferentialBounds;
-    fn chart_edge_pole_distance_upper_bound(&self, edge: &ChartEdge, target: Point) -> Option<f64>;
+    fn chart_edge_moving_correspondence_upper(
+        &self,
+        source: &ChartEdge,
+        target: &ChartEdge,
+        source_interval: [f64; 2],
+        target_interval: [f64; 2],
+        source_points: &[Point; 2],
+        target_points: &[Point; 2],
+        endpoint_distances: [f64; 2],
+    ) -> Option<f64>;
+    fn chart_edge_pole_distance_upper_bound(
+        &self,
+        edge: &ChartEdge,
+        source_interval: [f64; 2],
+        target: Point,
+    ) -> Option<f64>;
     fn point_edge_query(
         &self,
         point: Point,

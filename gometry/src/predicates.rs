@@ -22,6 +22,6 @@ pub(crate) use pairwise::{
     shortest_line,
 };
 pub(crate) use topological::{
-    contains, contains_properly, contains_xy, covered_by, covers, crosses, disjoint, intersects,
-    intersects_xy, overlaps, touches, within,
+    contains, contains_properly, covered_by, covers, crosses, disjoint, intersects, overlaps,
+    touches, within,
 };

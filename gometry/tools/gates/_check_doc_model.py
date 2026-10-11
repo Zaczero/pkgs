@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import re
 import sys
 from dataclasses import dataclass
@@ -34,11 +35,13 @@ from pyo3stubs.cli import load_config
 from pyo3stubs.context import CheckContext
 from pyo3stubs.doc_structure import (
     DocSubject,
+    SignatureParameter,
     attribute_entries,
     check_doc_subject,
     iter_doc_subjects,
     parameter_entries,
     parse_doc,
+    resolve_parameter_rows,
     return_entries,
 )
 
@@ -55,7 +58,8 @@ _PUBLIC_TYPEVAR_NAMES = {
     '_GeometryT': 'GeometryT',
     '_GeometryT_co': 'GeometryT_co',
     '_GroupKeyT': 'GroupKeyT',
-    '_GroupValuesT_co': 'GroupValuesT_co',
+    '_GroupMissingT_co': 'GroupMissingT_co',
+    '_GroupRowT_co': 'GroupRowT_co',
 }
 
 ParameterForm = tuple[str | None, str, str | None, str | None]
@@ -68,6 +72,15 @@ class _StubConstructor:
     name: str
     forms: tuple[CallForm, ...]
     error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDocumentationContracts:
+    call_forms: dict[str, tuple[CallForm, ...]]
+    constructor_rows: dict[
+        str,
+        dict[str, tuple[str, str | None, str | None]],
+    ]
 
 
 def _is_never(function: griffe.Function) -> bool:
@@ -842,16 +855,319 @@ def _stub_constructor_contracts(
     return result
 
 
-def _call_form_defaults(
+def _source_module_for_path(
+    pkg: griffe.Module,
+    path: Path,
+) -> griffe.Module | None:
+    package_root = ROOT / 'python' / 'gometry'
+    try:
+        relative = path.resolve().relative_to(package_root.resolve())
+    except ValueError:
+        return None
+    parts = list(relative.with_suffix('').parts)
+    if parts and parts[-1] == '__init__':
+        parts.pop()
+    module_path = '.'.join(('gometry', *parts))
+    value: Any = pkg
+    for part in module_path.split('.')[1:]:
+        value = getattr(value, 'members', {}).get(part)
+    return value if isinstance(value, griffe.Module) else None
+
+
+def _namedtuple_call_form(
+    class_name: str,
+    class_node: ast.ClassDef,
+    module: griffe.Module,
+    aliases: dict[str, Any],
+) -> CallForm:
+    fields = [
+        member
+        for member in class_node.body
+        if isinstance(member, ast.AnnAssign)
+        and isinstance(member.target, ast.Name)
+        and not member.target.id.startswith('_')
+        and not (
+            isinstance(member.annotation, ast.Subscript)
+            and _stub_base_name(member.annotation.value) == 'ClassVar'
+        )
+    ]
+    parameters = tuple(
+        (
+            'positional or keyword',
+            field.target.id,
+            _stub_annotation(field.annotation, module, aliases),
+            _expression_text(field.value),
+        )
+        for field in fields
+        if isinstance(field.target, ast.Name)
+    )
+    generic_arguments = next(
+        (
+            tuple(
+                _public_annotation(ast.unparse(argument))
+                for argument in (
+                    base.slice.elts
+                    if isinstance(base.slice, ast.Tuple)
+                    else (base.slice,)
+                )
+            )
+            for base in class_node.bases
+            if isinstance(base, ast.Subscript)
+            and _stub_base_name(base.value) == 'Generic'
+        ),
+        (),
+    )
+    result = (
+        f'{class_name}[{", ".join(generic_arguments)}]'
+        if generic_arguments
+        else class_name
+    )
+    return parameters, result
+
+
+def _source_constructor_contracts(
+    pkg: griffe.Module,
+    inventory: Any,
+    aliases: dict[str, Any],
+) -> dict[str, _StubConstructor]:
+    result: dict[str, _StubConstructor] = {}
+    for name, facade in inventory.classes.items():
+        if facade.imported.source_path.resolve() == STUB.resolve():
+            continue
+        class_node = facade.declaration.node
+        path = f'gometry.{name}'
+        module = _source_module_for_path(pkg, facade.imported.source_path)
+        if module is None:
+            result[path] = _StubConstructor(
+                name,
+                '',
+                (),
+                error=f'cannot load source module for {facade.imported.source_path}',
+            )
+            continue
+        namedtuple = any(
+            _stub_base_name(base) == 'NamedTuple' for base in class_node.bases
+        )
+        if namedtuple:
+            result[path] = _StubConstructor(
+                name,
+                'NamedTuple',
+                (_namedtuple_call_form(name, class_node, module, aliases),),
+            )
+            continue
+
+        phases = {
+            phase: _stub_constructor_declarations(class_node, phase)
+            for phase in ('__new__', '__init__')
+        }
+        phases = {phase: functions for phase, functions in phases.items() if functions}
+        if not phases:
+            continue
+        if len(phases) > 1:
+            result[path] = _StubConstructor(
+                name,
+                '',
+                (),
+                error='both __new__ and __init__ are declared in the source facade class',
+            )
+            continue
+        constructor, functions = next(iter(phases.items()))
+        receiver = 'cls' if constructor == '__new__' else 'self'
+        forms = []
+        error = None
+        for function in functions:
+            form = _stub_call_form(
+                function,
+                module,
+                aliases,
+                receiver=receiver,
+                constructor=constructor,
+                class_result=name,
+            )
+            if form is None:
+                error = f'{name}.{constructor} has no leading {receiver} receiver'
+                break
+            forms.append(form)
+        result[path] = _StubConstructor(name, constructor, tuple(forms), error=error)
+    return result
+
+
+def _source_class_call_result(class_node: ast.ClassDef) -> str:
+    parameters = []
+    for base in class_node.bases:
+        if (
+            not isinstance(base, ast.Subscript)
+            or _stub_base_name(base.value) != 'Generic'
+        ):
+            continue
+        values = base.slice.elts if isinstance(base.slice, ast.Tuple) else (base.slice,)
+        parameters.extend(_public_annotation(ast.unparse(value)) for value in values)
+    return (
+        f'{class_node.name}[{", ".join(parameters)}]' if parameters else class_node.name
+    )
+
+
+def _source_namedtuple_form(
+    class_node: ast.ClassDef,
+    module: griffe.Module,
+    aliases: dict[str, Any],
+) -> CallForm:
+    parameters = []
+    for member in class_node.body:
+        if (
+            not isinstance(member, ast.AnnAssign)
+            or not isinstance(member.target, ast.Name)
+            or member.target.id.startswith('_')
+            or (
+                isinstance(member.annotation, ast.Subscript)
+                and _stub_base_name(member.annotation.value) == 'ClassVar'
+            )
+        ):
+            continue
+        parameters.append((
+            'positional or keyword',
+            member.target.id,
+            _stub_annotation(member.annotation, module, aliases),
+            ast.unparse(member.value) if member.value is not None else None,
+        ))
+    return tuple(parameters), _source_class_call_result(class_node)
+
+
+def _source_facade_constructor_contracts(
+    pkg: griffe.Module,
+    inventory: Any,
+    aliases: dict[str, Any],
+) -> dict[str, _StubConstructor]:
+    package_root = (ROOT / 'python' / 'gometry').resolve()
+    contracts: dict[str, _StubConstructor] = {}
+    for name, facade in inventory.classes.items():
+        source_path = Path(facade.imported.source_path).resolve()
+        if source_path == STUB.resolve():
+            continue
+        relative = source_path.relative_to(package_root)
+        parts = list(relative.with_suffix('').parts)
+        if parts and parts[-1] == '__init__':
+            parts.pop()
+        module_path = '.'.join(('gometry', *parts))
+        module: Any = pkg
+        for part in module_path.split('.')[1:]:
+            module = getattr(module, 'members', {}).get(part)
+        if not isinstance(module, griffe.Module):
+            contracts[f'gometry.{name}'] = _StubConstructor(
+                name,
+                '',
+                (),
+                error=f'source module {module_path!r} is missing from the Griffe model',
+            )
+            continue
+
+        class_node = facade.declaration.node
+        if any(_stub_base_name(base) == 'NamedTuple' for base in class_node.bases):
+            contracts[f'gometry.{name}'] = _StubConstructor(
+                name,
+                'NamedTuple',
+                (_source_namedtuple_form(class_node, module, aliases),),
+            )
+            continue
+
+        phases = {
+            phase: _stub_constructor_declarations(class_node, phase)
+            for phase in ('__new__', '__init__')
+        }
+        phases = {phase: forms for phase, forms in phases.items() if forms}
+        if not phases:
+            continue
+        if len(phases) > 1:
+            contracts[f'gometry.{name}'] = _StubConstructor(
+                name,
+                '',
+                (),
+                error='both __new__ and __init__ are declared in the source facade class',
+            )
+            continue
+        constructor, functions = next(iter(phases.items()))
+        receiver = 'cls' if constructor == '__new__' else 'self'
+        forms = []
+        error = None
+        for function in functions:
+            form = _stub_call_form(
+                function,
+                module,
+                aliases,
+                receiver=receiver,
+                constructor=constructor,
+                class_result=_source_class_call_result(class_node),
+            )
+            if form is None:
+                error = f'{name}.{constructor} has no leading {receiver} receiver'
+                break
+            forms.append(form)
+        contracts[f'gometry.{name}'] = _StubConstructor(
+            name,
+            constructor,
+            tuple(forms),
+            error=error,
+        )
+    return contracts
+
+
+def _call_form_context_defaults(
     forms: tuple[CallForm, ...],
-) -> tuple[dict[str, str | None], list[str]]:
+) -> dict[str, str | None]:
     values: dict[str, str | None] = {}
     for parameters, _ in forms:
         for _, name, _, default in parameters:
             values.setdefault(name, None)
             if values[name] is None and default is not None:
                 values[name] = default
-    return values, []
+    return values
+
+
+def _call_form_parameter_rows(
+    forms: tuple[CallForm, ...],
+) -> dict[str, tuple[str, str | None]]:
+    names = tuple(
+        dict.fromkeys(
+            parameter[1] for parameters, _ in forms for parameter in parameters
+        )
+    )
+
+    result: dict[str, tuple[str, str | None]] = {}
+    for name in names:
+        occurrences = tuple(
+            next(
+                (parameter for parameter in parameters if parameter[1] == name),
+                None,
+            )
+            for parameters, _ in forms
+        )
+        if any(occurrence is None for occurrence in occurrences):
+            result[name] = ('varies', 'varies by call form')
+            continue
+        actual = [occurrence for occurrence in occurrences if occurrence is not None]
+        states = {
+            (
+                'variadic'
+                if kind in {'variadic positional', 'variadic keyword'}
+                else ('defaulted' if default is not None else 'required'),
+                kind if kind in {'variadic positional', 'variadic keyword'} else None,
+                default,
+            )
+            for kind, _name, _annotation, default in actual
+        }
+        if len(states) != 1:
+            result[name] = ('varies', 'varies by call form')
+            continue
+        status, _kind, default = next(iter(states))
+        result[name] = (
+            status,
+            default
+            if status == 'defaulted'
+            else 'not applicable'
+            if status == 'variadic'
+            else None,
+        )
+    return result
 
 
 def _public_overload_paths(
@@ -892,6 +1208,386 @@ def _python_function_sources(
         ):
             sources.append((alias, target))
     return sources
+
+
+def _class_provenance_error(
+    name: str,
+    public: griffe.Class,
+    inventory: Any,
+) -> str | None:
+    facade = inventory.classes.get(name)
+    if facade is None:
+        return f'{name}: public class has no source declaration in the facade inventory'
+    imported = facade.imported
+    package_root = (ROOT / 'python' / 'gometry').resolve()
+    try:
+        relative = Path(imported.source_path).resolve().relative_to(package_root)
+    except ValueError:
+        return f'{name}: class source is outside the Python package'
+    parts = list(relative.with_suffix('').parts)
+    if parts and parts[-1] == '__init__':
+        parts.pop()
+    module = '.'.join(('gometry', *parts))
+    expected = f'{module}.{imported.declared_name}'
+    source = public.extra.get('gometry', {}).get('class_source')
+    if source is None:
+        return f'{name}: materialized class has no declaration source location'
+    if (
+        getattr(source, 'qualname', None) != expected
+        or Path(getattr(source, 'path', '')).resolve()
+        != Path(imported.source_path).resolve()
+    ):
+        return (
+            f'{name}: materialized class source '
+            f'{getattr(source, "path", None)!r}::{getattr(source, "qualname", None)!r} '
+            f'does not match {imported.source_path}::{expected}'
+        )
+    targets = {
+        alias.target_path
+        for alias in public.aliases.values()
+        if isinstance(alias, griffe.Alias)
+    }
+    if expected not in targets:
+        return (
+            f'{name}: missing class provenance for {expected!r} '
+            f'from {imported.source_path}'
+        )
+    return None
+
+
+def _source_paths_match(actual: str, expected: Path) -> bool:
+    actual_path = Path(actual)
+    expected_path = expected.resolve()
+    if actual_path.is_absolute():
+        return actual_path.resolve() == expected_path
+    try:
+        return actual_path == expected_path.relative_to(ROOT.parent.resolve())
+    except ValueError:
+        return False
+
+
+def _source_function_forms(
+    qualname: str,
+    declarations: Iterable[ast.AST],
+    stub_module: griffe.Module,
+    aliases: dict[str, Any],
+) -> tuple[CallForm, ...]:
+    functions = [
+        declaration
+        for declaration in declarations
+        if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    overloads = [
+        function
+        for function in functions
+        if any(
+            (
+                decorator.id
+                if isinstance(decorator, ast.Name)
+                else decorator.attr
+                if isinstance(decorator, ast.Attribute)
+                else None
+            )
+            == 'overload'
+            for decorator in function.decorator_list
+        )
+    ]
+    result = []
+    for function in overloads or functions[-1:]:
+        positional = [*function.args.posonlyargs, *function.args.args]
+        decorators = {
+            decorator.id
+            if isinstance(decorator, ast.Name)
+            else decorator.attr
+            if isinstance(decorator, ast.Attribute)
+            else None
+            for decorator in function.decorator_list
+        }
+        receiver = (
+            positional[0].arg
+            if (
+                '.' in qualname
+                and 'staticmethod' not in decorators
+                and positional
+                and positional[0].arg in {'self', 'cls'}
+            )
+            else None
+        )
+        if _stub_is_never(function.returns, stub_module, aliases) or (
+            _stub_has_required_never_input(
+                function,
+                stub_module,
+                aliases,
+                receiver or '',
+            )
+        ):
+            continue
+        form = _stub_call_form(
+            function,
+            stub_module,
+            aliases,
+            receiver=receiver,
+        )
+        if form is None:
+            raise ValueError(f'{qualname}: source call form has an invalid receiver')
+        result.append(form)
+    return tuple(result)
+
+
+def _visible_member_filters() -> tuple[tuple[re.Pattern[str], bool], ...]:
+    import yaml
+
+    config = yaml.safe_load(
+        (ROOT / 'properdocs.yml')
+        .read_text(encoding='utf-8')
+        .replace('!!python/name:', '')
+    )
+    plugin = next(
+        item['mkdocstrings'] for item in config['plugins'] if 'mkdocstrings' in item
+    )
+    filters = plugin['handlers']['python']['options']['filters']
+    return tuple(
+        (re.compile(pattern.removeprefix('!')), not pattern.startswith('!'))
+        for pattern in filters
+    )
+
+
+def _griffe_function(pkg: griffe.Module, path: str) -> griffe.Function | None:
+    current: Any = pkg
+    for component in path.removeprefix('gometry.').split('.'):
+        current = getattr(current, 'members', {}).get(component)
+        if isinstance(current, griffe.Alias):
+            current = current.target
+        if current is None:
+            return None
+    return current if isinstance(current, griffe.Function) else None
+
+
+def _source_facade_function_contracts(
+    pkg: griffe.Module,
+    aliases: dict[str, Any],
+    public_names: set[str],
+) -> dict[str, tuple[CallForm, ...]]:
+    init_path = ROOT / 'python' / 'gometry' / '__init__.py'
+    package_root = init_path.parent
+    tree = ast.parse(init_path.read_text(encoding='utf-8'))
+    result: dict[str, tuple[CallForm, ...]] = {}
+    for statement in tree.body:
+        if not isinstance(statement, ast.ImportFrom):
+            continue
+        if statement.level:
+            module_name = '.'.join((
+                'gometry',
+                *((statement.module or '').split('.') if statement.module else ()),
+            ))
+        else:
+            module_name = statement.module or ''
+        if not module_name.startswith('gometry'):
+            continue
+        relative = (
+            module_name.removeprefix('gometry').removeprefix('.').replace('.', '/')
+        )
+        candidates = (
+            package_root / f'{relative}.pyi',
+            package_root / f'{relative}.py',
+            package_root / relative / '__init__.py',
+        )
+        source_path = next((path for path in candidates if path.is_file()), None)
+        if source_path is None:
+            continue
+        source_module = _source_module_for_path(pkg, source_path)
+        if source_module is None:
+            raise ValueError(f'cannot load facade function module {module_name!r}')
+        source_tree = ast.parse(source_path.read_text(encoding='utf-8'))
+        groups: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+        for declaration in source_tree.body:
+            if isinstance(declaration, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                groups.setdefault(declaration.name, []).append(declaration)
+        for imported in statement.names:
+            public_name = imported.asname or imported.name
+            if public_name not in public_names or public_name in result:
+                continue
+            declarations = groups.get(imported.name)
+            if declarations:
+                forms = _source_function_forms(
+                    public_name,
+                    declarations,
+                    source_module,
+                    aliases,
+                )
+                path = f'gometry.{public_name}'
+                function = _griffe_function(pkg, path)
+                if forms and function is None:
+                    raise ValueError(
+                        f'{path}: source facade callable is missing from Griffe'
+                    )
+                if forms and function.docstring is not None:
+                    result[path] = forms
+    return result
+
+
+def source_documentation_contracts() -> SourceDocumentationContracts:
+    """Extract visible call forms and authored constructor rows from source."""
+    import gometry as gm
+
+    loader = griffe.GriffeLoader(
+        search_paths=[str(ROOT / 'python')],
+        extensions=griffe.Extensions(PromoteStubOverloads(), ExpandTokenAliases()),
+        allow_inspection=False,
+    )
+    pkg = loader.load('gometry')
+    loader.resolve_aliases(external=False)
+    lib = pkg.members.get('_lib')
+    if not isinstance(lib, griffe.Module):
+        raise TypeError('source call-form inventory has no gometry._lib module')
+
+    cfg = load_config(ROOT / 'tools' / 'stubs' / 'stubconfig.py')
+    tree = ast.parse(STUB.read_text(encoding='utf-8'))
+    inventory = load_public_symbols(STUB, ROOT / 'python' / 'gometry' / '__init__.py')
+    aliases = annotation_aliases(pkg)
+    subjects = tuple(
+        iter_doc_subjects(
+            CheckContext(cfg),
+            runtime_module=gm,
+            source_classes=inventory.source_classes,
+        )
+    )
+
+    result: dict[str, tuple[CallForm, ...]] = {}
+    for subject in subjects:
+        if subject.kind != 'callable':
+            continue
+        forms = _source_function_forms(
+            subject.qualname,
+            subject.declarations,
+            lib,
+            aliases,
+        )
+        if forms:
+            path = (
+                subject.qualname
+                if subject.qualname.startswith('gometry.')
+                else f'gometry.{subject.qualname}'
+            )
+            function = _griffe_function(pkg, path)
+            if function is None:
+                raise ValueError(f'{path}: source callable is missing from Griffe')
+            # The reference handler does not display members without a docstring.
+            if function.docstring is not None:
+                result[path] = tuple(forms)
+
+    result.update({
+        path: forms
+        for path, forms in _source_facade_function_contracts(
+            pkg,
+            aliases,
+            set(gm.__all__),
+        ).items()
+        if path not in result
+    })
+
+    class_nodes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    class_nodes.update({
+        name: source.node
+        for name, source in inventory.source_classes.items()
+        if isinstance(source.node, ast.ClassDef)
+    })
+    filters = _visible_member_filters()
+    for class_name in gm.__all__:
+        class_node = class_nodes.get(class_name)
+        if class_node is None:
+            continue
+        groups: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+        for member in class_node.body:
+            if isinstance(
+                member, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ) and member.name.startswith('__'):
+                groups.setdefault(member.name, []).append(member)
+        for member_name, declarations in groups.items():
+            visible = True
+            for pattern, include in filters:
+                if pattern.search(member_name):
+                    visible = include
+            if not visible:
+                continue
+            path = f'gometry.{class_name}.{member_name}'
+            forms = _source_function_forms(path, declarations, lib, aliases)
+            function = _griffe_function(pkg, path)
+            if forms and function is None:
+                raise ValueError(
+                    f'{path}: source special method is missing from Griffe'
+                )
+            if forms and function.docstring is not None:
+                result[path] = forms
+
+    constructors = _stub_constructor_contracts(lib, aliases, set(gm.__all__), tree)
+    constructors.update({
+        path: contract
+        for path, contract in _source_facade_constructor_contracts(
+            pkg,
+            inventory,
+            aliases,
+        ).items()
+        if path not in constructors
+    })
+    for path, contract in constructors.items():
+        if contract.error is not None:
+            raise ValueError(f'{path}: {contract.error}')
+        if contract.forms:
+            result[path] = contract.forms
+
+    class_subjects = {
+        subject.qualname: subject for subject in subjects if subject.kind == 'class'
+    }
+    constructor_subjects = {
+        subject.qualname.removesuffix('.__new__').removesuffix('.__init__'): subject
+        for subject in subjects
+        if subject.kind == 'constructor'
+    }
+    constructor_rows: dict[str, dict[str, tuple[str, str | None, str | None]]] = {}
+    for path, forms in result.items():
+        if path.count('.') != 1:
+            continue
+        name = path.rsplit('.', 1)[-1]
+        carriers = [
+            (subject.prose, subject.source)
+            for subject in (
+                class_subjects.get(name),
+                constructor_subjects.get(name),
+            )
+            if subject is not None and subject.prose
+        ]
+        documented_names = {
+            parameter
+            for prose, _source in carriers
+            for entry in parameter_entries(parse_doc(prose))
+            for parameter in entry.names
+        }
+        if not documented_names:
+            continue
+        parameter_forms = tuple(
+            tuple(
+                SignatureParameter(name, kind, annotation, default)
+                for kind, name, annotation, default in parameters
+            )
+            for parameters, _returns in forms
+        )
+        resolution = resolve_parameter_rows(
+            path,
+            carriers,
+            parameter_forms,
+            require_documentation=False,
+        )
+        if resolution.errors:
+            raise ValueError('; '.join(resolution.errors))
+        constructor_rows[path] = {
+            row.name: (row.status, row.default, row.annotation)
+            for row in resolution.rows
+            if row.name in documented_names
+        }
+    return SourceDocumentationContracts(result, constructor_rows)
 
 
 def collect_errors() -> list[str]:
@@ -952,6 +1648,16 @@ def collect_errors() -> list[str]:
         set(gm.__all__),
         stub_tree,
     )
+    source_constructors = _source_facade_constructor_contracts(
+        pkg,
+        inventory,
+        aliases,
+    )
+    stub_constructors.update({
+        path: contract
+        for path, contract in source_constructors.items()
+        if path not in stub_constructors
+    })
 
     # The import inventory is authoritative: every flat public native
     # function/class must still be represented by its same-named native member;
@@ -962,10 +1668,9 @@ def collect_errors() -> list[str]:
         if public is None:
             errors.append(f'{name}: missing public/native model member')
             continue
-        # Structured result classes are intentionally private-stub-owned; they
-        # have no native class and are still public canonical anchors.
-        stub_owned = name in {'Extremes', 'Features', 'PolygonizeResult'}
-        if public.canonical_path != f'gometry.{name}' and not stub_owned:
+        if name in inventory.classes and not isinstance(public, griffe.Class):
+            errors.append(f'{name}: public source class was not materialized')
+        if public.canonical_path != f'gometry.{name}':
             errors.append(f'{name}: canonical path is {public.canonical_path!r}')
         if isinstance(public, griffe.Function):
             python_sources = _python_function_sources(public, pkg, lib)
@@ -979,15 +1684,8 @@ def collect_errors() -> list[str]:
             elif not isinstance(native, griffe.Function):
                 errors.append(f'{name}: missing native function provenance')
         elif isinstance(public, griffe.Class):
-            targets = {
-                alias.target_path
-                for alias in public.aliases.values()
-                if isinstance(alias, griffe.Alias)
-            }
-            if f'gometry._lib.{name}' not in targets and (
-                name == 'Cell' and f'gometry._types.{name}' not in targets
-            ):
-                errors.append(f'{name}: missing native class provenance')
+            if provenance_error := _class_provenance_error(name, public, inventory):
+                errors.append(provenance_error)
 
     model_overloads: set[str] = set()
     for function in _functions(pkg, set()):
@@ -1010,12 +1708,19 @@ def collect_errors() -> list[str]:
         for variant in variants:
             annotations = [parameter.annotation for parameter in variant.parameters]
             annotations.append(variant.returns)
-            private = sorted({
-                expr.name
-                for annotation in annotations
-                for expr in _expressions(annotation)
-                if expr.name.startswith('_')
-            })
+            # Private TypeAlias names are implementation details; their expanded
+            # members, rather than the alias spelling, determine the public type.
+            private_names = set()
+            for annotation in annotations:
+                expressions = _expressions(annotation)
+                if any(expr.name.startswith('_') for expr in expressions):
+                    expressions = _expressions(
+                        expand_annotation(copy.deepcopy(annotation), aliases)
+                    )
+                private_names.update(
+                    expr.name for expr in expressions if expr.name.startswith('_')
+                )
+            private = sorted(private_names)
             if private:
                 errors.append(
                     f'{function.canonical_path}: private annotations {private}'
@@ -1038,8 +1743,8 @@ def collect_errors() -> list[str]:
             if binding is not None:
                 errors.append(f'{path}: prohibited constructor was exposed')
             continue
-        expected_defaults, conflicts = _call_form_defaults(expected.forms)
-        errors.extend(f'{path}: {conflict}' for conflict in conflicts)
+        expected_defaults = _call_form_context_defaults(expected.forms)
+        expected_rows = _call_form_parameter_rows(expected.forms)
         if class_obj is None:
             errors.append(f'{path}: constructor class is missing from the Griffe model')
             continue
@@ -1057,8 +1762,35 @@ def collect_errors() -> list[str]:
                 f'{path}: class-call forms differ from the authored constructor sequence'
             )
         constructor_data = binding.extra.get('gometry', {})
+        parameter_resolution = constructor_data.get('parameter_resolution')
+        if parameter_resolution is None:
+            errors.append(f'{path}: constructor parameter rows were not resolved')
+        else:
+            errors.extend(f'{path}: {error}' for error in parameter_resolution.errors)
+            actual_rows = {
+                row.name: (row.status, row.default) for row in parameter_resolution.rows
+            }
+            if actual_rows != expected_rows:
+                errors.append(
+                    f'{path}: prose-row applicability differs from the authored call forms'
+                )
         source = constructor_data.get('source_function')
-        if (
+        if expected.name == 'NamedTuple':
+            class_source = constructor_data.get('class_source')
+            facade = inventory.classes.get(class_name)
+            if (
+                class_source is None
+                or facade is None
+                or class_source.qualname != path
+                or not _source_paths_match(
+                    class_source.path,
+                    facade.imported.source_path,
+                )
+            ):
+                errors.append(
+                    f'{path}: NamedTuple constructor has incorrect source provenance'
+                )
+        elif (
             not isinstance(source, griffe.Function)
             or source.name != expected.name
             or not isinstance(source.parent, griffe.Class)
@@ -1067,6 +1799,23 @@ def collect_errors() -> list[str]:
             errors.append(
                 f'{path}: constructor binding has incorrect source provenance'
             )
+        else:
+            facade = inventory.classes.get(class_name)
+            source_declaration = source.extra.get('gometry', {}).get(
+                'declaration_source'
+            )
+            if facade is not None and (
+                source_declaration is None
+                or not _source_paths_match(
+                    source_declaration.path,
+                    facade.imported.source_path,
+                )
+            ):
+                errors.append(
+                    f'{path}: constructor declaration came from '
+                    f'{getattr(source_declaration, "path", None)!r}, expected '
+                    f'{facade.imported.source_path!r}'
+                )
         if binding in class_obj.members.values():
             errors.append(f'{path}: private constructor binding became a public member')
 
@@ -1086,12 +1835,18 @@ def collect_errors() -> list[str]:
             }:
                 continue
             for parameter in section.value:
-                actual = _expression_text(parameter.value)
-                expected_default = expected_defaults.get(parameter.name)
-                if parameter.name in expected_defaults and actual != expected_default:
+                actual = (
+                    parameter.value
+                    if isinstance(parameter.value, str)
+                    else _expression_text(parameter.value)
+                )
+                expected_row = expected_rows.get(parameter.name)
+                expected_default = expected_row[1] if expected_row is not None else None
+                if expected_row is not None and actual != expected_default:
                     errors.append(
-                        f'{path}({parameter.name}): parsed documentation default '
-                        f'{actual!r} differs from {expected_default!r}'
+                        f'{path}({parameter.name}): rendered documentation default '
+                        f'{actual!r} differs from call-form status '
+                        f'{expected_row[0]!r} ({expected_default!r})'
                     )
                 key = f'{section.kind.value}:{parameter.name}'
                 if key in rendered_defaults:

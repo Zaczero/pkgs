@@ -49,7 +49,11 @@ pub(crate) use domain::{
     ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, ensure_geographic_row_in_frame,
     geographic_lonlat_result,
 };
-pub(crate) use edge_distance::PointEdgeScratch;
+#[cfg(test)]
+pub(crate) use edge_distance::test_counters as point_edge_test_counters;
+pub(crate) use edge_distance::{
+    EVALUATION_SAFETY_CEILING as POINT_EDGE_EVALUATION_SAFETY_CEILING, PointEdgeScratch,
+};
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
 };

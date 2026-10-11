@@ -31,6 +31,35 @@ fn assert_bits(value: f64, expected: f64) {
     assert_eq!(value.to_bits(), expected.to_bits());
 }
 
+#[test]
+fn conventional_degree_latitude_conversion_preserves_source_bits() {
+    let unit = factor(std::f64::consts::PI / 180.0);
+    for latitude_north in [true, false] {
+        let frame = GeographicFrame::try_new_with_orientation(
+            unit,
+            unit,
+            0.0,
+            GeographicAxisOrientation::from_axis_directions(true, latitude_north),
+        )
+        .unwrap();
+        for latitude in [
+            -63.870_640_325_120_85,
+            -61.836_984_191_501_61,
+            43.625_172_661_832_906,
+        ] {
+            let native_latitude = latitude * frame.latitude_orientation_sign();
+            assert_bits(
+                frame.to_geodesic_latitude(native_latitude).unwrap(),
+                latitude,
+            );
+            let native = frame
+                .point_from_geodesic(crate::geometry::Point::new_raw_xy(0.0, latitude))
+                .unwrap();
+            assert_bits(native.y, native_latitude);
+        }
+    }
+}
+
 fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::CoordSeq {
     crate::geometry::CoordSeq::try_from_vecs(xs, ys, None, None).unwrap()
 }
@@ -233,6 +262,10 @@ fn ordinary_chart_certificate_matches_selected_period_and_edge_contracts() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "these tests characterize exact binary64 spellings at a periodic seam"
+)]
 fn removed_period_workarounds_preserve_finite_longitude_bits() {
     fn previous_wrap(axis: PeriodicAxis, value: f64) -> f64 {
         let mut reduced = value % axis.period();

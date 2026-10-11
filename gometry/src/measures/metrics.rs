@@ -1,6 +1,5 @@
 use pyo3::prelude::*;
 
-use crate::boundary::metadata;
 use crate::dispatch::{MetricOp, kernels};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
@@ -25,8 +24,9 @@ pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry, GeometryArray, or iterable of geometry-like values
-///     Input geometry, array, or iterable materialized as an array.
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+///     Input geometry, array, or iterable materialized as a row-preserving
+///     array. Missing rows return ``nan``.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -99,23 +99,11 @@ fn measure_natural_or_override(
     op: crate::dispatch::Operation,
     kernel: crate::dispatch::UnaryMeasureKernel,
 ) -> PyResult<Py<PyAny>> {
-    match crate::GeometryValues::parse(geom)? {
-        crate::GeometryValues::One(_) | crate::GeometryValues::Array(_) => {
-            crate::dispatch::dispatch_unary(py, geom, op, unit, None, kernel)
-        },
-        crate::GeometryValues::Collected(mut items) => {
-            let frame = metadata::resolve_geometry_frames(
-                &mut items,
-                crate::FrameAdoption {
-                    crs: None,
-                    epoch: None,
-                },
-                "GeometryArray",
-            )?;
-            let array = PyGeometryArray::pack_or_mixed(items, frame)?;
-            crate::dispatch::unary_array(py, &array, op, unit, None, kernel)
-        },
+    if crate::broadcast::classify_input(geom).is_some() {
+        return crate::dispatch::dispatch_unary(py, geom, op, unit, None, kernel);
     }
+    let array = PyGeometryArray::new(geom, None, None)?;
+    crate::dispatch::unary_array(py, &array, op, unit, None, kernel)
 }
 
 /// Compute length in CRS-natural units or with a ``unit`` override.
@@ -142,8 +130,9 @@ fn measure_natural_or_override(
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry, GeometryArray, or iterable of geometry-like values
-///     Input geometry, array, or iterable materialized as an array.
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+///     Input geometry, array, or iterable materialized as a row-preserving
+///     array. Missing rows return ``nan``.
 #[doc = unit_parameter_doc!()]
 ///
 /// Returns
@@ -188,8 +177,9 @@ pub(crate) fn length(
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry, GeometryArray, or iterable of geometry-like values
-///     Input geometry, array, or iterable materialized as an array.
+/// geom : Geometry, GeometryArray, or iterable of geometry-like values or None
+///     Input geometry, array, or iterable materialized as a row-preserving
+///     array. Missing rows return ``nan``.
 #[doc = unit_parameter_doc!()]
 ///     Geographic CRSs are not supported by 3D Euclidean metrics.
 ///
@@ -283,9 +273,9 @@ pub(crate) fn length_natural_array(
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry or GeometryArray
-///     Geometry whose vertices are moved.
-/// reference : Geometry or GeometryArray
+/// geom : Geometry, GeometryArray, or iterable of Geometry or None
+///     Geometry whose vertices are moved. Missing rows remain missing.
+/// reference : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Target geometry to snap onto.
 /// tolerance : float or sequence of float
 ///     Maximum finite non-negative snap distance in coordinate space:
@@ -295,7 +285,7 @@ pub(crate) fn length_natural_array(
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     Snapped result(s).
+///     Snapped result(s), with missing rows preserved.
 ///
 /// Raises
 /// ------

@@ -1,4 +1,4 @@
-"""Optional integrations stay import-cheap and never mutate framework globals."""
+"""Optional integrations stay import-cheap and avoid global accessors."""
 
 from __future__ import annotations
 
@@ -109,6 +109,10 @@ def test_minimal_install_introspection_discovers_optional_exports() -> None:
 
 
 def test_pandas_and_polars_converters_are_inert_and_pyarrow_independent() -> None:
+    pytest.importorskip(
+        'polars',
+        reason='polars-runtime-32==1.43.2 has no CPython 3.14t wheel',
+    )
     _run_isolated(
         """
         import sys
@@ -150,12 +154,7 @@ def test_pandas_and_polars_converters_are_inert_and_pyarrow_independent() -> Non
         assert not hasattr(pd.Series, 'geo')
         assert not hasattr(pl.Series, 'geo')
         assert not hasattr(pl.Expr, 'geo')
-        try:
-            pd.api.types.pandas_dtype('gometry.geometry')
-        except TypeError:
-            pass
-        else:
-            raise AssertionError('converter registered the gometry dtype name')
+        assert pd.api.types.pandas_dtype('gometry.geometry') == pandas_series.dtype
         """
     )
 

@@ -6,7 +6,7 @@
 use std::ops::Range;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyOverflowError, PyValueError};
 use pyo3::prelude::{PyResult, Python, pyclass};
 use pyo3::types::{
     PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
@@ -26,8 +26,10 @@ use crate::grid::cell_set;
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
+use crate::py::arrow_c;
 use crate::py::cells::grid_kind::{
-    collect_ids, collect_inferred_ids, grid_kind_from_type, membership_id,
+    collect_ids, collect_inferred_ids, grid_kind_from_type, grid_kind_from_value, is_raw_identity,
+    membership_id,
 };
 use crate::py::cells::{
     FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
@@ -55,10 +57,10 @@ use crate::py::vectors::Groups;
 ///
 /// Parameters
 /// ----------
-/// values : numpy.ndarray, buffer, or iterable
+/// values : iterable, numpy.ndarray, or buffer
 ///     Typed cell objects and ``None``; raw ids for H3/S2/Tile and tokens for
 ///     any grid are accepted when a concrete cell supplies the family.
-/// type : type, optional
+/// type : type
 ///     Native cell class. Inferred from a concrete typed cell when present.
 #[pyclass(
     name = "CellArray",
@@ -489,6 +491,78 @@ impl PyCellArray {
         (missing, present_count)
     }
 
+    fn arrow_id_buffer(&self) -> (crate::geometry::SharedSlice<u64>, usize) {
+        self.selection_ref().csr_rows(0..self.len()).map_or_else(
+            || {
+                (
+                    crate::geometry::SharedSlice::from_vec(self.logical_ids_vec()),
+                    0,
+                )
+            },
+            |rows| (self.storage.ids.clone(), rows.start),
+        )
+    }
+
+    fn arrow_missing_mask(&self) -> Option<ValidityMask> {
+        match self.selection_ref() {
+            RowSelectionRef::Identity => self.storage.missing.clone(),
+            RowSelectionRef::Window { start, len } => {
+                self.storage.missing.as_ref().map(|missing| {
+                    missing
+                        .window(start, len)
+                        .expect("selected rows are admitted")
+                })
+            },
+            RowSelectionRef::Gather(_) => self.missing_mask_and_present_count().0,
+        }
+    }
+
+    fn geohash_arrow_buffers(
+        &self,
+    ) -> PyResult<(
+        crate::geometry::SharedSlice<i32>,
+        crate::geometry::SharedSlice<u8>,
+    )> {
+        let mut total_bytes = 0_usize;
+        for row in 0..self.len() {
+            if self.is_row_missing(row) {
+                continue;
+            }
+            let cell = Geohash::from_validated_id(self.id_at(row));
+            let (_, length) = cell.token_bytes();
+            total_bytes = total_bytes.checked_add(length).ok_or_else(|| {
+                PyOverflowError::new_err("geohash tokens exceed Arrow UTF-8 size")
+            })?;
+        }
+        if i32::try_from(total_bytes).is_err() {
+            return Err(PyOverflowError::new_err(
+                "geohash tokens exceed Arrow UTF-8 offset range",
+            ));
+        }
+        let offset_count = self.len().checked_add(1).ok_or_else(|| {
+            PyOverflowError::new_err("geohash row count exceeds Arrow offset capacity")
+        })?;
+        let mut offsets = Vec::with_capacity(offset_count);
+        let mut values = Vec::with_capacity(total_bytes);
+        offsets.push(0_i32);
+        for row in 0..self.len() {
+            if !self.is_row_missing(row) {
+                let cell = Geohash::from_validated_id(self.id_at(row));
+                let (bytes, length) = cell.token_bytes();
+                values.extend_from_slice(
+                    bytes
+                        .get(..length)
+                        .expect("geohash token length fits its buffer"),
+                );
+            }
+            offsets.push(i32::try_from(values.len()).expect("reserved Arrow UTF-8 offset range"));
+        }
+        Ok((
+            crate::geometry::SharedSlice::from_vec(offsets),
+            crate::geometry::SharedSlice::from_vec(values),
+        ))
+    }
+
     fn map_logical_cells<G, T>(&self, mut f: impl FnMut(G) -> T) -> Vec<T>
     where
         G: CellArrayGrid,
@@ -609,13 +683,18 @@ impl PyCellArray {
                 values
             })
         } else {
-            let other_kind = grid_kind_from_type(&other.get_type())?;
-            if kind != other_kind {
-                return Err(GeometryError::new_err(format!(
-                    "cell types must match, got {} and {}",
-                    kind.class_name(),
-                    other_kind.class_name()
-                )));
+            if let Some(other_kind) = grid_kind_from_value(other) {
+                if kind != other_kind {
+                    return Err(GeometryError::new_err(format!(
+                        "cell types must match, got {} and {}",
+                        kind.class_name(),
+                        other_kind.class_name()
+                    )));
+                }
+            } else if !is_raw_identity(other, kind) {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "other must be a same-grid cell, integer id, or string token",
+                ));
             }
             let other_id = kind.id_from_value(other)?;
             dispatch_cell_grid!(self, G, {
@@ -694,6 +773,63 @@ impl PyCellArray {
     #[expect(non_upper_case_globals, reason = "Python dunder name")]
     const __array_ufunc__: Option<Py<PyAny>> = None;
 
+    /// Export cell identities through the Arrow C Data Interface.
+    ///
+    /// H3, S2, and tile arrays use nullable ``uint64`` IDs. Geohash arrays use
+    /// nullable UTF-8 tokens. Numeric columns do not retain grid kind; restore
+    /// it with ``CellArray(..., type=...)`` when importing raw IDs.
+    ///
+    /// Parameters
+    /// ----------
+    /// requested_schema : capsule or None, default None
+    ///     A matching Arrow C schema capsule. A different schema is rejected.
+    ///
+    /// Returns
+    /// -------
+    /// tuple of capsule
+    ///     The Arrow schema and array capsules. Their owners retain exported
+    ///     buffers until the consumer releases the array.
+    ///
+    /// Raises
+    /// ------
+    /// TypeError
+    ///     If ``requested_schema`` does not match the exported value type.
+    /// OverflowError
+    ///     If the encoded geohash tokens exceed Arrow UTF-8's 32-bit offset range.
+    #[pyo3(signature = (requested_schema=None, /))]
+    fn __arrow_c_array__(
+        &self,
+        py: Python<'_>,
+        requested_schema: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        if self.kind() == GridKind::GeohashCell {
+            let (offsets, values) = self.geohash_arrow_buffers()?;
+            let mut array = arrow_c::utf8_array(offsets, values)?;
+            if let Some(missing) = self.arrow_missing_mask() {
+                arrow_c::apply_top_level_validity(&mut array, &missing)?;
+            }
+            return arrow_c::array_capsules_with_schema(
+                py,
+                arrow_c::utf8_schema(),
+                array,
+                requested_schema,
+            );
+        }
+
+        let length = self.len();
+        let (ids, start) = self.arrow_id_buffer();
+        let mut array = arrow_c::primitive_u64_array_windowed(ids, start, length)?;
+        if let Some(missing) = self.arrow_missing_mask() {
+            arrow_c::apply_top_level_validity(&mut array, &missing)?;
+        }
+        arrow_c::array_capsules_with_schema(
+            py,
+            arrow_c::primitive_u64_schema(true),
+            array,
+            requested_schema,
+        )
+    }
+
     /// Construct a cell array from typed cells, ids, or tokens.
     ///
     /// The grid is inferred from a typed cell when ``type=None``. H3, S2, and
@@ -710,7 +846,7 @@ impl PyCellArray {
     ///     Typed cells and ``None``; raw ids for H3/S2/Tile and string tokens
     ///     are accepted when the grid can be inferred. Iterables are consumed
     ///     in input order.
-    /// type : type, optional, default None
+    /// type : type
     ///     One of the native ``H3Cell``, ``S2Cell``, ``Tile``, or
     ///     ``GeohashCell`` classes, required when the grid cannot be inferred.
     ///
@@ -746,17 +882,17 @@ impl PyCellArray {
         })
     }
 
-    /// ``sys.getsizeof`` support: the wrapper plus this array's logical
+    /// ``sys.getsizeof`` support: Python's allocation base plus this array's logical
     /// ``uint64`` id payload, missing flags, and any row-selection map. Shared
-    /// backing buffers are reported like NumPy views, not as the full parent
-    /// allocation.
+    /// backing buffers are estimated from the selected view, not the full
+    /// parent allocation.
     ///
     /// Raises
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(size_of::<Self>(), self.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     /// Grid-system token for the stored cell type.
@@ -801,14 +937,17 @@ impl PyCellArray {
         self.len() != 0
     }
 
-    /// Select cells by integer, slice, or fancy index.
+    /// Select cells by integer-like scalar, slice, or fancy index.
     ///
-    /// An ``int`` returns one cell object. A ``slice`` or fancy index returns
-    /// a ``CellArray`` of the same cell kind.
+    /// An ``int``, object implementing ``__index__``, or zero-dimensional
+    /// integer ndarray returns one cell object or ``None`` for a missing row.
+    /// A ``slice``, integer sequence, one-dimensional integer ndarray, or
+    /// boolean mask returns a ``CellArray`` of the same cell kind. Boolean
+    /// scalars and NumPy index arrays with rank above one raise ``TypeError``.
     ///
     /// Returns
     /// -------
-    /// Cell or CellArray
+    /// Cell, None, or CellArray
     fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         array_getitem(self, py, index)
     }
@@ -894,8 +1033,8 @@ impl PyCellArray {
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------
@@ -922,8 +1061,8 @@ fn contains(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAn
     ///
     /// Parameters
     /// ----------
-    /// other : cell or CellArray
-    ///     One same-grid cell broadcast to every row, or a same-length array.
+    /// other : same-grid cell, integer id, string token, or CellArray
+    ///     One identity broadcast to every row, or a same-length array.
     ///
     /// Returns
     /// -------
@@ -1516,10 +1655,11 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Groups of CellArray
     ///     One row of neighbors per input cell, in input order. Neighbor
     ///     counts vary, so the result is a Groups, not a rectangular
-    ///     CellArray.
+    ///     CellArray. Missing input rows yield ``None`` groups.
     #[getter]
     pub(crate) fn neighbors(&self, py: Python<'_>) -> PyResult<Groups> {
         let kind = self.kind();
+        let (missing, _) = self.missing_mask_and_present_count();
         let cells = self.clone();
         let (ids, offsets) = py.detach(move || {
             dispatch_cell_grid!(&cells, G, {
@@ -1539,7 +1679,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 Ok::<_, PyErr>(builder.finish())
             })
         })?;
-        Groups::from_cell_flat(kind, ids, offsets)
+        Groups::from_cell_flat(kind, ids, offsets, missing)
     }
 
     /// Return the child cells of every cell at a finer depth, as ragged rows.
@@ -1553,7 +1693,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Returns
     /// -------
     /// Groups of CellArray
-    ///     One row of children per input cell, in input order.
+    ///     One row of children per input cell, in input order. Missing input
+    ///     rows yield ``None`` groups.
 ///
     /// Examples
     /// --------
@@ -1572,6 +1713,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Groups> {
         let kind = self.kind();
+        let (missing, _) = self.missing_mask_and_present_count();
         let cells = self.clone();
         let depth = dispatch_cell_grid!(self, G, {
             match cells.logical_cells::<G>().next() {
@@ -1621,7 +1763,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 Ok::<_, PyErr>(builder.finish())
             })
         })?;
-        Groups::from_cell_flat(kind, ids, offsets)
+        Groups::from_cell_flat(kind, ids, offsets, missing)
     }
 
     /// Compact this cell set to the coarsest exact covering, returned in the
@@ -1888,6 +2030,7 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::{GridKind, PyCellArray};
+    use crate::grid::cell::GridCell as _;
 
     fn h3_id(lat: f64, lon: f64, resolution: u8) -> u64 {
         u64::from(
@@ -1997,15 +2140,11 @@ mod tests {
             let parent = cells
                 .parent(Some(&depth))
                 .expect("parent resolves one shared explicit depth");
-            let expected_parent = crate::grid::cell::GridCell::parent_at(
-                h3o::CellIndex::try_from(cells.id_at(0)).expect("valid H3 id"),
-                6,
-            )
-            .expect("parent at depth 6");
-            assert_eq!(
-                parent.id_at(0),
-                crate::grid::cell::GridCell::hash_key(expected_parent)
-            );
+            let expected_parent = h3o::CellIndex::try_from(cells.id_at(0))
+                .expect("valid H3 id")
+                .parent_at(6)
+                .expect("parent at depth 6");
+            assert_eq!(parent.id_at(0), expected_parent.hash_key());
             assert_eq!(
                 depth
                     .getattr("calls")

@@ -130,6 +130,70 @@ pub(crate) fn is_concrete_batch(value: &Bound<'_, PyAny>) -> PyResult<bool> {
         && value_type.getattr("__module__")?.extract::<&str>()? == "numpy")
 }
 
+/// Materialize a recognized foreign column as native Python row values.
+///
+/// The format readers share this boundary so pandas missing markers and Arrow
+/// scalar wrappers are normalized before scalar, mapping, buffer, and iterable
+/// classification. Optional dataframe packages are never imported here.
+pub(crate) fn normalize_format_column<'py>(
+    value: &Bound<'py, PyAny>,
+) -> PyResult<Option<Bound<'py, PyAny>>> {
+    let mut kind = None;
+    let mro = value.get_type().getattr("__mro__")?;
+    for base in mro.try_iter()? {
+        let base = base?;
+        let name = base.getattr("__name__")?.extract::<String>()?;
+        let module = base.getattr("__module__")?.extract::<String>()?;
+        if name == "Series" && (module == "pandas" || module == "pandas.core.series") {
+            kind = Some("pandas");
+            break;
+        }
+        if name == "Series" && module == "polars.series.series" {
+            kind = Some("polars");
+            break;
+        }
+        if module == "pyarrow.lib" && (name == "ChunkedArray" || name.ends_with("Array")) {
+            kind = Some("arrow");
+            break;
+        }
+    }
+    let Some(kind) = kind else {
+        return Ok(None);
+    };
+
+    let py = value.py();
+    let method = match kind {
+        "pandas" => "tolist",
+        "polars" => "to_list",
+        "arrow" => "to_pylist",
+        _ => unreachable!("the recognized column kind has one conversion method"),
+    };
+    let values = value.call_method0(method)?.cast::<PyList>()?.clone();
+    if kind != "pandas" {
+        return Ok(Some(values.into_any()));
+    }
+
+    let missing = value
+        .call_method0("isna")?
+        .call_method0("tolist")?
+        .cast::<PyList>()?
+        .clone();
+    if missing.len() != values.len() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "pandas Series missing-value mask changed its row count",
+        ));
+    }
+    let mut rows = Vec::with_capacity(values.len());
+    for row in 0..values.len() {
+        if missing.get_item(row)?.extract::<bool>()? {
+            rows.push(py.None());
+        } else {
+            rows.push(values.get_item(row)?.unbind());
+        }
+    }
+    Ok(Some(PyList::new(py, rows)?.into_any()))
+}
+
 #[derive(Clone, Copy)]
 enum JsonProjection {
     Full,
@@ -779,8 +843,9 @@ fn select_geojson_geometry_value<'a>(
                     GeoJsonDecodeContext::NullableRow => Ok(None),
                     GeoJsonDecodeContext::GeometryLike => Err(crate::io::IoError::geojson(
                         "Feature has null geometry (an unlocated feature); parse the \
-                         FeatureCollection with from_geojson/from_features, where null \
-                         geometries become missing rows",
+                         FeatureCollection with from_geojson, where null geometries \
+                         become missing rows, or use from_geojson(..., features=True) \
+                         to retain its properties and ID",
                     )
                     .with_parse_path(&geometry_path)),
                 };

@@ -22,7 +22,7 @@ def test_packed_point_buffer_matches_scalar_and_preserves_frame(
         quadrant_segments=4,
     )
 
-    assert buffered.crs == 'EPSG:3857'
+    assert buffered.crs == gm.CRS('EPSG:3857')
     assert buffered.epoch == pytest.approx(2020.5)
     assert [row.to_wkt(drop_epoch=True) for row in buffered] == [
         point.buffer(

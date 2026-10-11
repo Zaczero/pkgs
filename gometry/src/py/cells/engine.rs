@@ -8,6 +8,7 @@ use crate::grid::coverer::RectCell;
 use crate::py::cells::coverage_ops::{
     GridCoverError, GridSourceAdmission, SortedCells, admit_grid_geometry,
 };
+use crate::py::cells::input::geometry_iterable_array;
 use crate::py::cells::{
     Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
     Shape,
@@ -174,8 +175,7 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
 /// Scalar/array coverage dispatch shared by all four grid families.
 ///
 /// A scalar returns a flat cell array. An array returns one ragged cell row per
-/// input geometry; missing rows become empty groups so source-row association
-/// is preserved.
+/// input geometry; missing source rows remain missing Groups rows.
 pub(crate) fn grid_cover_dispatch<'py>(
     py: Python<'py>,
     geom: &Bound<'py, PyAny>,
@@ -197,10 +197,14 @@ pub(crate) fn grid_cover_dispatch<'py>(
         let coverage = result?;
         return PyCellArray::from_ids(kind, coverage).into_py_any(py);
     }
-    let Some(array) = exact_geometry_array(geom) else {
+    let array = match exact_geometry_array(geom) {
+        Some(array) => Some(array.clone()),
+        None => geometry_iterable_array(geom, false, "GeometryArray")?,
+    };
+    let Some(array) = array else {
         return Err(expected_geometry_or_array());
     };
-    let array = array.clone();
+    let missing = array.missing().cloned();
     let result = py.detach(move || {
         let admission = match GridSourceAdmission::new_for_array(&array) {
             Ok(admission) => admission,
@@ -216,7 +220,7 @@ pub(crate) fn grid_cover_dispatch<'py>(
         })
     });
     let (ids, offsets) = result?.finish();
-    Groups::from_cell_flat(kind, ids, offsets)?.into_py_any(py)
+    Groups::from_cell_flat(kind, ids, offsets, missing)?.into_py_any(py)
 }
 
 fn cover_array_rows(
@@ -230,9 +234,9 @@ fn cover_array_rows(
         let ids = match geometry? {
             None => Vec::new(),
             Some(geometry) => {
-                // Scalar factories reject empty sources, but an array must retain row
-                // alignment. Represent a present empty exactly like a missing row in
-                // the ragged cell result: an empty group, not a batch error.
+                // Scalar factories reject empty sources, but an array retains
+                // row alignment. Both this row and a missing row have an empty
+                // CSR window; Groups validity distinguishes their meanings.
                 if geometry.shape.is_empty() {
                     Vec::new()
                 } else {

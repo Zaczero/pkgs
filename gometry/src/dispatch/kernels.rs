@@ -589,6 +589,9 @@ pub(crate) fn unary_split_antimeridian(
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
     let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
+    if ctx.frame.crs_ref().is_none() {
+        return data.shape().split_antimeridian_in_frame(frame);
+    }
     let metric_access = || {
         ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
             crate::crs::CrsError::invalid(
@@ -752,7 +755,7 @@ pub(crate) fn segmentize_placement(
 
 fn segmentize_rhumb_crs_error() -> crate::error::Error {
     crate::crs::CrsError::message(
-        "segmentize path='rhumb' requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
+        "segmentize path='rhumb' requires a geographic CRS; use with_crs(...) or to_crs(...) to attach one",
     )
 }
 
@@ -999,27 +1002,7 @@ pub(crate) fn unary_force_3d(
     _ctx: &CachelessRowContext<'_>,
     z: f64,
 ) -> Result<Shape> {
-    data.shape().set_z(Some(z), false)
-}
-
-/// Set-Z kernel shared by the spine-routed free function.
-pub(crate) fn unary_set_z(
-    data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
-    value: Option<f64>,
-    overwrite: bool,
-) -> Result<Shape> {
-    data.shape().set_z(value, overwrite)
-}
-
-/// Set-M kernel shared by the spine-routed free function.
-pub(crate) fn unary_set_m(
-    data: &PreparedPlan,
-    _ctx: &CachelessRowContext<'_>,
-    value: Option<f64>,
-    overwrite: bool,
-) -> Result<Shape> {
-    data.shape().set_m(value, overwrite)
+    data.shape().replace_z(Some(z), false)
 }
 
 /// Quantize kernel shared by the spine-routed free function.
@@ -1142,9 +1125,6 @@ pub(crate) fn binary_distance_3d(
             )?,
             to_metre,
         ));
-    }
-    if ctx.lane.is_array() {
-        return Ok(f64::NAN);
     }
     Ok(scale_length(left.distance_3d(right)?, to_metre))
 }

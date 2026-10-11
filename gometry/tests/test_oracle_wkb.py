@@ -11,7 +11,10 @@ import struct
 
 import gometry as gm
 import pytest
-import shapely
+
+shapely = pytest.importorskip(
+    'shapely', reason='shapely==2.1.2 oracle wheel is unavailable for this interpreter'
+)
 
 
 def _sample_geometries() -> list[tuple[str, gm.Geometry]]:
@@ -192,7 +195,7 @@ def test_ewkb_srid_bidirectional() -> None:
         flavor='extended',
     )
     back = gm.from_wkb(shapely_ewkb)
-    assert back.crs == 'EPSG:4326'
+    assert back.crs == gm.CRS('EPSG:4326')
     assert back.x == pytest.approx(10.0)
     assert back.y == pytest.approx(20.0)
     # With explicit crs= the frame is attached from the caller, not the SRID

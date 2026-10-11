@@ -5,22 +5,82 @@
 use geographiclib_rs::{Geodesic, InverseGeodesic as _};
 use pyo3::prelude::*;
 
-use crate::crs::frame::{Frame, crs_arc_static};
-use crate::crs::{PointEdgeScratch, with_ellipsoid_metric};
+use crate::crs::frame::{Frame, crs_arc, crs_arc_static};
+use crate::crs::{PointEdgeScratch, point_edge_test_counters, with_ellipsoid_metric};
 use crate::error::Result;
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::distance::frechet::frechet_dp_columns;
 use crate::geometry::distance::tests::{line, p, polygon};
 use crate::geometry::distance::{
     ChartHausdorffWitness, ChartParts, chart_directed_hausdorff_distance, chart_hausdorff_counters,
-    chart_scratch,
+    chart_parts_counters, chart_scratch,
 };
 use crate::geometry::{
     ChartMetric, FrameDependentCaches, GeodesicMetric, GeographicPrepared, MOrdinate, Point,
-    PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
+    PointEdgeQueryResult, PreparedPlan, Shape, ZOrdinate, graph_relate_data_geographic,
 };
 
 const MINIMUM_GAP_METERS: f64 = 4e-11 * 6_378_137.0;
+
+#[derive(Debug)]
+struct PublicHausdorffWork {
+    distance: f64,
+    source_evaluations: u64,
+    moving_evaluations: u64,
+    moving_endpoint_minima: u64,
+    target_candidates: u64,
+    point_edge_samples: u64,
+}
+
+fn public_hausdorff_work(
+    crs: &str,
+    source: Shape,
+    target: Shape,
+    source_limit: u64,
+    sample_limit: u64,
+) -> PublicHausdorffWork {
+    Python::initialize();
+    Python::attach(|py| {
+        let frame = Frame::new(Some(crs_arc(crs)), None).expect("geographic CRS");
+        let source = crate::Typed(crate::PyGeometry::with_frame(source, frame.clone()))
+            .into_pyobject(py)
+            .expect("source line binds as a public typed geometry");
+        let target = crate::Typed(crate::PyGeometry::with_frame(target, frame))
+            .into_pyobject(py)
+            .expect("target line binds as a public typed geometry");
+        chart_hausdorff_counters::reset();
+        chart_parts_counters::reset();
+        point_edge_test_counters::reset();
+        chart_hausdorff_counters::set_source_evaluation_limit(source_limit);
+        point_edge_test_counters::set_sample_limit(sample_limit);
+
+        let result = crate::hausdorff_distance(py, source.as_any(), target.as_any(), None, None);
+        let source_evaluations = chart_hausdorff_counters::source_evaluations();
+        let moving_evaluations = chart_hausdorff_counters::moving_correspondence_evaluations();
+        let moving_endpoint_minima = chart_hausdorff_counters::moving_endpoint_minima();
+        let target_candidates = chart_parts_counters::target_edge_candidates();
+        let point_edge_samples = point_edge_test_counters::samples();
+        point_edge_test_counters::reset();
+        if let Err(error) = &result {
+            eprintln!(
+                "hausdorff-failure-work source={source_evaluations} moving={moving_evaluations} moving_endpoint_minima={moving_endpoint_minima} point_edge={point_edge_samples} bvh={target_candidates}: {error}"
+            );
+        }
+        let distance = result
+            .expect("public geographic Hausdorff call")
+            .bind(py)
+            .extract::<f64>()
+            .expect("Hausdorff result is a float");
+        PublicHausdorffWork {
+            distance,
+            source_evaluations,
+            moving_evaluations,
+            moving_endpoint_minima,
+            target_candidates,
+            point_edge_samples,
+        }
+    })
+}
 
 fn disconnected_bvh_target() -> Shape {
     Shape::geometry_collection(
@@ -504,7 +564,7 @@ fn public_distance_measures_a_full_turn_line_as_its_parallel() {
         .into_pyobject(py)
         .expect("linestring binds as its public typed geometry");
 
-        let distance = crate::distance(py, &point, &line, None)
+        let distance = crate::distance(py, &point, &line, crate::NavigationPath::Geodesic, None)
             .expect("public distance succeeds")
             .bind(py)
             .extract::<f64>()
@@ -919,7 +979,9 @@ fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
                     "outside"
                 },
                 crate::geometry::PointEdgeQueryResult::Unresolved { .. } => "unresolved",
-                other => panic!("{name}: unexpected threshold result {other:?}"),
+                other @ (PointEdgeQueryResult::Excluded | PointEdgeQueryResult::Minimum(_)) => {
+                    panic!("{name}: unexpected threshold result {other:?}")
+                },
             };
             observations.push((name, start, end, query, limit, attained, classification));
         }
@@ -955,9 +1017,7 @@ fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
                     result
                         .expect_err("an unresolved threshold raises instead of returning False")
                         .to_string()
-                        .contains(
-                            "geodesic dwithin did not converge within 128 point-edge evaluations"
-                        )
+                        .contains("geodesic dwithin could not certify the threshold within its evaluation work limit")
                 ),
                 "outside" => {
                     assert!(
@@ -977,6 +1037,375 @@ fn public_dwithin_keeps_an_off_grid_interior_chart_witness() -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[test]
+fn public_mixed_unit_hausdorff_has_bounded_edge_search_work() {
+    const MIXED_UNIT_CRS: &str = r#"GEOGCRS["West-radian south-grad WGS84",
+ DATUM["World Geodetic System 1984",ELLIPSOID["WGS 84",6378137,298.257223563]],
+ PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.017453292519943295]],
+ CS[ellipsoidal,2],
+ AXIS["Longitude",west,ORDER[1],ANGLEUNIT["radian",1]],
+ AXIS["Latitude",south,ORDER[2],ANGLEUNIT["grad",0.015707963267948967]]]"#;
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 180.0, 60.01, 180.0);
+
+    for (name, perturb_longitude) in [("matching", false), ("one-ULP", true)] {
+        let longitudes = (0..=8).map(|index| 170.0 + 2.5 * f64::from(index));
+        let source_points = longitudes
+            .clone()
+            .map(|longitude| p(-longitude.to_radians(), -60.0 * 10.0 / 9.0))
+            .collect();
+        let target_points = longitudes
+            .map(|longitude| {
+                let native_longitude = -longitude.to_radians();
+                p(
+                    if perturb_longitude {
+                        native_longitude.next_up()
+                    } else {
+                        native_longitude
+                    },
+                    -60.01 * 10.0 / 9.0,
+                )
+            })
+            .collect();
+        let source = line(source_points);
+        let target = line(target_points);
+        let work = public_hausdorff_work(MIXED_UNIT_CRS, source, target, 64, 10_000);
+
+        assert!(
+            work.source_evaluations <= 64,
+            "{name}: public Hausdorff visited {} source parameters",
+            work.source_evaluations
+        );
+        assert!(
+            work.moving_evaluations <= 256,
+            "{name}: public Hausdorff evaluated {} moving correspondences",
+            work.moving_evaluations
+        );
+        assert!(
+            work.target_candidates <= 10_000,
+            "{name}: public Hausdorff visited {} BVH edge candidates",
+            work.target_candidates
+        );
+        assert!(
+            work.point_edge_samples <= 10_000,
+            "{name}: public Hausdorff evaluated {} point-edge samples",
+            work.point_edge_samples
+        );
+        assert!(
+            (work.distance - expected).abs() <= 0.01,
+            "{name}: {} vs {expected}",
+            work.distance
+        );
+    }
+}
+
+#[test]
+fn public_parallel_hausdorff_perturbations_have_bounded_work() {
+    let cases = [
+        ("exact", [10.0, 12.5]),
+        ("one ULP", [10.0_f64.next_up(), 12.5_f64.next_up()]),
+        ("1e-9 degree", [10.0 + 1.0e-9, 12.5 + 1.0e-9]),
+        ("1e-6 degree", [10.0 + 1.0e-6, 12.5 + 1.0e-6]),
+        ("different endpoint offsets", [
+            10.0_f64.next_up(),
+            12.5 + 1.0e-9,
+        ]),
+        ("reversed target", [12.5 + 1.0e-9, 10.0 + 1.0e-9]),
+    ];
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 0.0, 60.01, 0.0);
+
+    for (name, target_longitudes) in cases {
+        let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
+        let target = line(vec![
+            p(target_longitudes[0], 60.01),
+            p(target_longitudes[1], 60.01),
+        ]);
+        let work = public_hausdorff_work("EPSG:4326", source, target, 64, 2_048);
+        assert!(
+            work.source_evaluations <= 64,
+            "{name}: {} source parameters",
+            work.source_evaluations
+        );
+        assert!(
+            work.moving_evaluations <= 256,
+            "{name}: {} moving correspondences",
+            work.moving_evaluations
+        );
+        assert!(
+            work.point_edge_samples <= 2_048,
+            "{name}: {} point-edge samples",
+            work.point_edge_samples
+        );
+        assert!(
+            (work.distance - expected).abs() <= 0.01,
+            "{name}: {} vs {expected}",
+            work.distance
+        );
+    }
+}
+
+#[test]
+fn public_hausdorff_refreshes_a_clipped_target_edge_correspondence() {
+    let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
+    let target = line(vec![p(10.8, 60.01), p(11.7, 60.01)]);
+    let endpoint_distances: [f64; 2] = [
+        Geodesic::wgs84().inverse(60.0, 10.0, 60.01, 10.8),
+        Geodesic::wgs84().inverse(60.0, 12.5, 60.01, 11.7),
+    ];
+    let expected = endpoint_distances[0].max(endpoint_distances[1]);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 256, 20_000);
+
+    assert!(work.source_evaluations <= 256, "{work:?}");
+    assert!(work.moving_endpoint_minima <= 64, "{work:?}");
+    assert!(work.point_edge_samples <= 20_000, "{work:?}");
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{work:?} vs {expected}"
+    );
+}
+
+#[test]
+fn public_hausdorff_maps_a_short_source_onto_the_target_edge_interior() {
+    let source_edge = line(vec![p(10.5, 60.0), p(11.5, 60.0)]);
+    let target = line(vec![p(10.0, 60.01), p(12.0, 60.01)]);
+    let source = Shape::geometry_collection(vec![source_edge, target.clone()])
+        .expect("source contains the short edge and the longer target support");
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 10.5, 60.01, 10.5);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 64, 10_000);
+
+    assert!(work.source_evaluations <= 64, "{work:?}");
+    assert!(work.point_edge_samples <= 10_000, "{work:?}");
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{work:?} vs {expected}"
+    );
+}
+
+#[test]
+fn public_near_pole_hausdorff_has_bounded_symmetric_work() {
+    let source = line(vec![p(170.0, 89.9), p(190.0, 89.91)]);
+    let target = line(vec![p(170.000_001, 89.900_01), p(190.000_001, 89.910_01)]);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 64, 10_000);
+    // Independent pyproj Geod oracle: target minima bracketed by scans of 257
+    // and 1,025 points; source maxima by 129 and 513 samples plus local solves.
+    let expected = 1.116_939_781_867_64;
+
+    assert!(work.source_evaluations <= 64, "{work:?}");
+    assert!(work.moving_evaluations <= 128, "{work:?}");
+    assert!(work.moving_endpoint_minima <= 64, "{work:?}");
+    assert!(work.target_candidates <= 64, "{work:?}");
+    assert!(work.point_edge_samples <= 10_000, "{work:?}");
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{work:?} vs independent oracle {expected}"
+    );
+}
+
+#[test]
+fn public_hausdorff_refreshes_resegmented_target_parameters() {
+    let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
+    let target = Shape::geometry_collection(vec![
+        line(vec![p(11.25, 60.01), p(12.5, 60.01)]),
+        line(vec![p(10.0, 60.01), p(11.25, 60.01)]),
+    ])
+    .expect("reordered target segments form a valid linework collection");
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 10.0, 60.01, 10.0);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 128, 20_000);
+
+    assert!(work.source_evaluations <= 128, "{work:?}");
+    assert!(work.moving_endpoint_minima <= 64, "{work:?}");
+    assert!(work.point_edge_samples <= 20_000, "{work:?}");
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{work:?} vs {expected}"
+    );
+}
+
+#[test]
+fn public_hausdorff_keeps_candidate_edge_witnesses_separate_from_set_minima() {
+    let source_edge = line(vec![p(10.5, 60.0), p(11.5, 60.0)]);
+    let target_edge = line(vec![p(10.0, 60.01), p(12.0, 60.01)]);
+    let endpoints = [Shape::Point(p(10.5, 60.0)), Shape::Point(p(11.5, 60.0))];
+    let source = Shape::geometry_collection(vec![
+        source_edge,
+        target_edge.clone(),
+        endpoints[0].clone(),
+        endpoints[1].clone(),
+    ])
+    .expect("source collection retains both linework supports and endpoint points");
+    let target = Shape::geometry_collection(vec![
+        target_edge,
+        endpoints[0].clone(),
+        endpoints[1].clone(),
+    ])
+    .expect("target collection retains its line and the closer endpoint features");
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 10.5, 60.01, 10.5);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 64, 10_000);
+
+    assert!(work.source_evaluations <= 64, "{work:?}");
+    assert!(work.point_edge_samples <= 10_000, "{work:?}");
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{work:?} vs {expected}"
+    );
+}
+
+#[test]
+fn public_hausdorff_does_not_use_another_feature_as_candidate_endpoint_witness() {
+    let source = line(vec![p(10.0, 60.0), p(12.5, 60.0)]);
+    let target = Shape::geometry_collection(vec![
+        Shape::Point(p(10.0, 60.0)),
+        line(vec![p(10.0, 60.01), p(12.5, 60.01)]),
+    ])
+    .expect("endpoint point and offset line form a valid target collection");
+    let expected: f64 = Geodesic::wgs84().inverse(60.0, 10.0, 60.01, 10.0);
+    let work = public_hausdorff_work("EPSG:4326", source, target, 64, 4_096);
+
+    assert!(work.source_evaluations <= 64, "{work:?}");
+    assert!(work.point_edge_samples <= 4_096, "{work:?}");
+    assert!(
+        (work.distance - expected).abs() <= 0.01,
+        "{work:?} vs {expected}"
+    );
+}
+
+#[test]
+fn public_hausdorff_keeps_the_fixed_witness_fallback_without_target_edges() {
+    const SPHERE_CRS: &str = "+proj=longlat +a=6378137 +b=6378137 +type=crs";
+    let source = line(vec![p(-40.0, 0.0), p(40.0, 0.0)]);
+    let target = Shape::Point(p(180.0, 0.0));
+    let work = public_hausdorff_work(SPHERE_CRS, source, target, 4_096, 10_000);
+    let expected = std::f64::consts::PI * 6_378_137.0;
+
+    assert!(
+        work.source_evaluations > 2,
+        "the equatorial interior maximum must be sampled"
+    );
+    assert_eq!(work.moving_evaluations, 0);
+    assert!((work.distance - expected).abs() <= 0.01);
+}
+
+const PUBLIC_HAUSDORFF_WORK_VERTEX_COUNTS: &[usize] = &[8, 64, 128];
+// At 128 vertices these cases peak at 1,628 source evaluations and 56,945
+// point-edge samples; the limits retain over 3x and 4x headroom, respectively.
+const PUBLIC_HAUSDORFF_SOURCE_WORK_LIMIT: u64 = 5_000;
+const PUBLIC_HAUSDORFF_POINT_EDGE_WORK_LIMIT: u64 = 250_000;
+
+// The sizes span 16x. An n log n work envelope has adjacent finite-size
+// exponents log_8(16) = 1.333 and log_2(7/3) = 1.222, below the 1.4 ceiling.
+fn assert_public_hausdorff_work_scaling(
+    name: &str,
+    growing_span: bool,
+    latitude_origin: f64,
+    latitude_slope: f64,
+) {
+    let mut rows = Vec::with_capacity(PUBLIC_HAUSDORFF_WORK_VERTEX_COUNTS.len());
+    for &vertex_count in PUBLIC_HAUSDORFF_WORK_VERTEX_COUNTS {
+        let mut source_points = Vec::with_capacity(vertex_count);
+        let edge_count = u32::try_from(vertex_count)
+            .expect("test vertex count fits u32")
+            .checked_sub(1)
+            .expect("work-scaling supports contain at least two vertices");
+        for index in 0..vertex_count {
+            let index = f64::from(u32::try_from(index).expect("test vertex index fits u32"));
+            let longitude = if growing_span {
+                10.0 + 0.1 * index
+            } else {
+                10.0 + 20.0 * index / f64::from(edge_count)
+            };
+            let latitude = latitude_origin + latitude_slope * (longitude - 10.0);
+            source_points.push(p(longitude, latitude));
+        }
+        let first = *source_points
+            .first()
+            .expect("work-scaling support has at least two vertices");
+        let last = *source_points
+            .last()
+            .expect("work-scaling support has at least two vertices");
+        let source = line(source_points);
+        let target = line(vec![
+            p(first.x + 1.0e-6, first.y + 0.01),
+            p(last.x + 1.0e-6, last.y + 0.01),
+        ]);
+        let work = public_hausdorff_work(
+            "EPSG:4326",
+            source,
+            target,
+            PUBLIC_HAUSDORFF_SOURCE_WORK_LIMIT,
+            PUBLIC_HAUSDORFF_POINT_EDGE_WORK_LIMIT,
+        );
+        assert!(
+            work.source_evaluations <= PUBLIC_HAUSDORFF_SOURCE_WORK_LIMIT,
+            "{name} {vertex_count}: {work:?}"
+        );
+        assert!(
+            work.point_edge_samples <= PUBLIC_HAUSDORFF_POINT_EDGE_WORK_LIMIT,
+            "{name} {vertex_count}: {work:?}"
+        );
+        eprintln!(
+            "hausdorff-public-symmetric-scaling {name} vertices={vertex_count} source={} moving={} endpoint-minima={} point-edge={} bvh={}",
+            work.source_evaluations,
+            work.moving_evaluations,
+            work.moving_endpoint_minima,
+            work.point_edge_samples,
+            work.target_candidates,
+        );
+        rows.push((vertex_count, work));
+    }
+
+    for pair in rows.windows(2) {
+        let [(small_vertices, small), (large_vertices, large)] = pair else {
+            unreachable!("adjacent work-scaling pairs have two rows");
+        };
+        for (counter, small_work, large_work) in [
+            ("source", small.source_evaluations, large.source_evaluations),
+            ("moving", small.moving_evaluations, large.moving_evaluations),
+            (
+                "moving-endpoint-minima",
+                small.moving_endpoint_minima,
+                large.moving_endpoint_minima,
+            ),
+            (
+                "point-edge",
+                small.point_edge_samples,
+                large.point_edge_samples,
+            ),
+            ("bvh", small.target_candidates, large.target_candidates),
+        ] {
+            let exponent = ((large_work.max(1) as f64) / (small_work.max(1) as f64)).ln()
+                / ((*large_vertices as f64) / (*small_vertices as f64)).ln();
+            eprintln!(
+                "hausdorff-public-symmetric-scaling-exponent {name} {counter} {small_vertices}->{large_vertices}: {exponent:.3}"
+            );
+            assert!(
+                exponent <= 1.4,
+                "{name} {counter} work exponent {exponent:.3} exceeds 1.4"
+            );
+        }
+    }
+}
+
+#[test]
+fn public_fixed_span_flat_hausdorff_work_scales_by_vertex_count() {
+    assert_public_hausdorff_work_scaling("fixed-span flat", false, 60.0, 0.0);
+}
+
+#[test]
+fn public_fixed_span_oblique_hausdorff_work_scales_by_vertex_count() {
+    // Densify one oblique support against a fixed two-vertex support.
+    assert_public_hausdorff_work_scaling("fixed-span oblique", false, 10.0, 0.02);
+}
+
+#[test]
+fn public_growing_span_flat_hausdorff_work_scales_by_vertex_count() {
+    assert_public_hausdorff_work_scaling("growing-span flat", true, 60.0, 0.0);
+}
+
+#[test]
+fn public_growing_span_oblique_hausdorff_work_scales_by_vertex_count() {
+    // This series uses locally ordered edges whose total support grows with n.
+    assert_public_hausdorff_work_scaling("growing-span oblique", true, 10.0, 0.02);
 }
 
 #[test]

@@ -276,6 +276,15 @@ A `Point` exposes [`.x`][gometry.Point.x]/[`.y`][gometry.Point.y]/[`.z`][gometry
 [`.interiors`][gometry.Polygon.interiors] (its holes); and the multi-part / collection types are real
 sequences — iterate them, index them, and take `len(...)`, with each part typed:
 
+The multi-part classes are also registered as `collections.abc.Sequence`, so
+`isinstance` checks and ABC-based dispatch recognize the sequence interface.
+Their static types are `Sequence[Point]`, `Sequence[LineString]`,
+`Sequence[Polygon]`, or `Sequence[Geometry]`. Use class patterns such as
+`MultiPoint(parts)` for matching; anonymous sequence patterns do not match
+geometry objects. NumPy still treats each multipart geometry as one object:
+`np.asarray(multi)` has shape `()`, and `np.array([multi, multi], dtype=object)`
+has shape `(2,)`.
+
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
@@ -624,8 +633,13 @@ print(before_after(track, track.centroid(),
 
 For a permanent 2D conversion, use [`force_2d`][gometry.Geometry.force_2d] to
 drop Z and M. [`force_3d`][gometry.Geometry.force_3d] fills only vertices that
-lack Z, while [`set_z`][gometry.Geometry.set_z] and [`set_m`][gometry.Geometry.set_m]
-assign an ordinate at every vertex or clear it with `None`:
+lack Z. Use [`with_coordinates`][gometry.Geometry.with_coordinates] to replace
+one or more ordinates without changing topology. Each supplied value can be a
+scalar broadcast over vertices or a column with one value per vertex in the
+flattened coordinate sequence; omitted ordinates are preserved, and
+`z=None` / `m=None` removes that optional axis. X and Y cannot be removed.
+Matrix mode replaces the coordinate matrix using its existing axis layout and
+cannot be mixed with ordinate columns:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -635,8 +649,8 @@ flat = track.force_2d()
 print("force_2d axes:", flat.coordinate_axes)
 print("flat centroid:", (flat.centroid()).to_wkt())
 print("force_3d axes:", flat.force_3d().coordinate_axes)
-print("set_z:", flat.set_z(10.0))
-print("set_m:", flat.set_m(0.0).coordinate_axes)
+print("with_coordinates(z=...):", flat.with_coordinates(z=10.0))
+print("with_coordinates(m=...):", flat.with_coordinates(m=0.0).coordinate_axes)
 
 ```
 

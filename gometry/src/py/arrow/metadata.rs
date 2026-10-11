@@ -120,14 +120,15 @@ impl GeoParquetPhysicalLayout {
         self.has_extension
     }
 
-    /// Normalized CRS from the field's own GeoArrow extension metadata.
+    /// Stored CRS label from the field's own GeoArrow extension metadata.
     ///
     /// Returns
     /// -------
     /// str or None
-    ///     The embedded CRS label when the extension declares one; ``None``
-    ///     when the extension metadata omits a CRS. This is not the caller's
-    ///     GeoParquet column declaration.
+    ///     The exact gometry CRS definition when its namespaced metadata is
+    ///     present and agrees with standard CRS metadata; otherwise the
+    ///     normalized standard label. ``None`` means the extension omits CRS.
+    ///     This is not the caller's GeoParquet column declaration.
     #[getter]
     fn embedded_crs(&self) -> Option<String> {
         self.embedded_crs.clone()
@@ -604,18 +605,33 @@ pub(crate) fn reconcile_extension_sources(
                 )));
             }
             let encoding = GeometryEncoding::from_extension_name(&type_src.0);
-            let type_frame = parse_geoarrow_extension_metadata_for(&type_src.1, encoding)?;
-            let field_frame = parse_geoarrow_extension_metadata_for(&field_src.1, encoding)?;
+            let type_frame = parse_geoarrow_extension_metadata_details(&type_src.1, encoding)?;
+            let field_frame = parse_geoarrow_extension_metadata_details(&field_src.1, encoding)?;
             if !optional_crs_labels_operationally_equal(
-                type_frame.0.as_deref(),
-                field_frame.0.as_deref(),
-            )? || !optional_epochs_equal(type_frame.1, field_frame.1)
+                type_frame.crs.as_deref(),
+                field_frame.crs.as_deref(),
+            )? || !optional_epochs_equal(type_frame.epoch, field_frame.epoch)
             {
                 return Err(geoarrow_parse_error(
                     "conflicting GeoArrow extension metadata between ExtensionType and field",
                 ));
             }
-            Ok(Some(type_src))
+            if let (Some(type_definition), Some(field_definition)) = (
+                type_frame.crs_definition.as_deref(),
+                field_frame.crs_definition.as_deref(),
+            ) && type_definition != field_definition
+            {
+                return Err(geoarrow_parse_error(
+                    "conflicting gometry:crs_definition values between ExtensionType and field",
+                ));
+            }
+            let selected =
+                if type_frame.crs_definition.is_none() && field_frame.crs_definition.is_some() {
+                    field_src
+                } else {
+                    type_src
+                };
+            Ok(Some(selected))
         },
     }
 }
@@ -748,8 +764,27 @@ pub(crate) fn parse_geoarrow_extension_metadata_for(
     metadata: &[u8],
     encoding: Option<GeometryEncoding>,
 ) -> PyResult<(Option<String>, Option<f64>)> {
+    let parsed = parse_geoarrow_extension_metadata_details(metadata, encoding)?;
+    Ok((parsed.crs, parsed.epoch))
+}
+
+#[derive(Clone, Debug)]
+struct ParsedGeoArrowExtensionMetadata {
+    crs: Option<String>,
+    epoch: Option<f64>,
+    crs_definition: Option<String>,
+}
+
+fn parse_geoarrow_extension_metadata_details(
+    metadata: &[u8],
+    encoding: Option<GeometryEncoding>,
+) -> PyResult<ParsedGeoArrowExtensionMetadata> {
     if metadata.is_empty() {
-        return Ok((None, None));
+        return Ok(ParsedGeoArrowExtensionMetadata {
+            crs: None,
+            epoch: None,
+            crs_definition: None,
+        });
     }
     let value = serde_json::from_slice::<Value>(metadata).map_err(|error| {
         geoarrow_parse_error(format!("invalid GeoArrow extension metadata: {error}"))
@@ -780,7 +815,7 @@ pub(crate) fn parse_geoarrow_extension_metadata_for(
     // recommendation) or an authority string from other producers; both
     // resolve through the CRS engine while retaining the full authored
     // PROJJSON object; an embedded ID is metadata, not a replacement label.
-    let crs = match object.get("crs") {
+    let standard_crs = match object.get("crs") {
         Some(Value::String(_)) if crs_type == Some("projjson") => {
             return Err(geoarrow_parse_error(
                 "invalid GeoArrow extension metadata: crs_type projjson requires an object crs",
@@ -820,6 +855,32 @@ pub(crate) fn parse_geoarrow_extension_metadata_for(
             ));
         },
     };
+    let crs_definition = match object.get(geoarrow::CRS_DEFINITION_METADATA_KEY) {
+        None => None,
+        Some(Value::String(definition)) => {
+            let Some(standard_crs) = standard_crs.as_deref() else {
+                return Err(geoarrow_parse_error(format!(
+                    "invalid GeoArrow extension metadata: {} requires a standard crs",
+                    geoarrow::CRS_DEFINITION_METADATA_KEY
+                )));
+            };
+            normalize_geoarrow_crs(definition)?;
+            if !optional_crs_labels_operationally_equal(Some(standard_crs), Some(definition))? {
+                return Err(geoarrow_parse_error(format!(
+                    "invalid GeoArrow extension metadata: {} conflicts with standard GeoArrow CRS",
+                    geoarrow::CRS_DEFINITION_METADATA_KEY
+                )));
+            }
+            Some(definition.clone())
+        },
+        Some(_) => {
+            return Err(geoarrow_parse_error(format!(
+                "invalid GeoArrow extension metadata: {} must be a string",
+                geoarrow::CRS_DEFINITION_METADATA_KEY
+            )));
+        },
+    };
+    let crs = crs_definition.clone().or(standard_crs);
     let epoch = parse_geoarrow_epoch(&object)?;
     let epoch = crate::deserialized_epoch(epoch, crs.as_deref()).map_err(|error| {
         Python::attach(|py| {
@@ -829,7 +890,11 @@ pub(crate) fn parse_geoarrow_extension_metadata_for(
             ))
         })
     })?;
-    Ok((crs, epoch))
+    Ok(ParsedGeoArrowExtensionMetadata {
+        crs,
+        epoch,
+        crs_definition,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -849,7 +914,7 @@ pub(crate) fn normalize_geoarrow_crs(reference: &str) -> PyResult<String> {
         .map(std::borrow::Cow::into_owned)
 }
 
-/// Private Python entry: parse GeoArrow extension metadata bytes → (crs, epoch).
+/// Private Python entry: parse GeoArrow extension metadata bytes → (stored CRS label, epoch).
 #[pyfunction]
 #[pyo3(name = "_parse_geoarrow_extension_metadata")]
 pub(crate) fn py_parse_geoarrow_extension_metadata(
@@ -1259,11 +1324,13 @@ pub(crate) struct GeoParquetColumnFrame {
 
 #[pymethods]
 impl GeoParquetColumnFrame {
-    /// Normalized CRS declared by GeoParquet column metadata.
+    /// CRS label declared by GeoParquet column metadata.
     ///
     /// Returns
     /// -------
     /// str or None
+    ///     The exact gometry CRS definition when its namespaced metadata is
+    ///     present and agrees with standard metadata; otherwise
     ///     ``'OGC:CRS84'`` when the ``crs`` key is absent, ``None`` for an
     ///     explicit JSON null, or the normalized CRS from a PROJJSON object.
     #[getter]
@@ -1359,7 +1426,7 @@ fn parse_geoparquet_column_frame_value_typed(
     // CRS: absent → OGC:CRS84; present null → CRS-free; present object → PROJJSON;
     // present string is rejected (GeoParquet 1.x requires PROJJSON or null).
     let crs_present = object.contains_key("crs");
-    let crs = match object.get("crs") {
+    let standard_crs = match object.get("crs") {
         None => Some(normalize_geoparquet_crs_typed("OGC:CRS84", column_name)?),
         Some(Value::Null) => None,
         Some(crs @ Value::Object(_)) => Some(normalize_geoparquet_crs_typed(
@@ -1372,6 +1439,34 @@ fn parse_geoparquet_column_frame_value_typed(
             ));
         },
     };
+    let crs_definition = match object.get(geoarrow::CRS_DEFINITION_METADATA_KEY) {
+        None => None,
+        Some(Value::String(definition)) => {
+            let Some(standard_crs) = standard_crs.as_deref() else {
+                return Err(column_error(format!(
+                    "{} requires a standard CRS",
+                    geoarrow::CRS_DEFINITION_METADATA_KEY
+                )));
+            };
+            normalize_geoparquet_crs_typed(definition, column_name)?;
+            if !optional_crs_labels_operationally_equal(Some(standard_crs), Some(definition))
+                .map_err(|error| column_error(error.to_string()))?
+            {
+                return Err(column_error(format!(
+                    "{} conflicts with standard GeoParquet CRS",
+                    geoarrow::CRS_DEFINITION_METADATA_KEY
+                )));
+            }
+            Some(definition.clone())
+        },
+        Some(_) => {
+            return Err(column_error(format!(
+                "{} must be a string",
+                geoarrow::CRS_DEFINITION_METADATA_KEY
+            )));
+        },
+    };
+    let crs = crs_definition.or(standard_crs);
 
     let epoch_present = object.contains_key("epoch");
     let epoch = match object.get("epoch") {

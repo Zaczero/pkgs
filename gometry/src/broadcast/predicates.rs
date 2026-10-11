@@ -386,7 +386,9 @@ where
     R: crate::broadcast::BulkElement,
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
-    let admission = crate::dispatch::admit_binary(left, right, operation)?;
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let admission = crate::dispatch::admit_binary(&left, &right, operation)?;
     let left = admission.left;
     let right = admission.right;
     let frame = admission.frame;
@@ -453,9 +455,8 @@ pub(crate) fn relate_pattern_broadcast(
     })
 }
 
-/// The shared `contains_xy`/`intersects_xy` engine. `inclusive` selects the
-/// boundary-inclusive matrix projection (`intersects_xy`) over strict
-/// containment (`contains_xy`).
+/// Shared coordinate-query engine for the `contains` and `intersects`
+/// keyword overloads. `inclusive` selects whether boundary contact matches.
 pub(crate) fn xy_predicate(
     py: Python<'_>,
     geometry: &Bound<'_, PyAny>,

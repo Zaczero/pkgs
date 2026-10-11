@@ -34,7 +34,7 @@ fn axis_length_error(name: &str, expected: usize, got: usize) -> PyErr {
 
 fn explicit_none_error(name: &str) -> PyErr {
     InvalidGeometryError::new_err(format!(
-        "{name}=None is not allowed in set_coordinates; use set_z(None) or set_m(None) to clear ordinates"
+        "{name}=None is not allowed; X and Y ordinates cannot be removed"
     ))
 }
 
@@ -44,37 +44,49 @@ fn axis_count(axes: CoordinateAxes) -> usize {
         .wrapping_add(usize::from(axes.has_m()))
 }
 
-fn reject_axis_fabrication(axes: CoordinateAxes, kwargs: &Bound<'_, PyDict>) -> PyResult<()> {
-    if !axes.has_z() && kwargs.contains("z")? {
-        return Err(InvalidGeometryError::new_err(
-            "z coordinates require an existing Z axis; use force_3d() first",
-        ));
+fn replacement_axis_values(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    expected_len: usize,
+) -> PyResult<SharedSlice<f64>> {
+    let is_scalar = match value.getattr_opt(pyo3::intern!(py, "ndim"))? {
+        Some(ndim) => ndim.extract::<usize>()? == 0,
+        None => value.getattr_opt(pyo3::intern!(py, "__float__"))?.is_some(),
+    };
+    let values = if is_scalar {
+        vec![crate::finite_coordinate_required(name, value)?; expected_len]
+    } else {
+        crate::coordinate_column_values_exact(py, value, name, expected_len, |got| {
+            axis_length_error(name, expected_len, got)
+        })?
+    };
+    if !crate::geometry::column_all_finite(&values) {
+        return Err(InvalidGeometryError::new_err(format!(
+            "{name} must be finite"
+        )));
     }
-    if !axes.has_m() && kwargs.contains("m")? {
-        return Err(InvalidGeometryError::new_err(
-            "m coordinates require an existing M axis; use set_m() first",
-        ));
-    }
-    Ok(())
+    Ok(SharedSlice::from_vec(values))
 }
 
-fn required_axis(
+fn optional_xy_axis(
     py: Python<'_>,
     kwargs: &Bound<'_, PyDict>,
     name: &str,
     expected_len: usize,
-) -> PyResult<SharedSlice<f64>> {
-    let value = kwargs
-        .get_item(name)?
-        .ok_or_else(|| InvalidGeometryError::new_err(format!("{name} is required")))?;
+) -> PyResult<Option<SharedSlice<f64>>> {
+    let Some(value) = kwargs.get_item(name)? else {
+        return Ok(None);
+    };
     if value.is_none() {
         return Err(explicit_none_error(name));
     }
-    // Receiver length is known: exact collect so `itertools.repeat` cannot hang (D11).
-    let values = crate::coordinate_column_values_exact(py, &value, name, expected_len, |got| {
-        axis_length_error(name, expected_len, got)
-    })?;
-    Ok(SharedSlice::from_vec(values))
+    Ok(Some(replacement_axis_values(
+        py,
+        &value,
+        name,
+        expected_len,
+    )?))
 }
 
 fn optional_replace_axis(
@@ -87,17 +99,14 @@ fn optional_replace_axis(
         return Ok(ReplacementAxis::Carry);
     };
     if value.is_none() {
-        return Err(explicit_none_error(name));
+        return Ok(ReplacementAxis::Drop);
     }
-    let values = crate::coordinate_column_values_exact(py, &value, name, expected_len, |got| {
-        axis_length_error(name, expected_len, got)
-    })?;
-    if !crate::geometry::column_all_finite(&values) {
-        return Err(InvalidGeometryError::new_err(format!(
-            "{name} must be finite"
-        )));
-    }
-    Ok(ReplacementAxis::Replace(SharedSlice::from_vec(values)))
+    Ok(ReplacementAxis::Replace(replacement_axis_values(
+        py,
+        &value,
+        name,
+        expected_len,
+    )?))
 }
 
 fn replacement_from_kwargs(
@@ -109,23 +118,14 @@ fn replacement_from_kwargs(
     for key in kwargs.keys() {
         let name = key.extract::<&str>()?;
         if !matches!(name, "x" | "y" | "z" | "m") {
-            return Err(GeometryError::new_err(format!(
-                "set_coordinates got an unexpected keyword argument {name:?}"
+            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                "with_coordinates got an unexpected keyword argument {name:?}"
             )));
         }
     }
-    reject_axis_fabrication(axes, kwargs)?;
-    let xs = required_axis(py, kwargs, "x", expected_len)?;
-    let ys = required_axis(py, kwargs, "y", expected_len)?;
-    // Validate XY finiteness directly — no validation-only CoordSeq.
-    if !crate::geometry::column_all_finite(&xs) || !crate::geometry::column_all_finite(&ys) {
-        let error: crate::error::Error =
-            crate::geometry::GeometryErrorKind::NonFiniteCoordinate.into();
-        return Err(error.into());
-    }
     Ok(CoordinateReplacement {
-        xs,
-        ys,
+        xs: optional_xy_axis(py, kwargs, "x", expected_len)?,
+        ys: optional_xy_axis(py, kwargs, "y", expected_len)?,
         zs: optional_replace_axis(py, kwargs, "z", expected_len)?,
         ms: optional_replace_axis(py, kwargs, "m", expected_len)?,
         len: expected_len,
@@ -161,8 +161,8 @@ fn replacement_from_coordinates_view(
         && seq.len() == expected_len
     {
         return Ok(CoordinateReplacement {
-            xs: seq.carried_xs(),
-            ys: seq.carried_ys(),
+            xs: Some(seq.carried_xs()),
+            ys: Some(seq.carried_ys()),
             zs: seq
                 .carried_zs()
                 .map_or(ReplacementAxis::Carry, ReplacementAxis::Replace),
@@ -189,8 +189,8 @@ fn replacement_from_coordinates_view(
         }
     });
     Ok(CoordinateReplacement {
-        xs: SharedSlice::from_vec(xs),
-        ys: SharedSlice::from_vec(ys),
+        xs: Some(SharedSlice::from_vec(xs)),
+        ys: Some(SharedSlice::from_vec(ys)),
         zs: zs.map_or(ReplacementAxis::Carry, |values| {
             ReplacementAxis::Replace(SharedSlice::from_vec(values))
         }),
@@ -268,8 +268,8 @@ fn replacement_from_matrix(
         return Err(InvalidGeometryError::new_err("coordinates must be finite"));
     }
     Ok(CoordinateReplacement {
-        xs: SharedSlice::from_vec(xs),
-        ys: SharedSlice::from_vec(ys),
+        xs: Some(SharedSlice::from_vec(xs)),
+        ys: Some(SharedSlice::from_vec(ys)),
         zs: zs.map_or(ReplacementAxis::Carry, |values| {
             ReplacementAxis::Replace(SharedSlice::from_vec(values))
         }),
@@ -297,13 +297,20 @@ pub(crate) fn parse_coordinate_replacement(
         },
         (1, false) => replacement_from_matrix(py, &args.get_item(0)?, axes, expected_len),
         (0, false) => Err(GeometryError::new_err(
-            "set_coordinates requires a coordinate matrix or x= and y= columns",
+            "with_coordinates requires a coordinate matrix or at least one ordinate",
         )),
-        (1, true) => Err(GeometryError::new_err(
-            "set_coordinates cannot mix a positional coordinate matrix with x/y/z/m columns",
-        )),
+        (1, true) => {
+            let coordinates = args.get_item(0)?;
+            if coordinates.is_none() {
+                replacement_from_kwargs(py, kwargs.expect("checked"), axes, expected_len)
+            } else {
+                Err(GeometryError::new_err(
+                    "with_coordinates cannot mix a positional coordinate matrix with ordinate columns",
+                ))
+            }
+        },
         _ => Err(GeometryError::new_err(
-            "set_coordinates accepts at most one positional coordinate matrix",
+            "with_coordinates accepts at most one positional coordinate matrix",
         )),
     }
 }
@@ -331,20 +338,18 @@ fn replacement_seq(
     cursor.set(end);
     CoordSeq::try_from_vecs(
         replacement
-            .xs
-            .get(start..end)
-            .expect("replacement range is bounded by admitted coordinates")
+            .x_column_for_seq(old, start..end)
+            .as_slice()
             .to_vec(),
         replacement
-            .ys
-            .get(start..end)
-            .expect("replacement range is bounded by admitted coordinates")
+            .y_column_for_seq(old, start..end)
+            .as_slice()
             .to_vec(),
         replacement
-            .z_column_for_seq(old, start..end)?
+            .z_column_for_seq(old, start..end)
             .map(|values| values.as_slice().to_vec()),
         replacement
-            .m_column_for_seq(old, start..end)?
+            .m_column_for_seq(old, start..end)
             .map(|values| values.as_slice().to_vec()),
     )
     .map_err(PyErr::from)
@@ -366,16 +371,10 @@ fn replacement_point(
     let index = cursor.get();
     cursor.set(index.wrapping_add(1));
     Point::new_axes(
-        *replacement
-            .xs
-            .get(index)
-            .expect("replacement index is bounded by admitted coordinates"),
-        *replacement
-            .ys
-            .get(index)
-            .expect("replacement index is bounded by admitted coordinates"),
-        ZOrdinate(replacement.z_at(*old, index)?),
-        MOrdinate(replacement.m_at(*old, index)?),
+        replacement.x_at(*old, index),
+        replacement.y_at(*old, index),
+        ZOrdinate(replacement.z_at(*old, index)),
+        MOrdinate(replacement.m_at(*old, index)),
     )
     .map_err(PyErr::from)
 }
@@ -430,15 +429,50 @@ pub(crate) fn replace_shape_coordinates(
     replacement: &CoordinateReplacement,
 ) -> PyResult<Shape> {
     let cursor = Cell::new(0);
-    let replaced = shape.try_map_coordseqs(
+    let mut replaced = shape.try_map_coordseqs(
         |seq| replacement_seq(seq, replacement, &cursor),
         |point| replacement_point(point, replacement, &cursor),
     )?;
     if cursor.get() != replacement.len {
         return Err(replacement_len_error(replacement.len, cursor.get()));
     }
+    let replaces_axis = !matches!(&replacement.zs, ReplacementAxis::Carry)
+        || !matches!(&replacement.ms, ReplacementAxis::Carry);
+    if replaces_axis && has_empty_axis_change(&replaced, replacement) {
+        replaced = retag_empty_axes(&replaced, replacement)?;
+    }
     validate_shape_rings(&replaced)?;
     Ok(replaced)
+}
+
+fn has_empty_axis_change(shape: &Shape, replacement: &CoordinateReplacement) -> bool {
+    match shape {
+        Shape::Empty(_, axes) => replacement.output_axes(*axes) != *axes,
+        Shape::GeometryCollection(geometries) => geometries
+            .iter()
+            .any(|geometry| has_empty_axis_change(geometry, replacement)),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_) => false,
+    }
+}
+
+fn retag_empty_axes(shape: &Shape, replacement: &CoordinateReplacement) -> PyResult<Shape> {
+    match shape {
+        Shape::Empty(kind, axes) => Ok(Shape::typed_empty(*kind, replacement.output_axes(*axes))),
+        Shape::GeometryCollection(geometries) => Ok(Shape::GeometryCollection(
+            geometries.try_map_members(|geometry| retag_empty_axes(geometry, replacement))?,
+        )),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_) => Ok(shape.clone()),
+    }
 }
 
 pub(crate) fn slice_replacement_for_shape(
@@ -448,20 +482,22 @@ pub(crate) fn slice_replacement_for_shape(
 ) -> CoordinateReplacement {
     let end = start.wrapping_add(len);
     CoordinateReplacement {
-        xs: SharedSlice::from_vec(
-            replacement
-                .xs
-                .get(start..end)
-                .expect("replacement range is bounded by admitted coordinates")
-                .to_vec(),
-        ),
-        ys: SharedSlice::from_vec(
-            replacement
-                .ys
-                .get(start..end)
-                .expect("replacement range is bounded by admitted coordinates")
-                .to_vec(),
-        ),
+        xs: replacement.xs.as_ref().map(|values| {
+            SharedSlice::from_vec(
+                values
+                    .get(start..end)
+                    .expect("replacement range is bounded by admitted coordinates")
+                    .to_vec(),
+            )
+        }),
+        ys: replacement.ys.as_ref().map(|values| {
+            SharedSlice::from_vec(
+                values
+                    .get(start..end)
+                    .expect("replacement range is bounded by admitted coordinates")
+                    .to_vec(),
+            )
+        }),
         zs: match &replacement.zs {
             ReplacementAxis::Replace(values) => ReplacementAxis::Replace(SharedSlice::from_vec(
                 values
@@ -470,6 +506,7 @@ pub(crate) fn slice_replacement_for_shape(
                     .to_vec(),
             )),
             ReplacementAxis::Carry => ReplacementAxis::Carry,
+            ReplacementAxis::Drop => ReplacementAxis::Drop,
         },
         ms: match &replacement.ms {
             ReplacementAxis::Replace(values) => ReplacementAxis::Replace(SharedSlice::from_vec(
@@ -479,6 +516,7 @@ pub(crate) fn slice_replacement_for_shape(
                     .to_vec(),
             )),
             ReplacementAxis::Carry => ReplacementAxis::Carry,
+            ReplacementAxis::Drop => ReplacementAxis::Drop,
         },
         len,
         axes: replacement.axes,

@@ -217,7 +217,7 @@ def _compare_from_arrow(
         if g is None:
             continue
         checked += 1
-        ga = g.set_crs(None) if getattr(g, 'crs', None) is not None else g
+        ga = g.with_crs(None) if getattr(g, 'crs', None) is not None else g
         if not bool(shapely.equals(_as_shapely(ga), _as_shapely(s))):
             raise OracleMismatch(f'from_arrow geometry mismatch row={i}')
     if checked != 90_000:
@@ -305,7 +305,7 @@ def _precondition_prepared_hit_rate() -> None:
     import gometry as gm
 
     data = prepared_polygon_and_probes()
-    mask = gm.contains_xy(data['gm_poly'], data['xs'], data['ys'])
+    mask = gm.contains(data['gm_poly'], x=data['xs'], y=data['ys'])
     rate = float(np.asarray(mask).mean())
     if not (0.40 <= rate <= 0.60):
         raise OracleMismatch(
@@ -604,7 +604,7 @@ def _compare_from_geojson(
     # unequal shapes; when exact OGC equals fails on presentation noise, accept
     # only a tiny Hausdorff distance (never bounds-as-equality).
     for i, (g, s) in enumerate(zip(left, right, strict=True)):  # type: ignore[arg-type]
-        g_xy = g.set_crs(None) if getattr(g, 'crs', None) is not None else g
+        g_xy = g.with_crs(None) if getattr(g, 'crs', None) is not None else g
         if bool(shapely.equals(_as_shapely(g_xy), _as_shapely(s))):
             continue
         try:
@@ -823,7 +823,7 @@ def build_points() -> PublicCase:
     )
 
 
-def build_contains_xy() -> PublicCase:
+def build_coordinate_contains() -> PublicCase:
     data = prepared_polygon_and_probes()
     polygon = data['gm_poly']
     sh_poly = data['sh_poly']
@@ -832,7 +832,7 @@ def build_contains_xy() -> PublicCase:
     def gometry_call():
         import gometry as gm
 
-        return gm.contains_xy(polygon, xs, ys)
+        return gm.contains(polygon, x=xs, y=ys)
 
     def competitor_call():
         import shapely
@@ -840,7 +840,7 @@ def build_contains_xy() -> PublicCase:
         return shapely.contains_xy(sh_poly, xs, ys)
 
     _reg(
-        'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon',
+        'gometry.contains/coordinate_100k_probes_1316_vertex_polygon',
         gometry_call,
     )
     _reg(
@@ -1874,7 +1874,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.coords.matrix_and_index/100k_vertices': build_coords_matrix_and_index,
     'gometry.points/10k_numpy_xy': build_points,
     'gometry.from_wkt.batch/10k_realistic_mixed_wkt': build_from_wkt,
-    'gometry.contains_xy/prepared_100k_probes_1316_vertex_polygon': build_contains_xy,
+    'gometry.contains/coordinate_100k_probes_1316_vertex_polygon': build_coordinate_contains,
     'gometry.intersects/12k_irregular_polygon_point_array': build_intersects_polygon_points,
     'gometry.dwithin/pairwise_10k_50pct_matches': build_dwithin,
     'gometry.area/10k_projected_buildings': build_area,

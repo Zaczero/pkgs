@@ -20,7 +20,7 @@ def _angular_unit(factor: float, name: str = 'authored angle') -> dict[str, Any]
 
 
 def _mixed_geographic(order: str, directions: str) -> gm.CRS:
-    definition = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(4326).to_projjson(as_dict=True))
     axes = definition['coordinate_system']['axis']
     axes[0]['unit'] = _angular_unit(DEGREE, 'latitude unit')
     axes[1]['unit'] = _angular_unit(0.02, 'longitude unit')
@@ -91,7 +91,7 @@ def test_authored_axes_execute_independent_units_order_and_sign(
 def test_authored_near_degree_factor_survives_json_and_wkt_reentry(
     factor: float,
 ) -> None:
-    definition = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(4326).to_projjson(as_dict=True))
     for axis in definition['coordinate_system']['axis']:
         axis['unit'] = _angular_unit(factor, 'authored degree')
     crs = gm.CRS(definition)
@@ -112,7 +112,7 @@ def test_authored_near_degree_factor_survives_json_and_wkt_reentry(
 def test_authored_projected_axes_use_independent_linear_factors_both_directions() -> (
     None
 ):
-    definition = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(3857).to_projjson(as_dict=True))
     axes = definition['coordinate_system']['axis']
     axes[0]['unit'] = {'type': 'LinearUnit', 'name': 'x unit', 'conversion_factor': 2.0}
     axes[1]['unit'] = {'type': 'LinearUnit', 'name': 'y unit', 'conversion_factor': 3.0}
@@ -136,7 +136,7 @@ def test_authored_projected_axes_use_independent_linear_factors_both_directions(
 def test_near_utm_parameters_do_not_use_approximate_compact_recognition(
     parameter_code: int, value: float
 ) -> None:
-    definition = copy.deepcopy(gm.CRS(32632).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(32632).to_projjson(as_dict=True))
     parameter = next(
         item
         for item in definition['conversion']['parameters']
@@ -166,7 +166,7 @@ def test_near_utm_parameters_do_not_use_approximate_compact_recognition(
 def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name() -> (
     None
 ):
-    geographic = copy.deepcopy(gm.CRS(4326).to_projjson_dict())
+    geographic = copy.deepcopy(gm.CRS(4326).to_projjson(as_dict=True))
     ensemble = geographic.pop('datum_ensemble')
     ensemble['type'] = 'GeodeticReferenceFrame'
     geographic['datum'] = ensemble
@@ -183,7 +183,7 @@ def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name()
     assert prime_meridian.info['prime_meridian']['longitude'] == 1.0e-11
     assert gm.crs_transform(prime_meridian, 3857, 100.0, 0.5) == expected
 
-    projected = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
+    projected = copy.deepcopy(gm.CRS(3857).to_projjson(as_dict=True))
     projected['base_crs']['datum_ensemble']['ellipsoid']['semi_major_axis'] = (
         7_000_000.0
     )
@@ -204,7 +204,7 @@ def test_authored_prime_meridian_offset_and_ellipsoid_are_not_repaired_by_name()
     ids=['decimal-offset', 'adjacent-offset', 'negative-offset'],
 )
 def test_authored_projection_offset_keeps_exact_binary64_value(offset: float) -> None:
-    definition = copy.deepcopy(gm.CRS(3857).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(3857).to_projjson(as_dict=True))
     parameter = next(
         item
         for item in definition['conversion']['parameters']
@@ -217,7 +217,7 @@ def test_authored_projection_offset_keeps_exact_binary64_value(offset: float) ->
 
 
 def test_authored_near_pole_parameter_is_not_clamped() -> None:
-    definition = copy.deepcopy(gm.CRS(32661).to_projjson_dict())
+    definition = copy.deepcopy(gm.CRS(32661).to_projjson(as_dict=True))
     parameter = next(
         item
         for item in definition['conversion']['parameters']
@@ -234,8 +234,8 @@ def test_authored_near_pole_parameter_is_not_clamped() -> None:
 
 
 def test_authored_compound_child_definition_is_exposed_and_used_for_metrics() -> None:
-    horizontal = _mixed_geographic('lat-lon', 'east-north').to_projjson_dict()
-    vertical = gm.CRS(5703).to_projjson_dict()
+    horizontal = _mixed_geographic('lat-lon', 'east-north').to_projjson(as_dict=True)
+    vertical = gm.CRS(5703).to_projjson(as_dict=True)
     compound = gm.CRS({
         'type': 'CompoundCRS',
         'name': 'authored compound',
@@ -302,3 +302,130 @@ def test_authored_definition_crosses_pickle_arrow_geoparquet_and_pandas(
     restored = gm.from_pandas(values.to_pandas())
     assert restored.crs.definition == authored.definition
     _assert_same_axis_meaning(authored, restored.crs)
+
+
+@pytest.mark.parametrize(
+    'crs_input',
+    [
+        pytest.param(4326, id='authority'),
+        pytest.param(gm.CRS(4326).to_wkt(), id='wkt'),
+        pytest.param(_mixed_geographic('lat-lon', 'east-north'), id='projjson'),
+    ],
+)
+def test_arrow_encodings_capsules_and_ipc_preserve_exact_crs_definition(
+    crs_input: object,
+) -> None:
+    pa = pytest.importorskip('pyarrow')
+    expected_crs = gm.CRS(crs_input)
+    values = gm.GeometryArray(
+        [
+            gm.Point(100.0, 0.5, crs=expected_crs),
+            None,
+        ],
+        crs=expected_crs,
+    )
+
+    for encoding in ('auto', 'wkb'):
+        arrow = values.to_arrow(encoding=encoding)
+        metadata = json.loads(arrow.type.__arrow_ext_serialize__())
+        assert metadata['gometry:crs_definition'] == expected_crs.definition
+
+        restored = gm.from_arrow(arrow)
+        assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+        assert restored.crs is not None
+        assert restored.crs.definition == expected_crs.definition
+        assert restored.is_missing.tolist() == [False, True]
+
+        table = pa.table({'geometry': arrow})
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, table.schema) as writer:
+            writer.write_table(table)
+        ipc_geometry = pa.ipc.open_stream(pa.BufferReader(sink.getvalue())).read_all()[
+            'geometry'
+        ]
+        ipc_restored = gm.from_arrow(ipc_geometry)
+        assert ipc_restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+        assert ipc_restored.crs is not None
+        assert ipc_restored.crs.definition == expected_crs.definition
+
+    array_restored = gm.from_arrow(pa.array(values))
+    assert array_restored.crs is not None
+    assert array_restored.crs.definition == expected_crs.definition
+
+    class StreamOnly:
+        def __arrow_c_stream__(self, requested_schema: Any | None = None) -> Any:
+            return values.__arrow_c_stream__(requested_schema)
+
+    stream_restored = gm.from_arrow(StreamOnly())
+    assert stream_restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert stream_restored.crs is not None
+    assert stream_restored.crs.definition == expected_crs.definition
+
+
+def test_arrow_epoch_roundtrip_preserves_exact_crs_definition() -> None:
+    pa = pytest.importorskip('pyarrow')
+    authored = gm.CRS(4326)
+    values = gm.points([1.0, 2.0], [3.0, 4.0], crs=authored, epoch=2020.0)
+
+    for encoding in ('auto', 'wkb'):
+        arrow = values.to_arrow(encoding=encoding)
+        restored = gm.from_arrow(arrow)
+        assert restored.crs is not None
+        assert restored.crs.definition == authored.definition
+        assert restored.epoch == 2020.0
+
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, pa.schema([('geometry', arrow.type)])) as writer:
+            writer.write_batch(pa.record_batch([arrow], names=['geometry']))
+        ipc_geometry = pa.ipc.open_stream(pa.BufferReader(sink.getvalue())).read_all()[
+            'geometry'
+        ]
+        ipc_restored = gm.from_arrow(ipc_geometry)
+        assert ipc_restored.crs is not None
+        assert ipc_restored.crs.definition == authored.definition
+        assert ipc_restored.epoch == 2020.0
+
+
+@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+def test_geoparquet_roundtrip_preserves_exact_crs_definition_and_epoch(
+    encoding: str,
+    tmp_path: Any,
+) -> None:
+    pytest.importorskip('pyarrow')
+    authored = gm.CRS(4326)
+    values = gm.GeometryArray(
+        [
+            gm.Point(1.0, 2.0, crs=authored),
+            None,
+        ],
+        crs=authored,
+    ).with_epoch(2020.0)
+    path = tmp_path / f'{encoding}.parquet'
+
+    values.to_geoparquet(path, encoding=encoding)
+    restored, _ = gm.from_geoparquet(path)
+
+    assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
+    assert restored.crs is not None
+    assert restored.crs.definition == authored.definition
+    assert restored.epoch == values.epoch
+    assert restored.is_missing.tolist() == [False, True]
+
+
+def test_geoparquet_rejects_private_crs_definition_that_conflicts_with_projjson(
+    tmp_path: Any,
+) -> None:
+    pytest.importorskip('pyarrow')
+    pq = pytest.importorskip('pyarrow.parquet')
+    values = gm.points([1.0], [2.0], crs=4326)
+    path = tmp_path / 'conflicting-crs.parquet'
+    values.to_geoparquet(path)
+    table = pq.read_table(path)
+    metadata = json.loads(table.schema.metadata[b'geo'])
+    metadata['columns']['geometry']['gometry:crs_definition'] = 'EPSG:3857'
+    schema_metadata = dict(table.schema.metadata)
+    schema_metadata[b'geo'] = json.dumps(metadata).encode()
+    pq.write_table(table.replace_schema_metadata(schema_metadata), path)
+
+    with pytest.raises(gm.ParseError, match='gometry:crs_definition conflicts'):
+        gm.from_geoparquet(path)

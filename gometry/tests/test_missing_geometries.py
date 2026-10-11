@@ -89,7 +89,7 @@ def test_fill_missing_accepts_row_aligned_arrays(masked: gm.GeometryArray) -> No
     with pytest.raises(ValueError, match='fill array length 1 does not match'):
         masked.fill_missing(gm.GeometryArray([gm.Point(1.0, 1.0)]))
     with pytest.raises(gm.CRSMismatchError):
-        masked.set_crs(4326).fill_missing(
+        masked.with_crs(4326).fill_missing(
             gm.GeometryArray([
                 gm.Point(0.0, 0.0, crs=3857),
                 gm.Point(1.0, 1.0, crs=3857),
@@ -587,7 +587,7 @@ def test_masked_split_skips_missing_line_rows() -> None:
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
     ]
-    assert pieces[1].to_wkt() == []
+    assert pieces[1] is None
     assert pieces[2].to_wkt() == [
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
@@ -602,8 +602,8 @@ def test_masked_split_skips_missing_line_rows() -> None:
         'LINESTRING (0 0, 1 0)',
         'LINESTRING (1 0, 2 0)',
     ]
-    assert pairwise_pieces[1].to_wkt() == []
-    assert pairwise_pieces[2].to_wkt() == []
+    assert pairwise_pieces[1] is None
+    assert pairwise_pieces[2] is None
 
 
 def test_masked_splitter_array_skips_missing_points() -> None:
@@ -629,9 +629,15 @@ def test_spatial_index_point_fast_paths_skip_missing_query_rows() -> None:
     queries = gm.GeometryArray([gm.Point(0.0, 0.0), None, gm.Point(9.0, 9.0)])
     idx = gm.SpatialIndex(values)
 
-    assert idx.candidates(queries).to_list() == [[0], [], []]
-    assert idx.query(queries).to_list() == [[0], [], []]
-    assert idx.nearest(queries).to_list() == [[0], [], [1]]
+    assert idx.candidates(queries).to_list() == [[0], None, []]
+    assert idx.query(queries).to_list() == [[0], None, []]
+    assert idx.nearest(queries).to_list() == [[0], None, [1]]
+    nearest, distances = idx.nearest(queries, return_distance=True)
+    assert nearest.to_list() == [[0], None, [1]]
+    assert len(distances) == 2
+    pooled_nearest, pooled_distances = gm.nearest(values, queries, return_distance=True)
+    assert pooled_nearest.to_list() == [[0], None, [1]]
+    assert len(pooled_distances) == 2
 
     left, right = gm.join(queries, values, predicate='intersects')
     assert list(zip(left.tolist(), right.tolist(), strict=True)) == [(0, 0)]
@@ -669,9 +675,11 @@ def test_linref_array_lanes_degrade_missing_rows_to_nan() -> None:
     interpolated_m = measured_rows.line_interpolate(50.0, basis='m')
     assert interpolated_m[0].to_wkt() == 'POINT M (5 0 50)'
     assert interpolated_m[1] is None
+    assert interpolated_m.to_arrow().type.extension_name == 'geoarrow.point'
     substrings_m = measured_rows.line_substring(25.0, 75.0, basis='m')
     assert substrings_m[0].to_wkt() == 'LINESTRING M (2.5 0 25, 7.5 0 75)'
     assert substrings_m[1] is None
+    assert substrings_m.to_arrow().type.extension_name == 'geoarrow.linestring'
 
     invalid_m = gm.GeometryArray([
         measured,
@@ -739,7 +747,7 @@ def test_point_nav_float_array_lanes_degrade_missing_rows_to_nan() -> None:
 
     for op in (
         gm.bearing,
-        gm.rhumb_distance,
+        lambda left, right: gm.distance(left, right, path='rhumb'),
         lambda left, right: gm.bearing(left, right, path='rhumb'),
     ):
         left_array = op(points, target)
@@ -867,16 +875,18 @@ def test_geojson_feature_null_geometry_dict_lanes_become_missing_rows() -> None:
 
 def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
     expected = [False, True, False]
+    buffered = masked.buffer(0.1)
+    affine = masked.affine_transform([1.0, 0.0, 0.0, 1.0, 10.0, 10.0])
     survivors = [
-        masked.set_crs(4326),
-        masked.set_crs(4326).set_epoch(2020.0),
-        masked.set_crs(4326).to_crs(3857),
-        masked.set_z(1.0),
+        masked.with_crs(4326),
+        masked.with_crs(4326).with_epoch(2020.0),
+        masked.with_crs(4326).to_crs(3857),
+        masked.with_coordinates(z=1.0),
         masked.force_3d(),
         masked.reverse(),
         masked.swap_xy(),
-        masked.affine_transform([1.0, 0.0, 0.0, 1.0, 10.0, 10.0]),
-        masked.buffer(0.1),
+        affine,
+        buffered,
         masked.simplify(0.1),
         masked[:],
         masked[[0, 1, 2]],
@@ -884,8 +894,26 @@ def test_mask_survives_row_aligned_ops(masked: gm.GeometryArray) -> None:
     ]
     for result in survivors:
         assert result.is_missing.tolist() == expected, repr(result)
+    assert affine.to_arrow().type.extension_name == 'geoarrow.point'
+    assert buffered.to_arrow().type.extension_name == 'geoarrow.polygon'
     assert masked[1:].is_missing.tolist() == [True, False]
     assert masked[[False, True, True]].is_missing.tolist() == [True, False]
+
+
+def test_binary_geometry_streams_homogeneous_nullable_line_results() -> None:
+    left = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(4, 4)])
+    right = gm.GeometryArray([gm.Point(1, 0), gm.Point(5, 5), None])
+
+    paired = gm.shortest_line(left, right)
+    left_scalar = gm.shortest_line(gm.Point(0, 0), right)
+    right_scalar = gm.shortest_line(left, gm.Point(1, 0))
+
+    assert paired.is_missing.tolist() == [False, True, True]
+    assert left_scalar.is_missing.tolist() == [False, False, True]
+    assert right_scalar.is_missing.tolist() == [False, True, False]
+    assert paired.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert left_scalar.to_arrow().type.extension_name == 'geoarrow.linestring'
+    assert right_scalar.to_arrow().type.extension_name == 'geoarrow.linestring'
 
 
 def test_frame_semantics_with_missing() -> None:
@@ -950,9 +978,11 @@ def test_masked_flatten_exports_do_not_leak_placeholder(
     parts = masked.parts
     assert isinstance(parts, gm.Groups)
     assert parts.offsets.tolist() == [0, 1, 1, 2]
+    assert parts.is_missing.tolist() == [False, True, False]
     assert parts[0].to_wkt() == ['POINT (0 0)']
-    assert len(parts[1]) == 0
+    assert parts[1] is None
     assert parts[2].to_wkt() == ['POINT (2 2)']
+    assert parts.to_list() == [[gm.Point(0, 0)], None, [gm.Point(2, 2)]]
     obj = np.asarray(masked)
     assert obj.tolist()[1] is None
     interface = masked.__geo_interface__
@@ -960,6 +990,224 @@ def test_masked_flatten_exports_do_not_leak_placeholder(
     assert masked.geometry_type == ['Point', None, 'Point']
     assert 'missing' in masked._repr_html_()
     assert 'NaN' not in masked._repr_html_()
+
+
+def test_nullable_ragged_groups_distinguish_missing_from_empty_and_pickle() -> None:
+    source = gm.GeometryArray([
+        gm.MultiPoint([(0, 0), (1, 1)]),
+        None,
+        gm.MultiPoint([]),
+    ])
+    groups = source.parts
+
+    assert groups.is_missing.tolist() == [False, True, False]
+    assert groups[0].to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
+    assert groups[1] is None
+    assert groups[2].to_wkt() == []
+    assert groups.nbytes == groups.values.nbytes + groups.offsets.nbytes + 1
+    assert list(groups)[1] is None
+    assert list(reversed(groups))[1] is None
+    assert groups.to_list() == [
+        [gm.Point(0, 0), gm.Point(1, 1)],
+        None,
+        [],
+    ]
+    assert groups.count(None) == 1
+    assert groups.index(None) == 1
+    assert None in groups
+    assert groups == [groups[0], None, groups[2]]
+    assert groups != [groups[0], gm.GeometryArray([]), groups[2]]
+    assert groups[1:] == [None, groups[2]]
+    assert groups[::2].is_missing.tolist() == [False, False]
+    gathered = groups[1::2]
+    assert gathered.is_missing.tolist() == [True]
+    assert gathered[0] is None
+    assert pickle.loads(pickle.dumps(gathered)) == gathered
+
+    for protocol in range(pickle.HIGHEST_PROTOCOL + 1):
+        restored = pickle.loads(pickle.dumps(groups, protocol=protocol))
+        assert restored == groups
+        assert restored.is_missing.tolist() == [False, True, False]
+        assert restored[1] is None
+
+
+def test_missing_geometry_group_does_not_contain_empty_array() -> None:
+    missing = gm.GeometryArray([None]).parts
+    assert gm.GeometryArray([]) not in missing
+
+
+def test_present_empty_geometry_group_contains_empty_array() -> None:
+    present_empty = gm.GeometryArray([gm.MultiPoint([])]).parts
+    empty = gm.GeometryArray([])
+
+    assert empty in present_empty
+    assert present_empty.count(empty) == 1
+    assert present_empty.index(empty) == 0
+
+
+def test_missing_integer_group_does_not_contain_empty_row() -> None:
+    missing = gm.SpatialIndex().query(gm.GeometryArray([None]))
+    assert [] not in missing
+
+
+def test_missing_integer_group_counts_no_empty_rows() -> None:
+    missing = gm.SpatialIndex().query(gm.GeometryArray([None]))
+
+    assert missing.count([]) == 0
+
+
+def test_missing_integer_group_index_rejects_empty_row() -> None:
+    missing = gm.SpatialIndex().query(gm.GeometryArray([None]))
+
+    with pytest.raises(ValueError):
+        missing.index([])
+
+
+def test_present_empty_integer_group_matches_empty_row() -> None:
+    present_empty = gm.SpatialIndex().query(gm.GeometryArray([gm.Point(0, 0)]))
+
+    assert list(present_empty[0]) == []
+    assert [] in present_empty
+    assert present_empty.count([]) == 1
+    assert present_empty.index([]) == 0
+
+
+def test_missing_cell_group_does_not_contain_empty_cover_row() -> None:
+    missing = gm.h3_cover(gm.GeometryArray([None], crs=4326), resolution=4)
+    empty_polygon = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    empty_cells = gm.h3_cover(
+        gm.GeometryArray([empty_polygon], crs=4326), resolution=4
+    )[0]
+
+    assert missing[0] is None
+    assert empty_cells not in missing
+
+
+def test_present_empty_cell_group_contains_empty_cover_row() -> None:
+    empty_polygon = gm.from_wkt('POLYGON EMPTY', crs=4326)
+    present_empty = gm.h3_cover(
+        gm.GeometryArray([empty_polygon], crs=4326), resolution=4
+    )
+    empty_cells = present_empty[0]
+
+    assert len(empty_cells) == 0
+    assert empty_cells in present_empty
+    assert present_empty.count(empty_cells) == 1
+    assert present_empty.index(empty_cells) == 0
+
+
+def test_require_nullable_groups_matches_their_present_values() -> None:
+    rows = gm.GeometryArray([gm.Point(1, 2), None, gm.Point(3, 4)])
+
+    required_groups = gm.require(rows.parts)
+    required_values = gm.require(rows.parts.values)
+
+    assert required_groups == required_values
+    assert required_groups.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+@pytest.mark.parametrize(
+    ('geometry', 'member_type'),
+    [
+        pytest.param(gm.Point(0, 0), gm.Point, id='point'),
+        pytest.param(gm.MultiPoint([(0, 0), (1, 1)]), gm.Point, id='multi-point'),
+        pytest.param(gm.LineString([(0, 0), (1, 1)]), gm.LineString, id='linestring'),
+        pytest.param(
+            gm.MultiLineString([[(0, 0), (1, 1)]]),
+            gm.LineString,
+            id='multi-linestring',
+        ),
+        pytest.param(gm.box(0, 0, 1, 1), gm.Polygon, id='polygon'),
+        pytest.param(
+            gm.MultiPolygon([gm.box(0, 0, 1, 1)]), gm.Polygon, id='multi-polygon'
+        ),
+        pytest.param(
+            gm.GeometryCollection([gm.Point(0, 0), gm.LineString([(1, 1), (2, 2)])]),
+            gm.Geometry,
+            id='geometry-collection',
+        ),
+    ],
+)
+def test_parts_groups_publish_the_member_kind_for_dense_and_nullable_rows(
+    geometry: gm.Geometry, member_type: type[gm.Geometry]
+) -> None:
+    dense = gm.GeometryArray([geometry])
+    nullable = gm.GeometryArray([geometry, None])
+
+    for values, expected_missing in (
+        (dense, [False]),
+        (nullable, [False, True]),
+    ):
+        groups = values.parts
+        assert groups.is_missing.tolist() == expected_missing
+        for member in groups[0]:
+            assert isinstance(member, member_type)
+        if len(values) == 2:
+            assert groups[1] is None
+
+
+def test_empty_multipart_parts_are_present_empty_groups() -> None:
+    groups = gm.GeometryArray([gm.MultiPoint([]), None]).parts
+
+    assert groups.is_missing.tolist() == [False, True]
+    assert groups[0] is not None and len(groups[0]) == 0
+    assert groups[1] is None
+
+
+def test_nullable_array_fanouts_retain_missing_source_rows() -> None:
+    crossing = gm.LineString([(0, 0), (2, 0), (1, 1), (1, -1)])
+    line = gm.LineString([(0, 0), (2, 0)])
+    lines = gm.GeometryArray([crossing, None, line])
+
+    assert lines.self_intersections().is_missing.tolist() == [False, True, False]
+    assert lines.line_interpolate(count=2).is_missing.tolist() == [False, True, False]
+    assert gm.split(lines, gm.Point(1, 0)).is_missing.tolist() == [
+        False,
+        True,
+        False,
+    ]
+
+    polygons = gm.GeometryArray([
+        gm.box(0, 0, 1, 1),
+        None,
+        gm.box(2, 0, 3, 1),
+    ])
+    assert polygons.triangulate(method='delaunay').is_missing.tolist() == [
+        False,
+        True,
+        False,
+    ]
+    assert polygons.sample_points(count=1, seed=11).is_missing.tolist() == [
+        False,
+        True,
+        False,
+    ]
+    assert polygons.subdivide().is_missing.tolist() == [False, True, False]
+
+    ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)])
+    linework = gm.GeometryArray([ring, None, ring])
+    assert linework.polygonize().is_missing.tolist() == [False, True, False]
+
+    sites = gm.GeometryArray([
+        gm.MultiPoint([(0, 0), (2, 0), (1, 2)]),
+        None,
+        gm.MultiPoint([(4, 0), (6, 0), (5, 2)]),
+    ])
+    assert sites.voronoi(clip='envelope').is_missing.tolist() == [
+        False,
+        True,
+        False,
+    ]
+
+
+def test_nullable_cell_fanouts_retain_missing_source_rows() -> None:
+    dense = gm.h3_cells([0.0, 1.0], [0.0, 1.0], resolution=3)
+    cells = gm.CellArray([dense[0], None, dense[1]])
+
+    for groups in (cells.neighbors, cells.children()):
+        assert groups.is_missing.tolist() == [False, True, False]
+        assert groups[1] is None
+        assert groups.to_list()[1] is None
 
 
 def test_masked_repr_ignores_placeholder_geometry_type() -> None:
@@ -1030,14 +1278,14 @@ def test_masked_integer_facts_use_none_geometry_sentinels() -> None:
     assert rows.topological_dimension.tolist() == [0, -1, 0]
 
 
-def test_masked_self_intersections_missing_row_is_empty_group() -> None:
+def test_masked_self_intersections_preserve_missing_group() -> None:
     bowtie = gm.LineString([(0, 0), (1, 1), (1, 0), (0, 1)])
     rows = gm.GeometryArray([bowtie, None])
 
     intersections = rows.self_intersections()
 
     assert [(point.x, point.y) for point in intersections[0]] == [(0.5, 0.5)]
-    assert len(intersections[1]) == 0
+    assert intersections[1] is None
 
 
 def test_masked_polyline_returns_none_instead_of_type_error() -> None:
@@ -1052,39 +1300,44 @@ def test_masked_polyline_returns_none_instead_of_type_error() -> None:
     assert encoded[2] == gm.LineString([(2, 2), (3, 3)], crs=4326).to_polyline()
 
 
-def test_masked_sample_points_missing_row_is_empty_group() -> None:
+def test_masked_sample_points_preserve_missing_group() -> None:
     arr = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(1, 1, 2, 2)])
     samples = arr.sample_points(3, seed=7)
     assert isinstance(samples, gm.Groups)
     assert len(samples) == 3
-    assert [len(row) for row in samples] == [3, 0, 3]
+    assert samples.is_missing.tolist() == [False, True, False]
+    assert samples[1] is None
+    assert [len(row) for row in (samples[0], samples[2])] == [3, 3]
     assert all(
-        point.x == point.x and point.y == point.y for row in samples for point in row
+        point.x == point.x and point.y == point.y
+        for row in (samples[0], samples[2])
+        for point in row
     )
 
 
-def test_masked_line_interpolate_points_missing_row_is_empty_group() -> None:
+def test_masked_line_interpolate_points_preserve_missing_group() -> None:
     line = gm.LineString([(0.0, 0.0), (10.0, 0.0)])
     arr = gm.GeometryArray([line, None, line])
     points = arr.line_interpolate(count=3)
     assert isinstance(points, gm.Groups)
     assert len(points) == 3
-    assert [[point.x for point in row] for row in points] == [
+    assert points.is_missing.tolist() == [False, True, False]
+    assert points[1] is None
+    assert [[point.x for point in points[row]] for row in (0, 2)] == [
         [0.0, 5.0, 10.0],
-        [],
         [0.0, 5.0, 10.0],
     ]
 
 
 def test_masked_voronoi_skips_missing_placeholder() -> None:
     arr = gm.GeometryArray([gm.Point(0, 0), None, gm.Point(1, 0), gm.Point(0, 1)])
-    # Per-row Groups: the missing row becomes an empty group (no NaN placeholder).
+    # Per-row Groups retains a missing row without a NaN placeholder.
     edges = arr.voronoi(
         output='edges',
     )
     assert isinstance(edges, gm.Groups) and len(edges) == 4
-    assert len(edges[1]) == 0
-    for row in list(edges):
+    assert edges[1] is None
+    for row in (edges[0], edges[2], edges[3]):
         assert all('NaN' not in geom.to_wkt() for geom in row)
 
 
@@ -1196,11 +1449,11 @@ def test_masked_string_and_xy_predicate_surfaces() -> None:
     assert gm.relate(rows, probe)[1] is None
     assert gm.relate(probe, rows)[1] is None
     np.testing.assert_array_equal(
-        gm.contains_xy(probe, [0.0, 9.0, 2.0], [0.0, 9.0, 2.0]),
+        gm.contains(probe, x=[0.0, 9.0, 2.0], y=[0.0, 9.0, 2.0]),
         [True, False, False],
     )
     np.testing.assert_array_equal(
-        gm.intersects_xy(probe, [0.0, 9.0, 2.0], [0.0, 9.0, 2.0]),
+        gm.intersects(probe, x=[0.0, 9.0, 2.0], y=[0.0, 9.0, 2.0]),
         [True, False, False],
     )
 

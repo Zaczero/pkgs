@@ -9,6 +9,7 @@ use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 pub(crate) use crate::geometry::OverlayOp;
+use crate::geometry::storage::ValidityMask;
 use crate::{
     CoordinateAxes, Frame, GeometryErrorKind, GeometryKind, PyGeometry, PyGeometryArray, Shape,
     SimplifyMethod, Typed, exact_geometry, exact_geometry_array, geometry,
@@ -25,16 +26,23 @@ fn pooled_shapes(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
     Ok((array.frame.clone(), array.present_shapes()?))
 }
 
-fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Shape>)> {
+fn pooled_shapes_with_rows(
+    values: &Bound<'_, PyAny>,
+) -> PyResult<(Frame, Vec<Shape>, Option<ValidityMask>)> {
     let array = if let Some(array) = exact_geometry_array(values) {
         array.clone()
     } else if exact_geometry(values).is_some() {
         let geometry = exact_geometry(values).expect("checked scalar geometry");
-        return Ok((geometry.frame.clone(), vec![geometry.shape.shape().clone()]));
+        return Ok((
+            geometry.frame.clone(),
+            vec![geometry.shape.shape().clone()],
+            None,
+        ));
     } else {
         PyGeometryArray::new(values, None, None)?
     };
     let frame = array.frame.clone();
+    let missing = array.missing().cloned();
     let shapes = array
         .row_operation()
         .rows_with_missing(|| {
@@ -45,7 +53,7 @@ fn pooled_shapes_with_rows(values: &Bound<'_, PyAny>) -> PyResult<(Frame, Vec<Sh
             crate::array::ArrayRow::Present(row) => row.row().with_shape(Clone::clone),
         })
         .collect::<crate::error::Result<Vec<_>>>()?;
-    Ok((frame, shapes))
+    Ok((frame, shapes, missing))
 }
 
 /// The shared tail of the all-input overlays (`union_all`, `intersection_all`,
@@ -121,14 +129,14 @@ pub(crate) fn overlay_operator(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and batch operands broadcast pairwise; batch lengths must match.
+///     Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
@@ -163,14 +171,14 @@ pub(crate) fn intersection(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and batch operands broadcast pairwise; batch lengths must match.
+///     Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
@@ -208,15 +216,15 @@ pub(crate) fn union(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
 ///     Geometry to subtract from (``left``) and geometry subtracted
-///     (``right``). Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+///     (``right``). Scalar and batch operands broadcast pairwise; batch
+///     lengths must match. Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
@@ -252,14 +260,14 @@ pub(crate) fn difference(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and batch operands broadcast pairwise; batch lengths must match.
+///     Operands must share CRS and coordinate epoch.
 ///
 /// Returns
 /// -------
 /// Geometry or GeometryArray
-///     One result per input pair.
+///     One result per input pair; missing rows remain missing.
 ///
 /// Raises
 /// ------
@@ -421,9 +429,10 @@ pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> P
 /// All input geometries' edges are noded into one planar graph, so a ring can
 /// close across inputs. `diagnostics=False` returns the enclosed polygons;
 /// `diagnostics=True` returns those same polygons together with cut edges,
-/// dangles, and invalid rings grouped by source row. `Geometry.polygonize()`
-/// and `GeometryArray.polygonize()` instead polygonize each geometry's own
-/// linework independently.
+/// dangles, and invalid rings grouped by source row. Missing source rows are
+/// `None` groups; present rows with no diagnostic linework are empty groups.
+/// `Geometry.polygonize()` and `GeometryArray.polygonize()` instead polygonize
+/// each geometry's own linework independently.
 ///
 /// Parameters
 /// ----------
@@ -431,9 +440,11 @@ pub(crate) fn coverage_union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> P
 ///     One geometry or linework values to node and polygonize together. Array
 ///     and iterable inputs may contain ``None`` rows; they are omitted from the
 ///     pooled linework.
-/// diagnostics : bool, default False
+/// diagnostics : bool
 ///     Return a `PolygonizeResult` containing the pooled polygons and
-///     source-row `Groups` for cut edges, dangles, and invalid rings.
+///     source-row `Groups` for cut edges, dangles, and invalid rings. The
+///     diagnostic result form requires ``diagnostics=True``; the polygon-only
+///     form omits the option.
 ///
 /// Returns
 /// -------
@@ -478,10 +489,11 @@ pub(crate) fn polygonize_all(
     values: &Bound<'_, PyAny>,
     diagnostics: bool,
 ) -> PyResult<Py<PyAny>> {
-    let (metadata, shapes) = if diagnostics {
+    let (metadata, shapes, missing) = if diagnostics {
         pooled_shapes_with_rows(values)?
     } else {
-        pooled_shapes(values)?
+        let (metadata, shapes) = pooled_shapes(values)?;
+        (metadata, shapes, None)
     };
     let mut metric_scratch = crate::dispatch::MetricScratch::default();
     let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
@@ -503,7 +515,7 @@ pub(crate) fn polygonize_all(
             )
         })?;
         drop(metric_scratch);
-        crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())
+        crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch(), missing)
     } else {
         let polygons = py.detach(move || {
             let metric_access = || {

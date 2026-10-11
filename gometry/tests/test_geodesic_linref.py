@@ -9,10 +9,11 @@ from typing import Literal
 
 import gometry as gm
 import numpy as np
-import pyproj
 import pytest
 
 from tests._support import canon
+
+pyproj = pytest.importorskip('pyproj', reason='pyproj is an optional oracle dependency')
 
 RADIAN_CRS = (
     'GEOGCS["WGS 84 rad",'
@@ -206,7 +207,7 @@ def test_chart_line_cache_isolated_across_frame_retag() -> None:
     original = gm.LineString(coordinates, crs=4326)
     # Warm WGS84 before the metadata-only retag shares the immutable shape.
     original.line_interpolate(500_000.0)
-    retagged = original.set_crs(4267, overwrite=True)
+    retagged = original.with_crs(4267, overwrite=True)
     fresh = gm.LineString(coordinates, crs=4267)
     assert (
         retagged.line_interpolate(500_000.0).to_wkb()
@@ -664,9 +665,10 @@ def test_rhumb_segmentize_matches_rhumbsolve_parallel_literal_and_array() -> Non
     # route from (-10, 45); equal rhumb arclength on this parallel is linear
     # in longitude.
     line = gm.LineString([(-10.0, 45.0), (2.682817246984, 45.0)], crs=4326)
-    rhumb_length = gm.rhumb_distance(
+    rhumb_length = gm.distance(
         gm.Point(-10.0, 45.0, crs=4326),
         gm.Point(2.682817246984, 45.0, crs=4326),
+        path='rhumb',
     )
     max_length = rhumb_length / 2.0 * (1.0 + 1e-12)
 

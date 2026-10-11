@@ -450,7 +450,7 @@ def test_identity_to_crs_preserves_coordinate_bytes_and_epoch() -> None:
         'AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],'
         'AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]]]'
     )
-    epoch_source = gm.Point(180.0, -0.0, crs=dynamic).set_epoch(2010.0)
+    epoch_source = gm.Point(180.0, -0.0, crs=dynamic).with_epoch(2010.0)
     gm.crs_clear_cache()
     equal_epoch = epoch_source.to_crs(epoch_source.crs)
     assert equal_epoch.epoch == 2010.0

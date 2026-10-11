@@ -100,6 +100,7 @@ def test_released_array_pickles_preserve_rows(kind: str, expected: list) -> None
 def test_released_groups_pickle_preserves_empty_groups() -> None:
     values = pickle.loads(bytes.fromhex(_V1_PICKLES['groups']))
     assert [row.tolist() for row in values] == [[7, 11], [], [13]]
+    assert values.is_missing.tolist() == [False, False, False]
 
 
 def test_released_crs_and_cell_pickles_preserve_identity() -> None:
@@ -146,7 +147,7 @@ def test_nullable_homogeneous_ingress_stays_geoarrow_native() -> None:
         gm.from_wkb([line.to_wkb(), None]),
         gm.from_geojson([geojson_line, None]),
         gm.from_geojson(feature_collection),
-        gm.from_features(feature_collection).geometries,
+        gm.from_geojson(feature_collection, features=True).geometries,
     )
     for values in arrays:
         assert values.is_missing.tolist() == [False, True]

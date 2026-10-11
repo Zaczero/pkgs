@@ -16,7 +16,7 @@ use crate::io::{
 };
 
 pub(crate) const GEOJSON_M_ERROR: &str =
-    "GeoJSON cannot represent M; drop it with set_m(None) (or force_2d()).";
+    "GeoJSON cannot represent M; drop it with with_coordinates(m=None) (or force_2d()).";
 
 trait GeoJsonSink {
     fn push_str(&mut self, value: &str) -> Result<()>;
@@ -75,7 +75,7 @@ impl GeoJsonSink for CheckedGeoJson {
 pub(crate) fn geojson_interface_error() -> String {
     format!(
         "__geo_interface__ cannot represent M or coordinate epoch; {GEOJSON_M_ERROR} \
-         Clear the coordinate epoch with set_epoch(None)."
+         Clear the coordinate epoch with with_epoch(None)."
     )
 }
 
@@ -464,7 +464,7 @@ pub(crate) fn parse_geojson_at(value: &Value, path: &str) -> Result<Shape> {
 
 #[path = "geojson_object.rs"]
 mod geojson_object;
-// Crate-visible for from_features defining-member flags + shared §7.1 check.
+// Crate-visible for feature decoding and the shared §7.1 check.
 pub(crate) use geojson_object::{
     DefiningMembers, GeoJsonMemberKind, json_number_to_f64, reject_rfc7946_cross_type_members,
     validate_geojson_bbox, validate_geojson_bbox_member, validate_geojson_feature_id,
@@ -688,8 +688,8 @@ fn parse_geojson_multipolygon(value: &Value, path: &JsonPath<'_>) -> Result<Mult
 ///   `require`: when the target is omitted, the first embedded declaration is
 ///   adopted and every other declaration must match it semantically; when a
 ///   target is set, every declaration must match that target.
-/// * [`Fixed`](LegacyGeoJsonCrsPolicy::Fixed) — used by `from_geojson` /
-///   `from_features`: the target (default WGS84, or explicit ``None``) is the
+/// * [`Fixed`](LegacyGeoJsonCrsPolicy::Fixed) — used by `from_geojson`:
+///   the target (default WGS84, or explicit ``None``) is the
 ///   frame; every declaration must match it (or raise when target is
 ///   ``None`` and any declaration is present). Omitted never adopts.
 #[derive(Clone, Copy, Debug)]
@@ -936,11 +936,12 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath<'_>, depth: usize) ->
     }
     if geometry_type == "FeatureCollection" {
         // A FeatureCollection is a set of rows, not one geometry: it decodes
-        // to a GeometryArray via `from_geojson`/`from_features`, never
+        // to a GeometryArray via `from_geojson`, never
         // silently collapses into a GeometryCollection.
         return Err(IoError::geojson(
             "GeoJSON FeatureCollection is a feature set, not one geometry; \
-            use from_geojson (returns a GeometryArray) or from_features",
+            use from_geojson (returns a GeometryArray, or Features with \
+            features=True)",
         ));
     }
     let coordinates_path = path.key("coordinates");

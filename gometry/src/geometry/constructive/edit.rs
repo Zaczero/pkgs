@@ -1031,18 +1031,18 @@ impl CoordSeq {
     /// Set or clear the Z ordinate column. `value=None` removes Z (M is
     /// preserved); `Some(z)` with `overwrite` writes `z` at every vertex,
     /// otherwise fills only when the column is absent (existing Z is kept).
-    pub fn set_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::Z, value, overwrite)
     }
 
     /// Set or clear the M ordinate column. `value=None` removes M (Z is
     /// preserved); `Some(m)` with `overwrite` writes `m` at every vertex,
     /// otherwise fills only when the column is absent (existing M is kept).
-    pub fn set_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::M, value, overwrite)
     }
 
-    /// The columnar engine behind [`Shape::set_z`]/[`Shape::set_m`]: one
+    /// The columnar engine behind [`Shape::replace_z`]/[`Shape::replace_m`]: one
     /// optional ordinate column is replaced or dropped, the other passes
     /// through. Homogeneous packed storage shares uniform axes per column,
     /// so fill-only (`overwrite=False` on an existing column) is an
@@ -1068,7 +1068,7 @@ impl CoordSeq {
         // column (X, Y, and the OTHER optional ordinate) is Arc-carried, not
         // re-copied — zero allocation on the full-window common case.
         // An empty sequence gets a zero-length column: axes are real state
-        // on empties, so `set_z`/`force_3d` flip has_z/has_m even with no
+        // on empties, so `replace_z`/`force_3d` flip has_z/has_m even with no
         // vertices (`MULTIPOINT EMPTY` → `MULTIPOINT Z EMPTY`).
         let ordinate_column = |value: Option<f64>| {
             value.map(|value| crate::geometry::SharedSlice::from_vec(fill(value)))
@@ -1797,20 +1797,20 @@ impl Shape {
     /// Set or clear the Z ordinate. `value=None` removes Z (M is preserved);
     /// `Some(z)` with `overwrite` writes `z` at every vertex, otherwise fills
     /// only vertices that lack Z (existing Z is kept). M passes through.
-    pub fn set_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_z(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::Z, value, overwrite)
     }
 
     /// Set or clear the M ordinate. `value=None` removes M (Z is preserved);
     /// `Some(m)` with `overwrite` writes `m` at every vertex, otherwise fills
     /// only vertices that lack M (existing M is kept). Z passes through.
-    pub fn set_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
+    pub fn replace_m(&self, value: Option<f64>, overwrite: bool) -> Result<Self> {
         self.set_ordinate(OrdinateAxis::M, value, overwrite)
     }
 
     /// The same-kind empty retagged to `axes`, or `None` when `self` is not a
     /// canonical empty representation. The ordinate verbs route empties here
-    /// so declared axes are real state on emptiness (`set_z` on
+    /// so declared axes are real state on emptiness (`replace_z` on
     /// `MULTIPOLYGON EMPTY` yields `MULTIPOLYGON Z EMPTY`). A non-canonical
     /// empty (e.g. a collection OF empties) is `None` — its members retag
     /// individually through the recursive verb.
@@ -1836,7 +1836,7 @@ impl Shape {
         }
     }
 
-    /// The single engine behind [`Shape::set_z`]/[`Shape::set_m`]: per-vertex
+    /// The single engine behind [`Shape::replace_z`]/[`Shape::replace_m`]: per-vertex
     /// replacement of one optional ordinate, leaving the other axis untouched.
     /// Empties retag their declared axes (no vertices to fill, but the
     /// dimensionality is real state); collections recurse so nested empties

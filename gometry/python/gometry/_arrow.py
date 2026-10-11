@@ -25,6 +25,7 @@ GEOARROW_LINESTRING = 'geoarrow.linestring'
 GEOARROW_MULTILINESTRING = 'geoarrow.multilinestring'
 GEOARROW_POLYGON = 'geoarrow.polygon'
 GEOARROW_MULTIPOLYGON = 'geoarrow.multipolygon'
+_CRS_DEFINITION_KEY = 'gometry:crs_definition'
 
 #: How many ``list_`` wrappers sit between the extension type and its
 #: coordinate struct (``None`` marks the WKB binary layout).
@@ -87,7 +88,7 @@ def _crs_projjson(crs: str | CRS) -> dict[str, Any]:
     in-memory CRS encoding, and the one GeoParquet 1.1 requires when columns
     land in a lakehouse.
     """
-    return CRS(crs).to_projjson_dict()
+    return CRS(crs).to_projjson(as_dict=True)
 
 
 def _geoarrow_parse_error(message: str) -> Exception:
@@ -119,8 +120,10 @@ def _extension_type(
     """One GeoArrow extension type, parametrized by layout and frame metadata.
 
     The CRS definition (as an inline PROJJSON object) and coordinate epoch are serialized into
-    the extension metadata, so both survive a gometry Arrow round trip. The
-    ``epoch`` key is a gometry extension and may be ignored by other readers.
+    the extension metadata. ``gometry:crs_definition`` also retains the exact
+    label supplied by gometry, while ``crs`` remains standard PROJJSON. The
+    ``epoch`` and exact-label keys are gometry extensions and may be ignored by
+    other readers.
     When data returns to gometry, the shared geometry-frame policy validates it.
     """
     depth = _STORAGE_DEPTH[extension_name]
@@ -156,7 +159,12 @@ def _extension_type_from_storage(
     """GeoArrow extension semantics over an exact producer storage type."""
     metadata: dict[str, Any] = {}
     if crs is not None:
-        metadata = {'crs': _crs_projjson(crs), 'crs_type': 'projjson'}
+        definition = crs if isinstance(crs, str) else crs.definition
+        metadata = {
+            'crs': _crs_projjson(crs),
+            'crs_type': 'projjson',
+            _CRS_DEFINITION_KEY: definition,
+        }
     if epoch is not None:
         if not math.isfinite(epoch):
             raise _geoarrow_parse_error(
@@ -165,7 +173,7 @@ def _extension_type_from_storage(
         if crs is None:
             raise _geoarrow_parse_error(
                 'invalid GeoArrow extension metadata: a coordinate epoch requires '
-                'a CRS; attach one with crs= (or set_crs(...)) before tagging an epoch'
+                'a CRS; attach one with crs= (or with_crs(...)) before tagging an epoch'
             )
         metadata['epoch'] = epoch
 

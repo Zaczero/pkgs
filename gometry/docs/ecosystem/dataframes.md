@@ -1,17 +1,17 @@
 ---
-description: Typed, explicit conversion between GeometryArray and pandas, Polars, or GeoPandas without global registration or import-order behavior.
+description: Typed conversion between GeometryArray and pandas, Polars, or GeoPandas, with lazy optional integrations and pandas dtype discovery.
 ---
 
 # DataFrames
 
 DataFrame integrations are explicit storage boundaries. Geometry computation
-stays on [`GeometryArray`][gometry.GeometryArray]; converting a column never
-installs accessors, mutates a framework class, or changes a process-wide dtype
-registry.
+stays on [`GeometryArray`][gometry.GeometryArray]. Importing gometry does not
+import pandas; activating the pandas adapter registers gometry's existing
+extension dtype so pandas can resolve its `gometry.geometry` name.
 
 | Extra | Storage | Into gometry | Out of gometry |
 | --- | --- | --- | --- |
-| `pandas` | `GeometryExtensionArray` | [`gm.from_pandas(series)`][gometry.from_pandas] | [`array.to_pandas()`][gometry.GeometryArray.to_pandas] |
+| `pandas` (`gometry[pandas]`, `pandas>=3.0.3`; add `gometry[arrow]` for GeoArrow-backed `ArrowDtype`) | `GeometryExtensionArray`, GeoArrow-backed `ArrowDtype`, or object Series | [`gm.from_pandas(series)`][gometry.from_pandas] | [`array.to_pandas()`][gometry.GeometryArray.to_pandas] |
 | `polars` | WKB/EWKB `Binary` Series | [`gm.from_polars(series)`][gometry.from_polars] | [`array.to_polars()`][gometry.GeometryArray.to_polars] |
 | `geopandas` | Shapely geometry column | [`gm.from_geopandas(series_or_frame)`][gometry.from_geopandas] | [`array.to_geopandas()`][gometry.GeometryArray.to_geopandas] |
 
@@ -19,33 +19,82 @@ Install only the boundary you use:
 
 ```bash
 uv add "gometry[pandas]"
+uv add "gometry[arrow]"
 uv add "gometry[polars]"
 uv add "gometry[geopandas]"
 ```
 
-## pandas extension storage
+## pandas geometry storage
 
 `GeometryArray.to_pandas()` constructs a Series backed by gometry's concrete
-extension array. The Series and gometry array share immutable geometry storage;
-`gm.from_pandas()` returns the native column without a WKB round trip.
+extension array. The Series and gometry array share immutable geometry storage,
+so `gm.from_pandas()` returns that native column without a WKB round trip.
+`from_pandas()` also imports ordinary object Series whose rows are Geometry
+objects, WKB buffers, GeoJSON mappings, or objects exposing
+`__geo_interface__`. That path constructs geometry rows rather than sharing
+the Series' storage. `None`, `pd.NA`, and pandas-recognized missing values
+become missing geometry rows; empty geometries remain values. Use
+`from_geopandas()` for a GeoSeries so its CRS metadata is retained.
+
+A pandas Series backed by `pd.ArrowDtype` can also carry a GeoArrow extension
+column. `from_pandas()` passes that Arrow column directly to
+[`from_arrow`][gometry.from_arrow], preserving chunks, nulls, dimensions, CRS,
+and coordinate epoch without converting rows to Python dictionaries. This path
+requires `pyarrow` (`gometry[arrow]`); unrelated Arrow dtypes are rejected as
+non-geometry input.
 
 ```python exec="on" source="block" result="text"
+import pandas as pd
+
 import gometry as gm
 
 points = gm.points([21.0, 22.0], [52.0, 52.5], crs=4326)
 buffered = points.buffer(500)
 series = buffered.to_pandas(name="geometry")
 restored = gm.from_pandas(series)
+typed = pd.Series([gm.Point(23.0, 53.0, crs=4326)], dtype='gometry.geometry')
 
 print("dtype:", series.dtype)
+print("registered dtype:", typed.dtype)
 print("rows:", len(series))
 print("frame:", restored.crs.to_authority())
 ```
 
-The extension dtype reports a descriptive name, but gometry does not
-register it with pandas or expose a second construction API. Construct geometry
-columns through `array.to_pandas()`. This keeps imports and conversions free of
-global side effects.
+```python exec="on" source="block" result="text"
+import pandas as pd
+import pyarrow as pa
+
+import gometry as gm
+
+geometry = gm.points([1.0, 2.0], [3.0, 4.0], crs=4326, epoch=2020.0)
+arrow = geometry.to_arrow()
+chunked = pa.chunked_array([arrow.slice(0, 1), arrow.slice(1)])
+series = pd.Series(chunked, dtype=pd.ArrowDtype(chunked.type))
+restored = gm.from_pandas(series)
+
+print("dtype:", series.dtype)
+print(
+    "stored CRS definition preserved:",
+    restored.crs.definition == geometry.crs.definition,
+)
+print("epoch:", restored.epoch)
+```
+
+```python exec="on" source="block" result="text"
+import pandas as pd
+import gometry as gm
+
+series = pd.Series(
+    [gm.Point(1, 2), pd.NA, {"type": "Point", "coordinates": [3, 4]}],
+    dtype=object,
+)
+geometries = gm.from_pandas(series)
+print(geometries.to_wkt())
+```
+
+`GeometryDtype` registers as `gometry.geometry` when the pandas adapter is
+imported. Use that name with `pandas_dtype`, `Series(..., dtype=...)`, and
+`astype(...)`; `array.to_pandas()` remains the direct path from gometry.
 
 Missing rows are native `GeometryArray` state. `None` and
 `pd.NA` are missing; an empty geometry is a value. pandas operations such as

@@ -92,29 +92,43 @@ same row formats as the array constructor.
 
 ## Coordinate matrices
 
-[`Geometry.set_coordinates`][gometry.Geometry.set_coordinates] and
-[`GeometryArray.set_coordinates`][gometry.GeometryArray.set_coordinates] accept
+[`Geometry.with_coordinates`][gometry.Geometry.with_coordinates] and
+[`GeometryArray.with_coordinates`][gometry.GeometryArray.with_coordinates] accept
 one rank-2 coordinate matrix. Its shape is `(N, 2)` for XY, `(N, 3)` for XYZ
 or XYM, or `(N, 4)` for XYZM, and `N` must match the receiver's coordinate
 count (or the flattened present-row count for an array). The matrix width must
 match the receiver's axes. A rank other than 2, an unsupported width, or a
 row-count mismatch raises an error. The matrix is converted to native float64
 values, so this is a validated replacement input rather than a zero-copy view.
+Keyword columns can instead replace selected ordinates; their scalar-broadcast,
+flattened ordering, omission, and dimension-removal rules are described in
+[Z and M under operations](../guide/geometry.md#zm-under-operations).
 
 ## The geometry ↔ object-array bridge
 
-[`GeometryArray.to_numpy`][gometry.GeometryArray.to_numpy] is the explicit escape
-hatch to an `object` ndarray of geometry handles — there is no silent path that
-builds slow object arrays behind your back. The inverse is the
-`GeometryArray` constructor, which accepts an object
+[`GeometryArray.to_numpy`][gometry.GeometryArray.to_numpy] explicitly exports an
+`object` ndarray of geometry handles. NumPy's array protocol also supports
+`np.asarray(arr)` and `np.asarray(arr, dtype=object)`, which materialize an object
+array when requested. The inverse is the [`GeometryArray`][gometry.GeometryArray]
+constructor, which accepts an object
 ndarray (or any iterable) of gometry geometries **or** `__geo_interface__` objects,
 including Shapely geometries.
 
-[`Geometry`][gometry.Geometry], `GeometryArray`, and `Coordinates` set `__array_ufunc__ = None`, so
-NumPy ufuncs defer with a clear `TypeError` instead of forcing an implicit
-conversion. `GeometryArray` and `Coordinates` implement `__array__`, so
+[`Geometry`][gometry.Geometry] and `GeometryArray` set `__array_ufunc__ = None`, so
+NumPy ufuncs defer with a clear `TypeError` instead of assigning numeric meaning
+to spatial values. `GeometryArray` and `Coordinates` implement `__array__`, so
 `np.asarray(arr)` gives an `object` array and `np.asarray(coords)` gives an
-`(N, dims)` `float64` matrix.
+`(N, dims)` `float64` matrix. Coordinates therefore work directly with numeric
+ufuncs; the resulting arrays remain read-only where coordinate export is
+read-only, including as a ufunc `out=` target.
+
+Integer-array selection preserves known NumPy rank in its result type: a
+zero-dimensional integer array selects one row, while a one-dimensional integer
+array selects a container; selectors with rank greater than one raise
+`TypeError`. An ndarray annotation with a variable-length tuple of integer
+dimensions gives a scalar-or-container result; when NumPy erases the shape to
+`Any`, annotate the rank for a narrower result. See
+[array indexing](../guide/arrays.md#indexing-slicing-and-element-types).
 
 ## Cell arrays
 

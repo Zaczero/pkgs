@@ -248,7 +248,7 @@ fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
     reason = "test builder takes temporary shapes and returns their transformed value"
 )]
 fn with_z(shape: Shape, z: f64) -> Shape {
-    shape.set_z(Some(z), true).expect("set z")
+    shape.replace_z(Some(z), true).expect("replace Z")
 }
 
 fn pzm(x: f64, y: f64, z: f64, m: f64) -> Point {

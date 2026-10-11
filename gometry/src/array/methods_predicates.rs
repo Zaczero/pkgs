@@ -123,8 +123,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        arrow::reject_requested_schema(requested_schema)?;
-        arrow_c::array_to_array_capsules(py, self)
+        arrow_c::array_to_array_capsules(py, self, requested_schema)
     }
 
     #[pyo3(signature = (requested_schema = None))]
@@ -133,8 +132,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        arrow::reject_requested_schema(requested_schema)?;
-        arrow_c::array_to_stream_capsule(py, self)
+        arrow_c::array_to_stream_capsule(py, self, requested_schema)
     }
 
     /// Encode every ``LineString`` or ``Point`` row as Google polyline text (see

@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from datetime import UTC, date, datetime
+
     import gometry as gm
 
 
@@ -29,13 +31,11 @@ if TYPE_CHECKING:
     H3_CELLS = gm.h3_cells([1.0], [2.0], resolution=9)
     S2_CELLS = gm.s2_cells([1.0], [2.0], level=9)
 
-    # Fixed-depth and adaptive S2 covers have disjoint signatures.
-    gm.s2_cover(POLY)  # type: ignore[call-overload]
-    gm.s2_cover(POLY, level=None)  # type: ignore[call-overload]
-    gm.s2_cover(POLY, level=8, target_cells=8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, level=8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, 8)  # type: ignore[call-overload]
-    gm.s2_cover_adaptive(POLY, min_level=None)  # type: ignore[call-overload]
+    # S2 levels and adaptive controls use integer parameters.
+    gm.s2_cover(POLY, '8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, min_level='8')  # type: ignore[call-overload]
+    gm.s2_cover(POLY, level_mod=True)  # type: ignore[call-overload]
 
     # Domain families are flat, prefix-discoverable top-level functions;
     # namespace spellings are deliberately not retained for this first release.
@@ -45,9 +45,18 @@ if TYPE_CHECKING:
 
     # Argument types: strings are not distances.
     POINT.buffer('1.0')  # type: ignore[arg-type]
+    gm.Point(0.0, 0.0, crs=4326, epoch=date(2020, 1, 1))  # type: ignore[call-overload]
+    POINT.with_epoch(datetime(2020, 1, 1, tzinfo=UTC))  # type: ignore[arg-type]
 
     # Unknown keyword arguments are rejected.
     POINT.buffer(1.0, wrong_kw=2)  # type: ignore[call-arg]
+    gm.from_geojson(POINT.__geo_interface__, features=True)  # type: ignore[arg-type]
+
+    class _GeometryInterfaceProvider:
+        @property
+        def __geo_interface__(self) -> sht.GeoJsonPointGeometry: ...
+
+    gm.from_geojson([_GeometryInterfaceProvider()], features=True)  # type: ignore[arg-type]
 
     # Algorithm options are available only for the matching literal method.
     POINT.triangulate(method='delaunay', min_angle=10.0)  # type: ignore[call-overload]
@@ -89,8 +98,9 @@ if TYPE_CHECKING:
     gm.point_between(POINT, POINT, 0.5, path='rhumb', unit='planar')  # type: ignore[call-overload]
     gm.point_between(POLY, POINT, 0.5)  # type: ignore[call-overload]
     gm.point_between(GEOMS, POINT, 0.5)  # type: ignore[arg-type]
-    gm.rhumb_distance(POLY, POINT)  # type: ignore[call-overload]
-    gm.rhumb_distance(GEOMS, POINT)  # type: ignore[arg-type]
+    gm.distance(POLY, POINT, path='rhumb')  # type: ignore[call-overload]
+    gm.distance(GEOMS, POINT, path='rhumb')  # type: ignore[call-overload]
+    gm.distance(POINT, POINT, path='rhumb', unit='meters')  # type: ignore[call-overload]
     LINE.line_interpolate(1.0, basis='m', unit='meters')  # type: ignore[call-overload]
     LINE.line_interpolate(count=2, basis='m')  # type: ignore[call-overload]
     LINE.line_interpolate(count=2, normalized=True)  # type: ignore[call-overload]
@@ -172,6 +182,9 @@ if TYPE_CHECKING:
     _dense_overlay: gm.GeometryArray[gm.Geometry] = gm.intersection(
         gm.GeometryArray([POINT, None]), POLY
     )  # type: ignore[assignment]
+    _wrong_union_rows: list[gm.Geometry | int] = [POINT, 1]
+    gm.union(_wrong_union_rows, POINT)  # type: ignore[arg-type]
+    POINTS.concat(other=POINTS)  # type: ignore[call-overload]
 
     def _reject_unchecked_nullable_group(
         groups: gm.Groups[gm.GeometryArray[gm.Point | None]],
@@ -211,7 +224,7 @@ if TYPE_CHECKING:
     # --- High-value free-function overload groups (manifest: _OVERLOAD_TARGETS) ---
     # Binary predicates reject non-geometry operands.
     gm.contains(POINT, 1.0)  # type: ignore[call-overload]
-    gm.intersects(POINT, 'not-a-geom')  # type: ignore[call-overload]
+    gm.intersects(POINT, 'not-a-geom')  # type: ignore[arg-type]
     gm.distance(POINT, 0)  # type: ignore[call-overload]
     # from_wkt/from_wkb reject wrong payload types.
     gm.from_wkt(123)  # type: ignore[call-overload]
@@ -222,14 +235,13 @@ if TYPE_CHECKING:
     matrix_1d: np.ndarray[tuple[int], np.dtype[np.float64]] = np.array(
         [0.0, 0.0], dtype=np.float64
     )
-    POINT.set_coordinates(matrix_1d)  # type: ignore[arg-type]
+    POINT.with_coordinates(matrix_1d)  # type: ignore[arg-type]
     matrix_3d: np.ndarray[tuple[int, int, int], np.dtype[np.float64]] = np.zeros(
         (1, 1, 2), dtype=np.float64
     )
-    POINT.set_coordinates(matrix_3d)  # type: ignore[arg-type]
+    POINT.with_coordinates(matrix_3d)  # type: ignore[arg-type]
     gm.LineString([(0.0, 0.0), (1.0, 1.0)], x=[0.0], y=[1.0])  # type: ignore[call-overload]
-    POINT.set_coordinates()  # type: ignore[call-overload]
-    POINT.set_coordinates(x=[0.0])  # type: ignore[call-overload]
+    POINT.with_coordinates(x=None)  # type: ignore[call-overload]
     POINTS.to_geoparquet('points.parquet', encoding='bogus')  # type: ignore[arg-type]
 
     # Optional dataframe boundaries are explicit and statically typed; native
@@ -269,15 +281,15 @@ if TYPE_CHECKING:
     # Antimeridian splitting is explicit metadata-bearing geography.
     gm.box(170.0, -10.0, -170.0, 10.0, wrap='split')  # type: ignore[call-overload]
 
-    # Dtype families: GeometryArray/CellArray reject float dtypes statically
-    # (probe __array__/to_numpy — np.asarray erases the protocol dtype check).
-    POINTS.__array__(dtype=np.float64)  # type: ignore[arg-type]
+    # The builtin object spelling necessarily widens __array__ to type[object],
+    # so use dtype instances to probe static rejection of unsupported dtypes.
+    POINTS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
     POINTS.to_numpy(np.float64)  # type: ignore[call-arg]
-    H3_CELLS.__array__(dtype=np.float64)  # type: ignore[arg-type]
-    gm.CellArray([h3_cell, None]).__array__(dtype=np.uint64)  # type: ignore[arg-type]
+    H3_CELLS.__array__(dtype=np.dtype(np.float64))  # type: ignore[arg-type]
+    gm.CellArray([h3_cell, None]).__array__(dtype='uint64')  # type: ignore[call-overload]
     POINT.coords.__array__(dtype=np.int64)  # type: ignore[arg-type]
     # CRS kind vocabulary rejects unknown tokens.
-    gm.crs_search('WGS', kind='not_a_kind')  # type: ignore[arg-type]
+    gm.crs_catalog('WGS', kind='not_a_kind')  # type: ignore[arg-type]
     gm.crs_catalog(kind='ellipsoid')  # type: ignore[arg-type]
     gm.crs_codes('EPSG', kind='nope')  # type: ignore[arg-type]
     _bad_kind: sht.CrsKind = 'not_a_kind'  # type: ignore[assignment]

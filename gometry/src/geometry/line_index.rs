@@ -25,6 +25,8 @@ use crate::geometry::{
     point_segment_distance_and_projection, point_segment_selection, push_distinct_active_position,
     segment_projection,
 };
+#[cfg(test)]
+use crate::py::support::prepare_line_locate;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum InterpolationProvenance {
@@ -1657,17 +1659,10 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(
-            crate::py::support::prepare_line_locate(
-                &metric,
-                &invalid,
-                &cache,
-                invalid_probe,
-                false,
-                false,
-            )
-            .map(|(_, located)| located)
-            .unwrap_err()
-            .to_string(),
+            prepare_line_locate(&metric, &invalid, &cache, invalid_probe, false, false,)
+                .map(|(_, located)| located)
+                .unwrap_err()
+                .to_string(),
             source_error,
         );
         let valid = crate::geometry::PreparedPlan::new(
@@ -1682,17 +1677,10 @@ mod tests {
         .to_string();
         for _ in 0..2 {
             assert_eq!(
-                crate::py::support::prepare_line_locate(
-                    &metric,
-                    &valid,
-                    &cache,
-                    invalid_probe,
-                    false,
-                    false,
-                )
-                .map(|(_, located)| located)
-                .unwrap_err()
-                .to_string(),
+                prepare_line_locate(&metric, &valid, &cache, invalid_probe, false, false,)
+                    .map(|(_, located)| located)
+                    .unwrap_err()
+                    .to_string(),
                 query_error,
             );
         }

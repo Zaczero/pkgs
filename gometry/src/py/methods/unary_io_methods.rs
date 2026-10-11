@@ -133,7 +133,7 @@ them or choose another format.
 
 ", crate::writer_ordinate_policy!(), r"
 
-GeoJSON cannot represent M; drop it with ``set_m(None)`` (or ``force_2d()``).
+GeoJSON cannot represent M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 
 Parameters
 ----------
@@ -160,7 +160,7 @@ list of str
 CRSError
     If the input carries a CRS outside the 2D/3D WGS84 longitude/latitude family.
 InvalidGeometryError
-    If input carries M ordinates; drop them with ``set_m(None)`` (or ``force_2d()``).
+    If input carries M ordinates; drop them with ``with_coordinates(m=None)`` (or ``force_2d()``).
 GeometryError
     If input carries a coordinate epoch and ``drop_epoch`` is false.
 

@@ -103,6 +103,55 @@ def test_from_arrow_malformed_geoarrow_metadata_is_tagged_parse_error(
     assert excinfo.value.format == 'geoarrow'
 
 
+def test_from_arrow_rejects_private_crs_definition_that_conflicts_with_projjson() -> (
+    None
+):
+    storage = pa.StructArray.from_arrays(
+        [pa.array([0.0]), pa.array([0.0])], names=['x', 'y']
+    )
+    metadata = _json.dumps({
+        'crs': gm.CRS(4326).to_projjson(as_dict=True),
+        'crs_type': 'projjson',
+        'gometry:crs_definition': 'EPSG:3857',
+    }).encode()
+    field = pa.field(
+        'geometry',
+        storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.point',
+            b'ARROW:extension:metadata': metadata,
+        },
+    )
+    table = pa.Table.from_arrays([storage], schema=pa.schema([field]))
+
+    with pytest.raises(gm.ParseError, match='gometry:crs_definition conflicts'):
+        gm.from_arrow(table)
+
+
+def test_from_arrow_keeps_standard_only_geoarrow_crs_fallback() -> None:
+    source = gm.points([1.0], [2.0], crs=4326)
+    source_crs = source.crs
+    assert source_crs is not None
+    arrow = source.to_arrow()
+    metadata = _json.loads(arrow.type.__arrow_ext_serialize__())
+    metadata.pop('gometry:crs_definition', None)
+    field = pa.field(
+        'geometry',
+        arrow.storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.point',
+            b'ARROW:extension:metadata': _json.dumps(metadata).encode(),
+        },
+    )
+    table = pa.Table.from_arrays([arrow.storage], schema=pa.schema([field]))
+
+    restored = gm.from_arrow(table)
+
+    assert restored.crs is not None
+    assert restored.crs.same_as(source_crs, mode='ignore_axis_order')
+    assert restored.crs.definition != source_crs.definition
+
+
 def test_geoarrow_spherical_edges_rejected_on_linestring_accepted_on_point() -> None:
     """Edge semantics are vacuous on points; spherical remains rejected for lines."""
     point_storage = pa.StructArray.from_arrays(
@@ -175,7 +224,7 @@ def test_python_arrow_metadata_frame_matches_rust_boundary_rules() -> None:
         gometry_arrow._metadata_frame(b'{"crs":"EPSG:4326","epoch":Infinity}')
     with pytest.raises(
         gm.ParseError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ) as exc:
         gometry_arrow._metadata_frame(b'{"epoch":2020.0}')
     assert exc.value.format == 'geoarrow'
@@ -453,7 +502,7 @@ def test_from_arrow_accepts_operationally_equivalent_extension_crs_labels() -> N
         metadata={
             b'ARROW:extension:name': b'geoarrow.point',
             b'ARROW:extension:metadata': _json.dumps({
-                'crs': gm.CRS('OGC:CRS84').to_projjson_dict()
+                'crs': gm.CRS('OGC:CRS84').to_projjson(as_dict=True)
             }).encode(),
         },
     )
@@ -505,7 +554,7 @@ def test_python_arrow_extension_type_rejects_epoch_without_crs() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
+        match=r'^invalid GeoArrow extension metadata: a coordinate epoch requires a CRS; attach one with crs= \(or with_crs\(\.\.\.\)\) before tagging an epoch$',
     ):
         gometry_arrow._extension_type(cast('Any', pa), 'geoarrow.point', None, 2020.0)
     with pytest.raises(ValueError, match='epoch must be finite'):

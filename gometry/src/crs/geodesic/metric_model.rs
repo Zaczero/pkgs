@@ -10,6 +10,8 @@ use crate::crs::geodesic::{
 use crate::crs::{RuntimeState, info_with_state};
 use crate::geographic::GeographicFrame;
 use crate::geometry::Shape;
+#[cfg(test)]
+use crate::test_support::linear_reference_counters;
 use crate::text::str_contains_ignore_ascii_case;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -165,7 +167,7 @@ impl ResolvedMetric {
     /// here (the per-pair kernel validates each operand it actually measures).
     pub(crate) fn from_model(model: &MetricModel) -> Result<Self> {
         #[cfg(test)]
-        crate::test_support::linear_reference_counters::resolved_metric();
+        linear_reference_counters::resolved_metric();
         Ok(match model {
             MetricModel::Planar { to_metre } => Self::Planar {
                 to_metre: *to_metre,

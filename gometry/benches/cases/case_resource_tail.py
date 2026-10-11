@@ -127,7 +127,7 @@ def features_case() -> tuple[Callable[[], Any], Callable[[Any], None], int, int]
     }
 
     def run() -> Any:
-        return gm.from_features(features)
+        return gm.from_geojson(features, features=True)
 
     def validate(result: Any) -> None:
         assert len(result.geometries) == count

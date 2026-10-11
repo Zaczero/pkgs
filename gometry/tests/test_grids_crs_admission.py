@@ -65,7 +65,7 @@ def test_a2_s2_bbox_antimeridian_not_full_equator():
     for cover, budget in (
         (gm.s2_cover, {'level': 8, 'max_cells': None}),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -74,7 +74,7 @@ def test_a2_s2_bbox_antimeridian_not_full_equator():
             },
         ),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {
                 'min_level': 0,
                 'max_level': 30,
@@ -121,7 +121,7 @@ def test_a3_h3_shared_vertex_overlap_covers_multiple_cells():
     cell = cov[0]
     poly = cell.polygon
     if poly.crs is None:
-        poly = poly.set_crs(4326)
+        poly = poly.with_crs(4326)
     vertex = next(iter(poly.exterior.coords))
     vpt = gm.Point(vertex[0], vertex[1], crs=4326)
     tokens = [
@@ -143,7 +143,7 @@ def test_a4_h3_bounding_cell_seam_line():
     assert cell is not None
     poly = cell.polygon
     if poly.crs is None:
-        poly = poly.set_crs(4326)
+        poly = poly.with_crs(4326)
     assert gm.covers(poly, gm.Point(179.9, 0.0, crs=4326))
     assert gm.covers(poly, gm.Point(-179.9, 0.0, crs=4326))
 
@@ -298,7 +298,7 @@ def _dynamic_grid_source() -> tuple[gm.Geometry, gm.Geometry]:
         (gm.h3_cover, {'resolution': 7}),
         (gm.s2_cover, {'level': 12}),
         (
-            gm.s2_cover_adaptive,
+            gm.s2_cover,
             {'min_level': 12, 'max_level': 12, 'target_cells': 8},
         ),
         (gm.geohash_cover, {'precision': 8}),
@@ -353,10 +353,12 @@ def test_grid_cover_uses_the_paired_geographic_source_circle_for_scalar_and_arra
         max_cells=None,
     )
 
-    assert [len(row) for row in actual] == [len(actual[0]), 0, len(actual[0])]
+    assert actual.is_missing.tolist() == [False, True, False]
+    assert [len(actual[row]) for row in (0, 2)] == [len(actual[0]), len(actual[0])]
+    assert actual[1] is None
     assert len(actual[0]) > 1
     assert _cell_keys(actual[0]) == _cell_keys(expected[0])
-    assert len(expected[1]) == 0
+    assert expected[1] is None
     assert _cell_keys(actual[2]) == _cell_keys(expected[2])
 
 
@@ -878,9 +880,9 @@ def test_grid_cover_normalizes_geographic_aliases_and_keeps_projected_chord(
     """Geographic labels agree; a projected source keeps its executor-produced chord."""
     source = gm.LineString([(179.0, -10.0), (-179.0, 10.0)], crs=4326)
     geographic_variants = [
-        source.set_crs(None),
+        source.with_crs(None),
         source,
-        source.set_crs('OGC:CRS84', overwrite=True),
+        source.with_crs('OGC:CRS84', overwrite=True),
     ]
     cover = getattr(gm, f'{name}_cover')
     geographic_results = [
@@ -942,7 +944,7 @@ def test_grid_cover_normalizes_geographic_aliases_and_keeps_projected_chord(
         ('tile', {'zoom': 3}),
     ],
 )
-def test_grid_cover_array_empty_and_missing_rows_are_empty_groups(name, kwargs):
+def test_grid_cover_array_distinguishes_empty_and_missing_groups(name, kwargs):
     """Present empty and missing rows preserve source-row association."""
     source = gm.box(-10.0, -10.0, 10.0, 10.0, crs=4326).to_crs(3857)
     array = gm.GeometryArray([
@@ -952,7 +954,9 @@ def test_grid_cover_array_empty_and_missing_rows_are_empty_groups(name, kwargs):
     ])
     cover = getattr(gm, f'{name}_cover')
     groups = cover(array, cell_rule='overlap', max_cells=None, **kwargs)
-    assert [len(group) for group in groups] == [len(groups[0]), 0, 0]
+    assert groups.is_missing.tolist() == [False, False, True]
+    assert [len(groups[row]) for row in (0, 1)] == [len(groups[0]), 0]
+    assert groups[2] is None
     assert len(groups[0]) > 0
 
 

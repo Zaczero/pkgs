@@ -1,5 +1,5 @@
 ---
-description: gometry text and binary IO — WKB/EWKB for databases, WKT/EWKT, GeoJSON Z/M rules, __geo_interface__, pickle, and CRS/epoch round-trip behavior.
+description: gometry text and binary IO — WKB/EWKB for databases, WKT/EWKT, GeoJSON Z/M rules, Features.__geo_interface__, pickle, and CRS/epoch round-trip behavior.
 ---
 
 # Text & binary formats
@@ -165,9 +165,9 @@ except gm.InvalidGeometryError as e:
 
 !!! warning "GeoJSON cannot carry M or epoch"
     `to_geojson` and `__geo_interface__` raise on M; epoch metadata must be
-    explicitly dropped with `drop_epoch=True`. Clear M with [`set_m(None)`][gometry.Geometry.set_m] or
+    explicitly dropped with `drop_epoch=True`. Clear M with [`with_coordinates(m=None)`][gometry.Geometry.with_coordinates] or
     [`force_2d()`][gometry.Geometry.force_2d], and
-    epoch with [`set_epoch(None)`][gometry.Geometry.set_epoch] only when that loss is intended. WKB/EWKB
+    epoch with [`with_epoch(None)`][gometry.Geometry.with_epoch] only when that loss is intended. WKB/EWKB
     preserves M but not epoch. For lossless M/epoch interchange, use gometry's
     GeoArrow extension metadata with gometry or an extension-aware consumer;
     standard GeoArrow metadata alone does not carry epoch.
@@ -177,7 +177,8 @@ except gm.InvalidGeometryError as e:
 gometry geometries implement the `__geo_interface__` protocol, so they interoperate
 with any library that speaks it. [`gm.from_geojson`][gometry.from_geojson] is the
 inverse — it ingests anything exposing that protocol (or a raw GeoJSON-like
-mapping), including a GeoJSON `Feature`.
+mapping), including a GeoJSON `Feature`. By default it returns the geometry and
+drops feature side data; pass `features=True` to retain properties and IDs.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -187,8 +188,12 @@ mapping = p.__geo_interface__
 print("mapping:", mapping)
 
 back = gm.from_geojson(mapping, crs=4326)
-feat = gm.from_geojson({"type": "Feature", "properties": {}, "geometry": mapping}, crs=4326)
-print("round-trip:", back.to_wkt(), "| from Feature:", feat.to_wkt())
+feature = gm.from_geojson(
+    {"type": "Feature", "properties": {"name": "site"}, "geometry": mapping},
+    crs=4326,
+    features=True,
+)
+print("round-trip:", back.to_wkt(), "| Feature:", feature.geometries[0].to_wkt())
 ```
 
 [`gm.from_geojson`][gometry.from_geojson] is the one entry point for everything
@@ -197,9 +202,10 @@ exposing `__geo_interface__`. GeoJSON is WGS 84 lon/lat by specification
 ([RFC 7946](https://www.rfc-editor.org/info/rfc7946) / OGC:CRS84), so decoded
 geometry declares `OGC:CRS84` by default (matching GeoParquet); pass
 `crs=4326` for EPSG:4326, `crs=None` to opt out, or `crs=4979` for a
-WGS84-family 3D frame. A `FeatureCollection` is a feature *set* and decodes to a
-[`GeometryArray`][gometry.GeometryArray], one geometry per feature (use
-[`gm.from_features`][gometry.from_features] to keep properties and ids).
+WGS84-family 3D frame. A `FeatureCollection` is a feature *set*: by default it
+decodes to a [`GeometryArray`][gometry.GeometryArray], one geometry per feature.
+Set `features=True` on the same reader to return [`Features`][gometry.Features]
+with the aligned properties and IDs.
 
 !!! note "Uniform axes per coordinate sequence"
     RFC 7946 makes the third ordinate optional per *position*, but a gometry
@@ -225,13 +231,13 @@ fc = {
     ],
 }
 print(gm.from_geojson(fc))
-features = gm.from_features(fc)
+features = gm.from_geojson(fc, features=True)
 geoms, props, ids = features
 print(features.properties, ids, len(features.geometries))
 ```
 
-`from_features` returns a [`Features`][gometry.Features] container with three parallel fields.
-Destructure it as `geoms, props, ids = gm.from_features(...)`. It has no
+`features=True` returns a [`Features`][gometry.Features] container with three
+parallel fields. Destructure it as `geoms, props, ids = gm.from_geojson(..., features=True)`. It has no
 `len()`, so a three-field count cannot be misread as a feature count;
 `len(features.geometries)` is the row count.
 
@@ -243,9 +249,17 @@ When constructing [`Features`][gometry.Features] directly, omitted or explicit
 `properties=None` records `None` for every row; pass `properties={}` when
 independently editable empty mappings are wanted.
 
-The inverse is [`gm.to_feature_collection`][gometry.to_feature_collection] — give it
-geometries plus keyword-only `properties` (and optional `ids`) and it assembles a
-`FeatureCollection` mapping whose geometry members are JSON-ready. The mapping is
+### `Features.__geo_interface__`
+
+`features.__geo_interface__` returns a fresh `FeatureCollection` with the
+record's geometries, properties, and IDs. Missing geometries and properties
+remain `null`, and rows without an ID omit `id`; encoding uses the same WGS 84,
+epoch, and M constraints as
+[`gm.to_feature_collection`][gometry.to_feature_collection].
+
+[`gm.to_feature_collection`][gometry.to_feature_collection] assembles a
+`FeatureCollection` from separate geometry and metadata columns, with keyword-only
+`properties` (and optional `ids`). Its geometry members are JSON-ready. The mapping is
 suitable for `json.dumps` **only when every property value is JSON-serializable**
 (strings, numbers, bools, `None`, and nested lists/dicts of those) — arbitrary
 Python objects in `properties` raise `TypeError` at dump time. `to_geojson` honors
@@ -263,7 +277,9 @@ scalar IDs never broadcast, avoiding accidental duplicate identifiers.
 
 Pickle applies to durable public value and container types: [`Geometry`][gometry.Geometry],
 `GeometryArray` (packed point, line, and polygon columns round-trip as raw
-coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups], `CRS`, [`H3Cell`][gometry.H3Cell], and [`S2Cell`][gometry.S2Cell].
+coordinate/offset lanes), [`CellArray`][gometry.CellArray], [`Groups`][gometry.Groups],
+[`Features`][gometry.Features], `CRS`, [`H3Cell`][gometry.H3Cell], and
+[`S2Cell`][gometry.S2Cell].
 Their CRS, epoch, and Z/M metadata remain intact through pickle. The same value
 protocol supports [`multiprocessing`](https://docs.python.org/3/library/multiprocessing.html),
 [`concurrent.futures`](https://docs.python.org/3/library/concurrent.futures.html), joblib, and cache
@@ -271,9 +287,22 @@ storage; [`copy`](https://docs.python.org/3/library/copy.html#copy.copy)/[`deepc
 geometries serialize durable input state and rebuild derived acceleration
 structures when loaded; loaded objects do not contain warm-cache snapshots. There is
 no `Coverage` object to pickle: cover factories return `CellArray` or `Groups`
-containers. [`Coordinates`][gometry.Coordinates] and iterator types are not
-picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an immutable parent view; it is
-reconstructed from its geometry when unpickled.
+containers. [`Coordinates`][gometry.Coordinates] is picklable as an owner-retaining
+view, preserving its selected layout and flattened row indexes; iterator types
+are not picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an
+immutable parent view; it is reconstructed from its geometry when unpickled.
+
+`copy.copy(features)` returns a new record sharing its geometry, property, and ID
+columns, so edits to a shared property dictionary are visible through either
+record. `copy.deepcopy(features)` recursively copies property mappings and their
+values. On Python 3.13 and newer, `copy.replace(features, ...)` preserves each
+omitted column by identity and validates supplied columns.
+
+With pickle protocol 5, packed `GeometryArray` payload columns and their offsets
+can be sent out of band when the pickler uses `buffer_callback`. Those buffers
+are read-only `PickleBuffer` values; the unpickler must receive the collected
+buffers. Pickle protocol 5 alone does not make ordinary process-pool transfers
+zero-copy or create shared memory.
 
 ### Stored-format compatibility
 
@@ -318,7 +347,7 @@ print(restored == point, restored.crs, restored.epoch)
 | EWKB | `to_wkb(include_srid=True, drop_epoch=True)` | [`from_wkb`][gometry.from_wkb] | yes (SRID) | no (requires `drop_epoch=True` when present) | yes | yes |
 | WKT | [`to_wkt(drop_epoch=True)`][gometry.Geometry.to_wkt] | [`from_wkt`][gometry.from_wkt] | no | no (requires `drop_epoch=True` when present) | yes, when carried | yes (`M`/`ZM` tags) |
 | EWKT | `to_wkt(include_srid=True, drop_epoch=True)` | [`from_wkt`][gometry.from_wkt] | yes (`SRID=` prefix) | no (requires `drop_epoch=True` when present) | yes, when carried | yes |
-| GeoJSON | [`to_geojson(drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes, when carried | no — raises on M; use `set_m(None)` or `force_2d()` first |
+| GeoJSON | [`to_geojson(drop_epoch=True)`][gometry.Geometry.to_geojson] | [`from_geojson`][gometry.from_geojson] | assumes WGS84 lon/lat on write and declares it on read (default attaches `OGC:CRS84`; pass `crs=4326`/`crs=None`/`crs=4979` to control); reproject before `to_geojson` | no (requires `drop_epoch=True` when present) | yes, when carried | no — raises on M; use `with_coordinates(m=None)` or `force_2d()` first |
 | `__geo_interface__` | `geom.__geo_interface__` | [`from_geojson`][gometry.from_geojson] | no | no — raises when present | yes (when present) | no — raises when present |
 | GeoArrow | [`to_arrow`][gometry.Geometry.to_arrow] | [`gm.from_arrow`][gometry.from_arrow] | yes (PROJJSON) | yes, in gometry's extension metadata (gometry or extension-aware consumers; not standard GeoArrow metadata) | yes | yes (packed Z/M children for homogeneous axes without explicit empty members; WKB fallback for mixed axes or explicit empty members) |
 | pandas | [`to_pandas`][gometry.GeometryArray.to_pandas] | adapter Series of [`Geometry`][gometry.Geometry] | yes (on each geometry) | yes (on each geometry object) | yes | yes |

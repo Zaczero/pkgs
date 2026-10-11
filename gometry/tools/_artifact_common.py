@@ -42,7 +42,7 @@ LIBTIFF_PIN = ROOT / 'native' / 'libtiff-sys' / 'libtiff.pin'
 LIBTIFF_COMMIT = 'd01a94be176f5f6a87f7ee1c0b32e65416aa2b4d'
 LIBTIFF_VERSION = '4.7.2'
 REGISTRY_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
-MATURIN_VERSION = '1.14.1'
+MATURIN_VERSION = '1.15.0'
 RELEASE_PROFILE = 'release-dist'
 RELEASE_MATURIN_ARGS = f'--locked --profile {RELEASE_PROFILE}'
 SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v5'
@@ -109,13 +109,18 @@ def run(
         cwd=cwd,
         env=env,
         check=False,
-        capture_output=capture_output,
         text=True,
+        **(
+            {'capture_output': True}
+            if capture_output
+            else {'stdout': sys.stderr, 'stderr': sys.stderr}
+        ),
     )
-    if result.stdout:
-        sys.stderr.write(result.stdout)
-    if result.stderr:
-        sys.stderr.write(result.stderr)
+    if capture_output:
+        if result.stdout:
+            sys.stderr.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
     if result.returncode:
         raise subprocess.CalledProcessError(
             result.returncode,

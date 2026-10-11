@@ -260,7 +260,7 @@ enum FeatureGeometryRows {
 /// InvalidGeometryError
 ///     If the geometry has an M ordinate or coordinates outside the WGS84
 ///     longitude/latitude domain. GeoJSON Feature mappings have no
-///     representation for M; drop it with ``set_m(None)`` (or ``force_2d()``).
+///     representation for M; drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 /// CRSError
 ///     If a CRS-tagged geometry is not in the WGS84 lon/lat family.
 ///
@@ -360,7 +360,7 @@ pub(crate) fn to_feature(
 /// InvalidGeometryError
 ///     If a geometry has an M ordinate or coordinates outside the WGS84
 ///     longitude/latitude domain. GeoJSON Feature mappings cannot represent M;
-///     drop it with ``set_m(None)`` (or ``force_2d()``).
+///     drop it with ``with_coordinates(m=None)`` (or ``force_2d()``).
 /// CRSError
 ///     If a CRS-tagged geometry is not EPSG:4326 longitude/latitude.
 ///

@@ -20,11 +20,18 @@ sparse row table, including tombstones for removed rows, and rebuilds the search
 structure on load. A round trip therefore preserves live handles and prior
 mutations rather than replaying the original source rows.
 
-Lookup methods require a non-negative integer/index handle and reject `bool`.
-`idx.get(handle, default)` returns `default` for a valid handle that is unknown
-or removed, but negative and non-integer inputs raise; it does not use
-`dict.get`'s behavior for arbitrary keys. Membership checks remain tolerant and
-return `False` for non-integer probes.
+Lookup and removal accept non-negative integer-index handles and reject
+`bool`. `idx.get(handle, default)` returns `default` for a valid handle that is
+unknown or removed, but negative and non-index inputs raise. Membership checks
+remain tolerant and return `False` for non-index probes.
+
+`SpatialIndex` compares like a mapping: equality uses its live handle-to-
+geometry contents, including after removals. Since it is mutable, it is
+unhashable and cannot be used as a dictionary key.
+
+`query`, `candidates`, `nearest`, and `join` accept a `GeometryArray` or an
+iterable of `Geometry | None` rows. Missing query rows produce empty result
+groups and keep their original row positions.
 
 !!! warning "Candidates are not matches"
     [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
@@ -69,6 +76,10 @@ predicate, so it is always a subset. Both return handles in ascending source-row
 order. In this example, geometry **1** is a false
 positive because its diagonal triangle's bounding box overlaps the query while the
 shape does not.
+
+Array queries return one `Groups` row per query row. A missing query appears as
+`None` and is marked in `Groups.is_missing`; a present query with no matches
+appears as an empty row. Scalar queries keep their flat `int64` result.
 
 ```python exec="on" html="true" session="index-candidates"
 from _figures import figure
@@ -176,10 +187,11 @@ Distance `unit=` follows the CRS metric rules in [CRS, units & measurement](crs.
 The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate math.
 `dwithin` accepts a positive-infinite threshold and matches only admitted
 non-empty geometries. On a geographic CRS, `dwithin` raises `CRSError` if the
-128-evaluation search cannot prove whether a present pair is within the radius;
-it does not report an unresolved pair as `False`. Successful array results keep
-one boolean per input pair, and missing rows and present empty geometries remain
-in their positions as `False`.
+accumulated evaluation work limit cannot certify whether a present pair is
+within the radius; it does not report an unresolved pair as `False`. The [CRS
+guide](crs.md#geographic-point-to-segment-accuracy) describes the work scale and
+ceiling. Successful array results keep one boolean per input pair, and missing
+rows and present empty geometries remain in their positions as `False`.
 
 ## Nearest neighbors
 
@@ -214,6 +226,8 @@ the data and query.
   `(matches, distances)` for an array query; scalar `indices` is a read-only
   `int64` NumPy array, array `matches` is CSR [`Groups`][gometry.Groups], and `distances` is a
   read-only `float64` NumPy array aligned with the ids.
+- For array queries, missing input rows are `None` groups; present queries with
+  no indexed match are empty groups.
 - `exclusive=True` skips candidates structurally equal to the query and returns the
   nearest other features:
 

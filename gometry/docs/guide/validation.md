@@ -261,7 +261,7 @@ import gometry as gm
 
 raw = "POLYGON ((2 48, 3 48, 3 49, 2 49, 2 48))"
 area = gm.require(raw, crs=4326, axes="XY")
-print("meets contract:", area.crs == 4326, area.coordinate_axes)
+print("meets contract:", area.crs == gm.CRS(4326), area.coordinate_axes)
 
 ```
 

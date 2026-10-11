@@ -1830,12 +1830,12 @@ fn join_components(shapes: &[Shape]) -> Result<Shape> {
         let coords = if axes.has_z() {
             coords.clone()
         } else {
-            coords.set_z(None, false)?
+            coords.replace_z(None, false)?
         };
         if axes.has_m() {
             Ok(coords)
         } else {
-            coords.set_m(None, false)
+            coords.replace_m(None, false)
         }
     };
     let point_axes = common(&mut points.iter().map(|point| point.axes()));

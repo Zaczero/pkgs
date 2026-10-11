@@ -82,7 +82,6 @@ from gometry._lib import (
     boxes,
     contains,
     contains_properly,
-    contains_xy,
     coverage_clean,
     coverage_invalid_edges,
     coverage_is_valid,
@@ -107,7 +106,6 @@ from gometry._lib import (
     crs_proj_operations,
     crs_reset,
     crs_roundtrip,
-    crs_search,
     crs_transform,
     crs_transform_bounds,
     crs_unit,
@@ -123,7 +121,6 @@ from gometry._lib import (
     equals_identical,
     frechet_distance,
     from_arrow,
-    from_features,
     from_geojson,
     from_polyline,
     from_wkb,
@@ -146,7 +143,6 @@ from gometry._lib import (
     intersection,
     intersection_all,
     intersects,
-    intersects_xy,
     join,
     length,
     length_3d,
@@ -170,11 +166,9 @@ from gometry._lib import (
     relate,
     relate_pattern,
     require,
-    rhumb_distance,
     s2_bounding_cell,
     s2_cells,
     s2_cover,
-    s2_cover_adaptive,
     s2_difference,
     s2_intersection,
     s2_union,
@@ -222,12 +216,16 @@ del _get_type_hints
 
 del annotations
 
-# These native containers honor the full sequence protocol (len/getitem/iter/
-# reversed/in/index/count); registering makes `isinstance(value, Sequence)`
-# true. Each class also declares `sequence` natively so immutable type objects
-# do not need this registration to acquire Py_TPFLAGS_SEQUENCE.
+# These native containers honor Python's sequence operations; registration
+# makes `isinstance(value, Sequence)` and ABC-based dispatch recognize them.
+# Only sequence-pattern containers declare the native sequence flag. Multipart
+# geometries keep it clear so NumPy continues to treat each geometry atomically.
 _NATIVE_SEQUENCE_TYPES = (
     GeometryArray,
+    MultiPoint,
+    MultiLineString,
+    MultiPolygon,
+    GeometryCollection,
     CellArray,
     Groups,
     GeometryParts,
@@ -289,7 +287,6 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'boxes',
     'contains',
     'contains_properly',
-    'contains_xy',
     'coverage_clean',
     'coverage_invalid_edges',
     'coverage_is_valid',
@@ -314,7 +311,6 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'crs_proj_operations',
     'crs_reset',
     'crs_roundtrip',
-    'crs_search',
     'crs_transform',
     'crs_transform_bounds',
     'crs_unit',
@@ -331,7 +327,6 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'explore',
     'frechet_distance',
     'from_arrow',
-    'from_features',
     'from_geojson',
     'from_geopandas',
     'from_geoparquet',
@@ -358,7 +353,6 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'intersection',
     'intersection_all',
     'intersects',
-    'intersects_xy',
     'join',
     'length',
     'length_3d',
@@ -382,11 +376,9 @@ __all__ = [  # noqa: RUF022 - public API order follows Python's sorted() contrac
     'relate',
     'relate_pattern',
     'require',
-    'rhumb_distance',
     's2_bounding_cell',
     's2_cells',
     's2_cover',
-    's2_cover_adaptive',
     's2_difference',
     's2_intersection',
     's2_union',

@@ -536,6 +536,10 @@ mod tests {
         (point.x, point.y)
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the exact-orientation fixtures use bounded dyadic coordinates that fit i128 after scaling"
+    )]
     fn scaled_dyadic(value: f64, scale: u32) -> i128 {
         if value == 0.0 {
             return 0;
@@ -557,6 +561,10 @@ mod tests {
         numerator << (scale - denominator)
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the exact determinant is evaluated only for bounded dyadic test fixtures"
+    )]
     fn exact_orientation(a: Point, b: Point, point: Point) -> std::cmp::Ordering {
         // These fixtures are dyadic; a common power-of-two denominator makes
         // every orientation an exact integer determinant.
@@ -631,6 +639,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the counter observes the three components in the fixed test fixture"
+    )]
     fn first_component_work(shape: &Shape) -> usize {
         let mut visits = 0;
         match shape.try_for_each_first_component(&mut |_| {

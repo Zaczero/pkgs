@@ -84,6 +84,45 @@ def test_cell_construct_and_round_trip(grid: GridCase) -> None:
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_plural_cell_factories_accept_crs_tagged_multipoints(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    multipoint = gm.MultiPoint([(13.4, 52.5), (13.5, 52.6)], crs=4326)
+
+    assert grid.factory(multipoint, **kwargs) == grid.factory(
+        list(multipoint), **kwargs
+    )
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_plural_cell_factories_accept_empty_multipoints(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    empty = gm.MultiPoint([], crs=4326)
+    empty_cells = grid.factory(empty, **kwargs)
+
+    assert isinstance(empty_cells, gm.CellArray)
+    assert len(empty_cells) == 0
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+@pytest.mark.parametrize(
+    'geometry',
+    [
+        pytest.param(gm.Point(13.4, 52.5, crs=4326), id='scalar-point'),
+        pytest.param(
+            gm.LineString([(13.4, 52.5), (13.5, 52.6)], crs=4326),
+            id='linestring',
+        ),
+    ],
+)
+def test_plural_cell_factories_reject_other_scalar_geometry_kinds(
+    grid: GridCase,
+    geometry: gm.Geometry,
+) -> None:
+    with pytest.raises(gm.GeometryError):
+        grid.factory(geometry, **{grid.depth_kw: grid.depth})
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_cell_construct_canonicalizes_periodic_seam_aliases(grid: GridCase) -> None:
     owner = grid.make(-180.0, 23.0)
     assert grid.make(180.0, 23.0) == owner
@@ -417,14 +456,14 @@ def test_cell_array_outputs_preserve_nullable_reversed_duplicate_gathers() -> No
     expected = list(cells)
 
     centers = cells.center
-    assert centers.crs == 'OGC:CRS84'
+    assert centers.crs == gm.CRS('OGC:CRS84')
     assert not centers.coords.x.flags.writeable
     assert not centers.coords.y.flags.writeable
     assert centers.to_wkt() == [
         None if cell is None else cell.center.to_wkt() for cell in expected
     ]
     polygons = cells.polygon
-    assert polygons.crs == 'OGC:CRS84'
+    assert polygons.crs == gm.CRS('OGC:CRS84')
     assert polygons.to_wkt() == [
         None if cell is None else cell.polygon.to_wkt() for cell in expected
     ]
@@ -674,6 +713,56 @@ def test_cells_accept_packed_point_arrays(grid: GridCase) -> None:
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_factories_accept_point_iterables(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    longitudes = [13.4, 14.4]
+    latitudes = [52.5, 53.5]
+    expected = grid.factory(longitudes, latitudes, **kwargs)
+
+    first = gm.Point(longitudes[0], latitudes[0], crs=4326)
+    second = gm.Point(longitudes[1], latitudes[1], crs=4326)
+    points = [
+        first,
+        None,
+        second,
+    ]
+    assert list(grid.factory(iter(points), **kwargs)) == [
+        expected[0],
+        None,
+        expected[1],
+    ]
+    projected = [point.to_crs(3857) if point is not None else None for point in points]
+    assert list(grid.factory(projected, **kwargs)) == [expected[0], None, expected[1]]
+    assert grid.factory([], **kwargs).is_missing.tolist() == []
+    assert grid.factory([None, None], **kwargs).is_missing.tolist() == [True, True]
+    all_missing = gm.GeometryArray([None, None])
+    assert grid.factory(all_missing, **kwargs).is_missing.tolist() == [True, True]
+
+    with pytest.raises(gm.CRSMismatchError):
+        grid.factory([first, second.to_crs(3857)], **kwargs)
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_factories_accept_coordinate_matrices(grid: GridCase) -> None:
+    kwargs = {grid.depth_kw: grid.depth}
+    longitudes = [13.4, 14.4]
+    latitudes = [52.5, 53.5]
+    expected = grid.factory(longitudes, latitudes, **kwargs)
+    coordinates = np.array([
+        [longitudes[0], latitudes[0], 17.0],
+        [longitudes[1], latitudes[1], 29.0],
+    ])
+    assert grid.factory(coordinates, **kwargs) == expected
+    assert (
+        grid.factory(
+            [[longitudes[0], latitudes[0], -5.0], [longitudes[1], latitudes[1], 11.0]],
+            **kwargs,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_cell_admission_error_keeps_logical_row_after_missing(grid: GridCase) -> None:
     points = gm.points([0, 0], [0, 91], crs=4326)._with_missing([True, False])
     with pytest.raises(
@@ -712,6 +801,19 @@ def test_cell_array_hierarchical_predicate_broadcast(grid: GridCase) -> None:
     assert not values.contains(child).flags.writeable
     with pytest.raises(gm.GeometryError, match='equal lengths'):
         values.contains(paired[:1])
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_array_hierarchy_predicates_accept_grid_ids_and_tokens(
+    grid: GridCase,
+) -> None:
+    parent = grid.make()
+    child = grid.make(**{grid.depth_kw: grid.depth + 1})
+    values = gm.CellArray([parent, child], type=grid.cell_type)
+
+    for identity in (child.token, *((child.id,) if grid.has_int_id else ())):
+        np.testing.assert_array_equal(values.contains(identity), [True, True])
+        np.testing.assert_array_equal(values.intersects(identity), [True, True])
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
@@ -763,14 +865,14 @@ def test_masked_cell_array_row_preserving_operations(grid: GridCase) -> None:
     assert np.isnan(values.area[1])
     assert np.isnan(values.children_count()[1])
     assert values.parent().is_missing.tolist() == [False, True, False]
-    assert [len(row) for row in values.neighbors] == [
+    assert [None if row is None else len(row) for row in values.neighbors] == [
         len(a.neighbors),
-        0,
+        None,
         len(a.neighbors),
     ]
-    assert [len(row) for row in values.children()] == [
+    assert [None if row is None else len(row) for row in values.children()] == [
         len(a.children()),
-        0,
+        None,
         len(a.children()),
     ]
     assert values.token == [a.token, None, a.token]
@@ -1048,6 +1150,43 @@ def test_grid_set_algebra_accepts_atomic_identities_and_iterables_consistently()
             assert list(intersection_fn(identity, identity)) == [cell]
             assert list(difference_fn(identity, identity)) == []
         assert list(union_fn((x for x in [cell]), [cell])) == [cell]
+
+
+@pytest.mark.parametrize(
+    ('operations', 'cell'),
+    [
+        pytest.param(
+            (gm.h3_union, gm.h3_intersection, gm.h3_difference),
+            gm.H3Cell(21.0, 52.0, resolution=5),
+            id='h3',
+        ),
+        pytest.param(
+            (gm.s2_union, gm.s2_intersection, gm.s2_difference),
+            gm.S2Cell(21.0, 52.0, level=5),
+            id='s2',
+        ),
+        pytest.param(
+            (gm.geohash_union, gm.geohash_intersection, gm.geohash_difference),
+            gm.GeohashCell('u33d'),
+            id='geohash',
+        ),
+        pytest.param(
+            (gm.tile_union, gm.tile_intersection, gm.tile_difference),
+            gm.Tile(x=4, y=5, zoom=5),
+            id='tiles',
+        ),
+    ],
+)
+def test_grid_set_algebra_skips_missing_rows_but_rejects_bare_none(
+    operations, cell
+) -> None:
+    union_fn, intersection_fn, difference_fn = operations
+    assert list(union_fn([cell, None], [None])) == [cell]
+    assert list(intersection_fn([cell, None], [cell])) == [cell]
+    assert list(difference_fn([cell, None], [None])) == [cell]
+    assert list(union_fn([cell], (value for value in [None]))) == [cell]
+    with pytest.raises(TypeError, match='empty iterable'):
+        union_fn(None, [cell])
 
 
 def test_grid_set_algebra_preserves_real_iterator_errors() -> None:

@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::py::errors::{CRSError, GeometryError};
 use crate::{
     Crs, CrsCoordinateArgs, broadcast_coordinate_group, crs, crs_arc, finite_coordinate_required,
-    finite_f64_required, json_to_py, parse_area, parse_crs,
+    finite_f64_required, json_to_py, parse_area,
 };
 
 mod functions;
@@ -28,13 +28,13 @@ mod pymethods_export;
 mod pymethods_introspect;
 mod pymethods_operations;
 pub(crate) use functions::{
-    MinConfidence, crs_ellipsoids, crs_prime_meridians, crs_proj_operations, crs_same,
-    crs_to_authority, crs_to_cf, crs_to_epsg, crs_to_proj, crs_to_projjson, crs_to_projjson_dict,
-    crs_to_wkt, crs_unit, crs_units,
+    MinConfidence, crs_ellipsoids, crs_prime_meridians, crs_proj_operations, crs_projjson_mapping,
+    crs_same, crs_to_authority, crs_to_cf, crs_to_epsg, crs_to_proj, crs_to_projjson, crs_to_wkt,
+    crs_unit, crs_units,
 };
 pub(crate) use functions_catalog::{
     crs_authorities, crs_catalog, crs_celestial_bodies, crs_codes, crs_geoid_models,
-    crs_non_deprecated, crs_search, crs_utm_zones,
+    crs_non_deprecated, crs_utm_zones,
 };
 pub(crate) use functions_config::{crs_cache_info, crs_clear_cache, crs_configure, crs_reset};
 pub(crate) use functions_factors::crs_factors;
@@ -65,7 +65,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         crs_engine, crs_grid, _unpickle_crs_v1,
         crs_prime_meridians, crs_proj_operations, crs_reset,
         crs_roundtrip, crs_transform, crs_transform_bounds, crs_unit, crs_units,
-        crs_search, crs_catalog, crs_authorities, crs_codes, crs_utm_zones, crs_celestial_bodies,
+        crs_catalog, crs_authorities, crs_codes, crs_utm_zones, crs_celestial_bodies,
     );
     Ok(())
 }

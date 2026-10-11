@@ -380,15 +380,19 @@ impl ValidityMask {
         self.valid_count
     }
 
-    pub(crate) fn present_in_range(&self, rows: std::ops::Range<usize>) -> usize {
+    pub(crate) fn present_in_range(&self, row_range: std::ops::Range<usize>) -> usize {
         assert!(
-            rows.start <= rows.end && rows.end <= self.len,
+            row_range.start <= row_range.end,
+            "validity range endpoints must be ordered"
+        );
+        assert!(
+            row_range.end <= self.len,
             "validity range must be within its logical rows"
         );
         count_valid(
             &self.bytes,
-            self.bit_offset.wrapping_add(rows.start),
-            rows.len(),
+            self.bit_offset.wrapping_add(row_range.start),
+            row_range.len(),
         )
     }
 

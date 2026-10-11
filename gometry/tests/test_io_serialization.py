@@ -117,15 +117,15 @@ def test_crs_free_geojson_rejects_out_of_domain_feature_writers() -> None:
 
 def test_crs_free_geojson_round_trip_declares_crs84() -> None:
     point = gm.Point(21.0, 52.0)
-    assert gm.from_geojson(point.to_geojson()).crs == 'OGC:CRS84'
+    assert gm.from_geojson(point.to_geojson()).crs == gm.CRS('OGC:CRS84')
 
     array = gm.GeometryArray([point])
     decoded = gm.from_geojson(array.to_geojson())
     assert isinstance(decoded, gm.GeometryArray)
-    assert decoded.crs == 'OGC:CRS84'
+    assert decoded.crs == gm.CRS('OGC:CRS84')
 
     feature = gm.to_feature(point)
-    assert gm.from_features(feature).geometries.crs == 'OGC:CRS84'
+    assert gm.from_geojson(feature, features=True).geometries.crs == gm.CRS('OGC:CRS84')
 
 
 def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
@@ -180,7 +180,7 @@ def test_b1_to_feature_requires_explicit_epoch_drop() -> None:
     feature = gm.to_feature(point, drop_epoch=True)
     assert 'epoch' not in feature
     assert set(feature) >= {'type', 'geometry', 'properties'}
-    decoded = gm.from_features(feature)
+    decoded = gm.from_geojson(feature, features=True)
     assert decoded.geometries[0].epoch is None
 
 
@@ -255,7 +255,7 @@ def test_geojson_writers_resolve_metric_for_constant_z_polar_annulus() -> None:
 
 def test_b2_from_geojson_default_is_crs84() -> None:
     g = gm.from_geojson('{"type":"Point","coordinates":[1.0,2.0]}')
-    assert g.crs == 'OGC:CRS84'
+    assert g.crs == gm.CRS('OGC:CRS84')
 
 
 def test_b2_geojson_and_geoparquet_absent_crs_agree(tmp_path) -> None:
@@ -265,7 +265,7 @@ def test_b2_geojson_and_geoparquet_absent_crs_agree(tmp_path) -> None:
     from gometry import _geoparquet as gp
 
     gj = gm.from_geojson('{"type":"Point","coordinates":[1.0,2.0]}')
-    assert gj.crs == 'OGC:CRS84'
+    assert gj.crs == gm.CRS('OGC:CRS84')
 
     wkb = gm.Point(1.0, 2.0).to_wkb()
     table = pa.table({'geometry': [wkb]})
@@ -286,7 +286,7 @@ def test_b2_geojson_and_geoparquet_absent_crs_agree(tmp_path) -> None:
         path,
     )
     geoms, _table = gp.from_geoparquet(path)
-    assert geoms.crs == 'OGC:CRS84'
+    assert geoms.crs == gm.CRS('OGC:CRS84')
     assert gm.equals(gj, geoms[0])
     assert gm.distance(gj, geoms[0]) == 0.0
 
@@ -408,7 +408,7 @@ def test_include_srid_crs_free_raises() -> None:
 def test_include_srid_epsg_still_embeds() -> None:
     wkb = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
     assert wkb[:4].hex() == '01010000' or True  # EWKB flag present
-    assert gm.from_wkb(wkb).crs == 'EPSG:4326'
+    assert gm.from_wkb(wkb).crs == gm.CRS('EPSG:4326')
 
 
 # ---------------------------------------------------------------------------
@@ -446,18 +446,18 @@ def test_hole_polygons_with_missing_stay_packed() -> None:
 def test_from_polyline_accepts_crs84() -> None:
     encoded = gm.LineString([(1, 2), (3, 4)], crs=4326).to_polyline()
     decoded = gm.from_polyline(encoded, crs='OGC:CRS84')
-    assert decoded.crs == 'OGC:CRS84'
+    assert decoded.crs == gm.CRS('OGC:CRS84')
     assert decoded.to_wkt() == 'LINESTRING (1 2, 3 4)'
 
 
 # ---------------------------------------------------------------------------
-# Z1 — contains_xy / intersects_xy do not double-drain one-shot iters
+# Coordinate keyword predicates drain one-shot iterables once
 # ---------------------------------------------------------------------------
 
 
-def test_z1_contains_xy_one_shot_iterators() -> None:
+def test_coordinate_predicates_drain_one_shot_iterators_once() -> None:
     poly = gm.from_wkt('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))')
-    result = gm.contains_xy(poly, iter([0.5, 2.0]), iter([0.5, 2.0]))
+    result = gm.contains(poly, x=iter([0.5, 2.0]), y=iter([0.5, 2.0]))
     assert np.asarray(result).tolist() == [True, False]
-    result_i = gm.intersects_xy(poly, iter([0.5, 2.0]), iter([0.5, 2.0]))
+    result_i = gm.intersects(poly, x=iter([0.5, 2.0]), y=iter([0.5, 2.0]))
     assert np.asarray(result_i).tolist() == [True, False]

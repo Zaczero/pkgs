@@ -20,17 +20,19 @@ pub(super) fn parse_h3_grid_k(value: &Bound<'_, PyAny>) -> PyResult<u32> {
     u32::try_from(k).map_err(|_| GeometryError::new_err("H3 grid distance is too large"))
 }
 
-/// Build H3 cells from parallel lon/lat columns.
+/// Build H3 cells from points, coordinate rows, or parallel lon/lat columns.
 ///
 /// Parameters
 /// ----------
-/// values : GeometryArray of Point, float, or sequence of float
-///     Point geometries or WGS84 longitudes. Projected point arrays are
-///     reprojected in one native batch.
+/// values : GeometryArray of Point, iterable of Point or None, coordinate matrix, or float
+///     Point geometries (``None`` makes a missing cell), a coordinate matrix
+///     with at least two columns, or WGS84 longitudes. Iterable points must
+///     share one CRS and epoch; projected point inputs are reprojected to
+///     WGS84. Coordinate matrices use only X and Y, ignoring extra ordinates.
 ///
 /// lat : float or sequence of float, optional
-///     WGS84 latitude per row when ``values`` supplies longitudes. Scalars
-///     broadcast numpy-style; at least one coordinate column must be sequence of float.
+///     WGS84 latitude per row when ``values`` supplies longitudes. Coordinate
+///     columns broadcast numpy-style; at least one must be a sequence.
 ///
 /// resolution : int or sequence of int
 ///     H3 resolution (0-15; finer at higher values). A scalar broadcasts to
@@ -46,7 +48,7 @@ pub(super) fn parse_h3_grid_k(value: &Bound<'_, PyAny>) -> PyResult<u32> {
 /// GeometryError
 ///     If ``resolution`` is out of range or every argument is scalar.
 /// InvalidGeometryError
-///     If a coordinate is non-finite or columns differ in length.
+///     If a coordinate is non-finite or coordinate columns differ in length.
 ///
 /// See Also
 /// --------
@@ -248,9 +250,10 @@ pub(in crate::py::cells) fn h3_cell_index(cell: &Bound<'_, PyAny>) -> PyResult<C
 ///
 /// Parameters
 /// ----------
-/// geom : Geometry or GeometryArray
-///     Geometry to cover (WGS84 lon/lat or projected). An array returns one
-///     grouped cell row per input geometry.
+/// geom : Geometry, GeometryArray, or iterable of Geometry or None
+///     Geometry to cover (WGS84 lon/lat or projected). An array or iterable
+///     returns one group per input row; ``None`` produces a missing group and
+///     a present empty geometry produces an empty group.
 ///
 /// resolution : int
 ///     H3 resolution (``0``-``15``; finer at higher values).

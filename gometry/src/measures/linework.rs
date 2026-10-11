@@ -9,8 +9,9 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Two lineal geometries.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Two lineal operands. Scalar and sequence inputs broadcast pairwise;
+///     sequences must have equal length and compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------
@@ -75,7 +76,8 @@ pub(crate) fn shared_paths(
 ///     A scalar line returns all split parts in one `GeometryArray`, even when
 ///     its cutter is an array of points. A line array returns one `Groups` row
 ///     per source line; an array cutter is paired row by row. Missing line or
-///     cutter rows produce empty groups.
+///     cutter rows produce ``None`` groups; present rows with no split parts
+///     produce empty groups.
 ///
 /// Raises
 /// ------

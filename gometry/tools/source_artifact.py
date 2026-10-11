@@ -568,7 +568,7 @@ def stage_sdist(out_dir: Path) -> Path:
                             'final sdist source-input identity differs from checkout'
                         )
                     python_members = python_member_hashes(
-                        final_roots[0] / 'gometry' / 'python' / 'gometry'
+                        final_roots[0] / 'python' / 'gometry'
                     )
                     if python_members != initial_python_members:
                         raise AssertionError(
@@ -1441,7 +1441,7 @@ def sdist_python_member_hashes(sdist: Path) -> dict[str, str]:
         roots = [entry for entry in extracted.iterdir() if entry.is_dir()]
         if len(roots) != 1:
             raise AssertionError('source sdist has no unique package root')
-        return python_member_hashes(roots[0] / 'gometry' / 'python' / 'gometry')
+        return python_member_hashes(roots[0] / 'python' / 'gometry')
 
 
 def verify_source_artifact(sdist: Path, manifest_path: Path) -> dict[str, Any]:

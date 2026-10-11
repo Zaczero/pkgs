@@ -83,17 +83,17 @@ dev = [
 docs = [
   "libcst",
   "markdown-exec>=1.9",
-  "maturin==1.14.1",
+  "maturin==1.15.0",
   "mkdocs-gen-files>=0.5",
   "mkdocs-material>=9.5",
   "mkdocstrings[python]>=0.27",
   "properdocs>=1.6",
   "pymdown-extensions>=10.7",
 ]
-ci = ["lonboard", "maturin==1.14.1", "pyo3stubs", "pyyaml"]
+ci = ["lonboard", "maturin==1.15.0", "pyo3stubs", "pyyaml"]
 
 [build-system]
-requires = ["maturin==1.14.1"]
+requires = ["maturin==1.15.0"]
 build-backend = "maturin"
 
 [tool.coverage.run]
@@ -152,6 +152,8 @@ rust = false
 # disambiguator, and the batch variant must keep accepting scalars for mixed
 # broadcasting (`factors(0.5, lat_column)`). Same practice as numpy/typeshed.
 disable_error_code = ["overload-overlap"]
+# Type-check this checkout rather than an unrelated installed editable package.
+mypy_path = "$MYPY_CONFIG_FILE_DIR/python"
 
 [tool.pyright]
 # Scope the curated rules to the shipped library; tests/tools/benches are out of
@@ -165,6 +167,8 @@ venv = ".venv"
 pythonPlatform = "All"
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
+# `_lib` is a compiled extension; its `.pyi` stub is the source for type checking.
+reportMissingModuleSource = "none"
 reportUnnecessaryCast = "error"
 reportUnnecessaryTypeIgnoreComment = "error"
 

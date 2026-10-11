@@ -754,6 +754,7 @@ fn replacement_axis_value(
     match axis {
         ReplacementAxis::Replace(values) => Some(values[replacement_index]),
         ReplacementAxis::Carry => old.map(|column| column[old_index]),
+        ReplacementAxis::Drop => None,
     }
 }
 
@@ -769,8 +770,14 @@ fn push_replacement_vertex(
     replacement_index: usize,
 ) {
     builder.push_xyzm(
-        replacement.xs[replacement_index],
-        replacement.ys[replacement_index],
+        replacement
+            .xs
+            .as_ref()
+            .map_or_else(|| old.xs()[old_index], |values| values[replacement_index]),
+        replacement
+            .ys
+            .as_ref()
+            .map_or_else(|| old.ys()[old_index], |values| values[replacement_index]),
         replacement_axis_value(&replacement.zs, replacement_index, old.zs(), old_index),
         replacement_axis_value(&replacement.ms, replacement_index, old.ms(), old_index),
     );
@@ -818,7 +825,7 @@ fn replace_point_columns(
     let rows = point_columns.rows();
     let capacity = rows.present_count();
     storage::admit_packed_coord_count(capacity).map_err(batch_err)?;
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), capacity);
+    let mut builder = CoordSeqBuilder::with_capacity(replacement.output_axes(old.axes()), capacity);
     let mut replace_present = |physical| {
         push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index);
         *replacement_index = (*replacement_index).wrapping_add(1);
@@ -845,7 +852,7 @@ fn replace_line_columns<const HAS_MISSING: bool>(
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = line_columns.coords();
     let capacity = line_columns.materialized_present_vertices(2)?;
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), capacity);
+    let mut builder = CoordSeqBuilder::with_capacity(replacement.output_axes(old.axes()), capacity);
     let mut offsets = CsrOffsetBuilder::with_capacity(line_columns.rows());
     for row in 0..line_columns.rows() {
         if HAS_MISSING && line_columns.is_missing(row) {
@@ -884,7 +891,8 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = polygon_columns.coords();
     let (vertex_capacity, ring_capacity) = polygon_columns.materialized_present_sizes()?;
-    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), vertex_capacity);
+    let mut builder =
+        CoordSeqBuilder::with_capacity(replacement.output_axes(old.axes()), vertex_capacity);
     let mut ring_builder = CsrOffsetBuilder::with_capacity(ring_capacity);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(polygon_columns.rows());
     let mut ring_count = 0_usize;
@@ -1521,7 +1529,7 @@ pub(crate) fn map_selected_to_crs(
 mod tests {
     use super::*;
     use crate::PyGeometryArray;
-    use crate::crs::frame::{Frame, crs_arc_static};
+    use crate::crs::frame::{Frame, GeometryTransformFrame, crs_arc_static};
     use crate::geographic::AngularFactor;
     use crate::geometry::storage::{RowSelection, StorageLayout};
     use crate::geometry::{LineSeq, Polygon, Ring, Shape, SharedSlice};
@@ -1556,8 +1564,8 @@ mod tests {
         let mut xs = coords.xs().to_vec();
         *xs.last_mut().expect("present polygon has a ring") = -1.0;
         let replacement = CoordinateReplacement {
-            xs: SharedSlice::from_vec(xs),
-            ys: SharedSlice::from_vec(coords.ys().to_vec()),
+            xs: Some(SharedSlice::from_vec(xs)),
+            ys: Some(SharedSlice::from_vec(coords.ys().to_vec())),
             zs: ReplacementAxis::Carry,
             ms: ReplacementAxis::Carry,
             len: coords.len(),
@@ -1606,10 +1614,10 @@ mod tests {
         let columns = source
             .packed_columns()
             .expect("packed line source resolves");
-        let source_frame = Frame::Crs(crate::crs::frame::crs_arc_static("EPSG:3857"));
-        let transform_frame = crate::crs::frame::GeometryTransformFrame::new(
+        let source_frame = Frame::Crs(crs_arc_static("EPSG:3857"));
+        let transform_frame = GeometryTransformFrame::new(
             &source_frame,
-            crate::crs::frame::crs_arc_static("EPSG:4326"),
+            crs_arc_static("EPSG:4326"),
             None,
             crate::crs::TransformOptions::default(),
         )

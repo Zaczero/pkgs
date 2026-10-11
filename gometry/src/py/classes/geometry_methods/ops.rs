@@ -258,13 +258,18 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         let count = parse_sample_count(count)?;
         let seed = parse_sample_seed(seed)?;
+        let domain = if count == 0 {
+            crate::geometry::TopologyDomain::Cartesian
+        } else {
+            crate::geometry::topology_domain(&self.frame)?
+        };
         // A scalar IS row 0: derive its stream exactly as the array lane
         // derives row 0's, so `arr.sample_points(n, seed=s)[0]` and
         // `arr[0].sample_points(n, seed=s)` agree. Using the raw seed here made
         // the two spellings of one operation disagree for the same input.
         let shape = Arc::clone(&self.shape);
         let points = py.detach(move || {
-            shape.sample_points(count, crate::geometry::row_sample_seed(seed, 0))
+            shape.sample_points_in_domain(count, crate::geometry::row_sample_seed(seed, 0), domain)
         })?;
         self.parts_to_array(points.into_iter().map(Shape::Point))
     }

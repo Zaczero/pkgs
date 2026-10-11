@@ -105,15 +105,19 @@ geometry_leaf!(
 
 Parameters
 ----------
-x, y : float, optional
-    Point coordinates; both omitted builds ``POINT EMPTY``.
+x : Point, coordinate sequence, or float, optional
+    A Point to copy, one finite coordinate value, or the X coordinate.
+    Omit both coordinates for an empty point.
+y : float, optional
+    Finite Y coordinate when ``x`` is a scalar. Omit it when ``x`` is a
+    coordinate value or existing Point.
 z : float, optional
     Z ordinate (adds a 3D dimension).
 m : float, optional
     M (measure) ordinate.
-crs : CRS, int, str, or None, optional
+crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -123,13 +127,13 @@ geometry_leaf!(
 
 Parameters
 ----------
-coordinates : sequence of points or coordinate tuples, optional
+coordinates : iterable of points or coordinate tuples, optional
     The member points; omitted builds an empty multipoint.
 x, y, z, m : sequence of float, optional
     Column form: parallel ordinate arrays, one entry per point.
-crs : CRS, int, str, or None, optional
+crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -139,13 +143,13 @@ geometry_leaf!(
 
 Parameters
 ----------
-coordinates : sequence of coordinate tuples, optional
+coordinates : iterable of coordinate tuples, optional
     The vertices as ``(x, y[, z, m])`` tuples; omitted builds an empty line.
 x, y, z, m : sequence of float, optional
     Column form: parallel ordinate arrays, one entry per vertex.
-crs : CRS, int, str, or None, optional
+crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -155,11 +159,11 @@ geometry_leaf!(
 
 Parameters
 ----------
-lines : sequence of LineString or coordinate sequences, optional
+lines : iterable of LineString or coordinate sequences, optional
     The member lines; omitted builds an empty multilinestring.
-crs : CRS, int, str, or None, optional
+crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -169,15 +173,15 @@ geometry_leaf!(
 
 Parameters
 ----------
-shell : sequence of coordinate tuples, optional
+shell : iterable of coordinate tuples, optional
     Exterior ring vertices; omitted builds ``POLYGON EMPTY``.
-holes : sequence of rings, optional
+holes : iterable of rings, optional
     Interior rings, each a coordinate sequence.
 x, y, z, m : sequence of float, optional
     Column form for the exterior ring: parallel ordinate arrays.
-crs : CRS, int, str, or None, optional
+crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -187,11 +191,11 @@ geometry_leaf!(
 
 Parameters
 ----------
-polygons : sequence of Polygon or (shell, holes) pairs, optional
+polygons : iterable of Polygon or (shell, holes) pairs, optional
     The member polygons; omitted builds an empty multipolygon.
-crs : CRS, int, str, or None, optional
+crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 geometry_leaf!(
@@ -203,9 +207,9 @@ Parameters
 ----------
 geometries : sequence of Geometry, optional
     The member geometries, of any types; omitted builds an empty collection.
-crs : CRS, int, str, or None, optional
+crs : CRS-like, optional
     Coordinate reference system, attached as metadata (never transforms coordinates).
-epoch : float or None, optional
+epoch : numeric scalar, 0-D numeric array, or None, optional
     Coordinate epoch metadata; the CRS frame must admit geometry epochs."
 );
 
@@ -422,8 +426,8 @@ impl PyGeometryParts {
     /// ------
     /// OverflowError
     ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
-    fn __sizeof__(&self) -> PyResult<isize> {
-        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
+    fn __sizeof__(slf: &Bound<'_, Self>) -> PyResult<isize> {
+        python_sizeof(slf.py(), slf.as_any(), slf.borrow().heap_bytes())
     }
 
     fn __repr__(&self) -> String {
@@ -906,7 +910,7 @@ impl PyGeometry {
     /// New geometry with an explicit CRS and coordinate epoch (and a fresh
     /// bounds cache). Prefer [`with_shape`](Self::with_shape) when the CRS and
     /// epoch are inherited from an existing geometry.
-    pub(crate) fn with_epoch(
+    pub(crate) fn new_with_crs_epoch(
         shape: impl crate::geometry::IntoSharedShape,
         crs: Option<Crs>,
         epoch: Option<f64>,

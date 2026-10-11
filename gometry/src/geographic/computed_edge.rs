@@ -608,6 +608,29 @@ pub(crate) fn publish_certified_minor_chain(
     closed_ring: bool,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Vec<Point>>> {
+    publish_certified_minor_chain_with_vertex_intents(frame, points, closed_ring, budget, |_, _| {
+        ComputedVertexIntent::Canonical
+    })
+}
+
+pub(crate) fn publish_preserved_minor_chain(
+    frame: GeographicFrame,
+    points: &CoordSeq,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+) -> Result<Option<Vec<Point>>> {
+    publish_certified_minor_chain_with_vertex_intents(frame, points, closed_ring, budget, |_, _| {
+        ComputedVertexIntent::Preserved
+    })
+}
+
+fn publish_certified_minor_chain_with_vertex_intents(
+    frame: GeographicFrame,
+    points: &CoordSeq,
+    closed_ring: bool,
+    budget: &mut ExpansionBudget,
+    vertex_intent: impl Fn(usize, Point) -> ComputedVertexIntent,
+) -> Result<Option<Vec<Point>>> {
     let bound = frame.longitude().ordinary_longitude_bound();
     let canonical =
         points.xs().iter().zip(points.ys()).all(|(&x, &y)| {
@@ -622,9 +645,14 @@ pub(crate) fn publish_certified_minor_chain(
         );
         return Ok(None);
     }
-    publish_computed_chain(frame, points, closed_ring, budget, |_, _, _| {
-        Ok(ComputedEdgeIntent::CertifiedMinor)
-    })
+    publish_computed_chain_with_vertex_intents(
+        frame,
+        points,
+        closed_ring,
+        budget,
+        |_, _, _| Ok(ComputedEdgeIntent::CertifiedMinor),
+        vertex_intent,
+    )
 }
 
 pub(crate) fn publish_computed_chain_with_vertex_intents<'intent, P: Coordinates + ?Sized>(

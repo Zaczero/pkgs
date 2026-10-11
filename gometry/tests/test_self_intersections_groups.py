@@ -18,13 +18,14 @@ def test_self_intersections_crossing_line_point_coords() -> None:
     assert list(groups.offsets) == [0, 1]
 
 
-def test_self_intersections_missing_and_empty_row_offsets() -> None:
+def test_self_intersections_missing_and_empty_groups_remain_distinct() -> None:
     crossing = gm.LineString([(0.0, 0.0), (2.0, 0.0), (1.0, 1.0), (1.0, -1.0)])
     empty = gm.from_wkt('LINESTRING EMPTY')
     groups = gm.GeometryArray([crossing, None, empty]).self_intersections()
     assert [(point.x, point.y) for point in groups[0]] == [(1.0, 0.0)]
-    assert len(groups[1]) == 0
+    assert groups[1] is None
     assert len(groups[2]) == 0
+    assert groups.is_missing.tolist() == [False, True, False]
     assert list(groups.offsets) == [0, 1, 1, 1]
 
 

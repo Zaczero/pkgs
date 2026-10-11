@@ -339,7 +339,7 @@ grid_size : float or tuple of float
 origin : tuple of float, default (0.0, 0.0)
     A grid node anchoring the lattice.
 
-repair : bool, default False
+repair : bool
     If ``True``, guarantee a valid result: snap, linework-repair, and re-
     snap to a fixpoint. The geometry kind may change (a ``Polygon`` whose
     snapped shell pinches splits into a ``MultiPolygon``). Geographic

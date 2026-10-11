@@ -13,7 +13,7 @@ def test_crs_assignment_rejects_unknown_authority_metadata() -> None:
     with pytest.raises(ValueError, match='could not resolve CRS'):
         gm.Point(1, 2, crs=999999)
     with pytest.raises(ValueError, match='could not resolve CRS'):
-        gm.Point(1, 2).set_crs('EPSG:999999')
+        gm.Point(1, 2).with_crs('EPSG:999999')
     with pytest.raises(ValueError, match='Invalid PROJ string syntax'):
         gm.CRS('not-a-crs')
 
@@ -59,11 +59,11 @@ def test_crs_public_type_hints_resolve() -> None:
     assert gm.CRS(4326).kind == 'geographic_2d'
     assert gm.CRS(3857).is_projected is True
     assert isinstance(gm.CRS(5703).geoid_models, list)
-    assert isinstance(gm.CRS(4326).to_projjson_dict(), dict)
+    assert isinstance(gm.CRS(4326).to_projjson(as_dict=True), dict)
 
 
 def test_crs_html_preview_escapes_retained_text() -> None:
-    projjson = gm.CRS(3857).to_projjson_dict()
+    projjson = gm.CRS(3857).to_projjson(as_dict=True)
     projjson['name'] = '<img src=x onerror=alert(1)>&unsafe<script>'
     projjson.pop('id')
 
@@ -97,7 +97,6 @@ def test_crs_public_surface_stays_documented_and_native_registered() -> None:
         'proj_operations',
         'reset',
         'roundtrip',
-        'search',
         'transform',
         'transform_bounds',
         'unit',
@@ -118,19 +117,19 @@ def test_to_crs_transforms_estimated_local_crs_roundtrip() -> None:
     geom = gm.Point(21.0, 52.0, z=9.0, m=10.0, crs=4326)
     projected = geom.to_crs(geom.estimate_local_crs())
     recovered = projected.to_crs(4326)
-    assert projected.crs == 'EPSG:32634'
+    assert projected.crs == gm.CRS('EPSG:32634')
     assert projected.coords.to_nested() == pytest.approx(
         [499999.999, 5761038.2, 9.0, 10.0], rel=1e-06
     )
     assert recovered.coords.to_nested() == pytest.approx(
         [21.0, 52.0, 9.0, 10.0], abs=1e-06
     )
-    assert projected.buffer(100).crs == 'EPSG:32634'
+    assert projected.buffer(100).crs == gm.CRS('EPSG:32634')
 
 
 def test_estimate_local_crs_is_extent_aware_and_fail_closed() -> None:
     warsaw = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-    assert warsaw.estimate_local_crs() == 'EPSG:32634'
+    assert warsaw.estimate_local_crs() == gm.CRS('EPSG:32634')
     assert warsaw.to_crs(3857).estimate_local_crs() == warsaw.estimate_local_crs()
     assert gm.Point(0.0, 89.0, crs=4326).estimate_local_crs().is_projected
     assert gm.Point(0.0, -89.0, crs=4326).estimate_local_crs().is_projected
@@ -147,12 +146,12 @@ def test_estimate_local_crs_is_extent_aware_and_fail_closed() -> None:
     with pytest.raises(gm.CRSError, match='CRS-tagged'):
         gm.Point(0.0, 0.0).estimate_local_crs()
     with pytest.raises(gm.CRSError, match='empty'):
-        gm.Point().set_crs(4326).estimate_local_crs()
+        gm.Point().with_crs(4326).estimate_local_crs()
 
 
 def test_geometry_array_estimate_local_crs_skips_missing_rows() -> None:
     array = gm.GeometryArray([None, gm.Point(21.0, 52.0, crs=4326)])
-    assert array.estimate_local_crs() == 'EPSG:32634'
+    assert array.estimate_local_crs() == gm.CRS('EPSG:32634')
     with pytest.raises(gm.CRSError, match='present, non-empty'):
         gm.GeometryArray([None], crs=4326).estimate_local_crs()
 
@@ -185,7 +184,7 @@ def test_to_crs_uses_proj_for_authority_crs_outside_fast_path() -> None:
         web = point.to_crs(3857)
     with pytest.warns(gm.AccuracyWarning, match='uk_os_OSTN15_NTv2_OSGBtoETRS[.]tif'):
         batch = gm.points([530000, 700000], [180000, 570000], crs=27700).to_crs(4326)
-    assert lonlat.crs == 'EPSG:4326'
+    assert lonlat.crs == gm.CRS('EPSG:4326')
     assert lonlat.coordinate_axes == 'XYZM'
     assert lonlat.coords.to_nested() == pytest.approx([
         -0.12835394047946935,
@@ -193,14 +192,14 @@ def test_to_crs_uses_proj_for_authority_crs_outside_fast_path() -> None:
         42,
         7,
     ])
-    assert web.crs == 'EPSG:3857'
+    assert web.crs == gm.CRS('EPSG:3857')
     assert web.coords.to_nested() == pytest.approx([
         -14288.295295484671,
         6710932.763391882,
         42,
         7,
     ])
-    assert batch.crs == 'EPSG:4326'
+    assert batch.crs == gm.CRS('EPSG:4326')
     assert [
         coordinate for geometry in batch for coordinate in geometry.coords.to_nested()
     ] == pytest.approx([
@@ -226,7 +225,7 @@ def test_crs_input_forms_are_accepted_across_representative_params() -> None:
     import pyproj
 
     pyproj_crs = pyproj.CRS.from_epsg(4326)
-    projjson = gm.CRS(4326).to_projjson_dict()
+    projjson = gm.CRS(4326).to_projjson(as_dict=True)
     forms = [4326, 'EPSG:4326', ('EPSG', 4326), projjson, pyproj_crs]
     for form in forms:
         definition = gm.CRS(form).definition
@@ -235,7 +234,7 @@ def test_crs_input_forms_are_accepted_across_representative_params() -> None:
         else:
             assert definition == 'EPSG:4326'
         assert gm.Point(0, 0, crs=form).crs.definition == definition
-        assert gm.Point(0, 0).set_crs(form).crs.definition == definition
+        assert gm.Point(0, 0).with_crs(form).crs.definition == definition
         assert gm.points([0.0], [0.0], crs=form).crs.definition == definition
         assert (
             gm.require(gm.Point(0, 0, crs=4326), crs=form).crs.definition == definition

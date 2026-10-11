@@ -13,9 +13,9 @@ use crate::{
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------
@@ -49,9 +49,9 @@ pub(crate) fn relate(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 /// pattern : str
 ///     A DE-9IM pattern string (``T``/``F``/``*``/``0``/``1``/``2`` per cell).
 ///
@@ -89,9 +89,9 @@ pub(crate) fn relate_pattern(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     Scalar and ``GeometryArray`` broadcast pairwise; must share CRS and
-///     coordinate epoch.
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     Scalar and sequence operands broadcast pairwise; sequences must have
+///     equal length and compatible CRS/epoch frames.
 ///
 /// Returns
 /// -------
@@ -131,8 +131,9 @@ pub(crate) fn equals(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     The two operands (scalar/array broadcasting).
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     The two operands. Scalar and sequence inputs broadcast pairwise;
+///     sequences must have equal length.
 ///
 /// Returns
 /// -------
@@ -154,16 +155,18 @@ pub(crate) fn equals_identical(
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
 
-    let left_frame = identity_frame(left);
-    let right_frame = identity_frame(right);
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
+    let left_frame = identity_frame(&left);
+    let right_frame = identity_frame(&right);
     if let (Some(left_frame), Some(right_frame)) = (left_frame, right_frame)
         && left_frame != right_frame
     {
         // Value semantics: differing frames compare unequal (scalar `==`
         // parity) — but operand SHAPES still follow binary-op rules.
         return match (
-            crate::broadcast::exact_geometry_array(left),
-            crate::broadcast::exact_geometry_array(right),
+            crate::broadcast::exact_geometry_array(&left),
+            crate::broadcast::exact_geometry_array(&right),
         ) {
             (Some(l), Some(r)) => {
                 crate::broadcast::ensure_same_len(l.len(), r.len())?;
@@ -174,7 +177,7 @@ pub(crate) fn equals_identical(
             (None, None) => crate::broadcast::py_bool(py, false).into_py_any(py),
         };
     }
-    broadcast2(py, left, right, "equals_identical", |a, b| {
+    broadcast2(py, &left, &right, "equals_identical", |a, b| {
         Ok(a.shape() == b.shape())
     })
 }
@@ -205,8 +208,9 @@ fn identity_frame<'a>(
 ///
 /// Parameters
 /// ----------
-/// left, right : Geometry or GeometryArray
-///     The two operands (scalar/array broadcasting).
+/// left, right : Geometry, GeometryArray, or iterable of Geometry or None
+///     The two operands. Scalar and sequence inputs broadcast pairwise;
+///     sequences must have equal length and compatible CRS/epoch frames.
 /// tolerance : float or sequence of float, default 0.0
 ///     Maximum permitted per-ordinate difference — a scalar applies to every
 ///     pair, or pass one value per geometry.
@@ -244,19 +248,21 @@ pub(crate) fn equals_exact(
     include_m: bool,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
+    let left = crate::normalize_geometry_batch(py, left)?;
+    let right = crate::normalize_geometry_batch(py, right)?;
     // Delegate any array operand to the `GeometryArray::equals_exact` method —
     // it owns the packed-polygon/line SIMD fast paths and the scalar-or-array
     // tolerance lane. `equals_exact` is symmetric, so a scalar-left/array-right
     // call routes the array as the primary operand. Two scalars are the single
     // pair below.
-    if let Some(array) = crate::broadcast::exact_geometry_array(left) {
+    if let Some(array) = crate::broadcast::exact_geometry_array(&left) {
         return array
-            .equals_exact(py, right, tolerance, include_z, include_m)?
+            .equals_exact(py, &right, tolerance, include_z, include_m)?
             .into_py_any(py);
     }
-    if let Some(array) = crate::broadcast::exact_geometry_array(right) {
+    if let Some(array) = crate::broadcast::exact_geometry_array(&right) {
         return array
-            .equals_exact(py, left, tolerance, include_z, include_m)?
+            .equals_exact(py, &left, tolerance, include_z, include_m)?
             .into_py_any(py);
     }
     let tolerance = match tolerance {
@@ -265,7 +271,7 @@ pub(crate) fn equals_exact(
     };
     let tolerance = validate_equals_exact_tolerance(tolerance)?.get();
     crate::geometry::dispatch_axes!((include_z, include_m), HAS_Z, HAS_M, {
-        equals_exact_broadcast::<HAS_Z, HAS_M>(py, left, right, tolerance)
+        equals_exact_broadcast::<HAS_Z, HAS_M>(py, &left, &right, tolerance)
     })
 }
 
