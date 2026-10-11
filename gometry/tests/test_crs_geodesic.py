@@ -964,11 +964,10 @@ def test_minimum_clearance_line_uses_the_source_grad_ellipsoid() -> None:
         a=ellipsoid.semi_major_metre,
         rf=ellipsoid.inverse_flattening,
     )
-    to_crs84 = pyproj.Transformer.from_crs(
-        source_crs,
-        pyproj.CRS.from_user_input('OGC:CRS84'),
-        always_xy=True,
-    )
+    # Keep the source chart on its own ellipsoid; a CRS84 transform would add
+    # a datum shift and measure a different path. Paris's constant longitude
+    # offset cancels in each inverse-distance call.
+    degrees_per_grad = math.degrees(source_crs.axis_info[0].unit_conversion_factor)
     root_start = (0.0, 48.0, 10.0, 100.0)
     root_end = (2.0, 50.0, 210.0, 500.0)
     linework = gm.from_wkt(
@@ -985,9 +984,12 @@ def test_minimum_clearance_line_uses_the_source_grad_ellipsoid() -> None:
     )
 
     native_parameters = np.linspace(0.0, parameter, 4097)
-    native_x = root_start[0] + native_parameters * (root_end[0] - root_start[0])
-    native_y = root_start[1] + native_parameters * (root_end[1] - root_start[1])
-    longitudes, latitudes = to_crs84.transform(native_x, native_y)
+    longitudes = (
+        root_start[0] + native_parameters * (root_end[0] - root_start[0])
+    ) * degrees_per_grad
+    latitudes = (
+        root_start[1] + native_parameters * (root_end[1] - root_start[1])
+    ) * degrees_per_grad
     lengths = geodesic.inv(
         longitudes[:-1],
         latitudes[:-1],
@@ -997,9 +999,12 @@ def test_minimum_clearance_line_uses_the_source_grad_ellipsoid() -> None:
     prefix = float(np.sum(lengths, dtype=np.float64))
 
     native_parameters = np.linspace(0.0, 1.0, 4097)
-    native_x = root_start[0] + native_parameters * (root_end[0] - root_start[0])
-    native_y = root_start[1] + native_parameters * (root_end[1] - root_start[1])
-    longitudes, latitudes = to_crs84.transform(native_x, native_y)
+    longitudes = (
+        root_start[0] + native_parameters * (root_end[0] - root_start[0])
+    ) * degrees_per_grad
+    latitudes = (
+        root_start[1] + native_parameters * (root_end[1] - root_start[1])
+    ) * degrees_per_grad
     lengths = geodesic.inv(
         longitudes[:-1],
         latitudes[:-1],
