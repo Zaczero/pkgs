@@ -51,6 +51,112 @@ def test_coverage_is_valid_verdicts() -> None:
         gm.coverage_is_valid(grid, gap_width=-1)
 
 
+def test_geographic_disjoint_rows_are_valid_without_invalid_edges() -> None:
+    seam = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    greenwich = gm.Polygon(
+        [(-5, 2), (5, 2), (5, 8), (-5, 8)],
+        crs='OGC:CRS84',
+    )
+    rows = [seam, greenwich]
+
+    assert gm.coverage_is_valid(rows)
+    assert all(edge.is_empty for edge in gm.coverage_invalid_edges(rows))
+
+
+def test_geographic_overlap_is_invalid_and_reports_source_edges() -> None:
+    rows = [
+        gm.box(0, 0, 2, 2, crs='OGC:CRS84'),
+        gm.box(1, 0.5, 3, 1.5, crs='OGC:CRS84'),
+    ]
+
+    assert not gm.coverage_is_valid(rows)
+    assert any(not edge.is_empty for edge in gm.coverage_invalid_edges(rows))
+
+
+def test_geographic_t_junction_is_invalid_and_reports_source_edges() -> None:
+    rows = [
+        gm.box(0, 0, 1, 2, crs='OGC:CRS84'),
+        gm.from_wkt(
+            'POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))',
+            crs='OGC:CRS84',
+        ),
+        gm.from_wkt(
+            'POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))',
+            crs='OGC:CRS84',
+        ),
+    ]
+
+    assert not gm.coverage_is_valid(rows)
+    assert any(not edge.is_empty for edge in gm.coverage_invalid_edges(rows))
+
+
+def test_geographic_gap_width_uses_native_coordinate_units() -> None:
+    rows = [
+        gm.box(0, 0, 1, 1, crs='OGC:CRS84'),
+        gm.box(1.005, 0, 2, 1, crs='OGC:CRS84'),
+    ]
+
+    assert gm.coverage_is_valid(rows)
+    assert not gm.coverage_is_valid(rows, gap_width=0.01)
+    assert any(
+        not edge.is_empty for edge in gm.coverage_invalid_edges(rows, gap_width=0.01)
+    )
+
+
+def test_geographic_disjoint_coverage_preserves_nullable_rows() -> None:
+    seam = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    greenwich = gm.Polygon(
+        [(-5, 2), (5, 2), (5, 8), (-5, 8)],
+        crs='OGC:CRS84',
+    )
+    rows = gm.GeometryArray([seam, None, greenwich])
+
+    assert gm.coverage_is_valid(rows)
+    edges = gm.coverage_invalid_edges(rows)
+    assert edges.is_missing.tolist() == [False, True, False]
+    assert edges[0].is_empty
+    assert edges[2].is_empty
+
+
+def test_geographic_disjoint_coverage_union_keeps_its_output_bytes() -> None:
+    seam = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    greenwich = gm.Polygon(
+        [(-5, 2), (5, 2), (5, 8), (-5, 8)],
+        crs='OGC:CRS84',
+    )
+
+    assert gm.coverage_union_all([seam, greenwich]).to_wkt() == (
+        'MULTIPOLYGON (((-180 0, -170 0, -170 10, -180 10, -180 0)), '
+        '((180 10, 170 10, 170 0, 180 0, 180 10)), '
+        '((-5 2, 5 2, 5 8, -5 8, -5 2)))'
+    )
+
+
+def test_geographic_seam_coverage_union_keeps_its_output_bytes() -> None:
+    west = gm.Polygon(
+        [(170, 0), (180, 0), (180, 10), (170, 10)],
+        crs='OGC:CRS84',
+    )
+    east = gm.Polygon(
+        [(-180, 0), (-170, 0), (-170, 10), (-180, 10)],
+        crs='OGC:CRS84',
+    )
+
+    assert gm.coverage_union_all([west, east]).to_wkt() == (
+        'MULTIPOLYGON (((170 0, 180 0, 180 10, 170 10, 170 0)), '
+        '((-180 0, -170 0, -170 10, -180 10, -180 0)))'
+    )
+
+
 def test_coverage_is_valid_keeps_subnormal_gap_width_in_distance_space() -> None:
     scale = 1.0e-162
     rows = gm.GeometryArray([

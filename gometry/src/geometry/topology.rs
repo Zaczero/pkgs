@@ -47,7 +47,9 @@ pub(in crate::geometry) use exact::{
 };
 mod emission;
 pub(in crate::geometry) use emission::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
+mod coverage;
 pub(in crate::geometry) mod overlay;
+pub(crate) use coverage::invalid_coverage_source_segments;
 mod q;
 pub(in crate::geometry) use q::exact_segments_intersect;
 pub(in crate::geometry) mod q_embedding;

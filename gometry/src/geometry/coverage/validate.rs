@@ -27,7 +27,7 @@ pub(crate) struct CoverageRow<'a> {
 type CoverageRowIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
 
 pub(crate) struct PreparedCoverage<'a> {
-    rows: Vec<CoverageRow<'a>>,
+    pub(crate) rows: Vec<CoverageRow<'a>>,
     index: Option<Box<CoverageRowIndex>>,
 }
 
@@ -46,9 +46,7 @@ pub(crate) fn coverage_rows<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     gap_width: f64,
 ) -> Result<PreparedCoverage<'_>> {
-    if !(gap_width.is_finite() && gap_width >= 0.0) {
-        return Err(GeometryErrorKind::NonNegativeFinite("gap_width", gap_width).into());
-    }
+    validate_gap_width(gap_width)?;
     let mut prepared = Vec::with_capacity(rows.len());
     for row in rows {
         let shape = row.borrow();
@@ -104,6 +102,37 @@ pub(crate) fn coverage_rows<S: std::borrow::Borrow<Shape>>(
         rows: prepared,
         index,
     })
+}
+
+fn validate_gap_width(gap_width: f64) -> Result<()> {
+    if !(gap_width.is_finite() && gap_width >= 0.0) {
+        return Err(GeometryErrorKind::NonNegativeFinite("gap_width", gap_width).into());
+    }
+    Ok(())
+}
+
+fn validate_polygonal_rows<S: std::borrow::Borrow<Shape>>(rows: &[S]) -> Result<()> {
+    for row in rows {
+        match row.borrow() {
+            Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {},
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(
+                GeometryKind::Point
+                | GeometryKind::MultiPoint
+                | GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => return Err(GeometryErrorKind::CoveragePolygonalRequired.into()),
+        }
+    }
+    Ok(())
 }
 
 fn collect_polygon_segments(polygon: &Polygon, out: &mut Vec<Segment>) {
@@ -488,13 +517,53 @@ pub(crate) fn coverage_is_valid<S: std::borrow::Borrow<Shape>>(
     Ok(!visit_invalid_segments(&rows, gap_width, |_, _| false)?)
 }
 
+pub(crate) fn coverage_is_valid_with_domain<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    gap_width: f64,
+    domain: crate::geometry::TopologyDomain,
+) -> Result<bool> {
+    let invalid = invalid_segments_with_domain(rows, gap_width, domain, "coverage_is_valid")?;
+    Ok(invalid.iter().all(Vec::is_empty))
+}
+
 /// Per-row invalid boundary linework: the row's offending segments merged
 /// into lines (`LINESTRING EMPTY` where the row is clean).
+#[cfg(test)]
 pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
     rows: &[S],
     gap_width: f64,
 ) -> Result<Vec<Shape>> {
     let invalid = coverage_invalid_segments(rows, gap_width)?;
+    coverage_invalid_edge_shapes(invalid)
+}
+
+pub(crate) fn coverage_invalid_edges_with_domain<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    gap_width: f64,
+    domain: crate::geometry::TopologyDomain,
+    operation: &'static str,
+) -> Result<Vec<Shape>> {
+    let invalid = invalid_segments_with_domain(rows, gap_width, domain, operation)?;
+    coverage_invalid_edge_shapes(invalid)
+}
+
+fn invalid_segments_with_domain<S: std::borrow::Borrow<Shape>>(
+    rows: &[S],
+    gap_width: f64,
+    domain: crate::geometry::TopologyDomain,
+    operation: &'static str,
+) -> Result<Vec<Vec<Segment>>> {
+    match domain {
+        crate::geometry::TopologyDomain::Cartesian => coverage_invalid_segments(rows, gap_width),
+        crate::geometry::TopologyDomain::Geographic(frame) => {
+            validate_gap_width(gap_width)?;
+            validate_polygonal_rows(rows)?;
+            crate::geometry::invalid_coverage_source_segments(rows, frame, gap_width, operation)
+        },
+    }
+}
+
+fn coverage_invalid_edge_shapes(invalid: Vec<Vec<Segment>>) -> Result<Vec<Shape>> {
     let mut output = Vec::with_capacity(invalid.len());
     for segments in invalid {
         if segments.is_empty() {
