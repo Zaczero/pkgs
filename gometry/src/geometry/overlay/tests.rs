@@ -4323,20 +4323,10 @@ mod rectangle_clip_tests {
 }
 mod exact_geographic_nary_tests {
     use super::*;
+    use crate::geometry::test_support::polygon;
 
     fn frame() -> crate::geographic::GeographicFrame {
         crate::geographic::GeographicFrame::crs84()
-    }
-
-    fn polygon(points: &[(f64, f64)]) -> Shape {
-        let points = points
-            .iter()
-            .map(|&(x, y)| Point::new_raw_xy(x, y))
-            .collect::<Vec<_>>();
-        Shape::Polygon(Polygon::new(
-            Ring::try_from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-            Vec::new(),
-        ))
     }
 
     fn line(points: &[Point]) -> Shape {
