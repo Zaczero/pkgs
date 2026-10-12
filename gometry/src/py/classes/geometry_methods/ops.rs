@@ -337,8 +337,8 @@ impl PyGeometry {
         } else {
             None
         };
-        let shapes = py.detach(move || match source_context {
-            Some((domain, metric)) => {
+        let shapes = match source_context {
+            Some((domain, metric)) => py.detach(move || {
                 let metric_access = || {
                     metric.geographic_chart_metric()?.ok_or_else(|| {
                         crate::crs::CrsError::invalid(
@@ -348,9 +348,9 @@ impl PyGeometry {
                 };
                 let context = crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
                 shape.split_at_points_with_context(&splitters, tolerance, &context)
-            },
-            None => shape.split_at_points(&splitters, tolerance),
-        })?;
+            })?,
+            None => py.detach(move || shape.split_at_points(&splitters, tolerance))?,
+        };
         Ok(PyGeometryArray::from_shapes(shapes, frame)?)
     }
 
