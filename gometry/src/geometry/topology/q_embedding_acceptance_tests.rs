@@ -91,7 +91,7 @@ fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf(
         operation: OverlayOp::Intersection.name(),
         metric_access: None,
     };
-    let mut nearest_problem = certification.build_problem(&mut budget)?;
+    let nearest_problem = certification.build_problem(&mut budget)?;
     let sample_node = *nearest_problem
         .publication_sample_nodes
         .get(sample_index)

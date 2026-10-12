@@ -16229,9 +16229,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             if distinct.len() > 1 {
                 let mut has_source = false;
                 let mut computed_count = 0_usize;
+                let mut movable_conflicts = Vec::new();
                 for node in distinct {
                     budget.charge_into_error(1)?;
-                    match &nodes
+                    let variable = match &nodes
                         .nodes()
                         .get(node.0 as usize)
                         .ok_or_else(|| {
@@ -16243,19 +16244,36 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     {
                         NodeAuthority::Source(source) => {
                             has_source = true;
-                            conflicting_nodes.push(QVariableNode::Source(*source));
+                            QVariableNode::Source(*source)
                         },
                         NodeAuthority::Computed(_) => {
-                            conflicting_nodes.push(QVariableNode::Published(node));
                             computed_count = computed_count
                                 .checked_add(1)
                                 .ok_or(ResourceError::SizeOverflow)?;
+                            QVariableNode::Published(node)
                         },
+                    };
+                    let location = match variable {
+                        QVariableNode::Source(node) => {
+                            self.node_location.get(node.0 as usize).copied().flatten()
+                        },
+                        QVariableNode::Published(node) => self
+                            .publication_location
+                            .get(node.0 as usize)
+                            .copied()
+                            .flatten(),
+                    };
+                    if location.is_some() {
+                        movable_conflicts.push(variable);
                     }
                 }
                 if !has_source || computed_count > 1 {
                     unrepresentable = true;
                 }
+                if movable_conflicts.is_empty() {
+                    unrepresentable = true;
+                }
+                conflicting_nodes.extend(movable_conflicts);
             }
             start = end;
         }
