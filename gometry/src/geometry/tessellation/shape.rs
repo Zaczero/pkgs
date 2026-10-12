@@ -1224,7 +1224,7 @@ mod geographic_sample_tests {
         assert_eq!(draw.recipe, SampleRecipe::Segment {
             along: 0.745_781_757_262_701_1,
         });
-        assert_eq!(draw.point.x, 1.745_781_757_262_701_1);
+        assert_eq!(draw.point.x, 1.745_781_757_262_701);
         assert_eq!(draw.point.y, 0.0);
     }
 
