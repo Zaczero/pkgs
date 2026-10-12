@@ -3882,6 +3882,10 @@ mod subdivision_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "these coordinates assert exact source-root identity; a tolerance could accept a displaced cut"
+    )]
     fn ordinary_geographic_subdivision_resolves_two_cuts_on_the_original_root() -> Result<()> {
         let crs = concat!(
             "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",
@@ -3997,6 +4001,10 @@ mod subdivision_tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "these coordinates assert exact source-root identity; a tolerance could accept a displaced cut"
+    )]
     fn ordinary_geographic_polygon_subdivision_carries_shell_roots_across_cuts() -> Result<()> {
         let crs = concat!(
             "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",

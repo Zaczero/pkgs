@@ -283,6 +283,10 @@ fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "these exact coordinates identify original source roots; a tolerance could admit the wrong edge"
+)]
 fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> Result<()> {
     let crs = concat!(
         "GEOGCS[\"Custom grad\",DATUM[\"Custom datum\",",
@@ -308,7 +312,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
         Ok(LineSeq::from_proven(CoordSeq::try_from_points(&points)?))
     };
 
-    for partial_end_z in [7.0, 9.0] {
+    for (partial_end_z, complete_ordinates) in [(7.0, true), (9.0, false)] {
         let original = Shape::multi_line_string(axes, vec![
             line(&[(0.0, 0.0), (12.0, 6.0)], &[(7.0, 70.0), (7.0, 70.0)])?,
             line(&[(12.0, 6.0), (0.0, 0.0)], &[(7.0, 70.0), (7.0, 70.0)])?,
@@ -443,7 +447,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
                 && observation.source[1].x == 10.0 * scale
                 && (observation.parameter - 0.5).abs() <= 1e-15
         }));
-        if partial_end_z == 7.0 {
+        if complete_ordinates {
             assert!(cut_points.iter().all(|point| point.axes == axes));
             assert!(cut_points.iter().all(|point| point.z() == Some(7.0)));
             assert!(cut_points.iter().all(|point| point.m() == Some(70.0)));
