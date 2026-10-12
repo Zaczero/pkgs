@@ -69,6 +69,8 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
     static SOURCE_SPAN_VIEW_SORTS: Cell<usize> = const { Cell::new(0) };
     static SOURCE_SPAN_VIEW_ORDERED: Cell<usize> = const { Cell::new(0) };
+    static SOURCE_SPAN_ENDPOINT_PARAMETERS: Cell<usize> = const { Cell::new(0) };
+    static SOURCE_SPAN_INTERIOR_PARAMETERS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -105,13 +107,17 @@ pub(crate) fn take_subdivision_resolution_batches() -> Vec<(usize, usize, usize)
 pub(crate) fn reset_source_span_view_order_counts() {
     SOURCE_SPAN_VIEW_SORTS.with(|count| count.set(0));
     SOURCE_SPAN_VIEW_ORDERED.with(|count| count.set(0));
+    SOURCE_SPAN_ENDPOINT_PARAMETERS.with(|count| count.set(0));
+    SOURCE_SPAN_INTERIOR_PARAMETERS.with(|count| count.set(0));
 }
 
 #[cfg(test)]
-pub(crate) fn source_span_view_order_counts() -> (usize, usize) {
+pub(crate) fn source_span_view_order_counts() -> (usize, usize, usize, usize) {
     (
         SOURCE_SPAN_VIEW_SORTS.with(Cell::get),
         SOURCE_SPAN_VIEW_ORDERED.with(Cell::get),
+        SOURCE_SPAN_ENDPOINT_PARAMETERS.with(Cell::get),
+        SOURCE_SPAN_INTERIOR_PARAMETERS.with(Cell::get),
     )
 }
 
@@ -7474,6 +7480,30 @@ impl ExactPartition<'_> {
             let segment = *source_segments.get(source).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source span trace row is unknown".into())
             })?;
+            let source_start = PointKey::new(segment.start);
+            let source_end = PointKey::new(segment.end);
+            let source_parameter = |node: NodeId| -> Result<ExactRational> {
+                if let Some(key) = self.stored_key(node.0 as usize) {
+                    if key == source_start {
+                        #[cfg(test)]
+                        SOURCE_SPAN_ENDPOINT_PARAMETERS
+                            .with(|count| count.set(count.get().saturating_add(1)));
+                        return Ok(ExactRational::zero());
+                    }
+                    if key == source_end {
+                        #[cfg(test)]
+                        SOURCE_SPAN_ENDPOINT_PARAMETERS
+                            .with(|count| count.set(count.get().saturating_add(1)));
+                        return Ok(ExactRational::one());
+                    }
+                }
+                #[cfg(test)]
+                SOURCE_SPAN_INTERIOR_PARAMETERS
+                    .with(|count| count.set(count.get().saturating_add(1)));
+                let point = self.exact(node)?;
+                let [numerator, denominator] = parameter_along(segment, &point)?;
+                ExactRational::new(numerator, denominator)
+            };
             let row = views.get(source).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source span view row is unknown".into())
             })?;
@@ -7490,13 +7520,9 @@ impl ExactPartition<'_> {
                 } else {
                     [span_data.start, span_data.end]
                 };
-                let start_point = self.exact(start)?;
-                let end_point = self.exact(end)?;
-                let [start_numerator, start_denominator] = parameter_along(segment, &start_point)?;
-                let [end_numerator, end_denominator] = parameter_along(segment, &end_point)?;
-                let source_start = ExactRational::new(start_numerator, start_denominator)?;
-                let source_end = ExactRational::new(end_numerator, end_denominator)?;
-                if source_start.try_cmp(&source_end)?.is_ge() {
+                let start_parameter = source_parameter(start)?;
+                let end_parameter = source_parameter(end)?;
+                if start_parameter.try_cmp(&end_parameter)?.is_ge() {
                     return Err(GeometryErrorKind::Invalid(
                         "source span trace does not advance along its edge".into(),
                     )
@@ -7505,8 +7531,8 @@ impl ExactPartition<'_> {
                 output.push(SourceSpanTraceView {
                     span,
                     reversed,
-                    source_start,
-                    source_end,
+                    source_start: start_parameter,
+                    source_end: end_parameter,
                 });
             }
             traced.push(output);
