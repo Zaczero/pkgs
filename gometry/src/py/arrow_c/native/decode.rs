@@ -7,7 +7,8 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use super::{ArrowFormat, NativeArrowBatch, NativeNode};
+use super::layout::ArrowFormat;
+use super::{NativeArrowBatch, NativeNode};
 use crate::geometry::storage::builder::PackedColumnBuilder;
 use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, RowSelection};
 use crate::geometry::{
@@ -1102,9 +1103,8 @@ fn combined_validity(
 mod tests {
     use std::sync::Arc;
 
-    use super::super::{
-        NativeArrowBatch, NativeArrowClassification, OwnedBuffer, OwnedBufferSlots,
-    };
+    use super::super::buffers::{OwnedBuffer, OwnedBufferSlots};
+    use super::super::{NativeArrowBatch, NativeArrowClassification};
     use super::{ArrowFormat, NativeDecodedStorage, NativeNode};
     use crate::geometry::storage;
     use crate::py::arrow::WkbOffsetWidth;
