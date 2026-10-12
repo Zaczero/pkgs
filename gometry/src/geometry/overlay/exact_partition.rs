@@ -3548,6 +3548,12 @@ impl ExactSourceInventory {
             .iter()
             .map(|parts| self.polygon_node_xy(&parts.polygons, &by_node))
             .collect::<Result<Vec<_>>>()?;
+        let first_old_polygon_xy = old_polygon_xy.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("first subdivision polygon trace is unknown".into())
+        })?;
+        let second_old_polygon_xy = old_polygon_xy.get(1).ok_or_else(|| {
+            GeometryErrorKind::Invalid("second subdivision polygon trace is unknown".into())
+        })?;
         let mut node_parts = node_parts.into_iter();
         let mut polygon_edge_roles = polygon_edge_roles.into_iter();
         let first_roles = polygon_edge_roles.next().ok_or_else(|| {
@@ -3567,7 +3573,7 @@ impl ExactSourceInventory {
         )?;
         let first_traces = self.align_published_polygon_traces(
             &first,
-            &old_polygon_xy[0],
+            first_old_polygon_xy,
             &first_roles,
             polygon_traces.remove(0),
             roots,
@@ -3592,7 +3598,7 @@ impl ExactSourceInventory {
         )?;
         let second_traces = self.align_published_polygon_traces(
             &second,
-            &old_polygon_xy[1],
+            second_old_polygon_xy,
             &second_roles,
             polygon_traces.remove(0),
             roots,
@@ -3839,7 +3845,12 @@ impl ExactSourceInventory {
                         "polygon ring ranges are outside the source segment inventory".into(),
                     )
                 })?;
-                *slot = Some((ring, source - range.start));
+                *slot = Some((
+                    ring,
+                    source
+                        .checked_sub(range.start)
+                        .ok_or(ResourceError::SizeOverflow)?,
+                ));
             }
         }
         let mut visible_nodes = vec![false; partition.node_count()];
@@ -4111,9 +4122,11 @@ impl ExactSourceInventory {
                             )
                             .into());
                         }
-                        let endpoint_index =
-                            published_start.wrapping_add(output_edge).wrapping_add(1)
-                                % published_edge_count;
+                        let endpoint_index = published_start
+                            .checked_add(output_edge)
+                            .and_then(|index| index.checked_add(1))
+                            .ok_or(ResourceError::SizeOverflow)?
+                            % published_edge_count;
                         let endpoint = published.nth_coord(endpoint_index).xy();
                         output_edge = output_edge
                             .checked_add(1)
