@@ -509,7 +509,11 @@ impl PyGeometryArray {
         }
         let mut metric_scratch = crate::dispatch::MetricScratch::default();
         let (domain, metric) = resolver.resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
-        let source_crs = self.frame.crs_str().map(str::to_owned);
+        let source_crs = if matches!(resolver, crate::dispatch::MetricResolver::None) {
+            None
+        } else {
+            self.frame.crs_str().map(str::to_owned)
+        };
         self.map_shapes_detached(py, move |shape| {
             let metric_access = || {
                 metric

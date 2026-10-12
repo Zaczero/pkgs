@@ -15,8 +15,26 @@ use crate::dispatch::packed::{
     try_unary_packed_bool, try_unary_packed_bounds, try_unary_packed_f64,
 };
 use crate::error::Result;
-use crate::geometry::{PreparedPlan, Shape, TopologyDomain};
+use crate::geometry::{CoordinateAxes, PreparedPlan, Shape, TopologyDomain};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, Typed};
+
+// Hull and MRR preserve shape axes. Only their Z/M output paths need the
+// geographic source metric; mixed arrays retain the caller's resolver.
+fn resolver_for_shape_axes(
+    op: Operation,
+    unit: Option<DistanceUnit>,
+    axes: Option<CoordinateAxes>,
+) -> MetricResolver {
+    if matches!(
+        op,
+        Operation::ConvexHull | Operation::MinimumRotatedRectangle
+    ) && axes.is_some_and(|axes| !axes.has_z() && !axes.has_m())
+    {
+        MetricResolver::None
+    } else {
+        op.resolver_with_unit(unit)
+    }
+}
 
 fn execute_unary_scalar<R: BulkElement>(
     py: Python<'_>,
@@ -43,7 +61,7 @@ pub(crate) fn unary_scalar<R: BulkElement>(
     unit: Option<DistanceUnit>,
     kernel: impl FnOnce(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send,
 ) -> PyResult<R> {
-    let resolver = op.resolver_with_unit(unit);
+    let resolver = resolver_for_shape_axes(op, unit, Some(geometry.shape.shape().axes()));
     let mut metric_scratch =
         (!matches!(resolver, MetricResolver::None)).then(MetricScratch::default);
     let result = {
@@ -93,7 +111,7 @@ pub(crate) fn unary_array<R: BulkElement>(
     packed: Option<&PackedUnary>,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 ) -> PyResult<Py<PyAny>> {
-    let resolver = op.resolver_with_unit(unit);
+    let resolver = resolver_for_shape_axes(op, unit, array.storage().packed_axes());
     if let Some(result) = try_unary_packed_f64(py, array, op, unit) {
         return result;
     }
@@ -402,7 +420,7 @@ pub(crate) fn unary_array_shapes(
     packed: Option<&PackedUnary>,
     kernel: impl Fn(&PreparedPlan, &CachelessRowContext<'_>) -> Result<Shape> + Send + Sync,
 ) -> PyResult<PyGeometryArray> {
-    let resolver = op.resolver_with_unit(unit);
+    let resolver = resolver_for_shape_axes(op, unit, array.storage().packed_axes());
     if let Some(result) = try_unary_packed_array(py, array, op, resolver, packed) {
         return result;
     }
@@ -570,7 +588,7 @@ pub(crate) fn unary_array_shapes_budgeted(
     ) -> Result<Shape>
     + Send,
 ) -> PyResult<PyGeometryArray> {
-    let resolver = op.resolver_with_unit(unit);
+    let resolver = resolver_for_shape_axes(op, unit, array.storage().packed_axes());
     let frame = array.frame.clone();
     let output_frame = frame.clone();
     let mut metric_scratch =
@@ -659,6 +677,24 @@ mod shape_streaming_tests {
     use super::*;
     use crate::array::LogicalRow;
     use crate::geometry::storage::{GeometryArrayStorage, PackedStorage, ValidityMask};
+
+    #[test]
+    fn hull_and_rectangle_resolvers_skip_metric_context_for_known_xy_axes() {
+        for operation in [Operation::ConvexHull, Operation::MinimumRotatedRectangle] {
+            assert!(matches!(
+                resolver_for_shape_axes(operation, None, Some(CoordinateAxes::XY)),
+                MetricResolver::None
+            ));
+            assert!(matches!(
+                resolver_for_shape_axes(operation, None, Some(CoordinateAxes::XYZM)),
+                MetricResolver::GeographicCarry
+            ));
+            assert!(matches!(
+                resolver_for_shape_axes(operation, None, None),
+                MetricResolver::GeographicCarry
+            ));
+        }
+    }
 
     fn nullable_measured_lines() -> PyGeometryArray {
         let present = PyGeometryArray::from_shapes(
