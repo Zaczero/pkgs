@@ -289,15 +289,14 @@ fn symbolic_incircle_tie<C: MeshCoordinates>(
     Ok(ExactSign::Zero)
 }
 
-macro_rules! canonical_incircle {
-    ($coordinates:expr, $a:expr, $b:expr, $c:expr, $d:expr) => {{
-        let coordinates = $coordinates;
-        let [a, b, c, d] = [$a, $b, $c, $d];
-        match coordinates.incircle([a, b, c, d])? {
-            ExactSign::Zero => symbolic_incircle_tie(coordinates, [a, b, c, d])?,
-            sign => sign,
-        }
-    }};
+fn canonical_incircle_for<C: MeshCoordinates>(
+    coordinates: &C,
+    points: [C::Query; 4],
+) -> Result<ExactSign> {
+    match coordinates.incircle(points)? {
+        ExactSign::Zero => symbolic_incircle_tie(coordinates, points),
+        sign => Ok(sign),
+    }
 }
 
 #[cfg(test)]
@@ -308,7 +307,7 @@ fn canonical_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
             .get(site)
             .expect("the tie predicate receives only its four admitted sites")
     };
-    Ok(canonical_incircle!(&xy, a, b, c, d))
+    canonical_incircle_for(&xy, [a, b, c, d])
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -962,13 +961,12 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(edge.face());
             let d = self.edge_apex(HalfedgeId::from_index(twin));
-            if canonical_incircle!(
-                coordinates,
+            if canonical_incircle_for(coordinates, [
                 coordinates.query(a),
                 coordinates.query(b),
                 coordinates.query(c),
-                coordinates.query(d)
-            ) != ExactSign::Positive
+                coordinates.query(d),
+            ])? != ExactSign::Positive
             {
                 continue;
             }
@@ -997,13 +995,12 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(edge.face());
             let opposite = self.edge_apex(HalfedgeId::from_index(twin));
-            if canonical_incircle!(
-                coordinates,
+            if canonical_incircle_for(coordinates, [
                 coordinates.query(a),
                 coordinates.query(b),
                 coordinates.query(c),
-                coordinates.query(opposite)
-            ) != ExactSign::Positive
+                coordinates.query(opposite),
+            ])? != ExactSign::Positive
             {
                 continue;
             }
@@ -1307,13 +1304,12 @@ impl Mesh {
                     continue;
                 }
                 let [a, b, c] = self.triangle(neighbor);
-                if canonical_incircle!(
-                    coordinates,
+                if canonical_incircle_for(coordinates, [
                     coordinates.query(a),
                     coordinates.query(b),
                     coordinates.query(c),
-                    point
-                ) == ExactSign::Positive
+                    point,
+                ])? == ExactSign::Positive
                 {
                     self.set_stamp(neighbor, epoch);
                     stack.push(neighbor);
