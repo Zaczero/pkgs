@@ -158,7 +158,7 @@ impl UnionFind {
     }
 
     pub(crate) fn new_with_work<W: Work>(nodes: usize, work: &mut W) -> crate::error::Result<Self> {
-        work.charge_product(nodes, 2)?;
+        work.charge_product_into_error(nodes, 2)?;
         Ok(Self::new(nodes))
     }
 
@@ -167,7 +167,7 @@ impl UnionFind {
         node: usize,
         work: &mut W,
     ) -> crate::error::Result<usize> {
-        let mut charge = |ticks| match work.charge(ticks) {
+        let mut charge = |ticks| match work.charge_into_error(ticks) {
             Ok(()) => ControlFlow::Continue(()),
             Err(error) => ControlFlow::Break(error),
         };
@@ -221,7 +221,7 @@ impl UnionFind {
         b: usize,
         work: &mut W,
     ) -> crate::error::Result<bool> {
-        let mut charge = |ticks| match work.charge(ticks) {
+        let mut charge = |ticks| match work.charge_into_error(ticks) {
             Ok(()) => ControlFlow::Continue(()),
             Err(error) => ControlFlow::Break(error),
         };
@@ -306,6 +306,8 @@ mod row_id_sort_tests {
     }
 
     impl Work for TickLimit {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
             let next = self
                 .spent
@@ -316,6 +318,14 @@ mod row_id_sort_tests {
             }
             self.spent = next;
             Ok(())
+        }
+
+        fn charge_product(
+            &mut self,
+            count: usize,
+            ticks_per_item: usize,
+        ) -> crate::error::Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

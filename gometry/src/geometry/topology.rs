@@ -43,14 +43,15 @@ impl VertexKey {
 
 mod exact;
 pub(in crate::geometry) use exact::{
-    ExactChartPoint, point_on_exact_segment, vector_cross, vector_difference,
+    ExactChartPoint, point_on_exact_segment_with_work, vector_cross_with_work,
+    vector_difference_with_work,
 };
 mod emission;
 pub(in crate::geometry) use emission::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
 pub(in crate::geometry) mod linework;
 pub(in crate::geometry) mod overlay;
 mod q;
-pub(in crate::geometry) use q::exact_segments_intersect;
+pub(in crate::geometry) use q::exact_segments_intersect_with_work;
 pub(in crate::geometry) mod q_embedding;
 pub(crate) use q::{ExactGeographicRectangleLocation, ExactGeographicTopology};
 
