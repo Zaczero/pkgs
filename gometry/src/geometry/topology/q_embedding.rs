@@ -18083,28 +18083,34 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        let start_bank = if let Some(bank) = seam_wall_bank {
-            Some(bank)
-        } else if !start_is_seam {
-            None
-        } else if direction.is_gt() {
-            Some(super::emission::ChartSide::West)
-        } else if direction.is_lt() {
-            Some(super::emission::ChartSide::East)
-        } else {
-            None
-        };
-        let end_bank = if let Some(bank) = seam_wall_bank {
-            Some(bank)
-        } else if !end_is_seam {
-            None
-        } else if direction.is_gt() {
-            Some(super::emission::ChartSide::East)
-        } else if direction.is_lt() {
-            Some(super::emission::ChartSide::West)
-        } else {
-            None
-        };
+        let start_bank = seam_wall_bank.map_or_else(
+            || {
+                if !start_is_seam {
+                    None
+                } else if direction.is_gt() {
+                    Some(super::emission::ChartSide::West)
+                } else if direction.is_lt() {
+                    Some(super::emission::ChartSide::East)
+                } else {
+                    None
+                }
+            },
+            |bank| Some(bank),
+        );
+        let end_bank = seam_wall_bank.map_or_else(
+            || {
+                if !end_is_seam {
+                    None
+                } else if direction.is_gt() {
+                    Some(super::emission::ChartSide::East)
+                } else if direction.is_lt() {
+                    Some(super::emission::ChartSide::West)
+                } else {
+                    None
+                }
+            },
+            |bank| Some(bank),
+        );
         let start_requests = self.native_endpoint_root_requests(
             &chord.endpoints[0],
             source_trace,

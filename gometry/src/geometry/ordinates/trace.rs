@@ -674,13 +674,12 @@ impl RootRequestTable {
     }
 
     pub(crate) fn root_count(&self) -> Result<usize> {
-        match self.records.last() {
-            Some(record) => record
+        self.records.last().map_or(Ok(0), |record| {
+            record
                 .root_state_slot
                 .checked_add(1)
-                .ok_or_else(|| ResourceError::SizeOverflow.into()),
-            None => Ok(0),
-        }
+                .ok_or_else(|| ResourceError::SizeOverflow.into())
+        })
     }
 
     pub(crate) fn root_state_slot(&self, request: UniqueRequestId) -> Result<usize> {
