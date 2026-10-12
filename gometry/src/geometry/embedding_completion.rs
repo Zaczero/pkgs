@@ -17,15 +17,19 @@ use crate::geometry::overlay::{
     CertifiedOverlayOrder, GlobalFaces, RayAxis, RayPoints, compare_departures_with_work,
     graph_global_faces_with_work,
 };
+use crate::geometry::publication::StorageTarget;
 use crate::geometry::segments::try_sort_by_with_work;
+use crate::geometry::storage::{
+    ArrayRows, GeometryArrayStorage, LogicalRow, PackedRow, ShapeRow, StorageLayout, ValidityMask,
+};
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::{
     ExactChartPoint, exact_segments_intersect, point_on_exact_segment, vector_cross,
     vector_difference,
 };
 use crate::geometry::{
-    Bounds, CoordinateAxes, GeometryErrorKind, Point, Shape, Work, XY,
-    for_each_overlapping_bounds_cross_pair,
+    Bounds, CoordinateAxes, Coordinates, GeometryErrorKind, Point, Shape, ShapeCountQuery, Work,
+    XY, for_each_overlapping_bounds_cross_pair,
 };
 
 /// Exact points are chart images already admitted by their producer receipt.
@@ -347,6 +351,52 @@ pub(super) struct ShapeLiteralLayout<I> {
     pub(super) polygons: Vec<LiteralPolygon<I>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LiteralAddress {
+    pub(super) operation: u32,
+    pub(super) logical_row: usize,
+    pub(super) group_row: Option<usize>,
+    pub(super) value_row: Option<usize>,
+    pub(super) output: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct LiteralRowAddress {
+    operation: u32,
+    logical_row: usize,
+    group_row: Option<usize>,
+    value_row: Option<usize>,
+}
+
+impl LiteralRowAddress {
+    pub(super) const fn scalar() -> Self {
+        Self {
+            operation: 0,
+            logical_row: 0,
+            group_row: None,
+            value_row: None,
+        }
+    }
+
+    const fn output(self, output: u32) -> LiteralAddress {
+        LiteralAddress {
+            operation: self.operation,
+            logical_row: self.logical_row,
+            group_row: self.group_row,
+            value_row: self.value_row,
+            output,
+        }
+    }
+}
+
+pub(super) struct LiteralRowLayout<I> {
+    pub(super) operation: u32,
+    pub(super) logical_row: usize,
+    pub(super) group_row: Option<usize>,
+    pub(super) value_row: Option<usize>,
+    pub(super) layout: ShapeLiteralLayout<I>,
+}
+
 impl<I> ShapeLiteralLayout<I> {
     pub(super) fn in_output_order(
         self,
@@ -389,13 +439,51 @@ pub(super) fn reorder_rows<T>(
 
 /// Owns the real finalized sink and its physical-slot-to-logical-use map.
 pub(super) struct FrozenLiteralBuffers<I> {
-    shape: Shape,
-    layout: ShapeLiteralLayout<I>,
+    storage: FrozenStorage<I>,
 }
 
 /// Created only by the actual-buffer binder; it moves the same sink onward.
 pub(super) struct SealedOutput<I> {
     buffers: FrozenLiteralBuffers<I>,
+}
+
+enum FrozenStorage<I> {
+    Scalar {
+        shape: Shape,
+        layout: ShapeLiteralLayout<I>,
+    },
+    #[expect(
+        dead_code,
+        reason = "array receipt producers attach this final owner before common binding"
+    )]
+    Rows {
+        rows: ArrayRows,
+        row_map: Vec<Option<LiteralRowLayout<I>>>,
+    },
+    #[expect(
+        dead_code,
+        reason = "Groups receipt producers attach this final owner before common binding"
+    )]
+    Groups {
+        groups: FinalGroupRows,
+        row_map: Vec<Option<LiteralRowLayout<I>>>,
+    },
+}
+
+#[expect(
+    dead_code,
+    reason = "the sink retains each admitted container owner for zero-copy adoption"
+)]
+pub(super) enum LiteralStorage {
+    Scalar(Shape),
+    Rows(ArrayRows),
+    Groups(FinalGroupRows),
+}
+
+pub(crate) struct FinalGroupRows {
+    pub(crate) values: ArrayRows,
+    pub(crate) offsets: Vec<i64>,
+    pub(crate) missing: Option<ValidityMask>,
 }
 
 pub(super) enum LiteralCheck<I> {
@@ -410,7 +498,7 @@ pub(super) trait CheckedImages<I> {
 pub(super) trait LiteralChart<I> {
     fn read_point<W: Work>(
         &mut self,
-        output: u32,
+        address: LiteralAddress,
         image: I,
         record: Point,
         expected_axes: CoordinateAxes,
@@ -426,20 +514,203 @@ impl<I, R> LiteralReceiver<I> for R where R: CheckedImages<I> + LiteralChart<I> 
 impl<I> FrozenLiteralBuffers<I> {
     pub(super) const fn shapes(shape: Shape, locations: ShapeLiteralLayout<I>) -> Self {
         Self {
-            shape,
-            layout: locations,
+            storage: FrozenStorage::Scalar {
+                shape,
+                layout: locations,
+            },
+        }
+    }
+
+    #[expect(
+        dead_code,
+        reason = "array receipt producers provide their final admitted storage and row map"
+    )]
+    pub(super) fn rows<W: Work>(
+        storage: std::sync::Arc<GeometryArrayStorage>,
+        missing: Option<ValidityMask>,
+        layout: StorageLayout,
+        row_map: Vec<Option<LiteralRowLayout<I>>>,
+        work: &mut W,
+    ) -> Result<Self> {
+        work.charge(u64::try_from(row_map.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let (rows, row_map) =
+            ArrayRows::admit_with_row_map(storage, missing, layout, row_map, work)?;
+        Ok(Self {
+            storage: FrozenStorage::Rows { rows, row_map },
+        })
+    }
+
+    #[expect(
+        dead_code,
+        reason = "Groups receipt producers provide final values, group CSR, validity, and row maps"
+    )]
+    pub(super) fn groups<W: Work>(
+        storage: std::sync::Arc<GeometryArrayStorage>,
+        value_missing: Option<ValidityMask>,
+        value_layout: StorageLayout,
+        value_map: Vec<Option<LiteralRowLayout<I>>>,
+        offsets: Vec<i64>,
+        missing: Option<ValidityMask>,
+        work: &mut W,
+    ) -> Result<Self> {
+        work.charge(u64::try_from(value_map.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let (values, value_map) =
+            ArrayRows::admit_with_row_map(storage, value_missing, value_layout, value_map, work)?;
+        Ok(Self {
+            storage: FrozenStorage::Groups {
+                groups: FinalGroupRows {
+                    values,
+                    offsets,
+                    missing,
+                },
+                row_map: value_map,
+            },
+        })
+    }
+
+    pub(super) fn admit_target(self, target: StorageTarget) -> Result<Self> {
+        let Self { storage } = self;
+        match (target, storage) {
+            (StorageTarget::Scalar, FrozenStorage::Scalar { shape, layout }) => Ok(Self {
+                storage: FrozenStorage::Scalar { shape, layout },
+            }),
+            (StorageTarget::Array, FrozenStorage::Rows { rows, row_map }) => Ok(Self {
+                storage: FrozenStorage::Rows { rows, row_map },
+            }),
+            (StorageTarget::Groups, FrozenStorage::Groups { groups, row_map }) => Ok(Self {
+                storage: FrozenStorage::Groups { groups, row_map },
+            }),
+            (StorageTarget::Scalar | StorageTarget::Array | StorageTarget::Groups, _) => {
+                Err(GeometryErrorKind::Invalid(
+                    "storage target does not match the producer's final admitted storage".into(),
+                )
+                .into())
+            },
         }
     }
 }
 
 impl<I> SealedOutput<I> {
-    pub(super) const fn shape_layout(&self) -> &ShapeLiteralLayout<I> {
-        &self.buffers.layout
+    pub(super) fn shape_layout(&self) -> Option<&ShapeLiteralLayout<I>> {
+        match &self.buffers.storage {
+            FrozenStorage::Scalar { layout, .. } => Some(layout),
+            FrozenStorage::Rows { .. } | FrozenStorage::Groups { .. } => None,
+        }
     }
 
-    pub(super) fn into_shape(self) -> Shape {
-        self.buffers.shape
+    pub(super) fn into_storage(self) -> LiteralStorage {
+        match self.buffers.storage {
+            FrozenStorage::Scalar { shape, .. } => LiteralStorage::Scalar(shape),
+            FrozenStorage::Rows { rows, .. } => LiteralStorage::Rows(rows),
+            FrozenStorage::Groups { groups, .. } => LiteralStorage::Groups(groups),
+        }
     }
+
+    #[cfg(test)]
+    pub(super) fn into_shape(self) -> Result<Shape> {
+        match self.buffers.storage {
+            FrozenStorage::Scalar { shape, .. } => Ok(shape),
+            FrozenStorage::Rows { .. } | FrozenStorage::Groups { .. } => {
+                Err(GeometryErrorKind::Invalid(
+                    "non-scalar sealed geometry cannot be adopted as a scalar shape".into(),
+                )
+                .into())
+            },
+        }
+    }
+}
+
+fn validate_group_storage(
+    values: &ArrayRows,
+    offsets: &[i64],
+    missing: Option<&ValidityMask>,
+    work: &mut impl Work,
+) -> Result<usize> {
+    let group_count = offsets
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| GeometryErrorKind::Invalid("group offsets are empty".into()))?;
+    if offsets.first() != Some(&0)
+        || usize::try_from(*offsets.last().expect("offsets contain a sentinel")).ok()
+            != Some(values.len())
+        || missing.is_some_and(|missing| missing.len() != group_count)
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "group offsets or validity do not match the admitted values".into(),
+        )
+        .into());
+    }
+    work.charge(u64::try_from(offsets.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut previous = 0_i64;
+    for (index, &offset) in offsets.iter().enumerate() {
+        work.charge(1)?;
+        if offset < previous || offset < 0 {
+            return Err(GeometryErrorKind::Invalid(
+                "group offsets are negative or decreasing".into(),
+            )
+            .into());
+        }
+        if index > 0
+            && missing.is_some_and(|missing| missing.is_missing(index - 1))
+            && offset != previous
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "a missing group has a nonempty values window".into(),
+            )
+            .into());
+        }
+        previous = offset;
+    }
+    Ok(group_count)
+}
+
+fn validate_group_literal_map<I>(
+    admitted_values: &ArrayRows,
+    values: &[Option<LiteralRowLayout<I>>],
+    group_count: usize,
+    offsets: &[i64],
+    work: &mut impl Work,
+) -> Result<()> {
+    work.charge(u64::try_from(values.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    for group in 0..group_count {
+        let start =
+            usize::try_from(*offsets.get(group).ok_or_else(|| {
+                GeometryErrorKind::Invalid("group start offset is unknown".into())
+            })?)
+            .map_err(|_| GeometryErrorKind::Invalid("group start offset is negative".into()))?;
+        let end = usize::try_from(
+            *offsets
+                .get(group + 1)
+                .ok_or_else(|| GeometryErrorKind::Invalid("group end offset is unknown".into()))?,
+        )
+        .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
+        for value in start..end {
+            work.charge(1)?;
+            let row = values.get(value).and_then(Option::as_ref);
+            if matches!(
+                admitted_values.logical_row(value),
+                Some(LogicalRow::Missing { .. })
+            ) {
+                if row.is_some() {
+                    return Err(GeometryErrorKind::Invalid(
+                        "missing group value has a literal row map".into(),
+                    )
+                    .into());
+                }
+                continue;
+            }
+            let row = row.ok_or_else(|| {
+                GeometryErrorKind::Invalid("group value has no literal row map".into())
+            })?;
+            if row.group_row != Some(group) || row.value_row != Some(value) {
+                return Err(GeometryErrorKind::Invalid(
+                    "group literal map lost its group or value row identity".into(),
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn bind_literals<I, R, W>(
@@ -454,14 +725,14 @@ where
 {
     let mut rejected = Vec::new();
     let mut check =
-        |output, image, record, expected_axes, stored_axes, work: &mut W| -> Result<()> {
+        |address, image, record, expected_axes, stored_axes, work: &mut W| -> Result<()> {
             work.charge(1)?;
             if expected_axes != stored_axes || CoordinateAxes::from_point(record) != stored_axes {
                 rejected.push(image);
                 return Ok(());
             }
             let Some(actual) =
-                receiver.read_point(output, image, record, expected_axes, stored_axes, work)?
+                receiver.read_point(address, image, record, expected_axes, stored_axes, work)?
             else {
                 rejected.push(image);
                 return Ok(());
@@ -471,8 +742,18 @@ where
             }
             Ok(())
         };
-    validate_shape_layout(&buffers.layout, work)?;
-    visit_shape_literals(&buffers.shape, &buffers.layout, work, &mut check)?;
+    match &buffers.storage {
+        FrozenStorage::Scalar { shape, layout } => {
+            validate_shape_layout(layout, work)?;
+            visit_shape_literals(shape, layout, LiteralRowAddress::scalar(), work, &mut check)?;
+        },
+        FrozenStorage::Rows { rows, row_map } => {
+            visit_array_literals(rows, row_map, work, &mut check)?;
+        },
+        FrozenStorage::Groups { groups, row_map } => {
+            visit_group_literals(groups, row_map, work, &mut check)?;
+        },
+    }
     if rejected.is_empty() {
         Ok(LiteralCheck::Pass(SealedOutput { buffers }))
     } else {
@@ -548,14 +829,30 @@ fn validate_shape_layout<I>(layout: &ShapeLiteralLayout<I>, work: &mut impl Work
 pub(super) fn visit_shape_literals<I: Copy, W: Work>(
     shape: &Shape,
     layout: &ShapeLiteralLayout<I>,
+    row_address: LiteralRowAddress,
     work: &mut W,
-    visit: &mut impl FnMut(u32, I, Point, CoordinateAxes, CoordinateAxes, &mut W) -> Result<()>,
+    visit: &mut impl FnMut(
+        LiteralAddress,
+        I,
+        Point,
+        CoordinateAxes,
+        CoordinateAxes,
+        &mut W,
+    ) -> Result<()>,
 ) -> Result<()> {
     fn visit_sequence<I: Copy, W: Work>(
         sequence: &crate::geometry::CoordSeq,
         locations: &LiteralSequence<I>,
+        row_address: LiteralRowAddress,
         work: &mut W,
-        visit: &mut impl FnMut(u32, I, Point, CoordinateAxes, CoordinateAxes, &mut W) -> Result<()>,
+        visit: &mut impl FnMut(
+            LiteralAddress,
+            I,
+            Point,
+            CoordinateAxes,
+            CoordinateAxes,
+            &mut W,
+        ) -> Result<()>,
     ) -> Result<()> {
         if sequence.len() != locations.images.len() {
             return Err(GeometryErrorKind::Invalid(
@@ -572,7 +869,14 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
         }
         for (&image, point) in locations.images.iter().zip(sequence.points()) {
             work.charge(1)?;
-            visit(locations.output, image, point, locations.axes, axes, work)?;
+            visit(
+                row_address.output(locations.output),
+                image,
+                point,
+                locations.axes,
+                axes,
+                work,
+            )?;
         }
         Ok(())
     }
@@ -580,10 +884,24 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
     fn visit_polygon<I: Copy, W: Work>(
         polygon: &crate::geometry::Polygon,
         locations: &LiteralPolygon<I>,
+        row_address: LiteralRowAddress,
         work: &mut W,
-        visit: &mut impl FnMut(u32, I, Point, CoordinateAxes, CoordinateAxes, &mut W) -> Result<()>,
+        visit: &mut impl FnMut(
+            LiteralAddress,
+            I,
+            Point,
+            CoordinateAxes,
+            CoordinateAxes,
+            &mut W,
+        ) -> Result<()>,
     ) -> Result<()> {
-        visit_sequence(polygon.shell.coords(), &locations.shell, work, visit)?;
+        visit_sequence(
+            polygon.shell.coords(),
+            &locations.shell,
+            row_address,
+            work,
+            visit,
+        )?;
         if polygon.holes.len() != locations.holes.len()
             || locations.shell.axes != locations.axes
             || locations
@@ -597,7 +915,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
             .into());
         }
         for (ring, locations) in polygon.holes.iter().zip(&locations.holes) {
-            visit_sequence(ring.coords(), locations, work, visit)?;
+            visit_sequence(ring.coords(), locations, row_address, work, visit)?;
         }
         Ok(())
     }
@@ -605,11 +923,19 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
     fn visit_shape<I: Copy, W: Work>(
         shape: &Shape,
         layout: &ShapeLiteralLayout<I>,
+        row_address: LiteralRowAddress,
         point_row: &mut usize,
         line_row: &mut usize,
         polygon_row: &mut usize,
         work: &mut W,
-        visit: &mut impl FnMut(u32, I, Point, CoordinateAxes, CoordinateAxes, &mut W) -> Result<()>,
+        visit: &mut impl FnMut(
+            LiteralAddress,
+            I,
+            Point,
+            CoordinateAxes,
+            CoordinateAxes,
+            &mut W,
+        ) -> Result<()>,
     ) -> Result<()> {
         match shape {
             Shape::Point(point) => {
@@ -621,7 +947,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                     .ok_or(ResourceError::SizeOverflow)?;
                 work.charge(1)?;
                 visit(
-                    location.output,
+                    row_address.output(location.output),
                     location.image,
                     *point,
                     location.axes,
@@ -642,7 +968,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                 for (location, point) in locations.iter().zip(points.points()) {
                     work.charge(1)?;
                     visit(
-                        location.output,
+                        row_address.output(location.output),
                         location.image,
                         point,
                         location.axes,
@@ -657,7 +983,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                     GeometryErrorKind::Invalid("sealed line has no physical literal row".into())
                 })?;
                 *line_row = line_row.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                visit_sequence(line.as_coords(), locations, work, visit)
+                visit_sequence(line.as_coords(), locations, row_address, work, visit)
             },
             Shape::MultiLineString(lines) => {
                 for line in lines.as_slice() {
@@ -667,7 +993,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                         )
                     })?;
                     *line_row = line_row.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-                    visit_sequence(line.as_coords(), locations, work, visit)?;
+                    visit_sequence(line.as_coords(), locations, row_address, work, visit)?;
                 }
                 Ok(())
             },
@@ -678,7 +1004,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                 *polygon_row = polygon_row
                     .checked_add(1)
                     .ok_or(ResourceError::SizeOverflow)?;
-                visit_polygon(polygon, locations, work, visit)
+                visit_polygon(polygon, locations, row_address, work, visit)
             },
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons.as_slice() {
@@ -690,13 +1016,22 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
                     *polygon_row = polygon_row
                         .checked_add(1)
                         .ok_or(ResourceError::SizeOverflow)?;
-                    visit_polygon(polygon, locations, work, visit)?;
+                    visit_polygon(polygon, locations, row_address, work, visit)?;
                 }
                 Ok(())
             },
             Shape::GeometryCollection(collection) => {
                 for part in collection {
-                    visit_shape(part, layout, point_row, line_row, polygon_row, work, visit)?;
+                    visit_shape(
+                        part,
+                        layout,
+                        row_address,
+                        point_row,
+                        line_row,
+                        polygon_row,
+                        work,
+                        visit,
+                    )?;
                 }
                 Ok(())
             },
@@ -710,6 +1045,7 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
     visit_shape(
         shape,
         layout,
+        row_address,
         &mut point_row,
         &mut line_row,
         &mut polygon_row,
@@ -724,6 +1060,326 @@ pub(super) fn visit_shape_literals<I: Copy, W: Work>(
             "sealed output left physical literal rows unused".into(),
         )
         .into());
+    }
+    Ok(())
+}
+
+fn visit_coordinates<I: Copy, C: Coordinates + ?Sized, W: Work>(
+    coordinates: &C,
+    axes: CoordinateAxes,
+    locations: &LiteralSequence<I>,
+    row_address: LiteralRowAddress,
+    work: &mut W,
+    visit: &mut impl FnMut(
+        LiteralAddress,
+        I,
+        Point,
+        CoordinateAxes,
+        CoordinateAxes,
+        &mut W,
+    ) -> Result<()>,
+) -> Result<()> {
+    if coordinates.coord_count() != locations.images.len() || axes != locations.axes {
+        return Err(GeometryErrorKind::Invalid(
+            "sealed row coordinates differ from their physical literal map".into(),
+        )
+        .into());
+    }
+    for (&image, point) in locations.images.iter().zip(coordinates.iter_coords()) {
+        work.charge(1)?;
+        visit(
+            row_address.output(locations.output),
+            image,
+            point,
+            locations.axes,
+            axes,
+            work,
+        )?;
+    }
+    Ok(())
+}
+
+fn visit_storage_row<I: Copy, W: Work>(
+    row: ShapeRow<'_>,
+    layout: &ShapeLiteralLayout<I>,
+    row_address: LiteralRowAddress,
+    work: &mut W,
+    visit: &mut impl FnMut(
+        LiteralAddress,
+        I,
+        Point,
+        CoordinateAxes,
+        CoordinateAxes,
+        &mut W,
+    ) -> Result<()>,
+) -> Result<()> {
+    match row {
+        ShapeRow::Handle(handle) => {
+            visit_shape_literals(handle.shape(), layout, row_address, work, visit)
+        },
+        ShapeRow::Shape(shape) => visit_shape_literals(shape, layout, row_address, work, visit),
+        ShapeRow::Point(point) => {
+            if layout.points.len() != 1 || !layout.lines.is_empty() || !layout.polygons.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "packed point row has a non-point literal map".into(),
+                )
+                .into());
+            }
+            let literal = layout
+                .points
+                .first()
+                .ok_or_else(|| GeometryErrorKind::Invalid("point literal row is missing".into()))?;
+            work.charge(1)?;
+            visit(
+                row_address.output(literal.output),
+                literal.image,
+                point,
+                literal.axes,
+                CoordinateAxes::from_point(point),
+                work,
+            )
+        },
+        ShapeRow::Packed(packed @ PackedRow::Points { .. }) => {
+            let point = packed.point_value().ok_or_else(|| {
+                GeometryErrorKind::Invalid("packed point row has no coordinate".into())
+            })?;
+            if layout.points.len() != 1 || !layout.lines.is_empty() || !layout.polygons.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "packed point row has a non-point literal map".into(),
+                )
+                .into());
+            }
+            let literal = layout
+                .points
+                .first()
+                .ok_or_else(|| GeometryErrorKind::Invalid("point literal row is missing".into()))?;
+            work.charge(1)?;
+            visit(
+                row_address.output(literal.output),
+                literal.image,
+                point,
+                literal.axes,
+                packed.axes(),
+                work,
+            )
+        },
+        ShapeRow::Packed(PackedRow::Lines { .. }) => {
+            if layout.points.len() != 0 || layout.lines.len() != 1 || !layout.polygons.is_empty() {
+                return Err(GeometryErrorKind::Invalid(
+                    "packed line row has an incomplete literal map".into(),
+                )
+                .into());
+            }
+            let sequence = row.line_coords().ok_or_else(|| {
+                GeometryErrorKind::Invalid("packed line row has no coordinate window".into())
+            })?;
+            let locations = layout
+                .lines
+                .first()
+                .ok_or_else(|| GeometryErrorKind::Invalid("line literal row is missing".into()))?;
+            visit_coordinates(&sequence, row.axes(), locations, row_address, work, visit)
+        },
+        ShapeRow::Packed(PackedRow::Polygons { .. }) => {
+            if !layout.points.is_empty() || !layout.lines.is_empty() || layout.polygons.len() != 1 {
+                return Err(GeometryErrorKind::Invalid(
+                    "packed polygon row has an incomplete literal map".into(),
+                )
+                .into());
+            }
+            let locations = layout.polygons.first().ok_or_else(|| {
+                GeometryErrorKind::Invalid("polygon literal row is missing".into())
+            })?;
+            if locations.shell.output != locations.output
+                || locations
+                    .holes
+                    .iter()
+                    .any(|hole| hole.output != locations.output)
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "packed polygon rings lost their logical output identity".into(),
+                )
+                .into());
+            }
+            let mut rings = row.polygon_rings().ok_or_else(|| {
+                GeometryErrorKind::Invalid("packed polygon row has no ring windows".into())
+            })?;
+            let shell = rings.next().ok_or_else(|| {
+                GeometryErrorKind::Invalid("packed polygon row has no shell window".into())
+            })?;
+            visit_coordinates(
+                &shell,
+                row.axes(),
+                &locations.shell,
+                row_address,
+                work,
+                visit,
+            )?;
+            for hole in &locations.holes {
+                let ring = rings.next().ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "packed polygon row has a missing hole window".into(),
+                    )
+                })?;
+                visit_coordinates(&ring, row.axes(), hole, row_address, work, visit)?;
+            }
+            if rings.next().is_some() {
+                return Err(GeometryErrorKind::Invalid(
+                    "packed polygon row has an unmapped hole window".into(),
+                )
+                .into());
+            }
+            Ok(())
+        },
+    }
+}
+
+fn visit_array_literals<I: Copy, W: Work>(
+    rows: &ArrayRows,
+    row_map: &[Option<LiteralRowLayout<I>>],
+    work: &mut W,
+    visit: &mut impl FnMut(
+        LiteralAddress,
+        I,
+        Point,
+        CoordinateAxes,
+        CoordinateAxes,
+        &mut W,
+    ) -> Result<()>,
+) -> Result<()> {
+    if row_map.len() != rows.len() {
+        return Err(GeometryErrorKind::Invalid(
+            "final row storage and literal map have different logical lengths".into(),
+        )
+        .into());
+    }
+    work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    for logical in 0..rows.len() {
+        work.charge(1)?;
+        match rows.logical_row(logical).ok_or_else(|| {
+            GeometryErrorKind::Invalid("final storage has no admitted logical row".into())
+        })? {
+            LogicalRow::Missing { .. } => {
+                if row_map.get(logical).is_some_and(Option::is_some) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "missing final row has a literal receiver map".into(),
+                    )
+                    .into());
+                }
+            },
+            LogicalRow::Present { row, .. } => {
+                let locations = row_map
+                    .get(logical)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "present final row has no literal receiver map".into(),
+                        )
+                    })?;
+                if locations.logical_row != logical
+                    || locations.group_row.is_some()
+                    || locations.value_row.is_some()
+                {
+                    return Err(GeometryErrorKind::Invalid(
+                        "final row literal address does not match its logical row".into(),
+                    )
+                    .into());
+                }
+                validate_shape_layout(&locations.layout, work)?;
+                visit_storage_row(
+                    row,
+                    &locations.layout,
+                    LiteralRowAddress {
+                        operation: locations.operation,
+                        logical_row: locations.logical_row,
+                        group_row: None,
+                        value_row: None,
+                    },
+                    work,
+                    visit,
+                )?;
+            },
+        }
+    }
+    Ok(())
+}
+
+fn visit_group_literals<I: Copy, W: Work>(
+    groups: &FinalGroupRows,
+    row_map: &[Option<LiteralRowLayout<I>>],
+    work: &mut W,
+    visit: &mut impl FnMut(
+        LiteralAddress,
+        I,
+        Point,
+        CoordinateAxes,
+        CoordinateAxes,
+        &mut W,
+    ) -> Result<()>,
+) -> Result<()> {
+    let group_count = validate_group_storage(
+        &groups.values,
+        &groups.offsets,
+        groups.missing.as_ref(),
+        work,
+    )?;
+    validate_group_literal_map(&groups.values, row_map, group_count, &groups.offsets, work)?;
+    for group in 0..group_count {
+        work.charge(1)?;
+        if groups
+            .missing
+            .as_ref()
+            .is_some_and(|missing| missing.is_missing(group))
+        {
+            continue;
+        }
+        let start =
+            usize::try_from(*groups.offsets.get(group).ok_or_else(|| {
+                GeometryErrorKind::Invalid("group start offset is unknown".into())
+            })?)
+            .map_err(|_| GeometryErrorKind::Invalid("group start offset is negative".into()))?;
+        let end = usize::try_from(
+            *groups
+                .offsets
+                .get(group + 1)
+                .ok_or_else(|| GeometryErrorKind::Invalid("group end offset is unknown".into()))?,
+        )
+        .map_err(|_| GeometryErrorKind::Invalid("group end offset is negative".into()))?;
+        for value in start..end {
+            work.charge(1)?;
+            match groups.values.logical_row(value).ok_or_else(|| {
+                GeometryErrorKind::Invalid("group value has no admitted logical row".into())
+            })? {
+                LogicalRow::Missing { .. } => {
+                    if row_map.get(value).is_some_and(Option::is_some) {
+                        return Err(GeometryErrorKind::Invalid(
+                            "missing group value has a literal receiver map".into(),
+                        )
+                        .into());
+                    }
+                },
+                LogicalRow::Present { row, .. } => {
+                    let locations =
+                        row_map.get(value).and_then(Option::as_ref).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "present group value has no literal receiver map".into(),
+                            )
+                        })?;
+                    validate_shape_layout(&locations.layout, work)?;
+                    visit_storage_row(
+                        row,
+                        &locations.layout,
+                        LiteralRowAddress {
+                            operation: locations.operation,
+                            logical_row: locations.logical_row,
+                            group_row: locations.group_row,
+                            value_row: locations.value_row,
+                        },
+                        work,
+                        visit,
+                    )?;
+                },
+            }
+        }
     }
     Ok(())
 }
@@ -1810,18 +2466,24 @@ fn edges_have_only_vertex_contacts(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         AdmittedGraph, AdmittedLayout, CheckedImages, ExactPoints, FrozenLiteralBuffers,
-        LiteralChart, LiteralCheck, LiteralPoint, LiteralPolygon, LiteralSequence,
-        LogicalArealWalk, ShapeLiteralLayout, admit_candidate, admit_known_graph,
+        LiteralAddress, LiteralChart, LiteralCheck, LiteralPoint, LiteralPolygon, LiteralRowLayout,
+        LiteralSequence, LogicalArealWalk, ShapeLiteralLayout, admit_candidate, admit_known_graph,
         admit_logical_layout, bind_literals,
     };
     use crate::error::Result;
     use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly, Work};
+    use crate::geometry::storage::{
+        GeometryArrayStorage, PackedStorage, RowSelection, StorageLayout, ValidityMask,
+    };
     use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
     use crate::geometry::topology::ExactChartPoint;
     use crate::geometry::{
-        CoordSeq, CoordinateAxes, LineSeq, Point, Polygon, Ring, Shape, Unmetered, XY,
+        CoordSeq, CoordinateAxes, LineSeq, MOrdinate, Point, Polygon, Ring, Shape, Unmetered, XY,
+        ZOrdinate,
     };
 
     fn points(values: &[(f64, f64)]) -> ExactPoints {
@@ -1871,7 +2533,7 @@ mod tests {
     impl LiteralChart<u32> for IdentityLiteralChart {
         fn read_point<W: crate::geometry::Work>(
             &mut self,
-            _output: u32,
+            _address: super::LiteralAddress,
             _image: u32,
             record: Point,
             _expected_axes: CoordinateAxes,
@@ -1953,7 +2615,7 @@ mod tests {
     impl LiteralChart<u32> for TestLiteralReceiver {
         fn read_point<W: crate::geometry::Work>(
             &mut self,
-            output: u32,
+            address: super::LiteralAddress,
             image: u32,
             record: Point,
             expected_axes: CoordinateAxes,
@@ -1961,8 +2623,605 @@ mod tests {
             work: &mut W,
         ) -> Result<Option<ExactChartPoint>> {
             self.chart
-                .read_point(output, image, record, expected_axes, stored_axes, work)
+                .read_point(address, image, record, expected_axes, stored_axes, work)
         }
+    }
+
+    struct FullRecordReceiver {
+        images: ImageRows,
+        expected: Vec<(LiteralAddress, Point)>,
+    }
+
+    impl CheckedImages<u32> for FullRecordReceiver {
+        fn image(&self, image: u32) -> Result<&ExactChartPoint> {
+            self.images.image(image)
+        }
+    }
+
+    impl LiteralChart<u32> for FullRecordReceiver {
+        fn read_point<W: crate::geometry::Work>(
+            &mut self,
+            address: LiteralAddress,
+            image: u32,
+            record: Point,
+            expected_axes: CoordinateAxes,
+            stored_axes: CoordinateAxes,
+            _work: &mut W,
+        ) -> Result<Option<ExactChartPoint>> {
+            let Some((expected_address, expected_record)) = self.expected.get(image as usize)
+            else {
+                return Ok(None);
+            };
+            if address != *expected_address
+                || record != *expected_record
+                || expected_axes != stored_axes
+            {
+                return Ok(None);
+            }
+            Ok(Some(ExactChartPoint::from_rationals(
+                ExactRational::from_f64(record.x),
+                ExactRational::from_f64(record.y),
+            )))
+        }
+    }
+
+    fn xyzm_point(x: f64, y: f64, z: f64, m: f64) -> Point {
+        Point::new_raw_axes(x, y, ZOrdinate(Some(z)), MOrdinate(Some(m)))
+    }
+
+    fn point_literal_row(
+        image: u32,
+        operation: u32,
+        logical_row: usize,
+        group_row: Option<usize>,
+        value_row: Option<usize>,
+    ) -> LiteralRowLayout<u32> {
+        LiteralRowLayout {
+            operation,
+            logical_row,
+            group_row,
+            value_row,
+            layout: ShapeLiteralLayout {
+                points: vec![LiteralPoint {
+                    output: 0,
+                    axes: CoordinateAxes::XYZM,
+                    image,
+                }],
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        }
+    }
+
+    fn point_rows(points: &[Point]) -> Arc<GeometryArrayStorage> {
+        Arc::new(GeometryArrayStorage::Packed(PackedStorage::Points {
+            coords: Arc::new(CoordSeq::try_from_points(points).expect("pack XYZM points")),
+            row_map: RowSelection::Identity,
+        }))
+    }
+
+    fn line_rows(points: &[Point]) -> Arc<GeometryArrayStorage> {
+        Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
+            coords: Arc::new(CoordSeq::try_from_points(points).expect("pack XYZM line")),
+            offsets: crate::geometry::CsrOffsetColumn::try_new(vec![0, points.len()], points.len())
+                .expect("valid line offsets"),
+            row_map: RowSelection::Identity,
+        }))
+    }
+
+    fn polygon_rows(points: &[Point]) -> Arc<GeometryArrayStorage> {
+        Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            coords: Arc::new(CoordSeq::try_from_points(points).expect("pack XYZM ring")),
+            ring_offsets: crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(
+                vec![0, points.len()],
+                points.len(),
+            )
+            .expect("valid ring offsets"),
+            polygon_offsets:
+                crate::geometry::CsrOffsetColumn::<crate::geometry::PolygonLevel>::try_new(
+                    vec![0, 1],
+                    1,
+                )
+                .expect("valid polygon offsets"),
+            row_map: RowSelection::Identity,
+        }))
+    }
+
+    #[test]
+    fn scalar_final_m_corruption_is_rejected_by_storage_binding() {
+        let expected = xyzm_point(10.0, 20.0, 110.0, 1010.0);
+        let corrupted = xyzm_point(10.0, 20.0, 110.0, 1011.0);
+        let mut work = Unmetered;
+        let mut valid_receiver = FullRecordReceiver {
+            images: ImageRows(points(&[(10.0, 20.0)]).exact),
+            expected: vec![(
+                LiteralAddress {
+                    operation: 0,
+                    logical_row: 0,
+                    group_row: None,
+                    value_row: None,
+                    output: 0,
+                },
+                expected,
+            )],
+        };
+        let valid = FrozenLiteralBuffers::shapes(Shape::Point(expected), ShapeLiteralLayout {
+            points: vec![LiteralPoint {
+                output: 0,
+                axes: CoordinateAxes::XYZM,
+                image: 0,
+            }],
+            lines: Vec::new(),
+            polygons: Vec::new(),
+        });
+        assert!(matches!(
+            bind_literals(valid, &mut valid_receiver, &mut work).expect("bind valid scalar"),
+            LiteralCheck::Pass(_)
+        ));
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(points(&[(10.0, 20.0)]).exact),
+            expected: vec![(
+                LiteralAddress {
+                    operation: 0,
+                    logical_row: 0,
+                    group_row: None,
+                    value_row: None,
+                    output: 0,
+                },
+                expected,
+            )],
+        };
+        let buffers = FrozenLiteralBuffers::shapes(Shape::Point(corrupted), ShapeLiteralLayout {
+            points: vec![LiteralPoint {
+                output: 0,
+                axes: CoordinateAxes::XYZM,
+                image: 0,
+            }],
+            lines: Vec::new(),
+            polygons: Vec::new(),
+        });
+        let LiteralCheck::Reject(rejected) =
+            bind_literals(buffers, &mut receiver, &mut work).expect("bind scalar storage")
+        else {
+            panic!("a changed final M ordinate must be rejected");
+        };
+        assert_eq!(rejected, vec![0]);
+    }
+
+    #[test]
+    fn packed_rows_bind_after_present_only_admission() {
+        let first = xyzm_point(10.0, 20.0, 110.0, 1010.0);
+        let last = xyzm_point(30.0, 40.0, 330.0, 3030.0);
+        let corrupted_last = xyzm_point(30.0, 40.0, 330.0, 3031.0);
+        let mut work = Unmetered;
+        let valid = FrozenLiteralBuffers::rows(
+            point_rows(&[first, last]),
+            ValidityMask::from_vec(3, vec![false, true, false]),
+            StorageLayout::PresentOnly,
+            vec![
+                Some(point_literal_row(0, 7, 0, None, None)),
+                Some(point_literal_row(1, 7, 2, None, None)),
+            ],
+            &mut work,
+        )
+        .expect("admit valid compact point storage and its writer map");
+        let mut valid_receiver = FullRecordReceiver {
+            images: ImageRows(points(&[(10.0, 20.0), (30.0, 40.0)]).exact),
+            expected: vec![
+                (
+                    LiteralAddress {
+                        operation: 7,
+                        logical_row: 0,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    first,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 7,
+                        logical_row: 2,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    last,
+                ),
+            ],
+        };
+        assert!(matches!(
+            bind_literals(valid, &mut valid_receiver, &mut work).expect("bind valid packed rows"),
+            LiteralCheck::Pass(_)
+        ));
+        let missing = ValidityMask::from_vec(3, vec![false, true, false])
+            .expect("the middle logical row is missing");
+        let buffers = FrozenLiteralBuffers::rows(
+            point_rows(&[first, corrupted_last]),
+            Some(missing),
+            StorageLayout::PresentOnly,
+            vec![
+                Some(point_literal_row(0, 7, 0, None, None)),
+                Some(point_literal_row(1, 7, 2, None, None)),
+            ],
+            &mut work,
+        )
+        .expect("admit compact point storage and its writer map");
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(points(&[(10.0, 20.0), (30.0, 40.0)]).exact),
+            expected: vec![
+                (
+                    LiteralAddress {
+                        operation: 7,
+                        logical_row: 0,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    first,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 7,
+                        logical_row: 2,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    last,
+                ),
+            ],
+        };
+        let LiteralCheck::Reject(rejected) =
+            bind_literals(buffers, &mut receiver, &mut work).expect("bind packed row storage")
+        else {
+            panic!("the compacted row's changed final M ordinate must be rejected");
+        };
+        assert_eq!(rejected, vec![1]);
+    }
+
+    #[test]
+    fn gathered_rows_keep_duplicate_physical_rows_on_distinct_logical_receipts() {
+        let first = xyzm_point(10.0, 20.0, 110.0, 1010.0);
+        let second = xyzm_point(30.0, 40.0, 330.0, 3030.0);
+        let storage = Arc::new(GeometryArrayStorage::Packed(PackedStorage::Points {
+            coords: Arc::new(
+                CoordSeq::try_from_points(&[first, second]).expect("pack gathered points"),
+            ),
+            row_map: RowSelection::gather_checked_native(vec![1, 0, 1], 2)
+                .expect("admit duplicate gathered rows"),
+        }));
+        let mut work = Unmetered;
+        let buffers = FrozenLiteralBuffers::rows(
+            storage,
+            None,
+            StorageLayout::LogicalRows,
+            vec![
+                Some(point_literal_row(0, 23, 0, None, None)),
+                Some(point_literal_row(1, 23, 1, None, None)),
+                Some(point_literal_row(2, 23, 2, None, None)),
+            ],
+            &mut work,
+        )
+        .expect("admit gathered storage and logical writer maps");
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(points(&[(30.0, 40.0), (10.0, 20.0), (30.0, 40.0)]).exact),
+            expected: vec![
+                (
+                    LiteralAddress {
+                        operation: 23,
+                        logical_row: 0,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    second,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 23,
+                        logical_row: 1,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    first,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 23,
+                        logical_row: 2,
+                        group_row: None,
+                        value_row: None,
+                        output: 0,
+                    },
+                    second,
+                ),
+            ],
+        };
+        assert!(matches!(
+            bind_literals(buffers, &mut receiver, &mut work).expect("bind gathered final storage"),
+            LiteralCheck::Pass(_)
+        ));
+    }
+
+    #[test]
+    fn all_missing_packed_rows_have_no_literal_reads() {
+        let storage = Arc::new(GeometryArrayStorage::Packed(PackedStorage::Points {
+            coords: Arc::new(CoordSeq::try_from_points(&[]).expect("empty point column")),
+            row_map: RowSelection::Identity,
+        }));
+        let mut work = Unmetered;
+        let buffers = FrozenLiteralBuffers::rows(
+            storage,
+            ValidityMask::from_vec(3, vec![true, true, true]),
+            StorageLayout::PresentOnly,
+            vec![None, None, None],
+            &mut work,
+        )
+        .expect("admit all-missing rows");
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(Vec::new()),
+            expected: Vec::new(),
+        };
+        assert!(matches!(
+            bind_literals(buffers, &mut receiver, &mut work).expect("bind all-missing rows"),
+            LiteralCheck::Pass(_)
+        ));
+    }
+
+    #[test]
+    fn empty_present_group_has_no_values_and_is_not_missing() {
+        let storage = Arc::new(GeometryArrayStorage::Packed(PackedStorage::Points {
+            coords: Arc::new(CoordSeq::try_from_points(&[]).expect("empty value column")),
+            row_map: RowSelection::Identity,
+        }));
+        let mut work = Unmetered;
+        let buffers = FrozenLiteralBuffers::groups(
+            storage,
+            None,
+            StorageLayout::LogicalRows,
+            Vec::new(),
+            vec![0, 0],
+            None,
+            &mut work,
+        )
+        .expect("admit one empty-present group");
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(Vec::new()),
+            expected: Vec::new(),
+        };
+        assert!(matches!(
+            bind_literals(buffers, &mut receiver, &mut work).expect("bind empty-present group"),
+            LiteralCheck::Pass(_)
+        ));
+    }
+
+    #[test]
+    fn packed_line_and_polygon_coordinates_bind_from_final_csr_windows() {
+        let records = [
+            xyzm_point(10.0, 20.0, 110.0, 1010.0),
+            xyzm_point(12.0, 24.0, 120.0, 1020.0),
+            xyzm_point(14.0, 28.0, 140.0, 1040.0),
+        ];
+        let exact = points(&[(10.0, 20.0), (12.0, 24.0), (14.0, 28.0)]).exact;
+        let mut work = Unmetered;
+        let line_buffers = FrozenLiteralBuffers::rows(
+            line_rows(&records),
+            None,
+            StorageLayout::LogicalRows,
+            vec![Some(LiteralRowLayout {
+                operation: 13,
+                logical_row: 0,
+                group_row: None,
+                value_row: None,
+                layout: ShapeLiteralLayout {
+                    points: Vec::new(),
+                    lines: vec![LiteralSequence {
+                        output: 0,
+                        axes: CoordinateAxes::XYZM,
+                        images: vec![0, 1, 2],
+                    }],
+                    polygons: Vec::new(),
+                },
+            })],
+            &mut work,
+        )
+        .expect("admit final packed line columns");
+        let mut line_receiver = FullRecordReceiver {
+            images: ImageRows(exact.clone()),
+            expected: records
+                .iter()
+                .copied()
+                .map(|record| {
+                    (
+                        LiteralAddress {
+                            operation: 13,
+                            logical_row: 0,
+                            group_row: None,
+                            value_row: None,
+                            output: 0,
+                        },
+                        record,
+                    )
+                })
+                .collect(),
+        };
+        assert!(matches!(
+            bind_literals(line_buffers, &mut line_receiver, &mut work)
+                .expect("bind final line columns"),
+            LiteralCheck::Pass(_)
+        ));
+
+        let ring = [records[0], records[1], records[2], records[0]];
+        let polygon_buffers = FrozenLiteralBuffers::rows(
+            polygon_rows(&ring),
+            None,
+            StorageLayout::LogicalRows,
+            vec![Some(LiteralRowLayout {
+                operation: 17,
+                logical_row: 0,
+                group_row: None,
+                value_row: None,
+                layout: ShapeLiteralLayout {
+                    points: Vec::new(),
+                    lines: Vec::new(),
+                    polygons: vec![LiteralPolygon {
+                        output: 0,
+                        axes: CoordinateAxes::XYZM,
+                        shell: LiteralSequence {
+                            output: 0,
+                            axes: CoordinateAxes::XYZM,
+                            images: vec![0, 1, 2, 0],
+                        },
+                        holes: Vec::new(),
+                    }],
+                },
+            })],
+            &mut work,
+        )
+        .expect("admit final packed polygon columns");
+        let mut polygon_receiver = FullRecordReceiver {
+            images: ImageRows(exact),
+            expected: records
+                .iter()
+                .copied()
+                .map(|record| {
+                    (
+                        LiteralAddress {
+                            operation: 17,
+                            logical_row: 0,
+                            group_row: None,
+                            value_row: None,
+                            output: 0,
+                        },
+                        record,
+                    )
+                })
+                .collect(),
+        };
+        assert!(matches!(
+            bind_literals(polygon_buffers, &mut polygon_receiver, &mut work)
+                .expect("bind final polygon columns"),
+            LiteralCheck::Pass(_)
+        ));
+    }
+
+    #[test]
+    fn groups_bind_values_after_csr_and_validity_admission() {
+        let first = xyzm_point(10.0, 20.0, 110.0, 1010.0);
+        let second = xyzm_point(20.0, 30.0, 220.0, 2020.0);
+        let third = xyzm_point(30.0, 40.0, 330.0, 3030.0);
+        let corrupted_third = xyzm_point(30.0, 40.0, 330.0, 3031.0);
+        let mut work = Unmetered;
+        let valid = FrozenLiteralBuffers::groups(
+            point_rows(&[first, second, third]),
+            None,
+            StorageLayout::LogicalRows,
+            vec![
+                Some(point_literal_row(0, 11, 0, Some(0), Some(0))),
+                Some(point_literal_row(1, 11, 0, Some(0), Some(1))),
+                Some(point_literal_row(2, 11, 91, Some(3), Some(2))),
+            ],
+            vec![0, 2, 2, 2, 3],
+            ValidityMask::from_vec(4, vec![false, false, true, false]),
+            &mut work,
+        )
+        .expect("admit valid group CSR and values");
+        let mut valid_receiver = FullRecordReceiver {
+            images: ImageRows(points(&[(10.0, 20.0), (20.0, 30.0), (30.0, 40.0)]).exact),
+            expected: vec![
+                (
+                    LiteralAddress {
+                        operation: 11,
+                        logical_row: 0,
+                        group_row: Some(0),
+                        value_row: Some(0),
+                        output: 0,
+                    },
+                    first,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 11,
+                        logical_row: 0,
+                        group_row: Some(0),
+                        value_row: Some(1),
+                        output: 0,
+                    },
+                    second,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 11,
+                        logical_row: 91,
+                        group_row: Some(3),
+                        value_row: Some(2),
+                        output: 0,
+                    },
+                    third,
+                ),
+            ],
+        };
+        assert!(matches!(
+            bind_literals(valid, &mut valid_receiver, &mut work).expect("bind valid group storage"),
+            LiteralCheck::Pass(_)
+        ));
+        let buffers = FrozenLiteralBuffers::groups(
+            point_rows(&[first, second, corrupted_third]),
+            None,
+            StorageLayout::LogicalRows,
+            vec![
+                Some(point_literal_row(0, 11, 0, Some(0), Some(0))),
+                Some(point_literal_row(1, 11, 0, Some(0), Some(1))),
+                Some(point_literal_row(2, 11, 91, Some(3), Some(2))),
+            ],
+            vec![0, 2, 2, 2, 3],
+            ValidityMask::from_vec(4, vec![false, false, true, false]),
+            &mut work,
+        )
+        .expect("admit group CSR, validity, and value maps");
+        let mut receiver = FullRecordReceiver {
+            images: ImageRows(points(&[(10.0, 20.0), (20.0, 30.0), (30.0, 40.0)]).exact),
+            expected: vec![
+                (
+                    LiteralAddress {
+                        operation: 11,
+                        logical_row: 0,
+                        group_row: Some(0),
+                        value_row: Some(0),
+                        output: 0,
+                    },
+                    first,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 11,
+                        logical_row: 0,
+                        group_row: Some(0),
+                        value_row: Some(1),
+                        output: 0,
+                    },
+                    second,
+                ),
+                (
+                    LiteralAddress {
+                        operation: 11,
+                        logical_row: 91,
+                        group_row: Some(3),
+                        value_row: Some(2),
+                        output: 0,
+                    },
+                    third,
+                ),
+            ],
+        };
+        let LiteralCheck::Reject(rejected) =
+            bind_literals(buffers, &mut receiver, &mut work).expect("bind final Groups storage")
+        else {
+            panic!("the grouped value's changed final M ordinate must be rejected");
+        };
+        assert_eq!(rejected, vec![2]);
     }
 
     fn polygon_layout(graph: &AdmittedGraph, vertices: &[u32]) -> AdmittedLayout {
@@ -2893,7 +4152,10 @@ mod tests {
             LiteralCheck::Pass(sealed) => sealed,
             LiteralCheck::Reject(_) => panic!("actual closed-line slots match their images"),
         };
-        assert!(matches!(sealed.into_shape(), Shape::LineString(_)));
+        assert!(matches!(
+            sealed.into_shape().expect("scalar sink owns a shape"),
+            Shape::LineString(_)
+        ));
 
         let polygon_graph = admit_known_graph(reference, edges, identities, &mut work).unwrap();
         let layout = polygon_layout(&polygon_graph, &[0, 1, 2, 0]);

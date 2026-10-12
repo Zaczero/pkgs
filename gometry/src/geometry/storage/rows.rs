@@ -15,7 +15,7 @@ use super::{
 use crate::error::Result;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, CsrOffsetBuilder, GeometryErrorKind, GeometryKind, PolygonLevel,
-    RingLevel, Shape,
+    RingLevel, Shape, ShapeCountQuery, Work,
 };
 
 /// How a nullable payload is aligned when it crosses the owner boundary.
@@ -199,6 +199,97 @@ impl ArrayRows {
                 },
             },
         }
+    }
+
+    /// Admit a final writer's row map with the payload, preserving its logical
+    /// row identity through present-only compaction or scattering.
+    #[expect(
+        dead_code,
+        reason = "geographic final-storage receipts admit their writer map with the row owner"
+    )]
+    pub(crate) fn admit_with_row_map<T, W: Work>(
+        storage: Arc<GeometryArrayStorage>,
+        missing: Option<ValidityMask>,
+        layout: StorageLayout,
+        row_map: Vec<Option<T>>,
+        work: &mut W,
+    ) -> Result<(Self, Vec<Option<T>>)> {
+        work.charge(
+            u64::try_from(storage.len()).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let mut count = ShapeCountQuery::default();
+        let mut coordinates = 0_usize;
+        for row_index in 0..storage.len() {
+            work.charge(1)?;
+            coordinates = coordinates
+                .checked_add(storage.row(row_index).coordinates(&mut count)?)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        }
+        work.charge(
+            u64::try_from(coordinates).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+        )?;
+        let logical_rows = match missing.as_ref() {
+            Some(mask) => mask.len(),
+            None => storage.len(),
+        };
+        let row_map = match (missing.as_ref(), layout) {
+            (Some(mask), StorageLayout::PresentOnly) => {
+                if row_map.len() != mask.present_count() {
+                    return Err(GeometryErrorKind::message(
+                        "present-only writer map must match the payload's present row count",
+                    ));
+                }
+                let mut present_rows = row_map.into_iter();
+                let mut logical_map = Vec::with_capacity(mask.len());
+                for logical in 0..mask.len() {
+                    if mask.is_missing(logical) {
+                        logical_map.push(None);
+                    } else {
+                        logical_map.push(Some(present_rows.next().flatten().ok_or_else(|| {
+                            GeometryErrorKind::message("present writer row has no literal map")
+                        })?));
+                    }
+                }
+                if present_rows.next().is_some() {
+                    return Err(GeometryErrorKind::message(
+                        "present-only writer map contains an unused row",
+                    ));
+                }
+                logical_map
+            },
+            (Some(mask), StorageLayout::LogicalRows) => {
+                if row_map.len() != mask.len() {
+                    return Err(GeometryErrorKind::message(
+                        "logical writer map must match the missing mask",
+                    ));
+                }
+                if row_map
+                    .iter()
+                    .enumerate()
+                    .any(|(logical, row)| mask.is_missing(logical) != row.is_none())
+                {
+                    return Err(GeometryErrorKind::message(
+                        "logical writer map does not match row validity",
+                    ));
+                }
+                row_map
+            },
+            (None, _) => {
+                if row_map.len() != logical_rows || row_map.iter().any(Option::is_none) {
+                    return Err(GeometryErrorKind::message(
+                        "dense writer map must cover every payload row",
+                    ));
+                }
+                row_map
+            },
+        };
+        let rows = Self::admit(storage, missing, layout)?;
+        if row_map.len() != rows.len() {
+            return Err(GeometryErrorKind::message(
+                "admitted row map does not cover every logical row",
+            ));
+        }
+        Ok((rows, row_map))
     }
 
     pub(crate) fn storage(&self) -> &GeometryArrayStorage {
