@@ -3664,11 +3664,7 @@ impl ExactGeographicQ {
                         },
                     }
                 })?;
-        if let Some(error) = failure {
-            Err(error)
-        } else {
-            Ok(!stopped && result.is_continue())
-        }
+        failure.map_or_else(|| Ok(!stopped && result.is_continue()), Err)
     }
 
     pub(in crate::geometry) fn for_each_pole_sector(
