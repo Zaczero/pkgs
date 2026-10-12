@@ -705,6 +705,131 @@ def test_thin_seam_union_keeps_exclusions_and_disjoint_area() -> None:
     )
 
 
+def _native_seam_overlap_pair() -> tuple[gm.Polygon, gm.Polygon]:
+    return (
+        gm.Polygon(
+            [
+                (170.0, -1.0),
+                (-170.0, -1.0),
+                (-170.0, 2.0),
+                (170.0, 2.0),
+                (170.0, -1.0),
+            ],
+            crs=4326,
+        ),
+        gm.Polygon(
+            [
+                (177.0, 0.0),
+                (-174.0, 1.0),
+                (-174.0, 3.0),
+                (177.0, 2.0),
+                (177.0, 0.0),
+            ],
+            crs=4326,
+        ),
+    )
+
+
+def test_native_overlap_seam_union_keeps_both_selected_regions() -> None:
+    left, right = _native_seam_overlap_pair()
+    overlap = gm.Point(179.0, 1.0, crs=4326)
+    assert gm.contains(left, overlap)
+    assert gm.contains(right, overlap)
+
+    union = gm.union_all([left, right])
+
+    assert union.is_valid
+    assert gm.contains(union, overlap)
+    assert gm.contains(union, gm.Point(-176.0, 2.5, crs=4326))
+    assert not gm.contains(union, gm.Point(0.0, 1.0, crs=4326))
+
+
+def test_native_union_closes_multiple_west_seam_walls() -> None:
+    left, right = _native_seam_overlap_pair()
+    higher_west = gm.Polygon(
+        [(-180.0, 60.0), (-179.0, 61.0), (-180.0, 62.0), (-180.0, 60.0)],
+        crs=4326,
+    )
+    west = gm.Polygon(
+        [(-180.0, 50.0), (-179.0, 51.0), (-180.0, 52.0), (-180.0, 50.0)],
+        crs=4326,
+    )
+    operands = [left, right, higher_west, west]
+
+    overlap = gm.Point(179.0, 1.0, crs=4326)
+    assert gm.contains(left, overlap)
+    assert gm.contains(right, overlap)
+    union = gm.union_all(operands)
+
+    assert union.is_valid
+    assert gm.contains(union, overlap)
+    assert gm.contains(union, gm.Point(-176.0, 1.5, crs=4326))
+    assert gm.contains(union, gm.Point(-179.95, 61.0, crs=4326))
+    assert gm.contains(union, gm.Point(-179.95, 51.0, crs=4326))
+    assert not gm.contains(union, gm.Point(-179.95, 56.0, crs=4326))
+    assert not gm.contains(union, gm.Point(0.0, 1.0, crs=4326))
+    output_parts = [union] if union.geometry_type == 'Polygon' else list(union.parts)
+    emitted = {
+        (float(coordinate[0]), float(coordinate[1]))
+        for polygon in output_parts
+        for ring in (polygon.exterior, *polygon.interiors)
+        for coordinate in ring.coords
+    }
+    assert {
+        (-180.0, 50.0),
+        (-180.0, 52.0),
+        (-180.0, 60.0),
+        (-180.0, 62.0),
+    } <= emitted
+    assert union.to_wkb() == gm.union_all(list(reversed(operands))).to_wkb()
+
+
+def test_native_union_closes_an_upward_east_seam_wall() -> None:
+    left, right = _native_seam_overlap_pair()
+    east = gm.Polygon(
+        [(180.0, 60.0), (180.0, 62.0), (179.0, 61.0), (180.0, 60.0)],
+        crs=4326,
+    )
+
+    union = gm.union_all([left, right, east])
+
+    assert union.is_valid
+    assert gm.contains(union, gm.Point(179.95, 61.0, crs=4326))
+    output_parts = [union] if union.geometry_type == 'Polygon' else list(union.parts)
+    emitted = {
+        (float(coordinate[0]), float(coordinate[1]))
+        for polygon in output_parts
+        for ring in (polygon.exterior, *polygon.interiors)
+        for coordinate in ring.coords
+    }
+    assert {(180.0, 60.0), (180.0, 62.0)} <= emitted
+
+
+def test_native_union_preserves_a_seam_touching_hole() -> None:
+    left, right = _native_seam_overlap_pair()
+    holed = gm.Polygon(
+        [(170.0, 70.0), (-170.0, 70.0), (-170.0, 74.0), (170.0, 74.0), (170.0, 70.0)],
+        holes=[[(-180.0, 71.0), (-180.0, 73.0), (-179.0, 72.0), (-180.0, 71.0)]],
+        crs=4326,
+    )
+    assert gm.contains(holed, gm.Point(-179.95, 70.5, crs=4326))
+    assert not gm.contains(holed, gm.Point(-179.95, 72.0, crs=4326))
+
+    union = gm.union_all([left, right, holed])
+
+    assert union.is_valid
+    assert gm.contains(union, gm.Point(-179.95, 70.5, crs=4326))
+    assert not gm.contains(union, gm.Point(-179.95, 72.0, crs=4326))
+    output_parts = [union] if union.geometry_type == 'Polygon' else list(union.parts)
+    emitted = {
+        (float(coordinate[0]), float(coordinate[1]))
+        for polygon in output_parts
+        for ring in (polygon.exterior, *polygon.interiors)
+        for coordinate in ring.coords
+    }
+    assert {(-180.0, 71.0), (-180.0, 73.0)} <= emitted
+
+
 # OpenStreetMap Argentina and Uruguay borders near the Rio de la Plata, clipped
 # to a 0.03-degree box. Two border vertices lie one ULP apart, so the dissolve
 # has a sliver face containing no representable point.

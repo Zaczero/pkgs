@@ -2039,18 +2039,18 @@ mod tests {
     }
 
     #[test]
-    fn search_forwards_the_shared_work_handle_to_both_comparison_hooks() -> Result<()> {
+    fn search_forwards_the_shared_work_handle_to_both_comparison_hooks() {
         let phase = Rc::new(Cell::new(0));
         let mut problem = FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0]; 2]);
         problem.comparison_phase = Some(Rc::clone(&phase));
         let mut account = ComparisonWorkProbe {
-            budget: EvaluationBudget::new("comparison_work_probe", 2)?,
+            budget: EvaluationBudget::new("comparison_work_probe", 2).unwrap(),
             phase,
             comparator_ticks: Cell::new([0; 3]),
         };
 
         assert!(matches!(
-            run_with_budget(&mut problem, &mut account)?,
+            run_with_budget(&mut problem, &mut account).unwrap(),
             SearchOutcome::Pass(_)
         ));
         let comparator_ticks = account.comparator_ticks.get();
@@ -2064,17 +2064,21 @@ mod tests {
             FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0]; 2]),
             "comparison_work_probe",
             2,
-        )?
-        .run()?;
+        )
+        .unwrap()
+        .run()
+        .unwrap();
         let ordinary_phase = Rc::new(Cell::new(0));
         let mut ordinary_problem = FixtureProblem::new(vec![vec![1, 0]], vec![vec![1, 0]; 2]);
         ordinary_problem.comparison_phase = Some(ordinary_phase);
-        let ordinary = Search::new(ordinary_problem, "comparison_work_probe", 2)?.run()?;
+        let ordinary = Search::new(ordinary_problem, "comparison_work_probe", 2)
+            .unwrap()
+            .run()
+            .unwrap();
         assert_eq!(ordinary.evaluations, baseline.evaluations);
         assert_eq!(ordinary.output, baseline.output);
         assert_eq!(ordinary.classes[0].variables, baseline.classes[0].variables);
         assert_eq!(ordinary.classes[0].values, baseline.classes[0].values);
-        Ok(())
     }
 
     #[test]
