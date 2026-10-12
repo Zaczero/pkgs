@@ -708,7 +708,8 @@ mod tests {
                     },
                     "work_limit",
                     "subdivide",
-                    "could not certify a binary64 embedding within its search budget",
+                    "could not certify a binary64 embedding within its search budget \
+                     (123 evaluations over 5 constructed vertices)",
                 ),
                 (
                     GeometryErrorKind::GeneratedOutputTooLarge {

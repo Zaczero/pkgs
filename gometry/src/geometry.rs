@@ -189,8 +189,9 @@ use std::collections::BinaryHeap;
 use std::fmt;
 
 use access::{
-    compare_f64, compare_point_slices, compare_points, compare_polygons, compare_shapes,
-    line_length, linework_first_point, simd_reduce_f64, simd_xy_map_one_f64,
+    compare_f64, compare_point_slices, compare_point_slices_with_work, compare_points,
+    compare_polygons, compare_polygons_with_work, compare_shapes, line_length,
+    linework_first_point, simd_reduce_f64, simd_xy_map_one_f64,
 };
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use chart_bvh::ChartEdgeBvh;
