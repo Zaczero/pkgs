@@ -282,37 +282,136 @@ fn lifted_longitude_delta(frame: GeographicFrame, segment: Segment) -> f64 {
 }
 
 impl Chart<'_> {
-    fn emit_with_parameters(
+    fn emission<'a>(
         &self,
         segment: Segment,
         length: f64,
         pieces: usize,
-        source: &CoordSeq,
+        source: &'a CoordSeq,
         source_segment: usize,
-        output: &mut OutputColumns,
-        record_parameter: impl FnMut(f64),
-        budget: &ExpansionBudget,
-        planned_generated: usize,
-        refined_generated: &mut usize,
-    ) -> Result<()> {
+    ) -> Result<ChartEmission<'a>> {
         let edge = crate::crs::ChartEdge::new(
             point_from_xy(segment.start),
             point_from_xy(segment.end),
             self.frame,
         )?;
-        emit_chart_plan(
+        Ok(ChartEmission {
             source,
             source_segment,
-            &edge,
-            self.geodesic,
+            edge,
+            geodesic: self.geodesic,
             length,
             pieces,
-            output,
-            record_parameter,
-            budget,
-            planned_generated,
-            refined_generated,
-        )
+        })
+    }
+}
+
+struct ChartEmission<'a> {
+    source: &'a CoordSeq,
+    source_segment: usize,
+    edge: crate::crs::ChartEdge,
+    geodesic: &'a geographiclib_rs::Geodesic,
+    length: f64,
+    pieces: usize,
+}
+
+impl ChartEmission<'_> {
+    #[expect(
+        clippy::float_cmp,
+        reason = "source parameters are exact binary64 vertices of the emitted chain"
+    )]
+    fn emit(
+        &self,
+        output: &mut OutputColumns,
+        mut record_parameter: impl FnMut(f64),
+        budget: &ExpansionBudget,
+        planned_generated: usize,
+        refined_generated: &mut usize,
+    ) -> Result<()> {
+        let source_start = self.source.nth_coord(self.source_segment);
+        let source_end = self.source.nth_coord(self.source_segment.wrapping_add(1));
+        let mut previous_parameter = 0.0;
+        let mut last_emitted_parameter = None;
+        for step in 1..=self.pieces {
+            let fraction = step as f64 / self.pieces as f64;
+            let parameter = if step == self.pieces {
+                1.0
+            } else if self.edge.is_parallel() {
+                fraction
+            } else {
+                self.edge
+                    .locate_t(self.length * fraction, self.length, self.geodesic)?
+            };
+            if parameter <= previous_parameter || (step < self.pieces && parameter >= 1.0) {
+                return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
+            }
+            self.edge.publish_source_interval(
+                source_start,
+                source_end,
+                previous_parameter,
+                parameter,
+                |parameter| self.edge.chart_position(parameter),
+                |parameter, point, refined| {
+                    if parameter == 0.0
+                        || parameter == 1.0
+                        || last_emitted_parameter == Some(parameter)
+                    {
+                        return Ok(());
+                    }
+                    if !(point.x.is_finite() && point.y.is_finite()) {
+                        return Err(GeometryErrorKind::message(
+                            "chart-edge subdivision calculation produced a non-finite coordinate",
+                        ));
+                    }
+                    let ordinate_fraction = if refined {
+                        self.edge.arclength_fraction(
+                            parameter,
+                            Some(self.length),
+                            self.geodesic,
+                        )?
+                    } else {
+                        fraction
+                    };
+                    if refined {
+                        let additional = refined_generated
+                            .checked_add(1)
+                            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                        let requested = planned_generated
+                            .checked_add(additional)
+                            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                        budget.check_additional(requested)?;
+                        *refined_generated = additional;
+                    }
+                    output.push_chart_point(
+                        self.source,
+                        self.source_segment,
+                        point,
+                        ordinate_fraction,
+                    )?;
+                    record_parameter(parameter);
+                    last_emitted_parameter = Some(parameter);
+                    Ok(())
+                },
+                "segmentize",
+            )
+            .map_err(|error| {
+                if matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Geometry(
+                        GeometryErrorKind::UnrepresentableOutput {
+                            operation: "computed edge",
+                            ..
+                        }
+                    )
+                ) {
+                    GeometryErrorKind::unrepresentable_output("segmentize")
+                } else {
+                    error
+                }
+            })?;
+            previous_parameter = parameter;
+        }
+        Ok(())
     }
 }
 
@@ -385,18 +484,8 @@ impl Route for Chart<'_> {
         planned_generated: usize,
         refined_generated: &mut usize,
     ) -> Result<()> {
-        self.emit_with_parameters(
-            segment,
-            length,
-            pieces,
-            source,
-            source_segment,
-            output,
-            |_| {},
-            budget,
-            planned_generated,
-            refined_generated,
-        )
+        self.emission(segment, length, pieces, source, source_segment)?
+            .emit(output, |_| {}, budget, planned_generated, refined_generated)
     }
 
     fn measure(&self, segment: Segment) -> Result<f64> {
@@ -484,18 +573,15 @@ impl Route for ChartWithSourceParameters<'_> {
             ..
         } = self;
         parameters.push(0.0);
-        chart.emit_with_parameters(
-            segment,
-            length,
-            pieces,
-            source,
-            source_segment,
-            output,
-            |parameter| parameters.push(parameter),
-            budget,
-            planned_generated,
-            refined_generated,
-        )?;
+        chart
+            .emission(segment, length, pieces, source, source_segment)?
+            .emit(
+                output,
+                |parameter| parameters.push(parameter),
+                budget,
+                planned_generated,
+                refined_generated,
+            )?;
         parameters.push(1.0);
         edge_ends.push(parameters.len());
         *next_edge = next_edge
@@ -1130,95 +1216,6 @@ fn emit_geodesic_plan(
         }
         xs.push(longitude);
         ys.push(latitude);
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::float_cmp,
-    reason = "source parameters are exact binary64 vertices of the emitted chain"
-)]
-fn emit_chart_plan(
-    points: &CoordSeq,
-    source_segment: usize,
-    edge: &crate::crs::ChartEdge,
-    geodesic: &geographiclib_rs::Geodesic,
-    length: f64,
-    pieces: usize,
-    output: &mut OutputColumns,
-    mut record_parameter: impl FnMut(f64),
-    budget: &ExpansionBudget,
-    planned_generated: usize,
-    refined_generated: &mut usize,
-) -> Result<()> {
-    let source_start = points.nth_coord(source_segment);
-    let source_end = points.nth_coord(source_segment.wrapping_add(1));
-    let mut previous_parameter = 0.0;
-    let mut last_emitted_parameter = None;
-    for step in 1..=pieces {
-        let fraction = step as f64 / pieces as f64;
-        let parameter = if step == pieces {
-            1.0
-        } else if edge.is_parallel() {
-            fraction
-        } else {
-            edge.locate_t(length * fraction, length, geodesic)?
-        };
-        if parameter <= previous_parameter || (step < pieces && parameter >= 1.0) {
-            return Err(GeometryErrorKind::unrepresentable_output("segmentize"));
-        }
-        edge.publish_source_interval(
-            source_start,
-            source_end,
-            previous_parameter,
-            parameter,
-            |parameter| edge.chart_position(parameter),
-            |parameter, point, refined| {
-                if parameter == 0.0 || parameter == 1.0 || last_emitted_parameter == Some(parameter)
-                {
-                    return Ok(());
-                }
-                if !(point.x.is_finite() && point.y.is_finite()) {
-                    return Err(GeometryErrorKind::message(
-                        "chart-edge subdivision calculation produced a non-finite coordinate",
-                    ));
-                }
-                let ordinate_fraction = if refined {
-                    edge.arclength_fraction(parameter, Some(length), geodesic)?
-                } else {
-                    fraction
-                };
-                if refined {
-                    let additional = refined_generated
-                        .checked_add(1)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                    let requested = planned_generated
-                        .checked_add(additional)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                    budget.check_additional(requested)?;
-                    *refined_generated = additional;
-                }
-                output.push_chart_point(points, source_segment, point, ordinate_fraction)?;
-                record_parameter(parameter);
-                last_emitted_parameter = Some(parameter);
-                Ok(())
-            },
-            "segmentize",
-        )
-        .map_err(|error| {
-            if matches!(
-                error.kind(),
-                crate::error::ErrorKind::Geometry(GeometryErrorKind::UnrepresentableOutput {
-                    operation: "computed edge",
-                    ..
-                })
-            ) {
-                GeometryErrorKind::unrepresentable_output("segmentize")
-            } else {
-                error
-            }
-        })?;
-        previous_parameter = parameter;
     }
     Ok(())
 }
