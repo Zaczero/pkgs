@@ -6,7 +6,8 @@
 
 use std::cmp::Ordering;
 
-use super::{ExactCarrier, ExactPoint, Rational, Result, Segment, nonnegative_upper_bound};
+use super::span_bounds::nonnegative_upper_bound;
+use super::{ExactCarrier, ExactPoint, Rational, Result, Segment};
 use crate::geometry::DdInterval;
 use crate::geometry::tessellation::exact::Interval;
 
