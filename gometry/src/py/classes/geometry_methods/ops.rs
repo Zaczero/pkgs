@@ -289,7 +289,7 @@ impl PyGeometry {
             Ok(topology) => topology,
             Err(error) => {
                 py.detach(move || shape.polygon_triangles())?;
-                return Err(error.into());
+                return Err(error);
             },
         };
         let triangles = match domain {

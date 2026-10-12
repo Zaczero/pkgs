@@ -20,7 +20,7 @@ pub(in crate::geometry::tessellation) fn prepare_earcut_publication(
         .ok_or(GeometryErrorKind::PolygonRequired)?
     {
         Polygonal::Polygon(polygon) => {
-            append_earcut_polygon(&mut publication, polygon, &mut source_offset, budget)?
+            append_earcut_polygon(&mut publication, polygon, &mut source_offset, budget)?;
         },
         Polygonal::MultiPolygon(polygons) => {
             for polygon in polygons.iter() {
@@ -90,35 +90,33 @@ fn append_earcut_polygon(
                         "earcut corner is outside its source ring inventory".into(),
                     )
                 })?;
-            let producer_ordinal = match occurrences.get(&corner.occurrence) {
-                Some(&(site, producer_ordinal)) => {
-                    if site != corner.site
-                        || publication
-                            .sites
-                            .get(producer_ordinal)
-                            .is_none_or(|prepared| {
-                                prepared.source_ordinal != source_ordinal
-                                    || prepared.record != point
-                            })
-                    {
-                        return Err(GeometryErrorKind::Invalid(
-                            "earcut occurrence changed its source site".into(),
-                        )
-                        .into());
-                    }
-                    producer_ordinal
-                },
-                None => {
-                    let producer_ordinal = publication.sites.len();
-                    publication.sites.push(PreparedMeshSite::source(
-                        producer_ordinal,
-                        source_ordinal,
-                        point,
-                        MeshSiteLocation::Cartesian,
-                    ));
-                    occurrences.insert(corner.occurrence, (corner.site, producer_ordinal));
-                    producer_ordinal
-                },
+            let producer_ordinal = if let Some(&(site, producer_ordinal)) =
+                occurrences.get(&corner.occurrence)
+            {
+                if site != corner.site
+                    || publication
+                        .sites
+                        .get(producer_ordinal)
+                        .is_none_or(|prepared| {
+                            prepared.source_ordinal != source_ordinal || prepared.record != point
+                        })
+                {
+                    return Err(GeometryErrorKind::Invalid(
+                        "earcut occurrence changed its source site".into(),
+                    )
+                    .into());
+                }
+                producer_ordinal
+            } else {
+                let producer_ordinal = publication.sites.len();
+                publication.sites.push(PreparedMeshSite::source(
+                    producer_ordinal,
+                    source_ordinal,
+                    point,
+                    MeshSiteLocation::Cartesian,
+                ));
+                occurrences.insert(corner.occurrence, (corner.site, producer_ordinal));
+                producer_ordinal
             };
             *output_sites.get_mut(corner_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("earcut face has an invalid corner".into())
@@ -149,25 +147,22 @@ fn append_earcut_polygon(
             MeshEdgeRole::EarcutBoundary,
         );
         let mut boundary_uses = [placeholder; 3];
-        for (side, &start_corner) in triangle.corners.iter().enumerate() {
-            let end_corner = triangle
-                .corners
-                .get(side.wrapping_add(1) % triangle.corners.len())
-                .copied()
-                .ok_or_else(|| {
-                    GeometryErrorKind::Invalid("earcut face has an invalid side".into())
-                })?;
+        let corner_pairs = triangle
+            .corners
+            .iter()
+            .copied()
+            .zip(triangle.corners.iter().copied().cycle().skip(1));
+        let site_pairs = output_sites
+            .iter()
+            .copied()
+            .zip(output_sites.iter().copied().cycle().skip(1));
+        for (side, ((start_corner, end_corner), (start_site, end_site))) in
+            corner_pairs.zip(site_pairs).enumerate()
+        {
             let use_id = MeshUseId::new(
                 face_id,
                 u8::try_from(side).expect("an earcut face has three sides"),
             );
-            let start_site = *output_sites.get(side).ok_or_else(|| {
-                GeometryErrorKind::Invalid("earcut face has an invalid side".into())
-            })?;
-            let end_side = side.wrapping_add(1) % output_sites.len();
-            let end_site = *output_sites.get(end_side).ok_or_else(|| {
-                GeometryErrorKind::Invalid("earcut face has an invalid side".into())
-            })?;
             let start_source = publication
                 .sites
                 .get(start_site)
