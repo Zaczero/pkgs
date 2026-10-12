@@ -409,7 +409,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
         drop(take_source_arc_observations());
         let parts = inventory.subdivision_parts_with_roots(
             &partition,
-            SubdivisionTraceRequest {
+            &SubdivisionTraceRequest {
                 source_shape: &child,
                 source_traces: Some(&traces),
                 roots: &roots,

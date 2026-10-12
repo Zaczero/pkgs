@@ -3313,7 +3313,7 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn subdivision_parts_with_budget<M: ChartMetric, C: RootCatalog>(
         &self,
         partition: &ExactPartition<'_>,
-        request: SubdivisionTraceRequest<'_, '_, '_, M, C>,
+        request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
         budget: &mut ExpansionBudget,
         trace_work: &mut EvaluationBudget,
     ) -> Result<[SubdivisionPart; 2]> {
@@ -3322,13 +3322,13 @@ impl ExactSourceInventory {
         let mut resolve_rows = |rows: &[RequestRowInput], work: &mut EvaluationBudget| {
             resolve_request_rows(rows, roots, context.metric_access(), work)
         };
-        self.subdivision_parts_traced(partition, &request, budget, trace_work, &mut resolve_rows)
+        self.subdivision_parts_traced(partition, request, budget, trace_work, &mut resolve_rows)
     }
 
     pub(in crate::geometry) fn subdivision_parts_with_roots<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
-        request: SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
+        request: &SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
         budget: &mut ExpansionBudget,
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
@@ -3337,33 +3337,31 @@ impl ExactSourceInventory {
         let mut resolve_rows = |rows: &[RequestRowInput], work: &mut Unmetered| {
             roots.resolve_output_requests(rows, context.metric_access(), work)
         };
-        match request.source_traces {
-            None => self.subdivision_parts_traced(
+        if request.source_traces.is_none() {
+            return self.subdivision_parts_traced(
                 partition,
-                &request,
+                request,
                 budget,
                 trace_work,
                 &mut resolve_rows,
-            ),
-            Some(_) => {
-                if LineSource::from_shape(request.source_shape).is_some() {
-                    return self.subdivision_parts_traced(
-                        partition,
-                        &request,
-                        budget,
-                        trace_work,
-                        &mut resolve_rows,
-                    );
-                }
-                self.subdivision_polygon_parts_with_roots(partition, request, budget, trace_work)
-            },
+            );
         }
+        if LineSource::from_shape(request.source_shape).is_some() {
+            return self.subdivision_parts_traced(
+                partition,
+                request,
+                budget,
+                trace_work,
+                &mut resolve_rows,
+            );
+        }
+        self.subdivision_polygon_parts_with_roots(partition, request, budget, trace_work)
     }
 
     pub(in crate::geometry) fn subdivision_polygon_parts_with_roots<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
-        request: SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
+        request: &SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
         budget: &mut ExpansionBudget,
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
@@ -3505,7 +3503,7 @@ impl ExactSourceInventory {
             &embedding,
             &nodes,
             polygon_requests.by_node,
-            &request,
+            request,
             polygon_requests.root_xy_nodes.as_deref(),
             trace_work,
             &mut resolve_rows,
