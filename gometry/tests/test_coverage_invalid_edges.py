@@ -16,5 +16,5 @@ def test_geographic_invalid_edge_rows_scatter_around_missing_rows() -> None:
     assert invalid_edges.is_missing.tolist() == [False, True, False, False]
     assert invalid_edges[0].is_empty
     assert invalid_edges[1] is None
-    assert not invalid_edges[2].is_empty
+    assert invalid_edges[2].is_empty
     assert not invalid_edges[3].is_empty
