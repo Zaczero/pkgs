@@ -3850,12 +3850,15 @@ mod subdivision_tests {
 
                 crate::geometry::ordinates::reset_root_range_mapping_counts();
                 crate::geometry::overlay::reset_subdivision_resolution_batches();
+                crate::geometry::overlay::reset_source_span_view_order_counts();
                 drop(crate::geometry::ordinates::take_source_arc_observations());
                 split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
                 let table_builds = crate::geometry::ordinates::root_request_table_builds();
                 let resolution_batches =
                     crate::geometry::overlay::take_subdivision_resolution_batches();
+                let (source_span_sorts, ordered_source_span_views) =
+                    crate::geometry::overlay::source_span_view_order_counts();
                 let root_observations = crate::geometry::ordinates::take_source_arc_observations();
                 assert!(
                     parts
@@ -3877,6 +3880,9 @@ mod subdivision_tests {
                     );
                 assert_eq!(table_builds, 0);
                 assert_eq!(resolution_batches.len(), cuts);
+                assert!(ordered_source_span_views > 0);
+                assert!(source_span_sorts <= cuts.saturating_mul(4));
+                assert!(source_span_sorts > 0);
                 assert!(resolution_batches.iter().all(|&(rows, requests, unique)| {
                     rows <= 2 && requests <= rows.saturating_mul(2) && unique == rows
                 }));

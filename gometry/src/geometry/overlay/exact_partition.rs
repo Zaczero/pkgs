@@ -67,6 +67,8 @@ thread_local! {
     static SUBDIVISION_ROOT_XY_POSITION_CALLS: Cell<usize> = const { Cell::new(0) };
     static SUBDIVISION_RESOLUTION_BATCHES: std::cell::RefCell<Vec<(usize, usize, usize)>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    static SOURCE_SPAN_VIEW_SORTS: Cell<usize> = const { Cell::new(0) };
+    static SOURCE_SPAN_VIEW_ORDERED: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -97,6 +99,20 @@ pub(crate) fn reset_subdivision_resolution_batches() {
 #[cfg(test)]
 pub(crate) fn take_subdivision_resolution_batches() -> Vec<(usize, usize, usize)> {
     SUBDIVISION_RESOLUTION_BATCHES.with(|batches| std::mem::take(&mut *batches.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn reset_source_span_view_order_counts() {
+    SOURCE_SPAN_VIEW_SORTS.with(|count| count.set(0));
+    SOURCE_SPAN_VIEW_ORDERED.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn source_span_view_order_counts() -> (usize, usize) {
+    (
+        SOURCE_SPAN_VIEW_SORTS.with(Cell::get),
+        SOURCE_SPAN_VIEW_ORDERED.with(Cell::get),
+    )
 }
 
 pub(in crate::geometry) use construction::Forest as ExactPointForest;
@@ -2417,9 +2433,7 @@ impl ExactSourceInventory {
                     continue;
                 };
                 let [first, _] = points;
-                if axes.has_z() && !first.axes().has_z()
-                    || axes.has_m() && !first.axes().has_m()
-                {
+                if axes.has_z() && !first.axes().has_z() || axes.has_m() && !first.axes().has_m() {
                     continue;
                 }
                 for point in points {
@@ -2446,9 +2460,7 @@ impl ExactSourceInventory {
                 continue;
             };
             let [first, _] = points;
-            if axes.has_z() && !first.axes().has_z()
-                || axes.has_m() && !first.axes().has_m()
-            {
+            if axes.has_z() && !first.axes().has_z() || axes.has_m() && !first.axes().has_m() {
                 continue;
             }
             for point in points {
@@ -3767,21 +3779,24 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         work: &mut W,
     ) -> Result<SourceLineTraceViews> {
-        let all_views = partition.source_span_trace_views(&self.source_segments, work)?;
-        if all_views.len() != self.source_operands.len() {
+        let source_count = self
+            .source_operands
+            .iter()
+            .filter(|&&operand| operand == 0)
+            .count();
+        let mut source_ids = Vec::with_capacity(source_count);
+        for (source, &operand) in self.source_operands.iter().enumerate() {
+            work.charge(1)?;
+            if operand == 0 {
+                source_ids.push(source);
+            }
+        }
+        let views = partition.source_span_trace_views(&self.source_segments, &source_ids, work)?;
+        if views.len() != source_ids.len() {
             return Err(GeometryErrorKind::Invalid(
-                "exact source trace views do not match the partition source inventory".into(),
+                "ordinary source trace views do not match the source rows".into(),
             )
             .into());
-        }
-        let mut source_ids = Vec::new();
-        let mut views = Vec::new();
-        for (source, source_views) in all_views.into_iter().enumerate() {
-            work.charge(1)?;
-            if self.source_operands.get(source).copied() == Some(0) {
-                source_ids.push(source);
-                views.push(source_views);
-            }
         }
         Ok(SourceLineTraceViews { source_ids, views })
     }
@@ -7320,6 +7335,41 @@ impl ExactPartition<'_> {
         self.points.orientation(a.0, b.0, c.0)
     }
 
+    fn source_span_view_is_ordered(&self, segment: Segment, view: &[(u32, bool)]) -> Result<bool> {
+        let entry = |(span_id, reversed): (u32, bool)| -> Result<NodeId> {
+            let span = self.spans.get(span_id as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source span view references an unknown span".into())
+            })?;
+            Ok(if reversed { span.end } else { span.start })
+        };
+        let exit = |(span_id, reversed): (u32, bool)| -> Result<NodeId> {
+            let span = self.spans.get(span_id as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source span view references an unknown span".into())
+            })?;
+            Ok(if reversed { span.start } else { span.end })
+        };
+        let first = *view.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("source span view has no first span".into())
+        })?;
+        let last = *view.last().ok_or_else(|| {
+            GeometryErrorKind::Invalid("source span view has no last span".into())
+        })?;
+        if self.stored_key(entry(first)?.0 as usize) != Some(PointKey::new(segment.start))
+            || self.stored_key(exit(last)?.0 as usize) != Some(PointKey::new(segment.end))
+        {
+            return Ok(false);
+        }
+        for pair in view.windows(2) {
+            let [left, right] = pair else {
+                continue;
+            };
+            if exit(*left)? != entry(*right)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Return each source segment's exact atomic span run in source direction.
     ///
     /// The partition provenance is the only source-to-atom relation here.
@@ -7350,6 +7400,15 @@ impl ExactPartition<'_> {
             if view.len() < 2 {
                 continue;
             }
+            // Provenance enumeration often already forms a contiguous source
+            // run; only genuinely unordered rows need the exact sweep sort.
+            if self.source_span_view_is_ordered(*segment, view)? {
+                #[cfg(test)]
+                SOURCE_SPAN_VIEW_ORDERED.with(|count| count.set(count.get().saturating_add(1)));
+                continue;
+            }
+            #[cfg(test)]
+            SOURCE_SPAN_VIEW_SORTS.with(|count| count.set(count.get().saturating_add(1)));
             // Each atom's entry is its node nearest the source start; ordered
             // along the source, every exit is the next atom's entry.
             let entry = |(span, reversed): (u32, bool)| {
@@ -7395,23 +7454,31 @@ impl ExactPartition<'_> {
     fn source_span_trace_views<W: Work + ?Sized>(
         &self,
         source_segments: &[Segment],
+        source_ids: &[usize],
         work: &mut W,
     ) -> Result<Vec<Vec<SourceSpanTraceView>>> {
         let views = self.source_span_views(source_segments)?;
-        let total = views.iter().try_fold(0_usize, |count, row| {
-            count
+        let mut total = 0_usize;
+        for &source in source_ids {
+            let row = views.get(source).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source span trace row is unknown".into())
+            })?;
+            total = total
                 .checked_add(row.len())
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
+                .ok_or(ResourceError::SizeOverflow)?;
+        }
         work.charge(u64::try_from(total).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut traced = Vec::with_capacity(views.len());
-        for (source, row) in views.into_iter().enumerate() {
+        let mut traced = Vec::with_capacity(source_ids.len());
+        for &source in source_ids {
             work.charge(1)?;
             let segment = *source_segments.get(source).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source span trace row is unknown".into())
             })?;
+            let row = views.get(source).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source span view row is unknown".into())
+            })?;
             let mut output = Vec::with_capacity(row.len());
-            for (span, reversed) in row {
+            for &(span, reversed) in row {
                 work.charge(1)?;
                 let span_data = self.spans.get(span as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid(

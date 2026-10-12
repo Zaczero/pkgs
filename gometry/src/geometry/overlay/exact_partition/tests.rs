@@ -222,13 +222,11 @@ fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
     let ranges =
         source_line_ranges(LineSource::from_shape(&source).expect("source is lineal")).unwrap();
     let mut work = Unmetered;
+    let source_ids = (0..inventory.source_segments.len()).collect::<Vec<_>>();
     let views = partition
-        .source_span_trace_views(&inventory.source_segments, &mut work)
+        .source_span_trace_views(&inventory.source_segments, &source_ids, &mut work)
         .unwrap();
-    let views = SourceLineTraceViews {
-        source_ids: (0..views.len()).collect(),
-        views,
-    };
+    let views = SourceLineTraceViews { source_ids, views };
     let selected = vec![false; partition.spans.len()];
     let traces = [
         crate::geometry::topology::SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap(),
