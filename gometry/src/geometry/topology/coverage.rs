@@ -680,9 +680,10 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
             .ok_or_else(|| GeometryErrorKind::Invalid("coverage Q span has no end port".into()))?;
         let bounds = ChartBounds::from_points(&start.point, &end.point)?;
         span_bounds.push(bounds);
-        for (endpoint, node) in span.nodes.iter().enumerate() {
+        let [first_node, _] = span.nodes;
+        for (endpoint, node) in span.nodes.into_iter().enumerate() {
             work.charge(1)?;
-            if endpoint == 1 && span.nodes[0] == *node {
+            if endpoint == 1 && first_node == node {
                 continue;
             }
             incident_spans
@@ -705,9 +706,9 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
             rows_on_span.push(row);
             edges_on_span.push(edge_index);
 
-            for endpoint in 0..2 {
+            for (endpoint, node) in span.nodes.into_iter().enumerate() {
                 work.charge(1)?;
-                let node = span.nodes[endpoint].0 as usize;
+                let node = node.0 as usize;
                 let parameter = if (endpoint == 0) == owner.reversed {
                     &owner.source_range.end
                 } else {

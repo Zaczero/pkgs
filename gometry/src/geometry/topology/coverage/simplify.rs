@@ -636,13 +636,16 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
         let frame = topology.sources.frame;
         let period = ExactRational::from_f64(frame.longitude().period());
         let mut occupied_poles = [false; 2];
-        for (index, pole) in [ChartPole::North, ChartPole::South].into_iter().enumerate() {
+        for (pole, occupied) in [ChartPole::North, ChartPole::South]
+            .into_iter()
+            .zip(&mut occupied_poles)
+        {
             work.charge(1)?;
             let point = ExactChartPoint::from_rationals(
                 topology.q.cut.try_clone_with_work(work)?,
                 ExactRational::from_f64(frame.chart_pole_latitude(pole)),
             );
-            occupied_poles[index] = !topology
+            *occupied = !topology
                 .face_rows_at_chart_point(&point, &analysis.face_rows, work)?
                 .is_empty();
         }
