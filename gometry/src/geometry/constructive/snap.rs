@@ -204,8 +204,7 @@ impl SnapReference {
         // Grow to the surviving candidates rather than the reference count:
         // this runs once per source segment, and a tolerance window admits a
         // handful of references out of the whole set.
-        let mut candidates: Vec<(SegmentProjection, Point)> = Vec::new();
-        let mut state = I::State::default();
+        let mut candidates: Vec<(SegmentProjection, XY)> = Vec::new();
         let mut consider = |reference: XY| -> crate::error::Result<()> {
             // Skip if within tolerance of either endpoint, or farther than
             // tolerance from the open segment (honest distance, not squared).
@@ -219,10 +218,7 @@ impl SnapReference {
                 return Ok(());
             }
             if !projection.is_start() && !projection.is_end() {
-                let mut point = interpolate.interpolate(start, end, &projection, &mut state)?;
-                point.x = reference.x;
-                point.y = reference.y;
-                candidates.push((projection, point));
+                candidates.push((projection, reference));
             }
             Ok(())
         };
@@ -258,17 +254,19 @@ impl SnapReference {
         }
         // Equal projections use the reference XY set rather than its input order.
         crate::geometry::try_sort_by(&mut candidates, |a, b| {
-            Ok(a.0
-                .cmp_along(&b.0)?
-                .then_with(|| compare_xy(XY::new(a.1.x, a.1.y), XY::new(b.1.x, b.1.y))))
+            Ok(a.0.cmp_along(&b.0)?.then_with(|| compare_xy(a.1, b.1)))
         })?;
         // Collapse only genuine duplicates — references at an identical
         // projected position. A fixed parametric epsilon would merge distinct
         // reference points (e.g. 0.5 and 0.5000000000005) even at tolerance 0.
         #[expect(clippy::float_cmp, reason = "exact projected-position identity")]
         candidates.dedup_by(|right, left| right.1.x == left.1.x && right.1.y == left.1.y);
+        let mut state = I::State::default();
         let mut output = Vec::with_capacity(candidates.len());
-        for (_, point) in candidates {
+        for (projection, reference) in candidates {
+            let mut point = interpolate.interpolate(start, end, &projection, &mut state)?;
+            point.x = reference.x;
+            point.y = reference.y;
             output.push(point);
         }
         Ok(output)
