@@ -1479,7 +1479,9 @@ mod tests {
                 }
                 edge.source
                     .iter()
-                    .position(|point| point.x == x && point.y == y)
+                    .position(|point| {
+                        point.x.to_bits() == x.to_bits() && point.y.to_bits() == y.to_bits()
+                    })
                     .map(|endpoint_index| (edge_index, endpoint_index))
             })
             .expect("source coordinate has an exact source edge endpoint");
