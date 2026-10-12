@@ -5183,47 +5183,44 @@ fn exact_ring_edge_roles(
                     if atom.edge != edge_id {
                         continue;
                     }
-                    if clip.source.is_some() {
-                        if let Some(roots) = clip.source_roots.get(atom.segment as usize) {
-                            for root in roots {
-                                let source_start = if root.reversed {
-                                    exact::ExactRational::one()
-                                        .try_subtract(&atom.start_parameter)?
+                    if clip.source.is_some()
+                        && let Some(roots) = clip.source_roots.get(atom.segment as usize)
+                    {
+                        for root in roots {
+                            let source_start = if root.reversed {
+                                exact::ExactRational::one().try_subtract(&atom.start_parameter)?
+                            } else {
+                                atom.start_parameter.clone()
+                            };
+                            let source_end = if root.reversed {
+                                exact::ExactRational::one().try_subtract(&atom.end_parameter)?
+                            } else {
+                                atom.end_parameter.clone()
+                            };
+                            let source_forward = (forward != atom.reversed) != root.reversed;
+                            source_uses.push(VoronoiEdgeSourceUse {
+                                source_segment: atom.segment,
+                                source_operand: None,
+                                source_ring: Some(
+                                    u32::try_from(root.ring)
+                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                                ),
+                                source_edge: Some(
+                                    u32::try_from(root.edge)
+                                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                                ),
+                                forward: source_forward,
+                                start_parameter: if source_forward {
+                                    source_start.clone()
                                 } else {
-                                    atom.start_parameter.clone()
-                                };
-                                let source_end = if root.reversed {
-                                    exact::ExactRational::one().try_subtract(&atom.end_parameter)?
+                                    source_end.clone()
+                                },
+                                end_parameter: if source_forward {
+                                    source_end
                                 } else {
-                                    atom.end_parameter.clone()
-                                };
-                                let source_forward = (forward != atom.reversed) != root.reversed;
-                                source_uses.push(VoronoiEdgeSourceUse {
-                                    source_segment: atom.segment,
-                                    source_operand: None,
-                                    source_ring: Some(
-                                        u32::try_from(root.ring).map_err(|_| {
-                                            crate::error::ResourceError::SizeOverflow
-                                        })?,
-                                    ),
-                                    source_edge: Some(
-                                        u32::try_from(root.edge).map_err(|_| {
-                                            crate::error::ResourceError::SizeOverflow
-                                        })?,
-                                    ),
-                                    forward: source_forward,
-                                    start_parameter: if source_forward {
-                                        source_start.clone()
-                                    } else {
-                                        source_end.clone()
-                                    },
-                                    end_parameter: if source_forward {
-                                        source_end
-                                    } else {
-                                        source_start
-                                    },
-                                });
-                            }
+                                    source_start
+                                },
+                            });
                         }
                     }
                 }
