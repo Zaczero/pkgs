@@ -5218,7 +5218,7 @@ fn exact_ring_edge_roles(
                                         source_end.clone()
                                     },
                                     end_parameter: if source_forward {
-                                        source_end.clone()
+                                        source_end
                                     } else {
                                         source_start
                                     },
@@ -6651,7 +6651,7 @@ fn collinear_polygon_receipt(
                         embedded: id,
                         point: vertex.assignment,
                     });
-                    let _ = vertex_ids.insert(key.clone(), id);
+                    let _ = vertex_ids.insert(key, id);
                     id
                 };
                 ids.push(id);
@@ -6734,7 +6734,7 @@ fn collinear_polygon_receipt(
                         owner_transition: [None, None],
                         origins: origins.clone(),
                     });
-                    let _ = edge_ids.insert(key.clone(), edge);
+                    let _ = edge_ids.insert(key, edge);
                     first_darts.push(None);
                     edge
                 };
@@ -8819,8 +8819,8 @@ fn dual_embed(
             clip_segment.atoms.push(VoronoiClipAtomReceipt {
                 edge: edge_id,
                 reversed,
-                start_parameter: low_parameter.clone(),
-                end_parameter: high_parameter.clone(),
+                start_parameter: low_parameter,
+                end_parameter: high_parameter,
             });
             if clip.source.is_some() {
                 for (vertex_id, parameter) in
