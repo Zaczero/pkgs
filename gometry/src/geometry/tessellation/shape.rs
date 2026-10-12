@@ -1099,8 +1099,8 @@ impl Shape {
 /// Canonical sites: signed zeros normalized, coincident points merged, and
 /// snapping applied once at the public boundary, so the tessellators always
 /// receive a true site set in x order with dense ids.
-pub(super) fn canonical_voronoi_sites(mut points: Vec<Point>, tolerance: f64) -> Result<Vec<Site>> {
-    let mut rows = points.drain(..).enumerate().collect::<Vec<_>>();
+pub(super) fn canonical_voronoi_sites(points: Vec<Point>, tolerance: f64) -> Result<Vec<Site>> {
+    let mut rows = points.into_iter().enumerate().collect::<Vec<_>>();
     for (_, point) in &mut rows {
         point.x += 0.0;
         point.y += 0.0;

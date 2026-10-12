@@ -6406,7 +6406,7 @@ fn rounded_ring_with_origins(
         let last_edge = origins
             .last_mut()
             .ok_or_else(|| voronoi_error("rounded collinear strip has no closing edge"))?;
-        for origin in pending.drain(..) {
+        for origin in std::mem::take(&mut pending) {
             if !last_edge.contains(&origin) {
                 last_edge.push(origin);
             }
