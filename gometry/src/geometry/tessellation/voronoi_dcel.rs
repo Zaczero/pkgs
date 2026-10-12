@@ -4710,10 +4710,10 @@ impl Problem for VoronoiProblem<'_, '_> {
         _variables: &[Self::Node],
         work: &mut W,
     ) -> Result<Vec<Self::Key>> {
-        work.charge_product(self.embedding.live_nodes.len(), 1)?;
+        work.charge_product_into_error(self.embedding.live_nodes.len(), 1)?;
         let mut keys = Vec::with_capacity(self.embedding.live_nodes.len());
         for &node in self.embedding.live_nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -4721,7 +4721,7 @@ impl Problem for VoronoiProblem<'_, '_> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 keys.push(PointKey::new(
                     self.embedding.xy(node, self.embedding.coordinates)?,
                 ));
@@ -4758,7 +4758,7 @@ impl Problem for VoronoiProblem<'_, '_> {
             .len()
             .checked_mul(y_values.len())
             .expect("three candidate coordinates per axis fit in usize");
-        work.charge_product(candidate_count, 1)?;
+        work.charge_product_into_error(candidate_count, 1)?;
         candidates.reserve(candidate_count);
         for &x in &x_values {
             for &y in &y_values {

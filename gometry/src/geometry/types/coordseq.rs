@@ -413,7 +413,7 @@ fn columns_all_finite(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f
 }
 
 fn reserve_point_column(count: usize, work: &mut impl Work) -> Result<Vec<f64>> {
-    work.charge_product(count, 1)?;
+    work.charge_product_into_error(count, 1)?;
     Ok(Vec::with_capacity(count))
 }
 
@@ -423,13 +423,13 @@ fn copy_point_column(
     ordinate: impl FnMut(Point) -> f64,
     work: &mut impl Work,
 ) -> Result<()> {
-    work.charge_product(points.len(), 1)?;
+    work.charge_product_into_error(points.len(), 1)?;
     column.extend(points.iter().copied().map(ordinate));
     Ok(())
 }
 
 fn point_column_all_finite(values: &[f64], work: &mut impl Work) -> Result<bool> {
-    work.charge_product(values.len(), 1)?;
+    work.charge_product_into_error(values.len(), 1)?;
     Ok(column_all_finite(values))
 }
 
@@ -1111,11 +1111,21 @@ mod work_funded_constructor_tests {
     }
 
     impl Work for RecordingWork {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
             self.attempted.push(ticks);
             self.budget.charge(ticks)?;
             self.accepted.push(ticks);
             Ok(())
+        }
+
+        fn charge_product(
+            &mut self,
+            count: usize,
+            ticks_per_item: usize,
+        ) -> crate::error::Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

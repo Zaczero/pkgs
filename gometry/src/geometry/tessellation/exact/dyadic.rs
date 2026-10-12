@@ -118,7 +118,7 @@ impl CompactLimbs {
 
     fn from_vec_with_work<W: Work>(limbs: Vec<u64>, work: &mut W) -> Result<Self> {
         if limbs.len() <= INLINE_DYADIC_LIMBS {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Ok(Self::inline_from_slice(&limbs))
         } else {
             Ok(Self::Heap(limbs))
@@ -128,19 +128,19 @@ impl CompactLimbs {
     fn try_clone_with_work<W: Work>(&self, work: &mut W) -> Result<Self> {
         match self {
             Self::Inline { limbs, len } => {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 Ok(Self::Inline {
                     limbs: *limbs,
                     len: *len,
                 })
             },
             Self::Heap(limbs) if limbs.len() <= INLINE_DYADIC_LIMBS => {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 Ok(Self::inline_from_slice(limbs))
             },
             Self::Heap(limbs) => {
-                work.charge_product(limbs.len(), 1)?;
-                work.charge_product(limbs.len(), 1)?;
+                work.charge_product_into_error(limbs.len(), 1)?;
+                work.charge_product_into_error(limbs.len(), 1)?;
                 Ok(Self::Heap(limbs.clone()))
             },
         }
@@ -150,7 +150,7 @@ impl CompactLimbs {
         if let Self::Heap(limbs) = self
             && limbs.len() <= INLINE_DYADIC_LIMBS
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             *self = Self::inline_from_slice(limbs);
         }
         Ok(())
@@ -222,17 +222,17 @@ impl CompactLimbs {
         match self {
             Self::Inline { limbs, len } => {
                 let length = usize::from(*len);
-                work.charge_product(length.wrapping_sub(count), 1)?;
+                work.charge_product_into_error(length.wrapping_sub(count), 1)?;
                 limbs.copy_within(count..length, 0);
                 // `copy_within` returns only when count <= length.
                 let new_length = length.wrapping_sub(count);
-                work.charge_product(INLINE_DYADIC_LIMBS.wrapping_sub(new_length), 1)?;
+                work.charge_product_into_error(INLINE_DYADIC_LIMBS.wrapping_sub(new_length), 1)?;
                 limbs.split_at_mut(new_length).1.fill(0);
                 // The successful copy and two-limb invariant also bound this cast.
                 *len = (*len).wrapping_sub(count as u8);
             },
             Self::Heap(limbs) => {
-                work.charge_product(limbs.len().wrapping_sub(count), 1)?;
+                work.charge_product_into_error(limbs.len().wrapping_sub(count), 1)?;
                 limbs.drain(..count);
             },
         }
@@ -241,7 +241,7 @@ impl CompactLimbs {
 
     fn try_trim_high_with_work<W: Work>(&mut self, work: &mut W) -> Result<()> {
         loop {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self.as_slice().last() != Some(&0) {
                 return Ok(());
             }
@@ -361,14 +361,14 @@ impl<'a> Aligned<'a> {
     }
 
     fn trimmed_words_with_work<W: Work>(self, work: &mut W) -> Result<Vec<u64>> {
-        work.charge_product(self.len, 1)?;
-        work.charge_product(self.len, 1)?;
+        work.charge_product_into_error(self.len, 1)?;
+        work.charge_product_into_error(self.len, 1)?;
         let mut words = Vec::with_capacity(self.len);
         for index in 0..self.len {
             words.push(self.word(index));
         }
         loop {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if words.pop_if(|word| *word == 0).is_none() {
                 break;
             }
@@ -488,7 +488,7 @@ impl ExactDyadic {
 
     pub(in crate::geometry) fn try_trim_with_work<W: Work>(&mut self, work: &mut W) -> Result<()> {
         self.limbs.try_trim_high_with_work(work)?;
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if self.limbs.is_empty() {
             self.limbs = CompactLimbs::zero();
             self.negative = false;
@@ -497,7 +497,7 @@ impl ExactDyadic {
         }
         let mut zero_words: usize = 0;
         for &limb in self.limbs.iter() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if limb != 0 {
                 break;
             }
@@ -520,7 +520,7 @@ impl ExactDyadic {
             self.limbs.try_remove_prefix_with_work(zero_words, work)?;
         }
         if zero_bits != 0 {
-            work.charge_product(self.limbs.len(), 1)?;
+            work.charge_product_into_error(self.limbs.len(), 1)?;
             let mut carry = 0_u64;
             for limb in self.limbs.iter_mut().rev() {
                 let next = *limb << 64_u32.wrapping_sub(zero_bits);
@@ -615,8 +615,8 @@ impl ExactDyadic {
     ) -> Result<()> {
         debug_assert!(out.is_empty());
         let length = left.len.max(right.len);
-        work.charge_product(length, 1)?;
-        work.charge(1)?;
+        work.charge_product_into_error(length, 1)?;
+        work.charge_into_error(1)?;
         // Two u64 words and a one-bit carry always fit exactly in u128.
         let mut carry = 0_u128;
         for index in 0..length {
@@ -639,7 +639,7 @@ impl ExactDyadic {
         work: &mut W,
     ) -> Result<()> {
         debug_assert!(out.is_empty());
-        work.charge_product(larger.len, 1)?;
+        work.charge_product_into_error(larger.len, 1)?;
         // Two u64 words and a one-bit borrow stay within the i128 range.
         let mut borrow = 0_i128;
         for index in 0..larger.len {
@@ -668,9 +668,9 @@ impl ExactDyadic {
             // The extra limb is needed only when the final word carries. The
             // previous unconditional `length + 1` reservation made a
             // no-carry two-limb result spill even though it fit inline.
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let mut words = [0_u64; INLINE_DYADIC_LIMBS + 1];
-            work.charge_product(length, 1)?;
+            work.charge_product_into_error(length, 1)?;
             let mut carry = 0_u128;
             for (index, word) in words.iter_mut().take(length).enumerate() {
                 let sum = u128::from(left.word(index))
@@ -680,16 +680,16 @@ impl ExactDyadic {
                 carry = sum >> 64;
             }
             if carry != 0 {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let (_, suffix) = words.split_at_mut(length);
                 *suffix.first_mut().expect("the inline sum has a carry limb") = carry as u64;
             }
             let result_length = length.wrapping_add(usize::from(carry != 0));
             let (result_words, _) = words.split_at(result_length);
             if result_length > INLINE_DYADIC_LIMBS {
-                work.charge_product(result_length, 1)?;
+                work.charge_product_into_error(result_length, 1)?;
             }
-            work.charge_product(result_length, 1)?;
+            work.charge_product_into_error(result_length, 1)?;
             let mut result = CompactLimbs::with_capacity(result_length);
             for &word in result_words {
                 result.push(word);
@@ -699,7 +699,7 @@ impl ExactDyadic {
         // `Aligned::len` is bounded by the vector and exponent ranges in
         // `shifted_len`, so the carry limb count fits usize.
         let capacity = length.wrapping_add(1);
-        work.charge_product(capacity, 1)?;
+        work.charge_product_into_error(capacity, 1)?;
         let mut result = CompactLimbs::with_capacity(capacity);
         Self::write_sum_aligned(left, right, &mut result, work)?;
         Ok(result)
@@ -710,7 +710,7 @@ impl ExactDyadic {
         smaller: Aligned<'_>,
         work: &mut W,
     ) -> Result<CompactLimbs> {
-        work.charge_product(larger.len, 1)?;
+        work.charge_product_into_error(larger.len, 1)?;
         let mut result = CompactLimbs::with_capacity(larger.len);
         Self::write_diff_aligned(larger, smaller, &mut result, work)?;
         Ok(result)
@@ -722,7 +722,7 @@ impl ExactDyadic {
         work: &mut W,
     ) -> Result<Ordering> {
         for index in (0..left.len.max(right.len)).rev() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let order = left.word(index).cmp(&right.word(index));
             match order {
                 Ordering::Equal => {},
@@ -830,7 +830,7 @@ impl ExactDyadic {
             && left_shift < 64
             && right_shift < 64
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let left_value = u128::from(*left_limb) << left_shift;
             let right_value = u128::from(*right_limb) << right_shift;
             return if left_negative == right_negative {
@@ -962,7 +962,7 @@ impl ExactDyadic {
         other_exponent: i128,
         work: &mut W,
     ) -> Result<Ordering> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if self.is_zero() {
             return Ok(if other.is_zero() {
                 Ordering::Equal
@@ -1010,8 +1010,8 @@ impl ExactDyadic {
         work: &mut W,
     ) -> Result<()> {
         debug_assert!(out.is_empty());
-        work.charge_product(short.len(), long.len())?;
-        work.charge_product(short.len(), 1)?;
+        work.charge_product_into_error(short.len(), long.len())?;
+        work.charge_product_into_error(short.len(), 1)?;
         let first = short[0];
         // A u64 product plus an existing limb and a one-limb carry is at most
         // 2^128 - 1, so these low-word operations preserve the full sum.
@@ -1056,7 +1056,7 @@ impl ExactDyadic {
             .checked_add(other.exponent)
             .ok_or(ResourceError::SizeOverflow)?;
         if let ([left], [right]) = (self.limbs.as_slice(), other.limbs.as_slice()) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             return Self::try_from_u128(
                 self.negative != other.negative,
                 u128::from(*left).wrapping_mul(u128::from(*right)),
@@ -1071,7 +1071,7 @@ impl ExactDyadic {
         // Each heap limb vector is bounded by its allocation layout, so the
         // combined limb-count upper bound fits usize on supported 64-bit targets.
         let needed = short.len().wrapping_add(long.len());
-        work.charge_product(needed, 1)?;
+        work.charge_product_into_error(needed, 1)?;
         let mut limbs = CompactLimbs::with_capacity(needed);
         Self::write_product(short, long, &mut limbs, work)?;
         let mut result = Self {
@@ -1094,7 +1094,7 @@ impl ExactDyadic {
         right: &[u64],
         work: &mut W,
     ) -> Result<Ordering> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let left_len = left.len();
         let right_len = right.len();
         match left_len.cmp(&right_len) {
@@ -1103,7 +1103,7 @@ impl ExactDyadic {
             Ordering::Greater => return Ok(Ordering::Greater),
         }
         for (&left_word, &right_word) in left.iter().rev().zip(right.iter().rev()) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             match left_word.cmp(&right_word) {
                 Ordering::Equal => {},
                 Ordering::Less => return Ok(Ordering::Less),
@@ -1114,14 +1114,14 @@ impl ExactDyadic {
     }
 
     fn try_clone_words_with_work<W: Work>(words: &[u64], work: &mut W) -> Result<Vec<u64>> {
-        work.charge_product(words.len(), 1)?;
-        work.charge_product(words.len(), 1)?;
+        work.charge_product_into_error(words.len(), 1)?;
+        work.charge_product_into_error(words.len(), 1)?;
         Ok(words.to_vec())
     }
 
     fn try_trim_words_with_work<W: Work>(words: &mut Vec<u64>, work: &mut W) -> Result<()> {
         loop {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if words.last() != Some(&0) {
                 return Ok(());
             }
@@ -1165,18 +1165,18 @@ impl ExactDyadic {
             let mut quotient = Self::try_clone_words_with_work(dividend, work)?;
             let mut remainder = 0_u128;
             for limb in quotient.iter_mut().rev() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let value = (remainder << 64) | u128::from(*limb);
                 *limb = (value / digit) as u64;
                 remainder = value % digit;
             }
             Self::try_trim_words_with_work(&mut quotient, work)?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let remainder = if remainder == 0 {
                 Vec::new()
             } else {
-                work.charge_product(1, 1)?;
-                work.charge_product(1, 1)?;
+                work.charge_product_into_error(1, 1)?;
+                work.charge_product_into_error(1, 1)?;
                 vec![remainder as u64]
             };
             return Ok((quotient, remainder));
@@ -1186,10 +1186,10 @@ impl ExactDyadic {
         let shift = divisor[n.wrapping_sub(1)].leading_zeros();
         let shifted = |limbs: &[u64], extra: usize, work: &mut W| -> Result<Vec<u64>> {
             let capacity = limbs.len().wrapping_add(extra);
-            work.charge_product(capacity, 1)?;
-            work.charge_product(limbs.len(), 1)?;
+            work.charge_product_into_error(capacity, 1)?;
+            work.charge_product_into_error(limbs.len(), 1)?;
             if extra != 0 {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
             }
             let mut out = Vec::with_capacity(capacity);
             let mut carry = 0_u64;
@@ -1210,17 +1210,17 @@ impl ExactDyadic {
         let mut u = shifted(dividend, 1, work)?;
         let final_digit = m.wrapping_sub(n);
         let quotient_length = final_digit.wrapping_add(1);
-        work.charge_product(quotient_length, 1)?;
-        work.charge_product(quotient_length, 1)?;
+        work.charge_product_into_error(quotient_length, 1)?;
+        work.charge_product_into_error(quotient_length, 1)?;
         let mut quotient = vec![0; quotient_length];
         let (top, next) = (
             u128::from(v[n.wrapping_sub(1)]),
             u128::from(v[n.wrapping_sub(2)]),
         );
         for j in (0..=final_digit).rev() {
-            work.charge(1)?;
-            work.charge_product(n, 1)?;
-            work.charge(2)?;
+            work.charge_into_error(1)?;
+            work.charge_product_into_error(n, 1)?;
+            work.charge_into_error(2)?;
             let numerator = (u128::from(u[j.wrapping_add(n)]) << 64)
                 | u128::from(u[j.wrapping_add(n).wrapping_sub(1)]);
             let mut estimate = numerator / top;
@@ -1229,14 +1229,14 @@ impl ExactDyadic {
             // digit fits u128. A failed comparison cannot decrement zero;
             // rest + top fits u128 and the loop breaks before rest reaches 2^64.
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let too_large = estimate > u128::from(u64::MAX)
                     || estimate.wrapping_mul(next)
                         > ((rest << 64) | u128::from(u[j.wrapping_add(n).wrapping_sub(2)]));
                 if !too_large {
                     break;
                 }
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 estimate = estimate.wrapping_sub(1);
                 rest = rest.wrapping_add(top);
                 if rest > u128::from(u64::MAX) {
@@ -1261,8 +1261,8 @@ impl ExactDyadic {
             u[high] = difference as u64;
             quotient[j] = estimate as u64;
             if difference < 0 {
-                work.charge_product(n, 1)?;
-                work.charge(2)?;
+                work.charge_product_into_error(n, 1)?;
+                work.charge_into_error(2)?;
                 quotient[j] = quotient[j].wrapping_sub(1);
                 let mut carry = 0_u128;
                 for (limb, &divisor) in u.iter_mut().skip(j).take(n).zip(&v) {
@@ -1276,10 +1276,10 @@ impl ExactDyadic {
             }
         }
         Self::try_trim_words_with_work(&mut quotient, work)?;
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         u.truncate(n);
         if shift != 0 {
-            work.charge_product(n, 1)?;
+            work.charge_product_into_error(n, 1)?;
             for i in 0..n {
                 let high = if i.wrapping_add(1) < n {
                     u[i.wrapping_add(1)] << 64_u32.wrapping_sub(shift)
@@ -1332,7 +1332,7 @@ impl ExactDyadic {
         if remainder.cmp_magnitude_scaled_with_work(divisor, -1, work)? == Ordering::Greater {
             let mut carry = true;
             for limb in &mut quotient {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let (incremented, overflowed) = limb.overflowing_add(1);
                 *limb = incremented;
                 if !overflowed {
@@ -1342,11 +1342,11 @@ impl ExactDyadic {
             }
             if carry {
                 if quotient.len() == quotient.capacity() {
-                    work.charge_product(quotient.len().wrapping_add(1), 1)?;
-                    work.charge_product(quotient.len(), 1)?;
+                    work.charge_product_into_error(quotient.len().wrapping_add(1), 1)?;
+                    work.charge_product_into_error(quotient.len(), 1)?;
                 }
                 quotient.reserve(1);
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 quotient.push(1);
             }
         }
@@ -1392,7 +1392,7 @@ impl ExactDyadic {
             // Binary GCD: both magnitudes are odd, so no common power of two
             // needs restoring.
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if left > right {
                     std::mem::swap(&mut left, &mut right);
                 }
@@ -1407,7 +1407,7 @@ impl ExactDyadic {
         let mut right = Self::try_clone_words_with_work(&other.limbs, work)?;
         while !right.is_empty() {
             let (_, remainder) = Self::div_rem_unsigned_with_work(&left, &right, work)?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             left = right;
             right = remainder;
         }
@@ -1458,7 +1458,7 @@ impl ExactDyadic {
         if let (Some(dividend), Some(magnitude)) =
             (self.small_magnitude(), divisor.small_magnitude())
         {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if dividend % magnitude != 0 {
                 return Err(crate::geometry::GeometryErrorKind::Invalid(
                     "exact dyadic quotient has a remainder".into(),
@@ -1497,7 +1497,7 @@ impl ExactDyadic {
         other: &Self,
         work: &mut W,
     ) -> Result<Ordering> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if self.negative != other.negative {
             return Ok(if self.negative {
                 Ordering::Less

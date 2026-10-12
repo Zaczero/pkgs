@@ -6747,7 +6747,7 @@ impl<P: Problem<Output = ()>> Problem for TestVerifier<'_, P> {
     ) -> Result<()> {
         self.inner.fill_candidates(node, candidates, work)?;
         if let Some(allowed) = self.candidate_filter {
-            work.charge_product(candidates.len(), 1)?;
+            work.charge_product_into_error(candidates.len(), 1)?;
             candidates.retain(|&candidate| allowed(node, candidate));
         }
         Ok(())
