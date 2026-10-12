@@ -17,7 +17,7 @@ use crate::geographic::{
     Latitude, publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::embedding_completion::{
-    FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout,
+    FrozenLiteralBuffers, SealedOutput, ShapeLiteralLayout, reorder_rows,
 };
 pub(super) use crate::geometry::embedding_completion::{
     LiteralPoint, LiteralPolygon, LiteralSequence,
@@ -1361,8 +1361,7 @@ pub(super) fn native_literal_uses_in_output_order(
         )
         .into());
     }
-    let line_traces =
-        crate::geometry::embedding_completion::reorder_rows(line_traces, &order.lines, work)?;
+    let line_traces = reorder_rows(line_traces, &order.lines, work)?;
     let literal_uses = literal_uses.in_output_order(order, work)?;
     Ok((literal_uses, line_traces))
 }
