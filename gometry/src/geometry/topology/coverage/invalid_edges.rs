@@ -24,7 +24,7 @@ pub(super) fn capture(
     let mut owners = Vec::new();
     for span in &topology.q.spans {
         work.charge_into_error(1)?;
-        for owner in span.owners.iter() {
+        for owner in &span.owners {
             work.charge_into_error(1)?;
             let invalid = invalid_edges
                 .get(owner.source_edge.0 as usize)
@@ -54,23 +54,32 @@ pub(super) fn project_shapes(
     owners: &[QSpanOwner],
     work: &mut impl Work,
 ) -> Result<Vec<Shape>> {
-    if owners.is_empty() {
-        return (0..topology.sources.row_count)
-            .map(|_| {
-                Ok(Shape::typed_empty(
-                    GeometryKind::LineString,
-                    CoordinateAxes::XY,
-                ))
-            })
-            .collect();
-    }
-
     if invalid_source_edge_flags.len() != topology.sources.edges.len() {
         return Err(GeometryErrorKind::Invalid(
             "coverage invalid-edge flags are out of sync with source edges".into(),
         )
         .into());
     }
+    if owners.is_empty() {
+        for &invalid in invalid_source_edge_flags {
+            work.charge_into_error(1)?;
+            if invalid {
+                return Err(GeometryErrorKind::Invalid(
+                    "coverage invalid-edge source ownership is incomplete".into(),
+                )
+                .into());
+            }
+        }
+        return std::iter::repeat_with(|| {
+            Ok(Shape::typed_empty(
+                GeometryKind::LineString,
+                CoordinateAxes::XY,
+            ))
+        })
+        .take(topology.sources.row_count)
+        .collect();
+    }
+
     let mut selected = vec![false; topology.sources.edges.len()];
     for owner in owners {
         work.charge_into_error(1)?;
@@ -331,6 +340,29 @@ mod tests {
                 .invalid_source_shapes(&mut crate::geometry::Unmetered)
                 .is_err(),
             "a source-edge crosswire is rejected before row scatter",
+        );
+    }
+
+    #[test]
+    fn omitted_invalid_source_owners_cannot_project_as_clean_rows() {
+        let rows = [
+            crate::io::parse_wkt("POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))")
+                .expect("first overlapping row"),
+            crate::io::parse_wkt("POLYGON ((1 0.5, 3 0.5, 3 1.5, 1 1.5, 1 0.5))")
+                .expect("second overlapping row"),
+        ];
+        let mut analysis = analyze(&rows, 0.0);
+        assert!(
+            !analysis.invalid_source_owners.is_empty(),
+            "the overlap has captured source-edge owners before the omission",
+        );
+        analysis.invalid_source_owners.clear();
+
+        assert!(
+            analysis
+                .invalid_source_shapes(&mut crate::geometry::Unmetered)
+                .is_err(),
+            "missing captured owners must not turn invalid rows into empty output",
         );
     }
 
