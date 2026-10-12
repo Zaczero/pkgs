@@ -181,11 +181,7 @@ pub(crate) fn sample_weighted<T>(
     for draw_ordinal in 0..count {
         let pick = uniform_f64(&mut state) * total;
         let index = cumulative.partition_point(|&edge| edge <= pick);
-        let element_id = if index < pieces.len() {
-            index
-        } else {
-            pieces.len() - 1
-        };
+        let element_id = index.min(pieces.len().saturating_sub(1));
         let support = pieces
             .get(element_id)
             .expect("a positive finite total comes from at least one piece");
