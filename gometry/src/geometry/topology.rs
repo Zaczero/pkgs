@@ -48,6 +48,7 @@ pub(in crate::geometry) use exact::{
 };
 mod emission;
 pub(in crate::geometry) use emission::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
+pub(in crate::geometry) mod linework;
 pub(in crate::geometry) mod overlay;
 mod q;
 pub(in crate::geometry) use q::exact_segments_intersect_with_work;
