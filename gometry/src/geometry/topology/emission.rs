@@ -1127,7 +1127,7 @@ impl<'topology> EmissionBuilder<'topology> {
             .into());
         }
         let node = self.nodes.source_node(source.node)?;
-        self.validate_port_origin(node, &origin)?;
+        self.validate_port_origin(node, origin)?;
         self.push_port(
             EmissionPort {
                 node,
@@ -1233,7 +1233,7 @@ impl<'topology> EmissionBuilder<'topology> {
 
     pub(super) fn port(&mut self, data: NativePortData) -> Result<EmissionPortId> {
         for occurrence in &data.occurrences {
-            self.validate_port_origin(data.node, &occurrence.origin)?;
+            self.validate_port_origin(data.node, occurrence.origin)?;
         }
         self.push_port(
             EmissionPort {
@@ -1294,7 +1294,7 @@ impl<'topology> EmissionBuilder<'topology> {
         Ok(id)
     }
 
-    fn validate_port_origin(&self, node: EmissionNodeId, origin: &VertexOrigin) -> Result<()> {
+    fn validate_port_origin(&self, node: EmissionNodeId, origin: VertexOrigin) -> Result<()> {
         let VertexOrigin::SourceNode(source) = origin else {
             return Ok(());
         };
@@ -1307,7 +1307,7 @@ impl<'topology> EmissionBuilder<'topology> {
             )
             .into());
         };
-        if authority != source {
+        if *authority != source {
             return Err(GeometryErrorKind::Invalid(
                 "source-origin port disagrees with its emission node authority".into(),
             )
