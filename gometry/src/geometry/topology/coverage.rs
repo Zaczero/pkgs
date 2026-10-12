@@ -772,6 +772,10 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
     expand_winding_row_bounds(&topology, &mut row_bounds, work)?;
 
     let mut coincident_pairs = try_hash_set_with_capacity(shared_span_counts.len())?;
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "hash order only populates a membership set that is queried by key"
+    )]
     for (pair, shared_count) in shared_span_counts {
         work.charge(1)?;
         let (left, right) = pair;
