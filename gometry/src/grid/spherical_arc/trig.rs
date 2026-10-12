@@ -3,15 +3,13 @@ use super::h3_boundary::degrees_to_radians_bound;
 #[cfg(test)]
 use super::vectors::strict_minor_longitude_delta;
 use super::{
-    Ball, Bound, HALF_PI_HI, HALF_PI_LO, Midpoint, PI_HI, PI_LO, QUARTER_PI_HI, QUARTER_PI_LO,
+    Ball, Bound, HALF_PI_HI, HALF_PI_LO, Midpoint as _, PI_HI, PI_LO, QUARTER_PI_HI, QUARTER_PI_LO,
 };
 
 /// Certified sine/cosine of a bounded radian argument.  The returned balls
 /// enclose mathematical values; inability to prove a unique reduction is an
 /// ordinary fail-open result (`None`).
-pub(super) fn sin_cos(input: Bound) -> Option<(Ball, Ball)> {
-    let (reduced, quadrant) = reduce_quadrant(input)?;
-    let (sin, cos) = sin_cos_small(reduced)?;
+fn apply_quadrant(sin: Ball, cos: Ball, quadrant: i64) -> Option<(Ball, Ball)> {
     match quadrant.rem_euclid(4) {
         0 => Some((sin, cos)),
         1 => Some((cos, signed_ball(sin, -1)?)),
@@ -20,6 +18,12 @@ pub(super) fn sin_cos(input: Bound) -> Option<(Ball, Ball)> {
         _ => unreachable!("remainder modulo four is in 0..4"),
     }
 }
+
+pub(super) fn sin_cos(input: Bound) -> Option<(Ball, Ball)> {
+    let (reduced, quadrant) = reduce_quadrant(input)?;
+    let (sin, cos) = sin_cos_small(reduced)?;
+    apply_quadrant(sin, cos, quadrant)
+}
 /// The inverse-bracket verifier may need a stricter enclosure than the B3
 /// scalar fast filter's fixed 128-epsilon radius.  It keeps the same certified
 /// reduction and quadrant proof, then uses only the outward degree-27/28
@@ -27,13 +31,7 @@ pub(super) fn sin_cos(input: Bound) -> Option<(Ball, Ball)> {
 pub(super) fn sin_cos_for_inverse(input: Bound) -> Option<(Ball, Ball)> {
     let (reduced, quadrant) = reduce_quadrant(input)?;
     let (sin, cos) = sin_cos_fallback(reduced)?;
-    match quadrant.rem_euclid(4) {
-        0 => Some((sin, cos)),
-        1 => Some((cos, signed_ball(sin, -1)?)),
-        2 => Some((signed_ball(sin, -1)?, signed_ball(cos, -1)?)),
-        3 => Some((signed_ball(cos, -1)?, sin)),
-        _ => unreachable!("remainder modulo four is in 0..4"),
-    }
+    apply_quadrant(sin, cos, quadrant)
 }
 /// Degree-13/14 fast polynomial over the certified `[-pi/4, pi/4]` range.
 /// The error radius follows the frozen bound: input enclosure + the derived
@@ -122,6 +120,12 @@ const FACTORIALS: [f64; 29] = [
     FACT_29,
     FACT_30,
 ];
+/// Outward enclosures of `1/k!`: the neighbouring floats of the binary64
+/// `k!` enclose the integer, and each reciprocal is rounded outward.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "this compile-time table is written in a bounded length loop; the pinned compiler has no const-stable checked array access"
+)]
 const RECIPROCAL_FACTORIALS: [Bound; 29] = {
     let mut table = [Bound { lo: 0.0, hi: 0.0 }; 29];
     let mut index = 0;
