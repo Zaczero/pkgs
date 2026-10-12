@@ -4225,7 +4225,7 @@ pub(crate) struct ExactGeographicTopology {
 }
 
 impl RootCatalog for ExactGeographicTopology {
-    fn resolve<M: ChartMetric>(
+    fn resolve<M: ChartMetric, W: Work>(
         &self,
         root: RootId,
         parameter: &ExactRational,
@@ -4233,7 +4233,7 @@ impl RootCatalog for ExactGeographicTopology {
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         state: &mut RootMetricState,
         fraction: &mut Option<f64>,
-        work: &mut impl Work,
+        work: &mut W,
     ) -> Result<NodeOrdinates> {
         let edge = self.sources.edges.get(root.index()).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace references an unknown source edge".into())

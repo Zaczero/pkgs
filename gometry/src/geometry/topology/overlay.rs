@@ -16,9 +16,10 @@ use super::exact::{
 };
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use super::q_embedding::{
-    EmittedNodeKey, EmittedVertex, QCoordinates, QEmbeddingEmission, build_cut_node_ports,
-    canonical_bits, certify_and_search_q_embedding, certify_nearest_ring_roles, emitted_node_key,
-    for_each_q_cycle_vertex, node_injectivity_collisions_with_work, source_ring_emitted_vertices,
+    EmittedNodeKey, EmittedVertex, QCoordinates, QEmbeddingCertification, QEmbeddingEmission,
+    build_cut_node_ports, canonical_bits, certify_and_search_q_embedding,
+    certify_nearest_ring_roles, emitted_node_key, for_each_q_cycle_vertex,
+    node_injectivity_collisions_with_work, source_ring_emitted_vertices,
 };
 #[cfg(test)]
 use super::q_embedding::{
@@ -28,7 +29,7 @@ use super::q_embedding::{
 use crate::error::{ResourceError, Result};
 use crate::geographic::{ChartPole, SeamIdentity};
 use crate::geometry::embedding_completion::{
-    CheckedAssignment, FrozenLiteralBuffers, LiteralCheck, ShapeLiteralLayout, bind_literals,
+    FrozenLiteralBuffers, LiteralCheck, ShapeLiteralLayout,
 };
 use crate::geometry::embedding_search::{
     EvaluationBudget, EvaluationOnly, SearchAccount, SearchOutcome,
@@ -42,7 +43,7 @@ use crate::geometry::overlay::{
     build_certified_overlay_shape_with_axes_and_order,
 };
 use crate::geometry::segments::try_sort_by_with_work;
-use crate::geometry::tessellation::exact::ExactRational;
+use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind,
     HasM, HasZ, LineSeq, Loc, MOrdinate, Point, Polygon, Ring, Shape, Work, XY, ZOrdinate,
@@ -298,72 +299,30 @@ struct WrittenQDrawing {
     family_state: Option<FeatureFamilyRegistry>,
 }
 
-fn write_certified_q_emission(embedding: CertifiedQEmission) -> Result<WrittenQDrawing> {
+struct WrittenDrawingParts {
+    points: Vec<Point>,
+    lines: Vec<CoordSeq>,
+    polygons: Vec<Polygon>,
+    layout: ShapeLiteralLayout<QSourceImage>,
+}
+
+fn write_certified_q_emission(embedding: CertifiedQEmission) -> WrittenQDrawing {
     let family_state = embedding.family_state;
     match embedding.sealed {
-        SealedQDrawing::Source(source) => Ok(WrittenQDrawing {
+        SealedQDrawing::Source(source) => WrittenQDrawing {
             shape: source.sealed.into_shape(),
             line_traces: source.line_traces,
             family_state,
-        }),
+        },
         SealedQDrawing::Native(native) => {
-            let written = write_completed_native(native)?;
-            Ok(WrittenQDrawing {
+            let written = write_completed_native(native);
+            WrittenQDrawing {
                 shape: written.shape,
                 line_traces: written.line_traces,
                 family_state,
-            })
+            }
         },
     }
-}
-
-fn resolve_q_embedding_certified<
-    'topology,
-    'access,
-    M: crate::geometry::ChartMetric,
-    A: SearchAccount,
->(
-    topology: &'topology ExactGeographicTopology,
-    plan: &QEmissionPlan,
-    source_points: &[Option<EmittedVertex<'topology>>],
-    nearest: &QCoordinates,
-    live_node_keys: &[(EmittedNodeKey, QNodeId)],
-    drawing: QEmissionDrawing<'topology>,
-    ordinates_axes: CoordinateAxes,
-    strict: bool,
-    operation: &'static str,
-    metric_access: Option<&'access SourceArcMetricAccess<'access, '_, M>>,
-    expansion_budget: &mut ExpansionBudget,
-    account: &mut A,
-) -> Result<(super::q_embedding::QEmbeddingPass, Vec<NodeOrdinates>)> {
-    let ordinates = node_ordinates(topology, ordinates_axes, metric_access, account)?;
-    let published_inventory = plan.fragment_recipes.publish_with_expansion_budget(
-        topology,
-        nearest,
-        expansion_budget,
-        account,
-    )?;
-    let emission =
-        plan.embedding_emission(topology, source_points, &published_inventory, account)?;
-    let pass = match certify_and_search_q_embedding(
-        topology,
-        &emission,
-        nearest,
-        live_node_keys,
-        drawing,
-        &ordinates,
-        ordinates_axes,
-        strict,
-        operation,
-        metric_access,
-        account,
-    )? {
-        SearchOutcome::Pass(pass) => pass,
-        SearchOutcome::Exhausted => {
-            return Err(GeometryErrorKind::unrepresentable_output(operation));
-        },
-    };
-    Ok((pass, ordinates))
 }
 
 fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
@@ -400,20 +359,40 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
     #[cfg(test)]
     let mut test_coordinates = nearest.clone();
     let (sealed, family_state) = if needs_q_certificate {
-        let (pass, _ordinates) = resolve_q_embedding_certified(
+        let ordinates = node_ordinates(topology, declared_axes, metric_access, preparation_work)?;
+        let published_inventory = plan.fragment_recipes.publish_with_expansion_budget(
             topology,
-            plan,
-            source_points,
             nearest,
-            &live_node_keys,
-            drawing,
-            declared_axes,
-            strict,
-            operation,
-            metric_access,
             expansion_budget,
             preparation_work,
         )?;
+        let emission = plan.embedding_emission(
+            topology,
+            source_points,
+            &published_inventory,
+            preparation_work,
+        )?;
+        let certification = QEmbeddingCertification {
+            topology,
+            emission: &emission,
+            nearest,
+            ordinates: &ordinates,
+            declared_axes,
+            strict_axes: strict,
+            operation,
+            metric_access,
+        };
+        let pass = match certify_and_search_q_embedding(
+            &certification,
+            &live_node_keys,
+            drawing,
+            preparation_work,
+        )? {
+            SearchOutcome::Pass(pass) => pass,
+            SearchOutcome::Exhausted => {
+                return Err(GeometryErrorKind::unrepresentable_output(operation));
+            },
+        };
         #[cfg(test)]
         {
             choice = if pass.searched {
@@ -439,19 +418,17 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
             operation,
             preparation_work,
         )?;
-        let images = CheckedAssignment::new(super::q_embedding::QSourceImages {
+        let sealed = match super::q_embedding::bind_source_only(
+            source,
             topology,
-            source_ports: None,
-            publication: &[],
-        });
-        let mut chart = super::q_embedding::AssignedSourceChart {
-            topology,
-            source_ports: None,
-            source_ordinates: &ordinates,
-            publication_points: &[],
-            publication_ordinates: &[],
-        };
-        let sealed = match bind_literals(source.buffers, &mut chart, &images, preparation_work)? {
+            None,
+            &ordinates,
+            None,
+            &[],
+            &[],
+            &[],
+            preparation_work,
+        )? {
             LiteralCheck::Pass(sealed) => sealed,
             LiteralCheck::Reject(_) => {
                 return Err(GeometryErrorKind::Invalid(
@@ -505,7 +482,7 @@ pub(in crate::geometry) fn exact_geographic_overlay<M: crate::geometry::ChartMet
         &mut expansion_budget,
         &mut preparation_work,
     )?;
-    publish_q_overlay(embedding)
+    Ok(publish_q_overlay(embedding))
 }
 
 pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::ChartMetric>(
@@ -551,12 +528,17 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
         expansion_budget,
         budget,
     )?;
-    let written = write_certified_q_emission(embedding)?;
+    let written = write_certified_q_emission(embedding);
     let line_count = match &written.shape {
         Shape::LineString(_) => 1,
         Shape::MultiLineString(lines) => lines.len(),
         Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => 0,
-        _ => {
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => {
             return Err(GeometryErrorKind::Invalid(
                 "native line preparation emitted a non-lineal shape".into(),
             )
@@ -577,8 +559,8 @@ pub(in crate::geometry) fn prepare_native_source_lines<M: crate::geometry::Chart
     })
 }
 
-fn publish_q_overlay(embedding: CertifiedQEmission) -> Result<Shape> {
-    Ok(write_certified_q_emission(embedding)?.shape)
+fn publish_q_overlay(embedding: CertifiedQEmission) -> Shape {
+    write_certified_q_emission(embedding).shape
 }
 
 pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMetric>(
@@ -611,7 +593,7 @@ pub(in crate::geometry) fn exact_geographic_boundary<M: crate::geometry::ChartMe
         &mut expansion_budget,
         &mut preparation_work,
     )?;
-    Ok(write_certified_q_emission(embedding)?.shape)
+    Ok(write_certified_q_emission(embedding).shape)
 }
 
 fn boundary_cycle_line_paths(
@@ -758,7 +740,7 @@ pub(super) fn source_ring_reuse_matches(
         let (source_start, source_end) = if reverse {
             (edge.source[1], edge.source[0])
         } else {
-            (edge.source[0], edge.source[1])
+            edge.source.into()
         };
         if !edge.source_interval_reads_as(
             topology.sources.frame,
@@ -1133,7 +1115,12 @@ impl QEmissionPlan {
         if strict_axes && axes != declared_axes {
             return Err(GeometryErrorKind::ordinate_dropped(operation));
         }
-        let (points, lines, polygons, layout) = write_drawing(
+        let WrittenDrawingParts {
+            points,
+            lines,
+            polygons,
+            layout,
+        } = write_drawing(
             drawing,
             ring_roles,
             ordinates,
@@ -1153,12 +1140,12 @@ impl QEmissionPlan {
             true,
             work,
         )?;
-        let layout = layout.in_output_order(
-            order.ok_or_else(|| {
+        let layout = {
+            let order = order.ok_or_else(|| {
                 GeometryErrorKind::Invalid("source shape lost its literal output ordering".into())
-            })?,
-            work,
-        )?;
+            })?;
+            layout.in_output_order(&order, work)?
+        };
         Ok(SourceFrozenDrawing {
             buffers: FrozenLiteralBuffers::shapes(shape, layout),
         })
@@ -1170,7 +1157,7 @@ impl QEmissionPlan {
         declared_axes: CoordinateAxes,
         work: &mut impl Work,
     ) -> Result<super::emission::NativeFrozenDrawing> {
-        parts.validate_literal_uses()?;
+        parts.validate_literal_uses(work)?;
         let NativeMaterializedParts {
             axes,
             points,
@@ -1189,19 +1176,19 @@ impl QEmissionPlan {
             true,
             work,
         )?;
-        let (literal_uses, line_traces) = super::emission::native_literal_uses_in_output_order(
-            literal_uses,
-            line_traces,
-            order.ok_or_else(|| {
+        let (literal_uses, line_traces) = {
+            let order = order.ok_or_else(|| {
                 GeometryErrorKind::Invalid("native shape lost its literal output ordering".into())
-            })?,
-            work,
-        )?;
-        Ok(super::emission::NativeFrozenDrawing {
-            buffers: crate::geometry::embedding_completion::FrozenLiteralBuffers::shapes(
-                shape,
+            })?;
+            super::emission::native_literal_uses_in_output_order(
                 literal_uses,
-            ),
+                line_traces,
+                &order,
+                work,
+            )?
+        };
+        Ok(super::emission::NativeFrozenDrawing {
+            buffers: FrozenLiteralBuffers::shapes(shape, literal_uses),
             line_traces,
         })
     }
@@ -1843,7 +1830,7 @@ fn build_fragment_recipes(
                 GeometryErrorKind::Invalid("Q line recipe span is unknown".into())
             })?;
             let (from, to) = match step.from_endpoint {
-                SpanEndpoint::Start => (span.ports[0], span.ports[1]),
+                SpanEndpoint::Start => span.ports.into(),
                 SpanEndpoint::End => (span.ports[1], span.ports[0]),
             };
             spans.push(DirectedSpan {
@@ -1942,9 +1929,7 @@ fn push_source_edge_recipe(
     let native_delta =
         ExactRational::from_f64(end.get()).try_subtract(&ExactRational::from_f64(start.get()))?;
     let lift = retained.periods();
-    let period_lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(lift),
-    );
+    let period_lift = ExactRational::from_dyadic(ExactDyadic::from_i64(lift));
     let mut displacement = native_delta.try_add(&period.try_product(&period_lift)?)?;
     let (endpoints, range) = if reverse {
         displacement = ExactRational::zero().try_subtract(&displacement)?;
@@ -2044,7 +2029,7 @@ impl PolygonPlan {
                     topology,
                     source_ring,
                     cycles,
-                    &source_cycles,
+                    source_cycles,
                     work,
                 )?
             {
@@ -2054,7 +2039,7 @@ impl PolygonPlan {
                 topology,
                 source_ring,
                 cycles,
-                &source_cycles,
+                source_cycles,
                 work,
             )?
             else {
@@ -2164,10 +2149,6 @@ impl AreaSupport {
         Ok(false)
     }
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "the union counts distinct admitted source rows"
-    )]
     fn count(&mut self, q: &super::q::ExactGeographicQ, work: &mut impl Work) -> Result<usize> {
         let Some(&first) = self.faces.first() else {
             return Ok(0);
@@ -2187,10 +2168,6 @@ impl AreaSupport {
         Ok(count)
     }
 
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "sorted unique support rows add only rows absent from the area union"
-    )]
     fn with_rows(
         &mut self,
         q: &super::q::ExactGeographicQ,
@@ -3616,19 +3593,31 @@ struct SourceWrittenPath {
     locations: LiteralSequence<QSourceImage>,
 }
 
+#[derive(Clone, Copy)]
+struct SourcePathContext<'a, 'walk> {
+    ordinates: &'a [NodeOrdinates],
+    source_ports: Option<&'a [Option<ExactChartPoint>]>,
+    publication: Option<SourcePublication<'a>>,
+    walks: Option<&'a RecipeWalkIndex<'walk>>,
+    axes: CoordinateAxes,
+}
+
 fn write_source_path(
     vertices: &[EmittedVertex<'_>],
     output: u32,
     owner: RecipeWalkOwner,
     recipe_rotation: usize,
-    ordinates: &[NodeOrdinates],
-    source_ports: Option<&[Option<ExactChartPoint>]>,
-    publication: Option<SourcePublication<'_>>,
-    walks: Option<&RecipeWalkIndex<'_>>,
+    context: &SourcePathContext<'_, '_>,
     cursors: &mut BTreeMap<RecipeWalkOwner, usize>,
-    axes: CoordinateAxes,
     work: &mut impl Work,
 ) -> Result<SourceWrittenPath> {
+    let SourcePathContext {
+        ordinates,
+        source_ports,
+        publication,
+        walks,
+        axes,
+    } = *context;
     let walk = match (publication, walks) {
         (Some(_), Some(walks)) => Some(next_recipe_walk(walks, cursors, owner, work)?),
         (None, None) => None,
@@ -3639,8 +3628,7 @@ fn write_source_path(
             .into());
         },
     };
-    let mut rotated_fragments = None;
-    if let Some(walk) = walk
+    let rotated_fragments = if let Some(walk) = walk
         && recipe_rotation != 0
     {
         if recipe_rotation >= walk.fragments.len() {
@@ -3653,8 +3641,10 @@ fn write_source_path(
         work.charge(u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut fragments = walk.fragments.clone();
         fragments.rotate_left(recipe_rotation);
-        rotated_fragments = Some(fragments);
-    }
+        Some(fragments)
+    } else {
+        None
+    };
     let walk_fragments = match walk {
         Some(walk) => rotated_fragments.as_deref().unwrap_or(&walk.fragments),
         None => &[],
@@ -3777,12 +3767,8 @@ fn write_ring(
     output: u32,
     owner: RecipeWalkOwner,
     recipe_rotation: usize,
-    ordinates: &[NodeOrdinates],
-    source_ports: Option<&[Option<ExactChartPoint>]>,
-    publication: Option<SourcePublication<'_>>,
-    walks: Option<&RecipeWalkIndex<'_>>,
+    context: &SourcePathContext<'_, '_>,
     cursors: &mut BTreeMap<RecipeWalkOwner, usize>,
-    axes: CoordinateAxes,
     work: &mut impl Work,
 ) -> Result<(Ring, LiteralSequence<QSourceImage>)> {
     let path = write_source_path(
@@ -3790,12 +3776,8 @@ fn write_ring(
         output,
         owner,
         recipe_rotation,
-        ordinates,
-        source_ports,
-        publication,
-        walks,
+        context,
         cursors,
-        axes,
         work,
     )?;
     Ok((
@@ -3830,8 +3812,11 @@ fn rotate_area_ring_vertices<'topology>(
     let open = vertices.get(..edge_count).ok_or_else(|| {
         GeometryErrorKind::Invalid("Q area ring has an invalid open vertex range".into())
     })?;
-    rotated.extend_from_slice(&open[start_index..]);
-    rotated.extend_from_slice(&open[..start_index]);
+    let (prefix, suffix) = open.split_at_checked(start_index).ok_or_else(|| {
+        GeometryErrorKind::Invalid("Q area ring has an invalid native cycle start".into())
+    })?;
+    rotated.extend_from_slice(suffix);
+    rotated.extend_from_slice(prefix);
     let first = *rotated.first().ok_or_else(|| {
         GeometryErrorKind::Invalid("Q area ring rotation removed every vertex".into())
     })?;
@@ -3848,13 +3833,15 @@ fn write_drawing(
     walks: Option<&RecipeWalkIndex<'_>>,
     axes: CoordinateAxes,
     work: &mut impl Work,
-) -> Result<(
-    Vec<Point>,
-    Vec<CoordSeq>,
-    Vec<Polygon>,
-    ShapeLiteralLayout<QSourceImage>,
-)> {
+) -> Result<WrittenDrawingParts> {
     let mut walk_cursors = BTreeMap::new();
+    let path_context = SourcePathContext {
+        ordinates,
+        source_ports,
+        publication,
+        walks,
+        axes,
+    };
     let (polygons, polygon_locations) = match drawing.polygons {
         DrawnPolygons::WholeSphere(source_polygons) => {
             work.charge(
@@ -3877,12 +3864,8 @@ fn write_drawing(
                         output_id,
                         source_ring.recipe_walk,
                         0,
-                        ordinates,
-                        source_ports,
-                        publication,
-                        walks,
+                        &path_context,
                         &mut walk_cursors,
-                        axes,
                         work,
                     )?;
                     if source_ring.hole {
@@ -3950,12 +3933,8 @@ fn write_drawing(
                     region_id,
                     drawn.recipe_walk,
                     recipe_rotation,
-                    ordinates,
-                    source_ports,
-                    publication,
-                    walks,
+                    &path_context,
                     &mut walk_cursors,
-                    axes,
                     work,
                 )?;
                 let destination = if is_hole {
@@ -4041,12 +4020,8 @@ fn write_drawing(
             output,
             line.recipe_walk,
             0,
-            ordinates,
-            source_ports,
-            publication,
-            walks,
+            &path_context,
             &mut walk_cursors,
-            axes,
             work,
         )?;
         lines.push(CoordSeq::try_from_points(&path.points)?);
@@ -4081,11 +4056,16 @@ fn write_drawing(
             }
         }
     }
-    Ok((points, lines, polygons, ShapeLiteralLayout {
-        points: point_locations,
-        lines: line_locations,
-        polygons: polygon_locations,
-    }))
+    Ok(WrittenDrawingParts {
+        points,
+        lines,
+        polygons,
+        layout: ShapeLiteralLayout {
+            points: point_locations,
+            lines: line_locations,
+            polygons: polygon_locations,
+        },
+    })
 }
 
 fn identity_output_order(
@@ -5110,7 +5090,12 @@ mod tests {
         let ring_roles = certify_nearest_ring_roles(topology, &drawing, &mut work)?;
         let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
         let axes = CoordinateAxes::XY;
-        let (points, lines, polygons, layout) = write_drawing(
+        let WrittenDrawingParts {
+            points,
+            lines,
+            polygons,
+            layout,
+        } = write_drawing(
             drawing,
             &ring_roles,
             &ordinates,
@@ -5122,12 +5107,12 @@ mod tests {
         )?;
         let (shape, order) =
             seal_output_parts(plan, points, lines, polygons, axes, axes, true, &mut work)?;
-        let layout = layout.in_output_order(
-            order.ok_or_else(|| {
+        let layout = {
+            let order = order.ok_or_else(|| {
                 GeometryErrorKind::Invalid("source boundary lost its literal row order".into())
-            })?,
-            &mut work,
-        )?;
+            })?;
+            layout.in_output_order(&order, &mut work)?
+        };
         Ok((shape, layout))
     }
 
@@ -5137,23 +5122,18 @@ mod tests {
         layout: ShapeLiteralLayout<QSourceImage>,
     ) -> Result<LiteralCheck<QSourceImage>> {
         let mut work = crate::geometry::Unmetered;
-        let images = super::super::q_embedding::QSourceImages {
-            topology,
-            source_ports: None,
-            publication: &[],
-        };
         let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
-        let mut chart = super::super::q_embedding::AssignedSourceChart {
+        super::super::q_embedding::bind_source_only(
+            super::super::emission::SourceFrozenDrawing {
+                buffers: FrozenLiteralBuffers::shapes(shape, layout),
+            },
             topology,
-            source_ports: None,
-            source_ordinates: &ordinates,
-            publication_points: &[],
-            publication_ordinates: &[],
-        };
-        bind_literals(
-            FrozenLiteralBuffers::shapes(shape, layout),
-            &mut chart,
-            &images,
+            None,
+            &ordinates,
+            None,
+            &[],
+            &[],
+            &[],
             &mut work,
         )
     }
@@ -5424,19 +5404,17 @@ mod tests {
         let ordinates = test_node_ordinates(topology)?;
         let metric_access: Option<&SourceArcMetricAccess<'_, '_, crate::crs::GeodesicMetric>> =
             None;
-        certify_q_embedding_nearest(
+        let certification = QEmbeddingCertification {
             topology,
             emission,
             nearest,
-            live_keys,
-            drawing,
-            &ordinates,
-            CoordinateAxes::XY,
-            false,
+            ordinates: &ordinates,
+            declared_axes: CoordinateAxes::XY,
+            strict_axes: false,
             operation,
             metric_access,
-            budget,
-        )
+        };
+        certify_q_embedding_nearest(&certification, live_keys, drawing, budget)
     }
 
     fn q_union_one_source(shape: &Shape, frame: GeographicFrame) -> Shape {
@@ -6026,18 +6004,21 @@ mod tests {
             live_samples: &[true; 3],
         };
         let mut cursors = BTreeMap::new();
+        let path_context = SourcePathContext {
+            ordinates: &source_ordinates,
+            source_ports: None,
+            publication: Some(source_publication),
+            walks: Some(&walks),
+            axes: CoordinateAxes::XY,
+        };
 
         let (ring, locations) = write_ring(
             &rotated_vertices,
             0,
             owner,
             recipe_rotation,
-            &source_ordinates,
-            None,
-            Some(source_publication),
-            Some(&walks),
+            &path_context,
             &mut cursors,
-            CoordinateAxes::XY,
             &mut work,
         )?;
 
@@ -6051,7 +6032,12 @@ mod tests {
                 QSourceImage::PublicationSample(sample) => {
                     Some((*sample as usize, point.x, point.y))
                 },
-                _ => None,
+                QSourceImage::Port(_)
+                | QSourceImage::SourcePoint(_)
+                | QSourceImage::SourceRingStart(_)
+                | QSourceImage::SourceRingEnd(_)
+                | QSourceImage::CollapsedStart(_)
+                | QSourceImage::CollapsedEnd(_) => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(written_samples, vec![
@@ -6437,7 +6423,7 @@ mod tests {
             OverlayOp::Intersection.name(),
             &mut budget,
         )? {
-            NearestQCertificate::Pass(output) => output,
+            NearestQCertificate::Pass(output) => *output,
             NearestQCertificate::SearchRequired => {
                 return Err(GeometryErrorKind::Invalid(
                     "the midpoint tie fixture should certify at nearest-even".into(),
@@ -6547,7 +6533,7 @@ mod tests {
             assert_eq!(certified_coordinates.xy(*node)?, nearest.xy(*node)?);
         }
 
-        let written = write_certified_q_emission(certified)?;
+        let written = write_certified_q_emission(certified);
         let expected = written.shape;
         let actual = exact_geographic_overlay::<crate::crs::GeodesicMetric>(
             &topology,
@@ -7190,7 +7176,7 @@ mod tests {
         let embedding =
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding)?;
+        let result = publish_q_overlay(embedding);
         assert_eq!(
             crate::io::to_wkb(&result, None, false)?,
             crate::io::to_wkb(&source, None, false)?,
@@ -7241,7 +7227,7 @@ mod tests {
             resolve_q_embedding_xy(&topology, &plan, &source_points, &nearest, operation.name())
                 .expect("source axis-band ring is representable");
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding).expect("publish the source axis-band ring");
+        let result = publish_q_overlay(embedding);
         assert_eq!(
             crate::io::to_wkb(&result, None, false).expect("serialize Q result"),
             crate::io::to_wkb(&source, None, false).expect("serialize source band")
@@ -7309,7 +7295,7 @@ mod tests {
                 .enumerate()
                 .filter_map(|(index, (before, after))| (before != after).then_some(index))
                 .collect::<Vec<_>>();
-            let result = publish_q_overlay(embedding)?;
+            let result = publish_q_overlay(embedding);
             let issue = crate::geometry::validate_shape_in_frame(
                 &result,
                 crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
@@ -7353,7 +7339,7 @@ mod tests {
             OverlayOp::Union.name(),
         )?;
         assert_eq!(embedding.choice, QEmbeddingChoice::Nearest);
-        let result = publish_q_overlay(embedding)?;
+        let result = publish_q_overlay(embedding);
         assert!(
             crate::geometry::validate_shape_in_frame(
                 &result,
@@ -7790,13 +7776,16 @@ mod tests {
             let anchored_end = ExactRational::from_f64(start_x)
                 .try_add_with_work(&recipe.exact_displacement, &mut work)?
                 .round_with_work(&mut work)?;
-            if start_x.to_bits() != 100.00000000000001_f64.to_bits()
-                || anchored_end.to_bits() != 99.99999999999997_f64.to_bits()
+            if start_x.to_bits() != 100.000_000_000_000_01_f64.to_bits()
+                || anchored_end.to_bits() != 99.999_999_999_999_97_f64.to_bits()
             {
                 continue;
             }
             let assigned_end = nearest.point(&topology, recipe.endpoints[1])?;
-            assert_eq!(assigned_end.x.to_bits(), 99.99999999999999_f64.to_bits());
+            assert_eq!(
+                assigned_end.x.to_bits(),
+                99.999_999_999_999_99_f64.to_bits()
+            );
             assert_eq!(end_x.to_bits(), assigned_end.x.to_bits());
             let fragment = publication
                 .fragments
@@ -8001,7 +7990,7 @@ mod tests {
                 .is_none(),
             "the searched boundary drawing must restore the exact area face/host structure"
         );
-        let written = write_certified_q_emission(embedding)?;
+        let written = write_certified_q_emission(embedding);
         let mut line_members = 0_usize;
         let mut polygon_members = 0_usize;
         written
@@ -8220,7 +8209,12 @@ mod tests {
                         source.point.x.to_bits() == 720.0_f64.to_bits()
                             && source.point.y.to_bits() == 90.0_f64.to_bits()
                     }),
-                _ => false,
+                QSourceImage::Port(_)
+                | QSourceImage::SourceRingStart(_)
+                | QSourceImage::SourceRingEnd(_)
+                | QSourceImage::CollapsedStart(_)
+                | QSourceImage::CollapsedEnd(_)
+                | QSourceImage::PublicationSample(_) => false,
             })
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid(
