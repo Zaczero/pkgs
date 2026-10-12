@@ -193,8 +193,8 @@ pub(crate) fn sample_weighted<T>(
         draws.push(SampleDraw {
             draw_ordinal,
             selected_element: element_id,
-            point,
             recipe,
+            point,
         });
     }
     Ok(Some(draws))
