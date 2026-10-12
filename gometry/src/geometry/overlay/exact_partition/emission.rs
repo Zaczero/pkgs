@@ -1023,10 +1023,6 @@ fn canonicalize_open_nodes_by_xy(coordinates: &[XY], nodes: &mut [NodeId]) {
 /// Whether a closed boundary walk is the outer cycle of the face on its left,
 /// judged at its exact lexicographically least vertex. `first(i)` and
 /// `last(i)` are the first and last darts of the walk's `i`-th step.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "callbacks return darts from the same nonempty closed walk in the checked topology"
-)]
 pub(super) fn walk_is_shell(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,
@@ -1472,6 +1468,14 @@ impl GlobalFaces {
         bounds: impl Fn(usize, usize) -> bool,
         work: &mut W,
     ) -> Result<Vec<Vec<u32>>> {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u8)]
+        enum DartState {
+            Omitted,
+            Pending,
+            Walked,
+        }
+
         let slots = topology.targets.len();
         let walk_count = topology.face_starts.len().checked_sub(1).ok_or_else(|| {
             GeometryErrorKind::Invalid("indexed graph face starts have no sentinel".into())
@@ -1493,13 +1497,6 @@ impl GlobalFaces {
             .into());
         }
         work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        #[repr(u8)]
-        enum DartState {
-            Omitted,
-            Pending,
-            Walked,
-        }
 
         let mut state = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {

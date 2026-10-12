@@ -15,9 +15,9 @@ use super::emission::{
     NativeFaceId, NativeGraphEdgeOwner, NativePortData, NativeSeamEvent, NativeSeamVertices,
     NativeSourceFaceGerm, NativeSourceSpanUse, NodeAuthority, OccurrenceSource, PortPosition,
     PortSpelling, PublicationInventory, QSourceImage, RecipeWalk, RecipeWalkOwner,
-    SealedSourceDrawing, SelectedNativeSeamBand, SelectedUse, SourceSampleOccurrence, SourceTrace,
-    TraceRequestLocation, TracedLine, merge_native_port_data, native_pole_edges, native_seam_edges,
-    native_source_sample_occurrences,
+    SealedSourceDrawing, SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing,
+    SourceSampleOccurrence, SourceTrace, TraceRequestLocation, TracedLine, merge_native_port_data,
+    native_pole_edges, native_seam_edges, native_source_sample_occurrences,
 };
 use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceEdge, ExactSourceRange, ExactSourceRing,
@@ -43,15 +43,21 @@ use crate::geographic::{
 };
 use crate::geometry::embedding_completion::{
     AdmittedGraph, AdmittedLayout, CheckedAssignment, CheckedImages,
-    ExactPoints as NativeReferencePoints, LiteralChart, LiteralCheck, LogicalArealWalk,
-    ShapeLiteralLayout, admit_candidate, admit_known_graph, admit_logical_layout, bind_literals,
-    exact_chord_fraction,
+    ExactPoints as NativeReferencePoints, FrozenLiteralBuffers, LiteralChart, LiteralCheck,
+    LogicalArealWalk, SealedOutput, ShapeLiteralLayout, admit_candidate, admit_known_graph,
+    admit_logical_layout, bind_literals, exact_chord_fraction,
 };
 use crate::geometry::embedding_search::{
     ClassAssignment, EvaluationBudget, GlobalCheck, Problem, SearchAccount, SearchOutcome,
     proximity_limit, run_with_budget, swept_bounds,
 };
-use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::exact_arith::{
+    ExactSign, RoundedNativeSite, retained_exact_native_site_with_work,
+    round_native_longitude_with_work, rounded_native_neighbors_with_work,
+    split_rational_native_site_with_work,
+};
+#[cfg(test)]
+use crate::geometry::ordinates::RequestRowId;
 use crate::geometry::ordinates::{
     NodeOrdinates, RootId, RootRange, RootRequest, SourceArcMetricAccess,
 };
@@ -140,6 +146,25 @@ struct NativeSelectedPoleSector {
     region: usize,
     sector: super::q::PoleSector,
 }
+
+type NativePoleClosure = (usize, ChartPole);
+struct NativeSelectedPoleSectors {
+    sectors: Vec<NativeSelectedPoleSector>,
+    closures: Vec<NativePoleClosure>,
+}
+
+struct NativeReferenceGraphResult {
+    cycles: Vec<NativeGraphCycle>,
+    parts: Vec<NativeGraphPart>,
+    face_regions: Vec<Option<usize>>,
+    face_groups: Vec<u32>,
+    face_cells: Vec<Option<u8>>,
+}
+
+type NativeCutPeriodRange = (i64, i64);
+type NativeChordCutRanges = Vec<NativeCutPeriodRange>;
+type NativeRecipeCutRanges = Vec<NativeChordCutRanges>;
+type NativeCutFamilyDomains = Vec<NativeRecipeCutRanges>;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum NativeChartSpellingKey {
@@ -698,17 +723,19 @@ impl NativeReferenceRayPoints<'_> {
 }
 
 impl RayPoints for NativeReferenceRayPoints<'_> {
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "query IDs are allocated immediately after the paired graph point columns"
-    )]
     fn rounded(&self, index: u32) -> XY {
         let index = index as usize;
-        let point = if index < self.base.rounded.len() {
-            self.base.rounded[index]
-        } else {
-            self.rounded_queries[index - self.base.rounded.len()]
-        };
+        let point = self
+            .base
+            .rounded
+            .get(index)
+            .or_else(|| {
+                index
+                    .checked_sub(self.base.rounded.len())
+                    .and_then(|query_index| self.rounded_queries.get(query_index))
+            })
+            .copied()
+            .expect("ray point IDs belong to the paired graph and query point tables");
         match self.transform {
             NativeRayTransform::Identity => point,
             NativeRayTransform::ReflectX => XY::new(-point.x, point.y),
@@ -849,6 +876,22 @@ fn logical_layout_for_plan(
     Ok(areal_walks)
 }
 
+fn native_point_contact_vertices(
+    plan: &ExpandedEmissionPlan<'_>,
+    port_vertices: &[u32],
+    work: &mut impl Work,
+) -> Result<Vec<u32>> {
+    work.charge(u64::try_from(plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut vertices = Vec::with_capacity(plan.points.len());
+    for &port in &plan.points {
+        work.charge(1)?;
+        vertices.push(*port_vertices.get(port.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("native output point has no graph vertex".into())
+        })?);
+    }
+    Ok(vertices)
+}
+
 impl NativeReferenceGraph {
     fn local_vertex(&self, key: NativeChartVertexKey, budget: &mut impl Work) -> Result<u32> {
         let probe = NativeChartVertexIndex { key, index: 0 };
@@ -987,7 +1030,7 @@ fn intern_native_chart_vertex(
     }
     budget.charge(3)?;
     let vertex = u32::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?;
-    points.push(data.point.clone());
+    points.push(data.point.try_clone_with_work(budget)?);
     vertex_keys.push(key);
     index.insert_with_work(
         NativeChartVertexIndex { key, index: vertex },
@@ -1351,7 +1394,7 @@ impl NativeReferenceGraphBuilder {
                 atom: written.atom,
                 reversed: written.reversed,
                 producer_range: ExactSourceRange {
-                    start: producer_start.clone(),
+                    start: producer_start.as_ref().clone(),
                     end: producer_end.clone(),
                 },
             });
@@ -1988,13 +2031,7 @@ fn native_reference_cycles_and_parts(
     whole_sphere: bool,
     materialize_areas: bool,
     budget: &mut impl Work,
-) -> Result<(
-    Vec<NativeGraphCycle>,
-    Vec<NativeGraphPart>,
-    Vec<Option<usize>>,
-    Vec<u32>,
-    Vec<Option<u8>>,
-)> {
+) -> Result<NativeReferenceGraphResult> {
     let face_count = usize::try_from(graph.faces.count).map_err(|_| ResourceError::SizeOverflow)?;
     budget.charge(
         u64::try_from(face_count)
@@ -2322,13 +2359,13 @@ fn native_reference_cycles_and_parts(
         .into());
     }
     if !materialize_areas {
-        return Ok((
-            Vec::new(),
-            Vec::new(),
+        return Ok(NativeReferenceGraphResult {
+            cycles: Vec::new(),
+            parts: Vec::new(),
             face_regions,
             face_groups,
             face_cells,
-        ));
+        });
     }
 
     let boundary_selects = |face, other| {
@@ -2475,12 +2512,18 @@ fn native_reference_cycles_and_parts(
                 contributors,
             });
         }
+        let slot_at = |step| {
+            slots
+                .get(step)
+                .copied()
+                .expect("walk steps are bounded by the admitted face slots")
+        };
         let shell = walk_is_shell_with_work(
             &graph.points,
             &graph.topology,
             slots.len(),
-            |step| slots[step],
-            |step| slots[step],
+            slot_at,
+            slot_at,
             budget,
         )?;
         cycles.push(NativeGraphCycle {
@@ -2581,7 +2624,13 @@ fn native_reference_cycles_and_parts(
             .into());
         }
     }
-    Ok((cycles, parts, face_regions, face_groups, face_cells))
+    Ok(NativeReferenceGraphResult {
+        cycles,
+        parts,
+        face_regions,
+        face_groups,
+        face_cells,
+    })
 }
 
 fn native_cycle_start_vertex_index(
@@ -2762,9 +2811,11 @@ fn native_graph_cycle_vertex(
         )
         .into());
     }
-    let mut point = first_edge.vertices.get(endpoint).cloned().ok_or_else(|| {
-        GeometryErrorKind::Invalid("native graph cycle endpoint is unknown".into())
-    })?;
+    let mut point = first_edge
+        .vertices
+        .get(endpoint)
+        .ok_or_else(|| GeometryErrorKind::Invalid("native graph cycle endpoint is unknown".into()))?
+        .try_clone_with_work(budget)?;
     for &written_edge in cycle_edge.contributors.iter().skip(1) {
         budget.charge(1)?;
         if graph
@@ -2828,14 +2879,6 @@ fn native_whole_sphere_cell_points(
     cell: u8,
     budget: &mut impl Work,
 ) -> Result<[ExactChartPoint; 6]> {
-    // Away from the collapsed poles and sewn seam, these are disjoint strips.
-    let half = ExactRational::from_f64(frame.longitude().half_period());
-    let quarter = half.try_product_with_work(&ExactRational::from_f64(0.5), budget)?;
-    let zero = ExactRational::zero();
-    let negative_half = zero.try_subtract_with_work(&half, budget)?;
-    let negative_quarter = zero.try_subtract_with_work(&quarter, budget)?;
-    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
-    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
     fn point(
         longitude: &ExactRational,
         latitude: &ExactRational,
@@ -2846,6 +2889,15 @@ fn native_whole_sphere_cell_points(
             latitude.try_clone_with_work(budget)?,
         ))
     }
+
+    // Away from the collapsed poles and sewn seam, these are disjoint strips.
+    let half = ExactRational::from_f64(frame.longitude().half_period());
+    let quarter = half.try_product_with_work(&ExactRational::from_f64(0.5), budget)?;
+    let zero = ExactRational::zero();
+    let negative_half = zero.try_subtract_with_work(&half, budget)?;
+    let negative_quarter = zero.try_subtract_with_work(&quarter, budget)?;
+    let south = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::South));
+    let north = ExactRational::from_f64(frame.chart_pole_latitude(ChartPole::North));
     if !negative_half
         .try_cmp_with_work(&negative_quarter, budget)?
         .is_lt()
@@ -3682,7 +3734,7 @@ fn validate_native_written_chord_transport(
                 let (expected_start, expected_end) = if *reversed {
                     (endpoints[1], endpoints[0])
                 } else {
-                    (endpoints[0], endpoints[1])
+                    (*endpoints).into()
                 };
                 if (start_vertex, end_vertex) != (expected_start, expected_end) {
                     return Err(GeometryErrorKind::Invalid(
@@ -3797,7 +3849,7 @@ fn validate_native_written_chord_transport(
                     let (atom_start, atom_end) = if atom_use.reversed {
                         (endpoints[1], endpoints[0])
                     } else {
-                        (endpoints[0], endpoints[1])
+                        (*endpoints).into()
                     };
                     if previous_end.is_some_and(|previous| previous != atom_start) {
                         return Err(GeometryErrorKind::Invalid(
@@ -3878,36 +3930,62 @@ fn validate_native_materialized_port(
     Ok(vertex_point == &point)
 }
 
-struct NativeCandidateImages<'a, 'topology> {
-    reference: &'a NativeReference<'topology>,
-    points: &'a NativeReferencePoints,
+struct NativeCandidateAssignment<'reference, 'topology> {
+    reference: &'reference NativeReference<'topology>,
+    checked: CheckedAssignment<'reference>,
 }
 
-impl CheckedImages<EmissionPortId> for NativeCandidateImages<'_, '_> {
+impl<'reference, 'topology> NativeCandidateAssignment<'reference, 'topology> {
+    fn issue(
+        reference: &'reference NativeReference<'topology>,
+        checked: CheckedAssignment<'reference>,
+    ) -> Result<Self> {
+        if !checked.is_for(&reference.graph.common, &reference.dimension) {
+            return Err(GeometryErrorKind::Invalid(
+                "native checked assignment does not belong to its reference graph and layout"
+                    .into(),
+            )
+            .into());
+        }
+        Ok(Self { reference, checked })
+    }
+
+    const fn points(&self) -> &NativeReferencePoints {
+        self.checked.points()
+    }
+}
+
+struct NativeLiteralReceiver<'assignment, 'reference, 'topology> {
+    assignment: &'assignment NativeCandidateAssignment<'reference, 'topology>,
+    sites: &'assignment [AssignedSite],
+    ordinates: &'assignment [NodeOrdinates],
+    port_records: &'assignment mut [Option<Point>],
+}
+
+impl CheckedImages<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
     fn image(&self, image: EmissionPortId) -> Result<&ExactChartPoint> {
         let vertex = *self
+            .assignment
             .reference
             .port_vertices
             .get(image.0 as usize)
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("native literal image has no graph vertex".into())
             })?;
-        self.points.exact.get(vertex as usize).ok_or_else(|| {
-            GeometryErrorKind::Invalid("native literal image vertex is outside the graph".into())
+        self.assignment
+            .points()
+            .exact
+            .get(vertex as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "native literal image vertex is outside the graph".into(),
+                )
                 .into()
-        })
+            })
     }
 }
 
-struct NativeLiteralChart<'a, 'topology> {
-    reference: &'a NativeReference<'topology>,
-    sites: &'a [AssignedSite],
-    ordinates: &'a [NodeOrdinates],
-    points: &'a NativeReferencePoints,
-    port_records: Vec<Option<Point>>,
-}
-
-impl LiteralChart<EmissionPortId> for NativeLiteralChart<'_, '_> {
+impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
     fn read_point<W: Work>(
         &mut self,
         _output: u32,
@@ -3918,14 +3996,14 @@ impl LiteralChart<EmissionPortId> for NativeLiteralChart<'_, '_> {
         work: &mut W,
     ) -> Result<Option<ExactChartPoint>> {
         if !validate_native_materialized_port(
-            self.reference,
+            self.assignment.reference,
             image,
             record,
             self.sites,
             self.ordinates,
             stored_axes,
-            &mut self.port_records,
-            &self.points.exact,
+            self.port_records,
+            &self.assignment.points().exact,
             work,
         )? {
             return Ok(None);
@@ -3934,6 +4012,37 @@ impl LiteralChart<EmissionPortId> for NativeLiteralChart<'_, '_> {
             ExactRational::from_f64(record.x),
             ExactRational::from_f64(record.y),
         )))
+    }
+}
+
+impl NativeCandidateAssignment<'_, '_> {
+    fn bind_completed_native(
+        &self,
+        buffers: FrozenLiteralBuffers<EmissionPortId>,
+        sites: &[AssignedSite],
+        ordinates: &[NodeOrdinates],
+        port_records: &mut [Option<Point>],
+        work: &mut impl Work,
+    ) -> Result<Option<SealedOutput<EmissionPortId>>> {
+        let mut receiver = NativeLiteralReceiver {
+            assignment: self,
+            sites,
+            ordinates,
+            port_records,
+        };
+        let LiteralCheck::Pass(sealed) = bind_literals(buffers, &mut receiver, work)? else {
+            return Ok(None);
+        };
+        if !validate_native_sealed_layout(
+            self.reference,
+            sealed.shape_layout(),
+            receiver.port_records,
+            self.points(),
+            work,
+        )? {
+            return Ok(None);
+        }
+        Ok(Some(sealed))
     }
 }
 
@@ -4020,10 +4129,10 @@ fn q_source_image_xy_bits(
     Ok(Some([record.x.to_bits(), record.y.to_bits()]))
 }
 
-pub(super) struct QSourceImages<'a> {
-    pub(super) topology: &'a ExactGeographicTopology,
-    pub(super) source_ports: Option<&'a [Option<ExactChartPoint>]>,
-    pub(super) publication: &'a [ExactChartPoint],
+struct QSourceImages<'a> {
+    topology: &'a ExactGeographicTopology,
+    source_ports: Option<&'a [Option<ExactChartPoint>]>,
+    publication: &'a [ExactChartPoint],
 }
 
 impl QSourceImages<'_> {
@@ -4075,12 +4184,12 @@ impl CheckedImages<QSourceImage> for QSourceImages<'_> {
     }
 }
 
-pub(super) struct AssignedSourceChart<'a> {
-    pub(super) topology: &'a ExactGeographicTopology,
-    pub(super) source_ports: Option<&'a [Option<ExactChartPoint>]>,
-    pub(super) source_ordinates: &'a [NodeOrdinates],
-    pub(super) publication_points: &'a [XY],
-    pub(super) publication_ordinates: &'a [NodeOrdinates],
+struct AssignedSourceChart<'a> {
+    topology: &'a ExactGeographicTopology,
+    source_ports: Option<&'a [Option<ExactChartPoint>]>,
+    source_ordinates: &'a [NodeOrdinates],
+    publication_points: &'a [XY],
+    publication_ordinates: &'a [NodeOrdinates],
 }
 
 impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
@@ -4136,7 +4245,9 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 };
                 let source_location = if port.cut && self.source_ports.is_some() {
                     let rounded = rounded_chart_point_with_work(expected, work)?;
-                    if record.x != rounded.x || chart_record_y != rounded.y {
+                    if record.x.partial_cmp(&rounded.x) != Some(Ordering::Equal)
+                        || chart_record_y.partial_cmp(&rounded.y) != Some(Ordering::Equal)
+                    {
                         return Ok(None);
                     }
                     ExactChartPoint::from_rationals(
@@ -4153,7 +4264,8 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                 ) {
                     if !exact_coordinate_matches_with_work(&expected.y, chart_record_y, work)?
                         || (!source_record_authority
-                            && record.x != port.point.x.round_with_work(work)?)
+                            && record.x.partial_cmp(&port.point.x.round_with_work(work)?)
+                                != Some(Ordering::Equal))
                     {
                         return Ok(None);
                     }
@@ -4206,7 +4318,9 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
                         "source publication slot has no resolved ordinates".into(),
                     )
                 })?;
-                if record.x != point.x || record.y != point.y {
+                if record.x.partial_cmp(&point.x) != Some(Ordering::Equal)
+                    || record.y.partial_cmp(&point.y) != Some(Ordering::Equal)
+                {
                     return Ok(None);
                 }
                 let expected =
@@ -4222,6 +4336,84 @@ impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
             },
         }
     }
+}
+
+struct SourceOnlyReceipt<'a> {
+    images: QSourceImages<'a>,
+    chart: AssignedSourceChart<'a>,
+    publication: Option<&'a PublicationInventory>,
+}
+
+impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
+    fn image(&self, image: QSourceImage) -> Result<&ExactChartPoint> {
+        if let QSourceImage::PublicationSample(sample) = image
+            && self
+                .publication
+                .and_then(|publication| publication.samples.get(sample as usize))
+                .is_none()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "source-only literal sample is outside its publication context".into(),
+            )
+            .into());
+        }
+        self.images.image(image)
+    }
+}
+
+impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
+    fn read_point<W: Work>(
+        &mut self,
+        output: u32,
+        image: QSourceImage,
+        record: Point,
+        expected_axes: crate::geometry::CoordinateAxes,
+        stored_axes: crate::geometry::CoordinateAxes,
+        work: &mut W,
+    ) -> Result<Option<ExactChartPoint>> {
+        self.chart
+            .read_point(output, image, record, expected_axes, stored_axes, work)
+    }
+}
+
+pub(super) fn bind_source_only(
+    source: SourceFrozenDrawing,
+    topology: &ExactGeographicTopology,
+    source_ports: Option<&[Option<ExactChartPoint>]>,
+    source_ordinates: &[NodeOrdinates],
+    publication: Option<&PublicationInventory>,
+    publication_images: &[ExactChartPoint],
+    publication_points: &[XY],
+    publication_ordinates: &[NodeOrdinates],
+    work: &mut impl Work,
+) -> Result<LiteralCheck<QSourceImage>> {
+    if publication_images.len() != publication_points.len()
+        || publication_images.len() != publication_ordinates.len()
+        || publication
+            .is_some_and(|publication| publication.samples.len() != publication_images.len())
+        || (publication.is_none() && !publication_images.is_empty())
+    {
+        return Err(GeometryErrorKind::Invalid(
+            "source-only publication images do not match their operation context".into(),
+        )
+        .into());
+    }
+    let mut receipt = SourceOnlyReceipt {
+        images: QSourceImages {
+            topology,
+            source_ports,
+            publication: publication_images,
+        },
+        chart: AssignedSourceChart {
+            topology,
+            source_ports,
+            source_ordinates,
+            publication_points,
+            publication_ordinates,
+        },
+        publication,
+    };
+    bind_literals(source.buffers, &mut receipt, work)
 }
 
 fn validate_native_materialized_chord_row(
@@ -4419,7 +4611,7 @@ fn validate_native_materialized_chord_row(
                     let (atom_start, atom_end) = if atom_use.reversed {
                         (endpoints[1], endpoints[0])
                     } else {
-                        (endpoints[0], endpoints[1])
+                        (*endpoints).into()
                     };
                     if atom_start != previous_vertex {
                         return Ok(false);
@@ -4598,57 +4790,41 @@ fn validate_native_sealed_layout(
     Ok(true)
 }
 
-fn native_candidate_edges_preserve_embedding(
-    reference: &NativeReference<'_>,
-    points: &NativeReferencePoints,
+fn native_candidate_edges_preserve_embedding<'reference, 'topology>(
+    reference: &'reference NativeReference<'topology>,
+    points: NativeReferencePoints,
     budget: &mut impl Work,
-) -> Result<bool> {
+) -> Result<Option<NativeCandidateAssignment<'reference, 'topology>>> {
     let graph = &reference.graph;
-    budget.charge(
-        u64::try_from(reference.plan.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
-    )?;
-    let mut point_vertices = Vec::with_capacity(reference.plan.points.len());
-    for &port in &reference.plan.points {
-        let vertex = *reference
-            .port_vertices
-            .get(port.0 as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("native isolated point has no reference vertex".into())
-            })?;
-        point_vertices.push(vertex);
-    }
-    let Some(candidate) = admit_candidate(
-        &graph.common,
-        &reference.dimension,
-        points,
-        &point_vertices,
-        budget,
-    )?
+    let Some(checked) = admit_candidate(&graph.common, &reference.dimension, points, budget)?
     else {
-        return Ok(false);
+        return Ok(None);
     };
-    native_graph_sewing_matches(
+    if !native_graph_sewing_matches(
         &graph.sewing,
         &graph.vertex_keys,
-        &candidate.points.exact,
+        &checked.points().exact,
         reference.plan.topology.sources.frame,
         budget,
-    )
+    )? {
+        return Ok(None);
+    }
+    Ok(Some(NativeCandidateAssignment::issue(reference, checked)?))
 }
 
-struct NativeCandidateState {
+struct NativeCandidateState<'reference, 'topology> {
     port_records: Vec<Option<Point>>,
-    points: NativeReferencePoints,
+    assignment: NativeCandidateAssignment<'reference, 'topology>,
 }
 
-fn validate_native_materialized_candidate(
-    reference: &NativeReference<'_>,
+fn validate_native_materialized_candidate<'reference, 'topology>(
+    reference: &'reference NativeReference<'topology>,
     parts: &super::emission::NativeMaterializedParts,
     sites: &[AssignedSite],
     ordinates: &[NodeOrdinates],
     budget: &mut impl Work,
-) -> Result<Option<NativeCandidateState>> {
-    parts.validate_literal_uses()?;
+) -> Result<Option<NativeCandidateState<'reference, 'topology>>> {
+    parts.validate_literal_uses(budget)?;
     if parts.points.len() != reference.plan.points.len()
         || parts.lines.len() != reference.plan.lines.len()
         || parts.polygons.len() != reference.plan.parts.len()
@@ -4877,15 +5053,21 @@ fn validate_native_materialized_candidate(
             }
         }
     }
-    if !native_candidate_edges_preserve_embedding(reference, &candidate_points, budget)? {
+    let Some(assignment) =
+        native_candidate_edges_preserve_embedding(reference, candidate_points, budget)?
+    else {
         return Ok(None);
-    }
+    };
     Ok(Some(NativeCandidateState {
         port_records,
-        points: candidate_points,
+        assignment,
     }))
 }
 
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "NativeGraphCycle.edges stores the shell boundary; its shell field is a boolean role flag"
+)]
 fn validate_native_reference(
     reference: &NativeReference<'_>,
     budget: &mut impl Work,
@@ -5340,19 +5522,26 @@ fn append_native_line_edge(
     };
     budget.charge(2)?;
     let literal_producer_range = ExactSourceRange {
-        start: producer_start.clone(),
-        end: producer_end.clone(),
+        start: producer_start.as_ref().try_clone_with_work(budget)?,
+        end: producer_end.try_clone_with_work(budget)?,
     };
     budget.charge(u64::try_from(trace_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    let mut trace_range_copy = Vec::with_capacity(trace_ranges.len());
+    for (edge, range) in &trace_ranges {
+        trace_range_copy.push((*edge, range.try_clone_with_work(budget)?));
+    }
     line_graph_edges.push(NativeAreaEdge {
-        vertices: [start.clone(), end.clone()],
+        vertices: [
+            start.try_clone_with_work(budget)?,
+            end.try_clone_with_work(budget)?,
+        ],
         owner,
         kind: NativeAreaEdgeKind::Producer {
             recipe,
             trace_edge,
             producer_start,
             producer_end,
-            trace_ranges: trace_ranges.clone(),
+            trace_ranges: trace_range_copy,
             known_spans,
         },
     });
@@ -5387,8 +5576,11 @@ fn finish_native_line_run(
         .into());
     }
     budget.charge(u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    reference_ports.reserve(run.vertices.len());
+    for vertex in &run.vertices {
+        reference_ports.push(vertex.try_clone_with_work(budget)?);
+    }
     budget.charge(u64::try_from(run.vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    reference_ports.extend(run.vertices.iter().cloned());
     let ports = run
         .vertices
         .into_iter()
@@ -5494,7 +5686,7 @@ fn native_selected_pole_sectors(
     topology: &ExactGeographicQ,
     selected_face_roots: &[Option<usize>],
     budget: &mut impl Work,
-) -> Result<(Vec<NativeSelectedPoleSector>, Vec<(usize, ChartPole)>)> {
+) -> Result<NativeSelectedPoleSectors> {
     if selected_face_roots.len() != topology.global_face_count {
         return Err(GeometryErrorKind::Invalid(
             "native selected roots do not match the exact Q face table".into(),
@@ -5520,23 +5712,24 @@ fn native_selected_pole_sectors(
             };
             work.charge(1)?;
             sectors.push(NativeSelectedPoleSector { region, sector });
-            if closure_index.insert_with_work((region, pole), work, &mut |left, right, work| {
+            let closure = (region, pole);
+            if closure_index.insert_with_work(closure, work, &mut |left, right, work| {
                 work.charge(1)?;
                 Ok(left.cmp(right))
             })? {
                 work.charge(1)?;
-                closures.push((region, pole));
+                closures.push(closure);
             }
             Ok(())
         })?;
     }
-    Ok((sectors, closures))
+    Ok(NativeSelectedPoleSectors { sectors, closures })
 }
 
 fn native_pole_closure_regions(
     sectors: &[NativeSelectedPoleSector],
     budget: &mut impl Work,
-) -> Result<BTreeSet<(usize, ChartPole)>> {
+) -> Result<BTreeSet<NativePoleClosure>> {
     // A repeated fan dart is a full-turn boundary; a multi-ray fan already
     // bounds a local pole sector and must not receive the complementary arc.
     budget.charge(u64::try_from(sectors.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
@@ -5570,6 +5763,21 @@ fn native_whole_sphere_cell_edges(
     families: &mut FeatureFamilyRegistry,
     budget: &mut impl SearchAccount,
 ) -> Result<Vec<NativeAreaEdge>> {
+    const CELL_EDGES: [(u8, usize, usize); 12] = [
+        (0, 0, 1),
+        (0, 1, 2),
+        (0, 2, 7),
+        (0, 7, 6),
+        (0, 6, 5),
+        (0, 5, 0),
+        (1, 2, 3),
+        (1, 3, 4),
+        (1, 4, 9),
+        (1, 9, 8),
+        (1, 8, 7),
+        (1, 7, 2),
+    ];
+
     let longitude = frame.longitude();
     let half = ExactRational::from_f64(longitude.half_period());
     let quarter = half.try_product_with_work(&ExactRational::from_f64(0.5), budget)?;
@@ -5650,30 +5858,22 @@ fn native_whole_sphere_cell_edges(
     }
     families.synchronize_budget(budget)?;
 
-    const CELL_EDGES: [(u8, usize, usize); 12] = [
-        (0, 0, 1),
-        (0, 1, 2),
-        (0, 2, 7),
-        (0, 7, 6),
-        (0, 6, 5),
-        (0, 5, 0),
-        (1, 2, 3),
-        (1, 3, 4),
-        (1, 4, 9),
-        (1, 9, 8),
-        (1, 8, 7),
-        (1, 7, 2),
-    ];
     budget.charge(u64::try_from(CELL_EDGES.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut edges = Vec::with_capacity(CELL_EDGES.len());
     for (cell, start, end) in CELL_EDGES {
         let vertices = [
-            poles.get(start).cloned().ok_or_else(|| {
-                GeometryErrorKind::Invalid("whole-sphere cell start port is unknown".into())
-            })?,
-            poles.get(end).cloned().ok_or_else(|| {
-                GeometryErrorKind::Invalid("whole-sphere cell end port is unknown".into())
-            })?,
+            poles
+                .get(start)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("whole-sphere cell start port is unknown".into())
+                })?
+                .try_clone_with_work(budget)?,
+            poles
+                .get(end)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("whole-sphere cell end port is unknown".into())
+                })?
+                .try_clone_with_work(budget)?,
         ];
         edges.push(NativeAreaEdge {
             vertices,
@@ -5722,11 +5922,7 @@ impl QCoordinates {
                 super::q::CanonicalQNodeKey::Chart(key) => match key {
                     ExactQuotientKey::Coordinate(point) => {
                         let [_, nearest, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                frame.longitude(),
-                                &point.x,
-                                work,
-                            )?;
+                            rounded_native_neighbors_with_work(frame.longitude(), &point.x, work)?;
                         (
                             nearest.native,
                             nearest.periods,
@@ -5747,12 +5943,11 @@ impl QCoordinates {
                             q.ports.get(first_port_id.0 as usize).ok_or_else(|| {
                                 GeometryErrorKind::Invalid("Q pole port is unknown".into())
                             })?;
-                        let [_, nearest, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                frame.longitude(),
-                                &first_port.point.x,
-                                work,
-                            )?;
+                        let [_, nearest, _] = rounded_native_neighbors_with_work(
+                            frame.longitude(),
+                            &first_port.point.x,
+                            work,
+                        )?;
                         (
                             nearest.native,
                             nearest.periods,
@@ -5765,11 +5960,7 @@ impl QCoordinates {
                     latitude,
                 } => {
                     let [_, nearest, _] =
-                        crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                            frame.longitude(),
-                            longitude,
-                            work,
-                        )?;
+                        rounded_native_neighbors_with_work(frame.longitude(), longitude, work)?;
                     (
                         nearest.native,
                         nearest.periods,
@@ -5795,11 +5986,7 @@ impl QCoordinates {
                         GeometryErrorKind::Invalid("Q pole port is unknown".into())
                     })?;
                     let [_, rounded, _] =
-                        crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                            frame.longitude(),
-                            &port.point.x,
-                            work,
-                        )?;
+                        rounded_native_neighbors_with_work(frame.longitude(), &port.point.x, work)?;
                     *pole_port_longitude
                         .get_mut(port_id.0 as usize)
                         .ok_or_else(|| {
@@ -5906,22 +6093,14 @@ impl QCoordinates {
     }
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "singleton enclosure and binary64 equality certify exact represented coordinates"
-)]
-#[expect(
-    clippy::float_cmp,
-    reason = "singleton enclosure and binary64 equality certify exact represented coordinates"
-)]
 fn exact_coordinate_matches_with_work(
     value: &ExactRational,
     coordinate: f64,
     work: &mut impl Work,
 ) -> Result<bool> {
     let (low, high) = value.outward_bounds_with_work(work)?;
-    if low == high {
-        Ok(low == coordinate)
+    if low.partial_cmp(&high) == Some(Ordering::Equal) {
+        Ok(low.partial_cmp(&coordinate) == Some(Ordering::Equal))
     } else {
         Ok(value
             .try_cmp_with_work(&ExactRational::from_f64(coordinate), work)?
@@ -6795,9 +6974,7 @@ fn assigned_port_point(
     let periods = pole_port_periods.unwrap_or(candidate.periods);
     let center = center.try_add_with_work(
         &period.try_product_with_work(
-            &ExactRational::from_dyadic(
-                crate::geometry::tessellation::exact::ExactDyadic::from_i64(periods),
-            ),
+            &ExactRational::from_dyadic(ExactDyadic::from_i64(periods)),
             budget,
         )?,
         budget,
@@ -7347,9 +7524,7 @@ fn inexact_published_axes_with_work(
     nearest: QCandidate,
     work: &mut impl Work,
 ) -> Result<[bool; 2]> {
-    let lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(nearest.periods),
-    );
+    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(nearest.periods));
     let nearest_longitude = ExactRational::from_f64(nearest.native.x).try_add_with_work(
         &ExactRational::from_f64(frame.longitude().period()).try_product_with_work(&lift, work)?,
         work,
@@ -7444,11 +7619,7 @@ fn published_domains(
             GeometryErrorKind::Invalid("Q publication exact-position slot is unknown".into())
         })? = Some(exact.clone());
         let [_, longitude_site, _] =
-            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                frame.longitude(),
-                &exact.longitude,
-                budget,
-            )?;
+            rounded_native_neighbors_with_work(frame.longitude(), &exact.longitude, budget)?;
         let nearest_candidate = QCandidate {
             native: XY::new(
                 longitude_site.native,
@@ -7480,13 +7651,9 @@ fn published_domains(
             inexact_published_axes_with_work(frame, &exact, nearest_candidate, budget)?;
         let fixed_longitude = matches!(key, ExactQuotientKey::Seam(_));
         let longitude_candidates = if movable_axes[0] && !fixed_longitude {
-            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                frame.longitude(),
-                &exact.longitude,
-                budget,
-            )?
+            rounded_native_neighbors_with_work(frame.longitude(), &exact.longitude, budget)?
         } else {
-            [crate::geometry::exact_arith::RoundedNativeSite {
+            [RoundedNativeSite {
                 native: nearest_candidate.native.x,
                 periods: nearest_candidate.periods,
             }; 3]
@@ -7500,13 +7667,16 @@ fn published_domains(
         } else {
             [nearest_candidate.native.y; 3]
         };
-        let longitude_count = if movable_axes[0] && !fixed_longitude {
+        let longitude_count: usize = if movable_axes[0] && !fixed_longitude {
             3
         } else {
             1
         };
-        let latitude_count = if movable_axes[1] { 3 } else { 1 };
-        let mut domain = Vec::with_capacity(longitude_count * latitude_count);
+        let latitude_count: usize = if movable_axes[1] { 3 } else { 1 };
+        let domain_capacity = longitude_count
+            .checked_mul(latitude_count)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut domain = Vec::with_capacity(domain_capacity);
         for longitude in longitude_candidates.iter().take(longitude_count) {
             for &latitude in latitude_candidates.iter().take(latitude_count) {
                 budget.charge(1)?;
@@ -7587,13 +7757,9 @@ fn candidate_domains(
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("movable Q node has no exact position".into())
                 })?;
-            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                frame.longitude(),
-                &exact.longitude,
-                budget,
-            )?
+            rounded_native_neighbors_with_work(frame.longitude(), &exact.longitude, budget)?
         } else {
-            let site = crate::geometry::exact_arith::RoundedNativeSite {
+            let site = RoundedNativeSite {
                 native: nearest_xy.x,
                 periods: nearest_periods,
             };
@@ -7693,11 +7859,8 @@ fn native_cut_candidate_domain(
     exact: &ExactChartPoint,
     budget: &mut impl Work,
 ) -> Result<Vec<QCandidate>> {
-    let [_, longitude, _] = crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-        frame.longitude(),
-        &exact.x,
-        budget,
-    )?;
+    let [_, longitude, _] =
+        rounded_native_neighbors_with_work(frame.longitude(), &exact.x, budget)?;
     let nearest_y = exact.y.round_with_work(budget)?;
     let fixed_y = matches!(
         quotient_key_for_chart_position_with_work(frame, exact, budget)?,
@@ -7822,7 +7985,7 @@ pub(super) enum QVariableNode {
     Published(EmissionNodeId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum PublishedEndpoint {
     Source {
         port: QPortId,
@@ -7833,6 +7996,29 @@ enum PublishedEndpoint {
         node: EmissionNodeId,
         sample: usize,
     },
+}
+
+impl PublishedEndpoint {
+    fn try_clone_with_work(&self, work: &mut impl Work) -> Result<Self> {
+        Ok(match self {
+            Self::Source {
+                port,
+                source_record,
+                sample,
+            } => Self::Source {
+                port: *port,
+                source_record: *source_record,
+                sample: sample
+                    .as_ref()
+                    .map(|sample| sample.try_clone_with_work(work))
+                    .transpose()?,
+            },
+            Self::Published { node, sample } => Self::Published {
+                node: *node,
+                sample: *sample,
+            },
+        })
+    }
 }
 
 fn publication_sample_index(endpoint: &PublishedEndpoint) -> Option<usize> {
@@ -7950,7 +8136,6 @@ fn nearest_publication_source_port_point(
         .try_clone_with_work(budget)
 }
 
-#[derive(Clone)]
 struct QPublishedChord {
     recipe: FragmentRecipeId,
     trace_edge: usize,
@@ -7971,6 +8156,12 @@ struct QPublishedChord {
 enum QPublicationChordId {
     Source(usize),
     Published(usize),
+}
+
+struct LocalPublicationChord {
+    nodes: [QGraphNode; 2],
+    exact: [ExactChartPoint; 2],
+    candidate: [ExactChartPoint; 2],
 }
 
 #[derive(Clone)]
@@ -8087,8 +8278,7 @@ fn strict_native_bank_event(
         return Ok(false);
     }
     budget.charge(1)?;
-    let start_site =
-        crate::geometry::exact_arith::retained_exact_native_site_with_work(axis, start, budget)?;
+    let start_site = retained_exact_native_site_with_work(axis, start, budget)?;
     let period = ExactRational::from_f64(axis.period());
     let half = ExactRational::from_f64(axis.half_period());
     let periods = start_site.periods();
@@ -8098,9 +8288,7 @@ fn strict_native_bank_event(
         let immediately_lower = periods.checked_sub(1).ok_or(ResourceError::SizeOverflow)?;
         let lower_bank = half.try_add_with_work(
             &period.try_product_with_work(
-                &ExactRational::from_dyadic(
-                    crate::geometry::tessellation::exact::ExactDyadic::from_i64(immediately_lower),
-                ),
+                &ExactRational::from_dyadic(ExactDyadic::from_i64(immediately_lower)),
                 budget,
             )?,
             budget,
@@ -8113,9 +8301,7 @@ fn strict_native_bank_event(
     };
     let bank = half.try_add_with_work(
         &period.try_product_with_work(
-            &ExactRational::from_dyadic(
-                crate::geometry::tessellation::exact::ExactDyadic::from_i64(bank_index),
-            ),
+            &ExactRational::from_dyadic(ExactDyadic::from_i64(bank_index)),
             budget,
         )?,
         budget,
@@ -8236,7 +8422,7 @@ pub(super) fn source_line_reuse_is_complete(
         let (source_start, source_end) = if reverse {
             (edge.source[1], edge.source[0])
         } else {
-            (edge.source[0], edge.source[1])
+            edge.source.into()
         };
         if !edge.source_interval_reads_as(
             topology.sources.frame,
@@ -8515,6 +8701,10 @@ impl PreparedProducerWitness {
         Ok(())
     }
 
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "QSourceSpanRange.source_lift is copied from the referenced QSpanOwner.lift"
+    )]
     fn validate(
         &self,
         topology: &ExactGeographicTopology,
@@ -9175,18 +9365,17 @@ impl PreparedProducerWitness {
                                 "producer linework root edge is unknown".into(),
                             )
                         })?;
-                    let supported = match (recipe.use_kind, edge.kind) {
-                        (SelectedUse::Curve, SourceEdgeKind::Line { .. }) => true,
+                    let supported = matches!(
+                        (recipe.use_kind, edge.kind),
                         (
                             SelectedUse::Curve,
-                            SourceEdgeKind::Ring {
-                                kind: crate::geometry::RingKind::Collapsed,
-                                ..
-                            },
-                        ) => true,
-                        (SelectedUse::ArealBoundaryLine, SourceEdgeKind::Ring { .. }) => true,
-                        _ => false,
-                    };
+                            SourceEdgeKind::Line { .. }
+                                | SourceEdgeKind::Ring {
+                                    kind: crate::geometry::RingKind::Collapsed,
+                                    ..
+                                },
+                        ) | (SelectedUse::ArealBoundaryLine, SourceEdgeKind::Ring { .. })
+                    );
                     if !supported {
                         return Err(GeometryErrorKind::Invalid(
                             "producer linework root has an incompatible selected use".into(),
@@ -9517,24 +9706,27 @@ fn trace_source_nodes(
                     (overlap_high, overlap_low)
                 };
                 budget.charge(1)?;
+                let producer_range = ExactSourceRange {
+                    start: producer_parameter_at_source(root_range, &source_start, budget)?,
+                    end: producer_parameter_at_source(root_range, &source_end, budget)?,
+                };
+                let span_range = ExactSourceRange {
+                    start: span_parameter_at_source(range, &source_start, budget)?,
+                    end: span_parameter_at_source(range, &source_end, budget)?,
+                };
+                let source_range = ExactSourceRange {
+                    start: source_start,
+                    end: source_end,
+                };
                 source_ranges.push(QProducerSourceRange {
                     root: root_range.root(),
                     source_edge: source.id,
                     source_lift: range.source_lift,
-                    producer_range: ExactSourceRange {
-                        start: producer_parameter_at_source(root_range, &source_start, budget)?,
-                        end: producer_parameter_at_source(root_range, &source_end, budget)?,
-                    },
-                    span_range: ExactSourceRange {
-                        start: span_parameter_at_source(range, &source_start, budget)?,
-                        end: span_parameter_at_source(range, &source_end, budget)?,
-                    },
-                    source_range: ExactSourceRange {
-                        start: source_start,
-                        end: source_end,
-                    },
+                    source_range,
+                    producer_range,
                     span: range.span,
                     owner: range.owner,
+                    span_range,
                     nodes: range.nodes,
                     ports: range.ports,
                 });
@@ -9646,6 +9838,14 @@ struct QClassState {
     publication_pairs_by_rank: Vec<Vec<usize>>,
     cuts_by_rank: Vec<Vec<usize>>,
     fans_by_rank: Vec<Vec<usize>>,
+}
+
+struct UnifiedQClassBuild {
+    source_variable_count: usize,
+    classes: Vec<Vec<QVariableNode>>,
+    node_location: Vec<Option<QNodeLocation>>,
+    publication_location: Vec<Option<QNodeLocation>>,
+    states: Vec<QClassState>,
 }
 
 type QSourceClass = Vec<QNodeId>;
@@ -10221,13 +10421,13 @@ fn align_native_chart_lift(
     budget: &mut impl Work,
 ) -> Result<ExactChartPoint> {
     let longitude = frame.longitude();
-    let (_, point_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, point_lift) = split_rational_native_site_with_work(
         &point.x,
         longitude.period(),
         longitude.half_period(),
         budget,
     )?;
-    let (_, reference_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, reference_lift) = split_rational_native_site_with_work(
         &reference.x,
         longitude.period(),
         longitude.half_period(),
@@ -10375,7 +10575,7 @@ fn build_q_publication_chords(
     let mut sample_nodes = Vec::with_capacity(emission.publication.samples.len());
     for sample in &emission.publication.samples {
         budget.charge(1)?;
-        sample_nodes.push(nodes.intern_computed(frame, sample.exact_point.clone(), budget)?);
+        sample_nodes.push(nodes.intern_computed(frame, &sample.exact_point, budget)?);
     }
     let mut sample_source_ports = Vec::with_capacity(sample_nodes.len());
     for (sample_index, &node) in sample_nodes.iter().enumerate() {
@@ -10473,7 +10673,8 @@ fn build_q_publication_chords(
         budget.charge(
             u64::try_from(published.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
-        let mut endpoints = vec![None; published.points.len()];
+        let mut endpoints = Vec::with_capacity(published.points.len());
+        endpoints.resize_with(published.points.len(), || None);
         for (sample_index, sample) in samples.iter().enumerate() {
             budget.charge(1)?;
             let written = sample.written_vertex;
@@ -10504,7 +10705,11 @@ fn build_q_publication_chords(
                         })?,
                     source_record: None,
                     sample: Some(SourceSampleOccurrence {
-                        trace: sample.source_trace.clone(),
+                        trace: sample
+                            .source_trace
+                            .as_ref()
+                            .map(|trace| trace.try_clone_with_work(budget))
+                            .transpose()?,
                         endpoint_only: sample.endpoint_only,
                         publication_sample: Some(publication_sample),
                     }),
@@ -10729,7 +10934,10 @@ fn build_q_publication_chords(
                 trace_edge: index,
                 generated,
                 nodes: [from_node, to_node],
-                endpoints: [from.clone(), to.clone()],
+                endpoints: [
+                    from.try_clone_with_work(budget)?,
+                    to.try_clone_with_work(budget)?,
+                ],
                 exact: [from_exact.clone(), to_exact.clone()],
                 reference_offsets: [
                     reference_offsets
@@ -11141,29 +11349,44 @@ fn union_prepared_dependencies(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct UnifiedQClassInputs<'a> {
+    topology: &'a ExactGeographicTopology,
+    source_classes: &'a [QSourceClass],
+    publication_variables: &'a [EmissionNodeId],
+    publication_nodes: &'a EmissionNodeRegistry,
+    source_chords: &'a [QChord],
+    publication_chords: &'a [QPublishedChord],
+    proximity_pairs: &'a [QProximityPair],
+    cut_rows: &'a [QCutRow],
+    fan_rows: &'a [QFanRow],
+    publication_pairs: &'a [QPublicationPair],
+    source_domains: &'a [Vec<QCandidate>],
+    source_movable_axes: &'a [[bool; 2]],
+    publication_domains: &'a [Vec<QCandidate>],
+    producer_witness: &'a PreparedProducerWitness,
+}
+
 fn build_unified_q_classes(
-    topology: &ExactGeographicTopology,
-    source_classes: &[QSourceClass],
-    publication_variables: &[EmissionNodeId],
-    publication_nodes: &EmissionNodeRegistry,
-    source_chords: &[QChord],
-    publication_chords: &[QPublishedChord],
-    proximity_pairs: &[QProximityPair],
-    cut_rows: &[QCutRow],
-    fan_rows: &[QFanRow],
-    publication_pairs: &[QPublicationPair],
-    source_domains: &[Vec<QCandidate>],
-    source_movable_axes: &[[bool; 2]],
-    publication_domains: &[Vec<QCandidate>],
-    producer_witness: &PreparedProducerWitness,
+    inputs: &UnifiedQClassInputs<'_>,
     budget: &mut impl Work,
-) -> Result<(
-    usize,
-    Vec<Vec<QVariableNode>>,
-    Vec<Option<QNodeLocation>>,
-    Vec<Option<QNodeLocation>>,
-    Vec<QClassState>,
-)> {
+) -> Result<UnifiedQClassBuild> {
+    let UnifiedQClassInputs {
+        topology,
+        source_classes,
+        publication_variables,
+        publication_nodes,
+        source_chords,
+        publication_chords,
+        proximity_pairs,
+        cut_rows,
+        fan_rows,
+        publication_pairs,
+        source_domains,
+        source_movable_axes,
+        publication_domains,
+        producer_witness,
+    } = *inputs;
     let mut source_variable_count = 0_usize;
     for class in source_classes {
         budget.charge(1)?;
@@ -11542,13 +11765,13 @@ fn build_unified_q_classes(
                 .push(fan_index);
         }
     }
-    Ok((
+    Ok(UnifiedQClassBuild {
         source_variable_count,
         classes,
         node_location,
         publication_location,
         states,
-    ))
+    })
 }
 
 fn build_q_fan_rows(
@@ -13039,9 +13262,7 @@ fn candidate_chart_point_with_work(
     candidate: QCandidate,
     work: &mut impl Work,
 ) -> Result<ExactChartPoint> {
-    let lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(candidate.periods),
-    );
+    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(candidate.periods));
     Ok(ExactChartPoint::from_rationals(
         ExactRational::from_f64(candidate.native.x).try_add_with_work(
             &ExactRational::from_f64(frame.longitude().period())
@@ -13084,7 +13305,7 @@ fn native_port_data(
     budget: &mut impl Work,
 ) -> Result<super::emission::NativePortData> {
     let longitude_axis = frame.longitude();
-    let (_, chart_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, chart_lift) = split_rational_native_site_with_work(
         &source_chart_point.x,
         longitude_axis.period(),
         longitude_axis.half_period(),
@@ -13162,7 +13383,7 @@ fn native_port_data(
     } else {
         match quotient_key_for_chart_position_with_work(frame, source_chart_point, budget)? {
             ExactQuotientKey::NorthPole | ExactQuotientKey::SouthPole => {
-                let longitude = crate::geometry::exact_arith::round_native_longitude_with_work(
+                let longitude = round_native_longitude_with_work(
                     frame.longitude(),
                     &source_chart_point.x,
                     budget,
@@ -13238,13 +13459,13 @@ fn align_native_port_to_seam(
     let old_periods = *periods;
     let longitude =
         nearest_exact_longitude_alias_with_work(frame, &port.point.x, &seam.point.x, budget)?;
-    let (_, old_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, old_lift) = split_rational_native_site_with_work(
         &port.point.x,
         frame.longitude().period(),
         frame.longitude().half_period(),
         budget,
     )?;
-    let (_, new_lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+    let (_, new_lift) = split_rational_native_site_with_work(
         &longitude,
         frame.longitude().period(),
         frame.longitude().half_period(),
@@ -13284,7 +13505,7 @@ fn native_q_port_data(
     port_id: QPortId,
     port_points: &[Option<ExactChartPoint>],
     sites: &[Option<AssignedSite>],
-    source_request: Option<RootRequest>,
+    source_requests: &[RootRequest],
     budget: &mut impl Work,
 ) -> Result<NativePortData> {
     budget.charge(1)?;
@@ -13325,8 +13546,7 @@ fn native_q_port_data(
         None
     };
     let occurrences = if port.cut {
-        let source_requests = source_request.into_iter().collect::<Vec<_>>();
-        native_source_sample_occurrences(None, &source_requests, budget)?
+        native_source_sample_occurrences(None, source_requests, budget)?
     } else {
         budget.charge(1)?;
         vec![OccurrenceSource {
@@ -13352,9 +13572,7 @@ fn exact_squared_displacement(
     candidate: QCandidate,
     work: &mut impl Work,
 ) -> Result<ExactRational> {
-    let lift = ExactRational::from_dyadic(
-        crate::geometry::tessellation::exact::ExactDyadic::from_i64(candidate.periods),
-    );
+    let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(candidate.periods));
     let longitude = ExactRational::from_f64(candidate.native.x).try_add_with_work(
         &ExactRational::from_f64(frame.longitude().period()).try_product_with_work(&lift, work)?,
         work,
@@ -13376,9 +13594,7 @@ fn published_candidate_radius(
     let period = ExactRational::from_f64(frame.longitude().period());
     for candidate in candidates {
         budget.charge(1)?;
-        let lift = ExactRational::from_dyadic(
-            crate::geometry::tessellation::exact::ExactDyadic::from_i64(candidate.periods),
-        );
+        let lift = ExactRational::from_dyadic(ExactDyadic::from_i64(candidate.periods));
         let longitude = ExactRational::from_f64(candidate.native.x)
             .try_add_with_work(&period.try_product_with_work(&lift, budget)?, budget)?;
         let dx = longitude.try_subtract_with_work(&exact.longitude, budget)?;
@@ -13437,7 +13653,7 @@ enum QFamilyState {
 }
 
 pub(super) enum NearestQCertificate {
-    Pass(QEmbeddingOutput),
+    Pass(Box<QEmbeddingOutput>),
     SearchRequired,
     Unrepresentable,
 }
@@ -13445,6 +13661,39 @@ pub(super) enum NearestQCertificate {
 pub(super) struct QEmbeddingOutput {
     pub(super) sealed: super::emission::SealedQDrawing,
     pub(super) family_state: Option<FeatureFamilyRegistry>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct QEmbeddingCertification<'topology, 'emission, 'access, 'metric, M: ChartMetric> {
+    pub(super) topology: &'topology ExactGeographicTopology,
+    pub(super) emission: &'emission QEmbeddingEmission<'topology, 'emission>,
+    pub(super) nearest: &'emission QCoordinates,
+    pub(super) ordinates: &'emission [NodeOrdinates],
+    pub(super) declared_axes: crate::geometry::CoordinateAxes,
+    pub(super) strict_axes: bool,
+    pub(super) operation: &'static str,
+    pub(super) metric_access: Option<&'access SourceArcMetricAccess<'access, 'metric, M>>,
+}
+
+impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
+    QEmbeddingCertification<'topology, 'emission, 'access, 'metric, M>
+{
+    fn build_problem<A: SearchAccount>(
+        &self,
+        budget: &mut A,
+    ) -> Result<QEmbeddingProblem<'topology, 'emission, 'access, 'metric, M>> {
+        QEmbeddingProblem::new(
+            self.topology,
+            self.emission,
+            self.nearest,
+            self.ordinates,
+            self.declared_axes,
+            self.strict_axes,
+            self.operation,
+            self.metric_access,
+            budget,
+        )
+    }
 }
 
 fn native_reference_global_check<T>(
@@ -13635,6 +13884,11 @@ fn native_source_face_germs(
     Ok(Some(germs))
 }
 
+struct NativeKnownSourceSpanSlice {
+    uses: Vec<NativeSourceSpanUse>,
+    selected_left_region: Option<usize>,
+}
+
 fn native_known_source_spans_for_slice(
     topology: &ExactGeographicTopology,
     selected_face_roots: &[Option<usize>],
@@ -13643,11 +13897,12 @@ fn native_known_source_spans_for_slice(
     local_start: &ExactRational,
     local_end: &ExactRational,
     budget: &mut impl Work,
-) -> Result<Vec<NativeSourceSpanUse>> {
+) -> Result<NativeKnownSourceSpanSlice> {
     budget.charge(
         u64::try_from(chord.source_ranges.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut output = Vec::with_capacity(chord.source_ranges.len());
+    let mut selected_left_region = None;
     for source in &chord.source_ranges {
         budget.charge(1)?;
         let (producer_low, producer_high) = if source
@@ -13749,6 +14004,7 @@ fn native_known_source_spans_for_slice(
                 )
                 .into());
             }
+            selected_left_region = Some(region);
         }
         output.push(NativeSourceSpanUse {
             span: span_id,
@@ -13772,7 +14028,10 @@ fn native_known_source_spans_for_slice(
             face_germs,
         });
     }
-    Ok(output)
+    Ok(NativeKnownSourceSpanSlice {
+        uses: output,
+        selected_left_region,
+    })
 }
 
 fn native_known_span_boundaries(
@@ -13844,13 +14103,14 @@ fn native_known_span_boundaries(
                     } else {
                         None
                     };
+                    let source_requests = source_request.as_slice();
                     let data = native_q_port_data(
                         topology,
                         builder,
                         port,
                         port_points,
                         sites,
-                        source_request,
+                        source_requests,
                         budget,
                     )?;
                     boundaries.push(NativeKnownSpanBoundary {
@@ -13949,7 +14209,7 @@ fn native_events_for_span(
     let mut high = events.len();
     while low < high {
         budget.charge(1)?;
-        let middle = low + (high - low) / 2;
+        let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
         })?;
@@ -13963,7 +14223,7 @@ fn native_events_for_span(
     high = events.len();
     while low < high {
         budget.charge(1)?;
-        let middle = low + (high - low) / 2;
+        let middle = low.midpoint(high);
         let event = events.get(middle).ok_or_else(|| {
             GeometryErrorKind::Invalid("native span-event index is unknown".into())
         })?;
@@ -14112,7 +14372,7 @@ fn native_port_spelling_at_assigned_point(
             }
         },
         ExactQuotientKey::Coordinate(_) => {
-            let (_, lift) = crate::geometry::exact_arith::split_rational_native_site_with_work(
+            let (_, lift) = split_rational_native_site_with_work(
                 &point.x,
                 frame.longitude().period(),
                 frame.longitude().half_period(),
@@ -14183,7 +14443,7 @@ fn source_lifted_native_port(
         };
         spelling
     };
-    let mut shifted = port.clone();
+    let mut shifted = port.try_clone_with_work(work)?;
     shifted.point = point;
     shifted.spelling = spelling;
     Ok(Some(shifted))
@@ -14234,11 +14494,11 @@ fn common_refine_native_edges(
         let mut split_points = Vec::with_capacity(2);
         split_points.push(NativeSplitPoint {
             parameter: producer_start.try_clone_with_work(budget)?,
-            data: vertices[0].clone(),
+            data: vertices[0].try_clone_with_work(budget)?,
         });
         split_points.push(NativeSplitPoint {
             parameter: producer_end.try_clone_with_work(budget)?,
-            data: vertices[1].clone(),
+            data: vertices[1].try_clone_with_work(budget)?,
         });
         for source in &known_spans {
             let (event_start, event_end) = native_events_for_span(boundaries, source.span, budget)?;
@@ -14427,12 +14687,15 @@ fn common_refine_native_edges(
             }
             budget.charge(1)?;
             refined.push(NativeAreaEdge {
-                vertices: [start.data.clone(), end.data.clone()],
+                vertices: [
+                    start.data.try_clone_with_work(budget)?,
+                    end.data.try_clone_with_work(budget)?,
+                ],
                 owner,
                 kind: NativeAreaEdgeKind::Producer {
                     recipe,
                     trace_edge,
-                    producer_start: start.parameter.try_clone_with_work(budget)?,
+                    producer_start: Box::new(start.parameter.try_clone_with_work(budget)?),
                     producer_end: end.parameter.try_clone_with_work(budget)?,
                     trace_ranges: child_ranges,
                     known_spans: child_spans,
@@ -14443,6 +14706,10 @@ fn common_refine_native_edges(
     Ok(refined)
 }
 
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "NativeSourceSpanUse preserves its owner's chart lift as source_lift"
+)]
 fn validate_native_source_ranges(
     topology: &ExactGeographicTopology,
     selected_face_roots: &[Option<usize>],
@@ -14462,10 +14729,7 @@ fn validate_native_source_ranges(
         let owners = trace.owners_for_edge(trace_edge)?;
         let mut interval_cursor = ExactRational::zero();
         let mut found = false;
-        loop {
-            let Some(edge) = producer_edges.get(edge_cursor) else {
-                break;
-            };
+        while let Some(edge) = producer_edges.get(edge_cursor) {
             let NativeAreaEdgeKind::Producer {
                 recipe: edge_recipe,
                 trace_edge: edge_trace,
@@ -15282,24 +15546,31 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             &movable_axes,
             budget,
         )?;
-        let (source_base, classes, node_location, publication_location, class_states) =
-            build_unified_q_classes(
+        let UnifiedQClassBuild {
+            source_variable_count: source_base,
+            classes,
+            node_location,
+            publication_location,
+            states: class_states,
+        } = build_unified_q_classes(
+            &UnifiedQClassInputs {
                 topology,
-                &source_classes,
-                &published.variables,
-                &publication_nodes,
-                &chords,
-                &publication_chords,
-                &proximity_pairs,
-                &cut_rows,
-                &fan_rows,
-                &publication_pairs,
-                &domains,
-                &movable_axes,
-                &published.domains,
-                &prepared_producer,
-                budget,
-            )?;
+                source_classes: &source_classes,
+                publication_variables: &published.variables,
+                publication_nodes: &publication_nodes,
+                source_chords: &chords,
+                publication_chords: &publication_chords,
+                proximity_pairs: &proximity_pairs,
+                cut_rows: &cut_rows,
+                fan_rows: &fan_rows,
+                publication_pairs: &publication_pairs,
+                source_domains: &domains,
+                source_movable_axes: &movable_axes,
+                publication_domains: &published.domains,
+                producer_witness: &prepared_producer,
+            },
+            budget,
+        )?;
         budget.budget_mut().include_constructed(source_base)?;
         Ok(Self {
             topology,
@@ -15568,7 +15839,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         match self.check_global_candidate(&nearest, &publication_nearest, drawing, budget)? {
             GlobalCheck::Pass(mut output) => {
                 output.family_state = self.take_native_families();
-                Ok(NearestQCertificate::Pass(output))
+                Ok(NearestQCertificate::Pass(Box::new(output)))
             },
             GlobalCheck::Reject(classes) => {
                 if classes.is_empty() {
@@ -15577,6 +15848,33 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     Ok(NearestQCertificate::SearchRequired)
                 }
             },
+        }
+    }
+
+    fn certify_and_search<A: SearchAccount>(
+        mut self,
+        live_keys: &[(EmittedNodeKey, QNodeId)],
+        drawing: QEmissionDrawing<'topology>,
+        budget: &mut A,
+    ) -> Result<SearchOutcome<QEmbeddingPass>> {
+        match self.certify_nearest(live_keys, drawing, budget)? {
+            NearestQCertificate::Pass(output) => {
+                let output = *output;
+                #[cfg(test)]
+                {
+                    Ok(SearchOutcome::Pass(QEmbeddingPass {
+                        output,
+                        coordinates: self.nearest.clone(),
+                        searched: false,
+                    }))
+                }
+                #[cfg(not(test))]
+                {
+                    Ok(SearchOutcome::Pass(QEmbeddingPass { output }))
+                }
+            },
+            NearestQCertificate::SearchRequired => search_q_embedding(self, budget),
+            NearestQCertificate::Unrepresentable => Ok(SearchOutcome::Exhausted),
         }
     }
 
@@ -16195,7 +16493,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         &self,
         coordinates: &QCoordinates,
         publication_coordinates: &[Option<QCandidate>],
-        source_faces: Option<QFaceStructure>,
+        source_faces: Option<&QFaceStructure>,
         budget: &mut impl Work,
     ) -> Result<AssignedProducerProjection> {
         let q = &self.topology.q;
@@ -16257,7 +16555,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 points,
             });
         }
-        if let Some(source_faces) = source_faces.as_ref() {
+        if let Some(source_faces) = source_faces {
             budget.charge(
                 u64::try_from(source_faces.outgoing_nodes.len())
                     .map_err(|_| ResourceError::SizeOverflow)?,
@@ -16465,20 +16763,18 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             )
                         })?;
                     let longitude = self.topology.sources.frame.longitude();
-                    let (_, source_lift) =
-                        crate::geometry::exact_arith::split_rational_native_site_with_work(
-                            &target_source_point.x,
-                            longitude.period(),
-                            longitude.half_period(),
-                            budget,
-                        )?;
-                    let (_, output_lift) =
-                        crate::geometry::exact_arith::split_rational_native_site_with_work(
-                            &target.x,
-                            longitude.period(),
-                            longitude.half_period(),
-                            budget,
-                        )?;
+                    let (_, source_lift) = split_rational_native_site_with_work(
+                        &target_source_point.x,
+                        longitude.period(),
+                        longitude.half_period(),
+                        budget,
+                    )?;
+                    let (_, output_lift) = split_rational_native_site_with_work(
+                        &target.x,
+                        longitude.period(),
+                        longitude.half_period(),
+                        budget,
+                    )?;
                     let lift_delta = source_lift.try_subtract_with_work(output_lift, budget)?;
                     let longitude_shift = ExactRational::from_f64(longitude.period())
                         .try_product_with_work(&ExactRational::from_dyadic(lift_delta), budget)?;
@@ -17200,7 +17496,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let mut high = selected_regions.len();
                 while low < high {
                     budget.charge(1)?;
-                    let middle = low + (high - low) / 2;
+                    let middle = low.midpoint(high);
                     let candidate = selected_regions.get(middle).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "generated area use has no selected-region authority".into(),
@@ -17448,7 +17744,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                     self.all_outer_repair_classes(budget)?,
                                 ));
                             }
-                            variable_for_node[node_index] = Some(variable);
+                            *variable_for_node.get_mut(node_index).ok_or_else(|| {
+                                GeometryErrorKind::Invalid(
+                                    "native computed cut node has no variable slot".into(),
+                                )
+                            })? = Some(variable);
                             points.push(point);
                             domains.push(domain);
                             variable
@@ -17681,11 +17981,16 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     }
                     if q_port.cut {
                         native_source_sample_occurrences(
-                            sample.trace.clone(),
+                            sample
+                                .trace
+                                .as_ref()
+                                .map(|trace| trace.try_clone_with_work(budget))
+                                .transpose()?,
                             source_requests,
                             budget,
                         )?
                     } else {
+                        budget.charge(2)?;
                         let mut occurrences = Vec::with_capacity(2);
                         if sample.trace.is_some() && !sample.endpoint_only {
                             occurrences.push(OccurrenceSource {
@@ -17700,7 +18005,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                                 .map_or(super::emission::VertexOrigin::Presentation, |_| {
                                     super::emission::VertexOrigin::SourceSample
                                 }),
-                            source_trace: sample.trace.clone(),
+                            source_trace: sample
+                                .trace
+                                .as_ref()
+                                .map(|trace| trace.try_clone_with_work(budget))
+                                .transpose()?,
                         });
                         occurrences
                     }
@@ -17750,7 +18059,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         .map_or(super::emission::VertexOrigin::Presentation, |_| {
                             super::emission::VertexOrigin::SourceSample
                         }),
-                    source_trace: sample.source_trace.clone(),
+                    source_trace: sample
+                        .source_trace
+                        .as_ref()
+                        .map(|trace| trace.try_clone_with_work(budget))
+                        .transpose()?,
                 };
                 (*node, candidate, None, vec![occurrence])
             },
@@ -17798,7 +18111,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
     ) -> Result<NativePortData> {
         let node = builder.intern_point(&feature.point, budget)?;
         let occurrences = native_source_sample_occurrences(
-            feature.source_trace.clone(),
+            feature
+                .source_trace
+                .as_ref()
+                .map(|trace| trace.try_clone_with_work(budget))
+                .transpose()?,
             source_requests,
             budget,
         )?;
@@ -17867,24 +18184,63 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        let start_bank = if !start_is_seam {
-            None
-        } else if direction.is_gt() {
-            Some(super::emission::ChartSide::West)
-        } else if direction.is_lt() {
-            Some(super::emission::ChartSide::East)
+        let mut seam_wall_source_spans = None;
+        let seam_wall_bank = if let Some(region) = region
+            && direction.is_eq()
+            && start_is_seam
+            && end_is_seam
+        {
+            let vertical = start_chart.y.try_cmp_with_work(&end_chart.y, budget)?;
+            if vertical.is_eq() {
+                None
+            } else {
+                let source_spans = native_known_source_spans_for_slice(
+                    self.topology,
+                    self.emission.selected_face_roots,
+                    Some(region),
+                    chord,
+                    &zero,
+                    &one,
+                    budget,
+                )?;
+                if source_spans.selected_left_region != Some(region) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "native seam wall has no authenticated selected-left source germ".into(),
+                    )
+                    .into());
+                }
+                seam_wall_source_spans = Some(source_spans);
+                Some(if vertical.is_gt() {
+                    super::emission::ChartSide::West
+                } else {
+                    super::emission::ChartSide::East
+                })
+            }
         } else {
             None
         };
-        let end_bank = if !end_is_seam {
-            None
-        } else if direction.is_gt() {
-            Some(super::emission::ChartSide::East)
-        } else if direction.is_lt() {
-            Some(super::emission::ChartSide::West)
-        } else {
-            None
-        };
+        let start_bank = seam_wall_bank.or_else(|| {
+            if !start_is_seam {
+                None
+            } else if direction.is_gt() {
+                Some(super::emission::ChartSide::West)
+            } else if direction.is_lt() {
+                Some(super::emission::ChartSide::East)
+            } else {
+                None
+            }
+        });
+        let end_bank = seam_wall_bank.or_else(|| {
+            if !end_is_seam {
+                None
+            } else if direction.is_gt() {
+                Some(super::emission::ChartSide::East)
+            } else if direction.is_lt() {
+                Some(super::emission::ChartSide::West)
+            } else {
+                None
+            }
+        });
         let start_requests = self.native_endpoint_root_requests(
             &chord.endpoints[0],
             source_trace,
@@ -18056,7 +18412,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 kind: NativeAreaEdgeKind::Producer {
                     recipe,
                     trace_edge: chord.trace_edge,
-                    producer_start: previous_parameter.clone(),
+                    producer_start: Box::new(previous_parameter.clone()),
                     producer_end: feature.edge_parameter.clone(),
                     trace_ranges: trace_ranges_for_slice(
                         source_trace,
@@ -18073,7 +18429,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         &previous_parameter,
                         &feature.edge_parameter,
                         budget,
-                    )?,
+                    )?
+                    .uses,
                 },
             });
             output.break_after.push(true);
@@ -18095,7 +18452,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             kind: NativeAreaEdgeKind::Producer {
                 recipe,
                 trace_edge: chord.trace_edge,
-                producer_start: previous_parameter.clone(),
+                producer_start: Box::new(previous_parameter.clone()),
                 producer_end: one.clone(),
                 trace_ranges: trace_ranges_for_slice(
                     source_trace,
@@ -18104,15 +18461,21 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     &one,
                     budget,
                 )?,
-                known_spans: native_known_source_spans_for_slice(
-                    self.topology,
-                    self.emission.selected_face_roots,
-                    region,
-                    chord,
-                    &previous_parameter,
-                    &one,
-                    budget,
-                )?,
+                known_spans: match seam_wall_source_spans.take() {
+                    Some(source_spans) => source_spans.uses,
+                    None => {
+                        native_known_source_spans_for_slice(
+                            self.topology,
+                            self.emission.selected_face_roots,
+                            region,
+                            chord,
+                            &previous_parameter,
+                            &one,
+                            budget,
+                        )?
+                        .uses
+                    },
+                },
             },
         });
         output.break_after.push(end_is_seam);
@@ -18121,7 +18484,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
     fn register_native_pole_families(
         &mut self,
-        pole_closures: &[(usize, ChartPole)],
+        pole_closures: &[NativePoleClosure],
         budget: &mut impl SearchAccount,
     ) -> Result<()> {
         if pole_closures.is_empty() {
@@ -18382,10 +18745,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         Ok(output)
     }
 
-    fn native_cut_family_domains(
-        &self,
-        budget: &mut impl Work,
-    ) -> Result<Vec<Vec<Vec<(i64, i64)>>>> {
+    fn native_cut_family_domains(&self, budget: &mut impl Work) -> Result<NativeCutFamilyDomains> {
         let recipe_count = self.emission.fragment_recipes.len();
         if self.publication_chord_offsets.len()
             != recipe_count
@@ -18398,7 +18758,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .into());
         }
         budget.charge(u64::try_from(recipe_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut recipe_ranges = Vec::with_capacity(recipe_count);
+        let mut recipe_ranges: NativeCutFamilyDomains = Vec::with_capacity(recipe_count);
         for recipe_index in 0..recipe_count {
             budget.charge(1)?;
             let start = *self
@@ -18420,7 +18780,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 GeometryErrorKind::Invalid("native family chord offsets are reversed".into())
             })?;
             budget.charge(u64::try_from(leaf_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-            let mut leaf_ranges = Vec::with_capacity(leaf_count);
+            let mut leaf_ranges: NativeRecipeCutRanges = Vec::with_capacity(leaf_count);
             for chord_index in start..end {
                 budget.charge(1)?;
                 let chord = self.publication_chords.get(chord_index).ok_or_else(|| {
@@ -18428,25 +18788,23 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 })?;
                 let left = self.native_family_endpoint_domain(chord, 0, budget)?;
                 let right = self.native_family_endpoint_domain(chord, 1, budget)?;
-                let mut ranges = Vec::new();
-                for &(left_candidate, ref left_point) in &left {
-                    for &(right_candidate, ref right_point) in &right {
+                let mut ranges: NativeChordCutRanges = Vec::new();
+                for (left_candidate, left_point) in &left {
+                    for (right_candidate, right_point) in &right {
                         budget.charge(1)?;
                         if chord.nodes[0] == chord.nodes[1] && left_candidate != right_candidate {
                             continue;
                         }
-                        let left_site =
-                            crate::geometry::exact_arith::retained_exact_native_site_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &left_point.x,
-                                budget,
-                            )?;
-                        let right_site =
-                            crate::geometry::exact_arith::retained_exact_native_site_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &right_point.x,
-                                budget,
-                            )?;
+                        let left_site = retained_exact_native_site_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &left_point.x,
+                            budget,
+                        )?;
+                        let right_site = retained_exact_native_site_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &right_point.x,
+                            budget,
+                        )?;
                         if left_site.periods() == right_site.periods() {
                             continue;
                         }
@@ -18515,19 +18873,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        let (pole_sectors, selected_pole_closures) = native_selected_pole_sectors(
+        let selected_poles = native_selected_pole_sectors(
             &self.topology.q,
             self.emission.selected_face_roots,
             budget,
         )?;
-        let pole_closure_sectors = native_pole_closure_regions(&pole_sectors, budget)?;
+        let pole_closure_sectors = native_pole_closure_regions(&selected_poles.sectors, budget)?;
         let mut pole_closures = Vec::new();
         if has_area {
-            for (region, pole) in selected_pole_closures {
+            for closure in selected_poles.closures {
                 budget.charge(1)?;
+                let (region, _) = closure;
                 // A source fan already supplies its pole port and sector bounds;
                 // terminal and isolated sectors need a synthetic closure.
-                if !pole_closure_sectors.contains(&(region, pole)) {
+                if !pole_closure_sectors.contains(&closure) {
                     continue;
                 }
                 let mut area_region = whole_sphere;
@@ -18538,9 +18897,9 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         break;
                     }
                 }
-                if area_region && !pole_closures.contains(&(region, pole)) {
+                if area_region && !pole_closures.contains(&closure) {
                     budget.charge(1)?;
-                    pole_closures.push((region, pole));
+                    pole_closures.push(closure);
                 }
             }
         }
@@ -18753,7 +19112,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             }
             let area_region = match walk.owner {
                 RecipeWalkOwner::Line(_) => None,
-                owner => Some(
+                owner @ (RecipeWalkOwner::Cycle(_) | RecipeWalkOwner::SourceRing(_)) => Some(
                     area_facts
                         .get(&owner)
                         .map(|(region, _)| *region)
@@ -19012,7 +19371,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         )?;
         let mut graph_builder =
             new_native_reference_graph_builder(&area_edges, &reference_ports, budget)?;
-        let graph = if has_area {
+        let mut graph = if has_area {
             if !whole_sphere {
                 let mut band_events = seam_events
                     .iter()
@@ -19056,7 +19415,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             .chart_pole_latitude(ChartPole::North),
                     ),
                 ] {
-                    if !pole_closures.iter().any(|(_, selected)| *selected == pole) {
+                    if !pole_closures.iter().any(|&(_, selected)| selected == pole) {
                         continue;
                     }
                     let latitude = ExactRational::from_f64(latitude);
@@ -19065,12 +19424,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     let node = builder.intern_point(&chart_point, budget)?;
                     let node_index = node.0 as usize;
                     if node_index == sites.len() {
-                        let [_, longitude, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &chart_point.x,
-                                budget,
-                            )?;
+                        let [_, longitude, _] = rounded_native_neighbors_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &chart_point.x,
+                            budget,
+                        )?;
                         sites.push(Some(assigned_emission_site(
                             self.topology.sources.frame,
                             QCandidate {
@@ -19086,14 +19444,25 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             "native pole node is outside its assigned site table".into(),
                         )
                         .into());
-                    } else if sites[node_index].is_none() {
-                        let [_, longitude, _] =
-                            crate::geometry::exact_arith::rounded_native_neighbors_with_work(
-                                self.topology.sources.frame.longitude(),
-                                &chart_point.x,
-                                budget,
-                            )?;
-                        sites[node_index] = Some(assigned_emission_site(
+                    } else if sites
+                        .get(node_index)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "native pole node has no assigned site slot".into(),
+                            )
+                        })?
+                        .is_none()
+                    {
+                        let [_, longitude, _] = rounded_native_neighbors_with_work(
+                            self.topology.sources.frame.longitude(),
+                            &chart_point.x,
+                            budget,
+                        )?;
+                        *sites.get_mut(node_index).ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "native pole node has no assigned site slot".into(),
+                            )
+                        })? = Some(assigned_emission_site(
                             self.topology.sources.frame,
                             QCandidate {
                                 native: XY::new(
@@ -19153,14 +19522,19 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
 
                 let normalized_events =
                     normalize_native_seam_events(self.topology.sources.frame, seam_events, budget)?;
-                let native_seam_vertices = normalized_events
-                    .iter()
-                    .map(|event| NativeSeamVertices {
-                        latitude: event.vertices.latitude.clone(),
-                        east: event.vertices.east.clone(),
-                        west: event.vertices.west.clone(),
-                    })
-                    .collect::<Vec<_>>();
+                budget.charge(
+                    u64::try_from(normalized_events.len())
+                        .map_err(|_| ResourceError::SizeOverflow)?,
+                )?;
+                let mut native_seam_vertices = Vec::with_capacity(normalized_events.len());
+                for event in &normalized_events {
+                    budget.charge(1)?;
+                    native_seam_vertices.push(NativeSeamVertices {
+                        latitude: event.vertices.latitude.try_clone_with_work(budget)?,
+                        east: event.vertices.east.try_clone_with_work(budget)?,
+                        west: event.vertices.west.try_clone_with_work(budget)?,
+                    });
+                }
                 let seam_edges = native_seam_edges(
                     &bands,
                     &native_seam_vertices,
@@ -19221,15 +19595,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let mut graph = graph_builder.finish(self.topology.sources.frame, budget)?;
             graph.face_source_uses =
                 native_graph_face_source_table(&graph, &area_edges, &line_graph_edges, budget)?;
-            let (mut cycles, parts, face_regions, face_groups, face_cells) =
-                native_reference_cycles_and_parts(
-                    &graph,
-                    &area_edges,
-                    &line_graph_edges,
-                    whole_sphere,
-                    true,
-                    budget,
-                )?;
+            let NativeReferenceGraphResult {
+                mut cycles,
+                parts,
+                face_regions,
+                face_groups,
+                face_cells,
+            } = native_reference_cycles_and_parts(
+                &graph,
+                &area_edges,
+                &line_graph_edges,
+                whole_sphere,
+                true,
+                budget,
+            )?;
             align_native_cycle_starts(
                 self.topology.sources.frame,
                 self.topology,
@@ -19348,15 +19727,20 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             let mut graph = graph_builder.finish(self.topology.sources.frame, budget)?;
             graph.face_source_uses =
                 native_graph_face_source_table(&graph, &area_edges, &line_graph_edges, budget)?;
-            let (cycles, parts, face_regions, face_groups, face_cells) =
-                native_reference_cycles_and_parts(
-                    &graph,
-                    &area_edges,
-                    &line_graph_edges,
-                    whole_sphere,
-                    false,
-                    budget,
-                )?;
+            let NativeReferenceGraphResult {
+                cycles,
+                parts,
+                face_regions,
+                face_groups,
+                face_cells,
+            } = native_reference_cycles_and_parts(
+                &graph,
+                &area_edges,
+                &line_graph_edges,
+                whole_sphere,
+                false,
+                budget,
+            )?;
             graph.cycles = cycles;
             graph.parts = parts;
             graph.face_regions = face_regions;
@@ -19387,6 +19771,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             budget.charge(1)?;
             port_vertices.push(graph.local_vertex(native_emission_port_key(port), budget)?);
         }
+        let point_contact_vertices = native_point_contact_vertices(&plan, &port_vertices, budget)?;
+        graph.common = graph
+            .common
+            .with_output_point_contacts(&point_contact_vertices, budget)?;
         let logical_walks = logical_layout_for_plan(&plan, &port_vertices, budget)?;
         let dimension =
             admit_logical_layout(&graph.common, logical_walks, Some(&graph.faces), budget)?;
@@ -19401,7 +19789,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             literal_chord_uses,
             line_graph_edges,
             area_edges,
-            pole_sectors,
+            pole_sectors: selected_poles.sectors,
             graph,
         };
         validate_native_reference(&reference, budget)?;
@@ -19485,7 +19873,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             &reference.line_traces,
             budget,
         )?;
-        let Some(candidate) = validate_native_materialized_candidate(
+        let Some(mut candidate) = validate_native_materialized_candidate(
             reference,
             &parts,
             &assigned_sites,
@@ -19499,30 +19887,22 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .emission
             .plan
             .seal_native_parts(parts, self.declared_axes, budget)?;
-        let mut chart = NativeLiteralChart {
-            reference,
-            sites: &assigned_sites,
-            ordinates: &ordinates,
-            points: &candidate.points,
-            port_records: candidate.port_records,
-        };
-        let images = CheckedAssignment::new(NativeCandidateImages {
-            reference,
-            points: &candidate.points,
-        });
-        let sealed = match bind_literals(frozen.buffers, &mut chart, &images, budget)? {
-            LiteralCheck::Pass(sealed) => sealed,
-            LiteralCheck::Reject(_) => return Ok(None),
-        };
-        if !validate_native_sealed_layout(
-            reference,
-            sealed.shape_layout(),
-            &chart.port_records,
-            &candidate.points,
-            budget,
-        )? {
-            return Ok(None);
+        if !std::ptr::eq(candidate.assignment.reference, reference) {
+            return Err(GeometryErrorKind::Invalid(
+                "native completion assignment belongs to another reference".into(),
+            )
+            .into());
         }
+        let Some(sealed) = candidate.assignment.bind_completed_native(
+            frozen.buffers,
+            &assigned_sites,
+            &ordinates,
+            &mut candidate.port_records,
+            budget,
+        )?
+        else {
+            return Ok(None);
+        };
         Ok(Some(super::emission::CompletedNativeDrawing {
             sealed,
             line_traces: frozen.line_traces,
@@ -19688,12 +20068,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         } else {
             None
         };
-        let mut producer_projection = self.certify_assigned_producer(
-            coordinates,
-            publication_coordinates,
-            source_faces,
-            budget,
-        )?;
+        let mut producer_projection = {
+            let source_faces_for_certification = source_faces;
+            self.certify_assigned_producer(
+                coordinates,
+                publication_coordinates,
+                source_faces_for_certification.as_ref(),
+                budget,
+            )?
+        };
         let publication_rejections =
             self.publication_graph_rejections(&producer_projection, budget)?;
         if !publication_rejections.is_empty() {
@@ -19789,19 +20172,17 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         self.operation,
                         budget,
                     )?;
-                    let images = CheckedAssignment::new(QSourceImages {
-                        topology: self.topology,
-                        source_ports: Some(&producer_projection.source_ports),
-                        publication: &publication_chart_points,
-                    });
-                    let mut chart = AssignedSourceChart {
-                        topology: self.topology,
-                        source_ports: Some(&producer_projection.source_ports),
-                        source_ordinates: &self.ordinates,
-                        publication_points: &publication_points,
-                        publication_ordinates: &publication_ordinates,
-                    };
-                    let sealed = match bind_literals(source.buffers, &mut chart, &images, budget)? {
+                    let sealed = match bind_source_only(
+                        source,
+                        self.topology,
+                        Some(&producer_projection.source_ports),
+                        &self.ordinates,
+                        Some(self.emission.publication),
+                        &publication_chart_points,
+                        &publication_points,
+                        &publication_ordinates,
+                        budget,
+                    )? {
                         LiteralCheck::Pass(sealed) => sealed,
                         LiteralCheck::Reject(images) => {
                             let mut variables = Vec::with_capacity(images.len());
@@ -20152,7 +20533,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         assigned: &[Option<QCandidate>],
         cut_cache: &mut BTreeMap<QNodeId, ExactRational>,
         budget: &mut impl Work,
-    ) -> Result<Option<([QGraphNode; 2], [ExactChartPoint; 2], [ExactChartPoint; 2])>> {
+    ) -> Result<Option<LocalPublicationChord>> {
         budget.charge(1)?;
         match chord_id {
             QPublicationChordId::Source(index) => {
@@ -20170,9 +20551,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 ] else {
                     return Ok(None);
                 };
-                Ok(Some((chord.nodes.map(QGraphNode::Source), exact, [
-                    start, end,
-                ])))
+                Ok(Some(LocalPublicationChord {
+                    nodes: chord.nodes.map(QGraphNode::Source),
+                    exact,
+                    candidate: [start, end],
+                }))
             },
             QPublicationChordId::Published(index) => {
                 let chord = self.publication_chords.get(index).ok_or_else(|| {
@@ -20200,7 +20583,11 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 ] else {
                     return Ok(None);
                 };
-                Ok(Some((chord.nodes, chord.exact.clone(), [start, end])))
+                Ok(Some(LocalPublicationChord {
+                    nodes: chord.nodes,
+                    exact: chord.exact.clone(),
+                    candidate: [start, end],
+                }))
             },
         }
     }
@@ -20214,40 +20601,36 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         budget: &mut impl Work,
     ) -> Result<bool> {
         budget.charge(1)?;
-        let (
-            Some((left_nodes, left_exact, left_candidate)),
-            Some((right_nodes, right_exact, right_candidate)),
-        ) = (
+        let (Some(left), Some(right)) = (
             self.local_publication_chord(pair.left, class, assigned, cut_cache, budget)?,
             self.local_publication_chord(pair.right, class, assigned, cut_cache, budget)?,
-        )
-        else {
+        ) else {
             return Ok(false);
         };
         let period = ExactRational::from_f64(self.topology.sources.frame.longitude().period());
         let right_exact = [
-            translated_exact_point_with_work(&right_exact[0], pair.right_shift, &period, budget)?,
-            translated_exact_point_with_work(&right_exact[1], pair.right_shift, &period, budget)?,
+            translated_exact_point_with_work(&right.exact[0], pair.right_shift, &period, budget)?,
+            translated_exact_point_with_work(&right.exact[1], pair.right_shift, &period, budget)?,
         ];
         let right_candidate = [
             translated_exact_point_with_work(
-                &right_candidate[0],
+                &right.candidate[0],
                 pair.right_shift,
                 &period,
                 budget,
             )?,
             translated_exact_point_with_work(
-                &right_candidate[1],
+                &right.candidate[1],
                 pair.right_shift,
                 &period,
                 budget,
             )?,
         ];
         pair_preserves_incidence_with_work(
-            left_nodes,
-            &left_exact,
-            &left_candidate,
-            right_nodes,
+            left.nodes,
+            &left.exact,
+            &left.candidate,
+            right.nodes,
             &right_exact,
             &right_candidate,
             budget,
@@ -21353,40 +21736,6 @@ impl<M: ChartMetric> Problem for QEmbeddingProblem<'_, '_, '_, '_, M> {
     }
 }
 
-#[cfg(test)]
-pub(super) fn certify_q_embedding_nearest<
-    'topology,
-    'emission,
-    'access,
-    M: ChartMetric,
-    A: SearchAccount,
->(
-    topology: &'topology ExactGeographicTopology,
-    emission: &'emission QEmbeddingEmission<'topology, 'emission>,
-    nearest: &QCoordinates,
-    live_keys: &[(EmittedNodeKey, QNodeId)],
-    drawing: QEmissionDrawing<'topology>,
-    ordinates: &'emission [NodeOrdinates],
-    declared_axes: crate::geometry::CoordinateAxes,
-    strict_axes: bool,
-    operation: &'static str,
-    metric_access: Option<&'access SourceArcMetricAccess<'access, '_, M>>,
-    budget: &mut A,
-) -> Result<NearestQCertificate> {
-    let mut problem = QEmbeddingProblem::new(
-        topology,
-        emission,
-        nearest,
-        ordinates,
-        declared_axes,
-        strict_axes,
-        operation,
-        metric_access,
-        budget,
-    )?;
-    problem.certify_nearest(live_keys, drawing, budget)
-}
-
 fn search_q_embedding<M: ChartMetric, A: SearchAccount>(
     mut problem: QEmbeddingProblem<'_, '_, '_, '_, M>,
     budget: &mut A,
@@ -21434,54 +21783,27 @@ fn search_q_embedding<M: ChartMetric, A: SearchAccount>(
     }
 }
 
-pub(super) fn certify_and_search_q_embedding<
-    'emission,
-    'topology,
-    'access,
-    M: ChartMetric,
-    A: SearchAccount,
->(
-    topology: &'topology ExactGeographicTopology,
-    emission: &'emission QEmbeddingEmission<'topology, 'emission>,
-    nearest: &QCoordinates,
+pub(super) fn certify_and_search_q_embedding<'topology, M: ChartMetric, A: SearchAccount>(
+    certification: &QEmbeddingCertification<'topology, '_, '_, '_, M>,
     live_keys: &[(EmittedNodeKey, QNodeId)],
     drawing: QEmissionDrawing<'topology>,
-    ordinates: &'emission [NodeOrdinates],
-    declared_axes: crate::geometry::CoordinateAxes,
-    strict_axes: bool,
-    operation: &'static str,
-    metric_access: Option<&'access SourceArcMetricAccess<'access, '_, M>>,
     budget: &mut A,
 ) -> Result<SearchOutcome<QEmbeddingPass>> {
-    let mut problem = QEmbeddingProblem::new(
-        topology,
-        emission,
-        nearest,
-        ordinates,
-        declared_axes,
-        strict_axes,
-        operation,
-        metric_access,
-        budget,
-    )?;
-    match problem.certify_nearest(live_keys, drawing, budget)? {
-        NearestQCertificate::Pass(output) => {
-            #[cfg(test)]
-            {
-                Ok(SearchOutcome::Pass(QEmbeddingPass {
-                    output,
-                    coordinates: nearest.clone(),
-                    searched: false,
-                }))
-            }
-            #[cfg(not(test))]
-            {
-                Ok(SearchOutcome::Pass(QEmbeddingPass { output }))
-            }
-        },
-        NearestQCertificate::SearchRequired => search_q_embedding(problem, budget),
-        NearestQCertificate::Unrepresentable => Ok(SearchOutcome::Exhausted),
-    }
+    certification
+        .build_problem(budget)?
+        .certify_and_search(live_keys, drawing, budget)
+}
+
+#[cfg(test)]
+pub(super) fn certify_q_embedding_nearest<'topology, M: ChartMetric, A: SearchAccount>(
+    certification: &QEmbeddingCertification<'topology, '_, '_, '_, M>,
+    live_keys: &[(EmittedNodeKey, QNodeId)],
+    drawing: QEmissionDrawing<'topology>,
+    budget: &mut A,
+) -> Result<NearestQCertificate> {
+    certification
+        .build_problem(budget)?
+        .certify_nearest(live_keys, drawing, budget)
 }
 
 #[cfg(test)]
@@ -21493,6 +21815,7 @@ mod canonical_coordinate_tests {
 
     use super::*;
     use crate::geometry::OverlayOp;
+    use crate::geometry::embedding_completion::LiteralPoint;
 
     fn topology(shapes: &[crate::geometry::Shape]) -> Result<ExactGeographicTopology> {
         let frame = GeographicFrame::crs84();
@@ -21661,7 +21984,7 @@ mod canonical_coordinate_tests {
             kind: NativeAreaEdgeKind::Producer {
                 recipe: FragmentRecipeId(4),
                 trace_edge: 0,
-                producer_start: ExactRational::zero(),
+                producer_start: Box::new(ExactRational::zero()),
                 producer_end: ExactRational::one(),
                 trace_ranges: Vec::new(),
                 known_spans: vec![source],
@@ -21891,19 +22214,16 @@ mod canonical_coordinate_tests {
                 occurrences: Vec::new(),
             };
             let (edge, boundary) = reversed_lift_native_refinement_fixture(event, QPortId(0));
-            let error = match common_refine_native_edges(
+            let Err(error) = common_refine_native_edges(
                 vec![edge],
                 &[boundary],
                 GeographicFrame::crs84(),
                 &mut Unmetered,
-            ) {
-                Err(error) => error,
-                Ok(_) => {
-                    return Err(GeometryErrorKind::Invalid(
-                        "noncoincident native refinement event was accepted".into(),
-                    )
-                    .into());
-                },
+            ) else {
+                return Err(GeometryErrorKind::Invalid(
+                    "noncoincident native refinement event was accepted".into(),
+                )
+                .into());
             };
             assert!(matches!(
                 error.kind(),
@@ -22175,6 +22495,74 @@ mod canonical_coordinate_tests {
     }
 
     #[test]
+    fn source_only_receipt_binds_the_current_publication_buffers() -> Result<()> {
+        use super::super::emission::{
+            FeatureFamily, FeatureFamilyParent, FragmentRecipeId, PublicationInventory,
+            PublishedSample, SampleProducerKind,
+        };
+        use crate::geometry::Shape;
+
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let point = Point::new_raw_xy(7.0, 6.0);
+        let exact = ExactChartPoint::from_rationals(
+            ExactRational::from_f64(7.0),
+            ExactRational::from_f64(6.0),
+        );
+        let publication = PublicationInventory {
+            fragments: Vec::new(),
+            samples: vec![PublishedSample {
+                request_row: RequestRowId::from_index(0)?,
+                family: FeatureFamily {
+                    parent: FeatureFamilyParent::Fragment(FragmentRecipeId(0)),
+                    producer: SampleProducerKind::Publication,
+                    occurrence: 0,
+                },
+                parameter: ExactRational::from_f64(0.5),
+                written_vertex: 0,
+                point,
+                exact_point: exact.clone(),
+                published_chart_point: exact.clone(),
+                source_trace: None,
+                endpoint_only: false,
+            }],
+            counts: vec![1],
+            ordinates: vec![NodeOrdinates::default()],
+        };
+        let source = SourceFrozenDrawing {
+            buffers: FrozenLiteralBuffers::shapes(Shape::Point(point), ShapeLiteralLayout {
+                points: vec![LiteralPoint {
+                    output: 0,
+                    axes: crate::geometry::CoordinateAxes::XY,
+                    image: QSourceImage::PublicationSample(0),
+                }],
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            }),
+        };
+        let source_ordinates = [];
+        let publication_images = [exact];
+        let publication_points = [XY::new(7.0, 6.0)];
+        let publication_ordinates = [NodeOrdinates::default()];
+        let mut work = Unmetered;
+
+        assert!(matches!(
+            bind_source_only(
+                source,
+                &topology,
+                None,
+                &source_ordinates,
+                Some(&publication),
+                &publication_images,
+                &publication_points,
+                &publication_ordinates,
+                &mut work,
+            )?,
+            LiteralCheck::Pass(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn exactly_representable_constructed_seam_vertex_stays_on_quotient_publication() -> Result<()> {
         let source = crate::io::parse_wkt("POLYGON ((170 0, -170 10, 170 10, 170 0))")?;
         let cutter = crate::io::parse_wkt("POLYGON ((180 2, 185 2, 185 8, 180 8, 180 2))")?;
@@ -22213,13 +22601,76 @@ mod canonical_coordinate_tests {
     }
 
     #[test]
+    fn seam_wall_reductions_complete_through_the_native_reference() -> Result<()> {
+        let west = vec![
+            crate::io::parse_wkt("POLYGON ((170 -1, -170 -1, -170 2, 170 2, 170 -1))")?,
+            crate::io::parse_wkt("POLYGON ((177 0, -174 1, -174 3, 177 2, 177 0))")?,
+            crate::io::parse_wkt("POLYGON ((-180 60, -179 61, -180 62, -180 60))")?,
+            crate::io::parse_wkt("POLYGON ((-180 50, -179 51, -180 52, -180 50))")?,
+        ];
+        let east = vec![
+            crate::io::parse_wkt("POLYGON ((170 -1, -170 -1, -170 2, 170 2, 170 -1))")?,
+            crate::io::parse_wkt("POLYGON ((177 0, -174 1, -174 3, 177 2, 177 0))")?,
+            crate::io::parse_wkt("POLYGON ((180 60, 180 62, 179 61, 180 60))")?,
+        ];
+
+        for (bank, shapes) in [("West", west), ("East", east)] {
+            let topology = topology(&shapes)?;
+            let mut budget = EvaluationBudget::new("Native seam wall control", 0)?;
+            let plan = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+            let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
+            let publication = plan.fragment_recipes.publish(
+                &topology,
+                &nearest,
+                OverlayOp::Union.name(),
+                &mut budget,
+            )?;
+            let source_points = vec![None; topology.q.nodes.len()];
+            let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+            let live_keys = drawing.live_node_keys(topology.sources.frame, &mut budget)?;
+            let emission =
+                plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+            let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+            let certification = QEmbeddingCertification::<crate::crs::GeodesicMetric> {
+                topology: &topology,
+                emission: &emission,
+                nearest: &nearest,
+                ordinates: &ordinates,
+                declared_axes: crate::geometry::CoordinateAxes::XY,
+                strict_axes: false,
+                operation: OverlayOp::Union.name(),
+                metric_access: None,
+            };
+            let outcome =
+                certify_and_search_q_embedding(&certification, &live_keys, drawing, &mut budget)?;
+            let native = matches!(
+                outcome,
+                SearchOutcome::Pass(QEmbeddingPass {
+                    output: QEmbeddingOutput {
+                        sealed: super::super::emission::SealedQDrawing::Native(_),
+                        ..
+                    },
+                    ..
+                })
+            );
+            if !native {
+                return Err(GeometryErrorKind::Invalid(
+                    format!("{bank} seam-wall reduction did not complete through Native").into(),
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn selected_pole_wedge_is_a_fan_not_a_terminal_chart_closure() -> Result<()> {
         let cap = crate::io::parse_wkt("POLYGON ((0 80, 90 80, 180 80, -90 80, 0 80))")?;
         let wedge = crate::io::parse_wkt("POLYGON ((120 90, 110 75, 130 75, 120 90))")?;
         let topology = topology(&[cap, wedge])?;
         let mut work = Unmetered;
         let plan = QEmissionPlan::build(&topology, OverlayOp::Intersection, &mut work)?;
-        let (sectors, closures) =
+        let NativeSelectedPoleSectors { sectors, closures } =
             native_selected_pole_sectors(&topology.q, &plan.selected_face_roots, &mut work)?;
         let (region, clockwise, counterclockwise) = sectors
             .iter()
@@ -22230,7 +22681,9 @@ mod canonical_coordinate_tests {
                     counterclockwise,
                     ..
                 } => Some((selected.region, clockwise, counterclockwise)),
-                _ => None,
+                super::super::q::PoleSector::Fan { .. }
+                | super::super::q::PoleSector::Isolated { .. }
+                | super::super::q::PoleSector::Terminal { .. } => None,
             })
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("north wedge has no selected pole fan".into())
@@ -22333,13 +22786,13 @@ mod canonical_coordinate_tests {
         let west = point(-1.0, 0.0);
         let exact = vec![origin.clone(), east.clone(), north.clone(), west.clone()];
         let points = NativeReferencePoints {
+            exact,
             rounded: vec![
                 XY::new(0.0, 0.0),
                 XY::new(1.0, 0.0),
                 XY::new(0.0, 1.0),
                 XY::new(-1.0, 0.0),
             ],
-            exact,
         };
         let expected = [QDartId(1), QDartId(2), QDartId(3)];
         let mut ordered = [
@@ -22697,7 +23150,7 @@ mod canonical_coordinate_tests {
             Vec::new(),
         ));
         let topology = topology(&[source])?;
-        let operation = crate::geometry::overlay::OverlayOp::Union;
+        let operation = OverlayOp::Union;
         let mut budget = EvaluationBudget::new("native whole-sphere cover", 0)?;
         let plan = super::super::overlay::QEmissionPlan::build(&topology, operation, &mut budget)?;
         assert!(matches!(&plan.polygons, PolygonPlan::WholeSphere(_)));
@@ -22764,8 +23217,13 @@ mod canonical_coordinate_tests {
             )
             .expect_err("opposite selected boundary orientation must be rejected");
         let mut graph = graph_builder.finish(topology.sources.frame, &mut budget)?;
-        let (cycles, parts, face_regions, face_groups, face_cells) =
-            native_reference_cycles_and_parts(&graph, &edges, &[], true, true, &mut budget)?;
+        let NativeReferenceGraphResult {
+            cycles,
+            parts,
+            face_regions,
+            face_groups,
+            face_cells,
+        } = native_reference_cycles_and_parts(&graph, &edges, &[], true, true, &mut budget)?;
         graph.cycles = cycles;
         graph.parts = parts;
         graph.face_regions = face_regions;
@@ -22999,11 +23457,11 @@ mod canonical_coordinate_tests {
         );
         let mut work = crate::geometry::Unmetered;
         let mut nodes = EmissionNodeRegistry::with_sources(&topology, &[], &mut work)?;
-        let node = nodes.intern_computed(frame, exact.clone(), &mut work)?;
+        let node = nodes.intern_computed(frame, &exact, &mut work)?;
         let mut publication = PublicationInventory {
             fragments: Vec::new(),
             samples: vec![super::super::emission::PublishedSample {
-                request_row: crate::geometry::ordinates::RequestRowId::from_index(0)?,
+                request_row: RequestRowId::from_index(0)?,
                 family: super::super::emission::FeatureFamily {
                     parent: super::super::emission::FeatureFamilyParent::Fragment(
                         super::super::emission::FragmentRecipeId(0),
@@ -23045,24 +23503,31 @@ mod canonical_coordinate_tests {
         assert!(candidates.contains(&nearest));
         let fixed_source_axes = vec![[false, false]; topology.q.nodes.len()];
         let producer_witness = PreparedProducerWitness::default();
-        let (source_base, classes, source_location, publication_location, states) =
-            build_unified_q_classes(
-                &topology,
-                &[],
-                &domains.variables,
-                &nodes,
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &fixed_source_axes,
-                &domains.domains,
-                &producer_witness,
-                &mut budget,
-            )?;
+        let UnifiedQClassBuild {
+            source_variable_count: source_base,
+            classes,
+            node_location: source_location,
+            publication_location,
+            states,
+        } = build_unified_q_classes(
+            &UnifiedQClassInputs {
+                topology: &topology,
+                source_classes: &[],
+                publication_variables: &domains.variables,
+                publication_nodes: &nodes,
+                source_chords: &[],
+                publication_chords: &[],
+                proximity_pairs: &[],
+                cut_rows: &[],
+                fan_rows: &[],
+                publication_pairs: &[],
+                source_domains: &[],
+                source_movable_axes: &fixed_source_axes,
+                publication_domains: &domains.domains,
+                producer_witness: &producer_witness,
+            },
+            &mut budget,
+        )?;
         assert_eq!(source_base, 0);
         assert_eq!(classes, vec![vec![QVariableNode::Published(node)]]);
         assert!(source_location.iter().all(Option::is_none));
@@ -23171,18 +23636,17 @@ mod canonical_coordinate_tests {
         Ok(())
     }
 
-    #[test]
-    fn native_literal_readback_rejects_a_post_pass_published_port_mutation() -> Result<()> {
+    fn single_sample_native_reference<'topology>(
+        topology: &'topology ExactGeographicTopology,
+        budget: &mut EvaluationBudget,
+        assigned: QCandidate,
+    ) -> Result<(NativeReference<'topology>, EmissionPortId)> {
         use super::super::emission::{
-            EmissionBuilder, FeatureFamily, FeatureFamilyParent, FragmentRecipeId, NativePortData,
-            OccurrenceSource, PortSpelling, PublishedSample, SampleProducerKind, VertexOrigin,
-            native_port_point,
+            EmissionBuilder, FeatureFamily, FeatureFamilyParent, PublishedSample,
+            SampleProducerKind, VertexOrigin,
         };
-        use crate::geometry::ordinates::RequestRowId;
 
-        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
-        let mut budget = EvaluationBudget::new("native literal readback", 0)?;
-        let selected = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+        let selected = QEmissionPlan::build(topology, OverlayOp::Union, budget)?;
         let exact = ExactChartPoint::from_rationals(
             ExactRational::from_f64(10.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
             ExactRational::from_f64(1.0).try_add(&ExactRational::from_f64(2.0_f64.powi(-54)))?,
@@ -23197,7 +23661,7 @@ mod canonical_coordinate_tests {
             parameter: ExactRational::from_f64(0.5),
             written_vertex: 1,
             point: Point::new_raw_xy(10.0, 1.0),
-            exact_point: exact.clone(),
+            exact_point: exact,
             published_chart_point: ExactChartPoint::from_rationals(
                 ExactRational::from_f64(10.0),
                 ExactRational::from_f64(1.0),
@@ -23205,20 +23669,16 @@ mod canonical_coordinate_tests {
             source_trace: None,
             endpoint_only: false,
         };
-        let mut builder = EmissionBuilder::new(&topology, &selected, &[], false, &mut budget)?;
-        let sample_nodes = builder.reserve_publication_nodes(&[sample], &mut budget)?;
+        let mut builder = EmissionBuilder::new(topology, &selected, &[], false, budget)?;
+        let sample_nodes = builder.reserve_publication_nodes(&[sample], budget)?;
         let sample_node = *sample_nodes.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("Native literal fixture has no sample node".into())
         })?;
-        let assigned = QCandidate {
-            native: XY::new(10.0, 1.0),
-            periods: 0,
-        };
         let assigned_point =
-            candidate_chart_point_with_work(topology.sources.frame, assigned, &mut budget)?;
+            candidate_chart_point_with_work(topology.sources.frame, assigned, budget)?;
         let port_data = NativePortData {
             node: sample_node,
-            point: assigned_point.clone(),
+            point: assigned_point,
             spelling: PortSpelling::Interior { periods: 0 },
             source_record: None,
             occurrences: vec![OccurrenceSource {
@@ -23226,19 +23686,20 @@ mod canonical_coordinate_tests {
                 source_trace: None,
             }],
         };
-        let port_id = builder.port(port_data.clone())?;
+        let port_id = builder.port(port_data.try_clone_with_work(budget)?)?;
+        builder.point(port_id)?;
         let plan = builder.finish();
-        let graph_builder = new_native_reference_graph_builder(&[], &[port_data], &mut budget)?;
-        let graph = graph_builder.finish(topology.sources.frame, &mut budget)?;
+        let graph_builder = new_native_reference_graph_builder(&[], &[port_data], budget)?;
+        let graph = graph_builder.finish(topology.sources.frame, budget)?;
         let dimension =
-            admit_logical_layout(&graph.common, Vec::new(), Some(&graph.faces), &mut budget)?;
+            admit_logical_layout(&graph.common, Vec::new(), Some(&graph.faces), budget)?;
         let vertex = graph.local_vertex(
             native_emission_port_key(
                 plan.ports
                     .get(port_id.0 as usize)
                     .ok_or_else(|| GeometryErrorKind::Invalid("sample port is unknown".into()))?,
             ),
-            &mut budget,
+            budget,
         )?;
         let reference = NativeReference {
             plan,
@@ -23257,6 +23718,25 @@ mod canonical_coordinate_tests {
             pole_sectors: Vec::new(),
             graph,
         };
+        Ok((reference, port_id))
+    }
+
+    #[test]
+    fn native_literal_readback_rejects_a_post_pass_published_port_mutation() -> Result<()> {
+        use super::super::emission::native_port_point;
+
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("native literal readback", 0)?;
+        let assigned = QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        };
+        let (reference, port_id) =
+            single_sample_native_reference(&topology, &mut budget, assigned)?;
+        let vertex = *reference
+            .port_vertices
+            .get(port_id.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("sample graph vertex is unknown".into()))?;
         let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
         let ordinates = [NodeOrdinates::default()];
         let mut record = native_port_point(
@@ -23273,16 +23753,26 @@ mod canonical_coordinate_tests {
             .ok_or_else(|| GeometryErrorKind::Invalid("published vertex is unknown".into()))?
             .y = ExactRational::from_f64(record.y);
         let candidate_points = NativeReferencePoints::from_exact(exact_points, &mut budget)?;
-        let mut chart = NativeLiteralChart {
-            reference: &reference,
+        let checked = admit_candidate(
+            &reference.graph.common,
+            &reference.dimension,
+            candidate_points,
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("mutated native test assignment was not admitted".into())
+        })?;
+        let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
+        let mut port_records = vec![None; reference.plan.ports.len()];
+        let mut receiver = NativeLiteralReceiver {
+            assignment: &assignment,
             sites: &sites,
             ordinates: &ordinates,
-            points: &candidate_points,
-            port_records: vec![None; reference.plan.ports.len()],
+            port_records: &mut port_records,
         };
 
         assert!(
-            chart
+            receiver
                 .read_point(
                     0,
                     port_id,
@@ -23293,6 +23783,85 @@ mod canonical_coordinate_tests {
                 )?
                 .is_none(),
             "final Native literal binding must reject a post-Pass endpoint mutation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_assignment_factory_rejects_crosswired_graph_layout_and_images() -> Result<()> {
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("crosswired native receiver", 0)?;
+        let (reference, _) = single_sample_native_reference(&topology, &mut budget, QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        })?;
+        let (other_reference, _) =
+            single_sample_native_reference(&topology, &mut budget, QCandidate {
+                native: XY::new(11.0, 1.0),
+                periods: 0,
+            })?;
+        let foreign_assignment = admit_candidate(
+            &other_reference.graph.common,
+            &other_reference.dimension,
+            other_reference.graph.points.clone(),
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("foreign reference assignment was not admitted".into())
+        })?;
+
+        assert!(
+            NativeCandidateAssignment::issue(&reference, foreign_assignment).is_err(),
+            "a graph, layout, and image from another native reference must not issue a receiver"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_receiver_rejects_missing_producer_literal_rows() -> Result<()> {
+        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
+        let mut budget = EvaluationBudget::new("native literal row binding", 0)?;
+        let assigned = QCandidate {
+            native: XY::new(10.0, 1.0),
+            periods: 0,
+        };
+        let (reference, _) = single_sample_native_reference(&topology, &mut budget, assigned)?;
+        let checked = admit_candidate(
+            &reference.graph.common,
+            &reference.dimension,
+            reference.graph.points.clone(),
+            &mut budget,
+        )?
+        .ok_or_else(|| {
+            GeometryErrorKind::Invalid("unchanged Native reference assignment was rejected".into())
+        })?;
+        let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
+        let sites = [assigned_emission_site(topology.sources.frame, assigned)?];
+        let ordinates = [NodeOrdinates::default()];
+        let mut port_records = vec![None; reference.plan.ports.len()];
+        let missing_rows = FrozenLiteralBuffers::shapes(
+            crate::geometry::Shape::Empty(
+                crate::geometry::GeometryKind::Point,
+                crate::geometry::CoordinateAxes::XY,
+            ),
+            ShapeLiteralLayout {
+                points: Vec::<LiteralPoint<EmissionPortId>>::new(),
+                lines: Vec::new(),
+                polygons: Vec::new(),
+            },
+        );
+
+        assert!(
+            assignment
+                .bind_completed_native(
+                    missing_rows,
+                    &sites,
+                    &ordinates,
+                    &mut port_records,
+                    &mut budget,
+                )?
+                .is_none(),
+            "a sealed output that omits the producer's point row must not pass"
         );
         Ok(())
     }
@@ -23552,17 +24121,14 @@ mod canonical_coordinate_tests {
         ];
         let topology = topology(&shapes)?;
         let mut budget = EvaluationBudget::new("q native domain", 0)?;
-        let plan = super::super::overlay::QEmissionPlan::build(
-            &topology,
-            crate::geometry::overlay::OverlayOp::Union,
-            &mut budget,
-        )?;
+        let plan =
+            super::super::overlay::QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
         let source_points = vec![None; topology.sources.points.len()];
         let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
         let publication = plan.fragment_recipes.publish(
             &topology,
             &nearest,
-            crate::geometry::overlay::OverlayOp::Union.name(),
+            OverlayOp::Union.name(),
             &mut budget,
         )?;
         let emission =
@@ -23935,6 +24501,29 @@ mod ring_filter_tests {
 }
 
 #[cfg(test)]
+mod native_face_region_tests {
+    use super::*;
+
+    #[test]
+    fn distinct_selected_roots_cannot_share_one_native_face() -> Result<()> {
+        let mut face_regions = vec![None; 1];
+        let mut known = vec![false; 1];
+        let mut work = Unmetered;
+        assign_native_face_region(&mut face_regions, &mut known, 0, Some(1256), &mut work)?;
+
+        if assign_native_face_region(&mut face_regions, &mut known, 0, Some(1251), &mut work)
+            .is_ok()
+        {
+            return Err(GeometryErrorKind::Invalid(
+                "one Native face accepted two distinct selected-region roots".into(),
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod native_ordinate_provenance_tests {
     #![expect(
         clippy::panic_in_result_fn,
@@ -24020,7 +24609,7 @@ mod native_ordinate_provenance_tests {
             kind: NativeAreaEdgeKind::Producer {
                 recipe: FragmentRecipeId(4),
                 trace_edge: 0,
-                producer_start: ExactRational::zero(),
+                producer_start: Box::new(ExactRational::zero()),
                 producer_end: ExactRational::one(),
                 trace_ranges: Vec::new(),
                 known_spans: vec![source.clone(), source],
