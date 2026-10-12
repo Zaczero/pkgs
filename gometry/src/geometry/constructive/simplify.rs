@@ -715,9 +715,9 @@ fn stage_line_vertices(
                 bounds,
                 coordinate_count,
                 traces: None,
+                polygon_traces: None,
                 source_line_members: None,
                 trace_axes: None,
-                polygon_traces: None,
                 vertex_cut: item.vertex_cut,
             },
         });
