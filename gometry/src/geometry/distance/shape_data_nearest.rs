@@ -18,7 +18,7 @@ impl PreparedPlan {
     /// presence when reconstructing projected witnesses. `None` only when an operand is
     /// empty (the surfaces map it to the output-type EMPTY sentinel).
     pub(crate) fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
-        self.nearest_points_inner(other, None)
+        self.nearest_points_inner::<false>(other, None)
     }
 
     pub(crate) fn nearest_points_with_source_context(
@@ -28,10 +28,10 @@ impl PreparedPlan {
     ) -> Result<Option<(Point, Point)>> {
         #[cfg(test)]
         crate::geometry::record_root_work(crate::geometry::RootWorkEvent::NearestSourceContext);
-        self.nearest_points_inner(other, Some(source_context))
+        self.nearest_points_inner::<true>(other, Some(source_context))
     }
 
-    fn nearest_points_inner(
+    fn nearest_points_inner<const SOURCE_CONTEXT: bool>(
         &self,
         other: &Self,
         source_context: Option<&SourceArcContext<'_, '_, crate::crs::GeodesicMetric>>,
@@ -61,7 +61,8 @@ impl PreparedPlan {
             let best = nearest_probe_to_parts::<false>(self_parts, other_parts, None, false)?;
             nearest_probe_to_parts::<false>(other_parts, self_parts, best, true)?
         };
-        let source_axes = if source_context.is_some_and(|context| context.domain().is_geographic())
+        let source_axes = if SOURCE_CONTEXT
+            && source_context.is_some_and(|context| context.domain().is_geographic())
         {
             crate::geometry::common_axes(self.shape(), other.shape())
         } else {
@@ -77,15 +78,17 @@ impl PreparedPlan {
                 },
                 source_axes,
             )?;
-            if let (Some(source_projection), Some(source_context)) =
-                (source_projection, source_context)
-            {
-                target = resolve_nearest_source_projection(
-                    target,
-                    source_projection,
-                    source_axes,
-                    source_context,
-                )?;
+            if SOURCE_CONTEXT {
+                if let (Some(source_projection), Some(source_context)) =
+                    (source_projection, source_context)
+                {
+                    target = resolve_nearest_source_projection(
+                        target,
+                        source_projection,
+                        source_axes,
+                        source_context,
+                    )?;
+                }
             }
             Ok(if oriented.swapped {
                 (target, candidate.probe)
