@@ -1,14 +1,266 @@
-use pyo3::prelude::*;
-use pyo3::types::{PyList, PyTuple};
+use std::sync::Arc;
 
+use pyo3::prelude::*;
+use pyo3::types::{PyInt, PyList, PyTuple};
+
+use super::receipt::ProducerSourceRootUse;
 use crate::Frame;
+use crate::array::StreamingShapes;
 use crate::crs::frame::crs_arc_static;
 use crate::dispatch::MetricResolver;
 use crate::dispatch::kernels::binary_overlay;
-use crate::geometry::{
-    GeographicTopologyRoute, OverlayOp, Point, Polygon, Ring, Shape, Strictness,
-    geographic_topology_route,
+use crate::geometry::embedding_completion::{
+    FrozenLiteralBuffers, LiteralAddress, LiteralPoint, LiteralRowLayout, ShapeLiteralLayout,
 };
+use crate::geometry::ordinates::{RootId, RootRange};
+use crate::geometry::publication::{
+    ChartCutSide, ChartRestriction, DirectedChartRestrictionUse, ProducerDrawingReceipt,
+    ProducerImageId, ProducerLiteral, ProducerReceipt, PublicationCall, PublicationOutcome,
+    PublicationRejection, StorageTarget, SyntheticChartVertex,
+};
+use crate::geometry::{
+    CoordinateAxes, GeographicTopologyRoute, OverlayOp, Point, Polygon, Ring, Shape, Strictness,
+    Unmetered, geographic_topology_route,
+};
+
+fn point_literal_layout(
+    image: ProducerImageId,
+    logical_row: usize,
+    group_row: Option<usize>,
+    value_row: Option<usize>,
+    point: Point,
+) -> LiteralRowLayout<ProducerImageId> {
+    LiteralRowLayout {
+        operation: 0,
+        logical_row,
+        group_row,
+        value_row,
+        layout: ShapeLiteralLayout {
+            points: vec![LiteralPoint {
+                output: 0,
+                axes: CoordinateAxes::from_point(point),
+                image,
+            }],
+            lines: Vec::new(),
+            polygons: Vec::new(),
+        },
+    }
+}
+
+fn producer_point_receipt(
+    target: StorageTarget,
+    stored: Point,
+    expected: Point,
+) -> ProducerDrawingReceipt {
+    let image = ProducerImageId::new(0);
+    let address = LiteralAddress {
+        operation: 0,
+        logical_row: 0,
+        group_row: (target == StorageTarget::Groups).then_some(0),
+        value_row: (target == StorageTarget::Groups).then_some(0),
+        output: 0,
+    };
+    let mut work = Unmetered;
+    let buffers = match target {
+        StorageTarget::Scalar => FrozenLiteralBuffers::shapes(
+            Shape::Point(stored),
+            point_literal_layout(image, 0, None, None, stored).layout,
+        ),
+        StorageTarget::Array => {
+            let mut writer = StreamingShapes::with_capacity(0, 1);
+            writer.try_push(Shape::Point(stored)).unwrap();
+            let (storage, missing, layout) = writer.finish_parts().unwrap();
+            FrozenLiteralBuffers::rows(
+                Arc::new(storage),
+                missing,
+                layout,
+                vec![Some(point_literal_layout(image, 0, None, None, stored))],
+                &mut work,
+            )
+            .unwrap()
+        },
+        StorageTarget::Groups => {
+            let mut writer = StreamingShapes::with_capacity(0, 1);
+            writer.try_push(Shape::Point(stored)).unwrap();
+            let (storage, value_missing, layout) = writer.finish_parts().unwrap();
+            FrozenLiteralBuffers::groups(
+                Arc::new(storage),
+                value_missing,
+                layout,
+                vec![Some(point_literal_layout(
+                    image,
+                    0,
+                    Some(0),
+                    Some(0),
+                    stored,
+                ))],
+                vec![0, 1],
+                None,
+                &mut work,
+            )
+            .unwrap()
+        },
+    };
+    ProducerDrawingReceipt::new(
+        buffers,
+        vec![ProducerLiteral::from_point(address, image, expected)],
+        vec![ProducerSourceRootUse {
+            address,
+            image,
+            range: RootRange::whole(RootId::from_index(0)),
+        }],
+        vec![DirectedChartRestrictionUse {
+            restriction: ChartRestriction::CutChord,
+            start: SyntheticChartVertex::Cut {
+                node: 0,
+                side: ChartCutSide::East,
+            },
+            end: SyntheticChartVertex::Cut {
+                node: 1,
+                side: ChartCutSide::West,
+            },
+        }],
+    )
+}
+
+fn finish_producer_point(
+    target: StorageTarget,
+    stored: Point,
+    expected: Point,
+) -> PublicationOutcome {
+    let frame = Frame::default();
+    let mut work = Unmetered;
+    super::finish::finish_geographic(
+        PublicationCall::new(
+            ProducerReceipt::ProducerDrawing(producer_point_receipt(target, stored, expected)),
+            frame,
+            &mut work,
+        ),
+        target,
+    )
+    .unwrap()
+}
+
+#[test]
+fn producer_drawing_binds_scalar_array_and_groups_storage() {
+    let point = Point::new_raw_xy(4.0, -2.0);
+    for target in [
+        StorageTarget::Scalar,
+        StorageTarget::Array,
+        StorageTarget::Groups,
+    ] {
+        let PublicationOutcome::Pass(finished) = finish_producer_point(target, point, point) else {
+            panic!("matching producer drawing must bind its final storage");
+        };
+        match target {
+            StorageTarget::Scalar => {
+                let (Shape::Point(actual), _) = finished.into_scalar().unwrap() else {
+                    panic!("scalar producer drawing retains its point");
+                };
+                assert_eq!(actual, point);
+            },
+            StorageTarget::Array => {
+                let (rows, _) = finished.into_array().unwrap();
+                assert_eq!(rows.len(), 1);
+            },
+            StorageTarget::Groups => {
+                let (groups, _) = finished.into_groups().unwrap();
+                assert_eq!(groups.values.len(), 1);
+                assert_eq!(groups.offsets, [0, 1]);
+            },
+        }
+    }
+}
+
+#[test]
+fn producer_drawing_rejects_final_storage_readback_mismatch() {
+    let expected = Point::new_raw_xy(4.0, -2.0);
+    let corrupted = Point::new_raw_xy(40.0, -2.0);
+    match finish_producer_point(StorageTarget::Array, corrupted, expected) {
+        PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(images)) => {
+            assert_eq!(images, [ProducerImageId::new(0)]);
+        },
+        PublicationOutcome::Pass(finished) => {
+            let (rows, _) = finished.into_array().unwrap();
+            let actual = match rows.logical_row(0) {
+                Some(crate::geometry::storage::LogicalRow::Present { row, .. }) => {
+                    row.point().expect("one point literal is present")
+                },
+                _ => panic!("the producer-drawn final row remains present"),
+            };
+            assert_eq!(
+                actual, expected,
+                "omitting the producer-drawn binder must not publish changed coordinates"
+            );
+        },
+        PublicationOutcome::Reject(_) => {
+            panic!("producer-drawn storage returns its own rejection family")
+        },
+    }
+}
+
+#[test]
+fn geographic_scalar_sampling_publishes_prepared_draws_through_the_sink() {
+    crate::test_support::initialize_python();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let geometry = crate::PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(4.0, -2.0)), frame);
+
+    Python::attach(|py| {
+        let count = PyInt::new(py, 3).into_any();
+        let seed = PyInt::new(py, 0x1234).into_any();
+        let output = geometry
+            .sample_points_impl(py, &count, &seed)
+            .expect("geographic sampling publishes its prepared draw receipt");
+        let output = Py::new(py, output).unwrap();
+        let wkts = output
+            .bind(py)
+            .call_method0("to_wkt")
+            .unwrap()
+            .extract::<Vec<String>>()
+            .unwrap();
+        assert_eq!(wkts, ["POINT (4 -2)"; 3]);
+    });
+}
+
+#[test]
+fn geographic_array_sampling_publishes_final_groups_storage() {
+    crate::test_support::initialize_python();
+    let frame = Frame::new(Some(crs_arc_static("OGC:CRS84")), None).unwrap();
+    let array = crate::PyGeometryArray::from_shapes(
+        vec![
+            Shape::Point(Point::new_raw_xy(4.0, -2.0)),
+            Shape::Point(Point::new_raw_xy(8.0, 3.0)),
+        ],
+        frame,
+    )
+    .unwrap();
+
+    Python::attach(|py| {
+        let count = PyInt::new(py, 2).into_any();
+        let seed = PyInt::new(py, 0x1234).into_any();
+        let groups = array
+            .sample_points_impl(&count, &seed)
+            .expect("geographic array sampling publishes its prepared group receipts");
+        let groups = Py::new(py, groups).unwrap();
+        let groups = groups.bind(py);
+        assert_eq!(
+            groups
+                .getattr("offsets")
+                .unwrap()
+                .extract::<Vec<i64>>()
+                .unwrap(),
+            [0, 2, 4]
+        );
+        let values = groups.getattr("values").unwrap();
+        let wkts = values
+            .call_method0("to_wkt")
+            .unwrap()
+            .extract::<Vec<String>>()
+            .unwrap();
+        assert_eq!(wkts.len(), 4);
+        assert!(wkts.iter().all(|wkt| wkt.starts_with("POINT")));
+    });
+}
 
 #[test]
 fn geographic_dissolve_publishes_q_rows_through_final_array_storage() {

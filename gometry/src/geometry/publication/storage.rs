@@ -118,6 +118,12 @@ impl PublicationArrayRows {
                 )
                 .into())
             },
+            PublicationOutcome::Reject(PublicationRejection::ProducerDrawing(_)) => {
+                Err(GeometryErrorKind::Invalid(
+                    "array publication finisher returned a producer-drawn rejection".into(),
+                )
+                .into())
+            },
         }
     }
 }
@@ -352,7 +358,9 @@ mod tests {
                 );
             },
             PublicationOutcome::Reject(
-                PublicationRejection::Native | PublicationRejection::SourceOnly(_),
+                PublicationRejection::Native
+                | PublicationRejection::SourceOnly(_)
+                | PublicationRejection::ProducerDrawing(_),
             ) => {
                 panic!("array storage cannot return a Q candidate rejection")
             },

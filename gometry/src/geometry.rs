@@ -395,7 +395,8 @@ pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by, try_sort_by_wi
 pub(crate) use tessellation::exact::ExactRational;
 pub(crate) use tessellation::{
     CdtRefinement, PreparedMeshPublication, PreparedSampling, VoronoiEdgeColumn,
-    VoronoiPolygonOutput, VoronoiPolygonOutputs, row_sample_seed,
+    VoronoiPolygonOutput, VoronoiPolygonOutputs, publish_sampling_array, publish_sampling_groups,
+    row_sample_seed,
 };
 #[expect(
     unused_imports,
