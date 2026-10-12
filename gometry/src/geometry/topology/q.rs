@@ -3740,22 +3740,6 @@ impl ExactGeographicQ {
         Ok(())
     }
 
-    pub(super) fn for_each_pole_incident_face(
-        &self,
-        pole: ChartPole,
-        mut visit: impl FnMut(GlobalFaceId) -> Result<()>,
-    ) -> Result<()> {
-        let mut work = crate::geometry::Unmetered;
-        let mut visited = BTreeSet::new();
-        self.for_each_pole_sector(pole, &mut work, |sector| {
-            let face = sector.face();
-            if visited.insert(face) {
-                visit(face)?;
-            }
-            Ok(())
-        })
-    }
-
     fn locate_point(
         &self,
         topology: &ExactGeographicTopology,

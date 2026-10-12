@@ -22,6 +22,8 @@ use crate::geometry::{
     Unmetered, Work, XY, point_distance,
 };
 
+mod regions;
+
 type RowIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
 type SpanIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
 
