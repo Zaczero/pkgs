@@ -163,12 +163,28 @@ fn dedup_circular_points_with_ids(vertices: &mut Vec<Point>, identities: &mut Ve
     debug_assert_eq!(vertices.len(), identities.len());
     let mut write = 0_usize;
     for read in 0..vertices.len() {
-        if write != 0 && same_point(vertices[write.wrapping_sub(1)], vertices[read]) {
+        let point = *vertices
+            .get(read)
+            .expect("read index is within the source ring");
+        if write != 0
+            && same_point(
+                *vertices
+                    .get(write.wrapping_sub(1))
+                    .expect("a nonzero write index has a preceding point"),
+                point,
+            )
+        {
             continue;
         }
-        let identity = identities[read];
-        vertices[write] = vertices[read];
-        identities[write] = identity;
+        let identity = *identities
+            .get(read)
+            .expect("each source point has an identity");
+        *vertices
+            .get_mut(write)
+            .expect("the write index trails the read index") = point;
+        *identities
+            .get_mut(write)
+            .expect("each output point has an identity slot") = identity;
         write = write.wrapping_add(1);
     }
     vertices.truncate(write);
@@ -218,7 +234,11 @@ fn strip_collinear_vertices_with_ids(
         if let (Some(input_ids), Some(output_ids)) =
             (source_identities.as_ref(), &mut out_identities)
         {
-            output_ids.push(input_ids[index]);
+            output_ids.push(
+                *input_ids
+                    .get(index)
+                    .expect("each source point has an identity"),
+            );
         }
         loop {
             match out.as_mut_slice() {
@@ -227,8 +247,13 @@ fn strip_collinear_vertices_with_ids(
                     out.pop();
                     if let Some(output_ids) = &mut out_identities {
                         let last_id = *output_ids.last().expect("collinear output has a last ID");
-                        let middle = output_ids.len().wrapping_sub(2);
-                        output_ids[middle] = last_id;
+                        let middle = output_ids
+                            .len()
+                            .checked_sub(2)
+                            .expect("collinear output has a middle ID");
+                        *output_ids
+                            .get_mut(middle)
+                            .expect("collinear output has a middle ID") = last_id;
                         output_ids.pop();
                     }
                 },
@@ -1123,7 +1148,9 @@ impl EarArena {
             .enumerate()
             .map(|(index, point)| EarNode {
                 point,
-                identity: identities[index],
+                identity: *identities
+                    .get(index)
+                    .expect("each Earcut point has an identity"),
                 prev: NodeId::from_index(wrap_index(
                     index.wrapping_add(points.len()).wrapping_sub(1),
                     points.len(),
