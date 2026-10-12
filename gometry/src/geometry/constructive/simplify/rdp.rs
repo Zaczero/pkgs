@@ -336,7 +336,8 @@ pub(super) fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::segments::{ExactDistanceWitness, exact_distance_witness_cmp};
+    use crate::geometry::segments::ExactDistanceWitness;
+    use crate::geometry::segments::distance::exact_distance_witness_cmp;
 
     fn exact_split(xs: &[f64], ys: &[f64], tolerance: f64) -> Option<usize> {
         let end = xs.len().wrapping_sub(1);

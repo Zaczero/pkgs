@@ -35,6 +35,7 @@ use crate::collections::{HashMap, HashSet};
 use crate::error::{ErrorKind, Result};
 use crate::geographic::{ChartPointSite, GeographicFrame};
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
+#[cfg(test)]
 use crate::geometry::segments::ordering::try_sort_by;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};

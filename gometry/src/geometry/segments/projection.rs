@@ -1,15 +1,19 @@
 //! Clamped segment projection and its source-distance certificates.
 
 #[cfg(test)]
-use super::point_segment_selection;
+use super::distance::point_segment_selection;
+use super::distance::{
+    exact_witness_cmp_with_identity, point_distance, squared_norm_is_trustworthy,
+    try_point_distance_squared,
+};
+use super::interpolation::interpolate_segment_point;
 use super::{
     CertifiedSegmentProjection, ClassifiedSegmentProjection, DdInterval,
     ExactClassifiedSegmentProjection, ExactDistanceWitness, ExactProjectionTerms,
     ExactSegmentProjection, ExactSquaredDistance, FilteredInteriorProjection, PointSegmentMetric,
     PointSegmentSelection, PointSegmentWitnessKind, SegmentProjection, SelectionProjectionSource,
     SourceInteriorProjection, SourcePair, SquaredDistanceFilter, SquaredDistanceKey, WitnessRole,
-    certified_projection, exact_witness_cmp_with_identity, interpolate_segment_point,
-    point_distance, squared_norm_is_trustworthy, try_point_distance_squared,
+    certified_projection,
 };
 use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::ExactSign;

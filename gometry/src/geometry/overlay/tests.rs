@@ -3410,7 +3410,7 @@ fn overlay_output_rings_carry_no_collinear_nodes() {
 
 mod rectangle_clip_tests {
     use super::*;
-    use crate::geometry::segments::clip_segment_rect_interval;
+    use crate::geometry::segments::clip::clip_segment_rect_interval;
     use crate::geometry::tessellation::exact::compare_ratios;
 
     fn bounds(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Bounds {

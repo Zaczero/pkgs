@@ -4,8 +4,10 @@ use crate::geometry::embedding_search::{
 };
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
+use crate::geometry::segments::contact::{
+    SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation,
+};
 use crate::geometry::segments::ordering::{try_sort_by, try_sort_by_with_work};
-use crate::geometry::segments::{SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation};
 
 #[test]
 fn planar_embedding_domain_admits_finite_coordinates_only() {

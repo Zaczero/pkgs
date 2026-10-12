@@ -10,7 +10,8 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::relate::matrix_predicates::{self, CellMask};
 use crate::geometry::relate::{De9im, De9imInterval, Loc, OperandShape};
-use crate::geometry::segments::{TouchLocation, crossing_homogeneous_stored, crossing_point_with};
+use crate::geometry::segments::contact::TouchLocation;
+use crate::geometry::segments::{crossing_homogeneous_stored, crossing_point_with};
 use crate::geometry::source_support::{
     OccupiedToward, PointMembership, SourcePointLocation,
     cartesian_row_exact_offset_location_and_area, cartesian_row_exact_point_location_and_area,

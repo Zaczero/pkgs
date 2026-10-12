@@ -1,7 +1,7 @@
 use self::support::RemainingWork;
-use super::{try_sort_by, try_sort_by_with_work};
+use super::{compare_along_segment, try_sort_by, try_sort_by_with_work};
 use crate::error::ErrorKind;
-use crate::geometry::GeometryErrorKind;
+use crate::geometry::{GeometryErrorKind, Segment, XY};
 
 mod support;
 
@@ -240,4 +240,89 @@ fn fallible_sort_stops_at_a_merge_error_with_a_valid_item_permutation() {
             "record ({key}, {source_tag})"
         );
     }
+}
+
+#[test]
+fn cuts_sort_by_directed_coordinate_at_float_extremes() {
+    let cases = [
+        (
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(4.0, 0.0),
+            },
+            XY::new(1.0, 0.0),
+            XY::new(3.0, 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(0.0, 4.0),
+            },
+            XY::new(0.0, 1.0),
+            XY::new(0.0, 3.0),
+        ),
+        (
+            Segment {
+                start: XY::new(4.0, 0.0),
+                end: XY::new(0.0, 0.0),
+            },
+            XY::new(3.0, 0.0),
+            XY::new(1.0, 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(-4.0, 0.0),
+                end: XY::new(0.0, 0.0),
+            },
+            XY::new(-3.0, 0.0),
+            XY::new(-1.0, 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(0.0, 0.0),
+                end: XY::new(4.0 * f64::from_bits(1), 0.0),
+            },
+            XY::new(f64::from_bits(1), 0.0),
+            XY::new(3.0 * f64::from_bits(1), 0.0),
+        ),
+        (
+            Segment {
+                start: XY::new(-f64::MAX, 0.0),
+                end: XY::new(f64::MAX, 0.0),
+            },
+            XY::new(-f64::MAX / 2.0, 0.0),
+            XY::new(f64::MAX / 2.0, 0.0),
+        ),
+    ];
+    for (segment, first, second) in cases {
+        assert_eq!(
+            compare_along_segment(segment, first, second),
+            std::cmp::Ordering::Less
+        );
+    }
+}
+
+#[test]
+fn cut_order_canonicalizes_signed_zero_before_secondary_ties() {
+    let diagonal = Segment {
+        start: XY::new(-2.0, 0.0),
+        end: XY::new(2.0, 4.0),
+    };
+    assert_eq!(
+        compare_along_segment(diagonal, XY::new(0.0, 1.0), XY::new(-0.0, 3.0)),
+        std::cmp::Ordering::Less
+    );
+    assert_eq!(
+        compare_along_segment(diagonal, XY::new(-0.0, 2.0), XY::new(0.0, 2.0)),
+        std::cmp::Ordering::Equal
+    );
+
+    let descending = Segment {
+        start: XY::new(0.0, 4.0),
+        end: XY::new(4.0, 0.0),
+    };
+    assert_eq!(
+        compare_along_segment(descending, XY::new(2.0, 3.0), XY::new(2.0, 1.0)),
+        std::cmp::Ordering::Less
+    );
 }

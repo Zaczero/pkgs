@@ -2,6 +2,8 @@
 
 use crate::error::Result;
 use crate::geometry::{Ordering, Unmetered, Work};
+#[cfg(test)]
+use crate::geometry::{Segment, XY};
 
 /// Stable sort by a fallible comparison; the first error ends it. Runs of
 /// `RUN` items sort by insertion in place. Longer inputs merge those runs as
@@ -142,6 +144,36 @@ pub(in crate::geometry) fn try_dedup_by<T>(
             })
     });
     failure.map_or(Ok(()), Err)
+}
+
+/// Order cuts from `segment.start` to `segment.end` without measuring a
+/// distance. A nonconstant source coordinate is monotone along an exact
+/// straight segment, so X suffices unless it is constant. The other axis
+/// makes rounded off-support cuts deterministic and keeps equal point keys
+/// adjacent for deduplication.
+#[cfg(test)]
+#[expect(
+    clippy::float_cmp,
+    reason = "cut order uses exact coordinate identity along a stored segment; a tolerance would reorder distinct cuts"
+)]
+pub(crate) fn compare_along_segment(segment: Segment, left: XY, right: XY) -> std::cmp::Ordering {
+    let x_primary = segment.start.x != segment.end.x;
+    let compare_axis = |left: f64, right: f64, start: f64, end: f64| {
+        if left == right {
+            std::cmp::Ordering::Equal
+        } else if start <= end {
+            left.total_cmp(&right)
+        } else {
+            right.total_cmp(&left)
+        }
+    };
+    if x_primary {
+        compare_axis(left.x, right.x, segment.start.x, segment.end.x)
+            .then_with(|| compare_axis(left.y, right.y, segment.start.y, segment.end.y))
+    } else {
+        compare_axis(left.y, right.y, segment.start.y, segment.end.y)
+            .then_with(|| compare_axis(left.x, right.x, segment.start.x, segment.end.x))
+    }
 }
 
 #[cfg(test)]

@@ -17,7 +17,8 @@ use super::{
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::exact_arith::ExactSign;
-use crate::geometry::segments::{point_on_segment, stored_cross_sign, stored_orientation_sign};
+use crate::geometry::segments::contact::point_on_segment;
+use crate::geometry::segments::{stored_cross_sign, stored_orientation_sign};
 use crate::geometry::tessellation::exact::{ExactPoint, ExactRational};
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, Unmetered, Work, XY, same_point,
