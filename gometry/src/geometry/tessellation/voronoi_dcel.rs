@@ -2591,18 +2591,15 @@ pub(super) fn lone_site_polygon_outputs(
                     segment: output_edge_id,
                 }],
             });
+            let [edge_start, edge_end] = receipt
+                .edges
+                .last()
+                .ok_or_else(|| voronoi_error("lone-site receipt edge is absent"))?
+                .endpoints;
             receipt.darts.push(VoronoiDartReceipt {
                 id: output_edge_id,
-                origin: receipt
-                    .edges
-                    .last()
-                    .expect("edge was just recorded")
-                    .endpoints[0],
-                target: receipt
-                    .edges
-                    .last()
-                    .expect("edge was just recorded")
-                    .endpoints[1],
+                origin: edge_start,
+                target: edge_end,
                 twin: None,
                 edge: output_edge_id,
                 face: None,
@@ -2614,18 +2611,16 @@ pub(super) fn lone_site_polygon_outputs(
                 source_ring: Some(ring_index),
                 source_edge: Some(edge_index),
             };
-            receipt.vertices[receipt
-                .edges
-                .last()
-                .expect("edge was just recorded")
-                .endpoints[0] as usize]
+            receipt
+                .vertices
+                .get_mut(edge_start as usize)
+                .ok_or_else(|| voronoi_error("lone-site start vertex is absent"))?
                 .origins
                 .push(root_origin);
-            receipt.vertices[receipt
-                .edges
-                .last()
-                .expect("edge was just recorded")
-                .endpoints[1] as usize]
+            receipt
+                .vertices
+                .get_mut(edge_end as usize)
+                .ok_or_else(|| voronoi_error("lone-site end vertex is absent"))?
                 .origins
                 .push(VoronoiVertexOrigin::SourceClip {
                     segment: output_edge_id,
@@ -2811,10 +2806,13 @@ fn exact_diagram_receipt(
         .collect();
     for site in sites {
         if let Some(vertex) = subdivision.vertex_at(&site.exact_point)? {
-            vertex_origins[vertex.0 as usize].push(VoronoiVertexOrigin::SourceSite {
-                site: u32::try_from(site.id)
-                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-            });
+            vertex_origins
+                .get_mut(vertex.0 as usize)
+                .ok_or_else(|| voronoi_error("source-site vertex is absent from the receipt"))?
+                .push(VoronoiVertexOrigin::SourceSite {
+                    site: u32::try_from(site.id)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                });
         }
     }
     for segment in &receipt.clip_segments {
@@ -2838,18 +2836,24 @@ fn exact_diagram_receipt(
                 } else {
                     atom.end_parameter.clone()
                 };
-                vertex_origins[start.0 as usize].push(VoronoiVertexOrigin::SourceClip {
-                    segment: segment_id.0,
-                    parameter: start_parameter,
-                    source_ring: Some(root.ring),
-                    source_edge: Some(root.edge),
-                });
-                vertex_origins[end.0 as usize].push(VoronoiVertexOrigin::SourceClip {
-                    segment: segment_id.0,
-                    parameter: end_parameter,
-                    source_ring: Some(root.ring),
-                    source_edge: Some(root.edge),
-                });
+                vertex_origins
+                    .get_mut(start.0 as usize)
+                    .ok_or_else(|| voronoi_error("source-clip start vertex is absent"))?
+                    .push(VoronoiVertexOrigin::SourceClip {
+                        segment: segment_id.0,
+                        parameter: start_parameter,
+                        source_ring: Some(root.ring),
+                        source_edge: Some(root.edge),
+                    });
+                vertex_origins
+                    .get_mut(end.0 as usize)
+                    .ok_or_else(|| voronoi_error("source-clip end vertex is absent"))?
+                    .push(VoronoiVertexOrigin::SourceClip {
+                        segment: segment_id.0,
+                        parameter: end_parameter,
+                        source_ring: Some(root.ring),
+                        source_edge: Some(root.edge),
+                    });
             }
         }
     }
@@ -2857,25 +2861,37 @@ fn exact_diagram_receipt(
         let separator = edge.separator.map(|pair| pair.map(|site| site.0));
         let frame_side = edge.frame_side.map(receipt_frame_side);
         for vertex in edge.endpoints {
+            let origins = vertex_origins
+                .get_mut(vertex.0 as usize)
+                .ok_or_else(|| voronoi_error("edge vertex is absent from the receipt"))?;
             if let Some(sites) = separator {
-                vertex_origins[vertex.0 as usize].push(VoronoiVertexOrigin::Bisector { sites });
+                origins.push(VoronoiVertexOrigin::Bisector { sites });
             }
             if let Some(side) = frame_side {
-                vertex_origins[vertex.0 as usize].push(VoronoiVertexOrigin::Frame { side });
+                origins.push(VoronoiVertexOrigin::Frame { side });
             }
         }
     }
     for (vertex, exact_vertex) in subdivision.vertices.iter().enumerate() {
-        vertex_origins[vertex].extend(chart_vertex_origins(chart, &exact_vertex.point)?);
+        vertex_origins
+            .get_mut(vertex)
+            .ok_or_else(|| voronoi_error("diagram vertex is absent from the receipt"))?
+            .extend(chart_vertex_origins(chart, &exact_vertex.point)?);
     }
 
     receipt.vertices.reserve(subdivision.vertices.len());
     for (index, vertex) in subdivision.vertices.iter().enumerate() {
+        let origins = vertex_origins
+            .get_mut(index)
+            .ok_or_else(|| voronoi_error("diagram vertex origins are absent"))?;
+        let assignment = *assignments
+            .get(index)
+            .ok_or_else(|| voronoi_error("diagram vertex assignment is absent"))?;
         receipt.vertices.push(VoronoiVertexReceipt {
             id: u32::try_from(index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
             exact_xy: exact_xy_coordinates(&vertex.point)?,
-            origins: std::mem::take(&mut vertex_origins[index]),
-            assignment: assignments[index],
+            origins: std::mem::take(origins),
+            assignment,
         });
     }
 
@@ -6323,7 +6339,10 @@ fn clip_to_half_plane_with_origins(
             pieces.push(Piece {
                 start: piece_start,
                 end: piece_end,
-                origins: edge_origins[index].clone(),
+                origins: edge_origins
+                    .get(index)
+                    .ok_or_else(|| voronoi_error("collinear strip edge origins are absent"))?
+                    .clone(),
             });
         }
     }
@@ -8401,11 +8420,9 @@ fn dual_embed(
     }
     for (ring_index, (window, site)) in offsets.array_windows::<2>().zip(sites).enumerate() {
         let [row_start, row_end] = *window;
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "each row offset was pushed around appending this same ring's rounded vertices"
-        )]
-        let rounded = &mut rounded_all[row_start..row_end];
+        let rounded = rounded_all
+            .get_mut(row_start..row_end)
+            .ok_or(DualEmbeddingError::Unrepresentable)?;
         // The ring starts at its lexicographically smallest rounded vertex,
         // the canonical form both lanes publish; rounding is injective here,
         // so the minimum is unique.
@@ -8415,11 +8432,10 @@ fn dual_embed(
             .min_by(|(_, left), (_, right)| lex_xy(**left, **right))
             .map_or(0, |(index, _)| index);
         rounded.rotate_left(rotation);
-        ids_all[row_start..row_end].rotate_left(rotation);
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "ring_index addresses the edge-tag row built alongside this dual ring"
-        )]
+        ids_all
+            .get_mut(row_start..row_end)
+            .ok_or(DualEmbeddingError::Unrepresentable)?
+            .rotate_left(rotation);
         let tags = edge_tags
             .get_mut(ring_index)
             .ok_or(DualEmbeddingError::Unrepresentable)?;
@@ -8759,8 +8775,12 @@ fn dual_embed(
         };
         let mut owner_transition = [None, None];
         for use_edge in [Some(draft.first), draft.second].into_iter().flatten() {
-            let side = usize::from(!use_edge.forward);
-            owner_transition[side] = Some(use_edge.owner);
+            let [left_owner, right_owner] = &mut owner_transition;
+            if use_edge.forward {
+                *left_owner = Some(use_edge.owner);
+            } else {
+                *right_owner = Some(use_edge.owner);
+            }
         }
         receipt.edges.push(VoronoiEdgeReceipt {
             id: edge_id,
