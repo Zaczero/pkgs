@@ -8765,7 +8765,7 @@ fn dual_embed(
         };
         let mut owner_transition = [None, None];
         for use_edge in [Some(draft.first), draft.second].into_iter().flatten() {
-            let side = if use_edge.forward { 0 } else { 1 };
+            let side = usize::from(!use_edge.forward);
             owner_transition[side] = Some(use_edge.owner);
         }
         receipt.edges.push(VoronoiEdgeReceipt {
