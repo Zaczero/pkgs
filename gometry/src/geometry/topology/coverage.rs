@@ -24,6 +24,7 @@ use crate::geometry::{
 
 pub(in crate::geometry::topology) mod chains;
 mod regions;
+mod simplify;
 
 type RowIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;
 type SpanIndex = BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>>;

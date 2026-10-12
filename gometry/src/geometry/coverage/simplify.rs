@@ -80,10 +80,30 @@ fn simplify_chain_kept(
     guard: &TopologyGuard<'_>,
     chain_segments: &[Segment],
 ) -> Result<Vec<usize>> {
+    simplify_chain_kept_with_try_remove(
+        count,
+        &xy,
+        cyclic,
+        tolerance,
+        method,
+        |_, _, _, previous, point, next| {
+            Ok(guard.removal_is_safe(previous, point, next, chain_segments))
+        },
+    )
+}
+
+pub(in crate::geometry) fn simplify_chain_kept_with_try_remove(
+    count: usize,
+    xy: impl Fn(usize) -> XY,
+    cyclic: bool,
+    tolerance: f64,
+    method: SimplifyMethod,
+    try_remove: impl FnMut(usize, usize, usize, XY, XY, XY) -> Result<bool>,
+) -> Result<Vec<usize>> {
     match method {
         SimplifyMethod::Vw => {
             let area_tolerance = vw_area_tolerance(tolerance);
-            simplify_chain_guarded_with_segments(
+            simplify_chain_guarded_with_try_remove(
                 count,
                 &xy,
                 cyclic,
@@ -91,12 +111,11 @@ fn simplify_chain_kept(
                     let area = triangle_area(xy(prev), xy(vertex), xy(next));
                     Ok((area < area_tolerance).then_some(area))
                 },
-                guard,
-                chain_segments,
+                try_remove,
             )
         },
         SimplifyMethod::Dp => {
-            simplify_chain_guarded_with_segments(
+            simplify_chain_guarded_with_try_remove(
                 count,
                 &xy,
                 cyclic,
@@ -113,8 +132,7 @@ fn simplify_chain_kept(
                     })?;
                     Ok((deviation < tolerance).then_some(deviation))
                 },
-                guard,
-                chain_segments,
+                try_remove,
             )
         },
     }
@@ -150,6 +168,27 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
     guard: &TopologyGuard<'_>,
     chain_segments: &[Segment],
 ) -> Result<Vec<usize>> {
+    simplify_chain_guarded_with_try_remove(
+        count,
+        xy,
+        cyclic,
+        candidate,
+        |_, _, _, previous, point, next| {
+            Ok(guard.removal_is_safe(previous, point, next, chain_segments))
+        },
+    )
+}
+
+/// Guarded greedy simplification with a caller-owned decision and update
+/// boundary. A `true` result commits the candidate's topology-state update;
+/// `false` must leave that state unchanged.
+pub(in crate::geometry) fn simplify_chain_guarded_with_try_remove(
+    count: usize,
+    xy: impl Fn(usize) -> XY,
+    cyclic: bool,
+    candidate: &impl Fn(usize, usize, usize) -> Result<Option<f64>>,
+    mut try_remove: impl FnMut(usize, usize, usize, XY, XY, XY) -> Result<bool>,
+) -> Result<Vec<usize>> {
     let floor = if cyclic { 4 } else { 2 };
     if count <= floor {
         return Ok((0..count).collect());
@@ -157,10 +196,9 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
     // Lazy min-heap over a doubly linked interior walk: each removal
     // re-evaluates only its two neighbors (generation stamps invalidate
     // stale entries), so the whole pass is O(n log n) instead of a full
-    // rescan + sort + shift per removal. Selection order is identical to
-    // the rescan form: the guard is a pure function of the triple (it
-    // checks the STATIC original linework), so an unsafe candidate stays
-    // unsafe until a neighbor changes — which re-pushes it.
+    // rescan + sort + shift per removal. A declined candidate is revisited
+    // only when one of its neighbors changes; a stateful guard must therefore
+    // remain conservative when a nonlocal obstruction later disappears.
     let total_order_key = |importance: f64| -> u64 {
         let bits = importance.to_bits();
         if bits >> 63 == 1 {
@@ -202,7 +240,7 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
                 .get(index)
                 .expect("heap vertex index is within the chain"),
         );
-        if !guard.removal_is_safe(xy(before), xy(index), xy(after), chain_segments) {
+        if !try_remove(before, index, after, xy(before), xy(index), xy(after))? {
             continue;
         }
         *removed

@@ -3640,6 +3640,37 @@ impl ExactGeographicQ {
         Ok(node.pole.is_some())
     }
 
+    pub(super) fn for_each_spatial_candidate_with_work<W: Work>(
+        &self,
+        start: &ExactChartPoint,
+        end: &ExactChartPoint,
+        work: &mut W,
+        mut visit: impl FnMut(QSpatialItem, &mut W) -> Result<bool>,
+    ) -> Result<bool> {
+        let mut failure = None;
+        let mut stopped = false;
+        let result =
+            self.spatial_index
+                .for_each_candidate(outward_segment_proxy(start, end)?, |item| {
+                    match visit(item, work) {
+                        Ok(true) => std::ops::ControlFlow::Continue(()),
+                        Ok(false) => {
+                            stopped = true;
+                            std::ops::ControlFlow::Break(())
+                        },
+                        Err(error) => {
+                            failure = Some(error);
+                            std::ops::ControlFlow::Break(())
+                        },
+                    }
+                })?;
+        if let Some(error) = failure {
+            Err(error)
+        } else {
+            Ok(!stopped && result.is_continue())
+        }
+    }
+
     pub(in crate::geometry) fn for_each_pole_sector(
         &self,
         pole: ChartPole,
@@ -4372,6 +4403,158 @@ impl ExactGeographicTopology {
         self.q.locate_point(self, &point, SourceRowId(0))
     }
 
+    pub(super) fn face_rows_at_chart_point(
+        &self,
+        source_point: &ExactChartPoint,
+        face_rows: &[Vec<usize>],
+        work: &mut impl Work,
+    ) -> Result<Vec<usize>> {
+        if face_rows.len() != self.q.global_face_count {
+            return Err(GeometryErrorKind::Invalid(
+                "Q face row labels do not match its global face table".into(),
+            )
+            .into());
+        }
+        let point = lift_query_point(self.sources.frame, &self.q.cut, source_point)?;
+        let frame = self.sources.frame;
+        let mut adjacent_faces = BTreeSet::new();
+        for pole in [ChartPole::North, ChartPole::South] {
+            let latitude = ExactRational::from_f64(frame.chart_pole_latitude(pole));
+            if point.y.try_cmp_with_work(&latitude, work)?.is_eq() {
+                self.q
+                    .for_each_pole_sector_with_work(pole, work, |sector, _work| {
+                        adjacent_faces.insert(sector.face());
+                        Ok(())
+                    })?;
+            }
+        }
+        if !adjacent_faces.is_empty() {
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        if let Some(node) = q_port_node(&self.q.ports, &point)? {
+            let node_index = node.0 as usize;
+            let (start, end) = q_node_fan(&self.q, node_index)?;
+            let fan = self.q.outgoing.get(start..end).ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q point node fan is incomplete".into())
+            })?;
+            for &dart_id in fan {
+                work.charge(1)?;
+                let local_face = *self.q.dart_faces.get(dart_id.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q point node has an unknown dart".into())
+                })?;
+                let face = *self
+                    .q
+                    .global_face_of_local
+                    .get(local_face.0 as usize)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point node dart has no global face".into())
+                    })?;
+                adjacent_faces.insert(face);
+            }
+            if fan.is_empty()
+                && let Some(face) = self.q.source_node_faces.get(node_index).copied().flatten()
+            {
+                adjacent_faces.insert(face);
+            }
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        let point_query =
+            self.q
+                .for_each_spatial_candidate_with_work(&point, &point, work, |item, work| {
+                    let QSpatialItem::Span(span_index) = item else {
+                        return Ok(true);
+                    };
+                    let span = self.q.spans.get(span_index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point index has an unknown span".into())
+                    })?;
+                    let [start_port, end_port] = span.ports;
+                    let start = self.q.ports.get(start_port.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point span has no start port".into())
+                    })?;
+                    let end = self.q.ports.get(end_port.0 as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q point span has no end port".into())
+                    })?;
+                    if point_on_exact_segment_with_work(&point, &start.point, &end.point, work)? {
+                        if let Some(faces) =
+                            self.q.span_global_faces.get(span_index).copied().flatten()
+                        {
+                            adjacent_faces.extend(faces);
+                        }
+                        return Ok(false);
+                    }
+                    Ok(true)
+                })?;
+        if !point_query {
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        let cut_east = self
+            .q
+            .cut
+            .try_add(&ExactRational::from_f64(frame.longitude().period()))?;
+        if point.x.try_cmp(&self.q.cut)?.is_eq() || point.x.try_cmp(&cut_east)?.is_eq() {
+            let interval = self.q.cut_index.interval_at(&point.y, 1)?;
+            let face = *self
+                .q
+                .cut_interval_faces
+                .get(interval.id.0 as usize)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q cut interval has no global face".into())
+                })?;
+            adjacent_faces.insert(face);
+            return face_rows_for_ids(&adjacent_faces, face_rows, work);
+        }
+
+        let interval = self.q.cut_index.interval_at(&point.y, 1)?;
+        let start_face = *self
+            .q
+            .cut_interval_faces
+            .get(interval.id.0 as usize)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("Q cut interval has no global face".into())
+            })?;
+        let start_rows = face_rows.get(start_face.0 as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Q cut interval face has no row labels".into())
+        })?;
+        let mut rows = start_rows.iter().copied().collect::<BTreeSet<_>>();
+        let cut_point = ExactChartPoint::from_rationals(
+            self.q.cut.try_clone_with_work(work)?,
+            point.y.try_clone_with_work(work)?,
+        );
+        self.q
+            .for_each_spatial_candidate_with_work(&cut_point, &point, work, |item, work| {
+                let QSpatialItem::Span(span_index) = item else {
+                    return Ok(true);
+                };
+                let Some([left, right]) =
+                    span_crossed_by_north_ray(&self.q, span_index, &point, work)?
+                else {
+                    return Ok(true);
+                };
+                let (Some(left_rows), Some(right_rows)) = (
+                    face_rows.get(left.0 as usize),
+                    face_rows.get(right.0 as usize),
+                ) else {
+                    return Err(GeometryErrorKind::Invalid(
+                        "Q ray crossing face has no row labels".into(),
+                    )
+                    .into());
+                };
+                for &row in left_rows.iter().chain(right_rows) {
+                    work.charge(1)?;
+                    let left_has = left_rows.binary_search(&row).is_ok();
+                    let right_has = right_rows.binary_search(&row).is_ok();
+                    if left_has != right_has && !rows.insert(row) {
+                        rows.remove(&row);
+                    }
+                }
+                Ok(true)
+            })?;
+        Ok(rows.into_iter().collect())
+    }
+
     pub(crate) fn classify_rectangle(
         &self,
         bounds: Bounds,
@@ -4638,6 +4821,81 @@ fn span_crosses_north_ray(
     Ok(hit_x.try_cmp(&q.cut)?.is_gt() && hit_x.try_cmp(&point.x)?.is_lt())
 }
 
+fn span_crossed_by_north_ray(
+    q: &ExactGeographicQ,
+    span_index: usize,
+    point: &ExactChartPoint,
+    work: &mut impl Work,
+) -> Result<Option<[GlobalFaceId; 2]>> {
+    let Some(faces) = q.span_global_faces.get(span_index).copied().flatten() else {
+        return Ok(None);
+    };
+    let span = q
+        .spans
+        .get(span_index)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q ray references an unknown span".into()))?;
+    let start = q
+        .ports
+        .get(span.ports[0].0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q ray has no start port".into()))?;
+    let end = q
+        .ports
+        .get(span.ports[1].0 as usize)
+        .ok_or_else(|| GeometryErrorKind::Invalid("Q ray has no end port".into()))?;
+    let order = start.point.y.try_cmp_with_work(&end.point.y, work)?;
+    if order.is_eq() {
+        return Ok(None);
+    }
+    let (low, high) = if order.is_lt() {
+        (&start.point, &end.point)
+    } else {
+        (&end.point, &start.point)
+    };
+    if point.y.try_cmp_with_work(&low.y, work)?.is_lt()
+        || !point.y.try_cmp_with_work(&high.y, work)?.is_lt()
+    {
+        return Ok(None);
+    }
+    let delta_y = high.y.try_subtract_with_work(&low.y, work)?;
+    let slope = high
+        .x
+        .try_subtract_with_work(&low.x, work)?
+        .try_quotient_with_work(&delta_y, work)?;
+    let hit_x = low.x.try_add_with_work(
+        &point
+            .y
+            .try_subtract_with_work(&low.y, work)?
+            .try_product_with_work(&slope, work)?,
+        work,
+    )?;
+    if hit_x.try_cmp_with_work(&q.cut, work)?.is_gt()
+        && hit_x.try_cmp_with_work(&point.x, work)?.is_lt()
+    {
+        Ok(Some(faces))
+    } else {
+        Ok(None)
+    }
+}
+
+fn face_rows_for_ids(
+    faces: &BTreeSet<GlobalFaceId>,
+    face_rows: &[Vec<usize>],
+    work: &mut impl Work,
+) -> Result<Vec<usize>> {
+    let mut rows = BTreeSet::new();
+    for face in faces {
+        work.charge(1)?;
+        let occupants = face_rows
+            .get(face.0 as usize)
+            .ok_or_else(|| GeometryErrorKind::Invalid("Q face row labels are incomplete".into()))?;
+        for &row in occupants {
+            work.charge(1)?;
+            rows.insert(row);
+        }
+    }
+    Ok(rows.into_iter().collect())
+}
+
 fn build_span_line_rows(
     sources: &ExactGeographicChartInventory,
     spans: &[ChartSpan],
@@ -4823,7 +5081,7 @@ type GlobalNodeRowSupport = QRowCsr<SourceRowId>;
 type CollapsedPointFaces = QRowCsr<usize>;
 
 #[derive(Clone, Copy, Debug)]
-enum QSpatialItem {
+pub(super) enum QSpatialItem {
     Span(usize),
     Point(QPortId),
 }
