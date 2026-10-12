@@ -27,6 +27,7 @@ use crate::collections::HashMap;
 use crate::error::ResourceError;
 use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
+use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
     NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
@@ -42,6 +43,7 @@ use crate::geometry::segments::{
     stored_cross_sign, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
+use crate::geometry::topology::SourceTrace;
 use crate::geometry::{
     Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GeometryErrorKind, GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey,
@@ -1062,7 +1064,6 @@ impl SubdivisionRootCatalog {
             line_traces,
         ))
     }
-
     pub(in crate::geometry) fn from_polygon_shape(
         shape: &Shape,
         frame: GeographicFrame,
@@ -3305,7 +3306,7 @@ impl ExactSourceInventory {
         clip_operands: [usize; 2],
         budget: &mut ExpansionBudget,
         context: &SourceArcContext<'_, '_, M>,
-        trace_work: &mut crate::geometry::embedding_search::EvaluationBudget,
+        trace_work: &mut EvaluationBudget,
     ) -> Result<[SubdivisionPart; 2]> {
         let mut resolve_rows =
             |rows: &[RequestRowInput],
@@ -4442,7 +4443,7 @@ impl ExactSourceInventory {
         ranges: &[Range<usize>],
         views: &SourceLineTraceViews,
         selected: &[bool],
-        source_traces: &[crate::geometry::topology::SourceTrace],
+        source_traces: &[SourceTrace],
         work: &mut W,
     ) -> Result<Vec<SourceLineRun>> {
         #[cfg(test)]
@@ -4565,7 +4566,7 @@ impl ExactSourceInventory {
         &self,
         source_kind: GeometryKind,
         runs: Vec<SourceLineRun>,
-        source_traces: &[crate::geometry::topology::SourceTrace],
+        source_traces: &[SourceTrace],
         by_node: &ResolvedNodePoints,
         roots: &C,
         root_positions: Option<&SubdivisionRootCatalog>,
@@ -7008,7 +7009,7 @@ where
             })?;
             return face
                 .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow.into());
+                .ok_or_else(|| ResourceError::SizeOverflow.into());
         }
     }
     Err(
@@ -7253,8 +7254,13 @@ where
     let mut count = 1_u32;
     for node in 1..size {
         work.charge(1)?;
-        if links[node] == node as u32 {
-            labels[node] = count;
+        let link = *links.get(node).ok_or_else(|| {
+            GeometryErrorKind::Invalid("graph face link is outside its table".into())
+        })?;
+        if link == node as u32 {
+            *labels.get_mut(node).ok_or_else(|| {
+                GeometryErrorKind::Invalid("graph face label is outside its table".into())
+            })? = count;
             count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
     }

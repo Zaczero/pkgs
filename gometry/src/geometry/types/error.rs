@@ -138,7 +138,7 @@ pub enum GeometryErrorKind {
     },
     #[error(
         "{operation} could not certify a binary64 embedding within its search budget \
-         ({evaluations} predicate evaluations over {constructed} constructed vertices)"
+         ({evaluations} evaluations over {constructed} constructed vertices)"
     )]
     ExactEmbeddingSearchLimit {
         operation: &'static str,
