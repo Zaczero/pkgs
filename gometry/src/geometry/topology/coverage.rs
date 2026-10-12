@@ -1090,15 +1090,15 @@ fn mark_near_gap_edges(
             .get(query_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("coverage gap span has no bounds".into()))?;
         let query_segment = exact_span(topology, query_index)?;
-        for &(shift_f64, ref shift) in &shifts {
+        for (shift_f64, shift) in &shifts {
             work.charge(1)?;
             let query = AABB::from_bounds(
                 [
-                    bounds.min[0] + shift_f64 - gap_width,
+                    bounds.min[0] + *shift_f64 - gap_width,
                     bounds.min[1] - gap_width,
                 ],
                 [
-                    bounds.max[0] + shift_f64 + gap_width,
+                    bounds.max[0] + *shift_f64 + gap_width,
                     bounds.max[1] + gap_width,
                 ],
             );
