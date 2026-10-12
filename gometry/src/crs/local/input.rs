@@ -235,7 +235,7 @@ impl PreparedLocalInput {
             let provenance = match source_parameters {
                 Some(source_parameters) => RefinedChainProvenance::from_chart_parameters(
                     current_chain,
-                    edge_ends,
+                    &edge_ends,
                     source_parameters,
                 )?,
                 None => RefinedChainProvenance {

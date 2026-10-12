@@ -51,7 +51,7 @@ pub(crate) struct RefinedChainProvenance {
 impl RefinedChainProvenance {
     pub(crate) fn from_chart_parameters(
         chain_index: usize,
-        parameter_ends: Vec<usize>,
+        parameter_ends: &[usize],
         source_parameters: Vec<f64>,
     ) -> Result<Self> {
         if parameter_ends.last().copied().unwrap_or(0) != source_parameters.len() {
