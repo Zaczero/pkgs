@@ -6118,19 +6118,17 @@ pub(super) fn build_collinear_polygons_with_chart(
         }
     }
     let clip = normalize_clip_with_chart(sites, boundary, true, chart)?;
-    let frame = match clip.source {
-        None => clip
-            .rings
+    let frame = if clip.source.is_none() {
+        clip.rings
             .first()
             .cloned()
-            .expect("generated Voronoi clips contain their frame ring"),
-        Some(_) => {
-            let outer = clip
-                .rings
-                .first()
-                .ok_or_else(|| voronoi_error("Voronoi clip has no outer ring"))?;
-            exact::axis_aligned_bounds(outer.iter())?.to_vec()
-        },
+            .expect("generated Voronoi clips contain their frame ring")
+    } else {
+        let outer = clip
+            .rings
+            .first()
+            .ok_or_else(|| voronoi_error("Voronoi clip has no outer ring"))?;
+        exact::axis_aligned_bounds(outer.iter())?.to_vec()
     };
     let mut cells = Vec::new();
     let baseline = clip.polygon_baseline.unwrap_or(0);
@@ -6204,75 +6202,71 @@ pub(super) fn build_collinear_polygons_with_chart(
             Ring::try_from_closed(CoordSeq::try_from_xy(&vertices)?)?,
             Vec::new(),
         );
-        match clip.source {
-            None => {
-                let edge_roles = vec![
-                    edge_origins
-                        .into_iter()
-                        .map(|origins| VoronoiRingEdgeRole {
-                            edge: None,
-                            forward: true,
-                            origins,
-                            source_uses: Vec::new(),
-                        })
-                        .collect::<Vec<_>>(),
-                ];
-                let producer_vertices = exact_vertices
+        if clip.source.is_none() {
+            let edge_roles = vec![
+                edge_origins
                     .into_iter()
-                    .zip(vertices.iter().copied())
-                    .enumerate()
-                    .map(|(index, (exact_point, assignment))| {
-                        Ok(crate::geometry::overlay::OverlayNodeReceipt {
-                            id: u32::try_from(index)
-                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                            exact_point,
-                            assignment,
-                        })
+                    .map(|origins| VoronoiRingEdgeRole {
+                        edge: None,
+                        forward: true,
+                        origins,
+                        source_uses: Vec::new(),
                     })
-                    .collect::<Result<Vec<_>>>()?;
+                    .collect::<Vec<_>>(),
+            ];
+            let producer_vertices = exact_vertices
+                .into_iter()
+                .zip(vertices.iter().copied())
+                .enumerate()
+                .map(|(index, (exact_point, assignment))| {
+                    Ok(crate::geometry::overlay::OverlayNodeReceipt {
+                        id: u32::try_from(index)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                        exact_point,
+                        assignment,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            cells.push(EmbeddedPolygon {
+                polygon: strip,
+                owner: Some(
+                    u32::try_from(site_index)
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                ),
+                edge_roles,
+                producer_vertices: vec![producer_vertices],
+            });
+        } else {
+            let strip = Shape::Polygon(strip);
+            let clip_shape = Shape::Polygon(
+                clip.geometry
+                    .as_ref()
+                    .expect("polygon clips retain their chart-space polygon")
+                    .clone(),
+            );
+            let intersection = binary_cartesian_intersection_with_edge_roles(&strip, &clip_shape)?;
+            for part in intersection {
+                let count = polygon_output_count(
+                    part.polygon.shell.len(),
+                    part.polygon.holes.iter().map(|hole| hole.len()),
+                )?;
+                let next_published = published
+                    .checked_add(count)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                budget.check_additional(next_published.saturating_sub(baseline))?;
+                published = next_published;
+                let edge_roles =
+                    collinear_overlay_edge_roles(part.edge_sources, &edge_origins, &clip)?;
                 cells.push(EmbeddedPolygon {
-                    polygon: strip,
+                    polygon: part.polygon,
                     owner: Some(
                         u32::try_from(site_index)
                             .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
                     ),
                     edge_roles,
-                    producer_vertices: vec![producer_vertices],
+                    producer_vertices: part.vertices,
                 });
-            },
-            Some(_) => {
-                let strip = Shape::Polygon(strip);
-                let clip_shape = Shape::Polygon(
-                    clip.geometry
-                        .as_ref()
-                        .expect("polygon clips retain their chart-space polygon")
-                        .clone(),
-                );
-                let intersection =
-                    binary_cartesian_intersection_with_edge_roles(&strip, &clip_shape)?;
-                for part in intersection {
-                    let count = polygon_output_count(
-                        part.polygon.shell.len(),
-                        part.polygon.holes.iter().map(|hole| hole.len()),
-                    )?;
-                    let next_published = published
-                        .checked_add(count)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                    budget.check_additional(next_published.saturating_sub(baseline))?;
-                    published = next_published;
-                    let edge_roles =
-                        collinear_overlay_edge_roles(part.edge_sources, &edge_origins, &clip)?;
-                    cells.push(EmbeddedPolygon {
-                        polygon: part.polygon,
-                        owner: Some(
-                            u32::try_from(site_index)
-                                .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
-                        ),
-                        edge_roles,
-                        producer_vertices: part.vertices,
-                    });
-                }
-            },
+            }
         }
         previous = Some(site_index);
     }
