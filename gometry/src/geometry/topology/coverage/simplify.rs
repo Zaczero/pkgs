@@ -79,6 +79,7 @@ struct GeographicChainSequence {
     span_lifts: Vec<i64>,
 }
 
+#[derive(Clone, Copy)]
 struct GeographicRemovalCandidate<'a> {
     chain_index: usize,
     before: usize,
