@@ -44,7 +44,7 @@ pub(in crate::geometry) struct VoronoiDiagramReceipt {
 }
 
 impl VoronoiDiagramReceipt {
-    pub(in crate::geometry) fn empty(producer: VoronoiProducer) -> Self {
+    pub(in crate::geometry) const fn empty(producer: VoronoiProducer) -> Self {
         Self {
             producer,
             sites: Vec::new(),
