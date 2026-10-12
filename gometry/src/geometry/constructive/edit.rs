@@ -16,7 +16,7 @@ use crate::geometry::exact_arith::{
     two_product_dekker_admitted, two_product_dekker_checked_parts, two_sum,
 };
 use crate::geometry::overlay::{
-    OverlayOp, overlay_all_geographic_from_with_metric, overlay_intersection_with_rectangle,
+    OverlayOp, overlay_all_geographic_from_with_output_frame, overlay_intersection_with_rectangle,
     overlay_view_error,
 };
 use crate::geometry::{
@@ -2083,6 +2083,7 @@ impl Shape {
         rect: Bounds,
         drop: bool,
         frame: crate::geographic::GeographicFrame,
+        output_frame: &crate::Frame,
         metric_access: &crate::geometry::SourceArcMetricAccess<'_, '_, M>,
     ) -> Result<Self> {
         let subject_plan = crate::geometry::PreparedPlan::transient(self);
@@ -2103,7 +2104,7 @@ impl Shape {
             std::iter::once(&rectangle),
         )
         .map_err(|error| overlay_view_error(&error))?;
-        let clipped = overlay_all_geographic_from_with_metric(
+        let clipped = overlay_all_geographic_from_with_output_frame(
             &originals,
             OverlayOp::Intersection,
             Strictness::from(drop),
@@ -2112,6 +2113,7 @@ impl Shape {
                 crate::geometry::TopologyDomain::Geographic(frame),
                 Some(metric_access),
             ),
+            output_frame,
         )?;
         Ok(clipped)
     }

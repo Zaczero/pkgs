@@ -7,9 +7,7 @@ use crate::geometry::storage::packed_columns::{LineColumns, PackedColumns, Polyg
 use crate::geometry::storage::{
     GeometryArrayStorage, PackedStorage, RowSelection, reverse_coord_windows,
 };
-use crate::geometry::{
-    ExpansionBudget, ParallelSourceArcMetricAccess, ShapeCountQuery, TopologyDomain,
-};
+use crate::geometry::{ExpansionBudget, ParallelSourceArcMetricAccess, ShapeCountQuery};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GridSize {
@@ -446,19 +444,20 @@ impl PyGeometryArray {
         })
     }
 
-    pub(crate) fn clip_by_rect_unary_packed(
+    pub(crate) fn clip_by_rect_unary_packed(&self, py: Python<'_>, rect: Bounds) -> PyResult<Self> {
+        self.map_shapes_detached(py, move |shape| shape.clip_by_rect(rect, false))
+    }
+
+    pub(crate) fn clip_by_rect_unary_packed_geographic(
         &self,
         py: Python<'_>,
         rect: Bounds,
-        domain: TopologyDomain,
+        frame: crate::geographic::GeographicFrame,
         metric_access: &ParallelSourceArcMetricAccess<'_>,
     ) -> PyResult<Self> {
+        let output_frame = self.frame.clone();
         self.map_shapes_detached(py, move |shape| {
-            if let TopologyDomain::Geographic(frame) = domain {
-                shape.clip_by_rect_in_geographic_frame(rect, false, frame, metric_access)
-            } else {
-                shape.clip_by_rect(rect, false)
-            }
+            shape.clip_by_rect_in_geographic_frame(rect, false, frame, &output_frame, metric_access)
         })
     }
 }

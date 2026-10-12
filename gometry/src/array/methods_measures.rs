@@ -389,27 +389,47 @@ impl PyGeometryArray {
             .resolve_topology_ctx(&frame, &mut metric_scratch)?;
         // One detach around the whole loop: the union of every group needs no
         // Python, and a GIL round-trip per group was the loop's fixed cost.
-        let shapes: Vec<Shape> = py.detach(move || {
-            let metric_access = || {
-                metric.geographic_chart_metric()?.ok_or_else(|| {
-                    crate::crs::CrsError::invalid(
-                        "geographic dissolve source ordinates require the operation's CRS metric",
-                    )
-                })
-            };
-            group_shapes
-                .into_iter()
-                .map(|group| {
-                    crate::geometry::overlay_all_with_metric(
-                        &group,
-                        domain,
-                        crate::geometry::OverlayOp::Union,
-                        strictness,
-                        &metric_access,
-                    )
-                })
-                .collect::<Result<_, _>>()
-        })?;
+        let metric_access = || {
+            metric.geographic_chart_metric()?.ok_or_else(|| {
+                crate::crs::CrsError::invalid(
+                    "geographic dissolve source ordinates require the operation's CRS metric",
+                )
+            })
+        };
+        let shapes: Vec<Shape> = match domain {
+            crate::geometry::TopologyDomain::Cartesian => py.detach(move || {
+                group_shapes
+                    .into_iter()
+                    .map(|group| {
+                        crate::geometry::overlay_all_with_metric(
+                            &group,
+                            domain,
+                            crate::geometry::OverlayOp::Union,
+                            strictness,
+                            &metric_access,
+                        )
+                    })
+                    .collect::<Result<_, _>>()
+            })?,
+            crate::geometry::TopologyDomain::Geographic(geographic_frame) => {
+                let output_frame = frame.clone();
+                py.detach(move || {
+                    group_shapes
+                        .into_iter()
+                        .map(|group| {
+                            crate::geometry::overlay_all_geographic_with_metric_and_frame(
+                                &group,
+                                geographic_frame,
+                                &output_frame,
+                                crate::geometry::OverlayOp::Union,
+                                strictness,
+                                &metric_access,
+                            )
+                        })
+                        .collect::<Result<_, _>>()
+                })?
+            },
+        };
         drop(metric_scratch);
         Ok((Self::from_shapes(shapes, frame)?, groups)
             .into_pyobject(py)?

@@ -1029,9 +1029,13 @@ pub(crate) fn unary_clip_by_rect(
                     "geographic rectangle clipping requires the operation's CRS metric for source ordinates",
                 ))
         };
-        return data
-            .shape()
-            .clip_by_rect_in_geographic_frame(rect, drop, frame, &metric_access);
+        return data.shape().clip_by_rect_in_geographic_frame(
+            rect,
+            drop,
+            frame,
+            ctx.frame,
+            &metric_access,
+        );
     }
     data.clip_by_rect_with_bounds(rect, drop, data.bounds())
 }
@@ -1139,7 +1143,7 @@ pub(crate) fn binary_overlay(
 ) -> Result<Shape> {
     match ctx.domain {
         TopologyDomain::Cartesian => op.apply(left.shape(), right.shape(), strictness),
-        TopologyDomain::Geographic(_) => {
+        TopologyDomain::Geographic(frame) => {
             let metric_access = || {
                 ctx.metric.geographic_chart_metric()?.ok_or_else(|| {
                     crate::crs::CrsError::invalid(
@@ -1147,9 +1151,10 @@ pub(crate) fn binary_overlay(
                     )
                 })
             };
-            crate::geometry::overlay_all_with_metric(
+            crate::geometry::overlay_all_geographic_with_metric_and_frame(
                 &[left.shape(), right.shape()],
-                ctx.domain,
+                frame,
+                ctx.frame,
                 op,
                 strictness,
                 &metric_access,
