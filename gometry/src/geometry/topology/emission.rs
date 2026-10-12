@@ -2713,15 +2713,15 @@ impl SourceTrace {
         let edge_count = self.rows.edge_count();
         if self.samples.is_empty() {
             let mut rows = TraceRowsBuilder::new(work)?;
-            for &(edge, ref start, ref end) in slices {
+            for (edge, start, end) in slices {
                 work.charge(1)?;
-                if edge >= edge_count {
+                if *edge >= edge_count {
                     return Err(GeometryErrorKind::Invalid(
                         "source trace slice references an unknown edge".into(),
                     )
                     .into());
                 }
-                rows.push_composed_row(self.rows.row(edge)?, start, end, work)?;
+                rows.push_composed_row(self.rows.row(*edge)?, start, end, work)?;
             }
             return Ok(Self {
                 rows: rows.finish(work)?,
