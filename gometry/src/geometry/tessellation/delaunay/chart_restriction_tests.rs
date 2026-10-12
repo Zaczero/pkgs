@@ -33,6 +33,71 @@ fn south_polar_cap_plan() -> ConstrainedMeshPlan {
     .unwrap()
 }
 
+#[test]
+fn retained_cdt_polar_cap_translates_holes_into_the_restricted_chart() {
+    let shell = south_polar_fixture().0;
+    let hole = Ring::closed(
+        [
+            (90.0, -82.0),
+            (110.0, -82.0),
+            (110.0, -84.0),
+            (90.0, -84.0),
+            (90.0, -82.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new_raw_xy(x, y))
+        .collect(),
+    )
+    .unwrap();
+    let shape =
+        crate::geometry::Shape::Polygon(crate::geometry::Polygon::new(shell.clone(), vec![
+            hole.clone(),
+        ]));
+    let frame = GeographicFrame::crs84();
+    let chart = PointSelectionChart::try_from_shape(frame, &shape, shape.bounds()).unwrap();
+    let rings = [
+        (RingOwner::new(0, 0), &shell),
+        (RingOwner::new(0, 1), &hole),
+    ];
+
+    let source_plan = retained_constrained_source_plan(frame, chart.as_ref(), &rings)
+        .unwrap()
+        .expect("the hole is translated into the full-turn shell's retained chart");
+    assert_eq!(
+        exact::ExactRational::from_dyadic(source_plan.chart_area.unwrap())
+            .round()
+            .unwrap(),
+        3_560.0
+    );
+
+    let plan = prepare_constrained_triangle_plan(
+        rings.into_iter(),
+        3_560.0,
+        CdtRefinement::Off,
+        crate::geometry::TopologyDomain::Geographic(frame),
+        chart.as_ref(),
+    )
+    .unwrap();
+    assert_eq!(plan.source_constraints.len(), 8);
+    assert_eq!(plan.constraint_pieces.len(), 8);
+    assert_eq!(plan.restrictions.len(), 3);
+    assert_eq!(
+        plan.face_uses
+            .iter()
+            .flat_map(|face| &face.sides)
+            .filter(|side| {
+                matches!(
+                    side.boundary.as_ref(),
+                    Some(CdtSideBoundaryUse::Source(source))
+                        if plan.source_uses.get(*source).is_some_and(|use_| use_.owner.ring() == 1)
+                )
+            })
+            .count(),
+        4
+    );
+    plan.validate_certificate().unwrap();
+}
+
 #[expect(
     clippy::float_cmp,
     reason = "synthetic pole sites retain the exact represented chart-pole latitude"

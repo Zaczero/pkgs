@@ -10,8 +10,8 @@
 use std::cmp::Ordering;
 
 use crate::geographic::{
-    ChartPointSite, ChartPole, GeographicFrame, GeographicRing, PointSelectionChart, RingDomain,
-    RingSummary, SeamIdentity,
+    ChartPointSite, ChartPole, GeographicFrame, GeographicRing, PointSelectionChart,
+    RetainedLongitudeSite, RingDomain, RingSummary, SeamIdentity,
 };
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude, retained_site_orientation};
 use crate::geometry::publication::{
@@ -1226,6 +1226,72 @@ fn retained_point_in_cycle(
     })
 }
 
+fn compare_retained_coordinate_x(
+    left: RetainedLongitudeSite,
+    right: RetainedLongitudeSite,
+) -> Ordering {
+    left.periods()
+        .cmp(&right.periods())
+        .then_with(|| left.native().get().total_cmp(&right.native().get()))
+}
+
+fn retained_point_in_coordinate_cycle(
+    frame: GeographicFrame,
+    cycle: &[(RetainedLongitudeSite, f64)],
+    point: ChartPointSite,
+) -> Result<cdt::CdtPointLocation> {
+    let point_xy = (point.longitude(), point.source_y());
+    let mut inside = false;
+    for pair in cycle.windows(2) {
+        let (Some(&start), Some(&end)) = (pair.first(), pair.get(1)) else {
+            continue;
+        };
+        let start_y = start.1.total_cmp(&point_xy.1);
+        let end_y = end.1.total_cmp(&point_xy.1);
+        let orientation = retained_site_orientation(frame.longitude(), &[
+            (start.0, start.1),
+            (end.0, end.1),
+            point_xy,
+        ])?;
+        if orientation == ExactSign::Zero {
+            let between_x = {
+                let (low, high) = if compare_retained_coordinate_x(start.0, end.0).is_le() {
+                    (start.0, end.0)
+                } else {
+                    (end.0, start.0)
+                };
+                compare_retained_coordinate_x(low, point_xy.0).is_le()
+                    && compare_retained_coordinate_x(point_xy.0, high).is_le()
+            };
+            let (low, high) = if start.1.total_cmp(&end.1).is_le() {
+                (start.1, end.1)
+            } else {
+                (end.1, start.1)
+            };
+            if between_x
+                && low.total_cmp(&point_xy.1).is_le()
+                && point_xy.1.total_cmp(&high).is_le()
+            {
+                return Ok(cdt::CdtPointLocation::Boundary);
+            }
+        }
+        let crosses = (start_y != Ordering::Greater
+            && end_y == Ordering::Greater
+            && orientation == ExactSign::Positive)
+            || (end_y != Ordering::Greater
+                && start_y == Ordering::Greater
+                && orientation == ExactSign::Negative);
+        if crosses {
+            inside = !inside;
+        }
+    }
+    Ok(if inside {
+        cdt::CdtPointLocation::Inside
+    } else {
+        cdt::CdtPointLocation::Outside
+    })
+}
+
 #[derive(Clone, Copy)]
 struct RetainedPolarClosure {
     owner: RingOwner,
@@ -1398,14 +1464,6 @@ fn retained_constrained_source_plan(
         }
         retained_rings.push((owner, sites));
     }
-    if polar_closures.iter().any(|closure| {
-        rings
-            .iter()
-            .any(|(owner, _)| owner.polygon() == closure.owner.polygon() && owner.ring() != 0)
-    }) {
-        return Ok(None);
-    }
-
     // Each polygon hole is translated by an integral period into its shell's
     // continuous lift. Exact containment chooses the chart; rounded X is never
     // used to admit or deduplicate a site.
@@ -1427,20 +1485,58 @@ fn retained_constrained_source_plan(
                 "polygon shell chart is absent from its retained ring table",
             ));
         };
+        let polar_closure = polar_closures
+            .iter()
+            .find(|closure| closure.owner.polygon() == owner.polygon());
+        let polar_cycle = polar_closure
+            .map(|closure| -> Result<Vec<(RetainedLongitudeSite, f64)>> {
+                let capacity = shell
+                    .len()
+                    .checked_add(3)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                let mut cycle = Vec::with_capacity(capacity);
+                cycle.extend(shell.iter().map(|site| (site.longitude(), site.source_y())));
+                let pole_y = frame.chart_pole_latitude(closure.pole);
+                cycle.extend([
+                    (closure.last.longitude(), pole_y),
+                    (closure.first.longitude(), pole_y),
+                    (closure.first.longitude(), closure.first.source_y()),
+                ]);
+                Ok(cycle)
+            })
+            .transpose()?;
         let first = *hole.first().ok_or_else(|| {
             GeometryErrorKind::triangulation("polygon hole has no retained source sites")
         })?;
         let mut containing = None;
         for shift in -1_i64..=1 {
             let candidate = first.shifted(shift)?;
-            if retained_point_in_cycle(frame, shell, candidate)? == cdt::CdtPointLocation::Inside
-                && containing.replace(shift).is_some()
-            {
+            let location = if let Some(cycle) = &polar_cycle {
+                retained_point_in_coordinate_cycle(frame, cycle, candidate)?
+            } else {
+                retained_point_in_cycle(frame, shell, candidate)?
+            };
+            if location == cdt::CdtPointLocation::Inside && containing.replace(shift).is_some() {
                 containing = None;
                 break;
             }
         }
         if let Some(shift) = containing {
+            if let Some(closure) = polar_closure {
+                let (west, east) = if compare_retained_x(closure.first, closure.last).is_lt() {
+                    (closure.first, closure.last)
+                } else {
+                    (closure.last, closure.first)
+                };
+                for &site in hole {
+                    let site = site.shifted(shift)?;
+                    if !compare_retained_x(west, site).is_lt()
+                        || !compare_retained_x(site, east).is_lt()
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
             let Some((_, hole_sites)) = retained_rings.get_mut(hole_index) else {
                 return Err(GeometryErrorKind::triangulation(
                     "polygon hole chart disappeared during admission",
@@ -1449,6 +1545,8 @@ fn retained_constrained_source_plan(
             for site in hole_sites {
                 *site = site.shifted(shift)?;
             }
+        } else if polar_closure.is_some() {
+            return Ok(None);
         }
     }
 
