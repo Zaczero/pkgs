@@ -372,7 +372,10 @@ impl Diagram {
             };
             if starts_below && ends_above {
                 let bisector = ExactLine::perpendicular_bisector(a, b)?;
-                active.push((boundary, exact::line_intersection(&bisector, &horizontal)?));
+                active.push((
+                    boundary,
+                    exact::incidence::line_intersection(&bisector, &horizontal)?,
+                ));
             }
             for (centre, entering) in [(lower, true), (upper, false)] {
                 if let Some(centre) = centre {
@@ -434,8 +437,10 @@ impl Diagram {
                 }
                 let [lu, lv] = boundaries.get(left).expect("sweep boundary").sites;
                 let [ru, rv] = boundaries.get(right).expect("sweep boundary").sites;
-                let left_side = exact::squared_distance_cmp_point(vertex, xy(lu), xy(lv))?;
-                let right_side = exact::squared_distance_cmp_point(vertex, xy(ru), xy(rv))?;
+                let left_side =
+                    exact::incidence::squared_distance_cmp_point(vertex, xy(lu), xy(lv))?;
+                let right_side =
+                    exact::incidence::squared_distance_cmp_point(vertex, xy(ru), xy(rv))?;
                 let x_order = if left_side.is_eq() {
                     right_side
                 } else if right_side.is_eq() {

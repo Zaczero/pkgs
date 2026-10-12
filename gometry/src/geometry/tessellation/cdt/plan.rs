@@ -1,15 +1,18 @@
 //! Source interval storage and checked constrained-mesh publication.
 
+use std::cmp::Ordering;
+
+use super::super::exact_delaunay::{EMPTY, FaceSide, HalfedgeId, MeshCoordinates as _};
 use super::refinement::triangle_min_angle_degrees;
 #[cfg(test)]
 use super::update_work;
 use super::{
     CdtCoordinates, CdtFaceUse, CdtQuery, CdtSideUse, CdtSourceUse, CertifiedBoundarySplit,
-    ConstrainedMesh, ConstrainedMeshPlan, NodeProvenance, PieceCursor, RefinementConstruction,
-    SourceConstraint, SourcePiece, SourcePieces, SourceRingStart, next_triangle_side, ordered,
-    source_ring_owner,
+    ConstrainedMesh, ConstrainedMeshPlan, NodeProvenance, PieceCursor, PieceNode,
+    RefinementConstruction, SourceConstraint, SourcePiece, SourcePieces, SourceRingStart,
+    next_triangle_side, ordered, source_ring_owner,
 };
-use crate::collections::{HashMap, HashSet};
+use crate::collections::HashSet;
 use crate::error::{ErrorKind, Result};
 use crate::geographic::ChartPointSite;
 use crate::geometry::exact_arith::ExactSign;
@@ -562,7 +565,7 @@ impl SourcePieces {
     }
 }
 
-fn exact_source_coordinate(
+pub(super) fn exact_source_coordinate(
     start: &exact::ExactDyadic,
     end: &exact::ExactDyadic,
     parameter: &exact::ExactRational,
@@ -572,7 +575,7 @@ fn exact_source_coordinate(
     start.try_add(&delta.try_product(parameter)?)
 }
 
-fn round_source_coordinate(value: &exact::ExactRational) -> Result<f64> {
+pub(super) fn round_source_coordinate(value: &exact::ExactRational) -> Result<f64> {
     match value.round() {
         Ok(value) => Ok(value),
         Err(error)
@@ -603,11 +606,11 @@ fn split_half_ulp(value: f64) -> Result<exact::ExactDyadic> {
     exact::ExactDyadic::from_f64(gap).try_product(&exact::ExactDyadic::from_f64(0.5))
 }
 
-fn split_half_ulp_bounds(point: XY) -> Result<[exact::ExactDyadic; 2]> {
+pub(super) fn split_half_ulp_bounds(point: XY) -> Result<[exact::ExactDyadic; 2]> {
     Ok([split_half_ulp(point.x)?, split_half_ulp(point.y)?])
 }
 
-fn split_deviation_within(
+pub(super) fn split_deviation_within(
     coordinates: &CdtCoordinates,
     source: &SourceConstraint,
     parameter: &exact::ExactRational,

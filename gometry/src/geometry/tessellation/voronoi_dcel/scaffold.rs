@@ -21,7 +21,11 @@ pub(super) fn coincident_frame_owner(
 ) -> Result<SiteId> {
     let mut inside = None;
     for id in pair {
-        match exact::orient_points(ccw_start, ccw_end, &site_by_id(sites, id).exact_point)? {
+        match exact::incidence::orient_points(
+            ccw_start,
+            ccw_end,
+            &site_by_id(sites, id).exact_point,
+        )? {
             ExactSign::Positive => {
                 if inside.replace(id).is_some() {
                     return Err(voronoi_error(
@@ -137,8 +141,10 @@ pub(super) fn build_scaffold(
     }
     register_frame_clip_contacts(&mut scaffold)?;
     for primitive in &mut scaffold {
-        if exact::signed_line_product(&primitive.line, &primitive.start)? != ExactSign::Zero
-            || exact::signed_line_product(&primitive.line, &primitive.end)? != ExactSign::Zero
+        if exact::incidence::signed_line_product(&primitive.line, &primitive.start)?
+            != ExactSign::Zero
+            || exact::incidence::signed_line_product(&primitive.line, &primitive.end)?
+                != ExactSign::Zero
         {
             return Err(voronoi_error(
                 "exact Voronoi primitive endpoints leave their support line",
@@ -218,8 +224,8 @@ pub(super) fn emit_clipped_separators(
         let [left_site, right_site] = pair;
         let ids = [SiteId(left_site as u32), SiteId(right_site as u32)];
         let (start, end) = orient_separator(span.0, span.1, ids, sites)?;
-        if exact::signed_line_product(&line, &start)? != ExactSign::Zero
-            || exact::signed_line_product(&line, &end)? != ExactSign::Zero
+        if exact::incidence::signed_line_product(&line, &start)? != ExactSign::Zero
+            || exact::incidence::signed_line_product(&line, &end)? != ExactSign::Zero
         {
             return Err(voronoi_error(
                 "exact Voronoi primitive endpoints leave their support line",
@@ -334,7 +340,7 @@ pub(super) fn emit_atom_windows(
         ));
     }
     for [left, right] in events.array_windows::<2>() {
-        if exact::compare_along(start, end, left, right)? != Ordering::Less {
+        if exact::incidence::compare_along(start, end, left, right)? != Ordering::Less {
             return Err(voronoi_error(
                 "exact primitive has unordered duplicate events",
             ));
@@ -357,7 +363,7 @@ pub(super) fn register_frame_clip_contacts(scaffold: &mut [ScaffoldPrimitive]) -
     let (frames, clips) = scaffold.split_at_mut(4);
     for clip_prim in clips {
         for frame_prim in frames.iter_mut() {
-            match exact::segment_intersection(
+            match exact::incidence::segment_intersection(
                 &frame_prim.start,
                 &frame_prim.end,
                 &clip_prim.start,
@@ -399,7 +405,7 @@ pub(super) fn node_scaffold_and_separators(
 ) -> Result<NodedAtoms> {
     for separator in &mut separators {
         for primitive in &mut scaffold {
-            match exact::segment_intersection(
+            match exact::incidence::segment_intersection(
                 &separator.start,
                 &separator.end,
                 &primitive.start,
@@ -562,7 +568,7 @@ pub(super) fn node_scaffold_and_separators(
             let [start_vertex, end_vertex] = endpoints;
             let stored_start = &noded_vertex(&vertices, start_vertex).point;
             let stored_end = &noded_vertex(&vertices, end_vertex).point;
-            if exact::compare_along(ccw_start, ccw_end, stored_start, stored_end)?
+            if exact::incidence::compare_along(ccw_start, ccw_end, stored_start, stored_end)?
                 == Ordering::Greater
             {
                 coincident = Transition {

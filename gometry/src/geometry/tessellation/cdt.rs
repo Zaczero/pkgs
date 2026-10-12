@@ -29,6 +29,7 @@ use super::exact_delaunay::{FaceId, Located, Mesh};
 use super::{CdtRefinement, exact_delaunay};
 use crate::collections::HashMap;
 use crate::geographic::ChartPointSite;
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{Point, XY};
 
@@ -304,6 +305,10 @@ struct ConstraintIndex {
 
 const fn ordered(a: usize, b: usize) -> (usize, usize) {
     if a < b { (a, b) } else { (b, a) }
+}
+
+fn opposite_nonzero(a: ExactSign, b: ExactSign) -> bool {
+    a != ExactSign::Zero && b != ExactSign::Zero && a != b
 }
 
 pub(super) const fn next_triangle_side(side: usize) -> usize {

@@ -648,7 +648,7 @@ fn rounded_fan_order_matches_exact_stored_points() {
         for left in points {
             for right in points {
                 let actual = rounded_fan_angle_cmp(origin, left, right);
-                let exact = exact::angle_ccw_cmp(
+                let exact = exact::incidence::angle_ccw_cmp(
                     &exact::ExactPoint::from_xy(origin),
                     &exact::ExactPoint::from_xy(left),
                     &exact::ExactPoint::from_xy(right),
@@ -730,13 +730,15 @@ fn assert_owner_parts_match_exact_point_oracle(
             for right in later {
                 assert!(
                     right.iter().all(|point| {
-                        exact::point_in_cycle(left, point).unwrap() != exact::PointInCycle::Inside
+                        exact::incidence::point_in_cycle(left, point).unwrap()
+                            != exact::PointInCycle::Inside
                     }),
                     "one emitted hole is nested inside another"
                 );
                 assert!(
                     left.iter().all(|point| {
-                        exact::point_in_cycle(right, point).unwrap() != exact::PointInCycle::Inside
+                        exact::incidence::point_in_cycle(right, point).unwrap()
+                            != exact::PointInCycle::Inside
                     }),
                     "one emitted hole is nested inside another"
                 );
@@ -750,7 +752,7 @@ fn assert_holes_inside_exact_shell(shell: &[exact::ExactPoint], holes: &[Vec<exa
     for hole in holes {
         let mut saw_inside = false;
         for point in hole {
-            match exact::point_in_cycle(shell, point).unwrap() {
+            match exact::incidence::point_in_cycle(shell, point).unwrap() {
                 exact::PointInCycle::Outside => {
                     panic!("owner-local shell does not contain its emitted hole")
                 },
@@ -1211,7 +1213,7 @@ fn owner_ray_sort_and_sweep_use_exact_order_when_a_hint_is_unavailable() {
     let shallow = exact::ExactPoint::from_xy(XY::new(1.0, f64::from_bits(1)));
     let one = exact::ExactPoint::from_xy(XY::new(0.0, 1.0));
     let one_next = exact::ExactPoint::from_xy(XY::new(1.0, 1.0));
-    let high = exact::line_intersection(
+    let high = exact::incidence::line_intersection(
         &exact::ExactLine::through_points(&zero, &shallow).unwrap(),
         &exact::ExactLine::through_points(&one, &one_next).unwrap(),
     )
@@ -2315,8 +2317,11 @@ fn extreme_cluster_is_a_valid_binary64_partition() {
             .map(|point| exact::ExactPoint::from_xy(point.xy()))
             .collect();
         assert_ne!(
-            exact::point_in_cycle(&rounded_ring, &exact::ExactPoint::from_xy(site.point.xy()),)
-                .unwrap(),
+            exact::incidence::point_in_cycle(
+                &rounded_ring,
+                &exact::ExactPoint::from_xy(site.point.xy()),
+            )
+            .unwrap(),
             exact::PointInCycle::Outside,
         );
     }
@@ -3009,7 +3014,7 @@ fn pinned_clip_vertices_exhaust_a_constructed_nodes_adjacent_float_domain() {
     .unwrap();
     // In relative coordinates the bisector is 6*x + y = 13 and the clip edge
     // is y = x. Their hit (13/7, 13/7) rounds to the pinned middle vertex.
-    let hit = exact::line_intersection(&bisector, &diagonal).unwrap();
+    let hit = exact::incidence::line_intersection(&bisector, &diagonal).unwrap();
     let hit_vertex = subdivision.vertex_at(&hit).unwrap().unwrap();
     assert!(subdivision.vertex(hit_vertex).fixed_xy.is_none());
     assert_eq!(hit.round_nearest_even().unwrap(), center);
@@ -3102,7 +3107,7 @@ fn first_equal_label_misattaches_a_hole(subdivision: &ExactSubdivision) -> bool 
             continue;
         }
         let face = BoundaryFaceId(index as u32);
-        match exact::cycle_orientation(&walk_points(subdivision, face)).unwrap() {
+        match exact::incidence::cycle_orientation(&walk_points(subdivision, face)).unwrap() {
             ExactSign::Positive => positives.push((face, *label)),
             ExactSign::Negative => negatives.push((face, *label)),
             ExactSign::Zero => panic!("selected walk has zero orientation"),
@@ -3116,7 +3121,7 @@ fn first_equal_label_misattaches_a_hole(subdivision: &ExactSubdivision) -> bool 
             .expect("negative walk has a same-label positive")
             .0;
         let probe = &walk_points(subdivision, negative)[0];
-        exact::point_in_cycle(&walk_points(subdivision, parent), probe).unwrap()
+        exact::incidence::point_in_cycle(&walk_points(subdivision, parent), probe).unwrap()
             != exact::PointInCycle::Inside
     })
 }
@@ -3350,7 +3355,7 @@ fn old_frame_halfplane_holds(edge: &AtomicEdge, vertices: &[NodedVertex], sites:
     let start = &vertices[edge.endpoints[0].0 as usize].point;
     let end = &vertices[edge.endpoints[1].0 as usize].point;
     left.is_none_or(|site| {
-        exact::orient_points(
+        exact::incidence::orient_points(
             start,
             end,
             &exact::ExactPoint::from_xy(sites[site.0 as usize].point.xy()),
@@ -3358,7 +3363,7 @@ fn old_frame_halfplane_holds(edge: &AtomicEdge, vertices: &[NodedVertex], sites:
         .unwrap()
             == ExactSign::Positive
     }) && right.is_none_or(|site| {
-        exact::orient_points(
+        exact::incidence::orient_points(
             start,
             end,
             &exact::ExactPoint::from_xy(sites[site.0 as usize].point.xy()),
@@ -3391,7 +3396,7 @@ fn canonical_separator_emitter_keeps_one_sorted_directed_edge_per_dual() {
         assert!(separator.pair[0] < separator.pair[1]);
         let left = exact::ExactPoint::from_xy(sites[separator.pair[0].0 as usize].point.xy());
         assert_eq!(
-            exact::orient_points(&separator.start, &separator.end, &left).unwrap(),
+            exact::incidence::orient_points(&separator.start, &separator.end, &left).unwrap(),
             ExactSign::Positive
         );
     }
@@ -4407,7 +4412,7 @@ fn isolated_component_exterior_inherits_the_containing_face() {
         .enumerate()
         .filter(|(index, label)| {
             selected_cell_label(**label)
-                && exact::cycle_orientation(&walk_points(
+                && exact::incidence::cycle_orientation(&walk_points(
                     &subdivision,
                     BoundaryFaceId(*index as u32),
                 ))

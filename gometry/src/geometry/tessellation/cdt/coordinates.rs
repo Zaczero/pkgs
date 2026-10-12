@@ -1,16 +1,14 @@
 //! Raw and retained coordinate identity for constrained triangulation.
 
-use std::cmp::Ordering;
-
 use rstar::AABB;
 
 use super::super::exact_delaunay::MeshCoordinates;
-use super::{CdtCoordinateModel, CdtCoordinates, CdtKey, CdtPosition, CdtQuery};
+use super::{CdtCoordinateModel, CdtCoordinates, CdtKey, CdtPosition, CdtQuery, opposite_nonzero};
 use crate::error::Result;
 use crate::geographic::{ChartPointSite, GeographicFrame};
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::tessellation::exact;
-use crate::geometry::{GeometryErrorKind, Point, XY};
+use crate::geometry::{GeometryErrorKind, Point, XY, open_xy_cycle_magnitude};
 
 impl CdtPosition {
     fn raw(point: Point) -> Self {
@@ -298,7 +296,7 @@ impl CdtCoordinates {
             return exact::circumcenter(a, b, c)?.finite_rounding();
         }
         let [a, b, c] = triangle.map(|site| self.exact_xy(self.site_query(site)));
-        exact::circumcenter_dyadic_points(&a, &b, &c)
+        exact::point::circumcenter_dyadic_points(&a, &b, &c)
     }
 
     pub(super) fn axis_bounds(&self, query: CdtQuery) -> Result<[(f64, f64); 2]> {

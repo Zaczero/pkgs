@@ -1,19 +1,22 @@
 //! Bounded Ruppert refinement and certified source-boundary splits.
 
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 
 use rstar::{AABB, RTree, RTreeObject};
 
 use super::super::exact_delaunay::{
-    EMPTY, FaceId, FaceSide, HalfedgeId, Located, LocationOutcome, Mesh,
+    EMPTY, FaceId, FaceSide, HalfedgeId, Located, LocationOutcome, Mesh, MeshCoordinates as _,
+};
+use super::plan::{
+    exact_source_coordinate, round_source_coordinate, split_deviation_within, split_half_ulp_bounds,
 };
 #[cfg(test)]
 use super::update_work;
 use super::{
-    BadTriangle, CdtCoordinates, ConstrainedMesh, ConstraintCircle, ConstraintIndex, FaceLabels,
-    NodeProvenance, PreparedSourceSplit, PreparedSplit, RefinementConstruction, SourcePiece,
-    SourcePieces,
+    BadTriangle, CdtCoordinates, CertifiedBoundarySplit, ConstrainedMesh, ConstraintCircle,
+    ConstraintIndex, FaceLabels, NodeProvenance, PreparedSourceSplit, PreparedSplit,
+    RefinementConstruction, SourcePiece, SourcePieces, ordered,
 };
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;

@@ -3,13 +3,14 @@
 use std::collections::VecDeque;
 
 use super::super::exact_delaunay::{
-    EMPTY, FaceId, FaceSide, HalfedgeId, Located, LocationOutcome, Mesh,
+    EMPTY, FaceId, FaceSide, HalfedgeId, Mesh, MeshCoordinates as _,
 };
+use super::plan::{split_deviation_within, split_half_ulp_bounds};
 #[cfg(test)]
 use super::update_work;
 use super::{
-    CdtCoordinates, ConstrainedMesh, FaceLabels, NodeProvenance, PieceCursor,
-    RefinementConstruction, SourceConstraint, SourcePiece, SourcePieces, SourceRingStart, ordered,
+    CdtCoordinates, CdtQuery, ConstrainedMesh, FaceLabels, NodeProvenance, PieceCursor,
+    SourceConstraint, SourcePiece, SourcePieces, SourceRingStart, opposite_nonzero, ordered,
 };
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
@@ -17,10 +18,6 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::RingOwner;
 use crate::geometry::tessellation::exact;
 use crate::geometry::{GeometryErrorKind, Point};
-
-fn opposite_nonzero(a: ExactSign, b: ExactSign) -> bool {
-    a != ExactSign::Zero && b != ExactSign::Zero && a != b
-}
 
 impl ConstrainedMesh {
     #[expect(

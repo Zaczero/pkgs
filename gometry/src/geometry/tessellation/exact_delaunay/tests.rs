@@ -7,11 +7,8 @@ use super::{
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::exact;
+use crate::geometry::tessellation::test_support::points;
 use crate::geometry::{Point, XY};
-
-fn points(xy: &[(f64, f64)]) -> Vec<Point> {
-    xy.iter().map(|&(x, y)| Point::new_raw_xy(x, y)).collect()
-}
 
 fn random(n: usize, seed: u64) -> Vec<Point> {
     let mut s = seed;

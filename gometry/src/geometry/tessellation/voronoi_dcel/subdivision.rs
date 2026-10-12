@@ -97,7 +97,7 @@ pub(super) fn build_exact_subdivision(atoms: NodedAtoms) -> Result<ExactSubdivis
         for index in row.start + 1..row.end {
             let mut cursor = index;
             while cursor > row.start
-                && exact::angle_ccw_cmp(
+                && exact::incidence::angle_ccw_cmp(
                     origin,
                     &atoms.vertices[topology.targets[cursor] as usize].point,
                     &atoms.vertices[topology.targets[cursor - 1] as usize].point,
@@ -109,7 +109,7 @@ pub(super) fn build_exact_subdivision(atoms: NodedAtoms) -> Result<ExactSubdivis
             }
         }
         for slot in row.start + 1..row.end {
-            exact::angle_ccw_cmp(
+            exact::incidence::angle_ccw_cmp(
                 origin,
                 &atoms.vertices[topology.targets[slot - 1] as usize].point,
                 &atoms.vertices[topology.targets[slot] as usize].point,
@@ -444,7 +444,7 @@ pub(super) fn graft_components(
     let mut exterior = Vec::with_capacity(components);
     exterior.resize(components, None);
     for (face, walk) in subdivision.face_rows() {
-        let sign = exact::cycle_orientation(walk.iter().map(|&slot| {
+        let sign = exact::incidence::cycle_orientation(walk.iter().map(|&slot| {
             let dart = subdivision.dart(slot);
             &subdivision.vertex(dart.origin).point
         }))?;

@@ -16,7 +16,8 @@ pub(super) fn orient_separator(
     input: &[Site],
 ) -> Result<(exact::ExactPoint, exact::ExactPoint)> {
     let [left_site, _] = sites;
-    match exact::orient_points(&start, &end, &site_by_id(input, left_site).exact_point)? {
+    match exact::incidence::orient_points(&start, &end, &site_by_id(input, left_site).exact_point)?
+    {
         ExactSign::Positive => {},
         ExactSign::Negative => std::mem::swap(&mut start, &mut end),
         ExactSign::Zero => {
@@ -104,10 +105,10 @@ pub(super) fn frame_intersections(
         .zip(frame.iter().zip(frame.iter().cycle().skip(1)))
     {
         let edge = exact::ExactLine::through_points(start, end)?;
-        let hit = exact::line_intersection(line, &edge)?;
-        if exact::signed_line_product(line, &hit)? == ExactSign::Zero
-            && exact::point_in_cycle(frame, &hit)? != exact::PointInCycle::Outside
-            && exact::segment_intersection(start, end, &hit, &hit)?.is_point()
+        let hit = exact::incidence::line_intersection(line, &edge)?;
+        if exact::incidence::signed_line_product(line, &hit)? == ExactSign::Zero
+            && exact::incidence::point_in_cycle(frame, &hit)? != exact::PointInCycle::Outside
+            && exact::incidence::segment_intersection(start, end, &hit, &hit)?.is_point()
         {
             hits.push((side, hit));
         }
@@ -140,7 +141,7 @@ pub(super) fn clip_rectangle(clip: &NormalizedClip<'_>) -> Result<[exact::ExactP
             return Ok(rect);
         }
     }
-    exact::axis_aligned_bounds(clip.rings.iter().flatten())
+    exact::frame::axis_aligned_bounds(clip.rings.iter().flatten())
 }
 
 /// Whether the four corners form a counter-clockwise axis-aligned rectangle
@@ -159,7 +160,7 @@ pub(super) fn in_rectangle(
     rect: &[exact::ExactPoint; 4],
     point: &exact::ExactPoint,
 ) -> Result<bool> {
-    Ok(exact::point_in_cycle(rect, point)? != exact::PointInCycle::Outside)
+    Ok(exact::incidence::point_in_cycle(rect, point)? != exact::PointInCycle::Outside)
 }
 
 /// Sort points along `origin -> hint` and drop repeated positions.
@@ -169,7 +170,7 @@ pub(super) fn sort_unique_along(
     points: &mut Vec<exact::ExactPoint>,
 ) -> Result<()> {
     try_sort_by(points, |left, right| {
-        exact::compare_along(origin, hint, left, right)
+        exact::incidence::compare_along(origin, hint, left, right)
     })?;
     try_dedup_by(points, exact::ExactPoint::same_position)
 }
@@ -198,8 +199,8 @@ pub(super) fn separator_rectangle_hits(
     let mut hits = Vec::with_capacity(certified.len().saturating_add(8));
     hits.extend(certified.into_iter().map(|(_, point)| point));
     for (start, end) in rect.iter().zip(rect.iter().cycle().skip(1)) {
-        if exact::signed_line_product(line, start)? == ExactSign::Zero
-            && exact::signed_line_product(line, end)? == ExactSign::Zero
+        if exact::incidence::signed_line_product(line, start)? == ExactSign::Zero
+            && exact::incidence::signed_line_product(line, end)? == ExactSign::Zero
         {
             hits.push(start.clone());
             hits.push(end.clone());
@@ -218,8 +219,8 @@ pub(super) fn exact_bisector_frame_intersections(
         .into_iter()
         .zip(rect.iter().zip(rect.iter().cycle().skip(1)))
     {
-        let start_sign = exact::signed_line_product(line, start)?;
-        let end_sign = exact::signed_line_product(line, end)?;
+        let start_sign = exact::incidence::signed_line_product(line, start)?;
+        let end_sign = exact::incidence::signed_line_product(line, end)?;
         let hit = match (start_sign, end_sign) {
             (ExactSign::Zero, ExactSign::Zero) => {
                 hits.push((side, start.clone()));
@@ -229,7 +230,7 @@ pub(super) fn exact_bisector_frame_intersections(
             (_, ExactSign::Zero) => Some(end.clone()),
             (left, right) if left != right => {
                 let support = exact::ExactLine::through_points(start, end)?;
-                Some(exact::line_intersection(line, &support)?)
+                Some(exact::incidence::line_intersection(line, &support)?)
             },
             _ => None,
         };
@@ -262,7 +263,9 @@ pub(super) fn clip_segment_to_rectangle(
     }
     let mut kept = 0;
     for index in 0..points.len() {
-        if exact::segment_intersection(start, end, &points[index], &points[index])?.is_point() {
+        if exact::incidence::segment_intersection(start, end, &points[index], &points[index])?
+            .is_point()
+        {
             points.swap(kept, index);
             kept += 1;
         }
@@ -283,13 +286,13 @@ pub(super) fn hull_point_on_ray(
     }
     let [left, right] = sites;
     if center.same_position(mid)? {
-        return Ok(exact::orient_points(left, right, point)? != opposite_sign);
+        return Ok(exact::incidence::orient_points(left, right, point)? != opposite_sign);
     }
     Ok(
-        if exact::orient_points(left, right, center)? == opposite_sign {
-            exact::compare_along(center, mid, center, point)? != Ordering::Greater
+        if exact::incidence::orient_points(left, right, center)? == opposite_sign {
+            exact::incidence::compare_along(center, mid, center, point)? != Ordering::Greater
         } else {
-            exact::compare_along(mid, center, center, point)? != Ordering::Greater
+            exact::incidence::compare_along(mid, center, center, point)? != Ordering::Greater
         },
     )
 }
@@ -307,7 +310,8 @@ pub(super) fn clip_hull_ray_to_rectangle(
     let right = &site_at(sites, right_site).exact_point;
     let hits = separator_rectangle_hits([left, right], line, rect)?;
     let mid = left.midpoint(right)?;
-    let opposite_sign = exact::orient_points(left, right, &site_at(sites, opposite).exact_point)?;
+    let opposite_sign =
+        exact::incidence::orient_points(left, right, &site_at(sites, opposite).exact_point)?;
     let mut points = Vec::with_capacity(hits.len().saturating_add(1));
     if in_rectangle(rect, center)? {
         points.push(center.clone());
@@ -332,7 +336,7 @@ pub(super) fn clip_hull_ray_to_rectangle(
             return Ok(None);
         };
         (center.clone(), hint)
-    } else if exact::orient_points(left, right, center)? == opposite_sign {
+    } else if exact::incidence::orient_points(left, right, center)? == opposite_sign {
         (center.clone(), mid)
     } else {
         (mid, center.clone())

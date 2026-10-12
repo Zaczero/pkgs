@@ -276,7 +276,7 @@ fn canonical_incircle_for<C: MeshCoordinates>(
 ) -> Result<ExactSign> {
     match coordinates.incircle(points)? {
         ExactSign::Zero => symbolic_incircle_tie(coordinates, points),
-        sign => Ok(sign),
+        sign @ (ExactSign::Negative | ExactSign::Positive) => Ok(sign),
     }
 }
 
