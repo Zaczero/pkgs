@@ -744,6 +744,32 @@ def test_native_overlap_seam_union_keeps_both_selected_regions() -> None:
     assert not gm.contains(union, gm.Point(0.0, 1.0, crs=4326))
 
 
+def test_native_q_cut_uses_the_nearest_even_binary64_image() -> None:
+    next_latitude = math.nextafter(80.0, math.inf)
+    # The widest longitude gap is (-120, 20), so its Q cut at -50 splits the
+    # upper ring edge at the exact midpoint between adjacent binary64 latitudes.
+    polar_shell = gm.Polygon(
+        [
+            (-180.0, 80.0),
+            (-120.0, 80.0),
+            (20.0, next_latitude),
+            (90.0, 80.0),
+            (180.0, 80.0),
+            (-180.0, 80.0),
+        ],
+        crs=4326,
+    )
+    left, right = _native_seam_overlap_pair()
+
+    union = gm.union_all([polar_shell, left, right])
+
+    assert union.is_valid
+    assert gm.covers(union, gm.Point(0.0, 85.0, crs=4326))
+    assert not gm.covers(union, gm.Point(0.0, 75.0, crs=4326))
+    assert gm.contains(union, gm.Point(179.0, 1.0, crs=4326))
+    assert not gm.covers(union, gm.Point(0.0, 0.0, crs=4326))
+
+
 def test_native_union_closes_multiple_west_seam_walls() -> None:
     left, right = _native_seam_overlap_pair()
     higher_west = gm.Polygon(

@@ -4663,42 +4663,31 @@ fn validate_native_materialized_candidate(
     budget.charge(u64::try_from(graph_vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     budget.charge(u64::try_from(graph_vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut exact_points = reference.graph.points.exact.clone();
+    let frame = reference.plan.topology.sources.frame;
     for (vertex, key) in reference.graph.vertex_keys.iter().enumerate() {
         budget.charge(1)?;
         let node_index = key.node.0 as usize;
         let assigned = sites.get(node_index).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("native graph vertex has no assigned node site".into())
         })?;
-        let original = reference.sites.get(node_index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("native graph vertex has no fixed reference site".into())
-        })?;
-        if original.as_ref().copied() == Some(assigned) {
-            continue;
-        }
         let longitude = match key.spelling {
             NativeChartSpellingKey::Interior(_) => assigned.longitude.native().get(),
-            NativeChartSpellingKey::SeamEast => reference
-                .plan
-                .topology
-                .sources
-                .frame
-                .longitude()
-                .half_period(),
-            NativeChartSpellingKey::SeamWest => -reference
-                .plan
-                .topology
-                .sources
-                .frame
-                .longitude()
-                .half_period(),
+            NativeChartSpellingKey::SeamEast => frame.longitude().half_period(),
+            NativeChartSpellingKey::SeamWest => -frame.longitude().half_period(),
             NativeChartSpellingKey::Pole(bits) => f64::from_bits(bits),
         };
-        *exact_points.get_mut(vertex).ok_or_else(|| {
-            GeometryErrorKind::Invalid("native candidate graph vertex index is unknown".into())
-        })? = ExactChartPoint::from_rationals(
+        // An unchanged Native site can still be the rounded image of an
+        // unrepresentable exact Q vertex.
+        let assigned_point = ExactChartPoint::from_rationals(
             ExactRational::from_f64(longitude),
             ExactRational::from_f64(assigned.latitude),
         );
+        let point = exact_points.get_mut(vertex).ok_or_else(|| {
+            GeometryErrorKind::Invalid("native candidate graph vertex index is unknown".into())
+        })?;
+        if point != &assigned_point {
+            *point = assigned_point;
+        }
     }
     for (location, &record) in parts.literal_uses.points.iter().zip(&parts.points) {
         if !validate_native_materialized_port(
@@ -21557,6 +21546,53 @@ mod canonical_coordinate_tests {
         ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
     }
 
+    fn native_union_for_shapes(
+        shapes: &[crate::geometry::Shape],
+    ) -> Result<crate::geometry::Shape> {
+        let topology = topology(shapes)?;
+        let mut budget = EvaluationBudget::new(OverlayOp::Union.name(), 0)?;
+        let plan = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
+        let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
+        let publication = plan.fragment_recipes.publish(
+            &topology,
+            &nearest,
+            OverlayOp::Union.name(),
+            &mut budget,
+        )?;
+        let source_points = vec![None; topology.q.nodes.len()];
+        let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
+        let live_keys = drawing.live_node_keys(topology.sources.frame, &mut budget)?;
+        let emission =
+            plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
+        let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
+        let outcome = certify_and_search_q_embedding::<crate::crs::GeodesicMetric, _>(
+            &topology,
+            &emission,
+            &nearest,
+            &live_keys,
+            drawing,
+            &ordinates,
+            crate::geometry::CoordinateAxes::XY,
+            false,
+            OverlayOp::Union.name(),
+            None,
+            &mut budget,
+        )?;
+        let SearchOutcome::Pass(QEmbeddingPass { output, .. }) = outcome else {
+            return Err(GeometryErrorKind::Invalid(
+                "reduced Native union did not complete its Q embedding".into(),
+            )
+            .into());
+        };
+        let super::super::emission::SealedQDrawing::Native(native) = output.sealed else {
+            return Err(GeometryErrorKind::Invalid(
+                "reduced Native union used source-only publication".into(),
+            )
+            .into());
+        };
+        Ok(native.sealed.into_shape())
+    }
+
     fn native_demand_for_shapes(
         shapes: &[crate::geometry::Shape],
         operation: OverlayOp,
@@ -22283,52 +22319,28 @@ mod canonical_coordinate_tests {
         ];
 
         for (bank, shapes) in [("West", west), ("East", east)] {
-            let topology = topology(&shapes)?;
-            let mut budget = EvaluationBudget::new("Native seam wall control", 0)?;
-            let plan = QEmissionPlan::build(&topology, OverlayOp::Union, &mut budget)?;
-            let nearest = QCoordinates::build_with_work(&topology, &mut budget)?;
-            let publication = plan.fragment_recipes.publish(
-                &topology,
-                &nearest,
-                OverlayOp::Union.name(),
-                &mut budget,
-            )?;
-            let source_points = vec![None; topology.q.nodes.len()];
-            let drawing = plan.drawing(&topology, &nearest, &source_points, &mut budget)?;
-            let live_keys = drawing.live_node_keys(topology.sources.frame, &mut budget)?;
-            let emission =
-                plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
-            let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
-            let outcome = certify_and_search_q_embedding::<crate::crs::GeodesicMetric, _>(
-                &topology,
-                &emission,
-                &nearest,
-                &live_keys,
-                drawing,
-                &ordinates,
-                crate::geometry::CoordinateAxes::XY,
-                false,
-                OverlayOp::Union.name(),
-                None,
-                &mut budget,
-            )?;
-            let native = matches!(
-                outcome,
-                SearchOutcome::Pass(QEmbeddingPass {
-                    output: QEmbeddingOutput {
-                        sealed: super::super::emission::SealedQDrawing::Native(_),
-                        ..
-                    },
-                    ..
-                })
+            let output = native_union_for_shapes(&shapes)?;
+            assert!(
+                output.validate()?.is_none(),
+                "{bank} seam-wall reduction did not produce a valid Native result"
             );
-            if !native {
-                return Err(GeometryErrorKind::Invalid(
-                    format!("{bank} seam-wall reduction did not complete through Native").into(),
-                )
-                .into());
-            }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn polar_q_cut_midpoint_rounds_to_its_native_site() -> Result<()> {
+        let upper = 80.0_f64.next_up();
+        let polar_shell = crate::io::parse_wkt(&format!(
+            "POLYGON ((-180 80, -120 80, 20 {upper}, 90 80, 180 80, -180 80))"
+        ))?;
+        let overlap_left =
+            crate::io::parse_wkt("POLYGON ((170 -1, -170 -1, -170 2, 170 2, 170 -1))")?;
+        let overlap_right =
+            crate::io::parse_wkt("POLYGON ((177 0, -174 1, -174 3, 177 2, 177 0))")?;
+        let output = native_union_for_shapes(&[polar_shell, overlap_left, overlap_right])?;
+
+        assert!(output.validate()?.is_none());
         Ok(())
     }
 
