@@ -1067,6 +1067,8 @@ mod tests {
     use super::*;
     use crate::geographic::GeographicFrame;
     use crate::geometry::Unmetered;
+    use crate::geometry::embedding_search::EvaluationBudget;
+    use crate::geometry::tessellation::exact::ExactRational;
 
     #[test]
     fn shared_chain_keeps_opposite_row_uses_and_exact_subspan_roots() {
@@ -1154,9 +1156,9 @@ mod tests {
         assert_eq!(first_use.root_uses.len(), 2);
         assert_eq!(second_use.root_uses.len(), 2);
 
-        let zero = crate::geometry::tessellation::exact::ExactRational::from_f64(0.0);
-        let half = crate::geometry::tessellation::exact::ExactRational::from_f64(0.5);
-        let one = crate::geometry::tessellation::exact::ExactRational::from_f64(1.0);
+        let zero = ExactRational::from_f64(0.0);
+        let half = ExactRational::from_f64(0.5);
+        let one = ExactRational::from_f64(1.0);
         let mut first_row_edges = Vec::new();
         let mut second_row_ranges = Vec::new();
         for (use_index, row_use) in [(first_use_index, first_use), (second_use_index, second_use)] {
@@ -1324,12 +1326,7 @@ mod tests {
         let analysis =
             analyze_geographic_coverage(&rows, GeographicFrame::crs84(), 0.0, "coverage_simplify")
                 .expect("geographic coverage admits");
-        let mut work =
-            crate::geometry::embedding_search::EvaluationBudget::with_remaining_ticks_for_test(
-                "coverage_simplify",
-                0,
-                0,
-            )
+        let mut work = EvaluationBudget::with_remaining_ticks_for_test("coverage_simplify", 0, 0)
             .expect("empty evaluation budget");
         let error = match analysis.shared_chain_inventory(&mut work) {
             Err(error) => error,

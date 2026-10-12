@@ -10,6 +10,7 @@ use crate::collections::{
     HashMap, HashSet, try_hash_map, try_hash_map_with_capacity, try_hash_set_with_capacity,
 };
 use crate::error::{ResourceError, Result};
+use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{ChartPole, GeographicFrame, ScalarGeographicView};
 use crate::geometry::coverage::{
     BorderTieBreak, CoverageOverlapRule, ScaledLengthSum, longest_border_ranked_owner,
@@ -618,9 +619,8 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
     for row in rows {
         work.charge(1)?;
         let shape = row.borrow();
-        let view = ScalarGeographicView::try_new(frame, shape).map_err(|diagnostic| {
-            crate::geographic::lonlat::geographic_admission_error(&diagnostic)
-        })?;
+        let view = ScalarGeographicView::try_new(frame, shape)
+            .map_err(|diagnostic| geographic_admission_error(&diagnostic))?;
         views.push(view);
     }
     let mut expansion_budget = ExpansionBudget::new(operation, "exact chart noding");
@@ -1284,6 +1284,7 @@ fn point_segment_distance_squared(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::embedding_search::EvaluationBudget;
 
     fn topology(rows: &[Shape]) -> ExactGeographicTopology {
         let frame = GeographicFrame::crs84();
@@ -1419,12 +1420,8 @@ mod tests {
         let row_areas = [rows[0].area()];
 
         let mut sweep_budget =
-            crate::geometry::embedding_search::EvaluationBudget::with_remaining_ticks_for_test(
-                "coverage_clean",
-                0,
-                0,
-            )
-            .expect("empty test budget");
+            EvaluationBudget::with_remaining_ticks_for_test("coverage_clean", 0, 0)
+                .expect("empty test budget");
         let sweep_error = analysis
             .topology
             .q
@@ -1442,12 +1439,8 @@ mod tests {
         ));
 
         let mut selector_budget =
-            crate::geometry::embedding_search::EvaluationBudget::with_remaining_ticks_for_test(
-                "coverage_clean",
-                0,
-                0,
-            )
-            .expect("empty test budget");
+            EvaluationBudget::with_remaining_ticks_for_test("coverage_clean", 0, 0)
+                .expect("empty test budget");
         let selector_error = match analysis.assign_cleaning_faces(
             &row_areas,
             1.0,
