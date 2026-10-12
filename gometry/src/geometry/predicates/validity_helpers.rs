@@ -5,14 +5,15 @@ use ahash::HashMapExt as _;
 use crate::geometry::HashMap;
 #[cfg(test)]
 use crate::geometry::PointKey;
+use crate::geometry::ordinates::{RootId, RootRange, RootRequest};
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, Coordinates, FacetBvh, Ordering,
-    Point, PointSetIndex, Polygon, PreparedLinework, RefinedChainProvenance,
-    SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery, SquaredDistanceKey, VertexProvenance,
-    XY, point_distance, point_distance_squared, point_in_ccw_triangle, point_pair_distance_key,
-    point_segment_distance, point_segment_exact_distance_key, ring_winding, same_point,
-    segment_projection,
+    ClearanceFacetBvh, ClearancePointQuery, Component, CoordSeq, CoordinateAxes, Coordinates,
+    ExactRational, FacetBvh, Ordering, Point, PointSetIndex, Polygon, PreparedLinework,
+    RefinedChainProvenance, SEGMENT_INDEX_MIN_PAIRS, Segment, Shape, ShapeCountQuery,
+    SquaredDistanceKey, Unmetered, VertexProvenance, XY, point_distance, point_distance_squared,
+    point_in_ccw_triangle, point_pair_distance_key, point_segment_distance,
+    point_segment_exact_distance_key, ring_winding, same_point, segment_projection,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -238,6 +239,7 @@ pub(crate) fn minimum_clearance_witness_with_support(
     sites: &Shape,
     support: &Shape,
     refined_chains: &[RefinedChainProvenance],
+    resolve_source_ordinates: bool,
 ) -> crate::error::Result<Option<MinimumClearanceWitness>> {
     let site_points = sites.points_vec()?;
     if site_points.len() < 2 {
@@ -307,13 +309,7 @@ pub(crate) fn minimum_clearance_witness_with_support(
         if local_segment >= chain.segment_count {
             return true;
         }
-        let original_edge = chain.refined_lineage_index.map_or(local_segment, |index| {
-            refined_chains
-                .get(index)
-                .expect("refined-chain lineage index was admitted")
-                .piece_ends
-                .partition_point(|&piece_end| piece_end <= local_segment)
-        });
+        let original_edge = chain.original_edge(local_segment, refined_chains);
         let start_index = chain.site_start.wrapping_add(original_edge);
         let end_index = start_index.wrapping_add(1);
         let start = *site_points
@@ -329,6 +325,30 @@ pub(crate) fn minimum_clearance_witness_with_support(
         return Ok(None);
     };
     let mut plan = finish_clearance_candidate(&candidate, &site_points, &segments)?;
+    if resolve_source_ordinates
+        && let ClearanceSource::PointSegment { segment, .. } = candidate.source
+    {
+        let [_, second] = &mut plan;
+        let VertexProvenance::OnSegment {
+            projection,
+            root_request,
+            ..
+        } = second
+        else {
+            return Err(crate::geometry::GeometryErrorKind::Invalid(
+                "clearance point-segment candidate lost its support projection".into(),
+            )
+            .into());
+        };
+        *root_request = root_request_for_support_segment(
+            segment,
+            projection,
+            sites.axes(),
+            &site_points,
+            &lineages,
+            refined_chains,
+        )?;
+    }
     let has_segment_witness = plan
         .iter()
         .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }));
@@ -361,6 +381,105 @@ struct SupportChainLineage {
     segment_count: usize,
     site_start: usize,
     refined_lineage_index: Option<usize>,
+}
+
+impl SupportChainLineage {
+    fn original_edge(
+        &self,
+        local_segment: usize,
+        refined_chains: &[RefinedChainProvenance],
+    ) -> usize {
+        self.refined_lineage_index.map_or(local_segment, |index| {
+            refined_chains
+                .get(index)
+                .expect("refined-chain lineage index was admitted")
+                .piece_ends
+                .partition_point(|&piece_end| piece_end <= local_segment)
+        })
+    }
+}
+
+fn root_request_for_support_segment(
+    segment_index: usize,
+    projection: &crate::geometry::SegmentProjection,
+    axes: CoordinateAxes,
+    site_points: &[Point],
+    lineages: &[SupportChainLineage],
+    refined_chains: &[RefinedChainProvenance],
+) -> crate::error::Result<Option<RootRequest>> {
+    let chain_index = lineages
+        .partition_point(|chain| chain.first_segment <= segment_index)
+        .saturating_sub(1);
+    let Some(chain) = lineages.get(chain_index) else {
+        return Ok(None);
+    };
+    let local_segment = segment_index.wrapping_sub(chain.first_segment);
+    if local_segment >= chain.segment_count {
+        return Ok(None);
+    }
+    let original_edge = chain.original_edge(local_segment, refined_chains);
+    let root_start_index = chain
+        .site_start
+        .checked_add(original_edge)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let root_end_index = root_start_index
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let root_start = *site_points.get(root_start_index).ok_or_else(|| {
+        crate::geometry::GeometryErrorKind::Invalid(
+            "clearance support root start is outside the source points".into(),
+        )
+    })?;
+    let root_end = *site_points.get(root_end_index).ok_or_else(|| {
+        crate::geometry::GeometryErrorKind::Invalid(
+            "clearance support root end is outside the source points".into(),
+        )
+    })?;
+    let has_eligible_axis = (axes.has_z() && root_start.z().is_some() && root_end.z().is_some())
+        || (axes.has_m() && root_start.m().is_some() && root_end.m().is_some());
+    if !has_eligible_axis {
+        return Ok(None);
+    }
+
+    let root = RootId::from_index(
+        u32::try_from(root_start_index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+    );
+    let (source_start, source_end) = if let Some(refined_index) = chain.refined_lineage_index {
+        let refined = refined_chains
+            .get(refined_index)
+            .expect("refined-chain lineage index was admitted");
+        let (start, end) = refined
+            .source_interval(original_edge, local_segment)
+            .ok_or_else(|| {
+                crate::geometry::GeometryErrorKind::Invalid(
+                    "clearance support segment has no exact source parameter interval".into(),
+                )
+            })?;
+        (start, end)
+    } else {
+        (0.0, 1.0)
+    };
+    let mut work = Unmetered;
+    let range = RootRange::from_mapped_with_work(
+        root,
+        ExactRational::from_f64(source_start),
+        ExactRational::from_f64(source_end),
+        ExactRational::zero(),
+        ExactRational::one(),
+        &mut work,
+    )?;
+    let parameter = projection.exact_fraction()?;
+    range
+        .request_at_with_work(&parameter, &mut work)?
+        .map_or_else(
+            || {
+                Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "clearance support projection is outside its exact source interval".into(),
+                )
+                .into())
+            },
+            |request| Ok(Some(request)),
+        )
 }
 
 fn minimum_clearance_candidates(
@@ -526,6 +645,7 @@ fn finish_clearance_candidate(
                             .expect("clearance point ordinal belongs to the source points"),
                         segment.xy,
                     )?,
+                    root_request: None,
                 },
             ])
         },
@@ -984,11 +1104,13 @@ mod clearance_index_tests {
         let refined_chains = [RefinedChainProvenance {
             chain_index: 0,
             piece_ends: vec![2],
+            source_parameters: None,
         }];
 
-        let witness = minimum_clearance_witness_with_support(&sites, &support, &refined_chains)
-            .unwrap()
-            .expect("source line has a finite clearance");
+        let witness =
+            minimum_clearance_witness_with_support(&sites, &support, &refined_chains, false)
+                .unwrap()
+                .expect("source line has a finite clearance");
         assert_eq!(witness.planar_distance().unwrap(), 1.0);
         assert!(matches!(witness.plan[0], VertexProvenance::Input(2)));
         assert!(matches!(
@@ -1044,11 +1166,13 @@ mod clearance_index_tests {
         let refined_chains = [RefinedChainProvenance {
             chain_index: 0,
             piece_ends,
+            source_parameters: None,
         }];
 
-        let witness = minimum_clearance_witness_with_support(&sites, &support, &refined_chains)
-            .unwrap()
-            .expect("the point and line have a finite clearance");
+        let witness =
+            minimum_clearance_witness_with_support(&sites, &support, &refined_chains, false)
+                .unwrap()
+                .expect("the point and line have a finite clearance");
         assert_eq!(witness.planar_distance().unwrap(), 0.25);
         assert!(matches!(witness.plan[0], VertexProvenance::Input(64)));
         assert!(matches!(

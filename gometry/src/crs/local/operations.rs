@@ -164,6 +164,7 @@ pub(crate) fn metric_concave_hull(
                         shape_from_selected_hull(&selected, Shape::empty_polygon)?,
                     ))
                 },
+                |points, _, plan, _, _| emit_from_original(points, plan),
                 |points| shape_from_selected_hull(&points, Shape::empty_polygon),
             )
         },
@@ -181,6 +182,13 @@ pub(crate) fn geodesic_by_identity(
         &Shape,
         &[crate::geometry::RefinedChainProvenance],
     ) -> Result<(Vec<VertexProvenance>, Shape)>,
+    emit_fn: impl FnOnce(
+        &[Point],
+        &[Point],
+        &[VertexProvenance],
+        crate::geometry::CoordinateAxes,
+        crate::geographic::GeographicFrame,
+    ) -> Result<Vec<Point>>,
     rebuild: impl FnOnce(Vec<Point>) -> Result<Shape>,
 ) -> Result<Shape> {
     if shape.is_empty() {
@@ -205,18 +213,31 @@ pub(crate) fn geodesic_by_identity(
     let preserve_input_vertices = plan
         .iter()
         .all(|vertex| matches!(vertex, VertexProvenance::Input(_)));
-    let restored = if plan
+    let has_segment_witness = plan
         .iter()
-        .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }))
-    {
+        .any(|vertex| matches!(vertex, VertexProvenance::OnSegment { .. }));
+    let source_axes = prepared.source_original(shape).axes();
+    let restored = if has_segment_witness {
         let support_points = prepared.source_working(shape).points_vec()?;
         let total = original.len().wrapping_add(support_points.len());
         let mut source_points = Vec::with_capacity(total);
-        source_points.extend(original);
+        source_points.extend(original.iter().copied());
         source_points.extend(support_points);
-        rebuild(emit_from_original(&source_points, &plan)?)?
+        rebuild(emit_fn(
+            &source_points,
+            &original,
+            &plan,
+            source_axes,
+            prepared.geographic_frame(),
+        )?)?
     } else {
-        rebuild(emit_from_original(&original, &plan)?)?
+        rebuild(emit_fn(
+            &original,
+            &original,
+            &plan,
+            source_axes,
+            prepared.geographic_frame(),
+        )?)?
     };
     if matches!(restored, Shape::Point(_)) {
         return Ok(restored);
