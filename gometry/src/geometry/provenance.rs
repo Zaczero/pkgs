@@ -159,7 +159,7 @@ struct OriginalPointRoots<'a> {
 }
 
 impl RootCatalog for OriginalPointRoots<'_> {
-    fn resolve<M: ChartMetric>(
+    fn resolve<M: ChartMetric, W: Work>(
         &self,
         root: RootId,
         parameter: &ExactRational,
@@ -167,7 +167,7 @@ impl RootCatalog for OriginalPointRoots<'_> {
         metric_access: Option<&SourceArcMetricAccess<'_, '_, M>>,
         state: &mut RootMetricState,
         fraction: &mut Option<f64>,
-        work: &mut impl Work,
+        work: &mut W,
     ) -> Result<NodeOrdinates> {
         let start_index = root.index();
         let end_index = start_index
