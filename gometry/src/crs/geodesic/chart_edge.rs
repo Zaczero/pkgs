@@ -858,12 +858,12 @@ impl ChartEdge {
         work: &mut impl Work,
     ) -> Result<f64> {
         if self.latitude_delta == 0.0 {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             return self.finite_length(self.parallel_length(geodesic));
         }
 
         if let Some(meridian) = self.meridian {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             return self.finite_length(super::inverse_distance(
                 geodesic,
                 meridian.longitude,
@@ -947,7 +947,7 @@ impl ChartEdge {
             return self.finite_length(total * t);
         }
         if let Some(meridian) = self.meridian {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let position = self.geodetic_position(t)?;
             return self.finite_length(super::inverse_distance(
                 geodesic,
@@ -1303,7 +1303,7 @@ impl ChartEdge {
         let e2 = geodesic.f * (2.0 - geodesic.f);
         let dphi = self.latitude_delta * self.latitude_unit;
         if self.admits_gl4(dphi) {
-            work.charge(GL4_NODES.len() as u64)?;
+            work.charge_into_error(GL4_NODES.len() as u64)?;
             let width = if FULL { 1.0 } else { end - start };
             let value = std::iter::zip(GL4_NODES, GL4_WEIGHTS)
                 .map(|(node, weight)| {
@@ -1316,7 +1316,7 @@ impl ChartEdge {
         }
 
         let mut evaluations = 15_usize;
-        work.charge(15)?;
+        work.charge_into_error(15)?;
         let (initial, initial_error) = self.gk15(start, end, geodesic.a, e2, dphi);
         let tolerance = RELATIVE_LENGTH_ERROR * initial.abs();
         if initial_error <= tolerance {
@@ -1325,7 +1325,7 @@ impl ChartEdge {
 
         let mut total = initial;
         let mut total_error = initial_error;
-        work.charge(2)?;
+        work.charge_into_error(2)?;
         let mut intervals = vec![Interval {
             start,
             end,
@@ -1342,7 +1342,7 @@ impl ChartEdge {
             reason = "adaptive quadrature refines until its computed error meets the numerical tolerance"
         )]
         while total_error > tolerance {
-            work.charge(intervals.len() as u64)?;
+            work.charge_into_error(intervals.len() as u64)?;
             let largest = intervals
                 .iter()
                 .enumerate()
@@ -1358,7 +1358,7 @@ impl ChartEdge {
             } else {
                 1
             };
-            work.charge(removal_work)?;
+            work.charge_into_error(removal_work)?;
             let parent = intervals.swap_remove(largest);
             #[cfg(test)]
             update_test_progress(|progress| {
@@ -1369,7 +1369,7 @@ impl ChartEdge {
                     "chart-edge length quadrature did not converge within 5,000 evaluations",
                 ));
             }
-            work.charge(30)?;
+            work.charge_into_error(30)?;
             let middle = f64::midpoint(parent.start, parent.end);
             let (left, left_error) = self.gk15(parent.start, middle, geodesic.a, e2, dphi);
             let (right, right_error) = self.gk15(middle, parent.end, geodesic.a, e2, dphi);
@@ -1393,7 +1393,7 @@ impl ChartEdge {
             } else {
                 5
             };
-            work.charge(refinement_work)?;
+            work.charge_into_error(refinement_work)?;
             if needs_growth {
                 intervals.reserve(2);
                 #[cfg(test)]
@@ -2101,9 +2101,19 @@ mod tests {
     struct CountingWork(u64);
 
     impl Work for CountingWork {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
             self.0 = self.0.wrapping_add(ticks);
             Ok(())
+        }
+
+        fn charge_product(
+            &mut self,
+            count: usize,
+            ticks_per_item: usize,
+        ) -> crate::error::Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

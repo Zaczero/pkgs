@@ -59,7 +59,9 @@ fn reserve_with_work<T>(
 
 fn prepay_slots(additional: usize, work: &mut impl Work) -> Result<()> {
     if additional > 0 {
-        work.charge(u64::try_from(additional).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(additional).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
     }
     Ok(())
 }
@@ -602,10 +604,12 @@ impl RootRequestTable {
     pub(crate) fn from_rows(rows: &[RequestRowInput], work: &mut impl Work) -> Result<Self> {
         #[cfg(test)]
         ROOT_REQUEST_TABLE_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
-        work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut request_count = 0_usize;
         for row in rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             request_count = request_count
                 .checked_add(row.requests.len())
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -624,7 +628,7 @@ impl RootRequestTable {
         reserve_with_work(&mut ordered, request_count, work)?;
         for (row_index, row) in request_views.iter().enumerate() {
             for index in 0..row.len() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 ordered.push(RequestIndex {
                     row: row_index,
                     index,
@@ -638,7 +642,7 @@ impl RootRequestTable {
             let right = request_at(&request_views, *right)?;
             let root_order = left.root.cmp(&right.root);
             if root_order.is_eq() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 left.parameter.try_cmp_with_work(&right.parameter, work)
             } else {
                 Ok(root_order)
@@ -651,13 +655,13 @@ impl RootRequestTable {
         row_requests.resize(request_count, None);
         let mut previous: Option<UniqueRequestId> = None;
         for occurrence in ordered {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let request = request_at(&request_views, occurrence)?;
             let duplicate = if let Some(previous_id) = previous {
                 let previous_record = records.get(previous_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("unique source request index is unknown".into())
                 })?;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 previous_record.root == request.root
                     && previous_record
                         .parameter
@@ -693,7 +697,7 @@ impl RootRequestTable {
         let mut row_axes = Vec::new();
         reserve_with_work(&mut row_axes, rows.len(), work)?;
         for row in rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             row_axes.push(row.axes);
         }
         Ok(Self {
@@ -778,7 +782,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
     let mut output = Vec::new();
     reserve_with_work(&mut output, rows.len(), work)?;
     for row_index in 0..rows.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let row_id = RequestRowId::from_index(row_index)?;
         let row_axes = table.axes(row_id)?;
         let request_count = table.row(row_id)?.len();
@@ -789,7 +793,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
             let state = states.get_mut(state_slot).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source root state slot is unknown".into())
             })?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let record = table.record_mut(request_id)?;
             ordinates.merge(roots.resolve(
                 record.root,
@@ -801,7 +805,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
                 work,
             )?);
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         output.push(ordinates);
     }
     Ok(output)
@@ -888,7 +892,7 @@ impl TraceRows {
         let mut has_request = false;
         let mut all_point_support = true;
         for owner in self.row(edge)? {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if owner.parameter_at_with_work(local, work)?.is_some() {
                 has_request = true;
                 all_point_support &= owner.is_point_support_with_work(work)?;
@@ -904,10 +908,13 @@ impl TraceRows {
         work: &mut impl Work,
     ) -> Result<Vec<RootRequest>> {
         if let [owner] = self.row(edge)? {
-            return Ok(owner
-                .request_at_with_work(local, work)?
-                .into_iter()
-                .collect());
+            let Some(request) = owner.request_at_with_work(local, work)? else {
+                return Ok(Vec::new());
+            };
+            let mut requests = Vec::new();
+            reserve_with_work(&mut requests, 1, work)?;
+            requests.push(request);
+            return Ok(requests);
         }
         Ok(self.requests_with_support_at(edge, local, work)?.0)
     }
@@ -921,8 +928,9 @@ impl TraceRows {
     ) -> Result<usize> {
         let owners = self.row(edge)?;
         if let [owner] = owners {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if let Some(request) = owner.request_at_with_work(local, work)? {
+                reserve_with_work(requests, 1, work)?;
                 requests.push(request);
                 return Ok(1);
             }
@@ -930,6 +938,7 @@ impl TraceRows {
         }
         let (additional, _) = unique_requests_at(owners, local, work)?;
         let count = additional.len();
+        reserve_with_work(requests, count, work)?;
         requests.extend(additional);
         Ok(count)
     }
@@ -974,7 +983,7 @@ fn unique_requests_at(
     let mut has_request = false;
     let mut endpoint_only = true;
     for owner in owners {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some(request) = owner.request_at_with_work(local, work)? else {
             continue;
         };
@@ -986,7 +995,7 @@ fn unique_requests_at(
     let mut unique_requests = Vec::new();
     reserve_with_work(&mut unique_requests, unique.len(), work)?;
     for index in unique {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         unique_requests.push(
             requests
                 .get(index)
@@ -1025,10 +1034,10 @@ fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Res
         let [left, right] = pair else {
             continue;
         };
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let root_order = left.root.cmp(&right.root);
         let order = if root_order.is_eq() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             left.parameter.try_cmp_with_work(&right.parameter, work)?
         } else {
             root_order
@@ -1045,7 +1054,7 @@ fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Res
         let mut previous: Option<&RootRequest> = None;
         for (index, request) in requests.iter().enumerate() {
             let duplicate = if let Some(previous) = previous {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 previous.root == request.root
                     && previous
                         .parameter
@@ -1067,7 +1076,7 @@ fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Res
     let mut ordered_indices = Vec::new();
     reserve_with_work(&mut ordered_indices, requests.len(), work)?;
     for index in 0..requests.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         ordered_indices.push(index);
     }
     try_sort_by_with_work(&mut ordered_indices, work, |&left, &right, work| {
@@ -1079,7 +1088,7 @@ fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Res
         })?;
         let root_order = left.root.cmp(&right.root);
         if root_order.is_eq() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             left.parameter.try_cmp_with_work(&right.parameter, work)
         } else {
             Ok(root_order)
@@ -1092,7 +1101,7 @@ fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Res
     let mut unique_count = 0_usize;
     let mut previous: Option<usize> = None;
     for &index in &ordered_indices {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let current = requests.get(index).ok_or_else(|| {
             GeometryErrorKind::Invalid("source request index is outside its row".into())
         })?;
@@ -1100,7 +1109,7 @@ fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Res
             let previous = requests.get(previous).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source request index is outside its row".into())
             })?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             previous.root == current.root
                 && previous
                     .parameter
@@ -1123,7 +1132,7 @@ fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Res
     let mut unique = Vec::new();
     reserve_with_work(&mut unique, unique_count, work)?;
     for (index, duplicate) in duplicates.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !duplicate {
             unique.push(index);
         }
@@ -1208,7 +1217,7 @@ impl TraceRowsBuilder {
         self.ranges.reserve(parents.len());
         self.offsets.reserve(1);
         for parent in parents {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if let Some(child) = parent.compose_with_work(local_start, local_end, work)? {
                 self.ranges.push(child);
             }
@@ -1250,7 +1259,7 @@ impl TraceRowsBuilder {
 
 fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Work) -> Result<()> {
     if parameter.is_zero() || parameter.is_one() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         return Ok(());
     }
     let zero = ExactRational::zero();
@@ -1297,6 +1306,8 @@ mod tests {
     }
 
     impl Work for RecordingWork<'_> {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             let spent_before = self.spent;
             let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
@@ -1426,12 +1437,18 @@ mod tests {
     struct Fuel(u64);
 
     impl Work for Fuel {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, units: u64) -> Result<()> {
             self.0 = self
                 .0
                 .checked_sub(units)
                 .ok_or_else(|| GeometryErrorKind::Invalid("test work fuel exhausted".into()))?;
             Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 
