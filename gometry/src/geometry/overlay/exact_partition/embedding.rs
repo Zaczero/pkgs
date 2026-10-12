@@ -1610,10 +1610,10 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         _variables: &[Self::Node],
         work: &mut W,
     ) -> Result<Vec<Self::Key>> {
-        work.charge_product(self.live_nodes.len(), 1)?;
+        work.charge_product_into_error(self.live_nodes.len(), 1)?;
         let mut keys = Vec::with_capacity(self.live_nodes.len());
         for &node in &self.live_nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if self
                 .node_location
                 .get(node.0 as usize)
@@ -1621,7 +1621,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
                 .flatten()
                 .is_none_or(|(owner, _)| owner != class)
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 keys.push(PointKey::new(self.partition.nearest_xy(node)));
             }
         }
@@ -1644,7 +1644,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         work: &mut W,
     ) -> Result<()> {
         let nearest = self.partition.nearest_xy(node);
-        work.charge(2)?;
+        work.charge_into_error(2)?;
         let x_exact = self.partition.compare_axis_to(node, Axis::X, nearest.x)? == Ordering::Equal;
         let y_exact = self.partition.compare_axis_to(node, Axis::Y, nearest.y)? == Ordering::Equal;
         let x_values = [
@@ -1678,7 +1678,7 @@ impl Problem for PlanarProblem<'_, '_, '_> {
         let candidate_count = x_count
             .checked_mul(y_count)
             .expect("candidate axis counts are each one or three");
-        work.charge_product(candidate_count, 1)?;
+        work.charge_product_into_error(candidate_count, 1)?;
         candidates.reserve(candidate_count);
         for &x in x_values
             .get(..x_count)

@@ -94,7 +94,7 @@ pub(crate) fn compare_nested_point_slices_with_work<T: Coordinates>(
 ) -> crate::error::Result<Ordering> {
     let common_len = left.len().min(right.len());
     for index in 0..common_len {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let left = left
             .get(index)
             .expect("the common nested prefix is in range");
@@ -128,7 +128,7 @@ pub(crate) fn compare_point_slices_with_work<A: Coordinates + ?Sized, B: Coordin
 ) -> crate::error::Result<Ordering> {
     let common_len = left.coord_count().min(right.coord_count());
     for index in 0..common_len {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let left = left.nth_coord(index);
         let right = right.nth_coord(index);
         let order = compare_points(&left, &right);
@@ -195,11 +195,21 @@ mod tests {
     }
 
     impl Work for RecordingBudget {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
             self.attempted.push(ticks);
             self.budget.charge(ticks)?;
             self.accepted.push(ticks);
             Ok(())
+        }
+
+        fn charge_product(
+            &mut self,
+            count: usize,
+            ticks_per_item: usize,
+        ) -> crate::error::Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

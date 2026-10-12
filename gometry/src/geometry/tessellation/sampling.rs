@@ -1,6 +1,146 @@
+use super::{EarcutCornerId, EarcutTriangle, earcut_polygon_with_ids};
 use crate::error::Result;
-use crate::geometry::tessellation::{EarcutTriangle, earcut_polygon_with_ids};
-use crate::geometry::{Point, Shape};
+use crate::geometry::{MultiMember, Point, Polygon, Segment, Shape, TopologyDomain};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SampleOccurrenceId {
+    pub(crate) component: usize,
+    pub(crate) occurrence: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct GeographicSampleSegment {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "The common sampling sink binds the retained source occurrence to stored output"
+        )
+    )]
+    pub(crate) occurrence: SampleOccurrenceId,
+    pub(crate) start: Point,
+    pub(crate) end: Point,
+    pub(crate) longitude: crate::geographic::RetainedChartDisplacement,
+    pub(crate) delta_x: f64,
+    pub(crate) delta_y: f64,
+    pub(crate) raw_compatible: bool,
+}
+
+impl GeographicSampleSegment {
+    pub(crate) fn sample(
+        self,
+        along: f64,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Result<Point> {
+        let x = if self.raw_compatible {
+            (1.0 - along) * self.start.x + along * self.end.x
+        } else {
+            let start = self.longitude.endpoints()[0].get();
+            frame
+                .longitude()
+                .canonicalize(start + self.delta_x * along)
+                .map_err(|error| {
+                    crate::geometry::GeometryErrorKind::antimeridian_split_failed(error.to_string())
+                })?
+                .get()
+        };
+        Point::new(x, (1.0 - along) * self.start.y + along * self.end.y)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The common sampling sink consumes selected support identities for stored output"
+    )
+)]
+pub(crate) enum SampleSupport {
+    AreaTriangle {
+        occurrence: SampleOccurrenceId,
+        vertices: [Point; 3],
+        corners: [EarcutCornerId; 3],
+    },
+    Segment {
+        occurrence: SampleOccurrenceId,
+        segment: Segment,
+    },
+    GeographicSegment {
+        segment: GeographicSampleSegment,
+    },
+    PointAtom {
+        occurrence: SampleOccurrenceId,
+        point: Point,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SampleRecipe {
+    Triangle { spread: f64, blend: f64 },
+    Segment { along: f64 },
+    Atom,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The common sampling sink consumes draw order, selection, and placement authority"
+    )
+)]
+pub(crate) struct SampleDraw {
+    pub(crate) draw_ordinal: usize,
+    pub(crate) selected_element: usize,
+    pub(crate) recipe: SampleRecipe,
+    pub(crate) point: Point,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "The common sampling sink consumes row, domain, seed, and prepared support authority"
+    )
+)]
+pub(crate) struct PreparedSampling {
+    pub(crate) logical_row: usize,
+    pub(crate) resolved_seed: u64,
+    pub(crate) domain: TopologyDomain,
+    pub(crate) support_elements: Vec<SampleSupport>,
+    pub(crate) draws: Vec<SampleDraw>,
+}
+
+impl PreparedSampling {
+    pub(in crate::geometry::tessellation) const fn from_draws(
+        logical_row: usize,
+        resolved_seed: u64,
+        domain: TopologyDomain,
+        support_elements: Vec<SampleSupport>,
+        draws: Vec<SampleDraw>,
+    ) -> Self {
+        Self {
+            logical_row,
+            resolved_seed,
+            domain,
+            support_elements,
+            draws,
+        }
+    }
+
+    pub(in crate::geometry::tessellation) const fn empty(
+        logical_row: usize,
+        resolved_seed: u64,
+        domain: TopologyDomain,
+    ) -> Self {
+        Self::from_draws(logical_row, resolved_seed, domain, Vec::new(), Vec::new())
+    }
+
+    pub(crate) fn into_points(self) -> Vec<Point> {
+        self.draws.into_iter().map(|draw| draw.point).collect()
+    }
+}
 
 /// A common power-of-two factor that keeps weight products finite for
 /// huge-but-valid coordinates (exact in binary floating point; weights
@@ -25,8 +165,8 @@ pub(crate) fn sample_weighted<T>(
     seed: u64,
     pieces: &[T],
     weight: impl Fn(&T) -> f64,
-    place: impl Fn(&T, &mut u64) -> Result<Point>,
-) -> Result<Option<Vec<Point>>> {
+    place: impl Fn(&T, &mut u64) -> Result<(Point, SampleRecipe)>,
+) -> Result<Option<Vec<SampleDraw>>> {
     let mut total = 0.0;
     let mut cumulative = Vec::with_capacity(pieces.len());
     for piece in pieces {
@@ -36,42 +176,75 @@ pub(crate) fn sample_weighted<T>(
     if total <= 0.0 || !total.is_finite() {
         return Ok(None);
     }
-    let mut points = Vec::with_capacity(count);
+    let mut draws = Vec::with_capacity(count);
     let mut state = seed;
-    for _ in 0..count {
+    for draw_ordinal in 0..count {
         let pick = uniform_f64(&mut state) * total;
         let index = cumulative.partition_point(|&edge| edge <= pick);
-        let piece = pieces
-            .get(index)
-            .or_else(|| pieces.last())
+        let element_id = index.min(pieces.len().saturating_sub(1));
+        let support = pieces
+            .get(element_id)
             .expect("a positive finite total comes from at least one piece");
-        let point = place(piece, &mut state)?;
-        points.push(point);
+        let (point, recipe) = place(support, &mut state)?;
+        draws.push(SampleDraw {
+            draw_ordinal,
+            selected_element: element_id,
+            recipe,
+            point,
+        });
     }
-    Ok(Some(points))
+    Ok(Some(draws))
 }
 
-/// Triangles of every areal part, recursively through collections — the
-/// dimension-2 sample space.
-pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<EarcutTriangle>) -> Result<()> {
+fn next_sample_component(component: &mut usize) -> Result<usize> {
+    let id = *component;
+    *component = id
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    Ok(id)
+}
+
+fn collect_polygon_sample_triangles(
+    polygon: &Polygon,
+    component: &mut usize,
+    out: &mut Vec<SampleSupport>,
+) -> Result<()> {
+    let component = next_sample_component(component)?;
+    earcut_polygon_with_ids(polygon, &mut |triangle: EarcutTriangle| {
+        out.push(SampleSupport::AreaTriangle {
+            occurrence: SampleOccurrenceId {
+                component,
+                occurrence: triangle.face,
+            },
+            vertices: triangle.points,
+            corners: triangle.corners,
+        });
+        Ok(())
+    })
+}
+
+fn collect_sample_triangles_inner(
+    shape: &Shape,
+    component: &mut usize,
+    out: &mut Vec<SampleSupport>,
+) -> Result<()> {
     match shape {
-        Shape::Polygon(polygon) => {
-            earcut_polygon_with_ids(polygon, &mut |triangle| {
-                out.push(triangle);
-                Ok(())
-            })?;
-        },
+        Shape::Polygon(polygon) => collect_polygon_sample_triangles(polygon, component, out)?,
         Shape::MultiPolygon(polygons) => {
-            for polygon in polygons {
-                earcut_polygon_with_ids(polygon, &mut |triangle| {
-                    out.push(triangle);
-                    Ok(())
-                })?;
+            for member in polygons.members_with_values() {
+                match member {
+                    MultiMember::Empty => {
+                        next_sample_component(component)?;
+                    },
+                    MultiMember::Value(polygon) => {
+                        collect_polygon_sample_triangles(polygon, component, out)?;
+                    },
+                }
             }
         },
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                collect_sample_triangles(geometry, out)?;
+                collect_sample_triangles_inner(geometry, component, out)?;
             }
         },
         Shape::Point(_)
@@ -81,6 +254,84 @@ pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<EarcutTriang
         | Shape::Empty(..) => {},
     }
     Ok(())
+}
+
+/// Retain each emitted Earcut triangle and its source component before any
+/// weighted draw can detach it from its support.
+pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<SampleSupport>) -> Result<()> {
+    let mut component = 0;
+    collect_sample_triangles_inner(shape, &mut component, out)
+}
+
+fn append_sample_atoms(
+    points: impl IntoIterator<Item = Point>,
+    component: usize,
+    out: &mut Vec<SampleSupport>,
+) {
+    out.extend(points.into_iter().enumerate().map(|(occurrence, point)| {
+        SampleSupport::PointAtom {
+            occurrence: SampleOccurrenceId {
+                component,
+                occurrence,
+            },
+            point,
+        }
+    }));
+}
+
+fn collect_sample_atoms_inner(
+    shape: &Shape,
+    component: &mut usize,
+    out: &mut Vec<SampleSupport>,
+) -> Result<()> {
+    match shape {
+        Shape::Point(point) => {
+            let component = next_sample_component(component)?;
+            append_sample_atoms([*point], component, out);
+        },
+        Shape::MultiPoint(points) => {
+            let component = next_sample_component(component)?;
+            append_sample_atoms(points, component, out);
+        },
+        Shape::LineString(line) => {
+            let component = next_sample_component(component)?;
+            append_sample_atoms(line, component, out);
+        },
+        Shape::MultiLineString(lines) => {
+            for member in lines.members_with_values() {
+                let component = next_sample_component(component)?;
+                if let MultiMember::Value(line) = member {
+                    append_sample_atoms(line, component, out);
+                }
+            }
+        },
+        Shape::Polygon(polygon) => {
+            let component = next_sample_component(component)?;
+            append_sample_atoms(polygon.points(), component, out);
+        },
+        Shape::MultiPolygon(polygons) => {
+            for member in polygons.members_with_values() {
+                let component = next_sample_component(component)?;
+                if let MultiMember::Value(polygon) = member {
+                    append_sample_atoms(polygon.points(), component, out);
+                }
+            }
+        },
+        Shape::GeometryCollection(geometries) => {
+            for geometry in geometries {
+                collect_sample_atoms_inner(geometry, component, out)?;
+            }
+        },
+        Shape::Empty(..) => {},
+    }
+    Ok(())
+}
+
+/// Vertices of the dimension-0 support, retaining each collection and
+/// multipart component occurrence, including coincident atoms.
+pub(crate) fn collect_sample_atoms(shape: &Shape, out: &mut Vec<SampleSupport>) -> Result<()> {
+    let mut component = 0;
+    collect_sample_atoms_inner(shape, &mut component, out)
 }
 
 /// The splitmix64 step — the whole RNG behind `sample_points`: tiny,
@@ -107,7 +358,7 @@ pub(crate) const fn row_sample_seed(seed: u64, row: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::sample_weighted;
+    use super::{SampleRecipe, sample_weighted};
     use crate::geometry::{Point, Segment, XY};
 
     #[test]
@@ -123,21 +374,40 @@ mod tests {
             |_| 1.0,
             |segment, state| {
                 let along = super::uniform_f64(state);
-                Point::new(
-                    (1.0 - along) * segment.start.x + along * segment.end.x,
-                    (1.0 - along) * segment.start.y + along * segment.end.y,
-                )
+                Ok((
+                    Point::new(
+                        (1.0 - along) * segment.start.x + along * segment.end.x,
+                        (1.0 - along) * segment.start.y + along * segment.end.y,
+                    )?,
+                    SampleRecipe::Segment { along },
+                ))
             },
         )
         .expect("positive weight")
         .expect("samples");
-        let mut points = points.into_iter();
-        let first = points.next().expect("two samples were requested");
-        let second = points.next().expect("two samples were requested");
-        assert!(points.next().is_none());
-        assert_eq!(first.x.to_bits(), 0.745_781_757_262_701_1_f64.to_bits());
-        assert_eq!(first.y.to_bits(), 0.0_f64.to_bits());
-        assert_eq!(second.x.to_bits(), 0.444_359_217_055_772_1_f64.to_bits());
-        assert_eq!(second.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(points.len(), 2);
+        let [first, second] = points.as_slice() else {
+            panic!("two samples were requested");
+        };
+        assert_eq!(first.selected_element, 0);
+        let SampleRecipe::Segment { along } = first.recipe else {
+            panic!("segment placement recipe");
+        };
+        assert_eq!(
+            first.point.x.to_bits(),
+            0.745_781_757_262_701_1_f64.to_bits()
+        );
+        assert_eq!(first.point.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(along.to_bits(), first.point.x.to_bits());
+        assert_eq!(second.selected_element, 0);
+        assert_eq!(
+            second.point.x.to_bits(),
+            0.444_359_217_055_772_1_f64.to_bits()
+        );
+        assert_eq!(second.point.y.to_bits(), 0.0_f64.to_bits());
+        let SampleRecipe::Segment { along } = second.recipe else {
+            panic!("segment placement recipe");
+        };
+        assert_eq!(along.to_bits(), second.point.x.to_bits());
     }
 }

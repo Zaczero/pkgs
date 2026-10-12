@@ -100,11 +100,13 @@ pub(super) fn overlapping_rings_error(left: RingOwner, right: RingOwner) -> crat
 pub(crate) use delaunay::{CdtRefinement, delaunay_triangulation};
 use delaunay::{CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay};
 pub(crate) use earcut::{
-    EarcutTriangle, earcut_polygon_with, earcut_polygon_with_ids, point_in_ccw_triangle,
-    try_triangle_shape,
+    EarcutCornerId, EarcutOccurrenceId, EarcutSiteId, EarcutTriangle, earcut_polygon_with,
+    earcut_polygon_with_ids, point_in_ccw_triangle, try_triangle_shape,
 };
 pub(crate) use sampling::{
-    collect_sample_triangles, row_sample_seed, sample_weighted, uniform_f64, weight_scale,
+    GeographicSampleSegment, PreparedSampling, SampleDraw, SampleOccurrenceId, SampleRecipe,
+    SampleSupport, collect_sample_atoms, collect_sample_triangles, row_sample_seed,
+    sample_weighted, uniform_f64, weight_scale,
 };
 use voronoi::{DelaunayComplex, delaunay_complex, snap_sites};
 
