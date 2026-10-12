@@ -1672,7 +1672,7 @@ fn record_generic_exact_touch(
     clippy::arithmetic_side_effects,
     reason = "Ring stores its explicit closing coordinate, so its length is positive and one subtraction opens the cycle"
 )]
-fn exact_chart_point(chart: Option<PointSelectionChart>, point: XY) -> Result<exact::ExactPoint> {
+fn exact_chart_point(chart: Option<&PointSelectionChart>, point: XY) -> Result<exact::ExactPoint> {
     let Some(chart) = chart else {
         return Ok(exact::ExactPoint::from_xy(point));
     };
@@ -1685,7 +1685,7 @@ fn exact_chart_point(chart: Option<PointSelectionChart>, point: XY) -> Result<ex
 }
 
 fn chart_vertex_origins(
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
     point: &exact::ExactPoint,
 ) -> Result<Vec<VoronoiVertexOrigin>> {
     let mut origins = Vec::new();
@@ -1715,7 +1715,7 @@ fn chart_vertex_origins(
     Ok(origins)
 }
 
-fn open_ring(ring: &Ring, chart: Option<PointSelectionChart>) -> Result<OpenClipRing> {
+fn open_ring(ring: &Ring, chart: Option<&PointSelectionChart>) -> Result<OpenClipRing> {
     let open = ring.len() - 1;
     let mut exact_points = Vec::new();
     let mut fixed = Vec::new();
@@ -1815,7 +1815,7 @@ fn map_source_polygon_contacts(
     source_rings: &[Option<NormalizedSourceRing>],
     rings: &[Vec<exact::ExactPoint>],
     fixed: &[Vec<XY>],
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<(Vec<ExactCycleContact>, Vec<ExactPairTouch>)> {
     let mut contacts = Vec::with_capacity(source_contacts.len());
     let mut pair_touches = Vec::new();
@@ -2043,7 +2043,7 @@ fn normalize_clip_with_chart<'a>(
     sites: &[Site],
     boundary: VoronoiBoundary<'a>,
     polygon_output: bool,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<NormalizedClip<'a>> {
     let mut rings = Vec::new();
     let mut fixed = Vec::new();
@@ -2459,7 +2459,7 @@ pub(super) fn lone_site_empty_polygon_outputs(
 pub(super) fn lone_site_empty_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedEdges> {
     let receipt = match boundary {
         VoronoiBoundary::Polygon(polygon) => {
@@ -2475,7 +2475,7 @@ pub(super) fn lone_site_empty_edges(
 pub(super) fn lone_site_polygon_outputs(
     sites: &[Site],
     polygon: &Polygon,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<crate::geometry::VoronoiPolygonOutputs> {
     let [site] = sites else {
         return Err(voronoi_error(
@@ -2777,7 +2777,7 @@ fn exact_diagram_receipt(
     clip_trace: &ClipTrace,
     exact_to_embedded: &EmbeddedVertices,
     points: &[XY],
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
     let mut receipt = site_receipts(producer, sites)?;
     receipt.clip_segments = clip_segment_receipts(clip, Some(clip_trace))?;
@@ -5317,7 +5317,7 @@ fn embed(
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
     producer: VoronoiProducer,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     let mut live = LiveVertices::new(subdivision.vertices.len());
     let mut live_edges = Vec::new();
@@ -5733,7 +5733,7 @@ pub(super) fn build_product_with_chart(
     combinatorial_dual: bool,
     mesh: &CertifiedDelaunay,
     product: VoronoiProduct,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     if let Some(last) = sites.len().checked_sub(1) {
         u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -5813,7 +5813,7 @@ pub(super) fn build_edges_with_chart(
     budget: &mut ExpansionBudget,
     combinatorial_dual: bool,
     mesh: &CertifiedDelaunay,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedEdges> {
     Ok(build_product_with_chart(
         sites,
@@ -6101,7 +6101,7 @@ pub(super) fn build_collinear_polygons_with_chart(
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     let order = mesh
         .collinear_order()
@@ -6581,7 +6581,7 @@ fn collinear_polygon_receipt(
     sites: &[Site],
     clip: &NormalizedClip<'_>,
     cells: &mut [EmbeddedPolygon],
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<VoronoiDiagramReceipt> {
     let mut receipt = site_receipts(VoronoiProducer::Collinear, sites)?;
     receipt.clip_segments = clip_segment_receipts(clip, None)?;
@@ -7193,7 +7193,7 @@ pub(super) fn build_collinear_edges_with_chart(
     boundary: VoronoiBoundary<'_>,
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedEdges> {
     if let Some(last) = sites.len().checked_sub(1) {
         u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
@@ -8308,7 +8308,7 @@ fn dual_embed(
     sites: &[Site],
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> std::result::Result<EmbeddedVoronoi, DualEmbeddingError> {
     if rings.rings.len() != sites.len() {
         return Err(DualEmbeddingError::Unrepresentable);
@@ -9110,7 +9110,7 @@ fn dual_build_product(
     budget: &mut ExpansionBudget,
     mesh: &CertifiedDelaunay,
     product: VoronoiProduct,
-    chart: Option<PointSelectionChart>,
+    chart: Option<&PointSelectionChart>,
 ) -> Result<EmbeddedVoronoi> {
     let clip = normalize_clip_with_chart(sites, boundary, product.includes_polygons(), chart)?;
     if mesh.collinear_order().is_some() {

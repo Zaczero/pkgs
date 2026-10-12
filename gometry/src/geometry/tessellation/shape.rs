@@ -707,7 +707,7 @@ impl Shape {
             // padded frames of one point have no area.
             return match (canonical.len(), boundary) {
                 (1, VoronoiBoundary::Polygon(polygon)) => {
-                    voronoi_dcel::lone_site_polygon_outputs(&canonical, polygon, chart)
+                    voronoi_dcel::lone_site_polygon_outputs(&canonical, polygon, chart.as_ref())
                 },
                 (1, _) => voronoi_dcel::lone_site_empty_polygon_outputs(&canonical),
                 _ => voronoi_dcel::empty_polygon_outputs(&canonical),
@@ -715,7 +715,11 @@ impl Shape {
         };
         let embedded = if mesh.collinear_order().is_some() {
             voronoi_dcel::build_collinear_polygons_with_chart(
-                &canonical, boundary, budget, &mesh, chart,
+                &canonical,
+                boundary,
+                budget,
+                &mesh,
+                chart.as_ref(),
             )?
         } else {
             voronoi_dcel::build_product_with_chart(
@@ -725,7 +729,7 @@ impl Shape {
                 true,
                 &mesh,
                 voronoi_dcel::VoronoiProduct::Polygons,
-                chart,
+                chart.as_ref(),
             )?
         };
         let (cells, receipt) = embedded.into_polygon_outputs();
@@ -791,17 +795,28 @@ impl Shape {
         let (canonical, mesh, chart) = self.prepare_voronoi(tolerance, frame, boundary)?;
         let Some(mesh) = mesh else {
             return if canonical.len() == 1 {
-                voronoi_dcel::lone_site_empty_edges(&canonical, boundary, chart)
+                voronoi_dcel::lone_site_empty_edges(&canonical, boundary, chart.as_ref())
             } else {
                 voronoi_dcel::empty_packed_edges()
             };
         };
         if mesh.collinear_order().is_none() {
             return voronoi_dcel::build_edges_with_chart(
-                &canonical, boundary, budget, true, &mesh, chart,
+                &canonical,
+                boundary,
+                budget,
+                true,
+                &mesh,
+                chart.as_ref(),
             );
         }
-        voronoi_dcel::build_collinear_edges_with_chart(&canonical, boundary, budget, &mesh, chart)
+        voronoi_dcel::build_collinear_edges_with_chart(
+            &canonical,
+            boundary,
+            budget,
+            &mesh,
+            chart.as_ref(),
+        )
     }
 
     pub fn polygonize(&self, strict: bool) -> Result<Vec<Self>> {
