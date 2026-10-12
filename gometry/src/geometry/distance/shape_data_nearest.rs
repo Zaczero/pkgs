@@ -70,7 +70,7 @@ impl PreparedPlan {
         };
         best.map(|oriented| {
             let candidate = oriented.candidate;
-            let (mut target, source_projection) = candidate.target_point(
+            let (mut target, source_projection) = candidate.target_point::<SOURCE_CONTEXT>(
                 if oriented.swapped {
                     &self_parts.linework
                 } else {

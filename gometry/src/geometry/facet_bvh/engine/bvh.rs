@@ -90,7 +90,7 @@ impl NearestCandidate {
         }
     }
 
-    pub(crate) fn target_point(
+    pub(crate) fn target_point<const SOURCE_CONTEXT: bool>(
         &self,
         linework: &PreparedLinework,
         source_axes: CoordinateAxes,
@@ -105,10 +105,10 @@ impl NearestCandidate {
                 };
                 let projection = segment_projection(self.probe, segment)?;
                 let point = projection.interpolate_point(start, end)?;
-                let has_source_ordinates =
-                    (source_axes.has_z() && start.z().is_some() && end.z().is_some())
-                        || (source_axes.has_m() && start.m().is_some() && end.m().is_some());
-                let source =
+                let source = if SOURCE_CONTEXT {
+                    let has_source_ordinates =
+                        (source_axes.has_z() && start.z().is_some() && end.z().is_some())
+                            || (source_axes.has_m() && start.m().is_some() && end.m().is_some());
                     if has_source_ordinates && !projection.is_start() && !projection.is_end() {
                         Some(NearestSourceProjection {
                             start,
@@ -117,7 +117,10 @@ impl NearestCandidate {
                         })
                     } else {
                         None
-                    };
+                    }
+                } else {
+                    None
+                };
                 Ok((point, source))
             },
         }
