@@ -576,10 +576,10 @@ fn parameter_on_clip_segment(
     let [start_x, start_y] = &segment.exact_start;
     let [end_x, end_y] = &segment.exact_end;
     let [point_x, point_y] = &vertex.exact_xy;
-    let (start, end, point) = if start_x != end_x {
-        (start_x, end_x, point_x)
-    } else {
+    let (start, end, point) = if start_x == end_x {
         (start_y, end_y, point_y)
+    } else {
+        (start_x, end_x, point_x)
     };
     let denominator = end.try_subtract(start).unwrap();
     assert!(!denominator.is_zero());

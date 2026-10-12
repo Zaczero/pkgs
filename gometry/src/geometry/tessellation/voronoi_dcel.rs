@@ -6311,7 +6311,9 @@ fn clip_to_half_plane_with_origins(
         let end_side = exact::signed_line_product(line, end)?;
         let start_inside = start_side == keep || start_side == ExactSign::Zero;
         let end_inside = end_side == keep || end_side == ExactSign::Zero;
-        let crossing = if start_inside != end_inside {
+        let crossing = if start_inside == end_inside {
+            None
+        } else {
             Some(if start_side == ExactSign::Zero {
                 start.clone()
             } else if end_side == ExactSign::Zero {
@@ -6320,8 +6322,6 @@ fn clip_to_half_plane_with_origins(
                 let support = exact::ExactLine::through_points(start, end)?;
                 exact::line_intersection(line, &support)?
             })
-        } else {
-            None
         };
         let (piece_start, piece_end) = match (start_inside, end_inside) {
             (true, true) => (Some(start.clone()), Some(end.clone())),
