@@ -6,7 +6,6 @@ use crate::geometry::ordinates::take_source_arc_observations;
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
 use crate::geometry::segments::{SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation};
-use crate::geometry::topology::SourceTrace;
 
 #[test]
 fn planar_embedding_domain_admits_finite_coordinates_only() {
@@ -410,14 +409,19 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
         drop(take_source_arc_observations());
         let parts = inventory.subdivision_parts_with_roots(
             &partition,
-            &child,
-            Some(&traces),
-            &roots,
-            axes,
-            false,
-            [1, 2],
+            SubdivisionTraceRequest {
+                source_shape: &child,
+                source_traces: Some(&traces),
+                roots: &roots,
+                root_positions: root_xy_positions_needed.then_some(&roots),
+                declared_axes: axes,
+                strict: false,
+                clip_operands: [1, 2],
+                context: &context,
+                fallback_inventory: Some(&inventory),
+                reuse_existing_source_vertices: true,
+            },
             &mut budget,
-            &context,
             &mut trace_work,
         )?;
         let observations = take_source_arc_observations();

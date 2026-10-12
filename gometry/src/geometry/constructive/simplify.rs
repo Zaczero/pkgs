@@ -16,7 +16,8 @@ use crate::geometry::constructive::{WalkJoinRule, WalkPlan, materialize_walk, vw
 use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::ordinates::{NodeOrdinates, RequestRowInput, resolve_request_rows};
 use crate::geometry::overlay::{
-    ExactSourceInventory, SubdivisionPart, SubdivisionRootCatalog, rect_polygon,
+    ExactSourceInventory, SubdivisionPart, SubdivisionRootCatalog, SubdivisionTraceRequest,
+    rect_polygon,
 };
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
@@ -1758,14 +1759,19 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                 let mut trace_work = Unmetered;
                 inventory.subdivision_polygon_parts_with_roots(
                     &partition,
-                    &item.shape,
-                    polygon_traces,
-                    roots,
-                    declared_axes,
-                    drop,
-                    [1, 2],
+                    SubdivisionTraceRequest {
+                        source_shape: &item.shape,
+                        source_traces: Some(polygon_traces),
+                        roots,
+                        root_positions: roots.root_xy_positions_needed().then_some(roots),
+                        declared_axes,
+                        strict: drop,
+                        clip_operands: [1, 2],
+                        context,
+                        fallback_inventory: Some(&inventory),
+                        reuse_existing_source_vertices: true,
+                    },
                     budget,
-                    context,
                     &mut trace_work,
                 )?
             } else if trace_rooted {
@@ -1777,14 +1783,19 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                     })?;
                     inventory.subdivision_parts_with_budget(
                         &partition,
-                        &item.shape,
-                        item.traces.as_deref(),
-                        topology,
-                        crate::geometry::CoordinateAxes::XY,
-                        false,
-                        [1, 2],
+                        SubdivisionTraceRequest {
+                            source_shape: &item.shape,
+                            source_traces: item.traces.as_deref(),
+                            roots: topology,
+                            root_positions: None,
+                            declared_axes: crate::geometry::CoordinateAxes::XY,
+                            strict: false,
+                            clip_operands: [1, 2],
+                            context,
+                            fallback_inventory: Some(&inventory),
+                            reuse_existing_source_vertices: false,
+                        },
                         budget,
-                        context,
                         trace_work,
                     )?
                 } else {
@@ -1796,14 +1807,19 @@ fn split_with_context<M: crate::geometry::ChartMetric>(
                     let mut trace_work = Unmetered;
                     inventory.subdivision_parts_with_roots(
                         &partition,
-                        &item.shape,
-                        item.traces.as_deref(),
-                        roots,
-                        declared_axes,
-                        drop,
-                        [1, 2],
+                        SubdivisionTraceRequest {
+                            source_shape: &item.shape,
+                            source_traces: item.traces.as_deref(),
+                            roots,
+                            root_positions: roots.root_xy_positions_needed().then_some(roots),
+                            declared_axes,
+                            strict: drop,
+                            clip_operands: [1, 2],
+                            context,
+                            fallback_inventory: Some(&inventory),
+                            reuse_existing_source_vertices: true,
+                        },
                         budget,
-                        context,
                         &mut trace_work,
                     )?
                 }

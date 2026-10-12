@@ -265,24 +265,20 @@ impl<'e, 'p> ResolvedNodePoints<'e, 'p> {
     }
 }
 
-fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, W: Work, F>(
+fn resolve_traced_node_requests<'e, 'p, M: ChartMetric, C: RootCatalog, W: Work, F>(
     partition: &'p ExactPartition<'_>,
     embedding: &'e embedding::Embedding<'p>,
     nodes: &[NodeId],
     mut requests_by_node: Vec<Vec<RootRequest>>,
-    axes: CoordinateAxes,
-    root_positions: Option<&SubdivisionRootCatalog>,
+    request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
     root_xy_nodes: Option<&[bool]>,
-    fallback_inventory: Option<&ExactSourceInventory>,
-    reuse_existing_source_vertices: bool,
-    context: &SourceArcContext<'_, '_, M>,
     work: &mut W,
     resolve_rows: &mut F,
 ) -> Result<ResolvedNodePoints<'e, 'p>>
 where
     F: FnMut(&[RequestRowInput], &mut W) -> Result<Vec<NodeOrdinates>>,
 {
-    if root_positions.is_some() != root_xy_nodes.is_some() {
+    if request.root_positions.is_some() != root_xy_nodes.is_some() {
         return Err(GeometryErrorKind::Invalid(
             "subdivision root positions and node selection disagree".into(),
         )
@@ -307,11 +303,11 @@ where
     } else {
         false
     };
-    if !axes.has_z() && !axes.has_m() && !has_root_xy_nodes {
+    if !request.declared_axes.has_z() && !request.declared_axes.has_m() && !has_root_xy_nodes {
         return Ok(ResolvedNodePoints::from_embedding(embedding, None));
     }
     work.charge(u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let rooted_xy = if let Some(root_positions) = root_positions
+    let rooted_xy = if let Some(root_positions) = request.root_positions
         && has_root_xy_nodes
     {
         let root_xy_nodes = root_xy_nodes.ok_or_else(|| {
@@ -359,7 +355,7 @@ where
     } else {
         None
     };
-    if !axes.has_z() && !axes.has_m() {
+    if !request.declared_axes.has_z() && !request.declared_axes.has_m() {
         return Ok(rooted_xy.map_or_else(
             || ResolvedNodePoints::from_embedding(embedding, None),
             |rooted_xy| ResolvedNodePoints::from_embedding_with_xy(embedding, None, rooted_xy),
@@ -371,12 +367,16 @@ where
     let mut request_row_nodes = Vec::with_capacity(nodes.len());
     for &node in nodes {
         work.charge(1)?;
-        if reuse_existing_source_vertices
-            && let Some(fallback_inventory) = fallback_inventory
-            && let Some(ordinates) =
-                fallback_inventory.existing_source_vertex_ordinates(partition, node, axes, 0)?
-            && (!axes.has_z() || ordinates.z.value().is_some())
-            && (!axes.has_m() || ordinates.m.value().is_some())
+        if request.reuse_existing_source_vertices
+            && let Some(fallback_inventory) = request.fallback_inventory
+            && let Some(ordinates) = fallback_inventory.existing_source_vertex_ordinates(
+                partition,
+                node,
+                request.declared_axes,
+                0,
+            )?
+            && (!request.declared_axes.has_z() || ordinates.z.value().is_some())
+            && (!request.declared_axes.has_m() || ordinates.m.value().is_some())
         {
             let slot = by_node.get_mut(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid(
@@ -393,13 +393,13 @@ where
             GeometryErrorKind::Invalid("subdivision emission node is unknown".into())
         })?;
         if requests.is_empty() {
-            if fallback_inventory.is_some() {
+            if request.fallback_inventory.is_some() {
                 fallback_nodes.push(node);
             }
             continue;
         }
         request_rows.push(RequestRowInput {
-            axes,
+            axes: request.declared_axes,
             requests: std::mem::take(requests),
         });
         request_row_nodes.push(node);
@@ -417,7 +417,7 @@ where
         })?;
         *slot = Some((ZOrdinate(ordinate.z.value()), MOrdinate(ordinate.m.value())));
     }
-    if let Some(fallback_inventory) = fallback_inventory
+    if let Some(fallback_inventory) = request.fallback_inventory
         && !fallback_nodes.is_empty()
     {
         work.charge(u64::try_from(fallback_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
@@ -425,8 +425,8 @@ where
             partition,
             embedding,
             fallback_nodes.iter().copied(),
-            axes,
-            context,
+            request.declared_axes,
+            request.context,
             None,
         )?;
         for node in fallback_nodes {
@@ -1355,6 +1355,19 @@ struct SourceSpanTraceView {
 struct SourceLineTraceViews {
     source_ids: Vec<usize>,
     views: Vec<Vec<SourceSpanTraceView>>,
+}
+
+pub(in crate::geometry) struct SubdivisionTraceRequest<'a, 'access, 'metric, M: ChartMetric, C> {
+    pub(in crate::geometry) source_shape: &'a Shape,
+    pub(in crate::geometry) source_traces: Option<&'a [SourceTrace]>,
+    pub(in crate::geometry) roots: &'a C,
+    pub(in crate::geometry) root_positions: Option<&'a SubdivisionRootCatalog>,
+    pub(in crate::geometry) declared_axes: CoordinateAxes,
+    pub(in crate::geometry) strict: bool,
+    pub(in crate::geometry) clip_operands: [usize; 2],
+    pub(in crate::geometry) context: &'a SourceArcContext<'access, 'metric, M>,
+    pub(in crate::geometry) fallback_inventory: Option<&'a ExactSourceInventory>,
+    pub(in crate::geometry) reuse_existing_source_vertices: bool,
 }
 
 struct PolygonNodeRootRequests {
@@ -3296,99 +3309,49 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn subdivision_parts_with_budget<M: ChartMetric, C: RootCatalog>(
         &self,
         partition: &ExactPartition<'_>,
-        source_shape: &Shape,
-        source_traces: Option<&[SourceTrace]>,
-        roots: &C,
-        declared_axes: CoordinateAxes,
-        strict: bool,
-        clip_operands: [usize; 2],
+        request: SubdivisionTraceRequest<'_, '_, '_, M, C>,
         budget: &mut ExpansionBudget,
-        context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut EvaluationBudget,
     ) -> Result<[SubdivisionPart; 2]> {
+        let roots = request.roots;
+        let context = request.context;
         let mut resolve_rows = |rows: &[RequestRowInput], work: &mut EvaluationBudget| {
             resolve_request_rows(rows, roots, context.metric_access(), work)
         };
-        self.subdivision_parts_traced(
-            partition,
-            source_shape,
-            source_traces,
-            roots,
-            None,
-            declared_axes,
-            strict,
-            clip_operands,
-            budget,
-            context,
-            trace_work,
-            false,
-            &mut resolve_rows,
-        )
+        self.subdivision_parts_traced(partition, &request, budget, trace_work, &mut resolve_rows)
     }
 
     pub(in crate::geometry) fn subdivision_parts_with_roots<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
-        source_shape: &Shape,
-        source_traces: Option<&[SourceTrace]>,
-        roots: &SubdivisionRootCatalog,
-        declared_axes: CoordinateAxes,
-        strict: bool,
-        clip_operands: [usize; 2],
+        request: SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
         budget: &mut ExpansionBudget,
-        context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
-        let root_positions = roots.root_xy_positions_needed().then_some(roots);
+        let roots = request.roots;
+        let context = request.context;
         let mut resolve_rows = |rows: &[RequestRowInput], work: &mut Unmetered| {
             roots.resolve_output_requests(rows, context.metric_access(), work)
         };
-        match source_traces {
+        match request.source_traces {
             None => self.subdivision_parts_traced(
                 partition,
-                source_shape,
-                None,
-                roots,
-                root_positions,
-                declared_axes,
-                strict,
-                clip_operands,
+                &request,
                 budget,
-                context,
                 trace_work,
-                false,
                 &mut resolve_rows,
             ),
-            Some(source_traces) => {
-                if LineSource::from_shape(source_shape).is_some() {
+            Some(_) => {
+                if LineSource::from_shape(request.source_shape).is_some() {
                     return self.subdivision_parts_traced(
                         partition,
-                        source_shape,
-                        Some(source_traces),
-                        roots,
-                        root_positions,
-                        declared_axes,
-                        strict,
-                        clip_operands,
+                        &request,
                         budget,
-                        context,
                         trace_work,
-                        true,
                         &mut resolve_rows,
                     );
                 }
-                self.subdivision_polygon_parts_with_roots(
-                    partition,
-                    source_shape,
-                    source_traces,
-                    roots,
-                    declared_axes,
-                    strict,
-                    clip_operands,
-                    budget,
-                    context,
-                    trace_work,
-                )
+                self.subdivision_polygon_parts_with_roots(partition, request, budget, trace_work)
             },
         }
     }
@@ -3396,16 +3359,19 @@ impl ExactSourceInventory {
     pub(in crate::geometry) fn subdivision_polygon_parts_with_roots<M: ChartMetric>(
         &self,
         partition: &ExactPartition<'_>,
-        source_shape: &Shape,
-        source_traces: &[SourceTrace],
-        roots: &SubdivisionRootCatalog,
-        declared_axes: CoordinateAxes,
-        strict: bool,
-        clip_operands: [usize; 2],
+        request: SubdivisionTraceRequest<'_, '_, '_, M, SubdivisionRootCatalog>,
         budget: &mut ExpansionBudget,
-        context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut Unmetered,
     ) -> Result<[SubdivisionPart; 2]> {
+        let source_shape = request.source_shape;
+        let source_traces = request.source_traces.ok_or_else(|| {
+            GeometryErrorKind::Invalid("polygon subdivision source traces are missing".into())
+        })?;
+        let roots = request.roots;
+        let declared_axes = request.declared_axes;
+        let strict = request.strict;
+        let clip_operands = request.clip_operands;
+        let context = request.context;
         let ring_ranges = polygon_source_ring_ranges(source_shape)?;
         if source_traces.len() != ring_ranges.len() {
             return Err(GeometryErrorKind::Invalid(
@@ -3508,7 +3474,7 @@ impl ExactSourceInventory {
             }
         }
         let views = self.source_line_trace_views(partition, trace_work)?;
-        let root_positions = roots.root_xy_positions_needed().then_some(roots);
+        let root_positions = request.root_positions;
         let polygon_requests = self.polygon_node_root_requests(
             partition,
             &nodes,
@@ -3535,12 +3501,8 @@ impl ExactSourceInventory {
             &embedding,
             &nodes,
             polygon_requests.by_node,
-            declared_axes,
-            root_positions,
+            &request,
             polygon_requests.root_xy_nodes.as_deref(),
-            Some(self),
-            true,
-            context,
             trace_work,
             &mut resolve_rows,
         )?;
@@ -3628,28 +3590,20 @@ impl ExactSourceInventory {
     >(
         &self,
         partition: &ExactPartition<'_>,
-        source_shape: &Shape,
-        source_traces: Option<&[SourceTrace]>,
-        roots: &C,
-        root_positions: Option<&SubdivisionRootCatalog>,
-        declared_axes: crate::geometry::CoordinateAxes,
-        strict: bool,
-        clip_operands: [usize; 2],
+        request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
         budget: &mut ExpansionBudget,
-        context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut W,
-        reuse_existing_source_vertices: bool,
         resolve_rows: &mut F,
     ) -> Result<[SubdivisionPart; 2]> {
-        let Some(source_traces) = source_traces else {
+        let Some(source_traces) = request.source_traces else {
             let [left, right] = self.subdivision_parts(
                 partition,
-                source_shape,
-                declared_axes,
-                strict,
-                clip_operands,
+                request.source_shape,
+                request.declared_axes,
+                request.strict,
+                request.clip_operands,
                 budget,
-                context,
+                request.context,
             )?;
             return Ok([
                 SubdivisionPart {
@@ -3664,7 +3618,7 @@ impl ExactSourceInventory {
                 },
             ]);
         };
-        let source = LineSource::from_shape(source_shape).ok_or_else(|| {
+        let source = LineSource::from_shape(request.source_shape).ok_or_else(|| {
             GeometryErrorKind::Invalid("source trace was attached to a non-line shape".into())
         })?;
         let ranges = source_line_ranges(source)?;
@@ -3675,7 +3629,8 @@ impl ExactSourceInventory {
             .into());
         }
         let operands = self.operand_count();
-        if clip_operands
+        if request
+            .clip_operands
             .iter()
             .any(|&operand| operand >= operands || operand == 0)
         {
@@ -3689,8 +3644,8 @@ impl ExactSourceInventory {
         let winding_rings = self.winding_source_rings();
         let facts =
             self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
-        let mut selected = Vec::with_capacity(clip_operands.len());
-        for &clip_operand in &clip_operands {
+        let mut selected = Vec::with_capacity(request.clip_operands.len());
+        for &clip_operand in &request.clip_operands {
             let cells = self.select_subdivision_cells(
                 partition,
                 &topology,
@@ -3753,11 +3708,7 @@ impl ExactSourceInventory {
             &nodes,
             &run_plans,
             source_traces,
-            declared_axes,
-            root_positions,
-            reuse_existing_source_vertices.then_some(self),
-            reuse_existing_source_vertices,
-            context,
+            request,
             trace_work,
             resolve_rows,
         )?;
@@ -3768,11 +3719,7 @@ impl ExactSourceInventory {
                 runs,
                 source_traces,
                 &by_node,
-                roots,
-                root_positions,
-                declared_axes,
-                strict,
-                context,
+                request,
                 trace_work,
             )?);
         }
@@ -4200,6 +4147,7 @@ impl ExactSourceInventory {
         'e,
         'p,
         M: ChartMetric,
+        C: RootCatalog,
         W: Work,
         F: FnMut(&[RequestRowInput], &mut W) -> Result<Vec<NodeOrdinates>>,
     >(
@@ -4209,15 +4157,14 @@ impl ExactSourceInventory {
         nodes: &[NodeId],
         run_plans: &[Vec<SourceLineRun>],
         source_traces: &[SourceTrace],
-        axes: CoordinateAxes,
-        root_positions: Option<&SubdivisionRootCatalog>,
-        fallback_inventory: Option<&ExactSourceInventory>,
-        reuse_existing_source_vertices: bool,
-        context: &SourceArcContext<'_, '_, M>,
+        request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
         work: &mut W,
         resolve_rows: &mut F,
     ) -> Result<ResolvedNodePoints<'e, 'p>> {
-        if !axes.has_z() && !axes.has_m() && root_positions.is_none() {
+        if !request.declared_axes.has_z()
+            && !request.declared_axes.has_m()
+            && request.root_positions.is_none()
+        {
             return Ok(ResolvedNodePoints::from_embedding(embedding, None));
         }
         work.charge(
@@ -4225,7 +4172,9 @@ impl ExactSourceInventory {
         )?;
         let mut requests_by_node = Vec::new();
         requests_by_node.resize_with(partition.node_count(), Vec::new);
-        let mut root_xy_nodes = root_positions.map(|_| vec![false; partition.node_count()]);
+        let mut root_xy_nodes = request
+            .root_positions
+            .map(|_| vec![false; partition.node_count()]);
         for runs in run_plans {
             for run in runs {
                 if run.nodes.len() != run.trace_slices.len().saturating_add(1) {
@@ -4283,12 +4232,8 @@ impl ExactSourceInventory {
             embedding,
             nodes,
             requests_by_node,
-            axes,
-            root_positions,
+            request,
             root_xy_nodes.as_deref(),
-            fallback_inventory,
-            reuse_existing_source_vertices,
-            context,
             work,
             resolve_rows,
         )
@@ -4582,13 +4527,14 @@ impl ExactSourceInventory {
         runs: Vec<SourceLineRun>,
         source_traces: &[SourceTrace],
         by_node: &ResolvedNodePoints,
-        roots: &C,
-        root_positions: Option<&SubdivisionRootCatalog>,
-        declared_axes: CoordinateAxes,
-        strict: bool,
-        context: &SourceArcContext<'_, '_, M>,
+        request: &SubdivisionTraceRequest<'_, '_, '_, M, C>,
         work: &mut W,
     ) -> Result<SubdivisionPart> {
+        let roots = request.roots;
+        let root_positions = request.root_positions;
+        let declared_axes = request.declared_axes;
+        let strict = request.strict;
+        let context = request.context;
         if root_positions.is_none() {
             let node_count = runs.iter().try_fold(0_usize, |count, run| {
                 count

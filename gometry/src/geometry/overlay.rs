@@ -127,10 +127,10 @@ pub(in crate::geometry) use exact_partition::{
     AreaLocationStrategy, ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport,
     ExactPartition, ExactPointForest, ExactSourceInventory, GlobalFaces, NodeId, RayAxis,
     RayPoints, StagedExactSources, StagedRelationItem, StagedSourceComponent, SubdivisionPart,
-    SubdivisionRootCatalog, clip_polygonal_rectangle, compare_departures_with_work,
-    emitted_pair_preserves_incidence, graph_global_faces_with_work, homogeneous_midpoint,
-    segments_within_chebyshev, shoot_left, shoot_left_with_work, visit_component_faces,
-    walk_is_shell_with_work,
+    SubdivisionRootCatalog, SubdivisionTraceRequest, clip_polygonal_rectangle,
+    compare_departures_with_work, emitted_pair_preserves_incidence, graph_global_faces_with_work,
+    homogeneous_midpoint, segments_within_chebyshev, shoot_left, shoot_left_with_work,
+    visit_component_faces, walk_is_shell_with_work,
 };
 pub(crate) use exact_partition::{
     exact_intersects_bounds, occupied_cartesian_area, occupied_cartesian_support,
