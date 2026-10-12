@@ -5,11 +5,11 @@
 use std::ops::Range;
 
 use crate::error::Result;
-use crate::geometry::column_all_finite;
 use crate::geometry::types::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, SharedSlice, XY, ZOrdinate,
     ensure_coordseq_vertex_capacity,
 };
+use crate::geometry::{Unmetered, Work, column_all_finite};
 
 /// One sequence's shared column storage and coordinate row window (see
 /// [`CoordSeq::column_arcs`]).
@@ -412,6 +412,27 @@ fn columns_all_finite(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f
         && ms.is_none_or(column_all_finite)
 }
 
+fn reserve_point_column(count: usize, work: &mut impl Work) -> Result<Vec<f64>> {
+    work.charge_product(count, 1)?;
+    Ok(Vec::with_capacity(count))
+}
+
+fn copy_point_column(
+    points: &[Point],
+    column: &mut Vec<f64>,
+    ordinate: impl FnMut(Point) -> f64,
+    work: &mut impl Work,
+) -> Result<()> {
+    work.charge_product(points.len(), 1)?;
+    column.extend(points.iter().copied().map(ordinate));
+    Ok(())
+}
+
+fn point_column_all_finite(values: &[f64], work: &mut impl Work) -> Result<bool> {
+    work.charge_product(values.len(), 1)?;
+    Ok(column_all_finite(values))
+}
+
 impl CoordSeq {
     /// Empty sequence with the given axes.
     pub fn empty(axes: CoordinateAxes) -> Self {
@@ -428,6 +449,15 @@ impl CoordSeq {
 
     /// Fallible point gather for untrusted and resource-covered ingestion.
     pub fn try_from_points(points: &[Point]) -> Result<Self> {
+        Self::try_from_points_with_work(points, &mut Unmetered)
+    }
+
+    /// Construct the active columns while charging each lane's reserve, copy,
+    /// and finiteness pass to the Native operation account.
+    pub(crate) fn try_from_points_with_work(
+        points: &[Point],
+        work: &mut impl Work,
+    ) -> Result<Self> {
         let Some(first) = points.first() else {
             return Ok(Self::empty(CoordinateAxes::XY));
         };
@@ -439,19 +469,37 @@ impl CoordSeq {
             .into());
         }
         ensure_coordseq_vertex_capacity(points.len())?;
-        let mut xs = Vec::with_capacity(points.len());
-        let mut ys = Vec::with_capacity(points.len());
-        let mut zs = first.axes.has_z().then(|| Vec::with_capacity(points.len()));
-        let mut ms = first.axes.has_m().then(|| Vec::with_capacity(points.len()));
-        xs.extend(points.iter().map(|point| point.x));
-        ys.extend(points.iter().map(|point| point.y));
+        let mut xs = reserve_point_column(points.len(), work)?;
+        let mut ys = reserve_point_column(points.len(), work)?;
+        let mut zs = if first.axes.has_z() {
+            Some(reserve_point_column(points.len(), work)?)
+        } else {
+            None
+        };
+        let mut ms = if first.axes.has_m() {
+            Some(reserve_point_column(points.len(), work)?)
+        } else {
+            None
+        };
+        copy_point_column(points, &mut xs, |point| point.x, work)?;
+        copy_point_column(points, &mut ys, |point| point.y, work)?;
         if let Some(zs) = &mut zs {
-            zs.extend(points.iter().map(|point| point.z));
+            copy_point_column(points, zs, |point| point.z, work)?;
         }
         if let Some(ms) = &mut ms {
-            ms.extend(points.iter().map(|point| point.m));
+            copy_point_column(points, ms, |point| point.m, work)?;
         }
-        if !columns_all_finite(&xs, &ys, zs.as_deref(), ms.as_deref()) {
+        if !point_column_all_finite(&xs, work)? || !point_column_all_finite(&ys, work)? {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        if let Some(zs) = &zs
+            && !point_column_all_finite(zs, work)?
+        {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        if let Some(ms) = &ms
+            && !point_column_all_finite(ms, work)?
+        {
             return Err(GeometryErrorKind::NonFiniteCoordinate.into());
         }
         Self::try_from_vecs(xs, ys, zs, ms)
@@ -1034,6 +1082,194 @@ mod mask_selection_tests {
             (-0.0_f64).to_bits(),
             nan.to_bits()
         ]);
+    }
+}
+
+#[cfg(test)]
+mod work_funded_constructor_tests {
+    use super::*;
+    use crate::geometry::embedding_search::{EvaluationBudget, EvaluationOnly};
+
+    struct RecordingWork {
+        budget: EvaluationBudget,
+        attempted: Vec<u64>,
+        accepted: Vec<u64>,
+    }
+
+    impl RecordingWork {
+        fn with_remaining(remaining_ticks: u128) -> crate::error::Result<Self> {
+            Ok(Self {
+                budget: EvaluationBudget::with_remaining_ticks_for_test(
+                    "coordinate columns",
+                    1,
+                    remaining_ticks,
+                )?,
+                attempted: Vec::new(),
+                accepted: Vec::new(),
+            })
+        }
+    }
+
+    impl Work for RecordingWork {
+        fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
+            self.attempted.push(ticks);
+            self.budget.charge(ticks)?;
+            self.accepted.push(ticks);
+            Ok(())
+        }
+    }
+
+    fn search_limit(error: &crate::error::Error) -> bool {
+        matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactEmbeddingSearchLimit {
+                operation: "coordinate columns",
+                constructed: 1,
+                ..
+            })
+        )
+    }
+
+    fn record_bits(coords: &CoordSeq) -> Vec<[u64; 4]> {
+        coords
+            .iter()
+            .map(|point| {
+                [
+                    point.x.to_bits(),
+                    point.y.to_bits(),
+                    point.z.to_bits(),
+                    point.m.to_bits(),
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before coordinate-column allocation"
+    )]
+    fn column_reservation_refuses_before_allocating() -> crate::error::Result<()> {
+        let mut work = RecordingWork::with_remaining(0)?;
+
+        let Err(error) = reserve_point_column(2, &mut work) else {
+            return Err(GeometryErrorKind::Invalid(
+                "coordinate column reserved without work allowance".into(),
+            )
+            .into());
+        };
+
+        assert!(search_limit(&error));
+        assert_eq!(work.attempted, [2]);
+        assert!(work.accepted.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before point reads or output writes"
+    )]
+    fn column_copy_refuses_before_reading_or_writing_points() -> crate::error::Result<()> {
+        let points = [Point::new_raw_xy(1.0, 2.0), Point::new_raw_xy(3.0, 4.0)];
+        let mut output = vec![99.0];
+        let reads = std::cell::Cell::new(0);
+        let mut work = RecordingWork::with_remaining(0)?;
+
+        let error = match copy_point_column(
+            &points,
+            &mut output,
+            |point| {
+                reads.set(reads.get() + 1);
+                point.x
+            },
+            &mut work,
+        ) {
+            Ok(()) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "coordinate column copied without work allowance".into(),
+                )
+                .into());
+            },
+            Err(error) => error,
+        };
+
+        assert!(search_limit(&error));
+        assert_eq!(work.attempted, [2]);
+        assert!(work.accepted.is_empty());
+        assert_eq!(reads.get(), 0);
+        assert_eq!(output, [99.0]);
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before coordinate-value inspection"
+    )]
+    fn column_finiteness_pass_refuses_before_inspecting_values() -> crate::error::Result<()> {
+        let values = [1.0, f64::NAN];
+        let mut work = RecordingWork::with_remaining(0)?;
+
+        let Err(error) = point_column_all_finite(&values, &mut work) else {
+            return Err(GeometryErrorKind::Invalid(
+                "coordinate column was scanned without work allowance".into(),
+            )
+            .into());
+        };
+
+        assert!(search_limit(&error));
+        assert_eq!(work.attempted, [2]);
+        assert!(work.accepted.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin coordinate bits and funded column-phase counts"
+    )]
+    fn xyzm_column_phases_are_billed_and_ordinary_policies_erase_them() -> crate::error::Result<()>
+    {
+        let points = [
+            Point::new_raw_axes(-0.0, 1.25, ZOrdinate(Some(2.5)), MOrdinate(Some(3.75))),
+            Point::new_raw_axes(4.5, -0.0, ZOrdinate(Some(5.25)), MOrdinate(Some(6.75))),
+        ];
+        let expected = vec![
+            [
+                (-0.0_f64).to_bits(),
+                1.25_f64.to_bits(),
+                2.5_f64.to_bits(),
+                3.75_f64.to_bits(),
+            ],
+            [
+                4.5_f64.to_bits(),
+                (-0.0_f64).to_bits(),
+                5.25_f64.to_bits(),
+                6.75_f64.to_bits(),
+            ],
+        ];
+        let ordinary = CoordSeq::try_from_points(&points)?;
+        let mut unmetered = Unmetered;
+        let native_unmetered = CoordSeq::try_from_points_with_work(&points, &mut unmetered)?;
+        let mut budget =
+            EvaluationBudget::with_remaining_ticks_for_test("coordinate columns", 1, 1)?;
+        let evaluation_only = {
+            let mut work = EvaluationOnly::new(&mut budget);
+            CoordSeq::try_from_points_with_work(&points, &mut work)?
+        };
+        <EvaluationBudget as Work>::charge(&mut budget, 1)?;
+
+        let mut work = RecordingWork::with_remaining(100)?;
+        let funded = CoordSeq::try_from_points_with_work(&points, &mut work)?;
+
+        assert_eq!(record_bits(&ordinary), expected);
+        assert_eq!(record_bits(&native_unmetered), expected);
+        assert_eq!(record_bits(&evaluation_only), expected);
+        assert_eq!(record_bits(&funded), expected);
+        assert_eq!(work.attempted, [2; 12]);
+        assert_eq!(work.accepted, [2; 12]);
+        Ok(())
     }
 }
 

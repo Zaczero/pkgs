@@ -226,20 +226,17 @@ fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
         .source_span_trace_views(&inventory.source_segments, &mut work)
         .unwrap();
     let selected = vec![false; partition.spans.len()];
-    let traces = [
-        crate::geometry::topology::SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap(),
-    ];
+    let traces = [SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap()];
 
     assert!(
         ranges.iter().map(Range::len).sum::<usize>() < views.len(),
         "the partition inventory includes clip-rectangle segments"
     );
     reset_source_line_runs_calls();
-    let error = match inventory
-        .source_line_runs(&partition, &ranges, &views, &selected, &traces, &mut work)
-    {
-        Ok(_) => panic!("clip-rectangle segments have no source-line trace"),
-        Err(error) => error,
+    let Err(error) =
+        inventory.source_line_runs(&partition, &ranges, &views, &selected, &traces, &mut work)
+    else {
+        panic!("clip-rectangle segments have no source-line trace");
     };
     assert_eq!(source_line_runs_calls(), 1);
     assert!(
@@ -6736,10 +6733,10 @@ impl<P: Problem<Output = ()>> Problem for TestVerifier<'_, P> {
         right: Self::Node,
         work: &mut W,
     ) -> Result<Ordering> {
-        match self.node_order {
-            Some(compare) => Ok(compare(left, right)),
-            None => self.inner.compare_nodes(left, right, work),
-        }
+        self.node_order.map_or_else(
+            || self.inner.compare_nodes(left, right, work),
+            |compare| Ok(compare(left, right)),
+        )
     }
 
     fn fill_candidates<W: Work>(
