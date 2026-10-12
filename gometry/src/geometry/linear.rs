@@ -114,6 +114,10 @@ impl Shape {
         tolerance: f64,
         context: &SourceArcContext<'_, '_, M>,
     ) -> Result<Vec<Self>> {
+        let axes = self.axes();
+        if (!axes.has_z() && !axes.has_m()) || !context.domain().is_geographic() {
+            return self.split_at_points(splitters, tolerance);
+        }
         self.split_at_points_impl(
             splitters,
             tolerance,

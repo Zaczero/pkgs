@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 
-use crate::dispatch::{MetricOp, MetricResolver, kernels};
+use crate::dispatch::{MetricCtx, MetricOp, MetricResolver, kernels};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
 pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult<Py<PyAny>> {
@@ -275,20 +275,25 @@ fn snap_prepared(
     context: &crate::dispatch::CachelessRowContext<'_>,
 ) -> crate::error::Result<crate::geometry::Shape> {
     let source = left.shape();
-    let axes = source.axes();
-    if !axes.has_z() && !axes.has_m() {
-        return source.snap(right.shape(), tolerance);
+    match context.metric {
+        MetricCtx::GeographicCarry { .. } => {
+            let metric_access = || {
+                context.metric.geographic_chart_metric()?.ok_or_else(|| {
+                    crate::crs::CrsError::invalid(
+                        "geographic snap source ordinates require the operation's CRS metric",
+                    )
+                })
+            };
+            let source_context =
+                crate::geometry::SourceArcContext::new(context.domain, Some(&metric_access));
+            source.snap_with_context(right.shape(), tolerance, &source_context)
+        },
+        MetricCtx::None => source.snap(right.shape(), tolerance),
+        MetricCtx::Antimeridian | MetricCtx::Metric { .. } => Err(crate::crs::CrsError::invalid(
+            "internal dispatch error: snap requires no metric or geographic carry",
+        )
+        .into()),
     }
-    let metric_access = || {
-        context.metric.geographic_chart_metric()?.ok_or_else(|| {
-            crate::crs::CrsError::invalid(
-                "geographic snap source ordinates require the operation's CRS metric",
-            )
-        })
-    };
-    let source_context =
-        crate::geometry::SourceArcContext::new(context.domain, Some(&metric_access));
-    source.snap_with_context(right.shape(), tolerance, &source_context)
 }
 
 /// Snap vertices of ``geom`` onto ``reference`` within ``tolerance``.
