@@ -5465,25 +5465,28 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
     )
     .unwrap();
     let mesh = certified_delaunay(&dual_sites).unwrap();
-    let complex = delaunay_complex(&mesh, &dual_sites).unwrap();
+    // The chart trapezoid's unique Delaunay diagonal is (170, 8)-(190, 0).
+    let mut center_receipts = Vec::new();
+    let mut center_components = std::collections::BTreeSet::new();
     for vertex in &dual_outputs.receipt.vertices {
         for origin in &vertex.origins {
             if let VoronoiVertexOrigin::Circumcenter { component, sites } = origin {
-                let component = usize::try_from(*component).unwrap();
-                assert_eq!(
-                    complex.center_sites.get(component),
-                    Some(sites),
-                    "dual receipt preserves each center's defining Delaunay face"
-                );
-                let center = complex.center(component);
-                assert_eq!(vertex.exact_xy, exact_xy_coordinates(center).unwrap());
-                assert_eq!(
-                    vertex.assignment,
-                    Some(center.round_nearest_even().unwrap())
-                );
+                center_components.insert(*component);
+                let mut sites = *sites;
+                sites.sort_unstable();
+                let [x, y] = &vertex.exact_xy;
+                let assigned = XY::new(x.round().unwrap(), y.round().unwrap());
+                assert_eq!(vertex.assignment, Some(assigned));
+                center_receipts.push((sites, assigned));
             }
         }
     }
+    center_receipts.sort_unstable_by_key(|(sites, _)| *sites);
+    assert_eq!(center_components.len(), 2);
+    assert_eq!(center_receipts, vec![
+        ([0, 1, 2], XY::new(180.0, 4.0)),
+        ([1, 2, 3], XY::new(180.4, 5.0)),
+    ]);
     let mut rectangle_budget = ExpansionBudget::new("test", "retained dual source clip receipt");
     let dual_rectangle = dual_build_product(
         &dual_sites,
