@@ -1321,7 +1321,7 @@ mod tests {
                 Ok(())
             })
             .expect("face occupancy sweep");
-        owners.sort();
+        owners.sort_unstable();
         owners
     }
 
