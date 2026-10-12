@@ -18,6 +18,7 @@ use crate::geometry::ordinates::{NodeOrdinates, RequestRowInput, resolve_request
 use crate::geometry::overlay::{
     ExactSourceInventory, SubdivisionPart, SubdivisionRootCatalog, rect_polygon,
 };
+use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::topology::overlay::prepare_native_source_lines;
 use crate::geometry::topology::{FeatureFamilyRegistry, PreparedNativeSource, SourceTrace};
@@ -500,11 +501,9 @@ fn source_ordinates<W: Work>(
         )
         .into());
     }
-    crate::geometry::segments::try_sort_by_with_work(
-        &mut ordinates,
-        work,
-        |left, right, _work| Ok(left.total_cmp(right)),
-    )?;
+    try_sort_by_with_work(&mut ordinates, work, |left, right, _work| {
+        Ok(left.total_cmp(right))
+    })?;
     let mut unique = 0_usize;
     for index in 0..ordinates.len() {
         work.charge(1)?;
@@ -981,7 +980,7 @@ struct TracedLineReconstruction {
 fn traced_output_axes(
     declared_axes: crate::geometry::CoordinateAxes,
     row_ranges: &[std::ops::Range<usize>],
-    ordinates: &[crate::geometry::ordinates::NodeOrdinates],
+    ordinates: &[NodeOrdinates],
     strict: bool,
 ) -> Result<crate::geometry::CoordinateAxes> {
     let mut has_z = declared_axes.has_z();
@@ -1008,7 +1007,7 @@ fn traced_output_axes(
 
 fn point_with_traced_ordinates(
     point: Point,
-    ordinate: crate::geometry::ordinates::NodeOrdinates,
+    ordinate: NodeOrdinates,
     axes: crate::geometry::CoordinateAxes,
 ) -> Point {
     Point::new_raw_axes(
@@ -3325,7 +3324,9 @@ mod keep_mask_scratch_tests {
 #[cfg(test)]
 mod subdivision_tests {
     use super::*;
+    use crate::crs;
     use crate::geometry::overlay::{partition_calls, reset_partition_calls};
+    use crate::geometry::{ordinates, overlay};
 
     fn ring_shape(points: &[Point]) -> Shape {
         Shape::Polygon(Polygon::new(
@@ -3340,12 +3341,12 @@ mod subdivision_tests {
         ))
     }
 
-    fn wgs84_geodesic_metric() -> Result<(GeographicFrame, crate::crs::GeodesicMetric)> {
-        let model = crate::crs::metric_model(Some("EPSG:4326"))?;
-        let crate::crs::MetricModel::Geodesic { frame, .. } = &model else {
-            return Err(crate::crs::CrsError::invalid("WGS84 test CRS is not geographic").into());
+    fn wgs84_geodesic_metric() -> Result<(GeographicFrame, GeodesicMetric)> {
+        let model = crs::metric_model(Some("EPSG:4326"))?;
+        let crs::MetricModel::Geodesic { frame, .. } = &model else {
+            return Err(crs::CrsError::invalid("WGS84 test CRS is not geographic").into());
         };
-        Ok((*frame, crate::crs::GeodesicMetric::from_model(&model)?))
+        Ok((*frame, crs::GeodesicMetric::from_model(&model)?))
     }
 
     fn subdivision_output_vertices(parts: &[Shape]) -> usize {
@@ -3451,8 +3452,8 @@ mod subdivision_tests {
             crate::geographic::AngularFactor::try_new("latitude", std::f64::consts::PI / 2000.0)
                 .unwrap();
         let frame = crate::geographic::GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
-        let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
-            Err(crate::crs::CrsError::invalid(
+        let no_metric = || -> Result<&crs::GeodesicMetric> {
+            Err(crs::CrsError::invalid(
                 "unexpected source-arc metric access",
             ))
         };
@@ -3528,7 +3529,7 @@ mod subdivision_tests {
             .collect::<Vec<_>>();
         points.push(points[0]);
         let shape = ring_shape(&points);
-        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+        let context: SourceArcContext<'_, '_, crs::GeodesicMetric> = SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
             None,
         );
@@ -3536,20 +3537,14 @@ mod subdivision_tests {
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
         reset_ordinary_root_catalog_builds();
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        ordinates::reset_root_range_mapping_counts();
+        overlay::reset_subdivision_root_xy_position_calls();
         split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
         assert_eq!(parts.len(), 16);
         assert_eq!(ordinary_root_catalog_builds(), 0);
-        assert_eq!(
-            crate::geometry::ordinates::root_range_mapping_counts(),
-            (0, 0)
-        );
-        assert_eq!(
-            crate::geometry::overlay::subdivision_root_xy_position_calls(),
-            0
-        );
+        assert_eq!(ordinates::root_range_mapping_counts(), (0, 0));
+        assert_eq!(overlay::subdivision_root_xy_position_calls(), 0);
         let mut counts = ShapeCountQuery::default();
         assert!(parts.iter().all(|part| {
             counts
@@ -3571,7 +3566,7 @@ mod subdivision_tests {
             })
             .collect::<Vec<_>>();
         let shape = line_shape(&points);
-        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+        let context: SourceArcContext<'_, '_, crs::GeodesicMetric> = SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
             None,
         );
@@ -3579,20 +3574,14 @@ mod subdivision_tests {
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
         reset_ordinary_root_catalog_builds();
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        ordinates::reset_root_range_mapping_counts();
+        overlay::reset_subdivision_root_xy_position_calls();
         split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
         assert_eq!(parts.len(), 16);
         assert_eq!(ordinary_root_catalog_builds(), 0);
-        assert_eq!(
-            crate::geometry::ordinates::root_range_mapping_counts(),
-            (0, 0)
-        );
-        assert_eq!(
-            crate::geometry::overlay::subdivision_root_xy_position_calls(),
-            0
-        );
+        assert_eq!(ordinates::root_range_mapping_counts(), (0, 0));
+        assert_eq!(overlay::subdivision_root_xy_position_calls(), 0);
         assert!(parts.iter().all(|part| {
             ShapeCountQuery::default()
                 .coordinate_count(part)
@@ -3611,8 +3600,8 @@ mod subdivision_tests {
         let mut wide_parts = Vec::new();
         let mut wide_budget = ExpansionBudget::new("subdivide", "max_vertices");
         reset_ordinary_root_catalog_builds();
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        ordinates::reset_root_range_mapping_counts();
+        overlay::reset_subdivision_root_xy_position_calls();
         split(
             line_shape(&wide_points),
             16,
@@ -3623,14 +3612,8 @@ mod subdivision_tests {
         )?;
         assert_eq!(wide_parts.len(), 16);
         assert_eq!(ordinary_root_catalog_builds(), 0);
-        assert_eq!(
-            crate::geometry::ordinates::root_range_mapping_counts(),
-            (0, 0)
-        );
-        assert_eq!(
-            crate::geometry::overlay::subdivision_root_xy_position_calls(),
-            0
-        );
+        assert_eq!(ordinates::root_range_mapping_counts(), (0, 0));
+        assert_eq!(overlay::subdivision_root_xy_position_calls(), 0);
         Ok(())
     }
 
@@ -3645,7 +3628,7 @@ mod subdivision_tests {
             Point::new_raw_xy(-178.0 + 28.0 * fraction, 31.0 + 4.0 * fraction)
         }));
         let shape = line_shape(&points);
-        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+        let context: SourceArcContext<'_, '_, crs::GeodesicMetric> = SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
             None,
         );
@@ -3653,8 +3636,8 @@ mod subdivision_tests {
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
         reset_ordinary_root_catalog_builds();
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        ordinates::reset_root_range_mapping_counts();
+        overlay::reset_subdivision_root_xy_position_calls();
         reset_subdivision_work();
         split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
@@ -3665,15 +3648,14 @@ mod subdivision_tests {
                 .coordinate_count(part)
                 .is_some_and(|count| count <= 16)
         }));
-        let (endpoint_requests, interior_mappings) =
-            crate::geometry::ordinates::root_range_mapping_counts();
+        let (endpoint_requests, interior_mappings) = ordinates::root_range_mapping_counts();
         assert!(endpoint_requests > 0);
         assert!(
             interior_mappings <= subdivision_output_vertices(&parts).saturating_mul(4),
             "only inserted cut vertices need interior original-root mapping"
         );
         assert!(
-            crate::geometry::overlay::subdivision_root_xy_position_calls()
+            overlay::subdivision_root_xy_position_calls()
                 <= subdivision_output_vertices(&parts).saturating_mul(4),
             "root XY correction should only visit emitted cut vertices"
         );
@@ -3697,7 +3679,7 @@ mod subdivision_tests {
         ]
         .map(|(x, y)| Point::new_raw_xy(x, y));
         let shape = ring_shape(&points);
-        let context: SourceArcContext<'_, '_, crate::crs::GeodesicMetric> = SourceArcContext::new(
+        let context: SourceArcContext<'_, '_, crs::GeodesicMetric> = SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(GeographicFrame::crs84()),
             None,
         );
@@ -3705,20 +3687,14 @@ mod subdivision_tests {
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
         reset_ordinary_root_catalog_builds();
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        ordinates::reset_root_range_mapping_counts();
+        overlay::reset_subdivision_root_xy_position_calls();
         split(shape, 8, false, &context, &mut parts, &mut budget)?;
 
         assert_eq!(parts.len(), 2);
         assert_eq!(ordinary_root_catalog_builds(), 0);
-        assert_eq!(
-            crate::geometry::ordinates::root_range_mapping_counts(),
-            (0, 0)
-        );
-        assert_eq!(
-            crate::geometry::overlay::subdivision_root_xy_position_calls(),
-            0
-        );
+        assert_eq!(ordinates::root_range_mapping_counts(), (0, 0));
+        assert_eq!(overlay::subdivision_root_xy_position_calls(), 0);
         assert!(parts.iter().all(|part| {
             ShapeCountQuery::default()
                 .coordinate_count(part)
@@ -3731,7 +3707,7 @@ mod subdivision_tests {
     fn ordinary_geographic_zm_polygon_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()>
     {
         let (frame, metric) = wgs84_geodesic_metric()?;
-        let metric_access = || -> Result<&crate::crs::GeodesicMetric> { Ok(&metric) };
+        let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
         let context = SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(frame),
             Some(&metric_access),
@@ -3753,30 +3729,26 @@ mod subdivision_tests {
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
         reset_ordinary_root_catalog_builds();
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        ordinates::reset_root_range_mapping_counts();
+        overlay::reset_subdivision_root_xy_position_calls();
         split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
         assert_eq!(parts.len(), 16);
         assert_eq!(ordinary_root_catalog_builds(), 1);
-        let (endpoint_requests, interior_mappings) =
-            crate::geometry::ordinates::root_range_mapping_counts();
+        let (endpoint_requests, interior_mappings) = ordinates::root_range_mapping_counts();
         assert!(endpoint_requests > 0);
         assert!(
             interior_mappings <= subdivision_output_vertices(&parts).saturating_mul(4),
             "interior original-root mappings should track inserted output vertices"
         );
-        assert_eq!(
-            crate::geometry::overlay::subdivision_root_xy_position_calls(),
-            0
-        );
+        assert_eq!(overlay::subdivision_root_xy_position_calls(), 0);
         Ok(())
     }
 
     #[test]
     fn ordinary_geographic_zm_line_builds_one_root_catalog_and_maps_cut_vertices() -> Result<()> {
         let (frame, metric) = wgs84_geodesic_metric()?;
-        let metric_access = || -> Result<&crate::crs::GeodesicMetric> { Ok(&metric) };
+        let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
         let context = SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(frame),
             Some(&metric_access),
@@ -3797,30 +3769,26 @@ mod subdivision_tests {
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
         reset_ordinary_root_catalog_builds();
-        crate::geometry::ordinates::reset_root_range_mapping_counts();
-        crate::geometry::overlay::reset_subdivision_root_xy_position_calls();
+        ordinates::reset_root_range_mapping_counts();
+        overlay::reset_subdivision_root_xy_position_calls();
         split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
         assert_eq!(parts.len(), 16);
         assert_eq!(ordinary_root_catalog_builds(), 1);
-        let (endpoint_requests, interior_mappings) =
-            crate::geometry::ordinates::root_range_mapping_counts();
+        let (endpoint_requests, interior_mappings) = ordinates::root_range_mapping_counts();
         assert!(endpoint_requests > 0);
         assert!(
             interior_mappings <= subdivision_output_vertices(&parts).saturating_mul(4),
             "interior original-root mappings should track inserted output vertices"
         );
-        assert_eq!(
-            crate::geometry::overlay::subdivision_root_xy_position_calls(),
-            0
-        );
+        assert_eq!(overlay::subdivision_root_xy_position_calls(), 0);
         Ok(())
     }
 
     #[test]
     fn ordinary_geographic_zm_subdivision_reports_per_cut_root_work() -> Result<()> {
         let (frame, metric) = wgs84_geodesic_metric()?;
-        let metric_access = || -> Result<&crate::crs::GeodesicMetric> { Ok(&metric) };
+        let metric_access = || -> Result<&crs::GeodesicMetric> { Ok(&metric) };
         let context = SourceArcContext::new(
             crate::geometry::TopologyDomain::Geographic(frame),
             Some(&metric_access),
@@ -3857,23 +3825,22 @@ mod subdivision_tests {
                 let mut parts = Vec::new();
                 let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
-                crate::geometry::ordinates::reset_root_range_mapping_counts();
-                crate::geometry::overlay::reset_subdivision_resolution_batches();
-                crate::geometry::overlay::reset_source_span_view_order_counts();
-                drop(crate::geometry::ordinates::take_source_arc_observations());
+                ordinates::reset_root_range_mapping_counts();
+                overlay::reset_subdivision_resolution_batches();
+                overlay::reset_source_span_view_order_counts();
+                drop(ordinates::take_source_arc_observations());
                 split(shape, 16, false, &context, &mut parts, &mut budget)?;
 
-                let table_builds = crate::geometry::ordinates::root_request_table_builds();
-                let local_root_row_sorts = crate::geometry::ordinates::root_request_row_sorts();
-                let resolution_batches =
-                    crate::geometry::overlay::take_subdivision_resolution_batches();
+                let table_builds = ordinates::root_request_table_builds();
+                let local_root_row_sorts = ordinates::root_request_row_sorts();
+                let resolution_batches = overlay::take_subdivision_resolution_batches();
                 let (
                     source_span_sorts,
                     ordered_source_span_views,
                     source_span_endpoint_parameters,
                     source_span_interior_parameters,
-                ) = crate::geometry::overlay::source_span_view_order_counts();
-                let root_observations = crate::geometry::ordinates::take_source_arc_observations();
+                ) = overlay::source_span_view_order_counts();
+                let root_observations = ordinates::take_source_arc_observations();
                 assert!(
                     parts
                         .iter()
@@ -3922,13 +3889,13 @@ mod subdivision_tests {
             "UNIT[\"grad\",0.015707963267948967],",
             "AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]"
         );
-        let model = crate::crs::metric_model(Some(crs))?;
-        let crate::crs::MetricModel::Geodesic { frame, .. } = &model else {
-            return Err(crate::crs::CrsError::invalid("custom test CRS is not geographic").into());
+        let model = crs::metric_model(Some(crs))?;
+        let crs::MetricModel::Geodesic { frame, .. } = &model else {
+            return Err(crs::CrsError::invalid("custom test CRS is not geographic").into());
         };
-        let metric = crate::crs::GeodesicMetric::from_model(&model)?;
+        let metric = crs::GeodesicMetric::from_model(&model)?;
         let metric_access_calls = std::cell::Cell::new(0_usize);
-        let metric_access = || -> Result<&crate::crs::GeodesicMetric> {
+        let metric_access = || -> Result<&crs::GeodesicMetric> {
             metric_access_calls.set(metric_access_calls.get().saturating_add(1));
             Ok(&metric)
         };
@@ -3980,9 +3947,9 @@ mod subdivision_tests {
         let mut parts = Vec::new();
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
-        drop(crate::geometry::ordinates::take_source_arc_observations());
+        drop(ordinates::take_source_arc_observations());
         split(shape, 8, false, &context, &mut parts, &mut budget)?;
-        let observations = crate::geometry::ordinates::take_source_arc_observations();
+        let observations = ordinates::take_source_arc_observations();
         assert_eq!(metric_access_calls.get(), observations.len());
         let output_points = parts.iter().flat_map(all_points).collect::<Vec<_>>();
         let scale = 10.0 / 9.0;
@@ -4037,13 +4004,13 @@ mod subdivision_tests {
             "UNIT[\"grad\",0.015707963267948967],",
             "AXIS[\"Longitude\",EAST],AXIS[\"Latitude\",NORTH]]"
         );
-        let model = crate::crs::metric_model(Some(crs))?;
-        let crate::crs::MetricModel::Geodesic { frame, .. } = &model else {
-            return Err(crate::crs::CrsError::invalid("custom test CRS is not geographic").into());
+        let model = crs::metric_model(Some(crs))?;
+        let crs::MetricModel::Geodesic { frame, .. } = &model else {
+            return Err(crs::CrsError::invalid("custom test CRS is not geographic").into());
         };
-        let metric = crate::crs::GeodesicMetric::from_model(&model)?;
+        let metric = crs::GeodesicMetric::from_model(&model)?;
         let metric_access_calls = std::cell::Cell::new(0_usize);
-        let metric_access = || -> Result<&crate::crs::GeodesicMetric> {
+        let metric_access = || -> Result<&crs::GeodesicMetric> {
             metric_access_calls.set(metric_access_calls.get().saturating_add(1));
             Ok(&metric)
         };
@@ -4092,9 +4059,9 @@ mod subdivision_tests {
         let mut parts = Vec::new();
         let mut budget = ExpansionBudget::new("subdivide", "max_vertices");
 
-        drop(crate::geometry::ordinates::take_source_arc_observations());
+        drop(ordinates::take_source_arc_observations());
         split(shape, 8, false, &context, &mut parts, &mut budget)?;
-        let observations = crate::geometry::ordinates::take_source_arc_observations();
+        let observations = ordinates::take_source_arc_observations();
         let output_points = parts.iter().flat_map(all_points).collect::<Vec<_>>();
         assert!(
             output_points
@@ -4480,8 +4447,8 @@ mod subdivision_tests {
             crate::geographic::AngularFactor::try_new("latitude", std::f64::consts::PI / 180.0)
                 .unwrap();
         let frame = GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
-        let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
-            Err(crate::crs::CrsError::invalid(
+        let no_metric = || -> Result<&crs::GeodesicMetric> {
+            Err(crs::CrsError::invalid(
                 "unexpected source-arc metric access",
             ))
         };
@@ -4603,8 +4570,8 @@ mod subdivision_tests {
             crate::geographic::AngularFactor::try_new("latitude", std::f64::consts::PI / 2000.0)
                 .unwrap();
         let frame = GeographicFrame::try_new(longitude, latitude, 0.0).unwrap();
-        let no_metric = || -> Result<&crate::crs::GeodesicMetric> {
-            Err(crate::crs::CrsError::invalid(
+        let no_metric = || -> Result<&crs::GeodesicMetric> {
+            Err(crs::CrsError::invalid(
                 "unexpected source-arc metric access",
             ))
         };

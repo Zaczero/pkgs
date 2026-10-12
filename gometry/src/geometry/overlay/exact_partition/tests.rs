@@ -2,9 +2,11 @@ use super::*;
 use crate::geometry::embedding_search::{
     ClassAssignment, GlobalCheck, Problem, Search, SearchAccount,
 };
+use crate::geometry::ordinates::take_source_arc_observations;
 use crate::geometry::overlay::Strictness;
 use crate::geometry::overlay::rect::rect_polygon;
 use crate::geometry::segments::{SegmentEndpoint, SharedSpan, TouchEndpoint, TouchLocation};
+use crate::geometry::topology::SourceTrace;
 
 #[test]
 fn planar_embedding_domain_admits_finite_coordinates_only() {
@@ -329,7 +331,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
         let partial_end = ExactRational::one();
         let partial_producer_end = ExactRational::from_f64(5.0 / 7.0);
         let mut trace_work = Unmetered;
-        let trace = crate::geometry::topology::SourceTrace::from_edge_rows(
+        let trace = SourceTrace::from_edge_rows(
             [vec![
                 RootRange::from_mapped_with_work(
                     RootId::from_index(0),
@@ -396,7 +398,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
             Some(&metric_access),
         );
 
-        drop(crate::geometry::ordinates::take_source_arc_observations());
+        drop(take_source_arc_observations());
         let parts = inventory.subdivision_parts_with_roots(
             &partition,
             &child,
@@ -409,7 +411,7 @@ fn ordinary_traced_subdivision_resolves_reversed_and_partial_root_coowners() -> 
             &context,
             &mut trace_work,
         )?;
-        let observations = crate::geometry::ordinates::take_source_arc_observations();
+        let observations = take_source_arc_observations();
         let cut_points = parts
             .iter()
             .flat_map(|part| {

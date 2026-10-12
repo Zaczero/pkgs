@@ -48,7 +48,8 @@ use crate::geometry::{
     Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GeometryErrorKind, GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey,
     Polygon, PolygonizeFull, RepairMethod, Result, Ring, RingKind, Segment, Shape,
-    SharedShapeOwners, Unmetered, Work, XY, ZOrdinate, same_point, segment_contact_exact, storage,
+    SharedShapeOwners, Unmetered, Work, XY, ZOrdinate, line_segments, remove_antenna_vertices,
+    same_point, segment_contact_exact, storage,
 };
 #[cfg(test)]
 use crate::geometry::{for_each_candidate_pair, single_chain};
@@ -990,7 +991,7 @@ impl SubdivisionRootCatalog {
         }
         let mut needed = false;
         let Ok(()) = shape.try_for_each_segment_chain(|chain| {
-            for segment in crate::geometry::line_segments(chain) {
+            for segment in line_segments(chain) {
                 needed |= !frame
                     .longitude()
                     .ordinary_chart_edge(segment.start.x, segment.end.x);
@@ -1004,7 +1005,7 @@ impl SubdivisionRootCatalog {
         shape: &Shape,
         frame: GeographicFrame,
         root_xy_positions_needed: bool,
-    ) -> Result<(Self, Vec<crate::geometry::topology::SourceTrace>)> {
+    ) -> Result<(Self, Vec<SourceTrace>)> {
         let source = LineSource::from_shape(shape).ok_or_else(|| {
             GeometryErrorKind::Invalid(
                 "ordinary subdivision roots require a line source shape".into(),
@@ -1036,9 +1037,7 @@ impl SubdivisionRootCatalog {
                     &mut work,
                 )?]);
             }
-            line_traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
-                edge_rows, &mut work,
-            )?);
+            line_traces.push(SourceTrace::from_edge_rows(edge_rows, &mut work)?);
             Ok(())
         };
         match source {
@@ -1068,7 +1067,7 @@ impl SubdivisionRootCatalog {
         shape: &Shape,
         frame: GeographicFrame,
         root_xy_positions_needed: bool,
-    ) -> Result<(Self, Vec<crate::geometry::topology::SourceTrace>)> {
+    ) -> Result<(Self, Vec<SourceTrace>)> {
         let ring_ranges = polygon_source_ring_ranges(shape)?;
         let inventory = ExactSourceInventory::from_shapes(&[shape])?;
         let source_edge_count = ring_ranges.iter().try_fold(0_usize, |count, range| {
@@ -1105,9 +1104,7 @@ impl SubdivisionRootCatalog {
                     .checked_add(1)
                     .ok_or(ResourceError::SizeOverflow)?;
             }
-            traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
-                edge_rows, &mut work,
-            )?);
+            traces.push(SourceTrace::from_edge_rows(edge_rows, &mut work)?);
         }
         Ok((
             Self {
@@ -1424,7 +1421,7 @@ trait SubdivisionTraceWork: Work {
     ) -> Result<embedding::Embedding<'p>>;
 }
 
-impl SubdivisionTraceWork for crate::geometry::embedding_search::EvaluationBudget {
+impl SubdivisionTraceWork for EvaluationBudget {
     fn embed<'p>(
         &mut self,
         partition: &'p ExactPartition<'_>,
@@ -1492,15 +1489,15 @@ fn push_source_line_run<W: Work + ?Sized>(
 
 pub(in crate::geometry) struct SubdivisionPart {
     pub shape: Shape,
-    pub traces: Option<Vec<crate::geometry::topology::SourceTrace>>,
-    pub polygon_traces: Option<Vec<crate::geometry::topology::SourceTrace>>,
+    pub traces: Option<Vec<SourceTrace>>,
+    pub polygon_traces: Option<Vec<SourceTrace>>,
 }
 
 fn remove_node_antennas(mut nodes: Vec<NodeId>) -> Option<Vec<NodeId>> {
     if nodes.first() == nodes.last() {
         nodes.pop();
     }
-    let mut nodes = crate::geometry::remove_antenna_vertices(nodes, |left, right| left == right)?;
+    let mut nodes = remove_antenna_vertices(nodes, |left, right| left == right)?;
     let first = *nodes.first()?;
     nodes.push(first);
     Some(nodes)
@@ -3299,7 +3296,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
-        source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
+        source_traces: Option<&[SourceTrace]>,
         roots: &C,
         declared_axes: CoordinateAxes,
         strict: bool,
@@ -3308,11 +3305,9 @@ impl ExactSourceInventory {
         context: &SourceArcContext<'_, '_, M>,
         trace_work: &mut EvaluationBudget,
     ) -> Result<[SubdivisionPart; 2]> {
-        let mut resolve_rows =
-            |rows: &[RequestRowInput],
-             work: &mut crate::geometry::embedding_search::EvaluationBudget| {
-                resolve_request_rows(rows, roots, context.metric_access(), work)
-            };
+        let mut resolve_rows = |rows: &[RequestRowInput], work: &mut EvaluationBudget| {
+            resolve_request_rows(rows, roots, context.metric_access(), work)
+        };
         self.subdivision_parts_traced(
             partition,
             source_shape,
@@ -3334,7 +3329,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
-        source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
+        source_traces: Option<&[SourceTrace]>,
         roots: &SubdivisionRootCatalog,
         declared_axes: CoordinateAxes,
         strict: bool,
@@ -3401,7 +3396,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
-        source_traces: &[crate::geometry::topology::SourceTrace],
+        source_traces: &[SourceTrace],
         roots: &SubdivisionRootCatalog,
         declared_axes: CoordinateAxes,
         strict: bool,
@@ -3627,7 +3622,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         source_shape: &Shape,
-        source_traces: Option<&[crate::geometry::topology::SourceTrace]>,
+        source_traces: Option<&[SourceTrace]>,
         roots: &C,
         root_positions: Option<&SubdivisionRootCatalog>,
         declared_axes: crate::geometry::CoordinateAxes,
@@ -3813,7 +3808,7 @@ impl ExactSourceInventory {
         partition: &ExactPartition<'_>,
         nodes: &[NodeId],
         ring_ranges: &[Range<usize>],
-        ring_traces: &[crate::geometry::topology::SourceTrace],
+        ring_traces: &[SourceTrace],
         views: &SourceLineTraceViews,
         track_root_xy_nodes: bool,
         work: &mut W,
@@ -3927,7 +3922,7 @@ impl ExactSourceInventory {
         computed_edges: &[Vec<Vec<bool>>],
         requests_by_node: &[Vec<RootRequest>],
         work: &mut W,
-    ) -> Result<Vec<crate::geometry::topology::SourceTrace>> {
+    ) -> Result<Vec<SourceTrace>> {
         if polygons.len() != computed_edges.len() {
             return Err(GeometryErrorKind::Invalid(
                 "polygon ring traces do not match the emitted polygon parts".into(),
@@ -3988,9 +3983,7 @@ impl ExactSourceInventory {
                         work,
                     )?);
                 }
-                traces.push(crate::geometry::topology::SourceTrace::from_edge_rows(
-                    edge_rows, work,
-                )?);
+                traces.push(SourceTrace::from_edge_rows(edge_rows, work)?);
             }
         }
         Ok(traces)
@@ -4026,11 +4019,11 @@ impl ExactSourceInventory {
         shape: &Shape,
         old_xy: &[Vec<Vec<XY>>],
         computed_edges: &[Vec<Vec<bool>>],
-        source_traces: Vec<crate::geometry::topology::SourceTrace>,
+        source_traces: Vec<SourceTrace>,
         roots: &SubdivisionRootCatalog,
         frame: GeographicFrame,
         work: &mut W,
-    ) -> Result<Vec<crate::geometry::topology::SourceTrace>> {
+    ) -> Result<Vec<SourceTrace>> {
         let mut polygons = Vec::new();
         collect_polygon_parts(shape, &mut polygons);
         if polygons.len() != old_xy.len() || polygons.len() != computed_edges.len() {
@@ -4194,7 +4187,7 @@ impl ExactSourceInventory {
         embedding: &'e embedding::Embedding<'p>,
         nodes: &[NodeId],
         run_plans: &[Vec<SourceLineRun>],
-        source_traces: &[crate::geometry::topology::SourceTrace],
+        source_traces: &[SourceTrace],
         axes: CoordinateAxes,
         root_positions: Option<&SubdivisionRootCatalog>,
         fallback_inventory: Option<&ExactSourceInventory>,
@@ -4282,7 +4275,7 @@ impl ExactSourceInventory {
 
     fn source_line_seam_cuts<W: Work>(
         &self,
-        trace: &crate::geometry::topology::SourceTrace,
+        trace: &SourceTrace,
         source_edge: usize,
         start: &ExactRational,
         end: &ExactRational,
