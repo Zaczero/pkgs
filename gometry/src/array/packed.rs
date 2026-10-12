@@ -444,10 +444,6 @@ impl PyGeometryArray {
         Ok(Self::from_admitted_rows(rows, frame, caches))
     }
 
-    #[expect(
-        dead_code,
-        reason = "geographic array producers adopt final admitted row storage without repacking"
-    )]
     pub(crate) fn from_finished(finished: FinishedGeometry) -> crate::error::Result<Self> {
         let (rows, frame) = finished.into_array()?;
         Ok(Self::from_admitted_rows(

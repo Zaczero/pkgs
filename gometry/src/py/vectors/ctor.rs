@@ -2,7 +2,7 @@
 //! outputs (usize ids cast zero-copy to i64) plus the ragged-row
 //! collectors for geometry and cell fan-outs.
 
-use pyo3::{PyErr, Python};
+use pyo3::Python;
 
 use crate::CsrBuilder;
 use crate::error::Result;
@@ -15,13 +15,13 @@ use crate::py::vectors::{
 };
 
 impl Groups {
-    #[expect(
-        dead_code,
-        reason = "geographic grouped producers adopt the sink's sealed CSR owner directly"
-    )]
-    pub(crate) fn from_finished(finished: FinishedGeometry) -> PyResult<Self> {
-        let (groups, frame) = finished.into_groups().map_err(PyErr::from)?;
-        let row_count = validate_csr_offsets(&groups.offsets, groups.values.len())?;
+    pub(crate) fn from_finished(finished: FinishedGeometry) -> Result<Self> {
+        let (groups, frame) = finished.into_groups()?;
+        let row_count = groups.offsets.len().checked_sub(1).ok_or_else(|| {
+            crate::geometry::GeometryErrorKind::Invalid(
+                "finished Groups storage has no terminal offset".into(),
+            )
+        })?;
         let values = PyGeometryArray::from_admitted_rows(
             groups.values,
             frame,

@@ -30,6 +30,10 @@ impl CheckedLiteralSnapshot {
         }
         Ok(Self { records: snapshot })
     }
+
+    pub(super) fn contains(&self, address: LiteralAddress, image: PublicationImage) -> bool {
+        self.records.contains_key(&(address, image))
+    }
 }
 
 impl CheckedImages<PublicationImage> for CheckedLiteralSnapshot {
