@@ -13368,7 +13368,7 @@ fn native_q_port_data(
     port_id: QPortId,
     port_points: &[Option<ExactChartPoint>],
     sites: &[Option<AssignedSite>],
-    source_request: Option<RootRequest>,
+    source_requests: &[RootRequest],
     budget: &mut impl Work,
 ) -> Result<NativePortData> {
     budget.charge(1)?;
@@ -13409,7 +13409,6 @@ fn native_q_port_data(
         None
     };
     let occurrences = if port.cut {
-        let source_requests: &[RootRequest] = source_request.as_slice();
         native_source_sample_occurrences(None, source_requests, budget)?
     } else {
         budget.charge(1)?;
@@ -13967,13 +13966,14 @@ fn native_known_span_boundaries(
                     } else {
                         None
                     };
+                    let source_requests = source_request.as_slice();
                     let data = native_q_port_data(
                         topology,
                         builder,
                         port,
                         port_points,
                         sites,
-                        source_request,
+                        source_requests,
                         budget,
                     )?;
                     boundaries.push(NativeKnownSpanBoundary {
