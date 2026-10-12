@@ -267,8 +267,8 @@ pub(crate) fn emit_from_original_with_source_roots<M: ChartMetric>(
         *point = Point::new_raw_axes(
             point.x,
             point.y,
-            ZOrdinate(ordinates.z.value().or(point.z())),
-            MOrdinate(ordinates.m.value().or(point.m())),
+            ZOrdinate(ordinates.z.value().or_else(|| point.z())),
+            MOrdinate(ordinates.m.value().or_else(|| point.m())),
         );
     }
     Ok(output)
