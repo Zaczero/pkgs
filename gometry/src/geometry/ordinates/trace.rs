@@ -22,7 +22,9 @@ fn reserve_with_work<T>(
 
 fn prepay_slots(additional: usize, work: &mut impl Work) -> Result<()> {
     if additional > 0 {
-        work.charge(u64::try_from(additional).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(additional).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
     }
     Ok(())
 }
@@ -525,10 +527,12 @@ fn push_unique_root_request(
 
 impl RootRequestTable {
     pub(crate) fn from_rows(rows: &[RequestRowInput], work: &mut impl Work) -> Result<Self> {
-        work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut request_count = 0_usize;
         for row in rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             request_count = request_count
                 .checked_add(row.requests.len())
                 .ok_or(ResourceError::SizeOverflow)?;
@@ -547,7 +551,7 @@ impl RootRequestTable {
         reserve_with_work(&mut ordered, request_count, work)?;
         for (row_index, row) in request_views.iter().enumerate() {
             for index in 0..row.len() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 ordered.push(RequestIndex {
                     row: row_index,
                     index,
@@ -561,7 +565,7 @@ impl RootRequestTable {
             let right = request_at(&request_views, *right)?;
             let root_order = left.root.cmp(&right.root);
             if root_order.is_eq() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 left.parameter.try_cmp_with_work(&right.parameter, work)
             } else {
                 Ok(root_order)
@@ -574,13 +578,13 @@ impl RootRequestTable {
         row_requests.resize(request_count, None);
         let mut previous: Option<UniqueRequestId> = None;
         for occurrence in ordered {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let request = request_at(&request_views, occurrence)?;
             let duplicate = if let Some(previous_id) = previous {
                 let previous_record = records.get(previous_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("unique source request index is unknown".into())
                 })?;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 previous_record.root == request.root
                     && previous_record
                         .parameter
@@ -616,7 +620,7 @@ impl RootRequestTable {
         let mut row_axes = Vec::new();
         reserve_with_work(&mut row_axes, rows.len(), work)?;
         for row in rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             row_axes.push(row.axes);
         }
         Ok(Self {
@@ -701,7 +705,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
     let mut output = Vec::new();
     reserve_with_work(&mut output, rows.len(), work)?;
     for row_index in 0..rows.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let row_id = RequestRowId::from_index(row_index)?;
         let row_axes = table.axes(row_id)?;
         let request_count = table.row(row_id)?.len();
@@ -712,7 +716,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
             let state = states.get_mut(state_slot).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source root state slot is unknown".into())
             })?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let record = table.record_mut(request_id)?;
             ordinates.merge(roots.resolve(
                 record.root,
@@ -724,7 +728,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
                 work,
             )?);
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         output.push(ordinates);
     }
     Ok(output)
@@ -811,7 +815,7 @@ impl TraceRows {
         let mut has_request = false;
         let mut all_point_support = true;
         for owner in self.row(edge)? {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if owner.parameter_at_with_work(local, work)?.is_some() {
                 has_request = true;
                 all_point_support &= owner.is_point_support_with_work(work)?;
@@ -859,7 +863,7 @@ fn unique_requests_at(
     let mut has_request = false;
     let mut endpoint_only = true;
     for owner in owners {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some(request) = owner.request_at_with_work(local, work)? else {
             continue;
         };
@@ -872,7 +876,7 @@ fn unique_requests_at(
     let mut unique_requests = Vec::new();
     reserve_with_work(&mut unique_requests, unique.len(), work)?;
     for occurrence in unique {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         unique_requests.push(request_at(&rows, occurrence)?.try_clone_with_work(work)?);
     }
     Ok((unique_requests, has_request && endpoint_only))
@@ -900,10 +904,10 @@ fn unique_request_indices(
     rows: &[&[RootRequest]],
     work: &mut impl Work,
 ) -> Result<Vec<RequestIndex>> {
-    work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut capacity = 0_usize;
     for row in rows {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         capacity = capacity
             .checked_add(row.len())
             .ok_or(ResourceError::SizeOverflow)?;
@@ -912,7 +916,7 @@ fn unique_request_indices(
     reserve_with_work(&mut ordered, capacity, work)?;
     for (row_index, row) in rows.iter().enumerate() {
         for index in 0..row.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             ordered.push(RequestIndex {
                 row: row_index,
                 index,
@@ -924,7 +928,7 @@ fn unique_request_indices(
         let right = request_at(rows, *right)?;
         let root_order = left.root.cmp(&right.root);
         if root_order.is_eq() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             left.parameter.try_cmp_with_work(&right.parameter, work)
         } else {
             Ok(root_order)
@@ -934,9 +938,9 @@ fn unique_request_indices(
     let mut unique = Vec::new();
     reserve_with_work(&mut unique, ordered.len(), work)?;
     for occurrence in ordered {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let duplicate = if let Some(previous) = unique.last() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let previous = request_at(rows, *previous)?;
             let current = request_at(rows, occurrence)?;
             previous.root == current.root
@@ -952,7 +956,7 @@ fn unique_request_indices(
         }
     }
     try_sort_by_with_work(&mut unique, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(left
             .row
             .cmp(&right.row)
@@ -1038,7 +1042,7 @@ impl TraceRowsBuilder {
         self.ranges.reserve(parents.len());
         self.offsets.reserve(1);
         for parent in parents {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if let Some(child) = parent.compose_with_work(local_start, local_end, work)? {
                 self.ranges.push(child);
             }
@@ -1119,6 +1123,8 @@ mod tests {
     }
 
     impl Work for RecordingWork<'_> {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> Result<()> {
             let spent_before = self.spent;
             let result = <EvaluationBudget as Work>::charge(self.budget, ticks);
@@ -1248,12 +1254,18 @@ mod tests {
     struct Fuel(u64);
 
     impl Work for Fuel {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, units: u64) -> Result<()> {
             self.0 = self
                 .0
                 .checked_sub(units)
                 .ok_or_else(|| GeometryErrorKind::Invalid("test work fuel exhausted".into()))?;
             Ok(())
+        }
+
+        fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

@@ -138,7 +138,9 @@ pub(crate) use distance::{RowMetricPair, discrete_frechet_distance_with_scratch}
 pub(crate) use types::coordinate_columns_eq;
 pub(crate) mod embedding_completion;
 mod embedding_search;
-pub(crate) use embedding_search::{Unmetered, Work};
+#[cfg(test)]
+pub(crate) use embedding_search::work_product_ticks;
+pub(crate) use embedding_search::{Unmetered, Work, WorkResult};
 mod facet_bvh;
 mod generated_budget;
 mod line_index;

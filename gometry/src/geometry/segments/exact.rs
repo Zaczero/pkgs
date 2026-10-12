@@ -3,13 +3,13 @@
 //! the complete finite binary64 domain.
 
 use crate::error::Result;
-use crate::geometry::Ordering;
 use crate::geometry::exact_arith::bounded::{Bounded, inside_window};
 use crate::geometry::exact_arith::{binary_zero, dd_add, dd_mul, two_product_exact, two_sum};
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, Interval, round_ratio};
+use crate::geometry::{Ordering, Unmetered, Work};
 
 #[path = "exact_orientation.rs"]
 mod exact_orientation;
@@ -23,6 +23,14 @@ pub(in crate::geometry) fn crossing_homogeneous(
     a: Segment,
     b: Segment,
 ) -> Result<[ExactDyadic; 3]> {
+    crossing_homogeneous_with_work(a, b, &mut Unmetered)
+}
+
+pub(in crate::geometry) fn crossing_homogeneous_with_work<W: Work>(
+    a: Segment,
+    b: Segment,
+    work: &mut W,
+) -> Result<[ExactDyadic; 3]> {
     let point = |point: XY| {
         [
             ExactDyadic::from_f64(point.x),
@@ -30,11 +38,12 @@ pub(in crate::geometry) fn crossing_homogeneous(
             ExactDyadic::one(),
         ]
     };
-    crossing_homogeneous_stored(
+    crossing_homogeneous_stored_with_work(
         &point(a.start),
         &point(a.end),
         &point(b.start),
         &point(b.end),
+        work,
     )
 }
 
@@ -44,27 +53,44 @@ pub(in crate::geometry) fn crossing_homogeneous_stored(
     b_start: &[ExactDyadic; 3],
     b_end: &[ExactDyadic; 3],
 ) -> Result<[ExactDyadic; 3]> {
+    crossing_homogeneous_stored_with_work(a_start, a_end, b_start, b_end, &mut Unmetered)
+}
+
+pub(in crate::geometry) fn crossing_homogeneous_stored_with_work<W: Work>(
+    a_start: &[ExactDyadic; 3],
+    a_end: &[ExactDyadic; 3],
+    b_start: &[ExactDyadic; 3],
+    b_end: &[ExactDyadic; 3],
+    work: &mut W,
+) -> Result<[ExactDyadic; 3]> {
     let (rx, ry) = (
-        a_end[0].try_subtract_ref(&a_start[0])?,
-        a_end[1].try_subtract_ref(&a_start[1])?,
+        a_end[0].try_subtract_ref_with_work(&a_start[0], work)?,
+        a_end[1].try_subtract_ref_with_work(&a_start[1], work)?,
     );
     let (sx, sy) = (
-        b_end[0].try_subtract_ref(&b_start[0])?,
-        b_end[1].try_subtract_ref(&b_start[1])?,
+        b_end[0].try_subtract_ref_with_work(&b_start[0], work)?,
+        b_end[1].try_subtract_ref_with_work(&b_start[1], work)?,
     );
     let (cx, cy) = (
-        b_start[0].try_subtract_ref(&a_start[0])?,
-        b_start[1].try_subtract_ref(&a_start[1])?,
+        b_start[0].try_subtract_ref_with_work(&a_start[0], work)?,
+        b_start[1].try_subtract_ref_with_work(&a_start[1], work)?,
     );
-    let den = rx.try_product(&sy)?.try_subtract(ry.try_product(&sx)?)?;
-    let t = cx.try_product(&sy)?.try_subtract(cy.try_product(&sx)?)?;
-    let coordinate = |start: &ExactDyadic, direction: &ExactDyadic| -> Result<ExactDyadic> {
-        den.try_product(start)?.try_add(t.try_product(direction)?)
-    };
+    let den_left = rx.try_product_with_work(&sy, work)?;
+    let den_right = ry.try_product_with_work(&sx, work)?;
+    let den = den_left.try_subtract_with_work(den_right, work)?;
+    let t_left = cx.try_product_with_work(&sy, work)?;
+    let t_right = cy.try_product_with_work(&sx, work)?;
+    let t = t_left.try_subtract_with_work(t_right, work)?;
+    let coordinate =
+        |start: &ExactDyadic, direction: &ExactDyadic, work: &mut W| -> Result<ExactDyadic> {
+            let start_term = den.try_product_with_work(start, work)?;
+            let direction_term = t.try_product_with_work(direction, work)?;
+            start_term.try_add_with_work(direction_term, work)
+        };
     Ok([
-        coordinate(&a_start[0], &rx)?,
-        coordinate(&a_start[1], &ry)?,
-        den.clone(),
+        coordinate(&a_start[0], &rx, work)?,
+        coordinate(&a_start[1], &ry, work)?,
+        den.try_clone_with_work(work)?,
     ])
 }
 

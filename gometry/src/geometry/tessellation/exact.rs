@@ -112,11 +112,11 @@ fn rational_exponent(value: &ExactRational) -> i128 {
 }
 
 fn slices_equal_with_work<W: Work>(left: &[u64], right: &[u64], work: &mut W) -> Result<bool> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if left.len() != right.len() {
         return Ok(false);
     }
-    work.charge_product(left.len(), 1)?;
+    work.charge_product_into_error(left.len(), 1)?;
     Ok(left == right)
 }
 
@@ -136,7 +136,7 @@ impl ExactRational {
         if denominator.is_zero() {
             return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if numerator.is_zero() {
             return Ok(Self {
                 numerator: ExactDyadic::zero(),
@@ -192,7 +192,7 @@ impl ExactRational {
         other: &Self,
         work: &mut W,
     ) -> Result<bool> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let sign = self.numerator.negative ^ self.denominator.negative;
         if sign != (other.numerator.negative ^ other.denominator.negative) {
             return Ok(false);
@@ -211,7 +211,7 @@ impl ExactRational {
         )? {
             return Ok(false);
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(rational_exponent(self) == rational_exponent(other))
     }
 
@@ -2032,7 +2032,7 @@ pub(in crate::geometry) fn compare_ratios_with_work<W: Work>(
     bd: &ExactDyadic,
     work: &mut W,
 ) -> Result<Ordering> {
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if let Some(order) = ratio_order_filter(an, ad, bn, bd) {
         return Ok(order);
     }
@@ -2280,14 +2280,14 @@ fn exact_ratio_bracket_with_work<W: Work>(
         ))
     };
     let mut bits = proposal.to_bits();
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let (order, product) = compare(bits, work)?;
     match order {
         Ordering::Equal => return Ok(Some((bits, bits, None))),
         Ordering::Less => {
             let mut lower_product = product;
             for _ in 0..MAX_ULP_STEPS {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if bits == max_bits {
                     return Ok(None);
                 }
@@ -2303,7 +2303,7 @@ fn exact_ratio_bracket_with_work<W: Work>(
         },
         Ordering::Greater => {
             for _ in 0..MAX_ULP_STEPS {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if bits == 0 {
                     return Ok(None);
                 }
@@ -2349,7 +2349,7 @@ fn round_ratio_binary_with_work<W: Work>(
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
         let product =
             ExactDyadic::from_f64(f64::from_bits(mid)).try_product_with_work(&denominator, work)?;
@@ -2424,7 +2424,7 @@ pub(in crate::geometry) fn round_ratio_with_work<W: Work>(
             1.0
         });
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if let Some(proposal) = approximate_ratio(numerator, denominator)
         && let Some((low, high, lower_product)) =
             exact_ratio_bracket_with_work(numerator, denominator, proposal, sign, work)?
@@ -2488,7 +2488,7 @@ pub(in crate::geometry) fn outward_ratio_bounds_with_work<W: Work>(
     work: &mut W,
 ) -> Result<(f64, f64)> {
     let rounded = round_ratio_with_work(numerator, denominator, work)?;
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let rounded_exact = ExactDyadic::from_f64(rounded);
     match compare_ratios_with_work(
         numerator,
@@ -2523,7 +2523,7 @@ pub(in crate::geometry) fn round_sqrt_ratio_with_work<W: Work>(
     if numerator.is_zero() {
         return Ok(0.0);
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let max = ExactDyadic::from_f64(f64::MAX);
     let overflow_midpoint =
         max.try_add_with_work(ExactDyadic::from_f64(2.0_f64.powi(970)), work)?;
@@ -2533,7 +2533,7 @@ pub(in crate::geometry) fn round_sqrt_ratio_with_work<W: Work>(
     if numerator.cmp_with_work(&overflow_squared, work)? != Ordering::Less {
         return Ok(f64::INFINITY);
     }
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     if let Some(proposal) = approximate_sqrt_ratio(numerator, denominator)
         && proposal.is_finite()
     {
@@ -2601,14 +2601,14 @@ fn exact_sqrt_ratio_bracket_with_work<W: Work>(
         square.cmp_with_work(numerator, work)
     };
     let bits = proposal.to_bits().min(max_bits);
-    work.charge(1)?;
+    work.charge_into_error(1)?;
     let (mut lower, mut upper) = match compare(bits, work)? {
         Ordering::Equal => return Ok(Some((bits, bits))),
         Ordering::Less => {
             let mut lower = bits;
             let mut step = 1_u64;
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let distance = max_bits.wrapping_sub(lower);
                 if distance == 0 {
                     return Ok(None);
@@ -2628,7 +2628,7 @@ fn exact_sqrt_ratio_bracket_with_work<W: Work>(
             let mut upper = bits;
             let mut step = 1_u64;
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if upper == 0 {
                     return Ok(None);
                 }
@@ -2651,7 +2651,7 @@ fn exact_sqrt_ratio_bracket_with_work<W: Work>(
     // ordering; unlike a fixed ULP walk, this also covers both subnormal and
     // binade boundaries without an arbitrary retry limit.
     while upper.wrapping_sub(lower) > 1 {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let middle = lower.wrapping_add(upper.wrapping_sub(lower) / 2);
         match compare(middle, work)? {
             Ordering::Less => lower = middle,
@@ -2675,7 +2675,7 @@ fn round_sqrt_ratio_binary_with_work<W: Work>(
     let mut low = 0_u64;
     let mut high = f64::MAX.to_bits();
     while low < high {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mid = low.wrapping_add(high.wrapping_sub(low).div_ceil(2));
         let candidate = ExactDyadic::from_f64(f64::from_bits(mid));
         let square = candidate

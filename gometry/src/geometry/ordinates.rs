@@ -461,7 +461,7 @@ pub(crate) fn source_arc_ordinates<'m, M: ChartMetric + 'm>(
                 let edge = if let Some(edge) = state.edge {
                     edge
                 } else {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let edge = crate::crs::ChartEdge::from_retained(
                         start,
                         end,
@@ -817,12 +817,22 @@ mod tests {
     }
 
     impl crate::geometry::Work for CountingWork {
+        type Error = crate::error::Error;
+
         fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
             self.ticks = self
                 .ticks
                 .checked_add(ticks)
                 .expect("test work count fits in u64");
             Ok(())
+        }
+
+        fn charge_product(
+            &mut self,
+            count: usize,
+            ticks_per_item: usize,
+        ) -> crate::error::Result<()> {
+            self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
         }
     }
 

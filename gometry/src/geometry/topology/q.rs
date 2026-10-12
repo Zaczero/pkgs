@@ -3684,7 +3684,7 @@ impl ExactGeographicQ {
     ) -> Result<()> {
         let mut found_pole_node = false;
         for node in &self.nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if node.pole != Some(pole) {
                 continue;
             }
@@ -3708,7 +3708,7 @@ impl ExactGeographicQ {
                     .ok_or_else(|| {
                         GeometryErrorKind::Invalid("isolated Q pole has no host face".into())
                     })?;
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 visit(
                     PoleSector::Isolated {
                         pole,
@@ -3723,7 +3723,7 @@ impl ExactGeographicQ {
                 GeometryErrorKind::Invalid("Q pole outgoing fan is incomplete".into())
             })?;
             for (index, &clockwise) in fan.iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let next_index = index.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
                 let counterclockwise_index = if next_index == fan.len() {
                     0
@@ -3761,7 +3761,7 @@ impl ExactGeographicQ {
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q pole cut interval has no global host".into())
                 })?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             visit(PoleSector::Terminal { pole, face }, work)?;
         }
         Ok(())

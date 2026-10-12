@@ -924,13 +924,13 @@ pub(in crate::geometry) fn walk_is_shell_with_work<R: RayPoints + ?Sized, W: Wor
 ) -> Result<bool> {
     let mut minimum = 0;
     for candidate in 1..steps {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let candidate_node = topology.owners[first(candidate) as usize];
         let minimum_node = topology.owners[first(minimum) as usize];
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let x_order = points.compare_axis(candidate_node, minimum_node, Axis::X)?;
         let order = if x_order.is_eq() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             points.compare_axis(candidate_node, minimum_node, Axis::Y)?
         } else {
             x_order
@@ -948,7 +948,7 @@ pub(in crate::geometry) fn walk_is_shell_with_work<R: RayPoints + ?Sized, W: Wor
     let incoming = topology.twins[last(prior) as usize];
     let root = topology.owners[outgoing as usize];
     let mut upper = |slot: u32| -> Result<bool> {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         Ok(points.compare_axis(topology.targets[slot as usize], root, Axis::Y)? != Ordering::Less)
     };
     let outgoing_upper = upper(outgoing)?;
@@ -1372,11 +1372,10 @@ impl GlobalFaces {
             )
             .into());
         }
-        work.charge(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
-
+        work.charge_into_error(u64::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut state = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let other = topology.face_of[topology.twins[slot] as usize];
             state.push(
                 if bounds(
@@ -1389,25 +1388,25 @@ impl GlobalFaces {
                 },
             );
         }
-        work.charge(
+        work.charge_into_error(
             u64::try_from(topology.component_of.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut positions = Vec::with_capacity(topology.component_of.len());
         positions.resize(topology.component_of.len(), None);
         let mut walks = Vec::new();
         for start in 0..state.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if state[start] != DartState::Pending {
                 continue;
             }
             let mut walk = Vec::new();
             let mut slot = start;
             loop {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 debug_assert_eq!(state[slot], DartState::Pending);
                 state[slot] = DartState::Walked;
                 positions[topology.owners[slot] as usize] = Some(walk.len());
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 walk.push(slot as u32);
                 let target = topology.targets[slot] as usize;
                 // A tangent hole can share a boundary walk with its shell.
@@ -1418,16 +1417,16 @@ impl GlobalFaces {
                             "graph boundary cycle starts after its current walk".into(),
                         )
                     })?;
-                    work.charge(
+                    work.charge_into_error(
                         u64::try_from(cycle_len).map_err(|_| ResourceError::SizeOverflow)?,
                     )?;
                     let mut cycle = Vec::with_capacity(cycle_len);
                     for dart in walk.drain(begin..) {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         positions[topology.owners[dart as usize] as usize] = None;
                         cycle.push(dart);
                     }
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     walks.push(cycle);
                 }
                 let first = topology.starts[target] as usize;
@@ -1436,7 +1435,7 @@ impl GlobalFaces {
                 // Skip omitted wedges clockwise from the incoming twin.
                 slot = twin;
                 loop {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     slot = if slot == first {
                         end.wrapping_sub(1)
                     } else {

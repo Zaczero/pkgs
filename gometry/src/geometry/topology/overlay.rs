@@ -234,7 +234,7 @@ impl QEmissionDrawing<'_> {
                 for polygon in polygons {
                     for ring in polygon {
                         for vertex in &ring.vertices {
-                            work.charge(1)?;
+                            work.charge_into_error(1)?;
                             visit(vertex)?;
                         }
                     }
@@ -243,7 +243,7 @@ impl QEmissionDrawing<'_> {
             DrawnPolygons::Regions { rings, .. } => {
                 for ring in rings {
                     for vertex in &ring.vertices {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         visit(vertex)?;
                     }
                 }
@@ -251,12 +251,12 @@ impl QEmissionDrawing<'_> {
         }
         for line in &self.lines {
             for vertex in &line.path {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 visit(vertex)?;
             }
         }
         for vertex in &self.points {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             visit(vertex)?;
         }
         Ok(())
@@ -341,8 +341,9 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
     let mut live_node_keys = drawing.live_node_keys(topology.sources.frame, preparation_work)?;
     let identity_conflicts =
         node_injectivity_collisions_with_work(&mut live_node_keys, preparation_work)?;
-    preparation_work
-        .charge(u64::try_from(live_node_keys.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    preparation_work.charge_into_error(
+        u64::try_from(live_node_keys.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let has_rounded_constructed_node = nearest.has_inexact_nodes_with_work(
         topology,
         live_node_keys.iter().map(|(_, node)| *node),
@@ -602,7 +603,7 @@ fn boundary_cycle_line_paths(
     work: &mut impl Work,
 ) -> Result<(Vec<PlannedQLine>, Vec<bool>)> {
     let q = &topology.q;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             cycles
                 .len()
@@ -614,10 +615,10 @@ fn boundary_cycle_line_paths(
     let mut paths = Vec::with_capacity(cycles.len());
     let mut covered = vec![false; q.nodes.len()];
     for cycle in cycles {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mut path = Vec::with_capacity(cycle.darts.len());
         for &dart_id in &cycle.darts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q boundary cycle has an unknown dart".into())
             })?;
@@ -786,7 +787,7 @@ impl QEmissionPlan {
         let faces = select_faces(q, row_count, operation, work)?;
         let mut whole_sphere = !faces.is_empty();
         for &selected in &faces {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             whole_sphere &= selected;
             if !whole_sphere {
                 break;
@@ -804,7 +805,7 @@ impl QEmissionPlan {
             PolygonPlan::Regions { rings, .. } => rings
                 .iter()
                 .map(|ring| {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     Ok(match *ring {
                         PlannedAreaRing::Source { region, .. }
                         | PlannedAreaRing::Cycle { region, .. } => region,
@@ -840,7 +841,7 @@ impl QEmissionPlan {
         let selected_faces = select_faces(q, 1, OverlayOp::Union, work)?;
         let mut has_area = false;
         for &selected in &selected_faces {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             has_area |= selected;
             if has_area {
                 break;
@@ -848,7 +849,7 @@ impl QEmissionPlan {
         }
         let mut regions = face_regions(q, &selected_faces, work)?;
         let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
-        work.charge(
+        work.charge_into_error(
             u64::try_from(
                 cycles
                     .len()
@@ -874,7 +875,7 @@ impl QEmissionPlan {
         let mut point_nodes = Vec::new();
         let mut has_point = false;
         for (node, &covered) in q.nodes.iter().zip(&covered_by_area_cycles) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let fan_start = *q.outgoing_offsets.get(node.id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q boundary node has no fan start".into())
             })?;
@@ -884,7 +885,7 @@ impl QEmissionPlan {
                 .ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q boundary node has no fan end".into())
                 })?;
-            work.charge(
+            work.charge_into_error(
                 u64::try_from(fan_end.checked_sub(fan_start).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q boundary node has reversed fan offsets".into())
                 })?)
@@ -899,7 +900,7 @@ impl QEmissionPlan {
 
         let mut has_curve = false;
         for span_index in 0..q.spans.len() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if row_locations.span(span_index)? == Some(Loc::Interior) {
                 has_curve = true;
                 break;
@@ -934,15 +935,15 @@ impl QEmissionPlan {
         work: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        work.charge(
+        work.charge_into_error(
             u64::try_from(topology.sources.edges.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         let mut spans_by_source = Vec::with_capacity(topology.sources.edges.len());
         spans_by_source.resize_with(topology.sources.edges.len(), Vec::<SourceLineSpan>::new);
         for (span_index, span) in q.spans.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             for (owner_index, owner) in span.owners.iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let row = spans_by_source
                     .get_mut(owner.source_edge.0 as usize)
                     .ok_or_else(|| {
@@ -974,7 +975,9 @@ impl QEmissionPlan {
             }
         }
 
-        work.charge(u64::try_from(line_members.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(line_members.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut line_paths = Vec::with_capacity(line_members.len());
         for &member in line_members {
             let line = topology.sources.lines.get(member).ok_or_else(|| {
@@ -982,7 +985,7 @@ impl QEmissionPlan {
             })?;
             let mut path = Vec::new();
             for source_edge in line.source_edges.clone() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let edge = topology.sources.edges.get(source_edge).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native source line edge is unknown".into())
                 })?;
@@ -999,7 +1002,7 @@ impl QEmissionPlan {
                     GeometryErrorKind::Invalid("native source line span row is unknown".into())
                 })?;
                 try_sort_by_with_work(spans, work, |left, right, work| {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     Ok(left
                         .low
                         .try_cmp(&right.low)?
@@ -1014,7 +1017,7 @@ impl QEmissionPlan {
                 let one = ExactRational::one();
                 let mut covered_to = zero;
                 for source_span in spans.iter() {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     if source_span.low.try_cmp(&covered_to)?.is_gt() {
                         return Err(GeometryErrorKind::Invalid(
                             "native source line has a gap in its Q span coverage".into(),
@@ -1055,7 +1058,9 @@ impl QEmissionPlan {
             region_count: q.global_face_count,
         };
         let fragment_recipes = build_fragment_recipes(topology, &polygons, &[], &line_paths, work)?;
-        work.charge(u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         Ok(Self {
             whole_sphere: false,
             force_native: true,
@@ -1103,7 +1108,7 @@ impl QEmissionPlan {
                 if !live {
                     continue;
                 }
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let sample_ordinates = publication.ordinates.get(sample).ok_or_else(|| {
                     GeometryErrorKind::Invalid("live publication sample has no ordinate row".into())
                 })?;
@@ -1220,7 +1225,7 @@ impl QEmissionPlan {
         match &self.polygons {
             PolygonPlan::WholeSphere(source_polygons) => {
                 for &polygon_index in source_polygons {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let polygon =
                         topology
                             .sources
@@ -1232,7 +1237,7 @@ impl QEmissionPlan {
                                 )
                             })?;
                     for ring_index in polygon.rings.clone() {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         let ring = topology.sources.rings.get(ring_index).ok_or_else(|| {
                             GeometryErrorKind::Invalid(
                                 "Q whole-sphere plan references an unknown ring".into(),
@@ -1247,7 +1252,7 @@ impl QEmissionPlan {
                 ..
             } => {
                 for planned in planned_rings {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     match *planned {
                         PlannedAreaRing::Source { ring, .. } => {
                             let source_ring =
@@ -1263,7 +1268,7 @@ impl QEmissionPlan {
                                 work,
                             )?;
                             for cycle in &self.cycles {
-                                work.charge(1)?;
+                                work.charge_into_error(1)?;
                                 if !cycle_belongs_to_source_ring(
                                     topology,
                                     cycle,
@@ -1273,7 +1278,7 @@ impl QEmissionPlan {
                                     continue;
                                 }
                                 for &dart_id in &cycle.darts {
-                                    work.charge(1)?;
+                                    work.charge_into_error(1)?;
                                     let dart =
                                         q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                                             GeometryErrorKind::Invalid(
@@ -1293,7 +1298,7 @@ impl QEmissionPlan {
                                 )
                             })?;
                             for &dart_id in &cycle.darts {
-                                work.charge(1)?;
+                                work.charge_into_error(1)?;
                                 let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                                     GeometryErrorKind::Invalid(
                                         "Q cycle references an unknown dart".into(),
@@ -1303,7 +1308,7 @@ impl QEmissionPlan {
                                 spans.push(span);
                                 areal_spans.push(span);
                                 for port_id in [dart.from_port, dart.to_port] {
-                                    work.charge(1)?;
+                                    work.charge_into_error(1)?;
                                     let port =
                                         q.ports.get(port_id.0 as usize).ok_or_else(|| {
                                             GeometryErrorKind::Invalid(
@@ -1321,21 +1326,21 @@ impl QEmissionPlan {
             },
         }
         for line in &self.line_paths {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if line.origin == QLineOrigin::ArealBoundary {
                 for step in &line.path {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     areal_spans.push(step.span);
                 }
             }
             for step in &line.path {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 spans.push(step.span);
                 let span = q.spans.get(step.span).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q line plan references an unknown span".into())
                 })?;
                 for port_id in span.ports {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q line plan references an unknown port".into())
                     })?;
@@ -1346,9 +1351,9 @@ impl QEmissionPlan {
             }
         }
         for recipe in self.fragment_recipes.as_slice() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             for port_id in recipe.endpoints {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
                         "Q emission recipe endpoint references an unknown port".into(),
@@ -1357,32 +1362,38 @@ impl QEmissionPlan {
                 live_nodes.push(port.node);
             }
         }
-        work.charge(
+        work.charge_into_error(
             u64::try_from(self.point_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
         live_nodes.extend_from_slice(&self.point_nodes);
         try_sort_by_with_work(&mut spans, work, |left, right, _work| Ok(left.cmp(right)))?;
-        work.charge(u64::try_from(spans.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         spans.dedup();
         try_sort_by_with_work(&mut areal_spans, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(u64::try_from(areal_spans.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(areal_spans.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         areal_spans.dedup();
         try_sort_by_with_work(&mut live_nodes, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(u64::try_from(live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(live_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         live_nodes.dedup();
 
         let mut selected_ports = Vec::new();
         for &span_index in &spans {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let span = q.spans.get(span_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q embedding index references an unknown span".into())
             })?;
             for port_id in span.ports {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let port = q.ports.get(port_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
                         "Q embedding index references an unknown port".into(),
@@ -1392,21 +1403,23 @@ impl QEmissionPlan {
             }
         }
         for &node_id in &self.point_nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let node = q.nodes.get(node_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q embedding index references an unknown point".into())
             })?;
             for &port_id in q.node_ports.get(node.ports.clone()).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q embedding point has an invalid port run".into())
             })? {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 selected_ports.push((node_id, port_id));
             }
         }
         try_sort_by_with_work(&mut selected_ports, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(u64::try_from(selected_ports.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(selected_ports.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         selected_ports.dedup();
         let mut selected_nodes = selected_ports
             .iter()
@@ -1415,7 +1428,9 @@ impl QEmissionPlan {
         try_sort_by_with_work(&mut selected_nodes, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(u64::try_from(selected_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(selected_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         selected_nodes.dedup();
         let cut_nodes = build_cut_node_ports(topology, &spans, &selected_ports, work)?;
         let source_nodes = EmissionNodeRegistry::with_sources(topology, &live_nodes, work)?;
@@ -1454,7 +1469,7 @@ impl QEmissionPlan {
                     return Ok(false);
                 }
                 for (&polygon_index, rings) in selected.iter().zip(polygons) {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let source_polygon =
                         topology
                             .sources
@@ -1469,7 +1484,7 @@ impl QEmissionPlan {
                         return Ok(false);
                     }
                     for (ring_index, drawn) in source_polygon.rings.clone().zip(rings) {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         let source_ring =
                             topology.sources.rings.get(ring_index).ok_or_else(|| {
                                 GeometryErrorKind::Invalid(
@@ -1506,7 +1521,7 @@ impl QEmissionPlan {
                     return Ok(false);
                 }
                 for (planned, drawn) in planned.iter().zip(drawn) {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let walk = super::emission::next_recipe_walk(
                         &walks,
                         &mut cursors,
@@ -1551,7 +1566,7 @@ impl QEmissionPlan {
             return Ok(false);
         }
         for (index, (planned, drawn)) in self.line_paths.iter().zip(&drawing.lines).enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let owner = RecipeWalkOwner::Line(index);
             if planned.recipe_walk != owner || drawn.recipe_walk != owner {
                 return Ok(false);
@@ -1569,7 +1584,7 @@ impl QEmissionPlan {
             }
         }
         for (&node, drawn) in self.point_nodes.iter().zip(&drawing.points) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let source = source_points.get(node.0 as usize).copied().flatten();
             if source.is_none_or(|source| {
                 source.port.node != node
@@ -1580,7 +1595,7 @@ impl QEmissionPlan {
             }
         }
         for (owner, owner_walks) in &walks {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if cursors.get(owner).copied().unwrap_or_default() != owner_walks.len() {
                 return Ok(false);
             }
@@ -1599,7 +1614,7 @@ impl QEmissionPlan {
             PolygonPlan::WholeSphere(source_polygons) => {
                 let mut drawn_polygons = Vec::with_capacity(source_polygons.len());
                 for &polygon_index in source_polygons {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let polygon =
                         topology
                             .sources
@@ -1612,7 +1627,7 @@ impl QEmissionPlan {
                             })?;
                     let mut rings = Vec::with_capacity(polygon.rings.len());
                     for ring_index in polygon.rings.clone() {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         let ring = topology.sources.rings.get(ring_index).ok_or_else(|| {
                             GeometryErrorKind::Invalid(
                                 "Q whole-sphere plan references an unknown ring".into(),
@@ -1635,7 +1650,7 @@ impl QEmissionPlan {
             } => {
                 let mut drawn_rings = Vec::with_capacity(rings.len());
                 for planned in rings {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let (region, origin, recipe_walk, native_start_port, vertices) = match *planned
                     {
                         PlannedAreaRing::Source {
@@ -1720,7 +1735,7 @@ fn build_fragment_recipes(
     match polygons {
         PolygonPlan::WholeSphere(source_polygons) => {
             for &polygon_index in source_polygons {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let polygon = topology
                     .sources
                     .polygons
@@ -1731,7 +1746,7 @@ fn build_fragment_recipes(
                         )
                     })?;
                 for ring_index in polygon.rings.clone() {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let ring = topology.sources.rings.get(ring_index).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q whole-sphere recipe ring is unknown".into())
                     })?;
@@ -1743,7 +1758,7 @@ fn build_fragment_recipes(
         },
         PolygonPlan::Regions { rings, .. } => {
             for planned in rings {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 match *planned {
                     PlannedAreaRing::Source { ring, reverse, .. } => {
                         let source_ring = topology.sources.rings.get(ring).ok_or_else(|| {
@@ -1768,7 +1783,7 @@ fn build_fragment_recipes(
                         })?;
                         let mut spans = Vec::with_capacity(cycle.darts.len());
                         for &dart_id in &cycle.darts {
-                            work.charge(1)?;
+                            work.charge_into_error(1)?;
                             let dart =
                                 topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                                     GeometryErrorKind::Invalid(
@@ -1794,7 +1809,7 @@ fn build_fragment_recipes(
                         }
                         let mut pivot = None;
                         for (index, span) in spans.iter().enumerate() {
-                            work.charge(1)?;
+                            work.charge_into_error(1)?;
                             if topology
                                 .q
                                 .ports
@@ -1822,10 +1837,10 @@ fn build_fragment_recipes(
         },
     }
     for line in line_paths {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mut spans = Vec::with_capacity(line.path.len());
         for step in &line.path {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let span = topology.q.spans.get(step.span).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q line recipe span is unknown".into())
             })?;
@@ -1842,7 +1857,7 @@ fn build_fragment_recipes(
         }
         let mut pivot = None;
         for (index, span) in spans.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if topology
                 .q
                 .ports
@@ -1857,7 +1872,7 @@ fn build_fragment_recipes(
             spans.rotate_left(pivot);
         }
         let closed = if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let first = topology.q.ports.get(first.from.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q line recipe start is unknown".into())
             })?;
@@ -1964,13 +1979,13 @@ impl PolygonPlan {
         if whole_sphere {
             let mut source_polygons = Vec::new();
             for (index, source_polygon) in topology.sources.polygons.iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if !source_polygon_contributes_to_whole_sphere(source_polygon, operation) {
                     continue;
                 }
                 let mut has_areal_shell = false;
                 for ring_index in source_polygon.rings.clone() {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     if topology
                         .sources
                         .rings
@@ -1989,11 +2004,13 @@ impl PolygonPlan {
         }
 
         let mut rings = Vec::new();
-        work.charge(u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut emitted_cycles = vec![false; cycles.len()];
         let source_cycles_by_ring = source_cycles_by_ring(topology, cycles, work)?;
         for (ring_index, source_ring) in topology.sources.rings.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let source_cycles = source_cycles_by_ring.get(ring_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source-ring cycle index is incomplete".into())
             })?;
@@ -2012,7 +2029,7 @@ impl PolygonPlan {
                 .region;
             let mut cycles_are_consistent = true;
             for &cycle_index in source_cycles {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let cycle = cycles.get(cycle_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into())
                 })?;
@@ -2060,14 +2077,14 @@ impl PolygonPlan {
                 cycle_start,
             });
             for &cycle_index in source_cycles {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 *emitted_cycles.get_mut(cycle_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q source-ring cycle has no emission state".into())
                 })? = true;
             }
         }
         for (cycle_index, (cycle, &emitted)) in cycles.iter().zip(&emitted_cycles).enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if !emitted {
                 rings.push(PlannedAreaRing::Cycle {
                     cycle: cycle_index,
@@ -2121,7 +2138,7 @@ impl AreaSupport {
         work: &mut impl Work,
     ) -> Result<()> {
         for owner in &topology.q.spans[span].owners {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let edge = topology
                 .sources
                 .edges
@@ -2141,7 +2158,7 @@ impl AreaSupport {
         work: &mut impl Work,
     ) -> Result<bool> {
         for &face in &self.faces {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if q.face_rows.contains(face, row) {
                 return Ok(true);
             }
@@ -2156,11 +2173,13 @@ impl AreaSupport {
         try_sort_by_with_work(&mut self.rows, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(u64::try_from(self.rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(self.rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         self.rows.dedup();
         let mut count = q.face_rows.count(first);
         for &row in &self.rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if !q.face_rows.contains(first, row) && self.contains(q, row, work)? {
                 count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
             }
@@ -2176,12 +2195,12 @@ impl AreaSupport {
     ) -> Result<(usize, bool)> {
         let mut count = self.count(q, work)?;
         for &row in rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if !self.contains(q, row, work)? {
                 count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
             }
         }
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let first = rows.binary_search(&SourceRowId(0)).is_ok()
             || self.contains(q, SourceRowId(0), work)?;
         Ok((count, first))
@@ -2195,7 +2214,7 @@ fn append_unique_rows(
     work: &mut impl Work,
 ) -> Result<()> {
     output.clear();
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             left.len()
                 .checked_add(right.len())
@@ -2206,7 +2225,7 @@ fn append_unique_rows(
     output.extend_from_slice(left);
     output.extend_from_slice(right);
     try_sort_by_with_work(output, work, |left, right, _work| Ok(left.cmp(right)))?;
-    work.charge(u64::try_from(output.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(output.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     output.dedup();
     Ok(())
 }
@@ -2219,7 +2238,7 @@ fn select_faces(
 ) -> Result<Vec<bool>> {
     let mut selected = Vec::with_capacity(q.global_face_count);
     for face in 0..q.global_face_count {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let face = GlobalFaceId(u32::try_from(face).map_err(|_| ResourceError::SizeOverflow)?);
         selected.push(selects_support(
             q.face_rows.count(face),
@@ -2238,7 +2257,7 @@ pub(super) struct FaceUnion {
 
 impl FaceUnion {
     fn new(selected: &[bool], work: &mut impl Work) -> Result<Self> {
-        work.charge(
+        work.charge_into_error(
             u64::try_from(
                 selected
                     .len()
@@ -2259,7 +2278,7 @@ impl FaceUnion {
     )]
     fn find(&mut self, mut face: usize, work: &mut impl Work) -> Result<usize> {
         while self.parents[face] != face {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             self.parents[face] = self.parents[self.parents[face]];
             face = self.parents[face];
         }
@@ -2312,7 +2331,9 @@ pub(super) fn coverage_face_regions(
         )
         .into());
     }
-    work.charge(u64::try_from(face_owners.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(face_owners.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let selected = face_owners.iter().map(Option::is_some).collect::<Vec<_>>();
     face_regions_with_owner_labels(q, &selected, Some(face_owners), work)
 }
@@ -2337,7 +2358,7 @@ fn face_regions_with_owner_labels(
     }
     let mut regions = FaceUnion::new(selected, work)?;
     for faces in &q.span_global_faces {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some([left, right]) = faces else {
             continue;
         };
@@ -2380,10 +2401,12 @@ pub(super) fn selected_region_facts(
         )
         .into());
     }
-    work.charge(u64::try_from(region_roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(region_roots.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut roots = region_roots.to_vec();
     for &root in &roots {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !selected.get(root).copied().unwrap_or(false) || regions.find(root, work)? != root {
             return Err(GeometryErrorKind::Invalid(
                 "emitted region is not a selected FaceUnion root".into(),
@@ -2392,9 +2415,9 @@ pub(super) fn selected_region_facts(
         }
     }
     try_sort_by_with_work(&mut roots, work, |left, right, _work| Ok(left.cmp(right)))?;
-    work.charge(u64::try_from(roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     roots.dedup();
-    work.charge(u64::try_from(roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(roots.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut facts = roots
         .into_iter()
         .map(|root| SelectedRegionFact {
@@ -2408,7 +2431,7 @@ pub(super) fn selected_region_facts(
 
     for pole in [ChartPole::North, ChartPole::South] {
         q.for_each_pole_sector_with_work(pole, work, |sector, work| {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let face = sector.face();
             if !selected.get(face.0 as usize).copied().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q pole sector references an unknown face".into())
@@ -2416,7 +2439,7 @@ pub(super) fn selected_region_facts(
                 return Ok(());
             }
             let root = regions.selected_root(face, work)?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let index = facts
                 .binary_search_by_key(&root, |fact| fact.root)
                 .map_err(|_| {
@@ -2452,7 +2475,7 @@ pub(super) fn selected_face_roots(
     }
     let mut roots = Vec::with_capacity(selected.len());
     for (index, &is_selected) in selected.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !is_selected {
             roots.push(None);
             continue;
@@ -2479,7 +2502,7 @@ fn select_line_spans(
     let mut area = AreaSupport::default();
     let mut curve_rows = Vec::new();
     for (span_index, faces) in q.span_global_faces.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if q.span_is_collapsed_pole(span_index)? {
             selected.push(None);
             continue;
@@ -2533,13 +2556,13 @@ fn select_points(
     work: &mut impl Work,
 ) -> Result<Vec<QNodeId>> {
     let q = &topology.q;
-    work.charge(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut line_nodes = vec![false; q.nodes.len()];
     for (span, &selected) in q.spans.iter().zip(selected_spans) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if selected.is_some() {
             for node in span.nodes {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 *line_nodes.get_mut(node.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q span references an unknown node".into())
                 })? = true;
@@ -2551,7 +2574,7 @@ fn select_points(
     let mut area = AreaSupport::default();
     let mut support_rows = Vec::new();
     for (node_index, node) in q.nodes.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if line_nodes[node_index] {
             continue;
         }
@@ -2565,11 +2588,11 @@ fn select_points(
             area.faces.push(face);
         } else {
             for &dart in fan {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let span_index = q.darts[dart.0 as usize].span.0 as usize;
                 let line_rows = q.line_rows_for_span(span_index)?;
                 let collapsed_rows = q.collapsed_rows_for_span(span_index)?;
-                work.charge(
+                work.charge_into_error(
                     u64::try_from(
                         line_rows
                             .len()
@@ -2587,7 +2610,7 @@ fn select_points(
         }
         let mut face_selected = false;
         for &face in &area.faces {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if selected_faces[face.0 as usize] {
                 face_selected = true;
                 break;
@@ -2597,12 +2620,16 @@ fn select_points(
             continue;
         }
         let point_rows = q.point_rows_for_node(node_index)?;
-        work.charge(u64::try_from(point_rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(point_rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         support_rows.extend_from_slice(point_rows);
         try_sort_by_with_work(&mut support_rows, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(u64::try_from(support_rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(support_rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         support_rows.dedup();
         let (count, first) = area.with_rows(q, &support_rows, work)?;
         if selects_support(count, first, row_count, operation) {
@@ -2624,9 +2651,19 @@ fn selected_area_boundaries(
         )
         .into());
     }
+    work.charge_into_error(
+        u64::try_from(
+            q.darts
+                .len()
+                .checked_mul(2)
+                .and_then(|darts| darts.checked_add(q.nodes.len()))
+                .ok_or(ResourceError::SizeOverflow)?,
+        )
+        .map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut boundary = vec![false; q.darts.len()];
     for (span_index, faces) in q.span_global_faces.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some([left, right]) = faces else {
             continue;
         };
@@ -2693,7 +2730,7 @@ pub(super) fn coverage_area_boundaries(
     }
     let mut boundary = vec![None; q.darts.len()];
     for (span_index, faces) in q.span_global_faces.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some([left, right]) = faces else {
             continue;
         };
@@ -2770,7 +2807,7 @@ fn boundary_cycles_by_owner(
     regions: &mut FaceUnion,
     work: &mut impl Work,
 ) -> Result<Vec<(usize, BoundaryCycle)>> {
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             q.darts
                 .len()
@@ -2784,7 +2821,7 @@ fn boundary_cycles_by_owner(
     let mut positions = vec![None; q.nodes.len()];
     let mut walks = Vec::new();
     for seed in 0..q.darts.len() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let start = QDartId(u32::try_from(seed).map_err(|_| ResourceError::SizeOverflow)?);
         let Some(owner) = owner_of(start)? else {
             continue;
@@ -2798,7 +2835,7 @@ fn boundary_cycles_by_owner(
         let mut current = start;
         let mut walk = Vec::new();
         loop {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let current_index = current.0 as usize;
             if visited.get(current_index).copied().unwrap_or(false) {
                 if current == start {
@@ -2825,7 +2862,7 @@ fn boundary_cycles_by_owner(
             if let Some(begin) = positions.get(dart.to_node.0 as usize).copied().flatten() {
                 let mut cycle = Vec::with_capacity(walk.len().saturating_sub(begin));
                 for dart in walk.drain(begin..) {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let node = q
                         .darts
                         .get(dart.0 as usize)
@@ -2857,7 +2894,7 @@ fn boundary_cycles_by_owner(
         }
     }
     for (index, was_visited) in visited.into_iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let dart = QDartId(u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?);
         if owner_of(dart)?.is_some() && !was_visited {
             return Err(GeometryErrorKind::Invalid(
@@ -2869,7 +2906,7 @@ fn boundary_cycles_by_owner(
 
     let mut cycles = Vec::with_capacity(walks.len());
     for (owner, darts) in walks {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let first = *darts.first().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q overlay emitted an empty boundary cycle".into())
         })?;
@@ -2932,7 +2969,7 @@ fn next_boundary_dart_by_owner(
         .chain(before_twin.iter().rev())
         .chain(after_twin.iter().rev())
     {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if owner_of(candidate)? == Some(owner) {
             return Ok(candidate);
         }
@@ -2967,11 +3004,11 @@ fn line_owner_index(
     let collapsed_rows = q.collapsed_rows_for_span(span_index)?;
     let mut ring_owner = None;
     for (owner_index, owner) in span.owners.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let edge = source_edge_at(topology, owner.source_edge)?;
         let supported = match edge.kind {
             SourceEdgeKind::Line { .. } => {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 line_rows.binary_search(&edge.row).is_ok()
             },
             SourceEdgeKind::Ring {
@@ -2979,7 +3016,7 @@ fn line_owner_index(
                 kind: crate::geometry::RingKind::Collapsed,
                 ..
             } => {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 collapsed_rows.binary_search(&edge.row).is_ok()
             },
             SourceEdgeKind::Ring { .. } => {
@@ -3011,7 +3048,7 @@ fn area_owner_index(
         .get(span_index)
         .ok_or_else(|| GeometryErrorKind::Invalid("Q area span is unknown".into()))?;
     for (owner_index, owner) in span.owners.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if matches!(
             source_edge_at(topology, owner.source_edge)?.kind,
             SourceEdgeKind::Ring { .. }
@@ -3029,7 +3066,7 @@ fn line_steps(
 ) -> Result<Vec<Vec<LineStep>>> {
     let q = &topology.q;
     let node_count = q.nodes.len();
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             node_count
                 .checked_mul(2)
@@ -3041,7 +3078,9 @@ fn line_steps(
     )?;
     let mut degree = vec![0_usize; node_count];
     let mut incidences = Vec::new();
-    work.charge(u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let edge_count = selected.iter().flatten().count();
     incidences.reserve(
         edge_count
@@ -3049,7 +3088,7 @@ fn line_steps(
             .ok_or(ResourceError::SizeOverflow)?,
     );
     for (span_index, (span, selection)) in q.spans.iter().zip(selected).enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if selection.is_none() {
             continue;
         }
@@ -3058,7 +3097,7 @@ fn line_steps(
             (SpanEndpoint::Start, start_node),
             (SpanEndpoint::End, end_node),
         ] {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let node = node_id.0 as usize;
             let next = degree.get_mut(node).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q line span has an unknown node".into())
@@ -3076,7 +3115,7 @@ fn line_steps(
     let mut offsets = Vec::with_capacity(offset_count);
     offsets.push(0_usize);
     for count in &degree {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         offsets.push(
             offsets
                 .last()
@@ -3095,7 +3134,7 @@ fn line_steps(
     let mut visited = vec![false; q.spans.len()];
     let mut paths = Vec::new();
     for (node, &node_degree) in degree.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if node_degree == 2 {
             continue;
         }
@@ -3111,7 +3150,7 @@ fn line_steps(
             GeometryErrorKind::Invalid("Q line node has an invalid incidence range".into())
         })?;
         for &(_, span, endpoint) in incident {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let selection = selected.get(span).copied().ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q line incidence references an unknown span".into())
             })?;
@@ -3134,7 +3173,7 @@ fn line_steps(
         }
     }
     for (span, selection) in selected.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let already_visited = visited
             .get(span)
             .copied()
@@ -3163,11 +3202,11 @@ fn planned_line_paths(
 ) -> Result<Vec<PlannedQLine>> {
     let mut output = Vec::new();
     for path in paths {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mut current_origin = None;
         let mut current_steps = Vec::new();
         for step in path {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let span = topology.q.spans.get(step.span).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q line step references an unknown span".into())
             })?;
@@ -3222,7 +3261,7 @@ fn walk_line_steps(
     let mut steps = Vec::new();
     let (mut span_index, mut from_endpoint) = (start_span, start_endpoint);
     loop {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let already_visited = visited
             .get_mut(span_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q line span is unknown".into()))?;
@@ -3275,7 +3314,7 @@ fn walk_line_steps(
         for &incidence in incidences.get(start..end).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q line node has an invalid incidence range".into())
         })? {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if incidence.1 != span_index || incidence.2 != arrived_endpoint {
                 next = Some(incidence);
                 break;
@@ -3320,7 +3359,7 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
         )
         .into());
     }
-    work.charge(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut output = vec![NodeOrdinates::default(); q.nodes.len()];
     if !declared_axes.has_z() && !declared_axes.has_m() {
         return Ok(output);
@@ -3331,9 +3370,9 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
         .iter()
         .zip(q.source_edge_ports.iter())
     {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         for (point, &port) in edge.source.iter().zip(ports) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let node = q
                 .ports
                 .get(port.0 as usize)
@@ -3351,9 +3390,9 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
     let mut request_rows = Vec::new();
     let mut request_nodes = Vec::new();
     for span in &q.spans {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         for owner in &span.owners {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let start_parameter = if owner.reversed {
                 owner.source_range.end.try_clone_with_work(work)?
             } else {
@@ -3368,7 +3407,7 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
                 (span.nodes[0], start_parameter),
                 (span.nodes[1], end_parameter),
             ] {
-                work.charge(3)?;
+                work.charge_into_error(3)?;
                 request_rows.push(RequestRowInput {
                     axes: declared_axes,
                     requests: vec![RootRequest::new_with_work(
@@ -3383,7 +3422,7 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
     }
     let resolved = resolve_request_rows(&request_rows, topology, metric_access, work)?;
     for (node, ordinates) in request_nodes.into_iter().zip(resolved) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         output
             .get_mut(node.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q span endpoint node is unknown".into()))?
@@ -3395,7 +3434,7 @@ fn node_ordinates<M: crate::geometry::ChartMetric>(
         .iter()
         .zip(q.source_point_ports.iter())
     {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let node = q
             .ports
             .get(port.0 as usize)
@@ -3469,13 +3508,13 @@ pub(super) fn source_live_publication_samples(
     publication: &PublicationInventory,
     work: &mut impl Work,
 ) -> Result<Vec<bool>> {
-    work.charge(
+    work.charge_into_error(
         u64::try_from(publication.samples.len()).map_err(|_| ResourceError::SizeOverflow)?,
     )?;
     let mut live = vec![false; publication.samples.len()];
     for walk in plan.fragment_recipes.walks() {
         for &recipe in &walk.fragments {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let fragment = publication
                 .fragments
                 .get(recipe.0 as usize)
@@ -3494,7 +3533,7 @@ pub(super) fn source_live_publication_samples(
                 .into());
             }
             for sample_index in fragment.sample_range.clone() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let sample = publication.samples.get(sample_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
                         "source published fragment sample index is unknown".into(),
@@ -3561,7 +3600,7 @@ fn with_assigned_source_vertex_axes(
                         "assigned Q source cut has no checked chart image".into(),
                     )
                 })?;
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             Point::new_raw_xy(image.x.round()?, image.y.round()?)
         },
         _ => vertex.point,
@@ -3638,7 +3677,9 @@ fn write_source_path(
             .into());
         }
         // Keep each frozen publication sample on the producer edge that owns it.
-        work.charge(u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(walk.fragments.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut fragments = walk.fragments.clone();
         fragments.rotate_left(recipe_rotation);
         Some(fragments)
@@ -3671,7 +3712,7 @@ fn write_source_path(
                 .ok_or(ResourceError::SizeOverflow)?;
         }
     }
-    work.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut points = Vec::with_capacity(capacity);
     let mut images = Vec::with_capacity(capacity);
     if let Some(&first) = vertices.first() {
@@ -3686,7 +3727,7 @@ fn write_source_path(
     }
     for (edge_index, pair) in vertices.array_windows::<2>().enumerate() {
         let [_, end] = pair;
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if let (Some(publication), Some(_walk)) = (publication, walk) {
             let recipe = *walk_fragments.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("source path has no recipe for an output edge".into())
@@ -3705,7 +3746,7 @@ fn write_source_path(
                 GeometryErrorKind::Invalid("source published fragment has no endpoint".into())
             })?;
             for sample_index in fragment.sample_range.clone() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let sample = publication
                     .inventory
                     .samples
@@ -3807,7 +3848,9 @@ fn rotate_area_ring_vertices<'topology>(
     if start_index == 0 {
         return Ok(None);
     }
-    work.charge(u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(vertices.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut rotated = Vec::with_capacity(vertices.len());
     let open = vertices.get(..edge_count).ok_or_else(|| {
         GeometryErrorKind::Invalid("Q area ring has an invalid open vertex range".into())
@@ -3844,13 +3887,13 @@ fn write_drawing(
     };
     let (polygons, polygon_locations) = match drawing.polygons {
         DrawnPolygons::WholeSphere(source_polygons) => {
-            work.charge(
+            work.charge_into_error(
                 u64::try_from(source_polygons.len()).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
             let mut output = Vec::with_capacity(source_polygons.len());
             let mut output_locations = Vec::with_capacity(source_polygons.len());
             for (output_index, source_rings) in source_polygons.into_iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let output_id =
                     u32::try_from(output_index).map_err(|_| ResourceError::SizeOverflow)?;
                 let mut shell = None;
@@ -3858,7 +3901,7 @@ fn write_drawing(
                 let mut holes = Vec::new();
                 let mut hole_locations = Vec::new();
                 for source_ring in source_rings {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let (ring, locations) = write_ring(
                         &source_ring.vertices,
                         output_id,
@@ -3905,7 +3948,9 @@ fn write_drawing(
             rings,
             region_count,
         } => {
-            work.charge(u64::try_from(region_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(region_count).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut shells = Vec::with_capacity(region_count);
             let mut holes = Vec::with_capacity(region_count);
             let mut shell_locations = Vec::with_capacity(region_count);
@@ -3915,7 +3960,7 @@ fn write_drawing(
             shell_locations.resize_with(region_count, Vec::<LiteralSequence<QSourceImage>>::new);
             hole_locations.resize_with(region_count, Vec::<LiteralSequence<QSourceImage>>::new);
             for (ring_index, drawn) in rings.into_iter().enumerate() {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let is_hole = *ring_roles.get(ring_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q certified ring roles are incomplete".into())
                 })?;
@@ -3967,7 +4012,7 @@ fn write_drawing(
                 .zip(hole_locations)
                 .enumerate()
             {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if region_shells.is_empty() && region_holes.is_empty() {
                     continue;
                 }
@@ -4010,7 +4055,9 @@ fn write_drawing(
             (output, output_locations)
         },
     };
-    work.charge(u64::try_from(drawing.lines.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(drawing.lines.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut lines = Vec::with_capacity(drawing.lines.len());
     let mut line_locations = Vec::with_capacity(drawing.lines.len());
     for (line_index, line) in drawing.lines.iter().enumerate() {
@@ -4027,11 +4074,13 @@ fn write_drawing(
         lines.push(CoordSeq::try_from_points(&path.points)?);
         line_locations.push(path.locations);
     }
-    work.charge(u64::try_from(drawing.points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(drawing.points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut points = Vec::with_capacity(drawing.points.len());
     let mut point_locations = Vec::with_capacity(drawing.points.len());
     for (point_index, &vertex) in drawing.points.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         points.push(with_assigned_source_vertex_axes(
             vertex,
             ordinates,
@@ -4047,7 +4096,7 @@ fn write_drawing(
     }
     if let Some(walks) = walks {
         for (owner, owner_walks) in walks {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if walk_cursors.get(owner).copied().unwrap_or_default() != owner_walks.len() {
                 return Err(GeometryErrorKind::Invalid(
                     "source drawing did not consume each producer walk exactly once".into(),
@@ -4078,7 +4127,7 @@ fn identity_output_order(
         .checked_add(line_count)
         .and_then(|count| count.checked_add(polygon_count))
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(count).map_err(|_| ResourceError::SizeOverflow)?)?;
     Ok(CertifiedOverlayOrder {
         points: identity_output_indices(point_count, work)?,
         lines: identity_output_indices(line_count, work)?,
@@ -4087,10 +4136,10 @@ fn identity_output_order(
 }
 
 fn identity_output_indices(length: usize, work: &mut impl Work) -> Result<Vec<usize>> {
-    work.charge(u64::try_from(length).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(length).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut order = Vec::with_capacity(length);
     for index in 0..length {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         order.push(index);
     }
     Ok(order)
@@ -4111,7 +4160,7 @@ fn seal_output_parts(
         .checked_add(lines.len())
         .and_then(|count| count.checked_add(polygons.len()))
         .ok_or(ResourceError::SizeOverflow)?;
-    work.charge(u64::try_from(output_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(output_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let point_count = points.len();
     let line_count = lines.len();
 
@@ -4119,10 +4168,12 @@ fn seal_output_parts(
         let point_part = if points.is_empty() {
             None
         } else {
-            work.charge(u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let mut coordinates = CoordSeqBuilder::with_capacity(axes, points.len());
             for point in points {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 coordinates.push(point);
             }
             Some(Shape::multi_point(axes, coordinates.finish()?))
@@ -4130,7 +4181,9 @@ fn seal_output_parts(
         let line_part = if lines.is_empty() {
             None
         } else {
-            work.charge(u64::try_from(lines.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+            work.charge_into_error(
+                u64::try_from(lines.len()).map_err(|_| ResourceError::SizeOverflow)?,
+            )?;
             let values = lines.into_iter().map(LineSeq::from_proven).collect();
             Some(Shape::narrow_lines(axes, values))
         };
@@ -4143,7 +4196,7 @@ fn seal_output_parts(
             let keep_lines = line_count != 0;
             let shape = match point_part {
                 Some(point_part) => {
-                    work.charge(2)?;
+                    work.charge_into_error(2)?;
                     Shape::geometry_collection(vec![line_part, point_part])
                 },
                 None => Ok(line_part),
@@ -4198,7 +4251,7 @@ fn seal_output_parts(
                 )))
             },
             _ => {
-                work.charge(
+                work.charge_into_error(
                     u64::try_from(polygons.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 Shape::geometry_collection(polygons.into_iter().map(Shape::Polygon).collect())
@@ -4240,7 +4293,7 @@ fn cycle_belongs_to_source_ring(
 ) -> Result<bool> {
     let q = &topology.q;
     for &dart_id in &cycle.darts {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let dart = q
             .darts
             .get(dart_id.0 as usize)
@@ -4251,7 +4304,7 @@ fn cycle_belongs_to_source_ring(
             .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary span is unknown".into()))?;
         let mut owned = false;
         for owner in &span.owners {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let edge = source_edge_at(topology, owner.source_edge)?;
             if matches!(
                 edge.kind,
@@ -4275,10 +4328,10 @@ fn source_cycles_by_ring(
 ) -> Result<Vec<Vec<usize>>> {
     let mut output = vec![Vec::new(); topology.sources.rings.len()];
     for (cycle_index, cycle) in cycles.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let mut common_rings: Option<BTreeSet<SourceRingId>> = None;
         for &dart_id in &cycle.darts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let dart =
                 topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q boundary dart is unknown".into())
@@ -4289,7 +4342,7 @@ fn source_cycles_by_ring(
                 })?;
             let mut span_rings = BTreeSet::new();
             for owner in &span.owners {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 if let SourceEdgeKind::Ring { ring, .. } =
                     source_edge_at(topology, owner.source_edge)?.kind
                 {
@@ -4297,7 +4350,7 @@ fn source_cycles_by_ring(
                 }
             }
             if let Some(common_rings) = &mut common_rings {
-                work.charge(
+                work.charge_into_error(
                     u64::try_from(common_rings.len()).map_err(|_| ResourceError::SizeOverflow)?,
                 )?;
                 common_rings.retain(|ring| span_rings.contains(ring));
@@ -4310,7 +4363,7 @@ fn source_cycles_by_ring(
         }
         if let Some(common_rings) = common_rings {
             for ring in common_rings {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let ring_index =
                     usize::try_from(ring.0).map_err(|_| ResourceError::SizeOverflow)?;
                 output
@@ -4331,7 +4384,7 @@ fn source_cycle_start_port(
     work: &mut impl Work,
 ) -> Result<QPortId> {
     for &dart_id in &cycle.darts {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q cycle start references an unknown dart".into())
         })?;
@@ -4347,7 +4400,7 @@ fn source_cycle_start_port(
         }
     }
     for &dart_id in &cycle.darts {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("Q cycle start references an unknown dart".into())
         })?;
@@ -4378,12 +4431,12 @@ fn source_ring_cycles_follow_source(
     let q = &topology.q;
     let mut follows_source = None;
     for &cycle_index in cycle_indices {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let cycle = all_cycles
             .get(cycle_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into()))?;
         for &dart_id in &cycle.darts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let dart = q
                 .darts
                 .get(dart_id.0 as usize)
@@ -4394,7 +4447,7 @@ fn source_ring_cycles_follow_source(
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q boundary span is unknown".into()))?;
             let mut span_direction = None;
             for owner in &span.owners {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let edge = source_edge_at(topology, owner.source_edge)?;
                 if !matches!(
                     edge.kind,
@@ -4434,7 +4487,7 @@ fn source_ring_cycles_cover_boundary(
         let mut parallel_edges = Vec::new();
         let mut parallel_mask = 0_u8;
         for edge_index in source_ring.source_edges.clone() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let edge = topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
             })?;
@@ -4473,15 +4526,15 @@ fn source_ring_cycles_cover_boundary(
             return Ok(false);
         }
         for edge_id in parallel_edges {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let mut ranges = Vec::new();
             for &cycle_index in cycle_indices {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let cycle = all_cycles.get(cycle_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q axis-band cycle is unknown".into())
                 })?;
                 for &dart_id in &cycle.darts {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid("Q axis-band dart is unknown".into())
                     })?;
@@ -4489,9 +4542,9 @@ fn source_ring_cycles_cover_boundary(
                         GeometryErrorKind::Invalid("Q axis-band span is unknown".into())
                     })?;
                     for owner in &span.owners {
-                        work.charge(1)?;
+                        work.charge_into_error(1)?;
                         if owner.source_edge == edge_id {
-                            work.charge(1)?;
+                            work.charge_into_error(1)?;
                             ranges.push(owner.source_range.clone());
                         }
                     }
@@ -4506,12 +4559,12 @@ fn source_ring_cycles_cover_boundary(
 
     let mut ranges_by_edge = BTreeMap::<SourceEdgeId, Vec<ExactSourceRange>>::new();
     for &cycle_index in cycle_indices {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let cycle = all_cycles
             .get(cycle_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q source-ring cycle is unknown".into()))?;
         for &dart_id in &cycle.darts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let dart = topology.q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source-ring dart is unknown".into())
             })?;
@@ -4519,7 +4572,7 @@ fn source_ring_cycles_cover_boundary(
                 GeometryErrorKind::Invalid("Q source-ring span is unknown".into())
             })?;
             for owner in &span.owners {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 let edge = source_edge_at(topology, owner.source_edge)?;
                 if matches!(
                     edge.kind,
@@ -4534,7 +4587,7 @@ fn source_ring_cycles_cover_boundary(
         }
     }
     for edge_index in source_ring.source_edges.clone() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let edge =
             topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
@@ -4562,13 +4615,13 @@ fn source_ranges_cover_unit_interval(
     work: &mut impl Work,
 ) -> Result<bool> {
     try_sort_by_with_work(ranges, work, |left, right, work| {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         left.start.try_cmp(&right.start)
     })?;
     let mut covered = ExactRational::zero();
     let one = ExactRational::one();
     for range in ranges {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if range.start.try_cmp(&covered)?.is_gt() {
             return Ok(false);
         }
@@ -4586,7 +4639,7 @@ fn append_source_ring_live_nodes(
     work: &mut impl Work,
 ) -> Result<()> {
     for edge_index in source_ring.source_edges.clone() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let edge =
             topology.sources.edges.get(edge_index).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring edge is unknown".into())
@@ -4597,7 +4650,7 @@ fn append_source_ring_live_nodes(
             .get(edge.id.0 as usize)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q source ring ports are unknown".into()))?;
         for &port_id in ports {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let port = topology.q.ports.get(port_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q source ring port is unknown".into())
             })?;
@@ -4642,12 +4695,12 @@ fn draw_lines<'topology>(
     let q = &topology.q;
     let mut output = Vec::new();
     for line in paths {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let recipe_walk = line.recipe_walk;
         let path = &line.path;
         let mut start = None;
         for (index, step) in path.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let span = q
                 .spans
                 .get(step.span)
@@ -4670,7 +4723,7 @@ fn draw_lines<'topology>(
         let mut points: Vec<EmittedVertex<'topology>> = Vec::new();
         let mut previous: Option<EmittedVertex<'topology>> = None;
         for step in from_start.iter().chain(before_start) {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let span = q
                 .spans
                 .get(step.span)
@@ -4769,7 +4822,7 @@ fn draw_points<'topology>(
     let q = &topology.q;
     let mut output = Vec::with_capacity(nodes.len());
     for &node in nodes {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let vertex = if let Some(source) = source_points.get(node.0 as usize).copied().flatten() {
             source
         } else {
@@ -4807,7 +4860,7 @@ fn source_point_coordinates_with_work<'topology>(
     topology: &'topology ExactGeographicTopology,
     work: &mut impl Work,
 ) -> Result<Vec<Option<EmittedVertex<'topology>>>> {
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             topology
                 .sources
@@ -4861,17 +4914,17 @@ fn boundary_source_points_with_work<'topology>(
     work: &mut impl Work,
 ) -> Result<Vec<Option<EmittedVertex<'topology>>>> {
     let q = &topology.q;
-    work.charge(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(q.nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut selected = Vec::with_capacity(q.nodes.len());
     selected.resize(q.nodes.len(), None::<(bool, SourceEdgeId, QPortId, Point)>);
     for (span_index, span) in q.spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if span.nodes[0] == span.nodes[1] || !q.collapsed_rows_for_span(span_index)?.contains(&row)
         {
             continue;
         }
         for owner in &span.owners {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let edge = source_edge_at(topology, owner.source_edge)?;
             if edge.row != row
                 || !matches!(edge.kind, SourceEdgeKind::Ring {
@@ -4895,7 +4948,7 @@ fn boundary_source_points_with_work<'topology>(
             };
             let [start_node, end_node] = span.nodes;
             for (node, parameter) in [(start_node, start_parameter), (end_node, end_parameter)] {
-                work.charge(1)?;
+                work.charge_into_error(1)?;
                 // Prefer a stored source start at the node; its ring traversal spelling wins
                 // over the canonical chart port and over an incoming edge's endpoint alias.
                 let candidate = if parameter.is_zero() {
@@ -4921,7 +4974,7 @@ fn boundary_source_points_with_work<'topology>(
     }
     let mut output = Vec::with_capacity(selected.len());
     for entry in selected {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some((is_end, edge, port_id, point)) = entry else {
             output.push(None);
             continue;

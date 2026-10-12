@@ -173,6 +173,12 @@ impl From<ResourceError> for Error {
     }
 }
 
+impl From<std::convert::Infallible> for Error {
+    fn from(error: std::convert::Infallible) -> Self {
+        match error {}
+    }
+}
+
 /// A `ParseError` format tag identifying the malformed serialized, grid-cell,
 /// or point-code input. PyErr decoration lives in `crate::py::errors`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
