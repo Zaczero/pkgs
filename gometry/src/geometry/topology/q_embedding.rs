@@ -36,7 +36,7 @@ use super::q::{
     QuotientFaces, compare_q_darts_with_points, compare_qnode_keys, compare_qnode_keys_with_work,
     global_face_structure,
 };
-use crate::collections::UnionFind;
+use crate::collections::{HashMap, HashSet, UnionFind, collection_hash_state};
 use crate::error::{ResourceError, Result};
 use crate::geographic::{
     ChartPole, GeographicFrame, GeographicRing, Latitude, RingSummary, SeamIdentity,
@@ -166,7 +166,7 @@ type NativeChordCutRanges = Vec<NativeCutPeriodRange>;
 type NativeRecipeCutRanges = Vec<NativeChordCutRanges>;
 type NativeCutFamilyDomains = Vec<NativeRecipeCutRanges>;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum NativeChartSpellingKey {
     Interior(i64),
     SeamEast,
@@ -677,6 +677,125 @@ struct NativeGraphCycle {
     region: usize,
     edges: Vec<NativeGraphCycleEdge>,
     shell: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeCycleStartQuery {
+    region: usize,
+    shell: bool,
+    node: EmissionNodeId,
+    spelling: Option<NativeChartSpellingKey>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeCycleStartCandidate {
+    cycle_index: usize,
+    start: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeCycleStartLookup {
+    None,
+    Unique(NativeCycleStartCandidate),
+    Ambiguous,
+}
+
+#[derive(Clone, Copy, Default)]
+enum NativeCycleStartCandidates {
+    #[default]
+    None,
+    One(NativeCycleStartCandidate),
+    Multiple,
+}
+
+impl NativeCycleStartCandidates {
+    const fn insert(&mut self, candidate: NativeCycleStartCandidate) {
+        *self = match *self {
+            Self::None => Self::One(candidate),
+            Self::One(_) | Self::Multiple => Self::Multiple,
+        };
+    }
+
+    const fn lookup(self) -> NativeCycleStartLookup {
+        match self {
+            Self::None => NativeCycleStartLookup::None,
+            Self::One(candidate) => NativeCycleStartLookup::Unique(candidate),
+            Self::Multiple => NativeCycleStartLookup::Ambiguous,
+        }
+    }
+}
+
+#[derive(Default)]
+struct NativeCycleStartSpellingIndex {
+    exact: NativeCycleStartCandidates,
+    singleton_count: usize,
+    last_cycle_index: Option<usize>,
+}
+
+#[derive(Default)]
+struct NativeCycleStartBucket {
+    any_spelling: NativeCycleStartCandidates,
+    singleton_count: usize,
+    // These two candidates answer a unique-node fallback after excluding one
+    // exact spelling, without walking the remaining singleton cycles.
+    first_singleton: Option<(NativeChartSpellingKey, NativeCycleStartCandidate)>,
+    first_other_singleton: Option<(NativeChartSpellingKey, NativeCycleStartCandidate)>,
+}
+
+impl NativeCycleStartBucket {
+    fn insert_singleton(
+        &mut self,
+        spelling: NativeChartSpellingKey,
+        candidate: NativeCycleStartCandidate,
+    ) -> Result<()> {
+        self.singleton_count = self
+            .singleton_count
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
+        match self.first_singleton {
+            None => self.first_singleton = Some((spelling, candidate)),
+            Some((first_spelling, _))
+                if spelling != first_spelling && self.first_other_singleton.is_none() =>
+            {
+                self.first_other_singleton = Some((spelling, candidate));
+            },
+            Some(_) => {},
+        }
+        Ok(())
+    }
+
+    fn unique_singleton_other_than(
+        &self,
+        spelling: NativeChartSpellingKey,
+    ) -> Result<NativeCycleStartCandidate> {
+        let candidate = self
+            .first_singleton
+            .filter(|(first_spelling, _)| *first_spelling != spelling)
+            .or_else(|| {
+                self.first_other_singleton
+                    .filter(|(other_spelling, _)| *other_spelling != spelling)
+            });
+        candidate.map(|(_, candidate)| candidate).ok_or_else(|| {
+            GeometryErrorKind::Invalid(
+                "Native cycle-start singleton summary has no unique candidate".into(),
+            )
+            .into()
+        })
+    }
+}
+
+struct NativeCycleStartIndex {
+    by_region_role_node: HashMap<(usize, bool, EmissionNodeId), NativeCycleStartBucket>,
+    by_region_role_node_spelling: HashMap<
+        (usize, bool, EmissionNodeId, NativeChartSpellingKey),
+        NativeCycleStartSpellingIndex,
+    >,
+}
+
+struct NativeCycleLocalNodeStart {
+    first: usize,
+    spelling: NativeChartSpellingKey,
+    count: u8,
 }
 
 struct NativeGraphPart {
@@ -2617,8 +2736,10 @@ fn native_reference_cycles_and_parts(
     })
 }
 
-fn native_cycle_start_vertex_index(
-    graph: &NativeReferenceGraph,
+#[cfg(test)]
+fn exhaustive_native_cycle_start_vertex_index(
+    edge_nodes: &[[u32; 2]],
+    vertex_keys: &[NativeChartVertexKey],
     cycle: &NativeGraphCycle,
     target: EmissionNodeId,
     spelling: Option<NativeChartSpellingKey>,
@@ -2629,7 +2750,7 @@ fn native_cycle_start_vertex_index(
     let mut node_match_count = 0_usize;
     for (edge_index, edge) in cycle.edges.iter().enumerate() {
         budget.charge(1)?;
-        let endpoints = graph.edge_nodes.get(edge.atom as usize).ok_or_else(|| {
+        let endpoints = edge_nodes.get(edge.atom as usize).ok_or_else(|| {
             GeometryErrorKind::Invalid("native cycle start edge has no graph endpoints".into())
         })?;
         let start_vertex = if edge.reversed {
@@ -2637,12 +2758,9 @@ fn native_cycle_start_vertex_index(
         } else {
             endpoints[0]
         };
-        let key = graph
-            .vertex_keys
-            .get(start_vertex as usize)
-            .ok_or_else(|| {
-                GeometryErrorKind::Invalid("native cycle start vertex has no chart key".into())
-            })?;
+        let key = vertex_keys.get(start_vertex as usize).ok_or_else(|| {
+            GeometryErrorKind::Invalid("native cycle start vertex has no chart key".into())
+        })?;
         if key.node != target {
             continue;
         }
@@ -2683,6 +2801,206 @@ fn native_drawing_start_spelling(
     })
 }
 
+impl NativeCycleStartIndex {
+    fn build(
+        cycles: &[NativeGraphCycle],
+        edge_nodes: &[[u32; 2]],
+        vertex_keys: &[NativeChartVertexKey],
+        eligible_roles: &HashSet<(usize, bool)>,
+        hash_state: &ahash::RandomState,
+        budget: &mut impl Work,
+    ) -> Result<Self> {
+        budget.charge(1)?;
+        let mut by_region_role_node: HashMap<
+            (usize, bool, EmissionNodeId),
+            NativeCycleStartBucket,
+        > = HashMap::with_hasher(hash_state.clone());
+        let mut by_region_role_node_spelling: HashMap<
+            (usize, bool, EmissionNodeId, NativeChartSpellingKey),
+            NativeCycleStartSpellingIndex,
+        > = HashMap::with_hasher(hash_state.clone());
+        let mut local_nodes: HashMap<EmissionNodeId, NativeCycleLocalNodeStart> =
+            HashMap::with_hasher(hash_state.clone());
+        let mut local_node_order = Vec::new();
+
+        for (cycle_index, cycle) in cycles.iter().enumerate() {
+            budget.charge(1)?;
+            if !eligible_roles.contains(&(cycle.region, cycle.shell)) {
+                continue;
+            }
+            local_nodes.clear();
+            local_node_order.clear();
+            for (edge_index, edge) in cycle.edges.iter().enumerate() {
+                budget.charge(1)?;
+                let endpoints = edge_nodes.get(edge.atom as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "native cycle start edge has no graph endpoints".into(),
+                    )
+                })?;
+                let start_vertex = if edge.reversed {
+                    endpoints[1]
+                } else {
+                    endpoints[0]
+                };
+                let key = vertex_keys.get(start_vertex as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("native cycle start vertex has no chart key".into())
+                })?;
+                if let Some(node_start) = local_nodes.get_mut(&key.node) {
+                    node_start.count = node_start.count.saturating_add(1);
+                } else {
+                    local_nodes.insert(key.node, NativeCycleLocalNodeStart {
+                        first: edge_index,
+                        spelling: key.spelling,
+                        count: 1,
+                    });
+                    local_node_order.push(key.node);
+                    let bucket = by_region_role_node
+                        .entry((cycle.region, cycle.shell, key.node))
+                        .or_default();
+                    bucket.any_spelling.insert(NativeCycleStartCandidate {
+                        cycle_index,
+                        start: edge_index,
+                    });
+                }
+                let spelling_index = by_region_role_node_spelling
+                    .entry((cycle.region, cycle.shell, key.node, key.spelling))
+                    .or_default();
+                if spelling_index.last_cycle_index != Some(cycle_index) {
+                    budget.charge(1)?;
+                    spelling_index.exact.insert(NativeCycleStartCandidate {
+                        cycle_index,
+                        start: edge_index,
+                    });
+                    spelling_index.last_cycle_index = Some(cycle_index);
+                }
+            }
+
+            for node in local_node_order.iter().copied() {
+                budget.charge(1)?;
+                let node_start = local_nodes.get(&node).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Native cycle-start node summary is missing".into())
+                })?;
+                if node_start.count == 1 {
+                    let bucket = by_region_role_node
+                        .get_mut(&(cycle.region, cycle.shell, node))
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Native cycle-start bucket is missing".into(),
+                            )
+                        })?;
+                    bucket.insert_singleton(node_start.spelling, NativeCycleStartCandidate {
+                        cycle_index,
+                        start: node_start.first,
+                    })?;
+                    let spelling_index = by_region_role_node_spelling
+                        .get_mut(&(cycle.region, cycle.shell, node, node_start.spelling))
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Native cycle-start spelling summary is missing".into(),
+                            )
+                        })?;
+                    spelling_index.singleton_count = spelling_index
+                        .singleton_count
+                        .checked_add(1)
+                        .ok_or(ResourceError::SizeOverflow)?;
+                }
+            }
+        }
+
+        Ok(Self {
+            by_region_role_node,
+            by_region_role_node_spelling,
+        })
+    }
+
+    fn lookup(&self, query: NativeCycleStartQuery) -> Result<NativeCycleStartLookup> {
+        let Some(bucket) = self
+            .by_region_role_node
+            .get(&(query.region, query.shell, query.node))
+        else {
+            return Ok(NativeCycleStartLookup::None);
+        };
+        let Some(spelling) = query.spelling else {
+            return Ok(bucket.any_spelling.lookup());
+        };
+
+        let spelling_index = self.by_region_role_node_spelling.get(&(
+            query.region,
+            query.shell,
+            query.node,
+            spelling,
+        ));
+        let singleton_same = spelling_index.map_or(0, |index| index.singleton_count);
+        let singleton_other = bucket
+            .singleton_count
+            .checked_sub(singleton_same)
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "Native cycle-start singleton counts are inconsistent".into(),
+                )
+            })?;
+        match spelling_index.map_or(NativeCycleStartCandidates::None, |index| index.exact) {
+            NativeCycleStartCandidates::Multiple => Ok(NativeCycleStartLookup::Ambiguous),
+            NativeCycleStartCandidates::One(candidate) => Ok(if singleton_other == 0 {
+                NativeCycleStartLookup::Unique(candidate)
+            } else {
+                NativeCycleStartLookup::Ambiguous
+            }),
+            NativeCycleStartCandidates::None => match singleton_other {
+                0 => Ok(NativeCycleStartLookup::None),
+                1 => Ok(NativeCycleStartLookup::Unique(
+                    bucket.unique_singleton_other_than(spelling)?,
+                )),
+                _ => Ok(NativeCycleStartLookup::Ambiguous),
+            },
+        }
+    }
+}
+
+fn native_cycle_rotations_for_queries(
+    queries: &[NativeCycleStartQuery],
+    cycles: &[NativeGraphCycle],
+    edge_nodes: &[[u32; 2]],
+    vertex_keys: &[NativeChartVertexKey],
+    budget: &mut impl Work,
+) -> Result<Vec<Option<usize>>> {
+    let mut rotations = vec![None; cycles.len()];
+    if queries.is_empty() {
+        return Ok(rotations);
+    }
+
+    let hash_state = collection_hash_state()?.clone();
+    let mut eligible_roles = HashSet::with_hasher(hash_state.clone());
+    for query in queries {
+        eligible_roles.insert((query.region, query.shell));
+    }
+    let index = NativeCycleStartIndex::build(
+        cycles,
+        edge_nodes,
+        vertex_keys,
+        &eligible_roles,
+        &hash_state,
+        budget,
+    )?;
+    for &query in queries {
+        budget.charge(1)?;
+        let NativeCycleStartLookup::Unique(candidate) = index.lookup(query)? else {
+            continue;
+        };
+        let slot = rotations.get_mut(candidate.cycle_index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("Native cycle rotation row is unknown".into())
+        })?;
+        if slot.is_some_and(|previous| previous != candidate.start) {
+            return Err(GeometryErrorKind::Invalid(
+                "Native Q rings request conflicting starts on one graph cycle".into(),
+            )
+            .into());
+        }
+        *slot = Some(candidate.start);
+    }
+    Ok(rotations)
+}
+
 fn align_native_cycle_starts(
     frame: GeographicFrame,
     topology: &ExactGeographicTopology,
@@ -2703,7 +3021,7 @@ fn align_native_cycle_starts(
         )
         .into());
     }
-    let mut rotations = vec![None; cycles.len()];
+    let mut queries = Vec::with_capacity(rings.len());
     for (ring_index, ring) in rings.iter().enumerate() {
         budget.charge(1)?;
         let Some(port_id) = ring.native_start_port else {
@@ -2727,39 +3045,20 @@ fn align_native_cycle_starts(
         let is_hole = *ring_roles.get(ring_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("Native ring-order role is unknown".into())
         })?;
-        let mut matching_cycle = None;
-        let mut ambiguous = false;
-        for (cycle_index, cycle) in cycles.iter().enumerate() {
-            budget.charge(1)?;
-            if cycle.region != ring.region || cycle.shell == is_hole {
-                continue;
-            }
-            let Some(start) =
-                native_cycle_start_vertex_index(graph, cycle, target, spelling, budget)?
-            else {
-                continue;
-            };
-            if matching_cycle.replace((cycle_index, start)).is_some() {
-                ambiguous = true;
-                break;
-            }
-        }
-        if ambiguous {
-            continue;
-        }
-        if let Some((cycle_index, start)) = matching_cycle {
-            let slot = rotations.get_mut(cycle_index).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Native cycle rotation row is unknown".into())
-            })?;
-            if slot.is_some_and(|previous| previous != start) {
-                return Err(GeometryErrorKind::Invalid(
-                    "Native Q rings request conflicting starts on one graph cycle".into(),
-                )
-                .into());
-            }
-            *slot = Some(start);
-        }
+        queries.push(NativeCycleStartQuery {
+            region: ring.region,
+            shell: !is_hole,
+            node: target,
+            spelling,
+        });
     }
+    let rotations = native_cycle_rotations_for_queries(
+        &queries,
+        cycles,
+        &graph.edge_nodes,
+        &graph.vertex_keys,
+        budget,
+    )?;
     for (cycle, rotation) in cycles.iter_mut().zip(rotations) {
         if let Some(rotation) = rotation {
             budget.charge(
@@ -24418,6 +24717,497 @@ mod native_ordinate_provenance_tests {
         assert_eq!(at_span_start.parameter(), &source.source_range.start);
         assert_eq!(at_span_end.root(), RootId::from_index(7));
         assert_eq!(at_span_end.parameter(), &source.source_range.end);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod native_cycle_start_tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "cycle-start controls assert indexed behavior against the exhaustive oracle"
+    )]
+
+    use super::*;
+
+    #[derive(Clone, Copy)]
+    struct StartSpec {
+        node: EmissionNodeId,
+        spelling: NativeChartSpellingKey,
+        reversed: bool,
+    }
+
+    impl StartSpec {
+        fn forward(node: EmissionNodeId, spelling: NativeChartSpellingKey) -> Self {
+            Self {
+                node,
+                spelling,
+                reversed: false,
+            }
+        }
+    }
+
+    struct CycleSpec {
+        region: usize,
+        shell: bool,
+        starts: Vec<StartSpec>,
+    }
+
+    struct CountingWork(u64);
+
+    impl Work for CountingWork {
+        fn charge(&mut self, ticks: u64) -> Result<()> {
+            self.0 = self
+                .0
+                .checked_add(ticks)
+                .ok_or(ResourceError::SizeOverflow)?;
+            Ok(())
+        }
+    }
+
+    struct SeededInputs(u64);
+
+    impl SeededInputs {
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 32) as u32
+        }
+
+        fn spelling(&mut self) -> NativeChartSpellingKey {
+            match self.next() & 7 {
+                0 => NativeChartSpellingKey::Interior(-1),
+                1 => NativeChartSpellingKey::Interior(0),
+                2 => NativeChartSpellingKey::Interior(1),
+                3 => NativeChartSpellingKey::SeamEast,
+                4 => NativeChartSpellingKey::SeamWest,
+                _ => NativeChartSpellingKey::Pole(u64::from(self.next())),
+            }
+        }
+    }
+
+    fn synthetic_graph(
+        specifications: Vec<CycleSpec>,
+    ) -> (
+        Vec<NativeGraphCycle>,
+        Vec<[u32; 2]>,
+        Vec<NativeChartVertexKey>,
+    ) {
+        let mut cycles = Vec::with_capacity(specifications.len());
+        let mut edge_nodes = Vec::new();
+        let mut vertex_keys = Vec::new();
+        for specification in specifications {
+            let mut edges = Vec::with_capacity(specification.starts.len());
+            for start in specification.starts {
+                let vertex = u32::try_from(vertex_keys.len()).expect("small test graph vertex");
+                let other_vertex = vertex.checked_add(1).expect("small test graph endpoint");
+                let atom = u32::try_from(edge_nodes.len()).expect("small test graph edge");
+                vertex_keys.push(NativeChartVertexKey {
+                    node: start.node,
+                    spelling: start.spelling,
+                });
+                vertex_keys.push(NativeChartVertexKey {
+                    node: EmissionNodeId(u32::MAX),
+                    spelling: NativeChartSpellingKey::Pole(u64::MAX),
+                });
+                edge_nodes.push(if start.reversed {
+                    [other_vertex, vertex]
+                } else {
+                    [vertex, other_vertex]
+                });
+                edges.push(NativeGraphCycleEdge {
+                    atom,
+                    reversed: start.reversed,
+                    contributors: Vec::new(),
+                });
+            }
+            cycles.push(NativeGraphCycle {
+                face: 0,
+                region: specification.region,
+                edges,
+                shell: specification.shell,
+            });
+        }
+        (cycles, edge_nodes, vertex_keys)
+    }
+
+    fn query(
+        region: usize,
+        shell: bool,
+        node: u32,
+        spelling: Option<NativeChartSpellingKey>,
+    ) -> NativeCycleStartQuery {
+        NativeCycleStartQuery {
+            region,
+            shell,
+            node: EmissionNodeId(node),
+            spelling,
+        }
+    }
+
+    fn exhaustive_rotations_for_queries(
+        queries: &[NativeCycleStartQuery],
+        cycles: &[NativeGraphCycle],
+        edge_nodes: &[[u32; 2]],
+        vertex_keys: &[NativeChartVertexKey],
+        budget: &mut impl Work,
+    ) -> Result<Vec<Option<usize>>> {
+        let mut rotations = vec![None; cycles.len()];
+        for &query in queries {
+            let mut matching_cycle = None;
+            let mut ambiguous = false;
+            for (cycle_index, cycle) in cycles.iter().enumerate() {
+                budget.charge(1)?;
+                if cycle.region != query.region || cycle.shell != query.shell {
+                    continue;
+                }
+                let Some(start) = exhaustive_native_cycle_start_vertex_index(
+                    edge_nodes,
+                    vertex_keys,
+                    cycle,
+                    query.node,
+                    query.spelling,
+                    budget,
+                )?
+                else {
+                    continue;
+                };
+                if matching_cycle
+                    .replace(NativeCycleStartCandidate { cycle_index, start })
+                    .is_some()
+                {
+                    ambiguous = true;
+                    break;
+                }
+            }
+            if ambiguous {
+                continue;
+            }
+            if let Some(candidate) = matching_cycle {
+                let slot = rotations.get_mut(candidate.cycle_index).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Native cycle rotation row is unknown".into())
+                })?;
+                if slot.is_some_and(|previous| previous != candidate.start) {
+                    return Err(GeometryErrorKind::Invalid(
+                        "Native Q rings request conflicting starts on one graph cycle".into(),
+                    )
+                    .into());
+                }
+                *slot = Some(candidate.start);
+            }
+        }
+        Ok(rotations)
+    }
+
+    fn assert_same_differential_result(
+        indexed: &Result<Vec<Option<usize>>>,
+        exhaustive: &Result<Vec<Option<usize>>>,
+        context: &str,
+    ) {
+        match (indexed, exhaustive) {
+            (Ok(indexed), Ok(exhaustive)) => assert_eq!(indexed, exhaustive, "{context}"),
+            (Err(indexed), Err(exhaustive)) => {
+                assert!(
+                    matches!(
+                        indexed.kind(),
+                        crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+                    ),
+                    "{context}: indexed result has the wrong error kind"
+                );
+                assert!(
+                    matches!(
+                        exhaustive.kind(),
+                        crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+                    ),
+                    "{context}: exhaustive result has the wrong error kind"
+                );
+            },
+            (indexed, exhaustive) => panic!(
+                "{context}: indexed/exhaustive error disagreement: indexed={indexed:?}, exhaustive={exhaustive:?}"
+            ),
+        }
+    }
+
+    fn differential_rotations(
+        queries: &[NativeCycleStartQuery],
+        cycles: &[NativeGraphCycle],
+        edge_nodes: &[[u32; 2]],
+        vertex_keys: &[NativeChartVertexKey],
+        context: &str,
+    ) -> Result<Vec<Option<usize>>> {
+        let indexed = native_cycle_rotations_for_queries(
+            queries,
+            cycles,
+            edge_nodes,
+            vertex_keys,
+            &mut Unmetered,
+        );
+        let exhaustive = exhaustive_rotations_for_queries(
+            queries,
+            cycles,
+            edge_nodes,
+            vertex_keys,
+            &mut Unmetered,
+        );
+        assert_same_differential_result(&indexed, &exhaustive, context);
+        indexed
+    }
+
+    #[test]
+    fn native_cycle_start_index_matches_exhaustive_scan_on_seeded_small_graphs() {
+        let mut inputs = SeededInputs(0x6E61_7469_7665_6379);
+        for case in 0..96 {
+            let cycle_count = inputs.next() & 7;
+            let mut specifications = Vec::new();
+            for _ in 0..cycle_count {
+                let region = usize::try_from(inputs.next() & 3).expect("small test region");
+                let shell = inputs.next() & 1 == 0;
+                let start_count = inputs.next() & 7;
+                let mut starts = Vec::new();
+                for _ in 0..start_count {
+                    starts.push(StartSpec {
+                        node: EmissionNodeId(inputs.next() & 7),
+                        spelling: inputs.spelling(),
+                        reversed: inputs.next() & 1 != 0,
+                    });
+                }
+                specifications.push(CycleSpec {
+                    region,
+                    shell,
+                    starts,
+                });
+            }
+            let query_count = (inputs.next() & 7).max(1);
+            let mut queries = Vec::new();
+            for _ in 0..query_count {
+                let spelling = if inputs.next().trailing_zeros() >= 2 {
+                    None
+                } else {
+                    Some(inputs.spelling())
+                };
+                queries.push(query(
+                    usize::try_from(inputs.next() & 3).expect("small test region"),
+                    inputs.next() & 1 == 0,
+                    inputs.next() & 7,
+                    spelling,
+                ));
+            }
+            let (cycles, edge_nodes, vertex_keys) = synthetic_graph(specifications);
+
+            let indexed = native_cycle_rotations_for_queries(
+                &queries,
+                &cycles,
+                &edge_nodes,
+                &vertex_keys,
+                &mut Unmetered,
+            );
+            let exhaustive = exhaustive_rotations_for_queries(
+                &queries,
+                &cycles,
+                &edge_nodes,
+                &vertex_keys,
+                &mut Unmetered,
+            );
+            assert_same_differential_result(
+                &indexed,
+                &exhaustive,
+                &format!("seeded graph case {case}"),
+            );
+        }
+    }
+
+    #[test]
+    fn native_cycle_start_lookup_preserves_first_match_fallback_and_ambiguity() -> Result<()> {
+        let interior_zero = NativeChartSpellingKey::Interior(0);
+        let interior_one = NativeChartSpellingKey::Interior(1);
+        let interior_two = NativeChartSpellingKey::Interior(2);
+        let (cycles, edge_nodes, vertex_keys) = synthetic_graph(vec![
+            CycleSpec {
+                region: 2,
+                shell: true,
+                starts: vec![
+                    StartSpec::forward(EmissionNodeId(5), interior_zero),
+                    StartSpec::forward(EmissionNodeId(5), interior_zero),
+                    StartSpec::forward(EmissionNodeId(2), interior_one),
+                    StartSpec::forward(EmissionNodeId(3), interior_one),
+                    StartSpec::forward(EmissionNodeId(3), interior_two),
+                ],
+            },
+            CycleSpec {
+                region: 2,
+                shell: true,
+                starts: vec![StartSpec::forward(EmissionNodeId(5), interior_zero)],
+            },
+        ]);
+
+        let first_exact = differential_rotations(
+            &[query(2, true, 5, Some(interior_zero))],
+            &cycles[..1],
+            &edge_nodes[..5],
+            &vertex_keys,
+            "repeated exact spelling in one cycle",
+        )?;
+        assert_eq!(first_exact, [Some(0)]);
+
+        let unique_node_fallback = differential_rotations(
+            &[query(2, true, 2, Some(interior_zero))],
+            &cycles[..1],
+            &edge_nodes[..5],
+            &vertex_keys,
+            "unique-node fallback",
+        )?;
+        assert_eq!(unique_node_fallback, [Some(2)]);
+
+        let repeated_node_without_exact_spelling = differential_rotations(
+            &[query(2, true, 3, Some(interior_zero))],
+            &cycles[..1],
+            &edge_nodes[..5],
+            &vertex_keys,
+            "repeated node without exact spelling",
+        )?;
+        assert_eq!(repeated_node_without_exact_spelling, [None]);
+
+        let exact_spelling_precedes_nonmatching_occurrences = differential_rotations(
+            &[query(2, true, 3, Some(interior_one))],
+            &cycles[..1],
+            &edge_nodes[..5],
+            &vertex_keys,
+            "exact spelling beats other node occurrences",
+        )?;
+        assert_eq!(exact_spelling_precedes_nonmatching_occurrences, [Some(3)]);
+
+        let unspecified_spelling_chooses_the_first_node_start = differential_rotations(
+            &[query(2, true, 3, None)],
+            &cycles[..1],
+            &edge_nodes[..5],
+            &vertex_keys,
+            "unspecified spelling chooses first node start",
+        )?;
+        assert_eq!(unspecified_spelling_chooses_the_first_node_start, [Some(3)]);
+
+        let cross_cycle_ambiguity = differential_rotations(
+            &[query(2, true, 5, Some(interior_zero))],
+            &cycles,
+            &edge_nodes,
+            &vertex_keys,
+            "multiple matching cycles are ambiguous",
+        )?;
+        assert_eq!(cross_cycle_ambiguity, [None, None]);
+
+        let (fallback_ambiguity_cycles, fallback_edge_nodes, fallback_vertex_keys) =
+            synthetic_graph(vec![
+                CycleSpec {
+                    region: 3,
+                    shell: true,
+                    starts: vec![StartSpec::forward(EmissionNodeId(7), interior_zero)],
+                },
+                CycleSpec {
+                    region: 3,
+                    shell: true,
+                    starts: vec![StartSpec::forward(EmissionNodeId(7), interior_one)],
+                },
+            ]);
+        let exact_and_unique_fallback_are_ambiguous = differential_rotations(
+            &[query(3, true, 7, Some(interior_zero))],
+            &fallback_ambiguity_cycles,
+            &fallback_edge_nodes,
+            &fallback_vertex_keys,
+            "exact match plus another cycle's unique fallback is ambiguous",
+        )?;
+        assert_eq!(exact_and_unique_fallback_are_ambiguous, [None, None]);
+        Ok(())
+    }
+
+    #[test]
+    fn native_cycle_start_conflicting_requests_keep_the_existing_error() {
+        let spelling = NativeChartSpellingKey::Interior(0);
+        let (cycles, edge_nodes, vertex_keys) = synthetic_graph(vec![CycleSpec {
+            region: 4,
+            shell: true,
+            starts: vec![
+                StartSpec::forward(EmissionNodeId(1), spelling),
+                StartSpec::forward(EmissionNodeId(2), spelling),
+            ],
+        }]);
+        let queries = [
+            query(4, true, 1, Some(spelling)),
+            query(4, true, 2, Some(spelling)),
+        ];
+        let indexed = native_cycle_rotations_for_queries(
+            &queries,
+            &cycles,
+            &edge_nodes,
+            &vertex_keys,
+            &mut Unmetered,
+        );
+        let exhaustive = exhaustive_rotations_for_queries(
+            &queries,
+            &cycles,
+            &edge_nodes,
+            &vertex_keys,
+            &mut Unmetered,
+        );
+        assert_same_differential_result(&indexed, &exhaustive, "conflicting ring starts");
+        let error = indexed.expect_err("conflicting starts on one cycle must remain an error");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn native_cycle_start_work_scales_with_rings_and_cycles() -> Result<()> {
+        fn measured_ticks(ring_count: u32, cycle_count: u32) -> Result<u64> {
+            let mut specifications = Vec::new();
+            for _ in 0..cycle_count {
+                specifications.push(CycleSpec {
+                    region: 0,
+                    shell: true,
+                    starts: vec![StartSpec::forward(
+                        EmissionNodeId(0),
+                        NativeChartSpellingKey::Interior(0),
+                    )],
+                });
+            }
+            let (cycles, edge_nodes, vertex_keys) = synthetic_graph(specifications);
+            let queries = (0..ring_count)
+                .map(|ring| {
+                    query(
+                        0,
+                        true,
+                        ring + 100,
+                        Some(NativeChartSpellingKey::Interior(0)),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mut work = CountingWork(0);
+            let rotations = native_cycle_rotations_for_queries(
+                &queries,
+                &cycles,
+                &edge_nodes,
+                &vertex_keys,
+                &mut work,
+            )?;
+            assert!(rotations.iter().all(Option::is_none));
+            Ok(work.0)
+        }
+
+        let measured = [(8, 8), (16, 16), (32, 32)]
+            .map(|(rings, cycles)| measured_ticks(rings, cycles))
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        for (&ticks, (rings, cycles)) in measured.iter().zip([(8_u64, 8_u64), (16, 16), (32, 32)]) {
+            assert!(
+                ticks <= 5 * (rings + cycles),
+                "cycle-start work must stay linear in K + M: K={rings}, M={cycles}, ticks={ticks}"
+            );
+        }
+        assert!(
+            measured[1] <= measured[0] * 3 && measured[2] <= measured[1] * 3,
+            "doubling K and M must not approach the fourfold growth of a K×M scan: {measured:?}"
+        );
         Ok(())
     }
 }
