@@ -1,6 +1,7 @@
 use std::borrow::Borrow;
 use std::ops::ControlFlow;
 
+use crate::Frame;
 use crate::error::{ResourceError, Result};
 use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, GeographicInputs, GeographicViewError};
@@ -379,6 +380,36 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry:
         true,
         ExactPartitionBudget::Charge,
         &SourceArcContext::new(TopologyDomain::Geographic(frame), metric_access),
+    )
+}
+
+pub(crate) fn overlay_all_geographic_with_metric_and_frame<
+    S: Borrow<Shape>,
+    M: crate::geometry::ChartMetric,
+>(
+    geometries: &[S],
+    frame: GeographicFrame,
+    output_frame: &Frame,
+    op: OverlayOp,
+    strictness: Strictness,
+    metric_access: &SourceArcMetricAccess<'_, '_, M>,
+) -> Result<Shape> {
+    if geometries.is_empty() {
+        return Err(GeometryErrorKind::EmptyGeometrySequence {
+            operation: op.name(),
+        }
+        .into());
+    }
+    let originals = GeographicInputs::try_from_shapes(frame, geometries.iter().map(Borrow::borrow))
+        .map_err(|error| overlay_view_error(&error))?;
+    let context = SourceArcContext::new(TopologyDomain::Geographic(frame), Some(metric_access));
+    overlay_all_geographic_from_with_output_frame(
+        &originals,
+        op,
+        strictness,
+        true,
+        &context,
+        output_frame,
     )
 }
 
@@ -2012,6 +2043,44 @@ pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
     bounds_certificates: bool,
     context: &SourceArcContext<'_, '_, M>,
 ) -> Result<Shape> {
+    overlay_all_geographic_from_with_optional_output_frame(
+        originals,
+        op,
+        strictness,
+        bounds_certificates,
+        context,
+        None,
+    )
+}
+
+pub(in crate::geometry) fn overlay_all_geographic_from_with_output_frame<
+    M: crate::geometry::ChartMetric,
+>(
+    originals: &GeographicInputs<'_>,
+    op: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+    context: &SourceArcContext<'_, '_, M>,
+    output_frame: &Frame,
+) -> Result<Shape> {
+    overlay_all_geographic_from_with_optional_output_frame(
+        originals,
+        op,
+        strictness,
+        bounds_certificates,
+        context,
+        Some(output_frame),
+    )
+}
+
+fn overlay_all_geographic_from_with_optional_output_frame<M: crate::geometry::ChartMetric>(
+    originals: &GeographicInputs<'_>,
+    op: OverlayOp,
+    strictness: Strictness,
+    bounds_certificates: bool,
+    context: &SourceArcContext<'_, '_, M>,
+    output_frame: Option<&Frame>,
+) -> Result<Shape> {
     let frame = match context.domain() {
         TopologyDomain::Geographic(frame) => frame,
         TopologyDomain::Cartesian => {
@@ -2051,6 +2120,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
         strictness,
         bounds_certificates,
         context,
+        output_frame,
     )
 }
 
@@ -2167,6 +2237,7 @@ pub(crate) fn overlay_all_geographic_q_from(
         strictness,
         bounds_certificates,
         &SourceArcContext::new(TopologyDomain::Geographic(originals.frame()), None),
+        None,
     )
 }
 
@@ -2177,6 +2248,7 @@ fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
     strictness: Strictness,
     bounds_certificates: bool,
     context: &SourceArcContext<'_, '_, M>,
+    output_frame: Option<&Frame>,
 ) -> Result<Shape> {
     let frame = match context.domain() {
         TopologyDomain::Geographic(frame) => frame,
@@ -2212,8 +2284,15 @@ fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
             crate::geometry::compare_shapes(left.shape(), right.shape())
         });
     }
-    let topology =
-        crate::geometry::ExactGeographicTopology::from_views_as_set(frame, views.into_iter())?;
+    let topology = if let Some(output_frame) = output_frame {
+        crate::geometry::ExactGeographicTopology::from_views_as_set_with_publication_frame(
+            frame,
+            output_frame.clone(),
+            views.into_iter(),
+        )?
+    } else {
+        crate::geometry::ExactGeographicTopology::from_views_as_set(frame, views.into_iter())?
+    };
     let output = exact_geographic_overlay::<M>(
         &topology,
         op,

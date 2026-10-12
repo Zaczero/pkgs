@@ -10,14 +10,14 @@ use std::ops::{ControlFlow, Deref};
 
 use super::emission::{
     AssignedSite, EmissionChordId, EmissionNodeId, EmissionNodeRegistry, EmissionPort,
-    EmissionPortId, ExpandedEmissionPlan, FeatureFamilyBounds, FeatureFamilyRegistry,
-    FragmentRecipe, FragmentRecipeId, NativeAreaEdge, NativeAreaEdgeKind, NativeCutFeature,
-    NativeFaceId, NativeGraphEdgeOwner, NativePortData, NativeSeamEvent, NativeSeamVertices,
+    ExpandedEmissionPlan, FeatureFamilyBounds, FeatureFamilyRegistry, FragmentRecipe,
+    FragmentRecipeId, NativeAreaEdge, NativeAreaEdgeKind, NativeCutFeature, NativeFaceId,
+    NativeGraphEdgeOwner, NativePortData, NativeSeamEvent, NativeSeamVertices,
     NativeSourceFaceGerm, NativeSourceSpanUse, NodeAuthority, OccurrenceSource, PortPosition,
-    PortSpelling, PublicationInventory, QSourceImage, RecipeWalk, RecipeWalkOwner,
-    SealedSourceDrawing, SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing,
-    SourceSampleOccurrence, SourceTrace, TraceRequestLocation, TracedLine, merge_native_port_data,
-    native_pole_edges, native_seam_edges, native_source_sample_occurrences,
+    PortSpelling, PublicationInventory, RecipeWalk, RecipeWalkOwner, SealedSourceDrawing,
+    SelectedNativeSeamBand, SelectedUse, SourceFrozenDrawing, SourceSampleOccurrence, SourceTrace,
+    TraceRequestLocation, TracedLine, merge_native_port_data, native_pole_edges, native_seam_edges,
+    native_source_sample_occurrences,
 };
 use super::exact::{
     ExactChartPoint, ExactQuotientKey, ExactSourceEdge, ExactSourceRange, ExactSourceRing,
@@ -36,6 +36,7 @@ use super::q::{
     QuotientFaces, compare_q_darts_with_points, compare_qnode_keys, compare_qnode_keys_with_work,
     global_face_structure,
 };
+use super::{EmissionPortId, QSourceImage};
 use crate::collections::UnionFind;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{
@@ -65,6 +66,10 @@ use crate::geometry::overlay::{
     EmbeddingDomain, GlobalFaces, RayAxis, RayPoints, compare_departures_with_work,
     graph_global_faces_with_work, segments_within_chebyshev, shoot_left_with_work,
     walk_is_shell_with_work,
+};
+use crate::geometry::publication::{
+    ChartRestriction, ProducerReceipt, PublicationCall, PublicationOutcome, PublicationRejection,
+    StorageTarget,
 };
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational, Interval};
@@ -2861,9 +2866,9 @@ fn native_graph_cycle_recipe(
         })?;
         let next = match &edge.kind {
             NativeAreaEdgeKind::Producer { recipe, .. } => Some(*recipe),
-            NativeAreaEdgeKind::SeamConnector
-            | NativeAreaEdgeKind::PolePresentation { .. }
-            | NativeAreaEdgeKind::WholeSphereCover { .. } => None,
+            NativeAreaEdgeKind::Restriction(_) | NativeAreaEdgeKind::WholeSphereCover { .. } => {
+                None
+            },
         };
         if seen && recipe != next {
             return Ok(None);
@@ -3935,6 +3940,19 @@ struct NativeCandidateAssignment<'reference, 'topology> {
     checked: CheckedAssignment<'reference>,
 }
 
+pub(in crate::geometry) struct NativeCandidatePublication<'call, 'reference, 'topology> {
+    assignment: &'call NativeCandidateAssignment<'reference, 'topology>,
+    buffers: FrozenLiteralBuffers<EmissionPortId>,
+    sites: &'call [AssignedSite],
+    ordinates: &'call [NodeOrdinates],
+    port_records: &'call mut [Option<Point>],
+}
+
+pub(in crate::geometry) enum NativePublicationCheck {
+    Pass(SealedOutput<EmissionPortId>),
+    Reject,
+}
+
 impl<'reference, 'topology> NativeCandidateAssignment<'reference, 'topology> {
     fn issue(
         reference: &'reference NativeReference<'topology>,
@@ -3988,7 +4006,7 @@ impl CheckedImages<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
 impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
     fn read_point<W: Work>(
         &mut self,
-        _output: u32,
+        _address: super::super::embedding_completion::LiteralAddress,
         image: EmissionPortId,
         record: Point,
         _expected_axes: crate::geometry::CoordinateAxes,
@@ -4015,35 +4033,45 @@ impl LiteralChart<EmissionPortId> for NativeLiteralReceiver<'_, '_, '_> {
     }
 }
 
-impl NativeCandidateAssignment<'_, '_> {
-    fn bind_completed_native(
-        &self,
-        buffers: FrozenLiteralBuffers<EmissionPortId>,
-        sites: &[AssignedSite],
-        ordinates: &[NodeOrdinates],
-        port_records: &mut [Option<Point>],
-        work: &mut impl Work,
-    ) -> Result<Option<SealedOutput<EmissionPortId>>> {
-        let mut receiver = NativeLiteralReceiver {
-            assignment: self,
-            sites,
-            ordinates,
-            port_records,
-        };
-        let LiteralCheck::Pass(sealed) = bind_literals(buffers, &mut receiver, work)? else {
-            return Ok(None);
-        };
-        if !validate_native_sealed_layout(
-            self.reference,
-            sealed.shape_layout(),
-            receiver.port_records,
-            self.points(),
-            work,
-        )? {
-            return Ok(None);
-        }
-        Ok(Some(sealed))
+pub(in crate::geometry) fn bind_native_publication<W: Work>(
+    mut receipt: NativeCandidatePublication<'_, '_, '_>,
+    target: StorageTarget,
+    work: &mut W,
+) -> Result<NativePublicationCheck> {
+    receipt.buffers = receipt.buffers.admit_target(target)?;
+    let NativeCandidatePublication {
+        assignment,
+        buffers,
+        sites,
+        ordinates,
+        port_records,
+    } = receipt;
+    let mut receiver = NativeLiteralReceiver {
+        assignment,
+        sites,
+        ordinates,
+        port_records,
+    };
+    let sealed = match bind_literals(buffers, &mut receiver, work)? {
+        LiteralCheck::Pass(sealed) => sealed,
+        LiteralCheck::Reject(_) => {
+            return Ok(NativePublicationCheck::Reject);
+        },
+    };
+    let layout = sealed.shape_layout().ok_or_else(|| {
+        GeometryErrorKind::Invalid("native Q candidate did not bind scalar final storage".into())
+    })?;
+    if !validate_native_sealed_layout(
+        assignment.reference,
+        layout,
+        receiver.port_records,
+        assignment.points(),
+        work,
+    )? {
+        return Ok(NativePublicationCheck::Reject);
     }
+    drop(receiver);
+    Ok(NativePublicationCheck::Pass(sealed))
 }
 
 fn q_source_edge(
@@ -4195,7 +4223,7 @@ struct AssignedSourceChart<'a> {
 impl LiteralChart<QSourceImage> for AssignedSourceChart<'_> {
     fn read_point<W: Work>(
         &mut self,
-        _output: u32,
+        _address: super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
         record: Point,
         _expected_axes: crate::geometry::CoordinateAxes,
@@ -4344,6 +4372,46 @@ struct SourceOnlyReceipt<'a> {
     publication: Option<&'a PublicationInventory>,
 }
 
+pub(in crate::geometry) struct SourceOnlyPublication<'a> {
+    source: SourceFrozenDrawing,
+    topology: &'a ExactGeographicTopology,
+    source_ports: Option<&'a [Option<ExactChartPoint>]>,
+    source_ordinates: &'a [NodeOrdinates],
+    publication: Option<&'a PublicationInventory>,
+    publication_images: &'a [ExactChartPoint],
+    publication_points: &'a [XY],
+    publication_ordinates: &'a [NodeOrdinates],
+}
+
+impl<'a> SourceOnlyPublication<'a> {
+    pub(in crate::geometry::topology) const fn new(
+        source: SourceFrozenDrawing,
+        topology: &'a ExactGeographicTopology,
+        source_ports: Option<&'a [Option<ExactChartPoint>]>,
+        source_ordinates: &'a [NodeOrdinates],
+        publication: Option<&'a PublicationInventory>,
+        publication_images: &'a [ExactChartPoint],
+        publication_points: &'a [XY],
+        publication_ordinates: &'a [NodeOrdinates],
+    ) -> Self {
+        Self {
+            source,
+            topology,
+            source_ports,
+            source_ordinates,
+            publication,
+            publication_images,
+            publication_points,
+            publication_ordinates,
+        }
+    }
+}
+
+pub(in crate::geometry) enum SourcePublicationCheck {
+    Pass(SealedOutput<QSourceImage>),
+    Reject(Vec<QSourceImage>),
+}
+
 impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
     fn image(&self, image: QSourceImage) -> Result<&ExactChartPoint> {
         if let QSourceImage::PublicationSample(sample) = image
@@ -4364,7 +4432,7 @@ impl CheckedImages<QSourceImage> for SourceOnlyReceipt<'_> {
 impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
     fn read_point<W: Work>(
         &mut self,
-        output: u32,
+        address: super::super::embedding_completion::LiteralAddress,
         image: QSourceImage,
         record: Point,
         expected_axes: crate::geometry::CoordinateAxes,
@@ -4372,10 +4440,48 @@ impl LiteralChart<QSourceImage> for SourceOnlyReceipt<'_> {
         work: &mut W,
     ) -> Result<Option<ExactChartPoint>> {
         self.chart
-            .read_point(output, image, record, expected_axes, stored_axes, work)
+            .read_point(address, image, record, expected_axes, stored_axes, work)
     }
 }
 
+pub(in crate::geometry) fn bind_source_publication<W: Work>(
+    mut receipt: SourceOnlyPublication<'_>,
+    target: StorageTarget,
+    work: &mut W,
+) -> Result<SourcePublicationCheck> {
+    receipt.source.buffers = receipt.source.buffers.admit_target(target)?;
+    let SourceOnlyPublication {
+        source,
+        topology,
+        source_ports,
+        source_ordinates,
+        publication,
+        publication_images,
+        publication_points,
+        publication_ordinates,
+    } = receipt;
+    let mut receiver = SourceOnlyReceipt {
+        images: QSourceImages {
+            topology,
+            source_ports,
+            publication: publication_images,
+        },
+        chart: AssignedSourceChart {
+            topology,
+            source_ports,
+            source_ordinates,
+            publication_points,
+            publication_ordinates,
+        },
+        publication,
+    };
+    Ok(match bind_literals(source.buffers, &mut receiver, work)? {
+        LiteralCheck::Pass(sealed) => SourcePublicationCheck::Pass(sealed),
+        LiteralCheck::Reject(images) => SourcePublicationCheck::Reject(images),
+    })
+}
+
+#[cfg(test)]
 pub(super) fn bind_source_only(
     source: SourceFrozenDrawing,
     topology: &ExactGeographicTopology,
@@ -14047,9 +14153,7 @@ fn native_known_span_boundaries(
     let capacity = all_edges.clone().try_fold(0_usize, |count, edge| {
         let known_count = match &edge.kind {
             NativeAreaEdgeKind::Producer { known_spans, .. } => known_spans.len(),
-            NativeAreaEdgeKind::SeamConnector
-            | NativeAreaEdgeKind::PolePresentation { .. }
-            | NativeAreaEdgeKind::WholeSphereCover { .. } => 0,
+            NativeAreaEdgeKind::Restriction(_) | NativeAreaEdgeKind::WholeSphereCover { .. } => 0,
         };
         count
             .checked_add(
@@ -19563,9 +19667,15 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let mut materialized_poles = Vec::with_capacity(pole_edges.len());
                 for edge in &pole_edges {
                     budget.charge(1)?;
-                    let NativeAreaEdgeKind::PolePresentation { pole } = &edge.kind else {
+                    let NativeAreaEdgeKind::Restriction(restriction) = &edge.kind else {
                         return Err(GeometryErrorKind::Invalid(
                             "native pole constructor returned a non-pole edge".into(),
+                        )
+                        .into());
+                    };
+                    let ChartRestriction::PolarCap { pole } = restriction.restriction else {
+                        return Err(GeometryErrorKind::Invalid(
+                            "native pole constructor returned a non-polar restriction".into(),
                         )
                         .into());
                     };
@@ -19575,7 +19685,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         )
                         .into());
                     };
-                    materialized_poles.push((region, *pole));
+                    materialized_poles.push((region, pole));
                 }
                 try_sort_by_with_work(&mut materialized_poles, budget, |left, right, budget| {
                     budget.charge(1)?;
@@ -19893,20 +20003,34 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             )
             .into());
         }
-        let Some(sealed) = candidate.assignment.bind_completed_native(
-            frozen.buffers,
-            &assigned_sites,
-            &ordinates,
-            &mut candidate.port_records,
-            budget,
-        )?
-        else {
-            return Ok(None);
+        let line_traces = frozen.line_traces;
+        let receipt = NativeCandidatePublication {
+            assignment: &candidate.assignment,
+            buffers: frozen.buffers,
+            sites: &assigned_sites,
+            ordinates: &ordinates,
+            port_records: &mut candidate.port_records,
         };
-        Ok(Some(super::emission::CompletedNativeDrawing {
-            sealed,
-            line_traces: frozen.line_traces,
-        }))
+        match crate::geometry::publication::finish_geographic(
+            PublicationCall::new(
+                ProducerReceipt::QNative(receipt),
+                self.topology.publication_frame().clone(),
+                budget,
+            ),
+            StorageTarget::Scalar,
+        )? {
+            PublicationOutcome::Pass(sealed) => Ok(Some(super::emission::CompletedNativeDrawing {
+                sealed,
+                line_traces,
+            })),
+            PublicationOutcome::Reject(PublicationRejection::Native) => Ok(None),
+            PublicationOutcome::Reject(PublicationRejection::SourceOnly(_)) => {
+                Err(GeometryErrorKind::Invalid(
+                    "native Q finisher returned source-only rejection".into(),
+                )
+                .into())
+            },
+        }
     }
 
     fn assigned_publication_chart_points(
@@ -20172,19 +20296,26 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                         self.operation,
                         budget,
                     )?;
-                    let sealed = match bind_source_only(
+                    let receipt = SourceOnlyPublication {
                         source,
-                        self.topology,
-                        Some(&producer_projection.source_ports),
-                        &self.ordinates,
-                        Some(self.emission.publication),
-                        &publication_chart_points,
-                        &publication_points,
-                        &publication_ordinates,
-                        budget,
+                        topology: self.topology,
+                        source_ports: Some(&producer_projection.source_ports),
+                        source_ordinates: &self.ordinates,
+                        publication: Some(self.emission.publication),
+                        publication_images: &publication_chart_points,
+                        publication_points: &publication_points,
+                        publication_ordinates: &publication_ordinates,
+                    };
+                    let sealed = match crate::geometry::publication::finish_geographic(
+                        PublicationCall::new(
+                            ProducerReceipt::QSourceOnly(receipt),
+                            self.topology.publication_frame().clone(),
+                            budget,
+                        ),
+                        StorageTarget::Scalar,
                     )? {
-                        LiteralCheck::Pass(sealed) => sealed,
-                        LiteralCheck::Reject(images) => {
+                        PublicationOutcome::Pass(finished) => finished,
+                        PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
                             let mut variables = Vec::with_capacity(images.len());
                             for image in images {
                                 budget.charge(1)?;
@@ -20228,6 +20359,12 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                             return Ok(GlobalCheck::Reject(
                                 self.classes_for_variables(variables, budget)?,
                             ));
+                        },
+                        PublicationOutcome::Reject(PublicationRejection::Native) => {
+                            return Err(GeometryErrorKind::Invalid(
+                                "source-only Q finisher returned native rejection".into(),
+                            )
+                            .into());
                         },
                     };
                     super::emission::SealedQDrawing::Source(SealedSourceDrawing {
@@ -21815,13 +21952,68 @@ mod canonical_coordinate_tests {
 
     use super::*;
     use crate::geometry::OverlayOp;
-    use crate::geometry::embedding_completion::LiteralPoint;
+    use crate::geometry::embedding_completion::{LiteralPoint, LiteralRowLayout};
 
     fn topology(shapes: &[crate::geometry::Shape]) -> Result<ExactGeographicTopology> {
         let frame = GeographicFrame::crs84();
         let inputs = crate::geographic::GeographicInputs::try_from_shapes(frame, shapes.iter())
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         ExactGeographicTopology::from_views(frame, inputs.views().iter().copied())
+    }
+
+    fn source_drawing_for_storage(
+        point: Point,
+        target: StorageTarget,
+        work: &mut impl Work,
+    ) -> Result<SourceFrozenDrawing> {
+        let layout = ShapeLiteralLayout {
+            points: vec![LiteralPoint {
+                output: 0,
+                axes: crate::geometry::CoordinateAxes::XYZM,
+                image: QSourceImage::PublicationSample(0),
+            }],
+            lines: Vec::new(),
+            polygons: Vec::new(),
+        };
+        let buffers = match target {
+            StorageTarget::Scalar => FrozenLiteralBuffers::shapes(Shape::Point(point), layout),
+            StorageTarget::Array | StorageTarget::Groups => {
+                let storage =
+                    std::sync::Arc::new(crate::geometry::storage::GeometryArrayStorage::Packed(
+                        crate::geometry::storage::PackedStorage::Points {
+                            coords: std::sync::Arc::new(CoordSeq::try_from_points(&[point])?),
+                            row_map: crate::geometry::storage::RowSelection::Identity,
+                        },
+                    ));
+                let row = LiteralRowLayout {
+                    operation: 0,
+                    logical_row: 0,
+                    group_row: matches!(target, StorageTarget::Groups).then_some(0),
+                    value_row: matches!(target, StorageTarget::Groups).then_some(0),
+                    layout,
+                };
+                match target {
+                    StorageTarget::Array => FrozenLiteralBuffers::rows(
+                        storage,
+                        None,
+                        crate::geometry::storage::StorageLayout::LogicalRows,
+                        vec![Some(row)],
+                        work,
+                    )?,
+                    StorageTarget::Groups => FrozenLiteralBuffers::groups(
+                        storage,
+                        None,
+                        crate::geometry::storage::StorageLayout::LogicalRows,
+                        vec![Some(row)],
+                        vec![0, 1],
+                        None,
+                        work,
+                    )?,
+                    StorageTarget::Scalar => unreachable!(),
+                }
+            },
+        };
+        Ok(SourceFrozenDrawing { buffers })
     }
 
     fn native_demand_for_shapes(
@@ -22502,8 +22694,34 @@ mod canonical_coordinate_tests {
         };
         use crate::geometry::Shape;
 
-        let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
-        let point = Point::new_raw_xy(7.0, 6.0);
+        let source_shape = crate::io::parse_wkt("POINT (0 0)")?;
+        let geographic_frame = GeographicFrame::crs84();
+        let inputs = crate::geographic::GeographicInputs::try_from_shapes(
+            geographic_frame,
+            std::iter::once(&source_shape),
+        )
+        .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
+        let output_frame = crate::Frame::CrsEpoch("OGC:CRS84".into(), 2024.5);
+        let topology = ExactGeographicTopology::from_views_as_set_with_publication_frame(
+            geographic_frame,
+            output_frame.clone(),
+            inputs.views().iter().copied(),
+        )?;
+        let point = Point::new_raw_axes(
+            7.0,
+            6.0,
+            crate::geometry::ZOrdinate(Some(70.0)),
+            crate::geometry::MOrdinate(Some(700.0)),
+        );
+        let corrupted_point = Point::new_raw_axes(
+            7.0,
+            6.0,
+            crate::geometry::ZOrdinate(Some(70.0)),
+            crate::geometry::MOrdinate(Some(701.0)),
+        );
+        let mut sample_ordinates = NodeOrdinates::default();
+        sample_ordinates.z.observe(Some(70.0));
+        sample_ordinates.m.observe(Some(700.0));
         let exact = ExactChartPoint::from_rationals(
             ExactRational::from_f64(7.0),
             ExactRational::from_f64(6.0),
@@ -22526,27 +22744,57 @@ mod canonical_coordinate_tests {
                 endpoint_only: false,
             }],
             counts: vec![1],
-            ordinates: vec![NodeOrdinates::default()],
-        };
-        let source = SourceFrozenDrawing {
-            buffers: FrozenLiteralBuffers::shapes(Shape::Point(point), ShapeLiteralLayout {
-                points: vec![LiteralPoint {
-                    output: 0,
-                    axes: crate::geometry::CoordinateAxes::XY,
-                    image: QSourceImage::PublicationSample(0),
-                }],
-                lines: Vec::new(),
-                polygons: Vec::new(),
-            }),
+            ordinates: vec![sample_ordinates],
         };
         let source_ordinates = [];
         let publication_images = [exact];
         let publication_points = [XY::new(7.0, 6.0)];
-        let publication_ordinates = [NodeOrdinates::default()];
+        let publication_ordinates = [sample_ordinates];
         let mut work = Unmetered;
 
-        assert!(matches!(
-            bind_source_only(
+        fn read_finished_point(
+            finished: crate::geometry::publication::FinishedGeometry,
+            target: StorageTarget,
+        ) -> Result<(Option<Point>, crate::Frame)> {
+            Ok(match target {
+                StorageTarget::Scalar => {
+                    let (shape, frame) = finished.into_scalar()?;
+                    let point = match shape {
+                        Shape::Point(point) => Some(point),
+                        _ => None,
+                    };
+                    (point, frame)
+                },
+                StorageTarget::Array => {
+                    let (rows, frame) = finished.into_array()?;
+                    let point = match rows.logical_row(0) {
+                        Some(crate::geometry::storage::LogicalRow::Present { row, .. }) => {
+                            row.point()
+                        },
+                        _ => None,
+                    };
+                    (point, frame)
+                },
+                StorageTarget::Groups => {
+                    let (groups, frame) = finished.into_groups()?;
+                    let point = match groups.values.logical_row(0) {
+                        Some(crate::geometry::storage::LogicalRow::Present { row, .. }) => {
+                            row.point()
+                        },
+                        _ => None,
+                    };
+                    (point, frame)
+                },
+            })
+        }
+
+        for target in [
+            StorageTarget::Scalar,
+            StorageTarget::Array,
+            StorageTarget::Groups,
+        ] {
+            let source = source_drawing_for_storage(corrupted_point, target, &mut work)?;
+            let receipt = SourceOnlyPublication::new(
                 source,
                 &topology,
                 None,
@@ -22555,10 +22803,64 @@ mod canonical_coordinate_tests {
                 &publication_images,
                 &publication_points,
                 &publication_ordinates,
+            );
+            let call = PublicationCall::new(
+                ProducerReceipt::QSourceOnly(receipt),
+                topology.publication_frame().clone(),
                 &mut work,
-            )?,
-            LiteralCheck::Pass(_)
-        ));
+            );
+            match crate::geometry::publication::finish_geographic(call, target)? {
+                PublicationOutcome::Reject(PublicationRejection::SourceOnly(images)) => {
+                    assert_eq!(images, [QSourceImage::PublicationSample(0)]);
+                },
+                PublicationOutcome::Reject(PublicationRejection::Native) => {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source-only receipt returned native rejection".into(),
+                    )
+                    .into());
+                },
+                PublicationOutcome::Pass(finished) => {
+                    let (actual, _) = read_finished_point(finished, target)?;
+                    assert_eq!(
+                        actual,
+                        Some(point),
+                        "omitting the binder must fail final-storage readback"
+                    );
+                },
+            }
+
+            let source = source_drawing_for_storage(point, target, &mut work)?;
+            let receipt = SourceOnlyPublication::new(
+                source,
+                &topology,
+                None,
+                &source_ordinates,
+                Some(&publication),
+                &publication_images,
+                &publication_points,
+                &publication_ordinates,
+            );
+            let call = PublicationCall::new(
+                ProducerReceipt::QSourceOnly(receipt),
+                topology.publication_frame().clone(),
+                &mut work,
+            );
+            let PublicationOutcome::Pass(finished) =
+                crate::geometry::publication::finish_geographic(call, target)?
+            else {
+                return Err(GeometryErrorKind::Invalid(
+                    "valid source-only output was rejected".into(),
+                )
+                .into());
+            };
+            let (actual, finished_frame) = read_finished_point(finished, target)?;
+            assert_eq!(
+                actual,
+                Some(point),
+                "final storage readback must retain the checked full record"
+            );
+            assert_eq!(finished_frame, output_frame);
+        }
         Ok(())
     }
 
@@ -23724,6 +24026,7 @@ mod canonical_coordinate_tests {
     #[test]
     fn native_literal_readback_rejects_a_post_pass_published_port_mutation() -> Result<()> {
         use super::super::emission::native_port_point;
+        use crate::geometry::Shape;
 
         let topology = topology(&[crate::io::parse_wkt("POINT (0 0)")?])?;
         let mut budget = EvaluationBudget::new("native literal readback", 0)?;
@@ -23764,25 +24067,35 @@ mod canonical_coordinate_tests {
         })?;
         let assignment = NativeCandidateAssignment::issue(&reference, checked)?;
         let mut port_records = vec![None; reference.plan.ports.len()];
-        let mut receiver = NativeLiteralReceiver {
+        let buffers = FrozenLiteralBuffers::shapes(Shape::Point(record), ShapeLiteralLayout {
+            points: vec![LiteralPoint {
+                output: 0,
+                axes: crate::geometry::CoordinateAxes::XY,
+                image: port_id,
+            }],
+            lines: Vec::new(),
+            polygons: Vec::new(),
+        });
+        let receipt = NativeCandidatePublication {
             assignment: &assignment,
+            buffers,
             sites: &sites,
             ordinates: &ordinates,
             port_records: &mut port_records,
         };
-
         assert!(
-            receiver
-                .read_point(
-                    0,
-                    port_id,
-                    record,
-                    crate::geometry::CoordinateAxes::XY,
-                    crate::geometry::CoordinateAxes::XY,
-                    &mut budget,
-                )?
-                .is_none(),
-            "final Native literal binding must reject a post-Pass endpoint mutation"
+            matches!(
+                crate::geometry::publication::finish_geographic(
+                    PublicationCall::new(
+                        ProducerReceipt::QNative(receipt),
+                        topology.publication_frame().clone(),
+                        &mut budget,
+                    ),
+                    StorageTarget::Scalar,
+                )?,
+                PublicationOutcome::Reject(PublicationRejection::Native)
+            ),
+            "the common Native binder rejects a post-admission endpoint mutation"
         );
         Ok(())
     }
@@ -23851,17 +24164,26 @@ mod canonical_coordinate_tests {
             },
         );
 
+        let receipt = NativeCandidatePublication {
+            assignment: &assignment,
+            buffers: missing_rows,
+            sites: &sites,
+            ordinates: &ordinates,
+            port_records: &mut port_records,
+        };
         assert!(
-            assignment
-                .bind_completed_native(
-                    missing_rows,
-                    &sites,
-                    &ordinates,
-                    &mut port_records,
-                    &mut budget,
-                )?
-                .is_none(),
-            "a sealed output that omits the producer's point row must not pass"
+            matches!(
+                crate::geometry::publication::finish_geographic(
+                    PublicationCall::new(
+                        ProducerReceipt::QNative(receipt),
+                        topology.publication_frame().clone(),
+                        &mut budget,
+                    ),
+                    StorageTarget::Scalar,
+                )?,
+                PublicationOutcome::Reject(PublicationRejection::Native)
+            ),
+            "the consuming Q sink must reject a sealed output that omits its point row"
         );
         Ok(())
     }

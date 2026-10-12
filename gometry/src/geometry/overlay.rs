@@ -143,11 +143,11 @@ pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
 pub(in crate::geometry) use nary::{
     binary_cartesian_difference_without_partition_budget,
     binary_cartesian_intersection_with_edge_roles, overlay_all_geographic_from_with_metric,
-    overlay_view_error,
+    overlay_all_geographic_from_with_output_frame, overlay_view_error,
 };
 pub(crate) use nary::{
-    overlay_all, overlay_all_geographic_chart, overlay_all_with_metric,
-    overlay_intersection_with_rectangle,
+    overlay_all, overlay_all_geographic_chart, overlay_all_geographic_with_metric_and_frame,
+    overlay_all_with_metric, overlay_intersection_with_rectangle,
 };
 #[cfg(test)]
 pub(crate) use noding::self_node_segments_sourced;
