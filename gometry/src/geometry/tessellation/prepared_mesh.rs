@@ -6,6 +6,7 @@ use crate::geometry::Point;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MeshProducer {
     Delaunay,
+    Earcut,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +68,9 @@ impl MeshUseId {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MeshEdgeRole {
     Delaunay,
+    EarcutBoundary,
+    EarcutDiagonal,
+    EarcutBridge,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,13 +150,6 @@ impl PreparedMeshFace {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the shared storage adapter consumes producer/site/face authority from the carried receipt"
-    )
-)]
 pub(crate) struct PreparedMeshPublication {
     pub(crate) producer: MeshProducer,
     pub(crate) sites: Vec<PreparedMeshSite>,

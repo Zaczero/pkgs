@@ -12,6 +12,7 @@ mod earcut;
 mod earcut_bridges;
 mod earcut_sweep;
 pub(in crate::geometry) mod exact;
+mod mesh_publication;
 mod prepared_mesh;
 mod sampling;
 mod shape;

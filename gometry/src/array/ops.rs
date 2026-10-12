@@ -93,6 +93,18 @@ fn publish_mesh_publication_for_domain(
     geometry::publish_mesh_publication_for_domain(publication, domain, &source_context, budget)
 }
 
+fn publish_earcut_publication_for_domain(
+    mut publication: crate::geometry::PreparedMeshPublication,
+    domain: crate::geometry::TopologyDomain,
+    metric: crate::dispatch::MetricCtx<'_>,
+    budget: &mut crate::geometry::ExpansionBudget,
+) -> Result<crate::geometry::PublishedTriangleVertices> {
+    let points = publication.take_points();
+    let mut published = publish_triangle_vertices_for_domain(points, domain, metric, budget)?;
+    published.mesh_publication = Some(publication);
+    Ok(published)
+}
+
 impl PyGeometryArray {
     pub(crate) fn to_wkt_impl(
         &self,
@@ -416,18 +428,37 @@ impl PyGeometryArray {
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         // Mixed-axis rows cannot land in one packed coords column (`from_points`
-        // assumes axis-homogeneity); per-shape `delaunay_triangles` preserves
-        // each row's ordinate layout via `carry_each`.
+        // assumes axis-homogeneity); the prepared face rings preserve each row's
+        // selected sites and per-face ordinate layout through `carry_each`.
         if self.uniform_axes().is_none() {
-            return self.flat_map_shapes_groups_budgeted(
-                py,
-                "triangulate",
-                "method",
-                move |_, shape, budget| {
-                    let triangles = shape.delaunay_triangles_budgeted(budget)?;
-                    publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
-                },
-            );
+            return match domain {
+                crate::geometry::TopologyDomain::Cartesian => self.flat_map_shapes_groups_budgeted(
+                    py,
+                    "triangulate",
+                    "method",
+                    move |_, shape, budget| shape.delaunay_triangles_budgeted(budget),
+                ),
+                crate::geometry::TopologyDomain::Geographic(_) => self
+                    .flat_map_shapes_groups_budgeted(
+                        py,
+                        "triangulate",
+                        "method",
+                        move |_, shape, budget| {
+                            let publication = shape
+                                .delaunay_mesh_publication_in_domain_budgeted(domain, budget)?;
+                            let published = publish_mesh_publication_for_domain(
+                                publication,
+                                domain,
+                                metric,
+                                budget,
+                            )?;
+                            Shape::triangle_shapes_from_published_rings(
+                                &published.points,
+                                &published.ring_ends,
+                            )
+                        },
+                    ),
+            };
         }
         // Mirror the scalar `Geometry::delaunay_triangles` packed builder: each
         // row's flat `[a, c, b, a]` vertex stream is concatenated into ONE
@@ -513,14 +544,40 @@ impl PyGeometryArray {
         let (domain, metric) = crate::dispatch::MetricResolver::GeographicCarry
             .resolve_topology_ctx(&self.frame, &mut metric_scratch)?;
         if self.earcut_rows_pack()? {
-            return self.flat_map_packed_triangles_groups_budgeted(
+            return match domain {
+                crate::geometry::TopologyDomain::Cartesian => self
+                    .flat_map_packed_triangles_groups_budgeted(
+                        py,
+                        "triangulate",
+                        "method",
+                        move |_, shape, budget| {
+                            let vertices = shape.polygon_triangle_vertices_budgeted(budget)?;
+                            crate::geometry::PublishedTriangleVertices::uniform(vertices)
+                        },
+                    ),
+                crate::geometry::TopologyDomain::Geographic(_) => self
+                    .flat_map_packed_triangles_groups_budgeted(
+                        py,
+                        "triangulate",
+                        "method",
+                        move |_, shape, budget| {
+                            let publication = shape.earcut_mesh_publication_budgeted(budget)?;
+                            publish_earcut_publication_for_domain(
+                                publication,
+                                domain,
+                                metric,
+                                budget,
+                            )
+                        },
+                    ),
+            };
+        }
+        if matches!(domain, crate::geometry::TopologyDomain::Cartesian) {
+            return self.flat_map_shapes_groups_budgeted(
                 py,
                 "triangulate",
                 "method",
-                move |_, shape, budget| {
-                    let vertices = shape.polygon_triangle_vertices_budgeted(budget)?;
-                    publish_triangle_vertices_for_domain(vertices, domain, metric, budget)
-                },
+                move |_, shape, budget| shape.polygon_triangles_budgeted(budget),
             );
         }
         self.flat_map_shapes_groups_budgeted(
@@ -528,7 +585,8 @@ impl PyGeometryArray {
             "triangulate",
             "method",
             move |_, shape, budget| {
-                let triangles = shape.polygon_triangles_budgeted(budget)?;
+                let publication = shape.earcut_mesh_publication_budgeted(budget)?;
+                let triangles = Shape::earcut_triangle_shapes_from_publication(&publication)?;
                 publish_triangle_shapes_for_domain(triangles, domain, metric, budget)
             },
         )
