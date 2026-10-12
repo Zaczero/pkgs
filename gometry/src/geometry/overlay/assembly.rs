@@ -405,7 +405,11 @@ mod tests {
     }
 
     #[test]
-    fn certified_overlay_sort_funds_long_line_and_hole_prefixes() {
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin overlay sort order and prefix-comparison work"
+    )]
+    fn certified_overlay_sort_funds_long_line_and_hole_prefixes() -> crate::error::Result<()> {
         let long_line_low = line(&[
             (0.0, 0.0),
             (1.0, 0.0),
@@ -416,8 +420,7 @@ mod tests {
             (6.0, 0.0),
             (7.0, 0.0),
             (8.0, 0.0),
-        ])
-        .unwrap();
+        ])?;
         let long_line_high = line(&[
             (0.0, 0.0),
             (1.0, 0.0),
@@ -428,9 +431,8 @@ mod tests {
             (6.0, 0.0),
             (7.0, 0.0),
             (9.0, 0.0),
-        ])
-        .unwrap();
-        let (line_order, long_line_work) = sort_lines(vec![long_line_high, long_line_low]).unwrap();
+        ])?;
+        let (line_order, long_line_work) = sort_lines(vec![long_line_high, long_line_low])?;
         assert_eq!(line_order, [1, 0]);
 
         let short_line_low = line(&[
@@ -443,8 +445,7 @@ mod tests {
             (6.0, 0.0),
             (7.0, 0.0),
             (8.0, 0.0),
-        ])
-        .unwrap();
+        ])?;
         let short_line_high = line(&[
             (10.0, 0.0),
             (1.0, 0.0),
@@ -455,9 +456,8 @@ mod tests {
             (6.0, 0.0),
             (7.0, 0.0),
             (9.0, 0.0),
-        ])
-        .unwrap();
-        let (_, short_line_work) = sort_lines(vec![short_line_high, short_line_low]).unwrap();
+        ])?;
+        let (_, short_line_work) = sort_lines(vec![short_line_high, short_line_low])?;
         assert!(
             long_line_work > short_line_work,
             "equal-size lines with a longer common prefix must spend more comparison work"
@@ -473,8 +473,7 @@ mod tests {
             (6.0, 1.0),
             (7.0, 1.0),
             (0.0, 1.0),
-        ])
-        .unwrap();
+        ])?;
         let long_hole_high = polygon_with_hole(&[
             (0.0, 1.0),
             (1.0, 1.0),
@@ -485,10 +484,8 @@ mod tests {
             (6.0, 1.0),
             (8.0, 1.0),
             (0.0, 1.0),
-        ])
-        .unwrap();
-        let (hole_order, long_hole_work) =
-            sort_polygons(vec![long_hole_high, long_hole_low]).unwrap();
+        ])?;
+        let (hole_order, long_hole_work) = sort_polygons(vec![long_hole_high, long_hole_low])?;
         assert_eq!(hole_order, [1, 0]);
 
         let short_hole_low = polygon_with_hole(&[
@@ -501,8 +498,7 @@ mod tests {
             (6.0, 1.0),
             (7.0, 1.0),
             (0.0, 1.0),
-        ])
-        .unwrap();
+        ])?;
         let short_hole_high = polygon_with_hole(&[
             (0.0, 1.0),
             (10.0, 1.0),
@@ -513,12 +509,12 @@ mod tests {
             (6.0, 1.0),
             (8.0, 1.0),
             (0.0, 1.0),
-        ])
-        .unwrap();
-        let (_, short_hole_work) = sort_polygons(vec![short_hole_high, short_hole_low]).unwrap();
+        ])?;
+        let (_, short_hole_work) = sort_polygons(vec![short_hole_high, short_hole_low])?;
         assert!(
             long_hole_work > short_hole_work,
             "equal-size polygons with a longer common hole prefix must spend more comparison work"
         );
+        Ok(())
     }
 }

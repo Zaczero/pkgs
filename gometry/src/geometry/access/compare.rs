@@ -204,18 +204,20 @@ mod tests {
     }
 
     #[test]
-    fn point_prefix_refusal_precedes_coordinate_access() {
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before coordinate comparison and its work record"
+    )]
+    fn point_prefix_refusal_precedes_coordinate_access() -> crate::error::Result<()> {
         let left = crate::geometry::CoordSeq::try_from_points(&[
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 0.0),
-        ])
-        .unwrap();
+        ])?;
         let right = crate::geometry::CoordSeq::try_from_points(&[
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(2.0, 0.0),
-        ])
-        .unwrap();
-        let mut work = RecordingBudget::with_remaining(0).unwrap();
+        ])?;
+        let mut work = RecordingBudget::with_remaining(0)?;
 
         let error = compare_point_slices_with_work(&left, &right, &mut work).unwrap_err();
 
@@ -229,13 +231,18 @@ mod tests {
         ));
         assert_eq!(work.attempted, [1]);
         assert!(work.accepted.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn hole_prefix_refusal_precedes_nested_row_access() {
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin refusal before nested row comparison and its work record"
+    )]
+    fn hole_prefix_refusal_precedes_nested_row_access() -> crate::error::Result<()> {
         let left = [crate::geometry::CoordSeq::empty(CoordinateAxes::XY)];
         let right = [crate::geometry::CoordSeq::empty(CoordinateAxes::XY)];
-        let mut work = RecordingBudget::with_remaining(0).unwrap();
+        let mut work = RecordingBudget::with_remaining(0)?;
 
         let error = compare_nested_point_slices_with_work(&left, &right, &mut work).unwrap_err();
 
@@ -249,40 +256,44 @@ mod tests {
         ));
         assert_eq!(work.attempted, [1]);
         assert!(work.accepted.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn evaluation_only_comparison_keeps_order_and_erases_raw_work() {
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions pin comparison order and EvaluationOnly work erasure"
+    )]
+    fn evaluation_only_comparison_keeps_order_and_erases_raw_work() -> crate::error::Result<()> {
         let left = crate::geometry::CoordSeq::try_from_points(&[
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 0.0),
-        ])
-        .unwrap();
+        ])?;
         let right = crate::geometry::CoordSeq::try_from_points(&[
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(2.0, 0.0),
-        ])
-        .unwrap();
+        ])?;
         let expected = compare_point_slices(&left, &right);
         let mut unmetered = Unmetered;
         assert_eq!(
-            compare_point_slices_with_work(&left, &right, &mut unmetered).unwrap(),
+            compare_point_slices_with_work(&left, &right, &mut unmetered)?,
             expected
         );
 
         let mut budget =
-            EvaluationBudget::with_remaining_ticks_for_test("coordinate comparison", 1, 1).unwrap();
+            EvaluationBudget::with_remaining_ticks_for_test("coordinate comparison", 1, 1)?;
         {
             let mut work = EvaluationOnly::new(&mut budget);
             assert_eq!(
-                compare_point_slices_with_work(&left, &right, &mut work).unwrap(),
+                compare_point_slices_with_work(&left, &right, &mut work)?,
                 expected
             );
         }
-        <EvaluationBudget as Work>::charge(&mut budget, 1).unwrap();
+        <EvaluationBudget as Work>::charge(&mut budget, 1)?;
         assert!(
             <EvaluationBudget as Work>::charge(&mut budget, 1).is_err(),
             "EvaluationOnly must not spend raw comparison work"
         );
+        Ok(())
     }
 }
