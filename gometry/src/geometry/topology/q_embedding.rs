@@ -22358,19 +22358,18 @@ mod canonical_coordinate_tests {
             let emission =
                 plan.embedding_emission(&topology, &source_points, &publication, &mut budget)?;
             let ordinates = vec![NodeOrdinates::default(); topology.q.nodes.len()];
-            let outcome = certify_and_search_q_embedding::<crate::crs::GeodesicMetric, _>(
-                &topology,
-                &emission,
-                &nearest,
-                &live_keys,
-                drawing,
-                &ordinates,
-                crate::geometry::CoordinateAxes::XY,
-                false,
-                OverlayOp::Union.name(),
-                None,
-                &mut budget,
-            )?;
+            let certification = QEmbeddingCertification::<crate::crs::GeodesicMetric> {
+                topology: &topology,
+                emission: &emission,
+                nearest: &nearest,
+                ordinates: &ordinates,
+                declared_axes: crate::geometry::CoordinateAxes::XY,
+                strict_axes: false,
+                operation: OverlayOp::Union.name(),
+                metric_access: None,
+            };
+            let outcome =
+                certify_and_search_q_embedding(&certification, &live_keys, drawing, &mut budget)?;
             let native = matches!(
                 outcome,
                 SearchOutcome::Pass(QEmbeddingPass {
