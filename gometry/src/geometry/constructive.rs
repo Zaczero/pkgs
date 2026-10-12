@@ -11,6 +11,7 @@ mod segmentize;
 mod simplify;
 mod smooth;
 mod snap;
+mod subdivide;
 mod walk;
 mod winding;
 
@@ -30,12 +31,13 @@ pub(crate) use segmentize::{
 };
 pub(crate) use simplify::{
     GeographicRdpGuard, PlanarRdpGuard, RdpEdgeSpanGuard, raw_offset_loop,
-    rdp_keep_with_edge_guard, split, strict_cycle, validate_buffer_style,
+    rdp_keep_with_edge_guard, strict_cycle, validate_buffer_style,
 };
 pub(crate) use snap::{
     SnapReference, remove_repeated_line_points, remove_repeated_points,
     remove_repeated_ring_points, snap_ring_to_reference,
 };
+pub(crate) use subdivide::split;
 pub(in crate::geometry) use walk::winding_region;
 pub(crate) use walk::{
     WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop, emit_cap,
