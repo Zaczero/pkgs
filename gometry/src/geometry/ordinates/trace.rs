@@ -1419,7 +1419,7 @@ mod tests {
                     },
                     RootRequest {
                         root: second_root,
-                        parameter: second_parameter.clone(),
+                        parameter: second_parameter,
                     },
                 ],
             },
