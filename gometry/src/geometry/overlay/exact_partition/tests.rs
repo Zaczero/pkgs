@@ -57,6 +57,10 @@ fn geographic_embedding_domain_uses_frame_limits_and_existing_singular_lines() {
 
 #[test]
 #[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test propagates fallible setup with `?` and intentionally fails through assertions"
+)]
+#[expect(
     clippy::float_cmp,
     reason = "the certified rectangle must retain its exact supplied bounds"
 )]

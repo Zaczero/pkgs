@@ -1267,6 +1267,10 @@ fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Wor
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the fallible trace-builder setup propagates with `?`; assertions are the test oracle"
+)]
 mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;

@@ -3322,6 +3322,10 @@ mod keep_mask_scratch_tests {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "these regression tests propagate fallible setup with `?` and intentionally fail through assertions"
+)]
 mod subdivision_tests {
     use super::*;
     use crate::crs;
