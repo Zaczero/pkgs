@@ -869,33 +869,39 @@ trait PointBinaryF64Kernel: Copy + Send + Sync {
     ) -> PyResult<f64>;
 
     /// Geodesic array path: resolve the ellipsoid once, then map rows.
-    fn eval_rows_geodesic(
+    fn eval_rows_geodesic<const HAS_MISSING: bool>(
         self,
         metric: &crs::GeodesicMetric,
         len: usize,
         missing: Option<&ValidityMask>,
-        mut points: impl FnMut(usize) -> (Point, Point),
+        points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<Vec<f64>> {
-        match missing {
-            Some(mask) => (0..len)
-                .map(|row| {
-                    if mask.is_missing(row) {
-                        return Ok(f64::NAN);
-                    }
-                    let (left, right) = points(row);
-                    self.eval_geodesic(metric, left, right)
-                        .map_err(|err| crate::note_array_row(err, row))
-                })
-                .collect(),
-            None => (0..len)
-                .map(|row| {
-                    let (left, right) = points(row);
-                    self.eval_geodesic(metric, left, right)
-                        .map_err(|err| crate::note_array_row(err, row))
-                })
-                .collect(),
-        }
+        point_binary_f64_rows::<HAS_MISSING, _>(
+            self,
+            len,
+            missing,
+            points,
+            |kernel, left, right| kernel.eval_geodesic(metric, left, right),
+        )
     }
+}
+
+fn point_binary_f64_rows<const HAS_MISSING: bool, K: PointBinaryF64Kernel>(
+    kernel: K,
+    len: usize,
+    missing: Option<&ValidityMask>,
+    mut points: impl FnMut(usize) -> (Point, Point),
+    mut evaluate: impl FnMut(K, Point, Point) -> PyResult<f64>,
+) -> PyResult<Vec<f64>> {
+    (0..len)
+        .map(|row| {
+            if row_missing::<HAS_MISSING>(missing, row) {
+                return Ok(f64::NAN);
+            }
+            let (left, right) = points(row);
+            evaluate(kernel, left, right).map_err(|err| crate::note_array_row(err, row))
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -970,26 +976,6 @@ fn point_binary_f64_eval<K: PointBinaryF64Kernel>(
     }
 }
 
-fn point_binary_f64_rows_planar<const HAS_MISSING: bool, K: PointBinaryF64Kernel>(
-    kernel: K,
-    to_metre: f64,
-    len: usize,
-    missing: Option<&ValidityMask>,
-    mut points: impl FnMut(usize) -> (Point, Point),
-) -> PyResult<Vec<f64>> {
-    (0..len)
-        .map(|row| {
-            if row_missing::<HAS_MISSING>(missing, row) {
-                return Ok(f64::NAN);
-            }
-            let (left, right) = points(row);
-            kernel
-                .eval_planar(to_metre, left, right)
-                .map_err(|err| crate::note_array_row(err, row))
-        })
-        .collect()
-}
-
 fn point_binary_f64_rows_dispatch<K: PointBinaryF64Kernel>(
     kernel: K,
     model: &crs::MetricModel,
@@ -1000,19 +986,26 @@ fn point_binary_f64_rows_dispatch<K: PointBinaryF64Kernel>(
     match model {
         crs::MetricModel::Geodesic { .. } => {
             let metric = crs::GeodesicMetric::from_model(model)?;
-            kernel.eval_rows_geodesic(&metric, len, missing, points)
+            match missing {
+                Some(mask) => kernel.eval_rows_geodesic::<true>(&metric, len, Some(mask), points),
+                None => kernel.eval_rows_geodesic::<false>(&metric, len, None, points),
+            }
         },
         crs::MetricModel::Planar { to_metre } => match missing {
-            Some(mask) => point_binary_f64_rows_planar::<true, _>(
+            Some(mask) => point_binary_f64_rows::<true, _>(
                 kernel,
-                to_metre.get(),
                 len,
                 Some(mask),
                 points,
+                |kernel, left, right| kernel.eval_planar(to_metre.get(), left, right),
             ),
-            None => {
-                point_binary_f64_rows_planar::<false, _>(kernel, to_metre.get(), len, None, points)
-            },
+            None => point_binary_f64_rows::<false, _>(
+                kernel,
+                len,
+                None,
+                points,
+                |kernel, left, right| kernel.eval_planar(to_metre.get(), left, right),
+            ),
         },
     }
 }
