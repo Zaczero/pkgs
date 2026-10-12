@@ -1894,7 +1894,6 @@ fn edges_have_only_vertex_contacts(
                         .into_iter()
                         .find(|vertex| [*right_start, *right_end].contains(vertex));
                     let Some(shared) = shared else {
-                        new_contact = true;
                         return Ok(ControlFlow::Break(()));
                     };
                     let left_other = if *left_start == shared {
