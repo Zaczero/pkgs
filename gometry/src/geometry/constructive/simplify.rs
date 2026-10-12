@@ -3527,7 +3527,7 @@ mod subdivision_tests {
     fn ordinary_geographic_xy_polygon_skips_unneeded_root_catalog() -> Result<()> {
         let mut points = (0..127)
             .map(|index| {
-                let angle = 2.0 * std::f64::consts::PI * index as f64 / 127.0;
+                let angle = 2.0 * std::f64::consts::PI * f64::from(index) / 127.0;
                 Point::new_raw_xy(8.0 * angle.cos(), 8.0 * angle.sin())
             })
             .collect::<Vec<_>>();
@@ -3562,7 +3562,7 @@ mod subdivision_tests {
     fn ordinary_geographic_xy_line_without_chart_transit_skips_root_catalog() -> Result<()> {
         let points = (0..128)
             .map(|index| {
-                let fraction = index as f64 / 127.0;
+                let fraction = f64::from(index) / 127.0;
                 Point::new_raw_xy(
                     -9.0 + 18.0 * fraction,
                     2.0 * (3.0 * std::f64::consts::PI * fraction).sin(),
@@ -3594,7 +3594,7 @@ mod subdivision_tests {
 
         let wide_points = (0..128)
             .map(|index| {
-                let fraction = index as f64 / 127.0;
+                let fraction = f64::from(index) / 127.0;
                 Point::new_raw_xy(
                     -170.0 + 340.0 * fraction,
                     2.0 * (3.0 * std::f64::consts::PI * fraction).sin(),
@@ -3628,7 +3628,7 @@ mod subdivision_tests {
             Point::new_raw_xy(-179.0, 30.0),
         ];
         points.extend((0..126).map(|index| {
-            let fraction = index as f64 / 125.0;
+            let fraction = f64::from(index) / 125.0;
             Point::new_raw_xy(-178.0 + 28.0 * fraction, 31.0 + 4.0 * fraction)
         }));
         let shape = line_shape(&points);
@@ -3718,12 +3718,12 @@ mod subdivision_tests {
         );
         let mut points = (0..127)
             .map(|index| {
-                let angle = 2.0 * std::f64::consts::PI * index as f64 / 127.0;
+                let angle = 2.0 * std::f64::consts::PI * f64::from(index) / 127.0;
                 Point::new_raw_axes(
                     8.0 * angle.cos(),
                     8.0 * angle.sin(),
-                    crate::geometry::ZOrdinate(Some(index as f64 + 1.0)),
-                    crate::geometry::MOrdinate(Some(1000.0 + index as f64)),
+                    crate::geometry::ZOrdinate(Some(f64::from(index) + 1.0)),
+                    crate::geometry::MOrdinate(Some(1000.0 + f64::from(index))),
                 )
             })
             .collect::<Vec<_>>();
@@ -3759,12 +3759,12 @@ mod subdivision_tests {
         );
         let points = (0..128)
             .map(|index| {
-                let fraction = index as f64 / 127.0;
+                let fraction = f64::from(index) / 127.0;
                 Point::new_raw_axes(
                     -9.0 + 18.0 * fraction,
                     2.0 * (3.0 * std::f64::consts::PI * fraction).sin(),
-                    crate::geometry::ZOrdinate(Some(index as f64 + 1.0)),
-                    crate::geometry::MOrdinate(Some(1000.0 + index as f64)),
+                    crate::geometry::ZOrdinate(Some(f64::from(index) + 1.0)),
+                    crate::geometry::MOrdinate(Some(1000.0 + f64::from(index))),
                 )
             })
             .collect::<Vec<_>>();
@@ -3801,10 +3801,10 @@ mod subdivision_tests {
             for input_vertices in [32, 64, 128, 256] {
                 let mut points = (0..input_vertices)
                     .map(|index| {
-                        let fraction = index as f64 / (input_vertices - 1) as f64;
+                        let fraction = f64::from(index) / f64::from(input_vertices - 1);
                         let (x, y) = if kind == "polygon" {
-                            let angle =
-                                std::f64::consts::TAU * index as f64 / input_vertices as f64;
+                            let angle = std::f64::consts::TAU * f64::from(index)
+                                / f64::from(input_vertices);
                             (8.0 * angle.cos(), 8.0 * angle.sin())
                         } else {
                             (
@@ -3815,8 +3815,8 @@ mod subdivision_tests {
                         Point::new_raw_axes(
                             x,
                             y,
-                            crate::geometry::ZOrdinate(Some(index as f64 + 1.0)),
-                            crate::geometry::MOrdinate(Some(index as f64 + 1000.0)),
+                            crate::geometry::ZOrdinate(Some(f64::from(index) + 1.0)),
+                            crate::geometry::MOrdinate(Some(f64::from(index) + 1000.0)),
                         )
                     })
                     .collect::<Vec<_>>();
