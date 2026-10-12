@@ -1807,7 +1807,7 @@ fn point_edge_contacts_preserved(
                 Ok(ControlFlow::<()>::Continue(()))
             },
         )?;
-        let _completion = completion;
+        debug_assert!(completion.is_continue());
         Ok(result)
     }
 
@@ -1846,7 +1846,6 @@ fn edges_have_only_vertex_contacts(
         }
         bounds.push(outward_segment_bounds(start, end, work)?);
     }
-    let mut new_contact = false;
     let completion = for_each_overlapping_bounds_cross_pair_with_work(
         &bounds,
         &bounds,
@@ -1931,18 +1930,14 @@ fn edges_have_only_vertex_contacts(
                     );
                     match (left_on_right, right_on_left) {
                         (Ok(false), Ok(false)) => Ok(ControlFlow::Continue(())),
-                        (Ok(_), Ok(_)) => {
-                            new_contact = true;
-                            Ok(ControlFlow::Break(()))
-                        },
+                        (Ok(_), Ok(_)) => Ok(ControlFlow::Break(())),
                         (Err(error), _) | (_, Err(error)) => Err(error),
                     }
                 },
             }
         },
     )?;
-    let _completion = completion;
-    Ok(!new_contact)
+    Ok(completion.is_continue())
 }
 
 #[cfg(test)]
