@@ -212,71 +212,6 @@ fn subdivision_children(source: &Shape, split_x: bool, cut: f64) -> [Shape; 2] {
 }
 
 #[test]
-fn traced_line_ranges_reject_clip_rectangle_segments_as_line_provenance() {
-    let source = crate::io::parse_wkt("LINESTRING (0 0, 1 1)").unwrap();
-    let left = Shape::Polygon(rect_polygon(Bounds::new_raw(-1.0, -1.0, 0.5, 2.0)).unwrap());
-    let right = Shape::Polygon(rect_polygon(Bounds::new_raw(0.5, -1.0, 2.0, 2.0)).unwrap());
-    let inventory = ExactSourceInventory::from_shapes(&[&source, &left, &right]).unwrap();
-    let mut budget = ExpansionBudget::new("subdivide", "traced line range control");
-    let partition = inventory.partition(&mut budget).unwrap();
-    let ranges =
-        source_line_ranges(LineSource::from_shape(&source).expect("source is lineal")).unwrap();
-    let mut work = Unmetered;
-    let views = partition
-        .source_span_trace_views(&inventory.source_segments, &mut work)
-        .unwrap();
-    let selected = vec![false; partition.spans.len()];
-    let traces = [SourceTrace::from_edge_rows([Vec::new()], &mut work).unwrap()];
-
-    assert!(
-        ranges.iter().map(Range::len).sum::<usize>() < views.len(),
-        "the partition inventory includes clip-rectangle segments"
-    );
-    reset_source_line_runs_calls();
-    let Err(error) =
-        inventory.source_line_runs(&partition, &ranges, &views, &selected, &traces, &mut work)
-    else {
-        panic!("clip-rectangle segments have no source-line trace");
-    };
-    assert_eq!(source_line_runs_calls(), 1);
-    assert!(
-        error
-            .to_string()
-            .contains("line member source ranges omit partition source segments"),
-        "{error}"
-    );
-}
-
-#[test]
-fn public_geographic_seam_subdivision_does_not_reach_source_line_runs() {
-    let shape = crate::io::parse_wkt(
-        "LINESTRING (179 0, -179 30, -178 31, -177 32, -176 33, -175 34, -174 35, -173 36, -172 37)",
-    )
-    .unwrap();
-    let context = SourceArcContext::new(
-        crate::geometry::TopologyDomain::Geographic(crate::geographic::GeographicFrame::crs84()),
-        None,
-    );
-
-    reset_source_line_runs_calls();
-    let result = shape.subdivide_with_context(8, false, &context);
-
-    assert_eq!(
-        source_line_runs_calls(),
-        0,
-        "public subdivision must not enter the Native trace-range path"
-    );
-    let parts = result.expect("ordinary geographic subdivision preserves seam support");
-    let mut counts = crate::geometry::ShapeCountQuery::default();
-    assert!(!parts.is_empty());
-    assert!(parts.iter().all(|part| {
-        counts
-            .coordinate_count(part)
-            .is_some_and(|count| count <= 8)
-    }));
-}
-
-#[test]
 fn subdivision_rounds_the_exterior_crossing_without_cracking_the_seam() {
     let source =
         crate::io::parse_wkt("POLYGON((0 0,3 1,3 2,2 2,1 2,0 2,-1 2,-1 1,-1 0,0 0))").unwrap();
@@ -985,28 +920,6 @@ fn point_append_admission_rejects_when_count_is_u32_max() {
                 crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
             )
     ));
-}
-
-#[test]
-fn line_source_ranges_reserve_only_stored_multiline_values() {
-    let line = LineSeq::from_proven(
-        CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(1.0, 0.0)]).unwrap(),
-    );
-    let mut members = Vec::with_capacity(65);
-    for _ in 0..64 {
-        members.push(crate::geometry::MultiMember::Empty);
-    }
-    members.push(crate::geometry::MultiMember::Value(line));
-    let lines = MultiLineString::try_new(crate::geometry::CoordinateAxes::XY, members).unwrap();
-    let member_count = lines.member_count();
-    assert_eq!(lines.len(), 1);
-
-    let shape = Shape::MultiLineString(lines);
-    let source = LineSource::from_shape(&shape).expect("multiline source");
-    let ranges = source_line_ranges(source).unwrap();
-    assert_eq!(ranges.len(), 1);
-    assert_eq!(ranges[0], 0..1);
-    assert!(ranges.capacity() < member_count);
 }
 
 impl ExactPartition<'_> {

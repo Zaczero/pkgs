@@ -2741,12 +2741,39 @@ impl SourceTrace {
         self.rows.requests_at(edge, local, work)
     }
 
+    pub(in crate::geometry) fn append_requests_at(
+        &self,
+        edge: usize,
+        local: &ExactRational,
+        requests: &mut Vec<RootRequest>,
+        work: &mut impl Work,
+    ) -> Result<usize> {
+        self.rows.append_requests_at(edge, local, requests, work)
+    }
+
     pub(in crate::geometry) fn compose_edges(
         &self,
         slices: &[(usize, ExactRational, ExactRational)],
         work: &mut impl Work,
     ) -> Result<Self> {
         let edge_count = self.rows.edge_count();
+        if self.samples.is_empty() {
+            let mut rows = TraceRowsBuilder::new(work)?;
+            for (edge, start, end) in slices {
+                work.charge_into_error(1)?;
+                if *edge >= edge_count {
+                    return Err(GeometryErrorKind::Invalid(
+                        "source trace slice references an unknown edge".into(),
+                    )
+                    .into());
+                }
+                rows.push_composed_row(self.rows.row(*edge)?, start, end, work)?;
+            }
+            return Ok(Self {
+                rows: rows.finish(work)?,
+                samples: Vec::new(),
+            });
+        }
         let vertex_count = edge_count
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;

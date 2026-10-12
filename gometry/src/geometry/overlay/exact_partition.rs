@@ -25,13 +25,14 @@ use std::sync::Arc;
 #[cfg(test)]
 use crate::collections::HashMap;
 use crate::error::ResourceError;
-#[cfg(test)]
-use crate::geometry::Coordinates as _;
+use crate::geographic::GeographicFrame;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::embedding_search::EvaluationBudget;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::ordinates::{
-    RootMetricState, SourceArcContext, SourceArcRequest, source_arc_ordinates,
+    NodeOrdinates, RequestRowInput, RootCatalog, RootId, RootMetricState, RootRange, RootRequest,
+    SourceArcContext, SourceArcMetricAccess, SourceArcRequest, resolve_request_rows,
+    resolve_source_root, source_arc_ordinates,
 };
 use crate::geometry::overlay::noding::{
     SegmentProvenance, SegmentSource, dedup_undirected_segments_sourced, placement_offsets,
@@ -44,10 +45,11 @@ use crate::geometry::segments::{
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational};
 use crate::geometry::topology::SourceTrace;
 use crate::geometry::{
-    Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind,
-    GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey, Polygon,
-    PolygonizeFull, RepairMethod, Result, Ring, RingKind, Segment, Shape, SharedShapeOwners,
-    Unmetered, Work, XY, ZOrdinate, same_point, segment_contact_exact, storage,
+    Bounds, ChartMetric, Contact, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
+    GeometryErrorKind, GeometryKind, LineSeq, Loc, MOrdinate, MultiLineString, Point, PointKey,
+    Polygon, PolygonizeFull, RepairMethod, Result, Ring, RingKind, Segment, Shape,
+    SharedShapeOwners, Unmetered, Work, XY, ZOrdinate, line_segments, remove_antenna_vertices,
+    same_point, segment_contact_exact, storage,
 };
 #[cfg(test)]
 use crate::geometry::{for_each_candidate_pair, single_chain};
@@ -61,10 +63,18 @@ mod location;
 mod metrics;
 mod rays;
 mod relate;
+pub(in crate::geometry) mod subdivision;
 
 #[cfg(test)]
 thread_local! {
     static SOURCE_LINE_RUNS_CALLS: Cell<usize> = const { Cell::new(0) };
+    static SUBDIVISION_ROOT_XY_POSITION_CALLS: Cell<usize> = const { Cell::new(0) };
+    static SUBDIVISION_RESOLUTION_BATCHES: std::cell::RefCell<Vec<(usize, usize, usize)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static SOURCE_SPAN_VIEW_SORTS: Cell<usize> = const { Cell::new(0) };
+    static SOURCE_SPAN_VIEW_ORDERED: Cell<usize> = const { Cell::new(0) };
+    static SOURCE_SPAN_ENDPOINT_PARAMETERS: Cell<usize> = const { Cell::new(0) };
+    static SOURCE_SPAN_INTERIOR_PARAMETERS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -75,6 +85,44 @@ fn reset_source_line_runs_calls() {
 #[cfg(test)]
 fn source_line_runs_calls() -> usize {
     SOURCE_LINE_RUNS_CALLS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_subdivision_root_xy_position_calls() {
+    SUBDIVISION_ROOT_XY_POSITION_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn subdivision_root_xy_position_calls() -> usize {
+    SUBDIVISION_ROOT_XY_POSITION_CALLS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_subdivision_resolution_batches() {
+    SUBDIVISION_RESOLUTION_BATCHES.with(|batches| batches.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn take_subdivision_resolution_batches() -> Vec<(usize, usize, usize)> {
+    SUBDIVISION_RESOLUTION_BATCHES.with(|batches| std::mem::take(&mut *batches.borrow_mut()))
+}
+
+#[cfg(test)]
+pub(crate) fn reset_source_span_view_order_counts() {
+    SOURCE_SPAN_VIEW_SORTS.with(|count| count.set(0));
+    SOURCE_SPAN_VIEW_ORDERED.with(|count| count.set(0));
+    SOURCE_SPAN_ENDPOINT_PARAMETERS.with(|count| count.set(0));
+    SOURCE_SPAN_INTERIOR_PARAMETERS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn source_span_view_order_counts() -> (usize, usize, usize, usize) {
+    (
+        SOURCE_SPAN_VIEW_SORTS.with(Cell::get),
+        SOURCE_SPAN_VIEW_ORDERED.with(Cell::get),
+        SOURCE_SPAN_ENDPOINT_PARAMETERS.with(Cell::get),
+        SOURCE_SPAN_INTERIOR_PARAMETERS.with(Cell::get),
+    )
 }
 
 pub(in crate::geometry) use construction::Forest as ExactPointForest;
@@ -158,6 +206,7 @@ pub(in crate::geometry) struct NodeId(pub u32);
 pub(super) struct ResolvedNodePoints<'e, 'p> {
     embedding: &'e embedding::Embedding<'p>,
     by_node: Option<Vec<Option<(ZOrdinate, MOrdinate)>>>,
+    by_xy: Option<Vec<Option<XY>>>,
 }
 
 impl ResolvedNodePoints<'_, '_> {
@@ -166,6 +215,13 @@ impl ResolvedNodePoints<'_, '_> {
     }
 
     pub(super) fn get(&self, node: NodeId, xy: XY) -> Option<Point> {
+        let xy = self
+            .by_xy
+            .as_ref()
+            .and_then(|points| points.get(node.0 as usize))
+            .copied()
+            .flatten()
+            .unwrap_or(xy);
         let Some(by_node) = &self.by_node else {
             return Some(Point::new_raw_xy(xy.x, xy.y));
         };
@@ -191,7 +247,23 @@ impl<'e, 'p> ResolvedNodePoints<'e, 'p> {
         embedding: &'e embedding::Embedding<'p>,
         by_node: Option<Vec<Option<(ZOrdinate, MOrdinate)>>>,
     ) -> Self {
-        Self { embedding, by_node }
+        Self {
+            embedding,
+            by_node,
+            by_xy: None,
+        }
+    }
+
+    const fn from_embedding_with_xy(
+        embedding: &'e embedding::Embedding<'p>,
+        by_node: Option<Vec<Option<(ZOrdinate, MOrdinate)>>>,
+        by_xy: Vec<Option<XY>>,
+    ) -> Self {
+        Self {
+            embedding,
+            by_node,
+            by_xy: Some(by_xy),
+        }
     }
 }
 
@@ -695,67 +767,11 @@ impl SourceArcRecord {
     }
 }
 
-struct SourceSpanTraceView {
-    span: u32,
-    reversed: bool,
-    source_start: ExactRational,
-    source_end: ExactRational,
-}
-
-struct SourceLineRun {
-    member: usize,
-    nodes: Vec<NodeId>,
-    trace_slices: Vec<(usize, ExactRational, ExactRational)>,
-}
-
-fn push_source_line_run<W: Work + ?Sized>(
-    runs: &mut Vec<SourceLineRun>,
-    member: usize,
-    nodes: &mut Vec<NodeId>,
-    trace_slices: &mut Vec<(usize, ExactRational, ExactRational)>,
-    traced: bool,
-    work: &mut W,
-) -> Result<()> {
-    if nodes.len() < 2 {
-        nodes.clear();
-        trace_slices.clear();
-        return Ok(());
-    }
-    if traced {
-        let expected_edges = nodes
-            .len()
-            .checked_sub(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        if trace_slices.len() != expected_edges {
-            return Err(GeometryErrorKind::Invalid(
-                "source line run vertices do not match their trace slices".into(),
-            )
-            .into());
-        }
-        work.charge_into_error(1)?;
-    } else if !trace_slices.is_empty() {
-        return Err(
-            GeometryErrorKind::Invalid("untraced source line run has trace slices".into()).into(),
-        );
-    }
-    runs.push(SourceLineRun {
-        member,
-        nodes: std::mem::take(nodes),
-        trace_slices: std::mem::take(trace_slices),
-    });
-    Ok(())
-}
-
-pub(in crate::geometry) struct SubdivisionPart {
-    pub shape: Shape,
-    pub traces: Option<Vec<SourceTrace>>,
-}
-
 fn remove_node_antennas(mut nodes: Vec<NodeId>) -> Option<Vec<NodeId>> {
     if nodes.first() == nodes.last() {
         nodes.pop();
     }
-    let mut nodes = crate::geometry::remove_antenna_vertices(nodes, |left, right| left == right)?;
+    let mut nodes = remove_antenna_vertices(nodes, |left, right| left == right)?;
     let first = *nodes.first()?;
     nodes.push(first);
     Some(nodes)
@@ -2344,627 +2360,6 @@ impl ExactSourceInventory {
         )
     }
 
-    /// Select both closed children of one subdivision cut from one exact
-    /// arrangement. The cut rectangles are separate polygon operands, but
-    /// their seam and every source crossing share the same node recipes,
-    /// topology, rounding pass, and ordinate resolution.
-    /// The axis-aligned cut ordinate is exactly representable and pinned by
-    /// the embedding. Dissolving a straight seam in one child cannot move a
-    /// vertex retained by the other child off that seam.
-    pub(in crate::geometry) fn subdivision_parts<M: ChartMetric>(
-        &self,
-        partition: &ExactPartition<'_>,
-        source_shape: &Shape,
-        declared_axes: crate::geometry::CoordinateAxes,
-        strict: bool,
-        clip_operands: [usize; 2],
-        budget: &mut ExpansionBudget,
-        context: &SourceArcContext<'_, '_, M>,
-    ) -> Result<[Shape; 2]> {
-        let geographic_frame = match context.domain() {
-            crate::geometry::TopologyDomain::Cartesian => None,
-            crate::geometry::TopologyDomain::Geographic(frame) => Some(frame),
-        };
-        let source_operand = 0;
-        let operands = self.operand_count();
-        if clip_operands
-            .iter()
-            .any(|&operand| operand >= operands || operand == source_operand)
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "exact subdivision clip operand is out of range".into(),
-            )
-            .into());
-        }
-
-        let (topology, edges) = partition.local_topology()?;
-        let global = partition.global_faces(&topology, &edges)?;
-        let winding_rings = self.winding_source_rings();
-        let facts =
-            self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
-        if let Some(line_source) = LineSource::from_shape(source_shape) {
-            return self.subdivision_line_parts(
-                partition,
-                line_source,
-                &topology,
-                &global,
-                &facts,
-                declared_axes,
-                strict,
-                clip_operands,
-                context,
-            );
-        }
-        let ordinate_protected = self.ordinate_protected_nodes(partition, declared_axes)?;
-        let preserved_spans = geographic_frame.is_some().then(|| {
-            let mut roles = Vec::with_capacity(partition.spans.len());
-            for span in 0..partition.spans.len() {
-                roles.push(
-                    partition
-                        .provenance
-                        .owners(span)
-                        .iter()
-                        .any(|&(source, _)| {
-                            self.source_operands.get(source as usize).copied()
-                                == Some(source_operand as u32)
-                        }),
-                );
-            }
-            roles
-        });
-
-        let mut plans = Vec::with_capacity(clip_operands.len());
-        for &clip_operand in &clip_operands {
-            let cells = self.select_subdivision_cells(
-                partition,
-                &topology,
-                &global,
-                &facts,
-                source_operand,
-                clip_operand,
-            );
-            plans.push(cells.emission_plan_with_protected(
-                partition,
-                &topology,
-                &edges,
-                &global,
-                ordinate_protected.as_deref(),
-                preserved_spans.as_deref(),
-            )?);
-        }
-        let polygon_edge_roles = preserved_spans
-            .as_ref()
-            .map(|preserved_spans| {
-                plans
-                    .iter()
-                    .map(|plan| {
-                        plan.polygon_edge_roles(partition, &topology, &edges, preserved_spans)
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .transpose()?;
-
-        let emissions: Vec<_> = plans
-            .iter()
-            .map(|plan| plan.emission(&topology, &edges))
-            .collect();
-        let emission_refs: Vec<_> = emissions.iter().collect();
-        let embedding = partition.embed(&emission_refs, "subdivide")?;
-
-        let mut node_parts = Vec::with_capacity(plans.len());
-        for (plan, emission) in plans.iter().zip(&emissions) {
-            node_parts.push(plan.build_node_parts(partition, &topology, emission)?);
-        }
-
-        let by_node = self.resolve_node_points(
-            partition,
-            &embedding,
-            emissions
-                .iter()
-                .flat_map(|emission| emission.items.iter().flatten().copied()),
-            declared_axes,
-            context,
-            None,
-        )?;
-        let mut parts = node_parts.into_iter();
-        let mut polygon_edge_roles = polygon_edge_roles.unwrap_or_default().into_iter();
-        let first_roles = polygon_edge_roles.next();
-        let first_publication = match (first_roles, geographic_frame) {
-            (Some(roles), Some(frame)) => Some((roles, frame, &mut *budget)),
-            _ => None,
-        };
-        let first = self.node_parts_to_shape_resolved(
-            parts
-                .next()
-                .expect("two subdivision plans produce two outputs"),
-            &embedding,
-            &by_node,
-            declared_axes,
-            strict,
-            "subdivide",
-            first_publication,
-        )?;
-        let second_roles = polygon_edge_roles.next();
-        let second_publication = match (second_roles, geographic_frame) {
-            (Some(roles), Some(frame)) => Some((roles, frame, &mut *budget)),
-            _ => None,
-        };
-        let second = self.node_parts_to_shape_resolved(
-            parts
-                .next()
-                .expect("two subdivision plans produce two outputs"),
-            &embedding,
-            &by_node,
-            declared_axes,
-            strict,
-            "subdivide",
-            second_publication,
-        )?;
-        Ok([first, second])
-    }
-
-    pub(in crate::geometry) fn subdivision_parts_with_budget<M: ChartMetric>(
-        &self,
-        partition: &ExactPartition<'_>,
-        source_shape: &Shape,
-        source_traces: Option<&[SourceTrace]>,
-        declared_axes: crate::geometry::CoordinateAxes,
-        strict: bool,
-        clip_operands: [usize; 2],
-        budget: &mut ExpansionBudget,
-        context: &SourceArcContext<'_, '_, M>,
-        trace_work: &mut EvaluationBudget,
-    ) -> Result<[SubdivisionPart; 2]> {
-        let Some(source_traces) = source_traces else {
-            let [left, right] = self.subdivision_parts(
-                partition,
-                source_shape,
-                declared_axes,
-                strict,
-                clip_operands,
-                budget,
-                context,
-            )?;
-            return Ok([
-                SubdivisionPart {
-                    shape: left,
-                    traces: None,
-                },
-                SubdivisionPart {
-                    shape: right,
-                    traces: None,
-                },
-            ]);
-        };
-        let source = LineSource::from_shape(source_shape).ok_or_else(|| {
-            GeometryErrorKind::Invalid("source trace was attached to a non-line shape".into())
-        })?;
-        let ranges = source_line_ranges(source)?;
-        if source_traces.len() != ranges.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "source traces do not match the subdivision line members".into(),
-            )
-            .into());
-        }
-        let operands = self.operand_count();
-        if clip_operands
-            .iter()
-            .any(|&operand| operand >= operands || operand == 0)
-        {
-            return Err(GeometryErrorKind::Invalid(
-                "exact subdivision clip operand is out of range".into(),
-            )
-            .into());
-        }
-        let (topology, edges) = partition.local_topology()?;
-        let global = partition.global_faces(&topology, &edges)?;
-        let winding_rings = self.winding_source_rings();
-        let facts =
-            self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
-        let mut selected = Vec::with_capacity(clip_operands.len());
-        for &clip_operand in &clip_operands {
-            let cells = self.select_subdivision_cells(
-                partition,
-                &topology,
-                &global,
-                &facts,
-                0,
-                clip_operand,
-            );
-            selected.push(cells.spans);
-        }
-        let emissions: Vec<_> = selected
-            .iter()
-            .map(|spans| {
-                partition.span_emission(
-                    spans
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(span, &keep)| keep.then_some(span as u32)),
-                )
-            })
-            .collect();
-        let emission_refs: Vec<_> = emissions.iter().collect();
-        trace_work.charge_into_error(
-            u64::try_from(partition.node_count()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut seen = vec![false; partition.node_count()];
-        let mut nodes = Vec::new();
-        for emission in &emissions {
-            for &[start, end] in &emission.items {
-                for node in [start, end] {
-                    trace_work.charge_into_error(1)?;
-                    let admitted = seen.get_mut(node.0 as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "subdivision emission references an unknown node".into(),
-                        )
-                    })?;
-                    if !*admitted {
-                        *admitted = true;
-                        nodes.push(node);
-                    }
-                }
-            }
-        }
-        let embedding = partition.embed_with_budget(&emission_refs, "subdivide", trace_work)?;
-        let by_node =
-            self.resolve_node_points(partition, &embedding, nodes, declared_axes, context, None)?;
-        let views = partition.source_span_trace_views(&self.source_segments, trace_work)?;
-        let mut run_plans = Vec::with_capacity(selected.len());
-        for spans in &selected {
-            run_plans.push(self.source_line_runs(
-                partition,
-                &ranges,
-                &views,
-                spans,
-                source_traces,
-                trace_work,
-            )?);
-        }
-        let mut parts = Vec::with_capacity(run_plans.len());
-        for runs in run_plans {
-            parts.push(self.emit_traced_source_line_shape(
-                source.kind(),
-                runs,
-                source_traces,
-                &by_node,
-                declared_axes,
-                strict,
-                trace_work,
-            )?);
-        }
-        let mut parts = parts.into_iter();
-        Ok([
-            parts.next().expect("two subdivision selections"),
-            parts.next().expect("two subdivision selections"),
-        ])
-    }
-
-    fn subdivision_line_parts<M: ChartMetric>(
-        &self,
-        partition: &ExactPartition<'_>,
-        source: LineSource<'_>,
-        topology: &IndexedTopology,
-        global: &GlobalFaces,
-        facts: &CellFacts,
-        declared_axes: crate::geometry::CoordinateAxes,
-        strict: bool,
-        clip_operands: [usize; 2],
-        context: &SourceArcContext<'_, '_, M>,
-    ) -> Result<[Shape; 2]> {
-        let mut selected = Vec::with_capacity(clip_operands.len());
-        for &clip_operand in &clip_operands {
-            let cells =
-                self.select_subdivision_cells(partition, topology, global, facts, 0, clip_operand);
-            selected.push(cells.spans);
-        }
-
-        let emissions: Vec<_> = selected
-            .iter()
-            .map(|spans| {
-                partition.span_emission(
-                    spans
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(span, &selected)| selected.then_some(span as u32)),
-                )
-            })
-            .collect();
-        let emission_refs: Vec<_> = emissions.iter().collect();
-        let embedding = partition.embed(&emission_refs, "subdivide")?;
-        let by_node = self.resolve_node_points(
-            partition,
-            &embedding,
-            emissions
-                .iter()
-                .flat_map(|emission| emission.items.iter().flatten().copied()),
-            declared_axes,
-            context,
-            None,
-        )?;
-        let views = partition.source_span_views(&self.source_segments)?;
-        let ranges = source_line_ranges(source)?;
-        let mut outputs = Vec::with_capacity(selected.len());
-        for spans in selected {
-            outputs.push(self.emit_source_line_shape(
-                partition,
-                source.kind(),
-                &ranges,
-                &views,
-                &spans,
-                &by_node,
-                declared_axes,
-                strict,
-            )?);
-        }
-        let mut outputs = outputs.into_iter();
-        Ok([
-            outputs.next().expect("two subdivision line selections"),
-            outputs.next().expect("two subdivision line selections"),
-        ])
-    }
-
-    fn source_line_runs<W: Work + ?Sized>(
-        &self,
-        partition: &ExactPartition<'_>,
-        ranges: &[Range<usize>],
-        views: &[Vec<SourceSpanTraceView>],
-        selected: &[bool],
-        source_traces: &[SourceTrace],
-        work: &mut W,
-    ) -> Result<Vec<SourceLineRun>> {
-        #[cfg(test)]
-        SOURCE_LINE_RUNS_CALLS.with(|calls| {
-            calls.set(calls.get().saturating_add(1));
-        });
-        if source_traces.len() != ranges.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "source trace rows do not match the line members".into(),
-            )
-            .into());
-        }
-        work.charge_into_error(
-            u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut runs = Vec::new();
-        let mut source_offset = 0_usize;
-        for (member, range) in ranges.iter().enumerate() {
-            work.charge_into_error(1)?;
-            if range.start != source_offset {
-                return Err(GeometryErrorKind::Invalid(
-                    "line member source ranges are not contiguous".into(),
-                )
-                .into());
-            }
-            source_offset = range.end;
-            let trace = source_traces.get(member).ok_or_else(|| {
-                GeometryErrorKind::Invalid("source trace member is unknown".into())
-            })?;
-            if trace.edge_count() != range.len() {
-                return Err(GeometryErrorKind::Invalid(
-                    "source trace edge count differs from its line member".into(),
-                )
-                .into());
-            }
-            let mut run = Vec::new();
-            let mut trace_slices = Vec::new();
-            for source in range.clone() {
-                let source_views = views.get(source).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "exact subdivision line provenance lost a source segment".into(),
-                    )
-                })?;
-                for view in source_views {
-                    work.charge_into_error(1)?;
-                    let is_selected = *selected.get(view.span as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "source trace span is outside the selected span table".into(),
-                        )
-                    })?;
-                    if !is_selected {
-                        push_source_line_run(
-                            &mut runs,
-                            member,
-                            &mut run,
-                            &mut trace_slices,
-                            true,
-                            work,
-                        )?;
-                        continue;
-                    }
-                    let span = *partition.spans.get(view.span as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid("source trace span is unknown".into())
-                    })?;
-                    let (start, end) = if view.reversed {
-                        (span.end, span.start)
-                    } else {
-                        (span.start, span.end)
-                    };
-                    if run.last().is_some_and(|&last| last != start) {
-                        push_source_line_run(
-                            &mut runs,
-                            member,
-                            &mut run,
-                            &mut trace_slices,
-                            true,
-                            work,
-                        )?;
-                    }
-                    if run.is_empty() {
-                        run.reserve(2);
-                        run.push(start);
-                    }
-                    if run.last().copied() != Some(end) {
-                        run.push(end);
-                        work.charge_into_error(1)?;
-                        trace_slices.push((
-                            source
-                                .checked_sub(range.start)
-                                .ok_or(ResourceError::SizeOverflow)?,
-                            view.source_start.clone(),
-                            view.source_end.clone(),
-                        ));
-                    }
-                }
-            }
-            push_source_line_run(&mut runs, member, &mut run, &mut trace_slices, true, work)?;
-        }
-        if source_offset != views.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "line member source ranges omit partition source segments".into(),
-            )
-            .into());
-        }
-        Ok(runs)
-    }
-
-    fn emit_traced_source_line_shape<W: Work>(
-        &self,
-        source_kind: GeometryKind,
-        runs: Vec<SourceLineRun>,
-        source_traces: &[SourceTrace],
-        by_node: &ResolvedNodePoints,
-        declared_axes: CoordinateAxes,
-        strict: bool,
-        work: &mut W,
-    ) -> Result<SubdivisionPart> {
-        let node_count = runs.iter().try_fold(0_usize, |count, run| {
-            count
-                .checked_add(run.nodes.len())
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
-        work.charge_into_error(
-            u64::try_from(node_count).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut line_nodes = Vec::with_capacity(node_count);
-        for run in &runs {
-            line_nodes.extend(run.nodes.iter().copied());
-        }
-        let line_axes = bucket_axes(
-            line_nodes.iter().copied(),
-            by_node,
-            declared_axes,
-            strict,
-            "subdivide",
-        )?;
-        let coordinates = by_node.coordinates();
-        let mut lines = Vec::with_capacity(runs.len());
-        for run in &runs {
-            let mut points = Vec::with_capacity(run.nodes.len());
-            for &node in &run.nodes {
-                work.charge_into_error(1)?;
-                points.push(with_axes(
-                    by_node.point(node, embedding::Embedding::xy_at(coordinates, node)),
-                    line_axes,
-                ));
-            }
-            lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
-        }
-        if lines.is_empty() {
-            return Ok(SubdivisionPart {
-                shape: Shape::typed_empty(source_kind, declared_axes),
-                traces: Some(Vec::new()),
-            });
-        }
-        work.charge_into_error(
-            u64::try_from(runs.len()).map_err(|_| ResourceError::SizeOverflow)?,
-        )?;
-        let mut traces = Vec::with_capacity(runs.len());
-        for run in runs {
-            let source_trace = source_traces.get(run.member).ok_or_else(|| {
-                GeometryErrorKind::Invalid("source line trace member is unknown".into())
-            })?;
-            traces.push(source_trace.compose_edges(&run.trace_slices, work)?);
-        }
-        Ok(SubdivisionPart {
-            shape: Shape::narrow_lines(line_axes, lines),
-            traces: Some(traces),
-        })
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "span IDs and their selection bits are produced from the same ExactPartition, so both indexed columns share its span domain"
-    )]
-    fn emit_source_line_shape(
-        &self,
-        partition: &ExactPartition<'_>,
-        source_kind: GeometryKind,
-        ranges: &[Range<usize>],
-        views: &[Vec<(u32, bool)>],
-        selected: &[bool],
-        by_node: &ResolvedNodePoints,
-        declared_axes: crate::geometry::CoordinateAxes,
-        strict: bool,
-    ) -> Result<Shape> {
-        let mut node_runs = Vec::with_capacity(selected.len());
-        let mut source_offset = 0;
-        for range in ranges {
-            debug_assert_eq!(range.start, source_offset);
-            source_offset = range.end;
-            let mut run = Vec::new();
-            for source in range.clone() {
-                for &(span_id, reversed) in views.get(source).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "exact subdivision line provenance lost a source segment".into(),
-                    )
-                })? {
-                    if !selected[span_id as usize] {
-                        if run.len() >= 2 {
-                            node_runs.push(std::mem::take(&mut run));
-                        } else {
-                            run.clear();
-                        }
-                        continue;
-                    }
-                    let span = partition.spans[span_id as usize];
-                    let (start, end) = if reversed {
-                        (span.end, span.start)
-                    } else {
-                        (span.start, span.end)
-                    };
-                    if run.last().copied() != Some(start) && run.len() >= 2 {
-                        node_runs.push(std::mem::take(&mut run));
-                    }
-                    if run.is_empty() {
-                        run.reserve(2);
-                        run.push(start);
-                    }
-                    if run.last().copied() != Some(end) {
-                        run.push(end);
-                    }
-                }
-            }
-            if run.len() >= 2 {
-                node_runs.push(run);
-            }
-        }
-
-        let line_axes = bucket_axes(
-            node_runs.iter().flatten().copied(),
-            by_node,
-            declared_axes,
-            strict,
-            "subdivide",
-        )?;
-        let coordinates = by_node.coordinates();
-        let mut lines = Vec::with_capacity(node_runs.len());
-        for run in node_runs {
-            let mut points = Vec::with_capacity(run.len());
-            for node in run {
-                points.push(with_axes(
-                    by_node.point(node, embedding::Embedding::xy_at(coordinates, node)),
-                    line_axes,
-                ));
-            }
-            lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
-        }
-        if lines.is_empty() {
-            return Ok(Shape::typed_empty(source_kind, declared_axes));
-        }
-        Ok(Shape::narrow_lines(line_axes, lines))
-    }
-
     fn coordinates_from_nodes(
         &self,
         nodes: &[NodeId],
@@ -3169,107 +2564,6 @@ impl ExactSourceInventory {
             )?;
         }
         assemble_node_parts(points, lines, polygons, point_axes, line_axes, polygon_axes)
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "topology IDs and CSR rows are built from this partition; CellFacts admission checked each row-major product and both operand IDs are validated by subdivision_parts"
-    )]
-    fn select_subdivision_cells(
-        &self,
-        partition: &ExactPartition<'_>,
-        topology: &IndexedTopology,
-        global: &GlobalFaces,
-        facts: &CellFacts,
-        source_operand: usize,
-        clip_operand: usize,
-    ) -> ArealCells {
-        let operands = self.operand_count();
-        let mut cells = ArealCells {
-            faces: Vec::new(),
-            spans: Vec::new(),
-            nodes: Vec::new(),
-        };
-        cells.faces.reserve(global.count as usize);
-        let source_faces = facts
-            .face_membership
-            .iter()
-            .skip(source_operand)
-            .step_by(operands);
-        let clip_faces = facts
-            .face_membership
-            .iter()
-            .skip(clip_operand)
-            .step_by(operands);
-        cells.faces.extend(
-            source_faces
-                .zip(clip_faces)
-                .map(|(&source, &clip)| source && clip),
-        );
-        cells.spans.reserve(partition.spans.len());
-        let source_spans = facts
-            .span_support
-            .iter()
-            .skip(source_operand)
-            .step_by(operands);
-        let clip_spans = facts
-            .span_support
-            .iter()
-            .skip(clip_operand)
-            .step_by(operands);
-        cells.spans.extend(
-            source_spans
-                .zip(clip_spans)
-                .map(|(&source, &clip)| source && clip),
-        );
-        cells.nodes.reserve(partition.node_count());
-        cells.nodes.resize(partition.node_count(), false);
-        for (span, &selected) in partition.spans.iter().zip(&cells.spans) {
-            if selected {
-                cells.nodes[span.start.0 as usize] = true;
-                cells.nodes[span.end.0 as usize] = true;
-            }
-        }
-
-        let source_points = facts
-            .point_membership
-            .iter()
-            .skip(source_operand)
-            .step_by(operands);
-        let clip_points = facts
-            .point_membership
-            .iter()
-            .skip(clip_operand)
-            .step_by(operands);
-        let face_membership = |face: u32, operand: usize| {
-            let offset = (face as usize).wrapping_mul(operands).wrapping_add(operand);
-            facts.face_membership[offset]
-        };
-        for (((selected, starts), &component), (&source_point, &clip_point)) in cells
-            .nodes
-            .iter_mut()
-            .zip(topology.starts.array_windows::<2>())
-            .zip(&topology.component_of)
-            .zip(source_points.zip(clip_points))
-        {
-            let &[start, end] = starts;
-            let range = start as usize..end as usize;
-            let memberships = |operand: usize, point_membership: bool| {
-                let face_membership = if range.is_empty() {
-                    let host = global.component_hosts[component as usize];
-                    face_membership(host, operand)
-                } else {
-                    range.clone().any(|slot| {
-                        let face = global.walk_faces[topology.face_of[slot] as usize];
-                        face_membership(face, operand)
-                    })
-                };
-                face_membership || point_membership
-            };
-            *selected |=
-                memberships(source_operand, source_point) && memberships(clip_operand, clip_point);
-        }
-        cells
     }
 
     pub(in crate::geometry) fn repair_polygons<M: ChartMetric>(
@@ -4848,59 +4142,6 @@ fn node_source_range(records: &[(NodeId, u32)], node: NodeId) -> Range<usize> {
     start..start.wrapping_add(count)
 }
 
-#[derive(Clone, Copy)]
-enum LineSource<'a> {
-    LineString(&'a LineSeq),
-    MultiLineString(&'a MultiLineString),
-}
-
-impl<'a> LineSource<'a> {
-    const fn from_shape(shape: &'a Shape) -> Option<Self> {
-        match shape {
-            Shape::LineString(line) => Some(Self::LineString(line)),
-            Shape::MultiLineString(lines) => Some(Self::MultiLineString(lines)),
-            Shape::Point(_)
-            | Shape::MultiPoint(_)
-            | Shape::Polygon(_)
-            | Shape::MultiPolygon(_)
-            | Shape::GeometryCollection(_)
-            | Shape::Empty(..) => None,
-        }
-    }
-
-    const fn kind(self) -> GeometryKind {
-        match self {
-            Self::LineString(_) => GeometryKind::LineString,
-            Self::MultiLineString(_) => GeometryKind::MultiLineString,
-        }
-    }
-}
-
-fn source_line_ranges(source: LineSource<'_>) -> Result<Vec<Range<usize>>> {
-    let mut ranges = Vec::with_capacity(match source {
-        LineSource::LineString(_) => 1,
-        LineSource::MultiLineString(lines) => lines.len(),
-    });
-    let mut offset = 0_usize;
-    let mut push = |length: usize| -> Result<()> {
-        let end = offset
-            .checked_add(length.saturating_sub(1))
-            .ok_or(ResourceError::SizeOverflow)?;
-        ranges.push(offset..end);
-        offset = end;
-        Ok(())
-    };
-    match source {
-        LineSource::LineString(line) => push(line.len())?,
-        LineSource::MultiLineString(lines) => {
-            for line in lines.iter() {
-                push(line.len())?;
-            }
-        },
-    }
-    Ok(ranges)
-}
-
 #[expect(
     clippy::indexing_slicing,
     reason = "the incoming span and node IDs come from the exact chain walk and the CSR row is owned by its topology"
@@ -5391,6 +4632,41 @@ impl ExactPartition<'_> {
         self.points.orientation(a.0, b.0, c.0)
     }
 
+    fn source_span_view_is_ordered(&self, segment: Segment, view: &[(u32, bool)]) -> Result<bool> {
+        let entry = |(span_id, reversed): (u32, bool)| -> Result<NodeId> {
+            let span = self.spans.get(span_id as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source span view references an unknown span".into())
+            })?;
+            Ok(if reversed { span.end } else { span.start })
+        };
+        let exit = |(span_id, reversed): (u32, bool)| -> Result<NodeId> {
+            let span = self.spans.get(span_id as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source span view references an unknown span".into())
+            })?;
+            Ok(if reversed { span.start } else { span.end })
+        };
+        let first = *view.first().ok_or_else(|| {
+            GeometryErrorKind::Invalid("source span view has no first span".into())
+        })?;
+        let last = *view.last().ok_or_else(|| {
+            GeometryErrorKind::Invalid("source span view has no last span".into())
+        })?;
+        if self.stored_key(entry(first)?.0 as usize) != Some(PointKey::new(segment.start))
+            || self.stored_key(exit(last)?.0 as usize) != Some(PointKey::new(segment.end))
+        {
+            return Ok(false);
+        }
+        for pair in view.windows(2) {
+            let [left, right] = pair else {
+                continue;
+            };
+            if exit(*left)? != entry(*right)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Return each source segment's exact atomic span run in source direction.
     ///
     /// The partition provenance is the only source-to-atom relation here.
@@ -5421,6 +4697,15 @@ impl ExactPartition<'_> {
             if view.len() < 2 {
                 continue;
             }
+            // Provenance enumeration often already forms a contiguous source
+            // run; only genuinely unordered rows need the exact sweep sort.
+            if self.source_span_view_is_ordered(*segment, view)? {
+                #[cfg(test)]
+                SOURCE_SPAN_VIEW_ORDERED.with(|count| count.set(count.get().saturating_add(1)));
+                continue;
+            }
+            #[cfg(test)]
+            SOURCE_SPAN_VIEW_SORTS.with(|count| count.set(count.get().saturating_add(1)));
             // Each atom's entry is its node nearest the source start; ordered
             // along the source, every exit is the next atom's entry.
             let entry = |(span, reversed): (u32, bool)| {
@@ -5461,61 +4746,6 @@ impl ExactPartition<'_> {
             *view = ordered;
         }
         Ok(views)
-    }
-
-    fn source_span_trace_views<W: Work + ?Sized>(
-        &self,
-        source_segments: &[Segment],
-        work: &mut W,
-    ) -> Result<Vec<Vec<SourceSpanTraceView>>> {
-        let views = self.source_span_views(source_segments)?;
-        let total = views.iter().try_fold(0_usize, |count, row| {
-            count
-                .checked_add(row.len())
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
-        work.charge_into_error(u64::try_from(total).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut traced = Vec::with_capacity(views.len());
-        for (source, row) in views.into_iter().enumerate() {
-            work.charge_into_error(1)?;
-            let segment = *source_segments.get(source).ok_or_else(|| {
-                GeometryErrorKind::Invalid("source span trace row is unknown".into())
-            })?;
-            let mut output = Vec::with_capacity(row.len());
-            for (span, reversed) in row {
-                work.charge_into_error(1)?;
-                let span_data = self.spans.get(span as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "source span trace references an unknown exact span".into(),
-                    )
-                })?;
-                let [start, end] = if reversed {
-                    [span_data.end, span_data.start]
-                } else {
-                    [span_data.start, span_data.end]
-                };
-                let start_point = self.exact(start)?;
-                let end_point = self.exact(end)?;
-                let [start_numerator, start_denominator] = parameter_along(segment, &start_point)?;
-                let [end_numerator, end_denominator] = parameter_along(segment, &end_point)?;
-                let source_start = ExactRational::new(start_numerator, start_denominator)?;
-                let source_end = ExactRational::new(end_numerator, end_denominator)?;
-                if source_start.try_cmp(&source_end)?.is_ge() {
-                    return Err(GeometryErrorKind::Invalid(
-                        "source span trace does not advance along its edge".into(),
-                    )
-                    .into());
-                }
-                output.push(SourceSpanTraceView {
-                    span,
-                    reversed,
-                    source_start,
-                    source_end,
-                });
-            }
-            traced.push(output);
-        }
-        Ok(traced)
     }
 
     /// Build maximal chain views directly from exact span incidence.

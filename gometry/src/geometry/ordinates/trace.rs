@@ -1,3 +1,6 @@
+#[cfg(test)]
+use std::cell::Cell;
+
 use super::{
     NodeOrdinates, RootMetricState, SourceArcMetricAccess, SourceArcRequest, source_arc_ordinates,
 };
@@ -6,6 +9,40 @@ use crate::geographic::{GeographicFrame, RetainedChartDisplacement};
 use crate::geometry::segments::try_sort_by_with_work;
 use crate::geometry::tessellation::exact::ExactRational;
 use crate::geometry::{ChartMetric, CoordinateAxes, GeometryErrorKind, Point, Work};
+
+#[cfg(test)]
+thread_local! {
+    static ROOT_RANGE_ENDPOINT_REQUESTS: Cell<usize> = const { Cell::new(0) };
+    static ROOT_RANGE_INTERIOR_MAPPINGS: Cell<usize> = const { Cell::new(0) };
+    static ROOT_REQUEST_TABLE_BUILDS: Cell<usize> = const { Cell::new(0) };
+    static ROOT_REQUEST_ROW_SORTS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_root_range_mapping_counts() {
+    ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| count.set(0));
+    ROOT_RANGE_INTERIOR_MAPPINGS.with(|count| count.set(0));
+    ROOT_REQUEST_TABLE_BUILDS.with(|count| count.set(0));
+    ROOT_REQUEST_ROW_SORTS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn root_range_mapping_counts() -> (usize, usize) {
+    (
+        ROOT_RANGE_ENDPOINT_REQUESTS.with(Cell::get),
+        ROOT_RANGE_INTERIOR_MAPPINGS.with(Cell::get),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn root_request_table_builds() -> usize {
+    ROOT_REQUEST_TABLE_BUILDS.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn root_request_row_sorts() -> usize {
+    ROOT_REQUEST_ROW_SORTS.with(Cell::get)
+}
 
 fn reserve_with_work<T>(
     values: &mut Vec<T>,
@@ -331,6 +368,40 @@ impl RootRange {
         work: &mut impl Work,
     ) -> Result<Option<ExactRational>> {
         check_unit_parameter_with_work(producer_parameter, work)?;
+        if producer_parameter.is_zero() {
+            if self.producer_start.is_zero() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_start.try_clone_with_work(work)?));
+            }
+            if self.producer_end.is_zero() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_end.try_clone_with_work(work)?));
+            }
+            return Ok(None);
+        }
+        if producer_parameter.is_one() {
+            if self.producer_start.is_one() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_start.try_clone_with_work(work)?));
+            }
+            if self.producer_end.is_one() {
+                #[cfg(test)]
+                ROOT_RANGE_ENDPOINT_REQUESTS.with(|count| {
+                    count.set(count.get().saturating_add(1));
+                });
+                return Ok(Some(self.source_end.try_clone_with_work(work)?));
+            }
+            return Ok(None);
+        }
         if self
             .producer_start
             .try_cmp_with_work(&self.producer_end, work)?
@@ -363,6 +434,10 @@ impl RootRange {
         {
             return Ok(None);
         }
+        #[cfg(test)]
+        ROOT_RANGE_INTERIOR_MAPPINGS.with(|count| {
+            count.set(count.get().saturating_add(1));
+        });
         let producer_width = self
             .producer_end
             .try_subtract_with_work(&self.producer_start, work)?;
@@ -527,6 +602,8 @@ fn push_unique_root_request(
 
 impl RootRequestTable {
     pub(crate) fn from_rows(rows: &[RequestRowInput], work: &mut impl Work) -> Result<Self> {
+        #[cfg(test)]
+        ROOT_REQUEST_TABLE_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
         work.charge_into_error(
             u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
         )?;
@@ -830,7 +907,40 @@ impl TraceRows {
         local: &ExactRational,
         work: &mut impl Work,
     ) -> Result<Vec<RootRequest>> {
+        if let [owner] = self.row(edge)? {
+            let Some(request) = owner.request_at_with_work(local, work)? else {
+                return Ok(Vec::new());
+            };
+            let mut requests = Vec::new();
+            reserve_with_work(&mut requests, 1, work)?;
+            requests.push(request);
+            return Ok(requests);
+        }
         Ok(self.requests_with_support_at(edge, local, work)?.0)
+    }
+
+    pub(crate) fn append_requests_at(
+        &self,
+        edge: usize,
+        local: &ExactRational,
+        requests: &mut Vec<RootRequest>,
+        work: &mut impl Work,
+    ) -> Result<usize> {
+        let owners = self.row(edge)?;
+        if let [owner] = owners {
+            work.charge_into_error(1)?;
+            if let Some(request) = owner.request_at_with_work(local, work)? {
+                reserve_with_work(requests, 1, work)?;
+                requests.push(request);
+                return Ok(1);
+            }
+            return Ok(0);
+        }
+        let (additional, _) = unique_requests_at(owners, local, work)?;
+        let count = additional.len();
+        reserve_with_work(requests, count, work)?;
+        requests.extend(additional);
+        Ok(count)
     }
 
     pub(crate) fn requests_with_support_at(
@@ -857,6 +967,16 @@ fn unique_requests_at(
     local: &ExactRational,
     work: &mut impl Work,
 ) -> Result<(Vec<RootRequest>, bool)> {
+    if let [owner] = owners {
+        let Some(request) = owner.request_at_with_work(local, work)? else {
+            return Ok((Vec::new(), false));
+        };
+        let endpoint_only = owner.is_point_support_with_work(work)?;
+        let mut requests = Vec::new();
+        reserve_with_work(&mut requests, 1, work)?;
+        requests.push(request);
+        return Ok((requests, endpoint_only));
+    }
     check_unit_parameter_with_work(local, work)?;
     let mut requests = Vec::new();
     reserve_with_work(&mut requests, owners.len(), work)?;
@@ -871,13 +991,21 @@ fn unique_requests_at(
         endpoint_only &= owner.is_point_support_with_work(work)?;
         requests.push(request);
     }
-    let rows = [requests.as_slice()];
-    let unique = unique_request_indices(&rows, work)?;
+    let unique = unique_request_indices(&requests, work)?;
     let mut unique_requests = Vec::new();
     reserve_with_work(&mut unique_requests, unique.len(), work)?;
-    for occurrence in unique {
+    for index in unique {
         work.charge_into_error(1)?;
-        unique_requests.push(request_at(&rows, occurrence)?.try_clone_with_work(work)?);
+        unique_requests.push(
+            requests
+                .get(index)
+                .ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "unique source request index is outside its row".into(),
+                    )
+                })?
+                .try_clone_with_work(work)?,
+        );
     }
     Ok((unique_requests, has_request && endpoint_only))
 }
@@ -900,32 +1028,64 @@ fn request_at<'rows>(
         })
 }
 
-fn unique_request_indices(
-    rows: &[&[RootRequest]],
-    work: &mut impl Work,
-) -> Result<Vec<RequestIndex>> {
-    work.charge_into_error(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut capacity = 0_usize;
-    for row in rows {
+fn unique_request_indices(requests: &[RootRequest], work: &mut impl Work) -> Result<Vec<usize>> {
+    let mut ordered = true;
+    for pair in requests.windows(2) {
+        let [left, right] = pair else {
+            continue;
+        };
         work.charge_into_error(1)?;
-        capacity = capacity
-            .checked_add(row.len())
-            .ok_or(ResourceError::SizeOverflow)?;
-    }
-    let mut ordered = Vec::new();
-    reserve_with_work(&mut ordered, capacity, work)?;
-    for (row_index, row) in rows.iter().enumerate() {
-        for index in 0..row.len() {
+        let root_order = left.root.cmp(&right.root);
+        let order = if root_order.is_eq() {
             work.charge_into_error(1)?;
-            ordered.push(RequestIndex {
-                row: row_index,
-                index,
-            });
+            left.parameter.try_cmp_with_work(&right.parameter, work)?
+        } else {
+            root_order
+        };
+        if order.is_gt() {
+            ordered = false;
+            break;
         }
     }
-    try_sort_by_with_work(&mut ordered, work, |left, right, work| {
-        let left = request_at(rows, *left)?;
-        let right = request_at(rows, *right)?;
+
+    if ordered {
+        let mut unique = Vec::new();
+        reserve_with_work(&mut unique, requests.len(), work)?;
+        let mut previous: Option<&RootRequest> = None;
+        for (index, request) in requests.iter().enumerate() {
+            let duplicate = if let Some(previous) = previous {
+                work.charge_into_error(1)?;
+                previous.root == request.root
+                    && previous
+                        .parameter
+                        .try_cmp_with_work(&request.parameter, work)?
+                        .is_eq()
+            } else {
+                false
+            };
+            if !duplicate {
+                unique.push(index);
+                previous = Some(request);
+            }
+        }
+        return Ok(unique);
+    }
+
+    #[cfg(test)]
+    ROOT_REQUEST_ROW_SORTS.with(|count| count.set(count.get().saturating_add(1)));
+    let mut ordered_indices = Vec::new();
+    reserve_with_work(&mut ordered_indices, requests.len(), work)?;
+    for index in 0..requests.len() {
+        work.charge_into_error(1)?;
+        ordered_indices.push(index);
+    }
+    try_sort_by_with_work(&mut ordered_indices, work, |&left, &right, work| {
+        let left = requests.get(left).ok_or_else(|| {
+            GeometryErrorKind::Invalid("source request index is outside its row".into())
+        })?;
+        let right = requests.get(right).ok_or_else(|| {
+            GeometryErrorKind::Invalid("source request index is outside its row".into())
+        })?;
         let root_order = left.root.cmp(&right.root);
         if root_order.is_eq() {
             work.charge_into_error(1)?;
@@ -935,14 +1095,21 @@ fn unique_request_indices(
         }
     })?;
 
-    let mut unique = Vec::new();
-    reserve_with_work(&mut unique, ordered.len(), work)?;
-    for occurrence in ordered {
+    let mut duplicates = Vec::new();
+    reserve_with_work(&mut duplicates, requests.len(), work)?;
+    duplicates.resize(requests.len(), false);
+    let mut unique_count = 0_usize;
+    let mut previous: Option<usize> = None;
+    for &index in &ordered_indices {
         work.charge_into_error(1)?;
-        let duplicate = if let Some(previous) = unique.last() {
+        let current = requests.get(index).ok_or_else(|| {
+            GeometryErrorKind::Invalid("source request index is outside its row".into())
+        })?;
+        let duplicate = if let Some(previous) = previous {
+            let previous = requests.get(previous).ok_or_else(|| {
+                GeometryErrorKind::Invalid("source request index is outside its row".into())
+            })?;
             work.charge_into_error(1)?;
-            let previous = request_at(rows, *previous)?;
-            let current = request_at(rows, occurrence)?;
             previous.root == current.root
                 && previous
                     .parameter
@@ -951,17 +1118,25 @@ fn unique_request_indices(
         } else {
             false
         };
-        if !duplicate {
-            unique.push(occurrence);
+        if duplicate {
+            *duplicates
+                .get_mut(index)
+                .ok_or(ResourceError::SizeOverflow)? = true;
+        } else {
+            previous = Some(index);
+            unique_count = unique_count
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?;
         }
     }
-    try_sort_by_with_work(&mut unique, work, |left, right, work| {
+    let mut unique = Vec::new();
+    reserve_with_work(&mut unique, unique_count, work)?;
+    for (index, duplicate) in duplicates.into_iter().enumerate() {
         work.charge_into_error(1)?;
-        Ok(left
-            .row
-            .cmp(&right.row)
-            .then_with(|| left.index.cmp(&right.index)))
-    })?;
+        if !duplicate {
+            unique.push(index);
+        }
+    }
     Ok(unique)
 }
 
@@ -1083,6 +1258,10 @@ impl TraceRowsBuilder {
 }
 
 fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Work) -> Result<()> {
+    if parameter.is_zero() || parameter.is_one() {
+        work.charge_into_error(1)?;
+        return Ok(());
+    }
     let zero = ExactRational::zero();
     let one = ExactRational::one();
     if parameter.try_cmp_with_work(&zero, work)?.is_lt()
@@ -1097,8 +1276,12 @@ fn check_unit_parameter_with_work(parameter: &ExactRational, work: &mut impl Wor
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the fallible trace-builder setup propagates with `?`; assertions are the test oracle"
+)]
 mod tests {
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     use super::*;
@@ -1345,6 +1528,7 @@ mod tests {
     fn request_dedup_keeps_first_occurrence_order() {
         let first = RootId::from_index(7);
         let second = RootId::from_index(2);
+        reset_root_range_mapping_counts();
         let mut work = Unmetered;
         let mut rows = TraceRowsBuilder::new(&mut work).unwrap();
         rows.push_row(
@@ -1363,6 +1547,37 @@ mod tests {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].root(), first);
         assert_eq!(requests[1].root(), second);
+        assert_eq!(root_request_row_sorts(), 1);
+    }
+
+    #[test]
+    fn ordered_request_dedup_preserves_order_without_sorting() -> Result<()> {
+        let first = RootId::from_index(1);
+        let second = RootId::from_index(2);
+        let third = RootId::from_index(3);
+        reset_root_range_mapping_counts();
+        let mut work = Unmetered;
+        let mut rows = TraceRowsBuilder::new(&mut work)?;
+        rows.push_row(
+            [
+                RootRange::whole(first),
+                RootRange::whole(second),
+                RootRange::whole(second),
+                RootRange::whole(third),
+            ],
+            &mut work,
+        )?;
+        let rows = rows.finish(&mut work)?;
+        let requests = rows.requests_at(0, &ExactRational::from_f64(0.5), &mut work)?;
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.root())
+                .collect::<Vec<_>>(),
+            [first, second, third]
+        );
+        assert_eq!(root_request_row_sorts(), 0);
+        Ok(())
     }
 
     #[test]
