@@ -477,3 +477,6 @@ pub(crate) fn split_segment_at(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod extracted_tests;
