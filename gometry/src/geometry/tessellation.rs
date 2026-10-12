@@ -19,14 +19,6 @@ mod voronoi;
 mod voronoi_dcel;
 mod voronoi_receipt;
 
-pub(in crate::geometry) use voronoi_receipt::{
-    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt,
-    VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt, VoronoiDiagramReceipt,
-    VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiEdgeSourceUse,
-    VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole, VoronoiSeparatorReceipt,
-    VoronoiSiteReceipt, VoronoiSourceSiteDecision, VoronoiSourceSiteReceipt, VoronoiVertexOrigin,
-    VoronoiVertexReceipt,
-};
 #[expect(
     unused_imports,
     reason = "the parent-owned final writer consumes the prepared CDT face, side, source and origin receipts"
@@ -38,6 +30,14 @@ pub(crate) use delaunay::{
 pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
+};
+pub(in crate::geometry) use voronoi_receipt::{
+    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt,
+    VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt, VoronoiDiagramReceipt,
+    VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiEdgeSourceUse,
+    VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole, VoronoiSeparatorReceipt,
+    VoronoiSiteReceipt, VoronoiSourceSiteDecision, VoronoiSourceSiteReceipt, VoronoiVertexOrigin,
+    VoronoiVertexReceipt,
 };
 
 pub(crate) struct VoronoiPolygonOutput {
