@@ -176,9 +176,10 @@ pub(crate) fn unary_convex_hull(
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
         && PointSelectionChart::accepts_point_set(shape)
-        && let Some(hull) = ctx.with_source_arc_context(|source_context| {
-            point_set_convex_hull_shape(shape, frame, data.bounds(), source_context)
-        })?
+        && let Some(hull) =
+            ctx.with_source_arc_context_for_axes(shape.axes(), |source_context| {
+                point_set_convex_hull_shape(shape, frame, data.bounds(), source_context)
+            })?
     {
         return Ok(hull);
     }
@@ -461,9 +462,15 @@ pub(crate) fn unary_minimum_rotated_rectangle(
     if !matches!(shape, Shape::Point(_) | Shape::Empty(..))
         && let TopologyDomain::Geographic(frame) = ctx.domain
         && PointSelectionChart::accepts_point_set(shape)
-        && let Some(rectangle) = ctx.with_source_arc_context(|source_context| {
-            point_set_minimum_rotated_rectangle_shape(shape, frame, data.bounds(), source_context)
-        })?
+        && let Some(rectangle) =
+            ctx.with_source_arc_context_for_axes(shape.axes(), |source_context| {
+                point_set_minimum_rotated_rectangle_shape(
+                    shape,
+                    frame,
+                    data.bounds(),
+                    source_context,
+                )
+            })?
     {
         return Ok(rectangle);
     }
@@ -481,14 +488,21 @@ fn publish_raw_computed_if_geographic(
 ) -> Result<Shape> {
     match ctx.domain {
         TopologyDomain::Cartesian => Ok(shape),
-        TopologyDomain::Geographic(frame) => ctx.with_source_arc_context(|source_context| {
-            crate::geometry::publish_raw_computed_shape_with_context(
-                &shape,
-                frame,
-                operation,
-                source_context,
-            )
-        }),
+        TopologyDomain::Geographic(frame) => {
+            let axes = shape.axes();
+            if axes.has_z() || axes.has_m() {
+                ctx.with_source_arc_context(|source_context| {
+                    crate::geometry::publish_raw_computed_shape_with_context(
+                        &shape,
+                        frame,
+                        operation,
+                        source_context,
+                    )
+                })
+            } else {
+                crate::geometry::publish_raw_computed_shape(&shape, frame, operation)
+            }
+        },
     }
 }
 

@@ -105,6 +105,7 @@ impl SourceArcContext<'static, 'static, crate::crs::GeodesicMetric> {
 pub(crate) struct RootWorkCounters {
     pub(crate) native_chain_entries: usize,
     pub(crate) nearest_source_context_calls: usize,
+    pub(crate) source_context_setups: usize,
     pub(crate) source_arc_requests: usize,
     pub(crate) source_arc_resolutions: usize,
     pub(crate) root_requests: usize,
@@ -119,6 +120,7 @@ pub(crate) struct RootWorkCounters {
 pub(crate) enum RootWorkEvent {
     NativeChainEntry,
     NearestSourceContext,
+    SourceContextSetup,
     SourceArcRequest,
     SourceArcResolution,
     RootRequest,
@@ -134,6 +136,7 @@ thread_local! {
         const { Cell::new(RootWorkCounters {
             native_chain_entries: 0,
             nearest_source_context_calls: 0,
+            source_context_setups: 0,
             source_arc_requests: 0,
             source_arc_resolutions: 0,
             root_requests: 0,
@@ -165,6 +168,9 @@ pub(crate) fn record_root_work(event: RootWorkEvent) {
             RootWorkEvent::NearestSourceContext => {
                 current.nearest_source_context_calls =
                     current.nearest_source_context_calls.wrapping_add(1);
+            },
+            RootWorkEvent::SourceContextSetup => {
+                current.source_context_setups = current.source_context_setups.wrapping_add(1);
             },
             RootWorkEvent::SourceArcRequest => {
                 current.source_arc_requests = current.source_arc_requests.wrapping_add(1);

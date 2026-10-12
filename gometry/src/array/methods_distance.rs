@@ -521,8 +521,14 @@ impl PyGeometryArray {
                         .into()
                     })
             };
-            let source_context =
-                crate::geometry::SourceArcContext::new(domain, Some(&metric_access));
+            let source_axes = shape.axes();
+            let source_context = if source_axes.has_z() || source_axes.has_m() {
+                #[cfg(test)]
+                crate::geometry::record_root_work(crate::geometry::RootWorkEvent::SourceContextSetup);
+                crate::geometry::SourceArcContext::new(domain, Some(&metric_access))
+            } else {
+                crate::geometry::SourceArcContext::new(domain, None)
+            };
             if let crate::geometry::TopologyDomain::Geographic(frame) = domain
                 && !matches!(shape, Shape::Point(_) | Shape::Empty(..))
                 && PointSelectionChart::accepts_point_set(shape)
@@ -534,13 +540,18 @@ impl PyGeometryArray {
             let hull = shape.convex_hull()?;
             match domain {
                 crate::geometry::TopologyDomain::Cartesian => Ok(hull),
-                crate::geometry::TopologyDomain::Geographic(frame) => {
+                crate::geometry::TopologyDomain::Geographic(frame)
+                    if hull.axes().has_z() || hull.axes().has_m() =>
+                {
                     crate::geometry::publish_raw_computed_shape_with_context(
                         &hull,
                         frame,
                         "convex_hull",
                         &source_context,
                     )
+                },
+                crate::geometry::TopologyDomain::Geographic(frame) => {
+                    crate::geometry::publish_raw_computed_shape(&hull, frame, "convex_hull")
                 },
             }
         })
@@ -553,7 +564,7 @@ mod root_capture_tests {
     use crate::geometry::Ring;
 
     #[test]
-    fn geographic_xy_packed_hull_skips_source_root_capture() {
+    fn geographic_xy_hull_and_mrr_skip_source_root_capture() {
         let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         Python::initialize();
         let frame = Frame::Crs(crate::crs::frame::crs_arc_static("OGC:CRS84"));
@@ -601,6 +612,15 @@ mod root_capture_tests {
 
         assert_eq!(hulls.len(), 3);
         assert_eq!(hulls.uniform_axes(), Some(CoordinateAxes::XY));
+        assert_eq!(
+            crate::geometry::root_work_counters(),
+            crate::geometry::RootWorkCounters::default()
+        );
+
+        crate::geometry::reset_root_work_counters();
+        let rectangles = Python::attach(|py| array.minimum_rotated_rectangle(py)).unwrap();
+        assert_eq!(rectangles.len(), 3);
+        assert_eq!(rectangles.uniform_axes(), Some(CoordinateAxes::XY));
         assert_eq!(
             crate::geometry::root_work_counters(),
             crate::geometry::RootWorkCounters::default()
