@@ -93,8 +93,12 @@ impl RefinedChainProvenance {
                 )
                 .into());
             }
+            let segment_count = parameters
+                .len()
+                .checked_sub(1)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
             segment_end = segment_end
-                .checked_add(parameters.len() - 1)
+                .checked_add(segment_count)
                 .ok_or(crate::error::ResourceError::SizeOverflow)?;
             piece_ends.push(segment_end);
             start = end;
