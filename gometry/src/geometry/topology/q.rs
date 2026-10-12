@@ -4218,6 +4218,7 @@ pub(crate) struct ExactGeographicTopology {
     pub(super) sources: ExactGeographicChartInventory,
     pub(super) chart: NodedExactChart,
     pub(super) q: ExactGeographicQ,
+    pub(in crate::geometry) publication_frame: crate::Frame,
 }
 
 impl RootCatalog for ExactGeographicTopology {
@@ -4349,12 +4350,26 @@ impl ExactGeographicTopology {
         frame: GeographicFrame,
         views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
     ) -> Result<Self> {
+        Self::from_views_as_set_with_publication_frame(frame, crate::Frame::None, views)
+    }
+
+    pub(in crate::geometry) fn from_views_as_set_with_publication_frame<'a>(
+        frame: GeographicFrame,
+        publication_frame: crate::Frame,
+        views: impl ExactSizeIterator<Item = crate::geographic::ScalarGeographicView<'a>>,
+    ) -> Result<Self> {
         let mut budget =
             crate::geometry::ExpansionBudget::new("geographic topology", "exact chart noding");
         let mut work = crate::geometry::Unmetered;
         let sources =
             ExactGeographicChartInventory::collect_views_as_set_with_work(frame, views, &mut work)?;
-        Self::build(frame, sources, &mut budget, &mut work)
+        Self::build_with_publication_frame(
+            frame,
+            sources,
+            publication_frame,
+            &mut budget,
+            &mut work,
+        )
     }
 
     fn build(
@@ -4363,9 +4378,28 @@ impl ExactGeographicTopology {
         budget: &mut ExpansionBudget,
         work: &mut impl Work,
     ) -> Result<Self> {
+        Self::build_with_publication_frame(frame, sources, crate::Frame::None, budget, work)
+    }
+
+    fn build_with_publication_frame(
+        frame: GeographicFrame,
+        sources: ExactGeographicChartInventory,
+        publication_frame: crate::Frame,
+        budget: &mut ExpansionBudget,
+        work: &mut impl Work,
+    ) -> Result<Self> {
         let chart = sources.node_with_work(budget, work)?;
         let q = ExactGeographicQ::build(frame, &sources, &chart)?;
-        Ok(Self { sources, chart, q })
+        Ok(Self {
+            sources,
+            chart,
+            q,
+            publication_frame,
+        })
+    }
+
+    pub(in crate::geometry) const fn publication_frame(&self) -> &crate::Frame {
+        &self.publication_frame
     }
 
     pub(crate) fn validity_issue(&self, shape: &Shape) -> Result<Option<ValidationIssue>> {
@@ -4995,10 +5029,13 @@ fn exact_pair_relation(topology: &ExactGeographicTopology) -> Result<De9im> {
 impl HeapSize for ExactGeographicTopology {
     #[expect(
         clippy::arithmetic_side_effects,
-        reason = "HeapSize sums the retained source inventory, exact chart, and global Q estimates"
+        reason = "HeapSize sums the retained source inventory, exact chart, global Q, and publication-frame estimates"
     )]
     fn heap_bytes(&self) -> usize {
-        self.sources.heap_bytes() + self.chart.heap_bytes() + self.q.heap_bytes()
+        self.sources.heap_bytes()
+            + self.chart.heap_bytes()
+            + self.q.heap_bytes()
+            + std::mem::size_of_val(&self.publication_frame)
     }
 }
 

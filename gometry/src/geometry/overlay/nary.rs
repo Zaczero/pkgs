@@ -1,6 +1,7 @@
 use std::borrow::Borrow;
 use std::ops::ControlFlow;
 
+use crate::Frame;
 use crate::error::{ResourceError, Result};
 use crate::geographic::lonlat::geographic_admission_error;
 use crate::geographic::{GeographicFrame, GeographicInputs, GeographicViewError};
@@ -12,7 +13,6 @@ use crate::geometry::overlay::{
 };
 use crate::geometry::segments::crossing_point;
 use crate::geometry::tessellation::exact::ExactDyadic;
-use crate::geometry::topology::overlay::exact_geographic_overlay;
 use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
     GeographicTopologyRoute, GeometryErrorKind, GeometryKind, HashSet, Loc, Point, PointKey,
@@ -20,6 +20,12 @@ use crate::geometry::{
     SourceArcMetricAccess, TopologyDomain, XY, carry_overlay_ordinates, cartesian_point_location,
     clip_segment_parameter, exact_crossing_parameter, for_each_candidate_pair, point_on_segment,
     segment_contact_exact, undirected_segment_edge_key, unique_xy_points,
+};
+
+mod publication;
+pub(crate) use publication::overlay_all_geographic_output_with_metric_and_frame;
+pub(in crate::geometry) use publication::{
+    overlay_all_geographic_from_with_metric, overlay_all_geographic_from_with_output_frame,
 };
 
 #[cfg(test)]
@@ -379,6 +385,36 @@ pub(crate) fn overlay_all_geographic_chart<S: Borrow<Shape>, M: crate::geometry:
         true,
         ExactPartitionBudget::Charge,
         &SourceArcContext::new(TopologyDomain::Geographic(frame), metric_access),
+    )
+}
+
+pub(crate) fn overlay_all_geographic_with_metric_and_frame<
+    S: Borrow<Shape>,
+    M: crate::geometry::ChartMetric,
+>(
+    geometries: &[S],
+    frame: GeographicFrame,
+    output_frame: &Frame,
+    op: OverlayOp,
+    strictness: Strictness,
+    metric_access: &SourceArcMetricAccess<'_, '_, M>,
+) -> Result<Shape> {
+    if geometries.is_empty() {
+        return Err(GeometryErrorKind::EmptyGeometrySequence {
+            operation: op.name(),
+        }
+        .into());
+    }
+    let originals = GeographicInputs::try_from_shapes(frame, geometries.iter().map(Borrow::borrow))
+        .map_err(|error| overlay_view_error(&error))?;
+    let context = SourceArcContext::new(TopologyDomain::Geographic(frame), Some(metric_access));
+    overlay_all_geographic_from_with_output_frame(
+        &originals,
+        op,
+        strictness,
+        true,
+        &context,
+        output_frame,
     )
 }
 
@@ -2003,57 +2039,6 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
     )
 }
 
-pub(in crate::geometry) fn overlay_all_geographic_from_with_metric<
-    M: crate::geometry::ChartMetric,
->(
-    originals: &GeographicInputs<'_>,
-    op: OverlayOp,
-    strictness: Strictness,
-    bounds_certificates: bool,
-    context: &SourceArcContext<'_, '_, M>,
-) -> Result<Shape> {
-    let frame = match context.domain() {
-        TopologyDomain::Geographic(frame) => frame,
-        TopologyDomain::Cartesian => {
-            return Err(GeometryErrorKind::Invalid(
-                "geographic overlay received a Cartesian source context".into(),
-            )
-            .into());
-        },
-    };
-    if frame != originals.frame() {
-        return Err(GeometryErrorKind::Invalid(
-            "geographic overlay source context does not match its input frame".into(),
-        )
-        .into());
-    }
-    let mut original_refs = Vec::with_capacity(originals.views().len());
-    original_refs.extend(originals.views().iter().map(|view| view.shape()));
-    if let Some(shape) = geographic_rectangle_operation_result(originals, &original_refs, op) {
-        return Ok(shape);
-    }
-    if crate::geometry::geographic_topology_route(originals.views().iter().copied())
-        == GeographicTopologyRoute::ExactPartition
-    {
-        return exact_partition_overlay_with_bounds_certificates::<M>(
-            original_refs,
-            op,
-            strictness,
-            bounds_certificates,
-            ExactPartitionBudget::Charge,
-            context,
-        );
-    }
-    exact_geographic_q_overlay::<M>(
-        originals,
-        &original_refs,
-        op,
-        strictness,
-        bounds_certificates,
-        context,
-    )
-}
-
 fn geographic_rectangle_operation_result(
     originals: &GeographicInputs<'_>,
     shapes: &[&Shape],
@@ -2158,74 +2143,7 @@ pub(crate) fn overlay_all_geographic_q_from(
     strictness: Strictness,
     bounds_certificates: bool,
 ) -> Result<Shape> {
-    let mut original_refs = Vec::with_capacity(originals.views().len());
-    original_refs.extend(originals.views().iter().map(|view| view.shape()));
-    exact_geographic_q_overlay::<crate::crs::GeodesicMetric>(
-        originals,
-        &original_refs,
-        op,
-        strictness,
-        bounds_certificates,
-        &SourceArcContext::new(TopologyDomain::Geographic(originals.frame()), None),
-    )
-}
-
-fn exact_geographic_q_overlay<M: crate::geometry::ChartMetric>(
-    originals: &GeographicInputs<'_>,
-    original_refs: &[&Shape],
-    op: OverlayOp,
-    strictness: Strictness,
-    bounds_certificates: bool,
-    context: &SourceArcContext<'_, '_, M>,
-) -> Result<Shape> {
-    let frame = match context.domain() {
-        TopologyDomain::Geographic(frame) => frame,
-        TopologyDomain::Cartesian => {
-            return Err(GeometryErrorKind::Invalid(
-                "geographic Q overlay received a Cartesian source context".into(),
-            )
-            .into());
-        },
-    };
-    let declared_axes = overlay_declared_axes(original_refs, op);
-    puntal_nary_lane!(original_refs, op, strictness, context);
-
-    if bounds_certificates && op == OverlayOp::Intersection && originals.views().len() > 1 {
-        let facts = overlay_bounds_facts_geographic(originals);
-        if facts.raw_coordinate_bounds_sound && intersection_bounds_empty(&facts.bounds) {
-            return Ok(empty_nary_overlay_shape(original_refs, op));
-        }
-    }
-
-    // Preserve the left row for difference; commutative operations use a
-    // canonical row order so Q ownership is independent of input permutation.
-    let mut views = originals.views().to_vec();
-    if op == OverlayOp::Difference {
-        let (_, rest) = views
-            .split_first_mut()
-            .expect("geographic overlays have at least one operand");
-        rest.sort_unstable_by(|left, right| {
-            crate::geometry::compare_shapes(left.shape(), right.shape())
-        });
-    } else {
-        views.sort_unstable_by(|left, right| {
-            crate::geometry::compare_shapes(left.shape(), right.shape())
-        });
-    }
-    let topology =
-        crate::geometry::ExactGeographicTopology::from_views_as_set(frame, views.into_iter())?;
-    let output = exact_geographic_overlay::<M>(
-        &topology,
-        op,
-        declared_axes,
-        strictness.is_strict(),
-        context.metric_access(),
-    )?;
-    Ok(if output.is_empty() {
-        empty_nary_overlay_shape(original_refs, op)
-    } else {
-        output
-    })
+    publication::exact_geographic_q_from(originals, op, strictness, bounds_certificates)
 }
 
 pub(crate) fn occupied_geographic_support(
