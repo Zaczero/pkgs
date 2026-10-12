@@ -12,10 +12,10 @@ use crate::geometry::tessellation::{
     snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
-    AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, CsrOffsetColumn, Dimension,
-    ExpansionBudget, GeometryErrorKind, MultiMember, MultiPolygon, Point, PointKey, Polygon,
-    Polygonal, PolygonizeFull, Ring, Segment, Shape, ShapeCountQuery, SourceArcContext,
-    TopologyDomain, VoronoiBoundary, axis_extent, line_segments,
+    AxisFrame, CoordSeq, CoordinateAxes, Coordinates as _, Dimension, ExpansionBudget,
+    GeometryErrorKind, MultiMember, MultiPolygon, Point, PointKey, Polygon, Polygonal,
+    PolygonizeFull, Ring, Shape, ShapeCountQuery, SourceArcContext, TopologyDomain,
+    VoronoiBoundary, axis_extent, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every

@@ -610,10 +610,10 @@ pub(in crate::geometry::tessellation) fn prepare_raw_delaunay_publication(
         .iter()
         .map(|&(_, point)| point)
         .collect::<Vec<_>>();
-    let provider_sites = points
+    let provider_sites = indexed_points
         .iter()
         .enumerate()
-        .map(|(id, &point)| Site { id, point })
+        .map(|(id, &(source_ordinal, point))| Site::raw(id, point, source_ordinal))
         .collect::<Vec<_>>();
     let mesh = certified_delaunay(&provider_sites)?;
     let coordinates = |site| exact_delaunay::site_xy(&points, site);
