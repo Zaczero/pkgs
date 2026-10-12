@@ -1444,13 +1444,13 @@ fn point_unary_geometry_eval<K: PointUnaryGeometryKernel>(
     }
 }
 
-fn point_unary_geometry_coords_planar<const HAS_MISSING: bool, K: PointUnaryGeometryKernel>(
+fn point_unary_geometry_coords<const HAS_MISSING: bool, K: PointUnaryGeometryKernel>(
     kernel: K,
-    to_metre: f64,
     points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
     missing: Option<&ValidityMask>,
+    mut evaluate: impl FnMut(DestinationRow, Point) -> PyResult<Shape>,
 ) -> PyResult<CoordSeq> {
     let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     let (bearings, distances) = kernel.parameters();
@@ -1459,32 +1459,7 @@ fn point_unary_geometry_coords_planar<const HAS_MISSING: bool, K: PointUnaryGeom
         if row_missing::<HAS_MISSING>(missing, logical) {
             builder.push(point_nav_missing_point_with_axes(axes));
         } else {
-            let shape = kernel
-                .eval_planar(to_metre, row, points.get(logical))
-                .map_err(|err| crate::note_array_row(err, logical))?;
-            builder.push(point_from_point_nav_shape(&shape));
-        }
-    }
-    finish_point_nav_coords(builder, missing)
-}
-
-fn point_unary_geometry_coords_geodesic<const HAS_MISSING: bool, K: PointUnaryGeometryKernel>(
-    kernel: K,
-    metric: &crs::GeodesicMetric,
-    points: &PointRows<'_>,
-    len: usize,
-    axes: CoordinateAxes,
-    missing: Option<&ValidityMask>,
-) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-    let (bearings, distances) = kernel.parameters();
-    for row in destination_rows(bearings, distances, len) {
-        let logical = row.logical.get();
-        if row_missing::<HAS_MISSING>(missing, logical) {
-            builder.push(point_nav_missing_point_with_axes(axes));
-        } else {
-            let shape = kernel
-                .eval_geodesic(metric, row, points.get(logical))
+            let shape = evaluate(row, points.get(logical))
                 .map_err(|err| crate::note_array_row(err, logical))?;
             builder.push(point_from_point_nav_shape(&shape));
         }
@@ -1503,192 +1478,106 @@ fn point_unary_geometry_coords_dispatch<K: PointUnaryGeometryKernel>(
     match (model, missing) {
         (crs::MetricModel::Geodesic { .. }, Some(mask)) => {
             let metric = crs::GeodesicMetric::from_model(model)?;
-            point_unary_geometry_coords_geodesic::<true, _>(
+            point_unary_geometry_coords::<true, _>(
                 kernel,
-                &metric,
                 points,
                 len,
                 axes,
                 Some(mask),
+                |row, point| kernel.eval_geodesic(&metric, row, point),
             )
         },
         (crs::MetricModel::Geodesic { .. }, None) => {
             let metric = crs::GeodesicMetric::from_model(model)?;
-            point_unary_geometry_coords_geodesic::<false, _>(
-                kernel, &metric, points, len, axes, None,
-            )
-        },
-        (crs::MetricModel::Planar { to_metre }, Some(mask)) => {
-            point_unary_geometry_coords_planar::<true, _>(
+            point_unary_geometry_coords::<false, _>(
                 kernel,
-                to_metre.get(),
-                points,
-                len,
-                axes,
-                Some(mask),
-            )
-        },
-        (crs::MetricModel::Planar { to_metre }, None) => {
-            point_unary_geometry_coords_planar::<false, _>(
-                kernel,
-                to_metre.get(),
                 points,
                 len,
                 axes,
                 None,
+                |row, point| kernel.eval_geodesic(&metric, row, point),
             )
         },
-    }
-}
-
-fn destination_many_coords_geodesic(
-    kernel: DestinationPointKernel<'_>,
-    metric: &crs::GeodesicMetric,
-    points: &PointRows<'_>,
-    len: usize,
-    axes: CoordinateAxes,
-    missing: Option<&ValidityMask>,
-) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-    let (bearings, distances) = destination_parameter_slices(kernel.bearing, kernel.distance, len);
-    for (logical, (bearing, distance)) in bearings.iter().zip(distances).enumerate() {
-        if missing.is_some_and(|mask| mask.is_missing(logical)) {
-            builder.push(point_nav_missing_point_with_axes(axes));
-            continue;
-        }
-        builder.try_push(
-            destination_point_on_geodesic(
-                &metric.geodesic,
-                metric.frame,
-                points.get(logical),
-                *bearing,
-                *distance,
+        (crs::MetricModel::Planar { to_metre }, Some(mask)) => {
+            point_unary_geometry_coords::<true, _>(
+                kernel,
+                points,
+                len,
+                axes,
+                Some(mask),
+                |row, point| kernel.eval_planar(to_metre.get(), row, point),
             )
-            .map_err(|err| crate::note_array_row(err.into(), logical)),
-        )?;
+        },
+        (crs::MetricModel::Planar { to_metre }, None) => point_unary_geometry_coords::<false, _>(
+            kernel,
+            points,
+            len,
+            axes,
+            None,
+            |row, point| kernel.eval_planar(to_metre.get(), row, point),
+        ),
     }
-    finish_point_nav_coords(builder, missing)
 }
 
-fn destination_many_coords_planar<const HAS_MISSING: bool>(
+fn destination_point_coords<const HAS_MISSING: bool>(
     kernel: DestinationPointKernel<'_>,
-    to_metre: f64,
-    points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
     missing: Option<&ValidityMask>,
+    mut point_at: impl FnMut(usize) -> Point,
+    mut evaluate: impl FnMut(Point, DestinationRow) -> PyResult<Point>,
 ) -> PyResult<CoordSeq> {
     let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-    let (bearings, distances) = destination_parameter_slices(kernel.bearing, kernel.distance, len);
-    for (logical, (bearing, distance)) in bearings.iter().zip(distances).enumerate() {
+    for row in destination_rows(kernel.bearing, kernel.distance, len) {
+        let logical = row.logical.get();
         if row_missing::<HAS_MISSING>(missing, logical) {
             builder.push(point_nav_missing_point_with_axes(axes));
         } else {
             builder.try_push(
-                destination_point_planar(to_metre, points.get(logical), *bearing, *distance)
-                    .map_err(|err| crate::note_array_row(err, logical)),
+                evaluate(point_at(logical), row).map_err(|err| crate::note_array_row(err, logical)),
             )?;
         }
     }
     finish_point_nav_coords(builder, missing)
 }
 
-fn destination_many_coords_dispatch(
+fn destination_coords_dispatch<const HAS_MISSING: bool>(
     kernel: DestinationPointKernel<'_>,
     model: &crs::MetricModel,
-    points: &PointRows<'_>,
     len: usize,
     axes: CoordinateAxes,
     missing: Option<&ValidityMask>,
+    point_at: impl FnMut(usize) -> Point,
 ) -> PyResult<CoordSeq> {
     match model {
         crs::MetricModel::Geodesic { .. } => {
             let metric = crs::GeodesicMetric::from_model(model)?;
-            destination_many_coords_geodesic(kernel, &metric, points, len, axes, missing)
-        },
-        crs::MetricModel::Planar { to_metre } => missing.map_or_else(
-            || {
-                destination_many_coords_planar::<false>(
-                    kernel,
-                    to_metre.get(),
-                    points,
-                    len,
-                    axes,
-                    None,
-                )
-            },
-            |mask| {
-                destination_many_coords_planar::<true>(
-                    kernel,
-                    to_metre.get(),
-                    points,
-                    len,
-                    axes,
-                    Some(mask),
-                )
-            },
-        ),
-    }
-}
-
-fn destination_scalar_coords_geodesic(
-    metric: &crs::GeodesicMetric,
-    point: Point,
-    bearing: &[f64],
-    distance: &[f64],
-    len: usize,
-    axes: CoordinateAxes,
-) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-    for row in destination_rows(bearing, distance, len) {
-        builder.try_push(
-            destination_point_on_geodesic(
-                &metric.geodesic,
-                metric.frame,
-                point,
-                row.bearing,
-                row.distance,
+            destination_point_coords::<HAS_MISSING>(
+                kernel,
+                len,
+                axes,
+                missing,
+                point_at,
+                |point, row| {
+                    destination_point_on_geodesic(
+                        &metric.geodesic,
+                        metric.frame,
+                        point,
+                        row.bearing,
+                        row.distance,
+                    )
+                    .map_err(PyErr::from)
+                },
             )
-            .map_err(|err| crate::note_array_row(err.into(), row.logical.get())),
-        )?;
-    }
-    Ok(builder.finish()?)
-}
-
-fn destination_scalar_coords_planar(
-    to_metre: f64,
-    point: Point,
-    bearing: &[f64],
-    distance: &[f64],
-    len: usize,
-    axes: CoordinateAxes,
-) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
-    for row in destination_rows(bearing, distance, len) {
-        builder.try_push(
-            destination_point_planar(to_metre, point, row.bearing, row.distance)
-                .map_err(|err| crate::note_array_row(err, row.logical.get())),
-        )?;
-    }
-    Ok(builder.finish()?)
-}
-
-fn destination_scalar_coords_dispatch(
-    model: &crs::MetricModel,
-    point: Point,
-    bearing: &[f64],
-    distance: &[f64],
-    len: usize,
-    axes: CoordinateAxes,
-) -> PyResult<CoordSeq> {
-    match model {
-        crs::MetricModel::Geodesic { .. } => {
-            let metric = crs::GeodesicMetric::from_model(model)?;
-            destination_scalar_coords_geodesic(&metric, point, bearing, distance, len, axes)
         },
-        crs::MetricModel::Planar { to_metre } => {
-            destination_scalar_coords_planar(to_metre.get(), point, bearing, distance, len, axes)
-        },
+        crs::MetricModel::Planar { to_metre } => destination_point_coords::<HAS_MISSING>(
+            kernel,
+            len,
+            axes,
+            missing,
+            point_at,
+            |point, row| destination_point_planar(to_metre.get(), point, row.bearing, row.distance),
+        ),
     }
 }
 
@@ -1909,15 +1798,20 @@ fn destination_many_array(
                 bearing: &bearing.values,
                 distance: &distance.values,
             };
-            let coords = py.detach(move || {
-                destination_many_coords_dispatch(
+            let coords = py.detach(move || match missing_for_rows.as_ref() {
+                Some(mask) => destination_coords_dispatch::<true>(
                     kernel,
                     &model,
-                    &points,
                     len,
                     axes,
-                    missing_for_rows.as_ref(),
-                )
+                    Some(mask),
+                    |row| points.get(row),
+                ),
+                None => {
+                    destination_coords_dispatch::<false>(kernel, &model, len, axes, None, |row| {
+                        points.get(row)
+                    })
+                },
             })?;
             return Ok(PyGeometryArray::packed_points(coords, array.frame.clone())?
                 .with_missing_mask(missing)?
@@ -2001,15 +1895,12 @@ fn destination_point_array(
                 return empty_destinations(py, geometry, len);
             };
             let axes = CoordinateAxes::from_point(point);
+            let kernel = DestinationPointKernel {
+                bearing: &bearing.values,
+                distance: &distance.values,
+            };
             let coords = py.detach(move || {
-                destination_scalar_coords_dispatch(
-                    &model,
-                    point,
-                    &bearing.values,
-                    &distance.values,
-                    len,
-                    axes,
-                )
+                destination_coords_dispatch::<false>(kernel, &model, len, axes, None, |_| point)
             })?;
             Ok(
                 PyGeometryArray::packed_points(coords, geometry.frame.clone())?
@@ -2054,15 +1945,12 @@ pub(crate) fn destination_point_receiver(
         return empty_destinations(py, geometry, len);
     };
     let axes = CoordinateAxes::from_point(point);
+    let kernel = DestinationPointKernel {
+        bearing: &bearing.values,
+        distance: &distance.values,
+    };
     let coords = py.detach(move || {
-        destination_scalar_coords_dispatch(
-            &model,
-            point,
-            &bearing.values,
-            &distance.values,
-            len,
-            axes,
-        )
+        destination_coords_dispatch::<false>(kernel, &model, len, axes, None, |_| point)
     })?;
     Ok(
         PyGeometryArray::packed_points(coords, geometry.frame.clone())?
