@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 
+use super::delaunay::certified_delaunay_for_retained_points;
 use crate::NonNegative;
 use crate::error::Result;
 use crate::geographic::{ChartPointSite, GeographicFrame, PointSelectionChart};
@@ -1084,9 +1085,7 @@ impl Shape {
                         Ok(retained)
                     })
                     .collect::<Result<Vec<_>>>()?;
-                crate::geometry::tessellation::delaunay::certified_delaunay_for_retained_points(
-                    frame, &retained,
-                )?
+                certified_delaunay_for_retained_points(frame, &retained)?
             } else {
                 certified_delaunay(&sites)?
             })

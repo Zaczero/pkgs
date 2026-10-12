@@ -9,7 +9,7 @@ use crate::geographic::{
 };
 use crate::geometry::exact_arith::select_transformed_chart_displacement;
 use crate::geometry::tessellation::{
-    VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiPolygonOutputs,
+    VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin, VoronoiPolygonOutputs,
 };
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordWindow, Coordinates as _, CsrOffsetBuilder,
@@ -436,17 +436,9 @@ pub(crate) fn publish_voronoi_polygon_outputs(
                 .map(|ring| {
                     ring.iter()
                         .map(|role| {
-                            !role
-                                .origins
-                                .iter()
-                                .any(|origin| {
-                                    matches!(
-                                        origin,
-                                        crate::geometry::tessellation::VoronoiEdgeOrigin::SourceClip {
-                                            ..
-                                        }
-                                    )
-                                })
+                            !role.origins.iter().any(|origin| {
+                                matches!(origin, VoronoiEdgeOrigin::SourceClip { .. })
+                            })
                         })
                         .collect()
                 })

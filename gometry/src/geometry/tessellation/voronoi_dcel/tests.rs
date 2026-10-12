@@ -1,4 +1,5 @@
 use crate::geometry::overlay::shoot_left;
+use crate::geometry::tessellation::shape::canonical_voronoi_sites;
 
 #[test]
 fn direct_dual_subnormal_admission_matches_legacy_builder() {
@@ -5473,7 +5474,7 @@ fn retained_seam_exact_and_dual_producers_keep_each_site_in_its_cell() {
         );
     }
 
-    let dual_sites = crate::geometry::tessellation::shape::canonical_voronoi_sites(
+    let dual_sites = canonical_voronoi_sites(
         [(170.0, 0.0), (190.0, 0.0), (190.0, 10.0), (170.0, 8.0)]
             .into_iter()
             .map(|(x, y)| Point::new_raw_xy(x, y))

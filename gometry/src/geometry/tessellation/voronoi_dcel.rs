@@ -29,7 +29,8 @@ use crate::geometry::embedding_search::{
 };
 use crate::geometry::exact_arith::{ExactSign, retained_site_longitude};
 use crate::geometry::overlay::{
-    NodeId, RayAxis, RayPoints, binary_cartesian_difference_without_partition_budget,
+    NodeId, OverlayNodeReceipt, OverlaySourceEdgeUse, RayAxis, RayPoints,
+    binary_cartesian_difference_without_partition_budget,
     binary_cartesian_intersection_with_edge_roles, emitted_pair_preserves_incidence,
     segments_within_chebyshev, visit_component_faces,
 };
@@ -2956,7 +2957,7 @@ pub(super) struct EmbeddedPolygon {
     pub(super) polygon: Polygon,
     pub(super) owner: Option<u32>,
     pub(super) edge_roles: Vec<Vec<VoronoiRingEdgeRole>>,
-    pub(super) producer_vertices: Vec<Vec<crate::geometry::overlay::OverlayNodeReceipt>>,
+    pub(super) producer_vertices: Vec<Vec<OverlayNodeReceipt>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5256,11 +5257,7 @@ fn embedded_exact_ring(
     points: &[XY],
     clip: &NormalizedClip<'_>,
     clip_trace: &ClipTrace,
-) -> Result<(
-    Ring,
-    Vec<VoronoiRingEdgeRole>,
-    Vec<crate::geometry::overlay::OverlayNodeReceipt>,
-)> {
+) -> Result<(Ring, Vec<VoronoiRingEdgeRole>, Vec<OverlayNodeReceipt>)> {
     ensure_coordseq_vertex_capacity(ring.vertices.len())?;
     let (_, open_vertices) = ring
         .vertices
@@ -5271,7 +5268,7 @@ fn embedded_exact_ring(
     for &vertex in open_vertices {
         let point = exact_to_embedded.point(vertex, points)?;
         coordinates.push(Point::new_raw_xy(point.x, point.y));
-        producer_vertices.push(crate::geometry::overlay::OverlayNodeReceipt {
+        producer_vertices.push(OverlayNodeReceipt {
             id: vertex.0,
             exact_point: subdivision.vertex(vertex).point.clone(),
             assignment: point,
@@ -6216,7 +6213,7 @@ pub(super) fn build_collinear_polygons_with_chart(
                 .zip(vertices.iter().copied())
                 .enumerate()
                 .map(|(index, (exact_point, assignment))| {
-                    Ok(crate::geometry::overlay::OverlayNodeReceipt {
+                    Ok(OverlayNodeReceipt {
                         id: u32::try_from(index)
                             .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
                         exact_point,
@@ -6447,7 +6444,7 @@ fn clip_segment_offsets(clip: &NormalizedClip<'_>) -> Result<Vec<usize>> {
 }
 
 fn collinear_overlay_edge_roles(
-    source_edges: Vec<Vec<Vec<crate::geometry::overlay::OverlaySourceEdgeUse>>>,
+    source_edges: Vec<Vec<Vec<OverlaySourceEdgeUse>>>,
     strip_origins: &[Vec<VoronoiEdgeOrigin>],
     clip: &NormalizedClip<'_>,
 ) -> Result<Vec<Vec<VoronoiRingEdgeRole>>> {
@@ -9034,7 +9031,7 @@ fn dual_embed(
                 producer_ids
                     .iter()
                     .map(|&id| {
-                        Ok(crate::geometry::overlay::OverlayNodeReceipt {
+                        Ok(OverlayNodeReceipt {
                             id,
                             exact_point: exact_by_id
                                 .get(id as usize)
