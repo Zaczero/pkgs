@@ -2730,7 +2730,7 @@ mod tests {
             storage,
             ValidityMask::from_vec(3, vec![true, true, true]),
             StorageLayout::PresentOnly,
-            vec![None, None, None],
+            Vec::new(),
             &mut work,
         )
         .expect("admit all-missing rows");
