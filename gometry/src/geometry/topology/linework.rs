@@ -43,6 +43,18 @@ pub(super) struct FaceBoundaryCycle {
     pub(super) darts: Vec<QDartId>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FaceCycleRole {
+    pub(super) is_hole: bool,
+    pub(super) named_pole: Option<ChartPole>,
+}
+
+pub(super) struct MinimalFaceSelection {
+    pub(super) selected_faces: Vec<bool>,
+    pub(super) cycles: Vec<FaceBoundaryCycle>,
+    pub(super) cycle_roles: Vec<FaceCycleRole>,
+}
+
 pub(super) fn noded_spans(
     topology: &ExactGeographicTopology,
     work: &mut impl Work,
@@ -72,11 +84,7 @@ pub(super) fn noded_spans(
 pub(super) fn minimal_face_selection(
     topology: &ExactGeographicTopology,
     work: &mut impl Work,
-) -> Result<(
-    Vec<bool>,
-    Vec<FaceBoundaryCycle>,
-    Vec<(bool, Option<ChartPole>)>,
-)> {
+) -> Result<MinimalFaceSelection> {
     // A once-winding boundary names a pole cap; its opposite pole face is the exterior root.
     let face_count = topology.q.global_face_count;
     work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
@@ -95,14 +103,18 @@ pub(super) fn minimal_face_selection(
         cycles = minimal_face_boundaries(topology, &selected, work)?;
         roles = face_cycle_hole_roles(topology, &cycles, work)?;
     }
-    Ok((selected, cycles, roles))
+    Ok(MinimalFaceSelection {
+        selected_faces: selected,
+        cycles,
+        cycle_roles: roles,
+    })
 }
 
 pub(super) fn face_cycle_hole_roles(
     topology: &ExactGeographicTopology,
     cycles: &[FaceBoundaryCycle],
     work: &mut impl Work,
-) -> Result<Vec<(bool, Option<ChartPole>)>> {
+) -> Result<Vec<FaceCycleRole>> {
     let q = &topology.q;
     let mut roles = Vec::with_capacity(cycles.len());
     for cycle in cycles {
@@ -128,11 +140,15 @@ pub(super) fn face_cycle_hole_roles(
             GeometryErrorKind::Invalid("Q linework cycle has no chart vertices".into())
         })?;
         points.push(first.try_clone_with_work(work)?);
-        roles.push(super::q_embedding::exact_q_ring_role_for_linework(
+        let (is_hole, named_pole) = super::q_embedding::exact_q_ring_role_for_linework(
             topology.sources.frame,
             &points,
             work,
-        )?);
+        )?;
+        roles.push(FaceCycleRole {
+            is_hole,
+            named_pole,
+        });
     }
     Ok(roles)
 }
@@ -142,7 +158,7 @@ pub(super) fn face_cycle_hole_roles(
 pub(super) fn even_odd_face_selection(
     topology: &ExactGeographicTopology,
     cycles: &[FaceBoundaryCycle],
-    cycle_roles: &[(bool, Option<ChartPole>)],
+    cycle_roles: &[FaceCycleRole],
     work: &mut impl Work,
 ) -> Result<Vec<bool>> {
     let q = &topology.q;
@@ -166,9 +182,9 @@ pub(super) fn even_odd_face_selection(
     let mut children = Vec::with_capacity(face_count);
     children.resize_with(face_count, Vec::<GlobalFaceId>::new);
     let mut parent = vec![None; face_count];
-    for (cycle, &(is_hole, named_pole)) in cycles.iter().zip(cycle_roles) {
+    for (cycle, &role) in cycles.iter().zip(cycle_roles) {
         work.charge_into_error(1)?;
-        if named_pole.is_some() || !is_hole {
+        if role.named_pole.is_some() || !role.is_hole {
             continue;
         }
         if cycle.face == exterior {
@@ -293,13 +309,13 @@ pub(super) fn even_odd_face_selection(
 
 fn exterior_face_for_pole_caps(
     topology: &ExactGeographicTopology,
-    cycle_roles: &[(bool, Option<ChartPole>)],
+    cycle_roles: &[FaceCycleRole],
     work: &mut impl Work,
 ) -> Result<Option<GlobalFaceId>> {
     let mut exterior = None;
-    for &(_, named_pole) in cycle_roles {
+    for role in cycle_roles {
         work.charge_into_error(1)?;
-        let Some(named_pole) = named_pole else {
+        let Some(named_pole) = role.named_pole else {
             continue;
         };
         let Some(cap) = pole_sector_face(topology, named_pole, work)? else {
@@ -771,6 +787,49 @@ mod tests {
             .count()
     }
 
+    fn emitted_cycle_source_rows(
+        topology: &ExactGeographicTopology,
+        plan: &QEmissionPlan,
+    ) -> Result<BTreeSet<SourceRowId>> {
+        let mut rows = BTreeSet::new();
+        for walk in plan.fragment_recipes.walks() {
+            if !matches!(walk.owner, RecipeWalkOwner::Cycle(_)) {
+                continue;
+            }
+            for fragment in &walk.fragments {
+                let recipe = plan
+                    .fragment_recipes
+                    .as_slice()
+                    .get(fragment.0 as usize)
+                    .ok_or_else(|| {
+                        GeometryErrorKind::Invalid("Q cycle recipe is unknown".into())
+                    })?;
+                for range in recipe.ranges.iter().filter(|range| range.emitted) {
+                    if !((range.range.start.is_zero() && range.range.end.is_one())
+                        || (range.range.start.is_one() && range.range.end.is_zero()))
+                    {
+                        return Err(GeometryErrorKind::Invalid(
+                            "alias-ring source use does not retain its complete edge interval"
+                                .into(),
+                        )
+                        .into());
+                    }
+                    let edge = topology
+                        .sources
+                        .edges
+                        .get(range.source_edge.0 as usize)
+                        .ok_or_else(|| {
+                            GeometryErrorKind::Invalid(
+                                "Q cycle recipe source edge is unknown".into(),
+                            )
+                        })?;
+                    rows.insert(edge.row);
+                }
+            }
+        }
+        Ok(rows)
+    }
+
     #[test]
     fn node_selection_uses_the_seam_junction_not_a_greenwich_crossing() -> Result<()> {
         let seam = crate::io::parse_wkt("MULTILINESTRING ((170 0, -170 0), (180 -1, 180 1))")?;
@@ -837,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn alias_closed_ring_selects_a_geographic_face_for_both_producers() -> Result<()> {
+    fn alias_closed_ring_keeps_all_six_source_rows_for_both_producers() -> Result<()> {
         let edges = [
             "LINESTRING (170 0, 180 0)",
             "LINESTRING (-180 0, -170 0)",
@@ -860,6 +919,22 @@ mod tests {
         assert_eq!(build_area.producer, QProducer::BuildArea);
         assert_eq!(selected_face_count(&polygonize), 1);
         assert_eq!(selected_face_count(&build_area), 1);
+        let expected_rows = BTreeSet::from([
+            SourceRowId(0),
+            SourceRowId(1),
+            SourceRowId(2),
+            SourceRowId(3),
+            SourceRowId(4),
+            SourceRowId(5),
+        ]);
+        assert_eq!(
+            emitted_cycle_source_rows(&topology, &polygonize)?,
+            expected_rows
+        );
+        assert_eq!(
+            emitted_cycle_source_rows(&topology, &build_area)?,
+            expected_rows
+        );
         assert!(matches!(
             &polygonize.polygons,
             PolygonPlan::Regions { rings, .. } if !rings.is_empty()

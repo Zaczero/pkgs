@@ -1,3 +1,8 @@
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning tests use assertions for their behavior checks"
+)]
+
 use super::{DiagnosticKind, ExactGeographicTopology, QEmissionPlan, QLineOrigin, SourceRowId};
 use crate::error::Result;
 use crate::geographic::{GeographicFrame, GeographicInputs};
@@ -50,7 +55,7 @@ fn polygonize_full_keeps_a_dangle_on_the_joint_polygon_contact_graph() -> Result
         })
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(source_rows, [SourceRowId(1)]);
-    let shared_nodes = span
+    let shared_node_count = span
         .nodes
         .iter()
         .copied()
@@ -67,7 +72,7 @@ fn polygonize_full_keeps_a_dangle_on_the_joint_polygon_contact_graph() -> Result
                         .is_some_and(|boundary_span| boundary_span.nodes.contains(node))
                 })
         })
-        .collect::<Vec<_>>();
-    assert_eq!(shared_nodes.len(), 1);
+        .count();
+    assert_eq!(shared_node_count, 1);
     Ok(())
 }

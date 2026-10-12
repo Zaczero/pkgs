@@ -1181,9 +1181,10 @@ impl QEmissionPlan {
         work: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        let (selected_faces, cycles, _) = minimal_face_selection(topology, work)?;
-        let mut regions = FaceUnion::new(&selected_faces, work)?;
-        let cycles = cycles
+        let selection = minimal_face_selection(topology, work)?;
+        let mut regions = FaceUnion::new(&selection.selected_faces, work)?;
+        let cycles = selection
+            .cycles
             .into_iter()
             .map(|cycle| BoundaryCycle {
                 darts: cycle.darts,
@@ -1191,15 +1192,16 @@ impl QEmissionPlan {
             })
             .collect::<Vec<_>>();
         let mut roots = Vec::new();
-        for (face, &selected) in selected_faces.iter().enumerate() {
+        for (face, &selected) in selection.selected_faces.iter().enumerate() {
             work.charge_into_error(1)?;
             if selected {
                 roots.push(face);
             }
         }
         let selected_regions =
-            selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
-        let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
+            selected_region_facts(q, &selection.selected_faces, &mut regions, &roots, work)?;
+        let selected_face_roots =
+            selected_face_roots(q, &selection.selected_faces, &mut regions, work)?;
         let mut rings = Vec::with_capacity(cycles.len());
         for (cycle, boundary) in cycles.iter().enumerate() {
             work.charge_into_error(1)?;
@@ -1239,8 +1241,9 @@ impl QEmissionPlan {
         work: &mut impl Work,
     ) -> Result<Self> {
         let q = &topology.q;
-        let (_, face_cycles, cycle_roles) = minimal_face_selection(topology, work)?;
-        let selected_faces = even_odd_face_selection(topology, &face_cycles, &cycle_roles, work)?;
+        let selection = minimal_face_selection(topology, work)?;
+        let selected_faces =
+            even_odd_face_selection(topology, &selection.cycles, &selection.cycle_roles, work)?;
         let mut regions = face_regions(q, &selected_faces, work)?;
         let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
         work.charge_into_error(
