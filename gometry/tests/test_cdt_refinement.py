@@ -281,6 +281,31 @@ def test_geographic_constrained_chart_is_shared_by_scalar_and_array() -> None:
     )
 
 
+def test_geographic_constrained_cdt_keeps_zero_turn_world_band() -> None:
+    ring = [
+        (0.0, 20.0),
+        (120.0, 20.0),
+        (240.0, 20.0),
+        (360.0, 20.0),
+        (360.0, 10.0),
+        (240.0, 10.0),
+        (120.0, 10.0),
+        (0.0, 10.0),
+    ]
+    polygon = gm.Polygon(ring, crs=4326)
+    scalar = polygon.triangulate(method='constrained')
+    packed = gm.GeometryArray([polygon]).triangulate(method='constrained')[0]
+
+    assert len(scalar) == len(packed) == 6
+    assert [triangle.to_wkb() for triangle in scalar] == [
+        triangle.to_wkb() for triangle in packed
+    ]
+    assert all(triangle.area > 0 for triangle in scalar)
+    for left, right in combinations(scalar, 2):
+        assert gm.relate_pattern(left, right, 'F********'), gm.relate(left, right)
+    assert gm.equals(gm.union_all(scalar), polygon)
+
+
 @pytest.mark.parametrize(
     'coords',
     [

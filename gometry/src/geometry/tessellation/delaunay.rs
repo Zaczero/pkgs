@@ -53,6 +53,9 @@ pub(crate) use cdt::{
 };
 #[path = "exact_delaunay.rs"]
 pub(super) mod exact_delaunay;
+#[cfg(test)]
+#[path = "delaunay/world_band_tests.rs"]
+mod world_band_tests;
 
 // Test-only companion to the output budget: constrained output admission
 // must happen before the result vector is reserved.
@@ -1214,9 +1217,6 @@ fn retained_constrained_source_plan(
     chart: Option<&PointSelectionChart>,
     rings: &[(RingOwner, &Ring)],
 ) -> Result<Option<ConstrainedSourcePlan>> {
-    if chart.is_some_and(|chart| chart.has_full_longitude_support()) {
-        return Ok(None);
-    }
     let capacity = rings.iter().try_fold(0_usize, |total, ring| {
         total
             .checked_add(ring.1.coords().coord_count())
@@ -1229,7 +1229,8 @@ fn retained_constrained_source_plan(
             .map_err(|error| GeometryErrorKind::Invalid(error.to_string().into()))?;
         let reaches_pole = summary.south.identity(frame) == SeamIdentity::Pole
             || summary.north.identity(frame) == SeamIdentity::Pole;
-        if summary.domain != RingDomain::Ordinary || summary.exact_axis_band || reaches_pole {
+        let planar_full_longitude_band = summary.chart_turn == 0 && summary.exact_axis_band;
+        if (summary.domain != RingDomain::Ordinary && !planar_full_longitude_band) || reaches_pole {
             return Ok(None);
         }
         let coords = ring.coords();
