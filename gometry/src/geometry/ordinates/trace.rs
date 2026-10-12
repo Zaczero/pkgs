@@ -673,10 +673,13 @@ impl RootRequestTable {
         })
     }
 
-    pub(crate) fn root_count(&self) -> usize {
+    pub(crate) fn root_count(&self) -> Result<usize> {
         match self.records.last() {
-            Some(record) => record.root_state_slot + 1,
-            None => 0,
+            Some(record) => record
+                .root_state_slot
+                .checked_add(1)
+                .ok_or_else(|| ResourceError::SizeOverflow.into()),
+            None => Ok(0),
         }
     }
 
@@ -692,7 +695,7 @@ pub(crate) fn resolve_request_rows<M: ChartMetric, C: RootCatalog>(
     work: &mut impl Work,
 ) -> Result<Vec<NodeOrdinates>> {
     let mut table = RootRequestTable::from_rows(rows, work)?;
-    let state_count = table.root_count();
+    let state_count = table.root_count()?;
     let mut states = Vec::new();
     reserve_with_work(&mut states, state_count, work)?;
     states.resize(state_count, RootMetricState::default());
@@ -1135,14 +1138,19 @@ mod tests {
                 accepted: result.is_ok(),
             });
             if result.is_ok() {
-                self.spent += u128::from(ticks);
+                self.spent = self
+                    .spent
+                    .checked_add(u128::from(ticks))
+                    .expect("recorded work total fits u128");
             }
             result
         }
 
         fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
-            let ticks = u128::try_from(count).expect("usize fits u128")
-                * u128::try_from(ticks_per_item).expect("usize fits u128");
+            let ticks = u128::try_from(count)
+                .expect("usize fits u128")
+                .checked_mul(u128::try_from(ticks_per_item).expect("usize fits u128"))
+                .expect("recorded work product fits u128");
             let spent_before = self.spent;
             let result =
                 <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
@@ -1153,7 +1161,10 @@ mod tests {
                 accepted: result.is_ok(),
             });
             if result.is_ok() {
-                self.spent += ticks;
+                self.spent = self
+                    .spent
+                    .checked_add(ticks)
+                    .expect("recorded work total fits u128");
             }
             result
         }
@@ -1166,7 +1177,12 @@ mod tests {
             0,
             attempt
                 .spent_before
-                .checked_add(attempt.ticks - 1)
+                .checked_add(
+                    attempt
+                        .ticks
+                        .checked_sub(1)
+                        .expect("recorded work refusal has positive cost"),
+                )
                 .expect("the calibrated allowance is representable"),
         )
         .expect("the calibrated allowance fits the actual EvaluationBudget")
@@ -1195,7 +1211,12 @@ mod tests {
             _fraction: &mut Option<f64>,
             _work: &mut W,
         ) -> Result<NodeOrdinates> {
-            self.0.set(self.0.get() + 1);
+            self.0.set(
+                self.0
+                    .get()
+                    .checked_add(1)
+                    .expect("test resolution count fits usize"),
+            );
             let root_value =
                 u32::try_from(root.index()).map_err(|_| ResourceError::SizeOverflow)?;
             let value = f64::from(root_value) + parameter.round()?;
@@ -1427,7 +1448,7 @@ mod tests {
         let table = RootRequestTable::from_rows(&rows, &mut work).unwrap();
         let first = RequestRowId::from_index(0).unwrap();
         let second = RequestRowId::from_index(1).unwrap();
-        assert_eq!(table.root_count(), 3);
+        assert_eq!(table.root_count().unwrap(), 3);
         assert_eq!(
             table
                 .root_state_slot(table.request_id_at(first, 0).unwrap())
@@ -1547,7 +1568,7 @@ mod tests {
                 attempts: Vec::new(),
             };
             let table = RootRequestTable::from_rows(&rows, &mut table_work).unwrap();
-            assert_eq!(table.root_count(), 7);
+            assert_eq!(table.root_count().unwrap(), 7);
             assert_eq!(
                 table_work
                     .attempts

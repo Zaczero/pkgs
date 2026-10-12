@@ -3535,9 +3535,12 @@ impl FragmentRecipes {
                     .iter()
                     .try_fold(0_usize, |count, range| -> Result<usize> {
                         work.charge(1)?;
+                        let range_slots = 1_usize
+                            .checked_add(usize::from(range.endpoint_only))
+                            .ok_or(ResourceError::SizeOverflow)?;
                         count
-                            .checked_add(1 + usize::from(range.endpoint_only))
-                            .ok_or(ResourceError::SizeOverflow.into())
+                            .checked_add(range_slots)
+                            .ok_or_else(|| ResourceError::SizeOverflow.into())
                     })?;
             work.charge(u64::try_from(row_capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
             let mut row = Vec::with_capacity(row_capacity);
@@ -4193,14 +4196,19 @@ mod tests {
                 accepted: result.is_ok(),
             });
             if result.is_ok() {
-                self.spent += u128::from(ticks);
+                self.spent = self
+                    .spent
+                    .checked_add(u128::from(ticks))
+                    .expect("recorded work total fits u128");
             }
             result
         }
 
         fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> Result<()> {
-            let ticks = u128::try_from(count).expect("usize fits u128")
-                * u128::try_from(ticks_per_item).expect("usize fits u128");
+            let ticks = u128::try_from(count)
+                .expect("usize fits u128")
+                .checked_mul(u128::try_from(ticks_per_item).expect("usize fits u128"))
+                .expect("recorded work product fits u128");
             let spent_before = self.spent;
             let result =
                 <EvaluationBudget as Work>::charge_product(self.budget, count, ticks_per_item);
@@ -4211,7 +4219,10 @@ mod tests {
                 accepted: result.is_ok(),
             });
             if result.is_ok() {
-                self.spent += ticks;
+                self.spent = self
+                    .spent
+                    .checked_add(ticks)
+                    .expect("recorded work total fits u128");
             }
             result
         }
@@ -4224,7 +4235,12 @@ mod tests {
             0,
             charge
                 .spent_before
-                .checked_add(charge.ticks - 1)
+                .checked_add(
+                    charge
+                        .ticks
+                        .checked_sub(1)
+                        .expect("recorded work refusal has positive cost"),
+                )
                 .expect("the calibrated allowance is representable"),
         )
         .expect("the calibrated allowance fits the actual EvaluationBudget")
@@ -4253,7 +4269,12 @@ mod tests {
             _fraction: &mut Option<f64>,
             _work: &mut W,
         ) -> Result<NodeOrdinates> {
-            self.0.set(self.0.get() + 1);
+            self.0.set(
+                self.0
+                    .get()
+                    .checked_add(1)
+                    .expect("test resolution count fits usize"),
+            );
             let mut ordinates = NodeOrdinates::default();
             if axes.has_z() {
                 ordinates.z.observe(Some(10.0));
