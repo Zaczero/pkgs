@@ -73,6 +73,9 @@ use crate::geometry::{
     Work, XY, for_each_overlapping_bounds_cross_pair_with_work, ring_winding,
 };
 
+mod endpoint_point_cache;
+use self::endpoint_point_cache::{NativeEndpointPointCache, NativeEndpointPointKey};
+
 #[derive(Clone, Debug)]
 pub(super) struct QCoordinates {
     pub(super) node: Vec<XY>,
@@ -18718,6 +18721,7 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
         &self,
         chord: &QPublishedChord,
         endpoint_index: usize,
+        source_points: &mut NativeEndpointPointCache,
         budget: &mut impl Work,
     ) -> Result<Vec<(QCandidate, ExactChartPoint)>> {
         let endpoint = chord.endpoints.get(endpoint_index).ok_or_else(|| {
@@ -18758,25 +18762,32 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                     output.reserve(candidates.len());
                     for &candidate in candidates {
                         budget.charge(1)?;
-                        if let Some(point) = assigned_port_point(
-                            self.topology.sources.frame,
-                            &self.topology.q,
-                            *port,
-                            self.nearest.xy(q_port.node)?,
-                            candidate,
-                            self.nearest
-                                .pole_port_longitude
-                                .get(port.0 as usize)
-                                .copied()
-                                .flatten(),
-                            self.nearest
-                                .pole_port_periods
-                                .get(port.0 as usize)
-                                .copied()
-                                .flatten(),
-                            &self.cut_east,
+                        let point = source_points.get_or_compute(
+                            NativeEndpointPointKey::new(*port, candidate),
                             budget,
-                        )? {
+                            |budget| {
+                                assigned_port_point(
+                                    self.topology.sources.frame,
+                                    &self.topology.q,
+                                    *port,
+                                    self.nearest.xy(q_port.node)?,
+                                    candidate,
+                                    self.nearest
+                                        .pole_port_longitude
+                                        .get(port.0 as usize)
+                                        .copied()
+                                        .flatten(),
+                                    self.nearest
+                                        .pole_port_periods
+                                        .get(port.0 as usize)
+                                        .copied()
+                                        .flatten(),
+                                    &self.cut_east,
+                                    budget,
+                                )
+                            },
+                        )?;
+                        if let Some(point) = point {
                             output.push((
                                 candidate,
                                 self.assigned_publication_endpoint_point(
@@ -18847,6 +18858,8 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
             .into());
         }
         budget.charge(u64::try_from(recipe_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        budget.charge(1)?;
+        let mut source_points = NativeEndpointPointCache::new(collection_hash_state()?.clone());
         let mut recipe_ranges: NativeCutFamilyDomains = Vec::with_capacity(recipe_count);
         for recipe_index in 0..recipe_count {
             budget.charge(1)?;
@@ -18875,8 +18888,10 @@ impl<'topology, 'emission, 'access, 'metric, M: ChartMetric>
                 let chord = self.publication_chords.get(chord_index).ok_or_else(|| {
                     GeometryErrorKind::Invalid("native family chord is unknown".into())
                 })?;
-                let left = self.native_family_endpoint_domain(chord, 0, budget)?;
-                let right = self.native_family_endpoint_domain(chord, 1, budget)?;
+                let left =
+                    self.native_family_endpoint_domain(chord, 0, &mut source_points, budget)?;
+                let right =
+                    self.native_family_endpoint_domain(chord, 1, &mut source_points, budget)?;
                 let mut ranges: NativeChordCutRanges = Vec::new();
                 for (left_candidate, left_point) in &left {
                     for (right_candidate, right_point) in &right {
