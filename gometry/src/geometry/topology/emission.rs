@@ -2354,8 +2354,7 @@ impl SourceTrace {
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
         work.charge(u64::try_from(edge_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut new_samples_by_edge = Vec::new();
-        new_samples_by_edge.reserve(edge_count);
+        let mut new_samples_by_edge = Vec::with_capacity(edge_count);
         new_samples_by_edge.resize(edge_count, 0_usize);
         for sample in samples {
             work.charge(1)?;
@@ -2369,8 +2368,7 @@ impl SourceTrace {
             *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         }
         work.charge(u64::try_from(input_vertex_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-        let mut new_samples_before_vertex = Vec::new();
-        new_samples_before_vertex.reserve(input_vertex_count);
+        let mut new_samples_before_vertex = Vec::with_capacity(input_vertex_count);
         new_samples_before_vertex.resize(input_vertex_count, 0_usize);
         for vertex in 1..input_vertex_count {
             work.charge(1)?;

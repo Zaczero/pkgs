@@ -742,14 +742,11 @@ impl TraceRows {
         prepay_slots(self.offsets.len(), work)?;
         prepay_slots(self.sample_offsets.len(), work)?;
         prepay_slots(self.ranges.len(), work)?;
-        let mut offsets = Vec::new();
-        offsets.reserve(self.offsets.len());
+        let mut offsets = Vec::with_capacity(self.offsets.len());
         offsets.extend(self.offsets.iter().copied());
-        let mut sample_offsets = Vec::new();
-        sample_offsets.reserve(self.sample_offsets.len());
+        let mut sample_offsets = Vec::with_capacity(self.sample_offsets.len());
         sample_offsets.extend(self.sample_offsets.iter().copied());
-        let mut ranges = Vec::new();
-        ranges.reserve(self.ranges.len());
+        let mut ranges = Vec::with_capacity(self.ranges.len());
         for range in &self.ranges {
             ranges.push(range.try_clone_with_work(work)?);
         }
@@ -976,11 +973,9 @@ impl TraceRowsBuilder {
     pub(crate) fn new(work: &mut impl Work) -> Result<Self> {
         prepay_slots(1, work)?;
         prepay_slots(1, work)?;
-        let mut offsets = Vec::new();
-        offsets.reserve(1);
+        let mut offsets = Vec::with_capacity(1);
         offsets.push(0);
-        let mut sample_offsets = Vec::new();
-        sample_offsets.reserve(1);
+        let mut sample_offsets = Vec::with_capacity(1);
         sample_offsets.push(0);
         Ok(Self {
             offsets,
@@ -1075,8 +1070,7 @@ impl TraceRowsBuilder {
                     .ok_or(ResourceError::SizeOverflow)?;
             }
         }
-        let mut ranges = Vec::new();
-        ranges.reserve(total);
+        let mut ranges = Vec::with_capacity(total);
         ranges.extend(self.ranges);
         ranges.extend(self.sample_ranges);
         Ok(TraceRows {
