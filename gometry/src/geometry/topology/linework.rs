@@ -785,12 +785,12 @@ mod tests {
         assert_eq!(selected_face_count(&polygonize), 1);
         assert_eq!(selected_face_count(&build_area), 1);
         assert!(matches!(
-            polygonize.polygons,
-            PolygonPlan::Regions { ref rings, .. } if !rings.is_empty()
+            &polygonize.polygons,
+            PolygonPlan::Regions { rings, .. } if !rings.is_empty()
         ));
         assert!(matches!(
-            build_area.polygons,
-            PolygonPlan::Regions { ref rings, .. } if !rings.is_empty()
+            &build_area.polygons,
+            PolygonPlan::Regions { rings, .. } if !rings.is_empty()
         ));
         Ok(())
     }
