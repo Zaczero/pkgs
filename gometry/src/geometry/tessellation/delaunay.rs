@@ -645,7 +645,7 @@ fn prepare_delaunay_publication<C: exact_delaunay::MeshCoordinates>(
             canonical.output_to_selected,
             canonical.reversed,
             start..end,
-            boundary_uses,
+            &boundary_uses,
         ));
     }
     budget.add(capacity)?;

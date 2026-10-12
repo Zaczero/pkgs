@@ -131,7 +131,7 @@ impl PreparedMeshFace {
         output_to_selected: [u8; 3],
         reversed: bool,
         output_vertices: Range<usize>,
-        boundary_uses: [PreparedMeshBoundaryUse; 3],
+        boundary_uses: &[PreparedMeshBoundaryUse; 3],
     ) -> Self {
         Self {
             selected_face,
@@ -140,7 +140,7 @@ impl PreparedMeshFace {
             output_to_selected,
             reversed,
             output_vertices,
-            boundary_uses,
+            boundary_uses: *boundary_uses,
         }
     }
 }
