@@ -4030,6 +4030,12 @@ impl ExactSourceInventory {
                 }
                 let published = published_ring.coords();
                 let published_edge_count = published.coord_count().saturating_sub(1);
+                if published_edge_count == 0 {
+                    return Err(GeometryErrorKind::Invalid(
+                        "published polygon ring has no edges".into(),
+                    )
+                    .into());
+                }
                 let source_start = *old_ring.first().ok_or_else(|| {
                     GeometryErrorKind::Invalid("published polygon source ring is empty".into())
                 })?;
@@ -4077,7 +4083,8 @@ impl ExactSourceInventory {
                             .checked_add(output_edge)
                             .and_then(|index| index.checked_add(1))
                             .ok_or(ResourceError::SizeOverflow)?
-                            % published_edge_count;
+                            .checked_rem(published_edge_count)
+                            .ok_or(ResourceError::SizeOverflow)?;
                         let endpoint = published.nth_coord(endpoint_index).xy();
                         output_edge = output_edge
                             .checked_add(1)
