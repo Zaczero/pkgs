@@ -99,13 +99,6 @@ impl<I> FrozenLiteralBuffers<I> {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "array receipt producers provide their final admitted storage and row map"
-        )
-    )]
     pub(in crate::geometry) fn rows<W: Work>(
         storage: Arc<GeometryArrayStorage>,
         missing: Option<ValidityMask>,
@@ -141,13 +134,6 @@ impl<I> FrozenLiteralBuffers<I> {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Groups receipt producers provide final values, group CSR, validity, and row maps"
-        )
-    )]
     pub(in crate::geometry) fn groups<W: Work>(
         storage: Arc<GeometryArrayStorage>,
         value_missing: Option<ValidityMask>,

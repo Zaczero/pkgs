@@ -508,6 +508,14 @@ fn resolve_q_embedding<M: crate::geometry::ChartMetric, A: SearchAccount>(
                 )
                 .into());
             },
+            super::super::publication::PublicationOutcome::Reject(
+                super::super::publication::PublicationRejection::ProducerDrawing(_),
+            ) => {
+                return Err(GeometryErrorKind::Invalid(
+                    "Q source-only finisher returned producer-drawn rejection".into(),
+                )
+                .into());
+            },
         };
         (
             SealedQDrawing::Source(SealedSourceDrawing {
