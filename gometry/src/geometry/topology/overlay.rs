@@ -1158,7 +1158,7 @@ impl QEmissionPlan {
         declared_axes: CoordinateAxes,
         work: &mut impl Work,
     ) -> Result<super::emission::NativeFrozenDrawing> {
-        parts.validate_literal_uses()?;
+        parts.validate_literal_uses(work)?;
         let NativeMaterializedParts {
             axes,
             points,

@@ -345,7 +345,11 @@ impl<I> ShapeLiteralLayout<I> {
     }
 }
 
-fn reorder_rows<T>(rows: Vec<T>, order: &[usize], work: &mut impl Work) -> Result<Vec<T>> {
+pub(super) fn reorder_rows<T>(
+    rows: Vec<T>,
+    order: &[usize],
+    work: &mut impl Work,
+) -> Result<Vec<T>> {
     if rows.len() != order.len() {
         return Err(
             GeometryErrorKind::Invalid("literal output order omits a physical row".into()).into(),

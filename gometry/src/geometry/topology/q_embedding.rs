@@ -4687,7 +4687,7 @@ fn validate_native_materialized_candidate(
     ordinates: &[NodeOrdinates],
     budget: &mut impl Work,
 ) -> Result<Option<NativeCandidateState>> {
-    parts.validate_literal_uses()?;
+    parts.validate_literal_uses(budget)?;
     if parts.points.len() != reference.plan.points.len()
         || parts.lines.len() != reference.plan.lines.len()
         || parts.polygons.len() != reference.plan.parts.len()
