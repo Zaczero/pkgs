@@ -441,10 +441,10 @@ fn source_cut<W: Work>(
         if let Some(cut) = bounds_midpoint_cut(bounds, split_x) {
             return Ok(Some(cut));
         }
-        match source_vertex_cut(shape, split_x, bounds, owner_coordinate_count, work)? {
-            Some(cut) => Ok(Some(cut)),
-            None => source_median_cut(shape, split_x, bounds, owner_coordinate_count, work),
-        }
+        source_vertex_cut(shape, split_x, bounds, owner_coordinate_count, work)?.map_or_else(
+            || source_median_cut(shape, split_x, bounds, owner_coordinate_count, work),
+            |cut| Ok(Some(cut)),
+        )
     } else {
         source_median_cut(shape, split_x, bounds, owner_coordinate_count, work)
     }

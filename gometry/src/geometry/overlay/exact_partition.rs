@@ -360,12 +360,10 @@ where
         None
     };
     if !axes.has_z() && !axes.has_m() {
-        return Ok(match rooted_xy {
-            Some(rooted_xy) => {
-                ResolvedNodePoints::from_embedding_with_xy(embedding, None, rooted_xy)
-            },
-            None => ResolvedNodePoints::from_embedding(embedding, None),
-        });
+        return Ok(rooted_xy.map_or_else(
+            || ResolvedNodePoints::from_embedding(embedding, None),
+            |rooted_xy| ResolvedNodePoints::from_embedding_with_xy(embedding, None, rooted_xy),
+        ));
     }
     let mut by_node = vec![None; partition.node_count()];
     let mut fallback_nodes = Vec::new();
@@ -419,28 +417,26 @@ where
         })?;
         *slot = Some((ZOrdinate(ordinate.z.value()), MOrdinate(ordinate.m.value())));
     }
-    if let Some(fallback_inventory) = fallback_inventory {
-        if !fallback_nodes.is_empty() {
-            work.charge(
-                u64::try_from(fallback_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?,
-            )?;
-            let fallback = fallback_inventory.resolve_node_points(
-                partition,
-                embedding,
-                fallback_nodes.iter().copied(),
-                axes,
-                context,
-                None,
-            )?;
-            for node in fallback_nodes {
-                if let Some(ordinates) = fallback.ordinates(node) {
-                    let slot = by_node.get_mut(node.0 as usize).ok_or_else(|| {
-                        GeometryErrorKind::Invalid(
-                            "fallback subdivision node is outside the partition".into(),
-                        )
-                    })?;
-                    *slot = Some(ordinates);
-                }
+    if let Some(fallback_inventory) = fallback_inventory
+        && !fallback_nodes.is_empty()
+    {
+        work.charge(u64::try_from(fallback_nodes.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        let fallback = fallback_inventory.resolve_node_points(
+            partition,
+            embedding,
+            fallback_nodes.iter().copied(),
+            axes,
+            context,
+            None,
+        )?;
+        for node in fallback_nodes {
+            if let Some(ordinates) = fallback.ordinates(node) {
+                let slot = by_node.get_mut(node.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid(
+                        "fallback subdivision node is outside the partition".into(),
+                    )
+                })?;
+                *slot = Some(ordinates);
             }
         }
     }
