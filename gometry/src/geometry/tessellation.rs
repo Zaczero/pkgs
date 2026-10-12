@@ -2,6 +2,9 @@
 //! ear-cut polygon triangles, Voronoi polygons/edges, and linework
 //! polygonization.
 
+use std::ops::Deref;
+use std::sync::Arc;
+
 mod circumcenter;
 mod delaunay;
 pub(crate) use delaunay::exact_delaunay::{EMPTY, Triangulation, next_halfedge, prev_halfedge};
@@ -14,6 +17,8 @@ mod sampling;
 mod shape;
 mod voronoi;
 mod voronoi_dcel;
+mod voronoi_receipt;
+
 #[expect(
     unused_imports,
     reason = "the parent-owned final writer consumes the prepared CDT face, side, source and origin receipts"
@@ -26,10 +31,56 @@ pub(crate) use prepared_mesh::{
     MeshEdgeRole, MeshProducer, MeshSiteLocation, MeshUseId, PreparedMeshBoundaryUse,
     PreparedMeshFace, PreparedMeshPublication, PreparedMeshSite,
 };
+pub(in crate::geometry) use voronoi_receipt::{
+    VoronoiAssignmentReceipt, VoronoiCellReceipt, VoronoiChartCutSide, VoronoiClipAtomReceipt,
+    VoronoiClipSegmentReceipt, VoronoiClipSourceRoot, VoronoiDartReceipt, VoronoiDiagramReceipt,
+    VoronoiDirectedEdgeUse, VoronoiEdgeOrigin, VoronoiEdgeReceipt, VoronoiEdgeSourceUse,
+    VoronoiFrameSide, VoronoiProducer, VoronoiRingEdgeRole, VoronoiSeparatorReceipt,
+    VoronoiSiteReceipt, VoronoiSourceSiteDecision, VoronoiSourceSiteReceipt, VoronoiVertexOrigin,
+    VoronoiVertexReceipt,
+};
 
 pub(crate) struct VoronoiPolygonOutput {
     pub(crate) polygon: crate::geometry::Polygon,
-    pub(crate) computed_edges: Vec<Vec<bool>>,
+    pub(in crate::geometry) owner: Option<u32>,
+    pub(in crate::geometry) edge_roles: Vec<Vec<VoronoiRingEdgeRole>>,
+}
+
+pub(crate) struct VoronoiPolygonOutputs {
+    pub(crate) outputs: Vec<VoronoiPolygonOutput>,
+    pub(in crate::geometry) receipt: Arc<VoronoiDiagramReceipt>,
+}
+
+pub(crate) struct VoronoiEdgeColumn {
+    pub(crate) coordinates: crate::geometry::CoordSeq,
+    pub(crate) offsets: crate::geometry::CsrOffsetColumn,
+    pub(in crate::geometry) receipt: Arc<VoronoiDiagramReceipt>,
+}
+
+impl Deref for VoronoiPolygonOutputs {
+    type Target = [VoronoiPolygonOutput];
+
+    fn deref(&self) -> &Self::Target {
+        &self.outputs
+    }
+}
+
+impl IntoIterator for VoronoiPolygonOutputs {
+    type Item = VoronoiPolygonOutput;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.outputs.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a VoronoiPolygonOutputs {
+    type Item = &'a VoronoiPolygonOutput;
+    type IntoIter = std::slice::Iter<'a, VoronoiPolygonOutput>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.outputs.iter()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

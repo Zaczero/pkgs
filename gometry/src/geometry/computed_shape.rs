@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::crs::TransformMetricScratch;
 use crate::error::Result;
 use crate::geographic::{
@@ -6,6 +8,9 @@ use crate::geographic::{
     publish_computed_chain_with_vertex_intents_and_samples,
 };
 use crate::geometry::exact_arith::select_transformed_chart_displacement;
+use crate::geometry::tessellation::{
+    VoronoiDiagramReceipt, VoronoiEdgeColumn, VoronoiEdgeOrigin, VoronoiPolygonOutputs,
+};
 use crate::geometry::{
     ChartMetric, CoordSeq, CoordSeqBuilder, CoordWindow, Coordinates as _, CsrOffsetBuilder,
     CsrOffsetColumn, ExpansionBudget, GeometryErrorKind, LineSeq, Polygon, Ring, RootMetricState,
@@ -13,6 +18,33 @@ use crate::geometry::{
 };
 
 pub(crate) type PolygonPartEdgeRoles = Vec<Vec<Vec<bool>>>;
+
+pub(crate) struct VoronoiReceiptHold {
+    _diagram: Arc<VoronoiDiagramReceipt>,
+}
+
+pub(crate) struct PublishedVoronoiPolygonOutputs {
+    pub(crate) shapes: Vec<Shape>,
+    receipt: VoronoiReceiptHold,
+}
+
+impl PublishedVoronoiPolygonOutputs {
+    pub(crate) fn into_parts(self) -> (Vec<Shape>, VoronoiReceiptHold) {
+        (self.shapes, self.receipt)
+    }
+}
+
+pub(crate) struct PublishedVoronoiEdgeColumn {
+    pub(crate) coordinates: CoordSeq,
+    pub(crate) offsets: CsrOffsetColumn,
+    receipt: VoronoiReceiptHold,
+}
+
+impl PublishedVoronoiEdgeColumn {
+    pub(crate) fn into_parts(self) -> (CoordSeq, CsrOffsetColumn, VoronoiReceiptHold) {
+        (self.coordinates, self.offsets, self.receipt)
+    }
+}
 
 /// Rebuild shape structure while mapping each line or ring coordinate chain.
 ///
@@ -380,17 +412,41 @@ pub(crate) fn publish_raw_computed_shapes_with_budget_and_context(
 }
 
 pub(crate) fn publish_voronoi_polygon_outputs(
-    outputs: Vec<crate::geometry::VoronoiPolygonOutput>,
+    outputs: VoronoiPolygonOutputs,
     frame: Option<GeographicFrame>,
     budget: &mut ExpansionBudget,
-) -> Result<Vec<Shape>> {
-    outputs
+) -> Result<PublishedVoronoiPolygonOutputs> {
+    let receipt = outputs.receipt;
+    let shapes = outputs
+        .outputs
         .into_iter()
         .map(|output| {
+            let owner = output.owner.ok_or_else(|| {
+                GeometryErrorKind::Invalid("Voronoi output has no admitted site owner".into())
+            })?;
+            if !receipt.has_site(owner) {
+                return Err(GeometryErrorKind::Invalid(
+                    "Voronoi output owner is outside its diagram receipt".into(),
+                )
+                .into());
+            }
+            let computed_edges: Vec<Vec<bool>> = output
+                .edge_roles
+                .iter()
+                .map(|ring| {
+                    ring.iter()
+                        .map(|role| {
+                            !role.origins.iter().any(|origin| {
+                                matches!(origin, VoronoiEdgeOrigin::SourceClip { .. })
+                            })
+                        })
+                        .collect()
+                })
+                .collect();
             let polygon = match frame {
                 Some(frame) => publish_polygon_with_edge_roles(
                     &output.polygon,
-                    &output.computed_edges,
+                    &computed_edges,
                     frame,
                     budget,
                 )?,
@@ -398,7 +454,34 @@ pub(crate) fn publish_voronoi_polygon_outputs(
             };
             Ok(Shape::Polygon(polygon))
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(PublishedVoronoiPolygonOutputs {
+        shapes,
+        receipt: VoronoiReceiptHold { _diagram: receipt },
+    })
+}
+
+pub(crate) fn publish_voronoi_edge_column_with_budget(
+    output: VoronoiEdgeColumn,
+    frame: Option<GeographicFrame>,
+    budget: &mut ExpansionBudget,
+) -> Result<PublishedVoronoiEdgeColumn> {
+    let (coordinates, offsets) = match frame {
+        Some(frame) => publish_computed_line_column_with_budget(
+            &output.coordinates,
+            &output.offsets,
+            frame,
+            budget,
+        )?,
+        None => (output.coordinates, output.offsets),
+    };
+    Ok(PublishedVoronoiEdgeColumn {
+        coordinates,
+        offsets,
+        receipt: VoronoiReceiptHold {
+            _diagram: output.receipt,
+        },
+    })
 }
 
 pub(crate) fn publish_computed_line_column_with_budget(

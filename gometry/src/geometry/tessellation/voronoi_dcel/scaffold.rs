@@ -21,11 +21,7 @@ pub(super) fn coincident_frame_owner(
 ) -> Result<SiteId> {
     let mut inside = None;
     for id in pair {
-        match exact::orient_points(
-            ccw_start,
-            ccw_end,
-            &exact::ExactPoint::from_xy(site_by_id(sites, id).point.xy()),
-        )? {
+        match exact::orient_points(ccw_start, ccw_end, &site_by_id(sites, id).exact_point)? {
             ExactSign::Positive => {
                 if inside.replace(id).is_some() {
                     return Err(voronoi_error(
@@ -176,11 +172,11 @@ pub(super) fn emit_clipped_separators(
                     continue;
                 }
                 let pair_points = [
-                    site_at(sites, left_site).point.xy(),
-                    site_at(sites, right_site).point.xy(),
+                    &site_at(sites, left_site).exact_point,
+                    &site_at(sites, right_site).exact_point,
                 ];
                 let [left, right] = pair_points;
-                let line = exact::ExactLine::perpendicular_bisector(left, right)?;
+                let line = exact::ExactLine::perpendicular_bisector_points(left, right)?;
                 let Some(span) = clip_segment_to_rectangle(
                     complex.center(components[0]),
                     complex.center(components[1]),
@@ -200,11 +196,11 @@ pub(super) fn emit_clipped_separators(
             } => {
                 let [left_site, right_site] = pair;
                 let pair_points = [
-                    site_at(sites, left_site).point.xy(),
-                    site_at(sites, right_site).point.xy(),
+                    &site_at(sites, left_site).exact_point,
+                    &site_at(sites, right_site).exact_point,
                 ];
                 let [left, right] = pair_points;
-                let line = exact::ExactLine::perpendicular_bisector(left, right)?;
+                let line = exact::ExactLine::perpendicular_bisector_points(left, right)?;
                 let Some(span) = clip_hull_ray_to_rectangle(
                     complex.center(complex.component_of_face(face)),
                     pair,
@@ -261,14 +257,16 @@ pub(super) fn fixed_coordinates(
 ) -> Result<Vec<Option<XY>>> {
     let mut fixed = Vec::with_capacity(points.len());
     fixed.resize(points.len(), None);
-    for candidate in sites
-        .iter()
-        .map(|site| site.point.xy())
-        .chain(clip.fixed.iter().flatten().copied())
-    {
-        let point = exact::ExactPoint::from_xy(candidate);
-        if let Some(index) = lex_position(points, &point)? {
-            set_fixed_coordinate(&mut fixed, index, candidate)?;
+    for site in sites {
+        if let Some(index) = lex_position(points, &site.exact_point)? {
+            set_fixed_coordinate(&mut fixed, index, site.rounded_xy()?)?;
+        }
+    }
+    for (ring, rounded) in clip.rings.iter().zip(&clip.chart_fixed) {
+        for (point, &candidate) in ring.iter().zip(rounded) {
+            if let Some(index) = lex_position(points, point)? {
+                set_fixed_coordinate(&mut fixed, index, candidate)?;
+            }
         }
     }
     Ok(fixed)

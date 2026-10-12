@@ -207,10 +207,53 @@ fn exact_minimum_faces(exact_area: &exact::ExactDyadic, max_area: f64) -> Result
     Ok(low)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct Site {
     pub(super) id: usize,
     pub(super) point: Point,
+    pub(super) source_ordinal: usize,
+    pub(super) exact_point: exact::ExactPoint,
+    pub(super) retained_chart_site: Option<ChartPointSite>,
+    pub(super) quotient_aliases: Vec<usize>,
+    pub(super) snapped_sources: Vec<usize>,
+}
+
+impl Site {
+    pub(super) fn raw(id: usize, point: Point, source_ordinal: usize) -> Self {
+        Self {
+            id,
+            point,
+            source_ordinal,
+            exact_point: exact::ExactPoint::from_xy(point.xy()),
+            retained_chart_site: None,
+            quotient_aliases: Vec::new(),
+            snapped_sources: Vec::new(),
+        }
+    }
+
+    pub(super) fn retained(
+        id: usize,
+        point: Point,
+        source_ordinal: usize,
+        frame: GeographicFrame,
+        chart_site: ChartPointSite,
+    ) -> Result<Self> {
+        let x = retained_site_longitude(frame.longitude(), chart_site.longitude())?;
+        let y = exact::ExactDyadic::from_f64(chart_site.source_y());
+        Ok(Self {
+            id,
+            point,
+            source_ordinal,
+            exact_point: exact::ExactPoint::from_dyadics(x, y),
+            retained_chart_site: Some(chart_site),
+            quotient_aliases: Vec::new(),
+            snapped_sources: Vec::new(),
+        })
+    }
+
+    pub(super) fn rounded_xy(&self) -> Result<XY> {
+        self.exact_point.round_nearest_even()
+    }
 }
 
 /// The Delaunay mesh the Voronoi dual reads: counter-clockwise faces in the
@@ -567,10 +610,10 @@ pub(in crate::geometry::tessellation) fn prepare_raw_delaunay_publication(
         .iter()
         .map(|&(_, point)| point)
         .collect::<Vec<_>>();
-    let provider_sites = points
+    let provider_sites = indexed_points
         .iter()
         .enumerate()
-        .map(|(id, &point)| Site { id, point })
+        .map(|(id, &(source_ordinal, point))| Site::raw(id, point, source_ordinal))
         .collect::<Vec<_>>();
     let mesh = certified_delaunay(&provider_sites)?;
     let coordinates = |site| exact_delaunay::site_xy(&points, site);
@@ -660,7 +703,7 @@ fn prepare_delaunay_publication<C: exact_delaunay::MeshCoordinates>(
 pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {
     let mut sites = Vec::with_capacity(points.len());
     for (id, &point) in points.iter().enumerate() {
-        sites.push(Site { id, point });
+        sites.push(Site::raw(id, point, id));
     }
     certified_delaunay(&sites)?.into_topology()
 }
@@ -1550,10 +1593,7 @@ mod tests {
         points
             .iter()
             .enumerate()
-            .map(|(id, &(x, y))| Site {
-                id,
-                point: Point::new_raw_xy(x, y),
-            })
+            .map(|(id, &(x, y))| Site::raw(id, Point::new_raw_xy(x, y), id))
             .collect()
     }
 

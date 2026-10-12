@@ -639,12 +639,20 @@ impl PyGeometryArray {
             "voronoi_cells",
             "sites/clip topology",
             move |_, shape, budget| {
-                let outputs = shape.voronoi_polygon_outputs_budgeted(
+                let outputs = shape.voronoi_polygon_outputs_in_frame_budgeted(
                     tolerance,
                     boundary.as_borrowed(),
+                    geographic_frame,
                     budget,
                 )?;
-                crate::geometry::publish_voronoi_polygon_outputs(outputs, geographic_frame, budget)
+                let published: geometry::PublishedVoronoiPolygonOutputs =
+                    crate::geometry::publish_voronoi_polygon_outputs(
+                        outputs,
+                        geographic_frame,
+                        budget,
+                    )?;
+                let (shapes, _receipt): (_, geometry::VoronoiReceiptHold) = published.into_parts();
+                Ok(shapes)
             },
         )
     }
@@ -665,6 +673,7 @@ impl PyGeometryArray {
         let packed = py
             .detach(move || {
                 let mut columns = Vec::new();
+                let mut receipts = Vec::new();
                 let mut group_offsets = Vec::with_capacity(array.len().wrapping_add(1));
                 group_offsets.push(0_i64);
                 for logical_row in array.row_operation().rows_with_missing(|| ()) {
@@ -679,22 +688,25 @@ impl PyGeometryArray {
                                         "voronoi_edge_lines",
                                         "sites/clip topology",
                                     );
-                                    let (coords, offsets) = shape.voronoi_edge_column_budgeted(
+                                    let output = shape.voronoi_edge_column_in_frame_budgeted(
                                         tolerance,
                                         boundary.as_borrowed(),
+                                        geographic_frame,
                                         &mut budget,
                                     )?;
-                                    match geographic_frame {
-                                        Some(frame) => {
-                                            geometry::publish_computed_line_column_with_budget(
-                                                &coords,
-                                                &offsets,
-                                                frame,
-                                                &mut budget,
-                                            )
-                                        },
-                                        None => Ok((coords, offsets)),
-                                    }
+                                    let published: geometry::PublishedVoronoiEdgeColumn =
+                                        geometry::publish_voronoi_edge_column_with_budget(
+                                            output,
+                                            geographic_frame,
+                                            &mut budget,
+                                        )?;
+                                    let (coords, offsets, receipt): (
+                                        _,
+                                        _,
+                                        geometry::VoronoiReceiptHold,
+                                    ) = published.into_parts();
+                                    receipts.push(receipt);
+                                    Ok((coords, offsets))
                                 })
                                 .map_err(|error| (logical, error))?;
                             let n_lines = offsets.len().saturating_sub(1);
@@ -726,18 +738,20 @@ impl PyGeometryArray {
                         })?;
                     group_offsets.push(next);
                 }
-                Ok((columns, group_offsets))
+                Ok((columns, group_offsets, receipts))
             })
             .map_err(rows_err)?;
-        let (columns, group_offsets) = packed;
+        let (columns, group_offsets, receipts) = packed;
         let (coords, line_offsets) = py.detach(move || concat_packed_line_columns(columns))?;
-        Groups::from_packed_line_groups(
+        let output = Groups::from_packed_line_groups(
             frame,
             coords,
             line_offsets,
             group_offsets,
             self.missing().cloned(),
-        )
+        )?;
+        drop(receipts);
+        Ok(output)
     }
 
     pub(crate) fn voronoi_impl(
