@@ -47,10 +47,10 @@ pub(super) fn noded_spans(
     work: &mut impl Work,
 ) -> Result<Vec<NodedSpan>> {
     let q = &topology.q;
-    work.charge(u64::try_from(q.spans.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(q.spans.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut output = Vec::with_capacity(q.spans.len());
     for (span_index, span) in q.spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if span.nodes.first() == span.nodes.get(1) {
             continue;
         }
@@ -73,7 +73,7 @@ pub(super) fn minimal_face_selection(
     work: &mut impl Work,
 ) -> Result<Vec<bool>> {
     let face_count = topology.q.global_face_count;
-    work.charge(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(u64::try_from(face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
     let mut selected = Vec::with_capacity(face_count);
     selected.extend((0..face_count).map(|face| face != 0));
     Ok(selected)
@@ -87,16 +87,16 @@ pub(super) fn face_cycle_hole_roles(
     let q = &topology.q;
     let mut roles = Vec::with_capacity(cycles.len());
     for cycle in cycles {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let capacity = cycle
             .darts
             .len()
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        work.charge(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(u64::try_from(capacity).map_err(|_| ResourceError::SizeOverflow)?)?;
         let mut points = Vec::with_capacity(capacity);
         for &dart_id in &cycle.darts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let dart = q.darts.get(dart_id.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q linework cycle references an unknown dart".into())
             })?;
@@ -134,7 +134,7 @@ pub(super) fn even_odd_face_selection(
         )
         .into());
     }
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             face_count
                 .checked_add(cycles.len())
@@ -146,7 +146,7 @@ pub(super) fn even_odd_face_selection(
     children.resize_with(face_count, Vec::<GlobalFaceId>::new);
     let mut parent = vec![None; face_count];
     for (cycle, &is_hole) in cycles.iter().zip(hole_roles) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !is_hole {
             continue;
         }
@@ -158,7 +158,7 @@ pub(super) fn even_odd_face_selection(
         }
         let mut child_faces = Vec::with_capacity(cycle.darts.len());
         for &dart in &cycle.darts {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let opposite = dart_global_face(q, QDartId(dart.0 ^ 1))?;
             if opposite == cycle.face {
                 continue;
@@ -180,10 +180,12 @@ pub(super) fn even_odd_face_selection(
         try_sort_by_with_work(&mut child_faces, work, |left, right, _work| {
             Ok(left.cmp(right))
         })?;
-        work.charge(u64::try_from(child_faces.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(child_faces.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         child_faces.dedup();
         for child in child_faces {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let parent_slot = parent.get_mut(child.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("a geographic linework child face is unknown".into())
             })?;
@@ -213,7 +215,7 @@ pub(super) fn even_odd_face_selection(
         .ok_or_else(|| GeometryErrorKind::Invalid("Q has no exterior face".into()))? = Some(-1_i64);
     let mut pending = VecDeque::new();
     for face in 1..face_count {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if parent.get(face).copied().flatten().is_none() {
             *depths.get_mut(face).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q linework root face is unknown".into())
@@ -224,7 +226,7 @@ pub(super) fn even_odd_face_selection(
         }
     }
     while let Some(host) = pending.pop_front() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let host_depth = depths
             .get(host.0 as usize)
             .copied()
@@ -237,7 +239,7 @@ pub(super) fn even_odd_face_selection(
             GeometryErrorKind::Invalid("Q linework parent face is unknown".into())
         })?;
         for &child in hosted {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let depth = depths.get_mut(child.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q linework child face is unknown".into())
             })?;
@@ -259,7 +261,7 @@ pub(super) fn even_odd_face_selection(
 
     let mut selected = Vec::with_capacity(face_count);
     for depth in depths {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let depth = depth.ok_or_else(|| {
             GeometryErrorKind::Invalid("Q hole cycles do not reach every global face".into())
         })?;
@@ -280,7 +282,7 @@ pub(super) fn minimal_face_boundaries(
         )
         .into());
     }
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             q.darts
                 .len()
@@ -292,7 +294,7 @@ pub(super) fn minimal_face_boundaries(
     )?;
     let mut boundary = vec![false; q.darts.len()];
     for (span_index, faces) in q.span_global_faces.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let Some([left, right]) = faces else {
             continue;
         };
@@ -343,7 +345,7 @@ fn walk_minimal_face_boundaries(
     let mut positions = vec![None; q.nodes.len()];
     let mut cycles = Vec::new();
     for (seed, &is_boundary) in boundary.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if !is_boundary || visited.get(seed).copied().unwrap_or(false) {
             continue;
         }
@@ -363,7 +365,7 @@ fn walk_minimal_face_boundaries(
         let mut current = start;
         let mut walk = Vec::new();
         loop {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let current_index = current.0 as usize;
             if visited.get(current_index).copied().unwrap_or(false) {
                 if current == start {
@@ -395,7 +397,7 @@ fn walk_minimal_face_boundaries(
             if let Some(begin) = positions.get(dart.to_node.0 as usize).copied().flatten() {
                 let mut cycle = Vec::with_capacity(walk.len().saturating_sub(begin));
                 for dart in walk.drain(begin..) {
-                    work.charge(1)?;
+                    work.charge_into_error(1)?;
                     let node = q
                         .darts
                         .get(dart.0 as usize)
@@ -427,7 +429,7 @@ fn walk_minimal_face_boundaries(
         }
     }
     for (&selected, was_visited) in boundary.iter().zip(visited) {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if selected && !was_visited {
             return Err(GeometryErrorKind::Invalid(
                 "Q left a minimal-face boundary dart unvisited".into(),
@@ -443,7 +445,7 @@ pub(super) fn diagnostic_spans(
     work: &mut impl Work,
 ) -> Result<Vec<DiagnosticSpan>> {
     let q = &topology.q;
-    work.charge(
+    work.charge_into_error(
         u64::try_from(
             q.spans
                 .len()
@@ -457,7 +459,7 @@ pub(super) fn diagnostic_spans(
     let mut incident = Vec::with_capacity(q.nodes.len());
     incident.resize_with(q.nodes.len(), Vec::<usize>::new);
     for (span_index, span) in q.spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         for node in span.nodes {
             let degree = degree.get_mut(node.0 as usize).ok_or_else(|| {
                 GeometryErrorKind::Invalid("Q span has an unknown endpoint node".into())
@@ -473,14 +475,14 @@ pub(super) fn diagnostic_spans(
     }
     let mut pending = VecDeque::new();
     for (node, &degree) in degree.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if degree == 1 {
             pending.push_back(node);
         }
     }
     let mut dangles = vec![false; q.spans.len()];
     while let Some(node) = pending.pop_front() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if degree.get(node).copied() != Some(1) {
             continue;
         }
@@ -503,7 +505,7 @@ pub(super) fn diagnostic_spans(
             .get(span_index)
             .ok_or_else(|| GeometryErrorKind::Invalid("Q dangle span is unknown".into()))?;
         for endpoint in span.nodes {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let degree = degree
                 .get_mut(endpoint.0 as usize)
                 .ok_or_else(|| GeometryErrorKind::Invalid("Q dangle endpoint is unknown".into()))?;
@@ -518,7 +520,7 @@ pub(super) fn diagnostic_spans(
 
     let mut output = Vec::new();
     for (span_index, span) in q.spans.iter().enumerate() {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         let kind = if span.owners.len() > 1 {
             Some(DiagnosticKind::InvalidRing)
         } else if dangles.get(span_index).copied().unwrap_or(false) {
@@ -539,7 +541,7 @@ pub(super) fn diagnostic_spans(
         };
         let mut rows = Vec::<(SourceRowId, usize)>::with_capacity(span.owners.len());
         for (owner_index, owner) in span.owners.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             let edge = topology
                 .sources
                 .edges
@@ -550,10 +552,12 @@ pub(super) fn diagnostic_spans(
             rows.push((edge.row, owner_index));
         }
         try_sort_by_with_work(&mut rows, work, |left, right, _work| Ok(left.cmp(right)))?;
-        work.charge(u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(rows.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         rows.dedup_by_key(|(row, _)| *row);
         for (row, owner) in rows {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             output.push(DiagnosticSpan {
                 span: span_index,
                 owner,
@@ -609,7 +613,7 @@ fn next_face_boundary_dart(
         .chain(before_twin.iter().rev())
         .chain(after_twin.iter().rev())
     {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         if selected.get(candidate.0 as usize).copied().ok_or_else(|| {
             GeometryErrorKind::Invalid("Q boundary fan has an unknown dart".into())
         })? && dart_global_face(q, candidate)? == face

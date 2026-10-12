@@ -1134,10 +1134,12 @@ impl QEmissionPlan {
     ) -> Result<Self> {
         let q = &topology.q;
         let selected = noded_spans(topology, work)?;
-        work.charge(u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let mut line_paths = Vec::with_capacity(selected.len());
         for (index, selected) in selected.into_iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             line_paths.push(QLinePrimitive {
                 origin: QLineOrigin::Noded,
                 recipe_walk: RecipeWalkOwner::Line(index),
@@ -1155,7 +1157,9 @@ impl QEmissionPlan {
             region_count: q.global_face_count,
         };
         let fragment_recipes = build_fragment_recipes(topology, &polygons, &[], &line_paths, work)?;
-        work.charge(u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         Ok(Self {
             whole_sphere: false,
             force_native: false,
@@ -1188,7 +1192,7 @@ impl QEmissionPlan {
             .collect::<Vec<_>>();
         let mut roots = Vec::new();
         for (face, &selected) in selected_faces.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             if selected {
                 roots.push(face);
             }
@@ -1198,7 +1202,7 @@ impl QEmissionPlan {
         let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
         let mut rings = Vec::with_capacity(cycles.len());
         for (cycle, boundary) in cycles.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             rings.push(PlannedAreaRing::Cycle {
                 cycle,
                 region: boundary.region,
@@ -1241,14 +1245,16 @@ impl QEmissionPlan {
         let selected_faces = even_odd_face_selection(topology, &face_cycles, &hole_roles, work)?;
         let mut regions = face_regions(q, &selected_faces, work)?;
         let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
-        work.charge(u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+        work.charge_into_error(
+            u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
         let roots = cycles.iter().map(|cycle| cycle.region).collect::<Vec<_>>();
         let selected_regions =
             selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
         let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
         let mut rings = Vec::with_capacity(cycles.len());
         for (cycle, boundary) in cycles.iter().enumerate() {
-            work.charge(1)?;
+            work.charge_into_error(1)?;
             rings.push(PlannedAreaRing::Cycle {
                 cycle,
                 region: boundary.region,
@@ -2107,7 +2113,9 @@ fn diagnostic_line_paths(
     work: &mut impl Work,
 ) -> Result<Vec<PlannedQLine>> {
     let selected = super::linework::diagnostic_spans(topology, work)?;
-    work.charge(u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?)?;
+    work.charge_into_error(
+        u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
     let mut paths = Vec::with_capacity(selected.len());
     for DiagnosticSpan {
         span,
@@ -2116,7 +2124,7 @@ fn diagnostic_line_paths(
         kind,
     } in selected
     {
-        work.charge(1)?;
+        work.charge_into_error(1)?;
         paths.push(QLinePrimitive {
             origin: QLineOrigin::Diagnostic(kind),
             recipe_walk: RecipeWalkOwner::Line(paths.len()),
