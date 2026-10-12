@@ -6550,7 +6550,7 @@ mod tests {
 
     #[test]
     fn native_materialization_refuses_before_active_column_reservation() {
-        let mut work = RecordingWork::with_remaining("native columns", 11).unwrap();
+        let mut work = RecordingWork::with_remaining("native columns", 12).unwrap();
         let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
         let Err(error) = result else {
             panic!("Native materialization completed without funding its active columns");
@@ -6563,13 +6563,18 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(work.accepted_ticks(), 11);
-        assert_eq!(work.attempted.last(), Some(&2));
+        assert_eq!(work.accepted_ticks(), 12);
+        assert_eq!(
+            work.attempted.last(),
+            Some(&2),
+            "column refusal should follow funded preparation charges: {:?}",
+            work.attempted
+        );
     }
 
     #[test]
     fn native_materialization_refuses_before_each_active_column_phase() {
-        for remaining_ticks in [11, 19, 27] {
+        for remaining_ticks in [12, 20, 28] {
             let mut work =
                 RecordingWork::with_remaining("native columns", remaining_ticks).unwrap();
             let result = materialize_test_line(CoordinateAxes::XYZM, &mut work);
@@ -6585,7 +6590,12 @@ mod tests {
                 })
             ));
             assert_eq!(work.accepted_ticks(), remaining_ticks);
-            assert_eq!(work.attempted.last(), Some(&2));
+            assert_eq!(
+                work.attempted.last(),
+                Some(&2),
+                "allowance {remaining_ticks} should refuse the active-column phase: {:?}",
+                work.attempted
+            );
         }
     }
 
