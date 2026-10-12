@@ -1989,6 +1989,12 @@ fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
     assert_eq!(outputs.receipt.producer(), VoronoiProducer::Collinear);
     assert_receipt_graph(&outputs.receipt);
     assert_polygon_receipt_alignment(&outputs);
+    assert!(outputs.receipt.vertices.iter().all(|vertex| {
+        vertex
+            .origins
+            .iter()
+            .any(|origin| matches!(origin, VoronoiVertexOrigin::OverlayNode { .. }))
+    }));
     for output in &outputs {
         assert_eq!(output.edge_roles.len(), output.polygon.rings().count());
         assert!(
@@ -5493,6 +5499,13 @@ fn retained_lone_site_reuses_its_clip_and_empty_sites_stay_empty() {
     assert_polygon_receipt_alignment(&outputs);
     assert_eq!(outputs.receipt.cells.len(), 1);
     assert!(outputs.receipt.separators.is_empty());
+    assert!(
+        outputs
+            .receipt
+            .edges
+            .iter()
+            .all(|edge| edge.separator.is_none())
+    );
     assert_eq!(
         outputs.receipt.edges.len(),
         clip.shell.len().saturating_sub(1)
