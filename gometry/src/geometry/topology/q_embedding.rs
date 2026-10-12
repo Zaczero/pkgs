@@ -23686,7 +23686,7 @@ mod canonical_coordinate_tests {
                 source_trace: None,
             }],
         };
-        let port_id = builder.port(port_data.try_clone_with_work(&mut budget)?)?;
+        let port_id = builder.port(port_data.try_clone_with_work(budget)?)?;
         builder.point(port_id)?;
         let plan = builder.finish();
         let graph_builder = new_native_reference_graph_builder(&[], &[port_data], budget)?;
