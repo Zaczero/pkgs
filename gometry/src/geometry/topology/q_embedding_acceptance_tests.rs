@@ -26,11 +26,12 @@ fn published_sample_contact_fixture() -> Result<[crate::geometry::Shape; 2]> {
     Ok([input, clip])
 }
 
-fn sealed_shape(output: QEmbeddingOutput) -> crate::geometry::Shape {
-    match output.sealed {
-        super::super::emission::SealedQDrawing::Source(source) => source.sealed.into_shape(),
-        super::super::emission::SealedQDrawing::Native(native) => native.sealed.into_shape(),
-    }
+fn sealed_shape(output: QEmbeddingOutput) -> Result<crate::geometry::Shape> {
+    let finished = match output.sealed {
+        super::super::emission::SealedQDrawing::Source(source) => source.sealed,
+        super::super::emission::SealedQDrawing::Native(native) => native.sealed,
+    };
+    Ok(finished.into_scalar()?.0)
 }
 
 #[test]
@@ -133,7 +134,7 @@ fn partial_circle_publication_sample_repairs_contact_without_losing_either_leaf(
         "the colliding nearest sample must be repaired"
     );
 
-    let result = sealed_shape(pass.output);
+    let result = sealed_shape(pass.output)?;
     assert!(
         crate::geometry::validate_shape_in_frame(
             &result,
