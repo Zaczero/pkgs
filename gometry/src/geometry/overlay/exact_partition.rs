@@ -1357,6 +1357,11 @@ struct SourceLineTraceViews {
     views: Vec<Vec<SourceSpanTraceView>>,
 }
 
+struct PolygonNodeRootRequests {
+    by_node: Vec<Vec<RootRequest>>,
+    root_xy_nodes: Option<Vec<bool>>,
+}
+
 struct SourceLineSeamCut {
     parameter: ExactRational,
     coordinate: XY,
@@ -3504,7 +3509,7 @@ impl ExactSourceInventory {
         }
         let views = self.source_line_trace_views(partition, trace_work)?;
         let root_positions = roots.root_xy_positions_needed().then_some(roots);
-        let (requests_by_node, root_xy_nodes) = self.polygon_node_root_requests(
+        let polygon_requests = self.polygon_node_root_requests(
             partition,
             &nodes,
             &ring_ranges,
@@ -3518,7 +3523,7 @@ impl ExactSourceInventory {
             polygon_traces.push(self.polygon_ring_traces_from_nodes(
                 &parts.polygons,
                 roles,
-                &requests_by_node,
+                &polygon_requests.by_node,
                 trace_work,
             )?);
         }
@@ -3529,10 +3534,10 @@ impl ExactSourceInventory {
             partition,
             &embedding,
             &nodes,
-            requests_by_node,
+            polygon_requests.by_node,
             declared_axes,
             root_positions,
-            root_xy_nodes.as_deref(),
+            polygon_requests.root_xy_nodes.as_deref(),
             Some(self),
             true,
             context,
@@ -3808,7 +3813,7 @@ impl ExactSourceInventory {
         views: &SourceLineTraceViews,
         track_root_xy_nodes: bool,
         work: &mut W,
-    ) -> Result<(Vec<Vec<RootRequest>>, Option<Vec<bool>>)> {
+    ) -> Result<PolygonNodeRootRequests> {
         if ring_ranges.len() != ring_traces.len() {
             return Err(GeometryErrorKind::Invalid(
                 "polygon source ring ranges do not match their root traces".into(),
@@ -3909,7 +3914,10 @@ impl ExactSourceInventory {
                 }
             }
         }
-        Ok((requests_by_node, root_xy_nodes))
+        Ok(PolygonNodeRootRequests {
+            by_node: requests_by_node,
+            root_xy_nodes,
+        })
     }
 
     fn polygon_ring_traces_from_nodes<W: Work>(
