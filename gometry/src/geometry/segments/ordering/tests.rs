@@ -1,24 +1,9 @@
+use self::support::RemainingWork;
 use super::{try_sort_by, try_sort_by_with_work};
 use crate::error::ErrorKind;
-use crate::geometry::{GeometryErrorKind, Work};
+use crate::geometry::GeometryErrorKind;
 
-struct RemainingWork(u64);
-
-impl Work for RemainingWork {
-    type Error = crate::error::Error;
-
-    fn charge(&mut self, ticks: u64) -> crate::error::Result<()> {
-        let Some(remaining) = self.0.checked_sub(ticks) else {
-            return Err(crate::error::ResourceError::SizeOverflow.into());
-        };
-        self.0 = remaining;
-        Ok(())
-    }
-
-    fn charge_product(&mut self, count: usize, ticks_per_item: usize) -> crate::error::Result<()> {
-        self.charge(crate::geometry::work_product_ticks(count, ticks_per_item)?)
-    }
-}
+mod support;
 
 #[test]
 fn fallible_sort_is_stable_and_matches_the_standard_sort() {
