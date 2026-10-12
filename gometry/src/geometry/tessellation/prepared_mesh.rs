@@ -161,7 +161,7 @@ pub(crate) struct PreparedMeshPublication {
 }
 
 impl PreparedMeshPublication {
-    pub(in crate::geometry::tessellation) fn new(
+    pub(in crate::geometry::tessellation) const fn new(
         producer: MeshProducer,
         sites: Vec<PreparedMeshSite>,
         faces: Vec<PreparedMeshFace>,
