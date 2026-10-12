@@ -14,6 +14,10 @@ use super::exact::{
     ExactChartPoint, ExactSourceEdge, ExactSourceRange, ExactSourceRing, SourceEdgeId,
     SourceEdgeKind, SourceRingId, SourceRowId,
 };
+use super::linework::{
+    DiagnosticKind, DiagnosticSpan, even_odd_face_selection, face_cycle_hole_roles,
+    minimal_face_boundaries, minimal_face_selection, noded_spans,
+};
 use super::q::{ExactGeographicTopology, GlobalFaceId, QDartId, QNodeId, QPortId, row_locations};
 use super::q_embedding::{
     EmittedNodeKey, EmittedVertex, QCoordinates, QEmbeddingCertification, QEmbeddingEmission,
@@ -69,15 +73,26 @@ struct SourceLineSpan {
     reversed: bool,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "diagnostic and noded line plans await the shared F4 receiver routing"
+    )
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum QLineOrigin {
+pub(super) enum QLineOrigin {
     Curve,
     ArealBoundary,
+    Noded,
+    Diagnostic(DiagnosticKind),
 }
 
 pub(super) struct QLinePrimitive<T> {
-    origin: QLineOrigin,
+    pub(super) origin: QLineOrigin,
     pub(super) recipe_walk: RecipeWalkOwner,
+    pub(super) source_row: Option<SourceRowId>,
+    pub(super) close: bool,
     pub(super) path: T,
 }
 
@@ -132,10 +147,35 @@ impl SelectedRegionPoles {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "producer-specific selection is consumed when F4 receiver routing lands"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum QProducer {
+    Overlay,
+    Boundary,
+    SourceLines,
+    Node,
+    Polygonize,
+    BuildArea,
+}
+
 pub(super) struct QEmissionPlan {
     whole_sphere: bool,
     force_native: bool,
     boundary_support: Option<BoundarySupport>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the final producer sink consumes this selection tag after F4 lands"
+        )
+    )]
+    pub(super) producer: QProducer,
     pub(super) polygons: PolygonPlan,
     pub(super) cycles: Vec<BoundaryCycle>,
     pub(super) selected_regions: Vec<SelectedRegionFact>,
@@ -655,12 +695,14 @@ fn boundary_cycle_line_paths(
             path.push(LineStep {
                 span: span_index,
                 from_endpoint,
-                owner: area_owner_index(topology, span_index, work)?,
+                owner: boundary_owner_index(topology, span_index, work)?,
             });
         }
         paths.push(QLinePrimitive {
             origin: QLineOrigin::ArealBoundary,
             recipe_walk: RecipeWalkOwner::Line(paths.len()),
+            source_row: None,
+            close: false,
             path,
         });
     }
@@ -772,6 +814,13 @@ pub(super) fn source_ring_reuse_matches(
     Ok(true)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "producer builders are exercised before F4 and routed after its receiver lands"
+    )
+)]
 impl QEmissionPlan {
     pub(super) const fn is_whole_sphere(&self) -> bool {
         self.whole_sphere
@@ -822,6 +871,7 @@ impl QEmissionPlan {
             whole_sphere,
             force_native: false,
             boundary_support: None,
+            producer: QProducer::Overlay,
             polygons,
             cycles,
             selected_regions,
@@ -917,6 +967,7 @@ impl QEmissionPlan {
                 whole_sphere: false,
                 force_native: false,
                 boundary_support: Some(support),
+                producer: QProducer::Boundary,
                 polygons,
                 cycles: Vec::new(),
                 selected_regions,
@@ -1050,6 +1101,8 @@ impl QEmissionPlan {
             line_paths.push(QLinePrimitive {
                 origin: QLineOrigin::Curve,
                 recipe_walk: RecipeWalkOwner::Line(member),
+                source_row: None,
+                close: false,
                 path,
             });
         }
@@ -1065,12 +1118,165 @@ impl QEmissionPlan {
             whole_sphere: false,
             force_native: true,
             boundary_support: None,
+            producer: QProducer::SourceLines,
             polygons,
             cycles: Vec::new(),
             selected_regions: Vec::new(),
             selected_face_roots: vec![None; q.global_face_count],
             fragment_recipes,
             line_paths,
+            point_nodes: Vec::new(),
+        })
+    }
+
+    pub(super) fn build_node(
+        topology: &ExactGeographicTopology,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let q = &topology.q;
+        let selected = noded_spans(topology, work)?;
+        work.charge_into_error(
+            u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let mut line_paths = Vec::with_capacity(selected.len());
+        for (index, selected) in selected.into_iter().enumerate() {
+            work.charge_into_error(1)?;
+            line_paths.push(QLinePrimitive {
+                origin: QLineOrigin::Noded,
+                recipe_walk: RecipeWalkOwner::Line(index),
+                source_row: None,
+                close: false,
+                path: vec![LineStep {
+                    span: selected.span,
+                    from_endpoint: SpanEndpoint::Start,
+                    owner: selected.owner,
+                }],
+            });
+        }
+        let polygons = PolygonPlan::Regions {
+            rings: Vec::new(),
+            region_count: q.global_face_count,
+        };
+        let fragment_recipes = build_fragment_recipes(topology, &polygons, &[], &line_paths, work)?;
+        work.charge_into_error(
+            u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        Ok(Self {
+            whole_sphere: false,
+            force_native: false,
+            boundary_support: None,
+            producer: QProducer::Node,
+            polygons,
+            cycles: Vec::new(),
+            selected_regions: Vec::new(),
+            selected_face_roots: vec![None; q.global_face_count],
+            fragment_recipes,
+            line_paths,
+            point_nodes: Vec::new(),
+        })
+    }
+
+    pub(super) fn build_polygonize(
+        topology: &ExactGeographicTopology,
+        diagnostics: bool,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let q = &topology.q;
+        let selected_faces = minimal_face_selection(topology, work)?;
+        let mut regions = FaceUnion::new(&selected_faces, work)?;
+        let cycles = minimal_face_boundaries(topology, &selected_faces, work)?
+            .into_iter()
+            .map(|cycle| BoundaryCycle {
+                darts: cycle.darts,
+                region: cycle.face.0 as usize,
+            })
+            .collect::<Vec<_>>();
+        let mut roots = Vec::new();
+        for (face, &selected) in selected_faces.iter().enumerate() {
+            work.charge_into_error(1)?;
+            if selected {
+                roots.push(face);
+            }
+        }
+        let selected_regions =
+            selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
+        let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
+        let mut rings = Vec::with_capacity(cycles.len());
+        for (cycle, boundary) in cycles.iter().enumerate() {
+            work.charge_into_error(1)?;
+            rings.push(PlannedAreaRing::Cycle {
+                cycle,
+                region: boundary.region,
+            });
+        }
+        let polygons = PolygonPlan::Regions {
+            rings,
+            region_count: q.global_face_count,
+        };
+        let line_paths = if diagnostics {
+            diagnostic_line_paths(topology, work)?
+        } else {
+            Vec::new()
+        };
+        let fragment_recipes =
+            build_fragment_recipes(topology, &polygons, &cycles, &line_paths, work)?;
+        Ok(Self {
+            whole_sphere: false,
+            force_native: false,
+            boundary_support: None,
+            producer: QProducer::Polygonize,
+            polygons,
+            cycles,
+            selected_regions,
+            selected_face_roots,
+            fragment_recipes,
+            line_paths,
+            point_nodes: Vec::new(),
+        })
+    }
+
+    pub(super) fn build_area(
+        topology: &ExactGeographicTopology,
+        work: &mut impl Work,
+    ) -> Result<Self> {
+        let q = &topology.q;
+        let minimal_faces = minimal_face_selection(topology, work)?;
+        let face_cycles = minimal_face_boundaries(topology, &minimal_faces, work)?;
+        let hole_roles = face_cycle_hole_roles(topology, &face_cycles, work)?;
+        let selected_faces = even_odd_face_selection(topology, &face_cycles, &hole_roles, work)?;
+        let mut regions = face_regions(q, &selected_faces, work)?;
+        let cycles = selected_area_boundaries(q, &selected_faces, &mut regions, work)?;
+        work.charge_into_error(
+            u64::try_from(cycles.len()).map_err(|_| ResourceError::SizeOverflow)?,
+        )?;
+        let roots = cycles.iter().map(|cycle| cycle.region).collect::<Vec<_>>();
+        let selected_regions =
+            selected_region_facts(q, &selected_faces, &mut regions, &roots, work)?;
+        let selected_face_roots = selected_face_roots(q, &selected_faces, &mut regions, work)?;
+        let mut rings = Vec::with_capacity(cycles.len());
+        for (cycle, boundary) in cycles.iter().enumerate() {
+            work.charge_into_error(1)?;
+            rings.push(PlannedAreaRing::Cycle {
+                cycle,
+                region: boundary.region,
+            });
+        }
+        let polygons = PolygonPlan::Regions {
+            rings,
+            region_count: q.global_face_count,
+        };
+        let fragment_recipes = build_fragment_recipes(topology, &polygons, &cycles, &[], work)?;
+        Ok(Self {
+            whole_sphere: false,
+            force_native: false,
+            boundary_support: None,
+            producer: QProducer::BuildArea,
+            polygons,
+            cycles,
+            selected_regions,
+            selected_face_roots,
+            fragment_recipes,
+            line_paths: Vec::new(),
             point_nodes: Vec::new(),
         })
     }
@@ -1800,7 +2006,7 @@ fn build_fragment_recipes(
                                 span: span.id,
                                 from: dart.from_port,
                                 to: dart.to_port,
-                                owner_index: area_owner_index(
+                                owner_index: boundary_owner_index(
                                     topology,
                                     dart.span.0 as usize,
                                     work,
@@ -1871,27 +2077,68 @@ fn build_fragment_recipes(
         if let Some(pivot) = pivot {
             spans.rotate_left(pivot);
         }
-        let closed = if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
-            work.charge_into_error(1)?;
-            let first = topology.q.ports.get(first.from.0 as usize).ok_or_else(|| {
-                GeometryErrorKind::Invalid("Q line recipe start is unknown".into())
-            })?;
-            let last =
-                topology.q.ports.get(last.to.0 as usize).ok_or_else(|| {
+        let closed = line.close
+            || if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
+                work.charge_into_error(1)?;
+                let first = topology.q.ports.get(first.from.0 as usize).ok_or_else(|| {
+                    GeometryErrorKind::Invalid("Q line recipe start is unknown".into())
+                })?;
+                let last = topology.q.ports.get(last.to.0 as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid("Q line recipe end is unknown".into())
                 })?;
-            first.node == last.node
-        } else {
-            false
-        };
+                first.node == last.node
+            } else {
+                false
+            };
         let use_kind = match line.origin {
-            QLineOrigin::Curve => SelectedUse::Curve,
+            QLineOrigin::Curve | QLineOrigin::Noded | QLineOrigin::Diagnostic(_) => {
+                SelectedUse::Curve
+            },
             QLineOrigin::ArealBoundary => SelectedUse::ArealBoundaryLine,
         };
         let fragments = recipes.push_walk(topology, &spans, closed, use_kind, work)?;
         recipes.record_walk(line.recipe_walk, fragments);
     }
     Ok(recipes)
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "polygonize diagnostic paths are consumed by the F4 row receiver"
+    )
+)]
+fn diagnostic_line_paths(
+    topology: &ExactGeographicTopology,
+    work: &mut impl Work,
+) -> Result<Vec<PlannedQLine>> {
+    let selected = super::linework::diagnostic_spans(topology, work)?;
+    work.charge_into_error(
+        u64::try_from(selected.len()).map_err(|_| ResourceError::SizeOverflow)?,
+    )?;
+    let mut paths = Vec::with_capacity(selected.len());
+    for DiagnosticSpan {
+        span,
+        owner,
+        row,
+        kind,
+    } in selected
+    {
+        work.charge_into_error(1)?;
+        paths.push(QLinePrimitive {
+            origin: QLineOrigin::Diagnostic(kind),
+            recipe_walk: RecipeWalkOwner::Line(paths.len()),
+            source_row: Some(row),
+            close: kind == DiagnosticKind::InvalidRing,
+            path: vec![LineStep {
+                span,
+                from_endpoint: SpanEndpoint::Start,
+                owner,
+            }],
+        });
+    }
+    Ok(paths)
 }
 
 fn push_source_ring_recipes(
@@ -3037,7 +3284,7 @@ fn line_owner_index(
     )
 }
 
-fn area_owner_index(
+fn boundary_owner_index(
     topology: &ExactGeographicTopology,
     span_index: usize,
     work: &mut impl Work,
@@ -3056,7 +3303,13 @@ fn area_owner_index(
             return Ok(owner_index);
         }
     }
-    Err(GeometryErrorKind::Invalid("selected Q area boundary has no ring owner".into()).into())
+    if !span.owners.is_empty() {
+        return Ok(0);
+    }
+    Err(
+        GeometryErrorKind::Invalid("selected Q boundary has no source interval owner".into())
+            .into(),
+    )
 }
 
 fn line_steps(
@@ -3228,6 +3481,8 @@ fn planned_line_paths(
                 output.push(QLinePrimitive {
                     origin: previous,
                     recipe_walk: RecipeWalkOwner::Line(index),
+                    source_row: None,
+                    close: false,
                     path: std::mem::take(&mut current_steps),
                 });
             }
@@ -3239,6 +3494,8 @@ fn planned_line_paths(
             output.push(QLinePrimitive {
                 origin,
                 recipe_walk: RecipeWalkOwner::Line(index),
+                source_row: None,
+                close: false,
                 path: current_steps,
             });
         }
@@ -3482,12 +3739,16 @@ fn push_line_part<'topology>(
     output: &mut Vec<DrawnQLine<'topology>>,
     origin: QLineOrigin,
     recipe_walk: RecipeWalkOwner,
+    source_row: Option<SourceRowId>,
+    close: bool,
     vertices: &mut Vec<EmittedVertex<'topology>>,
 ) {
     if vertices.len() >= 2 {
         output.push(QLinePrimitive {
             origin,
             recipe_walk,
+            source_row,
+            close,
             path: std::mem::take(vertices),
         });
     } else {
@@ -4671,7 +4932,7 @@ fn draw_cycle_vertices<'topology>(
         topology,
         &cycle.darts,
         |vertex, work| {
-            let owner_index = area_owner_index(topology, vertex.span, work)?;
+            let owner_index = boundary_owner_index(topology, vertex.span, work)?;
             vertices.push(emitted_point(
                 topology,
                 coordinates,
@@ -4697,6 +4958,8 @@ fn draw_lines<'topology>(
     for line in paths {
         work.charge_into_error(1)?;
         let recipe_walk = line.recipe_walk;
+        let source_row = line.source_row;
+        let close = line.close;
         let path = &line.path;
         let mut start = None;
         for (index, step) in path.iter().enumerate() {
@@ -4782,7 +5045,14 @@ fn draw_lines<'topology>(
                             EmittedNodeKey::NorthPole | EmittedNodeKey::SouthPole
                         );
                         if is_seam || is_pole {
-                            push_line_part(&mut output, line.origin, recipe_walk, &mut points);
+                            push_line_part(
+                                &mut output,
+                                line.origin,
+                                recipe_walk,
+                                source_row,
+                                false,
+                                &mut points,
+                            );
                         } else if points
                             .last()
                             .is_some_and(|last: &EmittedVertex<'_>| last.point != previous.point)
@@ -4807,7 +5077,17 @@ fn draw_lines<'topology>(
             }
             previous = Some(to);
         }
-        push_line_part(&mut output, line.origin, recipe_walk, &mut points);
+        if close && let Some(&first) = points.first() {
+            points.push(first);
+        }
+        push_line_part(
+            &mut output,
+            line.origin,
+            recipe_walk,
+            source_row,
+            close,
+            &mut points,
+        );
     }
     Ok(output)
 }
