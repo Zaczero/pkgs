@@ -4137,9 +4137,13 @@ impl ExactSourceInventory {
                         intermediate.push(endpoint);
                     }
                     if computed {
+                        let slice_count = intermediate
+                            .len()
+                            .checked_add(1)
+                            .ok_or(ResourceError::SizeOverflow)?;
                         slices.extend(
-                            (0..intermediate.len().wrapping_add(1))
-                                .map(|_| (edge, zero.clone(), one.clone())),
+                            std::iter::repeat_with(|| (edge, zero.clone(), one.clone()))
+                                .take(slice_count),
                         );
                         continue;
                     }
@@ -6831,7 +6835,12 @@ fn polygon_source_ring_ranges(shape: &Shape) -> Result<Vec<Range<usize>>> {
     let polygons: Vec<&Polygon> = match shape {
         Shape::Polygon(polygon) => vec![polygon],
         Shape::MultiPolygon(polygons) => polygons.iter().collect(),
-        _ => {
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => {
             return Err(GeometryErrorKind::Invalid(
                 "subdivision ring traces require a polygonal source shape".into(),
             )
