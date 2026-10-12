@@ -113,7 +113,7 @@ impl ExactRationalArea {
         }
     }
 
-    pub(in crate::geometry) fn sign(&self) -> ExactSign {
+    pub(in crate::geometry) const fn sign(&self) -> ExactSign {
         self.numerator.sign()
     }
 }

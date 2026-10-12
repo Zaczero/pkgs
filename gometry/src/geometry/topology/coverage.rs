@@ -37,7 +37,7 @@ struct ChartBounds {
 }
 
 impl ChartBounds {
-    fn include(&mut self, other: Self) {
+    const fn include(&mut self, other: Self) {
         self.min[0] = self.min[0].min(other.min[0]);
         self.min[1] = self.min[1].min(other.min[1]);
         self.max[0] = self.max[0].max(other.max[0]);
