@@ -1,7 +1,7 @@
 use super::contact::strict_sign;
 use super::trig::{sin_cos_for_inverse, ulp};
 use super::{
-    Bound, CertSign, DirectedLongitudeSpan, HALF_PI_HI, HALF_PI_LO, Midpoint, PI_HI, PI_LO,
+    Bound, CertSign, DirectedLongitudeSpan, HALF_PI_HI, HALF_PI_LO, Midpoint as _, PI_HI, PI_LO,
     Vec3Bound,
 };
 

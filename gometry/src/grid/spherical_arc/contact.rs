@@ -5,7 +5,7 @@ use super::h3_fan::FanSide;
 use super::trig::{outward_half_width, sin_cos, upward_sum};
 use super::{
     AffineSourceArc, ArcContact, Ball, Bound, CertSign, DirectedLongitudeSpan, ExactArcKind,
-    H3FanPlan, HALF_PI_LO, Midpoint, OrderedMinorArc, PI_HI, PI_LO, Vec3Bound,
+    H3FanPlan, HALF_PI_LO, Midpoint as _, OrderedMinorArc, PI_HI, PI_LO, Vec3Bound,
 };
 
 impl ArcContact {

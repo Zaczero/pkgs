@@ -299,20 +299,6 @@ pub(in crate::grid) struct Vec3Bound {
     pub(in crate::grid) z: Bound,
 }
 
-/// Exact raw-seed segment parameter with a positive denominator.  An
-/// arithmetic failure is an undecidable carrier, not wrapped lattice data.
-#[expect(
-    clippy::similar_names,
-    reason = "the determinant is defined over paired x/y edge, segment, and start deltas"
-)]
-
-/// Outward enclosures of `1/k!`: the neighbouring floats of the binary64
-/// `k!` enclose the integer, and each reciprocal is rounded outward.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "this compile-time table is written in a bounded length loop; the pinned compiler has no const-stable checked array access"
-)]
-
 trait Midpoint {
     fn certified_midpoint(self, rhs: f64) -> Option<f64>;
 }

@@ -91,6 +91,12 @@ fn intersection_native_point(
     let y_sqrt3 = Bound::from_i128(sy)?.add(Bound::from_i128(dy)?.mul(t)?)?;
     Some((x2, y_sqrt3))
 }
+/// Exact raw-seed segment parameter with a positive denominator.  An
+/// arithmetic failure is an undecidable carrier, not wrapped lattice data.
+#[expect(
+    clippy::similar_names,
+    reason = "the determinant is defined over paired x/y edge, segment, and start deltas"
+)]
 fn rational_intersection_parameter(
     edge_dx: i128,
     edge_dy: i128,

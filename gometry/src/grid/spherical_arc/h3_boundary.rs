@@ -19,7 +19,7 @@ use super::{
     Bound, CellVertexKey, CertifiedCircularBoundsRad, CertifiedDegreeWindows,
     CertifiedLongitudeRad, DegreeWindowResult, ExactArcKind, H3ArcSet, H3BboxWitnesses,
     H3BoundingWindow, H3CellPlan, H3FanPlan, HALF_PI_HI, LongitudeSpan, MAX_H3_BOUNDARY_ARCS,
-    Midpoint, OrderedMinorArc, PI_HI, PI_LO, PhysicalEndpointKey, ProjectionSeed, Vec3Bound,
+    Midpoint as _, OrderedMinorArc, PI_HI, PI_LO, PhysicalEndpointKey, ProjectionSeed, Vec3Bound,
 };
 
 /// The native H3 boundary holds at most five original pentagon vertices plus
