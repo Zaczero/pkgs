@@ -198,16 +198,16 @@ fn q_face_metrics(
 ) -> Result<Vec<QFaceMetrics>> {
     let q = &topology.q;
     work.charge(u64::try_from(q.global_face_count).map_err(|_| ResourceError::SizeOverflow)?)?;
-    let mut metrics = (0..q.global_face_count)
-        .map(|_| {
-            Ok(QFaceMetrics {
-                area: ExactRationalArea::new(),
-                perimeter: 0.0,
-                boundary_darts: Vec::new(),
-                border_lengths: try_hash_map()?,
-            })
+    let mut metrics = std::iter::repeat_with(|| {
+        Ok(QFaceMetrics {
+            area: ExactRationalArea::new(),
+            perimeter: 0.0,
+            boundary_darts: Vec::new(),
+            border_lengths: try_hash_map()?,
         })
-        .collect::<Result<Vec<_>>>()?;
+    })
+    .take(q.global_face_count)
+    .collect::<Result<Vec<_>>>()?;
     let mut face_poles = vec![[false; 2]; q.global_face_count];
     for pole in [ChartPole::North, ChartPole::South] {
         let pole_index = match pole {
@@ -630,8 +630,8 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
         &mut expansion_budget,
         work,
     )?;
-    let mut face_rows: Vec<Vec<usize>> = (0..topology.q.global_face_count)
-        .map(|_| Vec::new())
+    let mut face_rows: Vec<Vec<usize>> = std::iter::repeat_with(Vec::new)
+        .take(topology.q.global_face_count)
         .collect();
     topology
         .q
@@ -660,8 +660,9 @@ pub(crate) fn analyze_geographic_coverage_with_work<S: Borrow<Shape>>(
     let mut row_bounds: Vec<Option<ChartBounds>> = vec![None; source_rows];
     let mut span_bounds = Vec::with_capacity(topology.q.spans.len());
     let mut incident_spans = vec![Vec::new(); topology.q.nodes.len()];
-    let mut node_edges: Vec<Vec<NodeEdge>> =
-        (0..topology.q.nodes.len()).map(|_| Vec::new()).collect();
+    let mut node_edges: Vec<Vec<NodeEdge>> = std::iter::repeat_with(Vec::new)
+        .take(topology.q.nodes.len())
+        .collect();
 
     for (span_index, span) in topology.q.spans.iter().enumerate() {
         work.charge(1)?;
