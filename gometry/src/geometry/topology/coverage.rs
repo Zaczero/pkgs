@@ -1496,18 +1496,16 @@ mod tests {
     fn geographic_face_labels_fill_only_the_enclosed_narrow_gap() {
         let rows: Vec<_> = (0..3)
             .flat_map(|x| {
-                (0..3).filter_map(move |y| {
-                    (x != 1 || y != 1).then(|| {
-                        let (x, y) = (f64::from(x), f64::from(y));
-                        crate::io::parse_wkt(&format!(
-                            "POLYGON (({x} {y}, {} {y}, {} {}, {x} {}, {x} {y}))",
-                            x + 1.0,
-                            x + 1.0,
-                            y + 1.0,
-                            y + 1.0,
-                        ))
-                        .expect("coverage grid cell")
-                    })
+                (0..3).filter(move |&y| x != 1 || y != 1).map(move |y| {
+                    let (x, y) = (f64::from(x), f64::from(y));
+                    crate::io::parse_wkt(&format!(
+                        "POLYGON (({x} {y}, {} {y}, {} {}, {x} {}, {x} {y}))",
+                        x + 1.0,
+                        x + 1.0,
+                        y + 1.0,
+                        y + 1.0,
+                    ))
+                    .expect("coverage grid cell")
                 })
             })
             .collect();
