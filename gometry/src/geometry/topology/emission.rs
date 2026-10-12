@@ -6564,11 +6564,11 @@ mod tests {
             })
         ));
         assert_eq!(work.accepted_ticks(), 12);
+        let attempted = &work.attempted;
         assert_eq!(
             work.attempted.last(),
             Some(&2),
-            "column refusal should follow funded preparation charges: {:?}",
-            work.attempted
+            "column refusal should follow funded preparation charges: {attempted:?}"
         );
     }
 
@@ -6590,11 +6590,11 @@ mod tests {
                 })
             ));
             assert_eq!(work.accepted_ticks(), remaining_ticks);
+            let attempted = &work.attempted;
             assert_eq!(
                 work.attempted.last(),
                 Some(&2),
-                "allowance {remaining_ticks} should refuse the active-column phase: {:?}",
-                work.attempted
+                "allowance {remaining_ticks} should refuse the active-column phase: {attempted:?}"
             );
         }
     }
