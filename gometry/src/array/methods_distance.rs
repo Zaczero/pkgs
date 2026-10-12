@@ -546,3 +546,64 @@ impl PyGeometryArray {
         })
     }
 }
+
+#[cfg(test)]
+mod root_capture_tests {
+    use super::*;
+    use crate::geometry::Ring;
+
+    #[test]
+    fn geographic_xy_packed_hull_skips_source_root_capture() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        Python::initialize();
+        let frame = Frame::Crs(crate::crs::frame::crs_arc_static("OGC:CRS84"));
+        let line = Shape::LineString(
+            LineSeq::try_new(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(120.0, 60.0),
+                    Point::new_raw_xy(360.0, 20.0),
+                ])
+                .expect("line coordinates"),
+            )
+            .expect("valid line"),
+        );
+        let polygon = Shape::Polygon(crate::geometry::Polygon::new(
+            Ring::try_from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(-10.0, -5.0),
+                    Point::new_raw_xy(10.0, -5.0),
+                    Point::new_raw_xy(10.0, 5.0),
+                    Point::new_raw_xy(-10.0, 5.0),
+                    Point::new_raw_xy(-10.0, -5.0),
+                ])
+                .expect("polygon coordinates"),
+            )
+            .expect("closed ring"),
+            Vec::new(),
+        ));
+        let chart_points = Shape::multi_point(
+            CoordinateAxes::XY,
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(170.0, 0.0),
+                Point::new_raw_xy(-170.0, 0.0),
+                Point::new_raw_xy(180.0, 10.0),
+            ])
+            .expect("chart multipoint coordinates"),
+        );
+        let array = PyGeometryArray::from_shapes(vec![line, polygon, chart_points], frame).unwrap();
+
+        crate::geometry::reset_root_work_counters();
+        let hulls = Python::attach(|py| {
+            array.convex_hull_unary_packed(py, crate::dispatch::MetricResolver::GeographicCarry)
+        })
+        .unwrap();
+
+        assert_eq!(hulls.len(), 3);
+        assert_eq!(hulls.uniform_axes(), Some(CoordinateAxes::XY));
+        assert_eq!(
+            crate::geometry::root_work_counters(),
+            crate::geometry::RootWorkCounters::default()
+        );
+    }
+}

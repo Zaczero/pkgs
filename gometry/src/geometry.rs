@@ -146,8 +146,12 @@ mod linear;
 mod linear_3d;
 mod ordinates;
 pub(crate) use ordinates::{
-    ParallelSourceArcMetricAccess, RootMetricState, SourceArcContext, SourceArcMetricAccess,
-    computed_native_sample_ordinates, source_ordinate_values_at_fraction,
+    ParallelSourceArcMetricAccess, RootMetricState, SourceArcCapture, SourceArcContext,
+    SourceArcMetricAccess, computed_native_sample_ordinates, source_ordinate_values_at_fraction,
+};
+#[cfg(test)]
+pub(crate) use ordinates::{
+    RootWorkCounters, RootWorkEvent, record_root_work, reset_root_work_counters, root_work_counters,
 };
 mod perimeter;
 pub(crate) use perimeter::{geographic_packed_polygonal_perimeter, geographic_polygonal_perimeter};
@@ -417,30 +421,36 @@ pub(crate) fn nearest_line(pair: Option<&(Point, Point)>, common: CoordinateAxes
 
 /// Publish a computed nearest-pair line with the displacement retained by its
 /// metric producer.
-pub(crate) fn nearest_line_with_intent<'metric, M>(
+pub(crate) fn nearest_line_with_intent<M: ChartMetric>(
     pair: Option<&(Point, Point)>,
     common: CoordinateAxes,
     frame: crate::geographic::GeographicFrame,
     intent: crate::geographic::ComputedEdgeIntent<'_>,
-    source_context: &SourceArcContext<'_, 'metric, M>,
-) -> Result<Shape>
-where
-    M: ChartMetric + 'metric,
-{
+    source_capture: SourceArcCapture<'_, '_, M>,
+) -> Result<Shape> {
     let Some(pair) = pair else {
         return nearest_line(None, common);
     };
     let points: [Point; 2] = coerce_to_common_axes(pair.0, pair.1).into();
     let mut budget = ExpansionBudget::new("shortest_line", "computed edges");
-    let published = publish_native_computed_chain(
-        frame,
-        points.as_slice(),
-        false,
-        &mut budget,
-        source_context,
-        |_, _, _| Ok(intent),
-        |_, _| crate::geographic::ComputedVertexIntent::Canonical,
-    )?;
+    let published = match source_capture.context() {
+        Some(source_context) => publish_native_computed_chain(
+            frame,
+            points.as_slice(),
+            false,
+            &mut budget,
+            source_context,
+            |_, _, _| Ok(intent),
+            |_, _| crate::geographic::ComputedVertexIntent::Canonical,
+        )?,
+        None => crate::geographic::publish_computed_chain(
+            frame,
+            points.as_slice(),
+            false,
+            &mut budget,
+            |_, _, _| Ok(intent),
+        )?,
+    };
     match published {
         Some(points) => Ok(Shape::LineString(LineSeq::from_proven(
             CoordSeq::try_from_points(&points)?,

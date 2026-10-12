@@ -374,21 +374,35 @@ fn publish_charted_point_chain(
         } => {
             debug_assert_eq!(edges.len(), coordinates.len().saturating_sub(1));
             let mut budget = ExpansionBudget::new(operation, "computed edges");
-            let published = crate::geometry::publish_native_computed_chain(
-                frame,
-                &coordinates,
-                closed_ring,
-                &mut budget,
-                source_context,
-                |index, _, _| {
-                    Ok(ComputedEdgeIntent::retained_native(
-                        *edges
-                            .get(index)
-                            .expect("each selected source edge has one retained relation"),
-                    ))
-                },
-                |_, _| ComputedVertexIntent::Canonical,
-            )?;
+            let intent = |index, _, _| {
+                Ok(ComputedEdgeIntent::retained_native(
+                    *edges
+                        .get(index)
+                        .expect("each selected source edge has one retained relation"),
+                ))
+            };
+            let capture = crate::geometry::SourceArcCapture::for_output_axes(
+                coordinates.axes(),
+                *source_context,
+            );
+            let published = match capture.context() {
+                Some(source_context) => crate::geometry::publish_native_computed_chain(
+                    frame,
+                    &coordinates,
+                    closed_ring,
+                    &mut budget,
+                    source_context,
+                    intent,
+                    |_, _| ComputedVertexIntent::Canonical,
+                )?,
+                None => crate::geographic::publish_computed_chain(
+                    frame,
+                    &coordinates,
+                    closed_ring,
+                    &mut budget,
+                    intent,
+                )?,
+            };
             let coordinates = match published {
                 Some(points) => CoordSeq::try_from_points(&points)?,
                 None => coordinates,

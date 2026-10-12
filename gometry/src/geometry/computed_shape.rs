@@ -247,17 +247,23 @@ pub(crate) fn publish_raw_computed_shape_with_budget_and_context(
     budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     map_computed_shape_chains(shape, shape, |_, coords, closed| {
-        publish_native_computed_chain(
-            frame,
-            coords,
-            closed,
-            budget,
-            source_context,
-            |_, start, end| {
-                ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
-            },
-            |_, _| ComputedVertexIntent::Canonical,
-        )
+        let intent = |_, start: crate::geometry::Point, end: crate::geometry::Point| {
+            ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [start.x, end.x])
+        };
+        let capture =
+            crate::geometry::SourceArcCapture::for_output_axes(coords.axes(), *source_context);
+        match capture.context() {
+            Some(source_context) => publish_native_computed_chain(
+                frame,
+                coords,
+                closed,
+                budget,
+                source_context,
+                intent,
+                |_, _| ComputedVertexIntent::Canonical,
+            ),
+            None => publish_computed_chain(frame, coords, closed, budget, intent),
+        }
     })
 }
 
@@ -708,6 +714,8 @@ where
     P: crate::geometry::Coordinates + ?Sized,
     M: ChartMetric + 'metric,
 {
+    #[cfg(test)]
+    crate::geometry::record_root_work(crate::geometry::RootWorkEvent::NativeChainEntry);
     let metric_access = source_context.metric_access();
     let axes = points
         .first_coord()

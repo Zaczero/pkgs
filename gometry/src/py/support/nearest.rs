@@ -214,6 +214,10 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                         };
                         let common =
                             crate::geometry::common_axes(fixed_plan.shape(), element.shape());
+                        let source_capture = crate::geometry::SourceArcCapture::for_output_axes(
+                            common,
+                            source_context,
+                        );
                         let line = match witness {
                             Some((start, end, step)) => crate::geometry::nearest_line_with_intent(
                                 Some(&(start, end)),
@@ -225,7 +229,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                     step,
                                 )
                                 .map_err(|error| (logical, error))?,
-                                &source_context,
+                                source_capture,
                             ),
                             None => crate::geometry::nearest_line(None, common),
                         }

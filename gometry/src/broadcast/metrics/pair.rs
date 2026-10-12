@@ -14,8 +14,8 @@ use crate::geographic::{ComputedEdgeIntent, GeographicFrame, lonlat as geographi
 use crate::geometry::storage::packed_columns::PackedColumns;
 use crate::geometry::storage::{PackedStorage, PointRows};
 use crate::geometry::{
-    FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, SourceArcContext, TopologyDomain,
-    emit_from_original, storage,
+    FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery, SourceArcCapture,
+    SourceArcContext, TopologyDomain, emit_from_original, storage,
 };
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
@@ -823,12 +823,30 @@ pub(crate) fn metric_nearest_points_resolved(
     b_cache: &FrameDependentCaches,
     source_context: &SourceArcContext<'_, '_, crs::GeodesicMetric>,
 ) -> crate::error::Result<Option<(Point, Point)>> {
+    let source_capture = SourceArcCapture::for_output_axes(
+        crate::geometry::common_axes(a.shape(), b.shape()),
+        *source_context,
+    );
+    metric_nearest_points_with_capture(metric, a, a_cache, b, b_cache, source_capture)
+}
+
+fn metric_nearest_points_with_capture(
+    metric: &crs::ResolvedMetric,
+    a: &PreparedPlan,
+    a_cache: &FrameDependentCaches,
+    b: &PreparedPlan,
+    b_cache: &FrameDependentCaches,
+    source_capture: SourceArcCapture<'_, '_, crs::GeodesicMetric>,
+) -> crate::error::Result<Option<(Point, Point)>> {
     if a.shape().is_empty() || b.shape().is_empty() {
         return Ok(None);
     }
     dispatch_resolved_metric(
         metric,
-        |_| a.nearest_points_with_source_context(b, source_context),
+        |_| match source_capture.context() {
+            Some(source_context) => a.nearest_points_with_source_context(b, source_context),
+            None => a.nearest_points(b),
+        },
         |metric| {
             let (ellipsoid, semi_major, flattening) = prepare_geodesic_pair(
                 &metric.geodesic,
@@ -861,15 +879,16 @@ pub(crate) fn metric_shortest_line_resolved(
     source_context: &SourceArcContext<'_, '_, crs::GeodesicMetric>,
 ) -> crate::error::Result<Shape> {
     let common = crate::geometry::common_axes(a.shape(), b.shape());
+    let source_capture = SourceArcCapture::for_output_axes(common, *source_context);
     match metric {
         crs::ResolvedMetric::Planar { .. } => {
-            let pair = metric_nearest_points_resolved(
+            let pair = metric_nearest_points_with_capture(
                 metric,
                 a,
                 &FrameDependentCaches::default(),
                 b,
                 &FrameDependentCaches::default(),
-                source_context,
+                source_capture,
             )?;
             match (pair.as_ref(), domain) {
                 (Some((start, end)), TopologyDomain::Geographic(frame)) => {
@@ -880,7 +899,7 @@ pub(crate) fn metric_shortest_line_resolved(
                         ComputedEdgeIntent::retained_binary64_pair(frame.longitude(), [
                             start.x, end.x,
                         ])?,
-                        source_context,
+                        source_capture,
                     )
                 },
                 (_, TopologyDomain::Cartesian) => {
@@ -919,7 +938,7 @@ pub(crate) fn metric_shortest_line_resolved(
                         [start.x, end.x],
                         intent,
                     )?,
-                    source_context,
+                    source_capture,
                 ),
                 None => crate::geometry::nearest_line(None, common),
             }
@@ -1488,8 +1507,8 @@ mod planar_nearest_source_ordinate_tests {
     use super::{metric_nearest_points_resolved, metric_shortest_line_resolved};
     use crate::crs::{GeodesicMetric, MetricModel, ResolvedMetric};
     use crate::geometry::{
-        ChartMetric, FrameDependentCaches, LineSeq, Point, PreparedPlan, Shape, SourceArcContext,
-        TopologyDomain,
+        ChartMetric, FrameDependentCaches, LineSeq, Point, PreparedPlan, RootWorkCounters, Shape,
+        SourceArcContext, TopologyDomain, reset_root_work_counters, root_work_counters,
     };
 
     const CRS: &str = "+proj=longlat +a=7000000 +rf=150 +type=crs";
@@ -1511,6 +1530,24 @@ mod planar_nearest_source_ordinate_tests {
                 metric.chart_edge_length(&edge).unwrap()
             })
             .sum()
+    }
+
+    fn assert_native_samples_resolved_once(line: &LineSeq) {
+        let expected_samples = line
+            .as_coords()
+            .iter()
+            .count()
+            .checked_sub(2)
+            .expect("shortest-line output retains both witness endpoints");
+        let work = root_work_counters();
+        assert_eq!(work.native_chain_entries, 1);
+        assert_eq!(work.source_arc_requests, expected_samples);
+        assert_eq!(work.source_arc_resolutions, expected_samples);
+        assert_eq!(work.root_requests, 0);
+        assert_eq!(work.root_ranges, 0);
+        assert_eq!(work.trace_rows_builders, 0);
+        assert_eq!(work.request_tables, 0);
+        assert_eq!(work.root_catalog_resolutions, 0);
     }
 
     #[test]
@@ -1607,6 +1644,7 @@ mod planar_nearest_source_ordinate_tests {
         let origin = Point::new_raw_xy(0.0, 0.0);
         let half_turn_total = segmented_length(&metric, origin, Point::new_raw_xy(180.0, 60.0));
         for resolved in [&planar, &geodesic] {
+            reset_root_work_counters();
             let Shape::LineString(line) = metric_shortest_line_resolved(
                 resolved,
                 &left,
@@ -1617,6 +1655,7 @@ mod planar_nearest_source_ordinate_tests {
             .unwrap() else {
                 panic!("shortest_line publishes a line");
             };
+            assert_native_samples_resolved_once(&line);
             let sample = line
                 .as_coords()
                 .iter()
@@ -1646,6 +1685,7 @@ mod planar_nearest_source_ordinate_tests {
         let right = PreparedPlan::new(Shape::Point(full_turn_end));
         let origin = Point::new_raw_xy(0.0, 1.0);
         let total = segmented_length(&metric, origin, Point::new_raw_xy(360.0, 60.0));
+        reset_root_work_counters();
         let Shape::LineString(line) = metric_shortest_line_resolved(
             &planar,
             &left,
@@ -1656,6 +1696,7 @@ mod planar_nearest_source_ordinate_tests {
         .unwrap() else {
             panic!("shortest_line publishes a line");
         };
+        assert_native_samples_resolved_once(&line);
         for (index, parameter) in [0.25, 0.5, 0.75].into_iter().enumerate() {
             let y = 1.0 + 59.0 * parameter;
             let sample = line
@@ -1667,6 +1708,79 @@ mod planar_nearest_source_ordinate_tests {
             let fraction = segmented_length(&metric, origin, producer_sample) / total;
             assert!((sample.z().unwrap() - (10.0 + 200.0 * fraction)).abs() < 1.0e-9);
             assert!((sample.m().unwrap() - (100.0 + 400.0 * fraction)).abs() < 1.0e-9);
+        }
+    }
+
+    #[test]
+    fn geographic_xy_planar_nearest_points_skip_source_root_capture() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
+        let metric = GeodesicMetric::from_model(&model).unwrap();
+        let metric_access = || Ok(&metric);
+        let context = SourceArcContext::new(
+            TopologyDomain::Geographic(metric.frame),
+            Some(&metric_access),
+        );
+        let planar = ResolvedMetric::from_model(&MetricModel::COORDINATE).unwrap();
+        let line = PreparedPlan::new(Shape::LineString(
+            LineSeq::segment(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(120.0, 60.0)).unwrap(),
+        ));
+        let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(60.0, 31.0)));
+
+        for (left, right, expected_left, expected_right) in [
+            (&line, &point, (60.4, 30.2), (60.0, 31.0)),
+            (&point, &line, (60.0, 31.0), (60.4, 30.2)),
+        ] {
+            reset_root_work_counters();
+            let pair = metric_nearest_points_resolved(
+                &planar,
+                left,
+                &FrameDependentCaches::default(),
+                right,
+                &FrameDependentCaches::default(),
+                &context,
+            )
+            .unwrap()
+            .expect("nonempty XY nearest pair");
+            assert!((pair.0.x - expected_left.0).abs() < 1.0e-12);
+            assert!((pair.0.y - expected_left.1).abs() < 1.0e-12);
+            assert!((pair.1.x - expected_right.0).abs() < 1.0e-12);
+            assert!((pair.1.y - expected_right.1).abs() < 1.0e-12);
+            assert_eq!(pair.0.axes(), crate::geometry::CoordinateAxes::XY);
+            assert_eq!(pair.1.axes(), crate::geometry::CoordinateAxes::XY);
+            assert_eq!(root_work_counters(), RootWorkCounters::default());
+        }
+    }
+
+    #[test]
+    fn geographic_xy_shortest_line_skips_source_root_capture() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let model = crate::crs::metric_model_at(Some(CRS), &state).unwrap();
+        let metric = GeodesicMetric::from_model(&model).unwrap();
+        let geodesic = ResolvedMetric::from_model(&model).unwrap();
+        let planar = ResolvedMetric::from_model(&MetricModel::COORDINATE).unwrap();
+        let metric_access = || Ok(&metric);
+        let context = SourceArcContext::new(
+            TopologyDomain::Geographic(metric.frame),
+            Some(&metric_access),
+        );
+        let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, 0.0)));
+        let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(180.0, 60.0)));
+
+        for unit in [&planar, &geodesic] {
+            reset_root_work_counters();
+            let line = metric_shortest_line_resolved(
+                unit,
+                &left,
+                &right,
+                TopologyDomain::Geographic(metric.frame),
+                &context,
+            )
+            .unwrap();
+            assert_eq!(line.axes(), crate::geometry::CoordinateAxes::XY);
+            assert_eq!(root_work_counters(), RootWorkCounters::default());
         }
     }
 }

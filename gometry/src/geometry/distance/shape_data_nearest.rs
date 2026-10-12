@@ -26,6 +26,8 @@ impl PreparedPlan {
         other: &Self,
         source_context: &SourceArcContext<'_, '_, crate::crs::GeodesicMetric>,
     ) -> Result<Option<(Point, Point)>> {
+        #[cfg(test)]
+        crate::geometry::record_root_work(crate::geometry::RootWorkEvent::NearestSourceContext);
         self.nearest_points_inner(other, Some(source_context))
     }
 

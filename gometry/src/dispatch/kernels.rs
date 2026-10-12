@@ -1243,3 +1243,84 @@ pub(crate) fn unary_interpolate_m(
         MeasureRange::interpolate_m(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
     metric_interpolate_m(model, data.shape(), range, overwrite)
 }
+
+#[cfg(test)]
+mod root_capture_tests {
+    use super::{unary_convex_hull, unary_minimum_rotated_rectangle};
+    use crate::crs::frame::Frame;
+    use crate::dispatch::metric::{CachelessRowContext, Lane, MetricResolver, MetricScratch};
+    use crate::geometry::{
+        CoordSeq, CoordinateAxes, LineSeq, Point, Polygon, PreparedPlan, Ring, RootWorkCounters,
+        Shape, reset_root_work_counters, root_work_counters,
+    };
+
+    fn line(points: &[Point]) -> Shape {
+        Shape::LineString(
+            LineSeq::try_new(CoordSeq::try_from_points(points).expect("line coordinates"))
+                .expect("valid line"),
+        )
+    }
+
+    fn polygon(points: &[Point]) -> Shape {
+        Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(points).expect("polygon coordinates"))
+                .expect("closed ring"),
+            Vec::new(),
+        ))
+    }
+
+    fn points(points: &[Point]) -> Shape {
+        Shape::multi_point(
+            CoordinateAxes::XY,
+            CoordSeq::try_from_points(points).expect("multipoint coordinates"),
+        )
+    }
+
+    #[test]
+    fn geographic_xy_hull_and_rectangle_kernels_skip_root_capture() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let frame = Frame::Crs("OGC:CRS84".into());
+        let mut scratch = MetricScratch::default();
+        let (domain, metric) = MetricResolver::GeographicCarry
+            .resolve_topology_ctx(&frame, &mut scratch)
+            .expect("geographic topology context");
+        let context = CachelessRowContext {
+            frame: &frame,
+            domain,
+            metric,
+            lane: Lane::Scalar,
+        };
+        let inputs = [
+            line(&[Point::new_raw_xy(0.0, 1.0), Point::new_raw_xy(360.0, 60.0)]),
+            polygon(&[
+                Point::new_raw_xy(-10.0, -5.0),
+                Point::new_raw_xy(10.0, -5.0),
+                Point::new_raw_xy(10.0, 5.0),
+                Point::new_raw_xy(-10.0, 5.0),
+                Point::new_raw_xy(-10.0, -5.0),
+            ]),
+            points(&[
+                Point::new_raw_xy(170.0, 0.0),
+                Point::new_raw_xy(-170.0, 0.0),
+                Point::new_raw_xy(180.0, 10.0),
+            ]),
+        ];
+
+        for input in inputs {
+            let data = PreparedPlan::new(input);
+
+            reset_root_work_counters();
+            let hull = unary_convex_hull(&data, &context).expect("geographic XY hull");
+            assert!(!hull.is_empty());
+            assert_eq!(hull.axes(), CoordinateAxes::XY);
+            assert_eq!(root_work_counters(), RootWorkCounters::default());
+
+            reset_root_work_counters();
+            let rectangle =
+                unary_minimum_rotated_rectangle(&data, &context).expect("geographic XY MRR");
+            assert!(!rectangle.is_empty());
+            assert_eq!(rectangle.axes(), CoordinateAxes::XY);
+            assert_eq!(root_work_counters(), RootWorkCounters::default());
+        }
+    }
+}
