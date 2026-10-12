@@ -941,7 +941,7 @@ fn geographic_edge_roles(
                         roles.push(edge_roles);
                     },
                     (crate::geometry::MultiMember::Empty, crate::geometry::MultiMember::Empty) => {
-                        roles.push(Vec::new())
+                        roles.push(Vec::new());
                     },
                     _ => return Ok(None),
                 }
