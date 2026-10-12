@@ -5281,6 +5281,28 @@ fn retained_collinear_seam_cells_and_edges_use_the_admitted_chart() {
             let mut actual_owners: Vec<_> = edge.owner_transition.into_iter().flatten().collect();
             actual_owners.sort_unstable();
             assert_eq!(actual_owners.as_slice(), expected_sites.as_slice());
+            let [Some(left_owner), Some(right_owner)] = edge.owner_transition else {
+                panic!("the retained seam separator has owners on both sides");
+            };
+            let [start_id, end_id] = edge.endpoints;
+            let start = receipt_vertex(&outputs.receipt, start_id)
+                .assignment
+                .expect("separator start has an assignment");
+            let end = receipt_vertex(&outputs.receipt, end_id)
+                .assignment
+                .expect("separator end has an assignment");
+            let site_xy = |site_id: u32| {
+                let [x, y] = &receipt_site(&outputs.receipt, site_id).exact_xy;
+                XY::new(x.round().unwrap(), y.round().unwrap())
+            };
+            assert_eq!(
+                exact::orient2d(start, end, site_xy(left_owner)),
+                ExactSign::Positive
+            );
+            assert_eq!(
+                exact::orient2d(start, end, site_xy(right_owner)),
+                ExactSign::Negative
+            );
         }
     }
     assert!(
