@@ -4,37 +4,6 @@
 //! into great circles. H3 and S2 classifiers consume the resulting parent
 //! intervals and retain the unsplit affine source as their authority.
 //!
-//! # This file is NOT to be split by line count (audited 2026-08-03)
-//!
-//! Two independent reviews proposed splitting these ~4,000 lines into five
-//! concern-modules, on the claim that — unlike the sibling `spherical_arc.rs`,
-//! whose split was attempted and REVERTED — this file has no private-field
-//! blocker. That claim is false; the blocker here is worse, and in every
-//! direction:
-//!
-//! - Cross-concern private-field reads: `step.turn_delta` (rectangle reads
-//!   lift), `vertex.longitude.raw`/`.turns` (exact-point reads lift),
-//!   `chain.edges`/`.vertices` (classifier reads lift),
-//!   `.numerator.ordering()` (selection reads substrate),
-//!   `self.start.longitude.raw` (edge reads lift), `piece.carrier.arc`/`.selection`
-//!   (facade reads selection — directly, though `SelectionAffinePiece::arc()`
-//!   exists), and `append_lifted_chain` reading `LiftedChain`.
-//! - The module tests read ~50 private fields spanning every group — and
-//!   `SymbolicAffineEdge::endpoints` is `#[cfg_attr(not(test), expect(dead_code,
-//!   …))]`, i.e. a field that exists ONLY so the tests can read it.
-//!
-//! Splitting therefore requires widening essentially the whole private state
-//! of the module to satisfy a line count. The failure mode is not a red test:
-//! once (say) `LiftedChain.vertices` is reachable from a sibling module, a
-//! later edit can reconstruct a rounded closure from raw endpoint doubles,
-//! which this file's own invariants forbid — surfacing months later as a wrong
-//! H3/S2 cover on a polar or seam-crossing source. Nothing in the suite catches
-//! that class.
-//!
-//! The one genuinely field-clean piece (`ExactExpansion` + its sum helpers,
-//! ~230 lines) is 5.7% of the file and sits under `ExactRatio`, which IS read
-//! cross-group. Not worth a module boundary in this file.
-
 use std::cmp::Ordering;
 
 use h3o::Resolution;
@@ -51,10 +20,12 @@ use crate::geometry::{
 };
 use crate::grid::s2::cell::Cell as S2Cell;
 use crate::grid::s2::projection::lonlat_to_point as s2_lonlat_to_point;
+use crate::grid::spatial_index::{PackedBvh, PackedBvhEntry};
+use crate::grid::spherical_arc::contact::degree_bound_to_radians;
 use crate::grid::spherical_arc::{
     AffineEndpointIdentity, AffineParentMap, AffineSourceArc, AffineStructure, AxisLatitude,
     AxisMeridian, Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
-    PhysicalEndpointKey, SourceEndpointRole, degree_bound_to_radians,
+    PhysicalEndpointKey, SourceEndpointRole,
 };
 
 const FULL_TURN_DEGREES: f64 = 360.0;
@@ -1713,7 +1684,7 @@ impl AuthorityAffinePiece {
         self.carrier.polygon
     }
 
-    pub(crate) const fn arc(&self) -> AffineSourceArc {
+    pub(in crate::grid) const fn arc(&self) -> AffineSourceArc {
         self.carrier.arc
     }
 }
@@ -1723,7 +1694,7 @@ impl SelectionAffinePiece {
         self.carrier.polygon
     }
 
-    pub(crate) const fn arc(&self) -> AffineSourceArc {
+    pub(in crate::grid) const fn arc(&self) -> AffineSourceArc {
         self.carrier.arc
     }
 
@@ -2142,165 +2113,6 @@ fn selection_image_point(point: &SourcePoint) -> ExactResult<SelectionPoint> {
     })
 }
 
-const PACKED_BVH_LEAF_SIZE: usize = 8;
-
-#[derive(Clone, Copy, Debug)]
-struct PackedBvhNodeId(usize);
-
-#[derive(Debug)]
-pub(crate) struct PackedBvhEntry<T> {
-    value: T,
-    envelope: AABB<[f64; 2]>,
-    order: usize,
-}
-
-impl<T> PackedBvhEntry<T> {
-    pub(crate) const fn new(value: T, envelope: AABB<[f64; 2]>) -> Self {
-        Self {
-            value,
-            envelope,
-            order: 0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PackedBvhNode {
-    envelope: AABB<[f64; 2]>,
-    start: usize,
-    end: usize,
-    left: Option<PackedBvhNodeId>,
-    right: Option<PackedBvhNodeId>,
-}
-
-#[derive(Debug)]
-pub(crate) struct PackedBvh<T> {
-    entries: Vec<PackedBvhEntry<T>>,
-    nodes: Vec<PackedBvhNode>,
-    root: Option<PackedBvhNodeId>,
-}
-
-impl<T> PackedBvh<T> {
-    pub(crate) fn build(mut entries: Vec<PackedBvhEntry<T>>) -> crate::error::Result<Self> {
-        let entry_count = entries.len();
-        let leaf_count = entry_count.div_ceil(PACKED_BVH_LEAF_SIZE);
-        let node_capacity = if entry_count == 0 {
-            0
-        } else {
-            leaf_count
-                .checked_mul(2)
-                .and_then(|count| count.checked_sub(1))
-                .ok_or(crate::error::ResourceError::SizeOverflow)?
-        };
-        let mut nodes = Vec::with_capacity(node_capacity);
-        for (order, entry) in entries.iter_mut().enumerate() {
-            entry.order = order;
-        }
-        let root = if entry_count == 0 {
-            None
-        } else {
-            Some(Self::build_node(&mut entries, &mut nodes, 0, entry_count))
-        };
-        Ok(Self {
-            entries,
-            nodes,
-            root,
-        })
-    }
-
-    fn build_node(
-        entries: &mut [PackedBvhEntry<T>],
-        nodes: &mut Vec<PackedBvhNode>,
-        start: usize,
-        end: usize,
-    ) -> PackedBvhNodeId {
-        let envelope = envelope_for_entries(
-            entries
-                .get(start..end)
-                .expect("BVH node range belongs to its entry column"),
-        );
-        let node = PackedBvhNodeId(nodes.len());
-        nodes.push(PackedBvhNode {
-            envelope,
-            start,
-            end,
-            left: None,
-            right: None,
-        });
-        let range_len = end.checked_sub(start).expect("BVH node ranges are ordered");
-        if range_len > PACKED_BVH_LEAF_SIZE {
-            let axis = longest_axis(envelope);
-            entries
-                .get_mut(start..end)
-                .expect("BVH node range belongs to its entry column")
-                .sort_unstable_by(|left, right| {
-                    proxy_center(left.envelope, axis)
-                        .total_cmp(&proxy_center(right.envelope, axis))
-                        .then_with(|| compare_envelopes(left.envelope, right.envelope))
-                        .then_with(|| left.order.cmp(&right.order))
-                });
-            let middle = start
-                .checked_add(range_len / 2)
-                .expect("middle of a BVH node range is representable");
-            let left = Self::build_node(entries, nodes, start, middle);
-            let right = Self::build_node(entries, nodes, middle, end);
-            let node = nodes
-                .get_mut(node.0)
-                .expect("BVH node slot was appended before its children");
-            node.left = Some(left);
-            node.right = Some(right);
-        }
-        node
-    }
-
-    pub(crate) fn visit(
-        &self,
-        query: AABB<[f64; 2]>,
-        visit: &mut impl FnMut(&T) -> crate::error::Result<()>,
-    ) -> crate::error::Result<()> {
-        let Some(root) = self.root else {
-            return Ok(());
-        };
-        self.visit_node(root, query, visit)
-    }
-
-    fn visit_node(
-        &self,
-        node: PackedBvhNodeId,
-        query: AABB<[f64; 2]>,
-        visit: &mut impl FnMut(&T) -> crate::error::Result<()>,
-    ) -> crate::error::Result<()> {
-        let current = self
-            .nodes
-            .get(node.0)
-            .expect("BVH node IDs are constructed by the owning builder");
-        if !aabbs_intersect(current.envelope, query) {
-            return Ok(());
-        }
-        match (current.left, current.right) {
-            (Some(left), Some(right)) => {
-                self.visit_node(left, query, visit)?;
-                self.visit_node(right, query, visit)?;
-            },
-            (None, None) => {
-                let entries = self
-                    .entries
-                    .get(current.start..current.end)
-                    .expect("BVH leaf range belongs to its entry column");
-                for entry in entries {
-                    if aabbs_intersect(entry.envelope, query) {
-                        visit(&entry.value)?;
-                    }
-                }
-            },
-            (Some(_), None) | (None, Some(_)) => {
-                unreachable!("BVH nodes have both child IDs or neither")
-            },
-        }
-        Ok(())
-    }
-}
-
 type AuthorityEdgeIndex = PackedBvh<usize>;
 
 fn build_authority_edge_index(
@@ -2321,74 +2133,6 @@ fn build_authority_edge_index(
         }
     }
     Ok(Some(PackedBvh::build(entries)?))
-}
-
-fn envelope_for_entries<T>(entries: &[PackedBvhEntry<T>]) -> AABB<[f64; 2]> {
-    let (first, remaining) = entries
-        .split_first()
-        .expect("BVH node entry ranges are nonempty");
-    let first = first.envelope;
-    let mut lower = first.lower();
-    let mut upper = first.upper();
-    for entry in remaining {
-        let entry_lower = entry.envelope.lower();
-        let entry_upper = entry.envelope.upper();
-        lower[0] = lower[0].min(entry_lower[0]);
-        lower[1] = lower[1].min(entry_lower[1]);
-        upper[0] = upper[0].max(entry_upper[0]);
-        upper[1] = upper[1].max(entry_upper[1]);
-    }
-    AABB::from_bounds(lower, upper)
-}
-
-#[derive(Clone, Copy)]
-enum PackedBvhAxis {
-    X,
-    Y,
-}
-
-fn longest_axis(envelope: AABB<[f64; 2]>) -> PackedBvhAxis {
-    let lower = envelope.lower();
-    let upper = envelope.upper();
-    let x = upper[0] - lower[0];
-    let y = upper[1] - lower[1];
-    if y > x {
-        PackedBvhAxis::Y
-    } else {
-        PackedBvhAxis::X
-    }
-}
-
-fn proxy_center(envelope: AABB<[f64; 2]>, axis: PackedBvhAxis) -> f64 {
-    let lower = envelope.lower();
-    let upper = envelope.upper();
-    match axis {
-        PackedBvhAxis::X => f64::midpoint(lower[0], upper[0]),
-        PackedBvhAxis::Y => f64::midpoint(lower[1], upper[1]),
-    }
-}
-
-fn compare_envelopes(left: AABB<[f64; 2]>, right: AABB<[f64; 2]>) -> Ordering {
-    let left_lower = left.lower();
-    let left_upper = left.upper();
-    let right_lower = right.lower();
-    let right_upper = right.upper();
-    left_lower[0]
-        .total_cmp(&right_lower[0])
-        .then_with(|| left_lower[1].total_cmp(&right_lower[1]))
-        .then_with(|| left_upper[0].total_cmp(&right_upper[0]))
-        .then_with(|| left_upper[1].total_cmp(&right_upper[1]))
-}
-
-fn aabbs_intersect(left: AABB<[f64; 2]>, right: AABB<[f64; 2]>) -> bool {
-    let left_lower = left.lower();
-    let left_upper = left.upper();
-    let right_lower = right.lower();
-    let right_upper = right.upper();
-    left_lower[0] <= right_upper[0]
-        && right_lower[0] <= left_upper[0]
-        && left_lower[1] <= right_upper[1]
-        && right_lower[1] <= left_upper[1]
 }
 
 /// Shared periodic source lift and conservative candidate authority.
@@ -2851,7 +2595,9 @@ impl GeographicCoverageSource {
     }
 
     #[cfg(test)]
-    pub(crate) fn selection_arcs(&self) -> Option<impl ExactSizeIterator<Item = &AffineSourceArc>> {
+    pub(in crate::grid) fn selection_arcs(
+        &self,
+    ) -> Option<impl ExactSizeIterator<Item = &AffineSourceArc>> {
         (!self.unknown).then(|| self.selection.edges.iter().map(|piece| &piece.carrier.arc))
     }
 

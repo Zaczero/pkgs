@@ -4,7 +4,8 @@
 //! an enclosure returns `None` rather than a number, so a caller never
 //! mistakes a rounded answer for a certified one.
 
-use super::{Midpoint as _, down, finite_minmax, outward_half_width, ulp, up, upward_sum};
+use super::Midpoint as _;
+use super::trig::{down, finite_minmax, outward_half_width, ulp, up, upward_sum};
 
 /// An outward binary64 interval.  `None` is deliberately used for operations
 /// which cannot certify a finite result; callers map it to their fail-open

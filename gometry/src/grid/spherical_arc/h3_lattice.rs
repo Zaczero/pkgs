@@ -4,11 +4,12 @@
 //! the lattice profile at that resolution. These routines certify that radius
 //! rather than sampling it, so a cap test can refuse a cell outright.
 
-use super::{
-    Bound, CapLatticeProfile, HALF_PI_HI, HALF_PI_LO, Hex2Int, LongitudeSpan, PI_HI, PI_LO,
-    ProjectionSeed, Resolution, Vec3Bound, certified_vector_latitude, certified_vector_longitude,
-    integer_power_bound, project_h3_seed, project_h3_seed_unnormalized, sin_cos,
-};
+use h3o::{CapLatticeProfile, Hex2Int, ProjectionSeed, Resolution};
+
+use super::h3_projection::{project_h3_seed, project_h3_seed_unnormalized};
+use super::trig::{integer_power_bound, sin_cos};
+use super::vectors::{certified_vector_latitude, certified_vector_longitude};
+use super::{Bound, HALF_PI_HI, HALF_PI_LO, LongitudeSpan, PI_HI, PI_LO, Vec3Bound};
 
 /// Certified radian bounds at the one permitted conversion boundary between
 /// spherical H3 work and the lon/lat source carrier.  Longitude remains a
@@ -800,3 +801,6 @@ pub(super) fn radians_to_degrees(radians: Bound) -> Option<Bound> {
         .mul(Bound::exact(180.0)?)?
         .div(Bound::new(PI_LO, PI_HI)?)
 }
+
+#[cfg(test)]
+mod tests;
