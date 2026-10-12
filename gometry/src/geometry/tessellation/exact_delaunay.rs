@@ -1845,14 +1845,8 @@ mod tests {
         }
 
         fn key(&self, query: Self::Query) -> Self::Key {
-            let normalized = |value: f64| {
-                if value == 0.0 {
-                    0.0_f64.to_bits()
-                } else {
-                    value.to_bits()
-                }
-            };
-            [normalized(query.x), normalized(query.y)]
+            let xy = |site| self.query(site);
+            xy.key(query)
         }
 
         fn compare(&self, left: Self::Query, right: Self::Query) -> std::cmp::Ordering {
@@ -1888,7 +1882,8 @@ mod tests {
             [min_x, max_x]: [Self::Query; 2],
             [min_y, max_y]: [Self::Query; 2],
         ) -> Result<std::cmp::Ordering> {
-            Ok(compare_f64(max_x.x - min_x.x, max_y.y - min_y.y))
+            let xy = |site| self.query(site);
+            xy.compare_axis_spans([min_x, max_x], [min_y, max_y])
         }
 
         fn locality_xy(&self, site: usize) -> XY {
