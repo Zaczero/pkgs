@@ -231,10 +231,6 @@ pub(in crate::geometry) trait RayPointsWithWork: RayPoints {
         work: &mut W,
     ) -> Result<ExactSign>;
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "runs advance within the keyed permutation created from this exact item slice"
-    )]
     fn sort_by_axis_with_work<T: Copy, P: Fn(T) -> u32, E: FnMut(T, T) -> Result<()>, W: Work>(
         &self,
         items: &mut [T],
@@ -1192,6 +1188,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin refusal before exact tied-axis ordering"
+    )]
     fn native_ray_tied_axis_refuses_before_exact_ordering() -> Result<()> {
         const OPERATION: &str = "native_ray_axis";
         let points = tied_axis_points();
@@ -1256,6 +1256,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin refusal before lazy crossing cache publication"
+    )]
     fn native_point_arena_lazy_crossing_refuses_before_cache_publication() -> Result<()> {
         const OPERATION: &str = "native_ray_lazy_crossing";
         let segments = [
@@ -1345,6 +1349,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the recorder assertions pin refusal before exact tied-orientation evaluation"
+    )]
     fn native_ray_tied_nonzero_orientation_refuses_before_determinant() -> Result<()> {
         const OPERATION: &str = "native_ray_orientation";
         let points = tied_orientation_points();

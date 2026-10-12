@@ -24815,9 +24815,7 @@ mod native_ray_work_tests {
             .ok_or_else(|| {
                 GeometryErrorKind::Invalid("invalid native-ray charge calibration".into())
             })?;
-        Ok(EvaluationBudget::with_remaining_ticks_for_test(
-            operation, 1, remaining,
-        )?)
+        EvaluationBudget::with_remaining_ticks_for_test(operation, 1, remaining)
     }
 
     fn assert_limit_error(error: &crate::error::Error, operation: &'static str) {

@@ -189,10 +189,6 @@ impl<'a> PointArena<'a> {
             .then(|| PointKey::new(self.rounded[index as usize]))
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the admitted PointArena node ID addresses aligned recipe and rounded columns; crossing segment IDs came from the candidate sweep"
-    )]
     pub(in crate::geometry) fn exact(&self, index: u32) -> Result<Cow<'_, [ExactDyadic; 3]>> {
         self.exact_with_work(index, &mut Unmetered)
     }
