@@ -79,6 +79,15 @@ struct GeographicChainSequence {
     span_lifts: Vec<i64>,
 }
 
+struct GeographicRemovalCandidate<'a> {
+    chain_index: usize,
+    before: usize,
+    vertex: usize,
+    after: usize,
+    sequence: &'a GeographicChainSequence,
+    rows: &'a [SourceRowId],
+}
+
 struct RootFragment {
     source_edge: SourceEdgeId,
     source_range: ExactSourceRange,
@@ -166,14 +175,14 @@ impl GeographicCoverageAnalysis {
                             return Ok(false);
                         }
                         guard.try_remove(
-                            chain_index,
-                            before,
-                            vertex,
-                            after,
-                            &canonical.points,
-                            &canonical.nodes,
-                            &canonical.lifts,
-                            &rows,
+                            GeographicRemovalCandidate {
+                                chain_index,
+                                before,
+                                vertex,
+                                after,
+                                sequence: canonical,
+                                rows: &rows,
+                            },
                             &mut generated_edges,
                             work,
                         )
@@ -682,17 +691,21 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
 
     fn try_remove(
         &mut self,
-        chain_index: usize,
-        before: usize,
-        vertex: usize,
-        after: usize,
-        points: &[ExactChartPoint],
-        nodes: &[QNodeId],
-        lifts: &[i64],
-        rows: &[SourceRowId],
+        candidate: GeographicRemovalCandidate<'_>,
         generated_edges: &mut [Option<usize>],
         work: &mut impl Work,
     ) -> Result<bool> {
+        let GeographicRemovalCandidate {
+            chain_index,
+            before,
+            vertex,
+            after,
+            sequence,
+            rows,
+        } = candidate;
+        let points = &sequence.points;
+        let nodes = &sequence.nodes;
+        let lifts = &sequence.lifts;
         let chain = self.inventory.chains.get(chain_index).ok_or_else(|| {
             GeometryErrorKind::Invalid("geographic chain index is out of range".into())
         })?;
