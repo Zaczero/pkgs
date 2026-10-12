@@ -917,20 +917,21 @@ impl<'a, 'q> GeographicQGuard<'a, 'q> {
                     .ports
                     .get(end_port.0 as usize)
                     .ok_or_else(|| GeometryErrorKind::Invalid("Q span has no end port".into()))?;
-                if super::super::q::exact_segments_intersect_with_work(
+                let intersects = super::super::q::exact_segments_intersect_with_work(
                     start,
                     end,
                     &start_port.point,
                     &end_port.point,
                     work,
-                )? && !intersection_is_endpoint_only(
-                    [start, end],
-                    endpoints,
-                    [&start_port.point, &end_port.point],
-                    span.nodes,
-                    work,
-                )? {
-                    return Ok(false);
+                )?;
+                if intersects {
+                    return intersection_is_endpoint_only(
+                        [start, end],
+                        endpoints,
+                        [&start_port.point, &end_port.point],
+                        span.nodes,
+                        work,
+                    );
                 }
                 Ok(true)
             })?;
